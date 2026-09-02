@@ -783,15 +783,26 @@ const SHIPPED_SURFACES: [&str; 4] = ["release", "editor", "lsp", "dap"];
 /// Classification alone is not enough: `install.sh` is classified `tooling`,
 /// yet its own ledger reason calls it the "user-facing one-line installer".
 /// Filtering on `production`/`test` would leave both public installers
-/// droppable. Documentation and configuration on a shipped surface stay out —
-/// release notes and contracts are exactly what publication legitimately
-/// translates.
+/// droppable.
+///
+/// `config` on a shipped surface is protected for the same reason. The ledger
+/// classifies functional configuration that way — `crates/*/features_sot.toml`
+/// drives LSP capability claims, `integrations/lsp4ij/**` is the editor
+/// integration itself, `dist-workspace.toml` and `.docker/**` construct the
+/// release artifact — and displacing any of it ships a broken product just as
+/// surely as dropping code. None of the twenty-one such entries is
+/// publication-specific.
+///
+/// `documentation` deliberately stays out, on a shipped surface or anywhere
+/// else: release notes and prose contracts are exactly what publication
+/// legitimately translates, and protecting them would block the projection's
+/// main legitimate job. Prose is translatable; functional configuration is not.
 fn entry_is_protected(entry: &AllowEntry) -> bool {
     if entry.classification == "production" || entry.classification == "test" {
         return true;
     }
     SHIPPED_SURFACES.contains(&entry.surface.as_str())
-        && matches!(entry.classification.as_str(), "tooling" | "generated")
+        && matches!(entry.classification.as_str(), "tooling" | "generated" | "config")
 }
 
 /// Rust-family build and toolchain manifests at any depth.

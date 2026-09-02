@@ -1816,14 +1816,18 @@ fn shipped_tooling_cannot_be_displaced_even_when_classified_tooling() -> Result<
 
 #[test]
 fn documentation_on_a_shipped_surface_stays_displaceable() -> Result<()> {
-    // Opposite direction: release notes and contracts are exactly what
-    // publication legitimately translates, so the widened rule must not
-    // swallow documentation and config.
-    let surface = ProductSurface::from_ledger_rows_for_test(vec![
-        ("docs/release-notes.md", "documentation", "release"),
-        ("schemas/some_contract.v1.schema.json", "config", "release"),
-    ]);
-    for path in ["docs/release-notes.md", "schemas/some_contract.v1.schema.json"] {
+    // Opposite direction: release notes are exactly what publication
+    // legitimately translates, so the rule must not swallow prose.
+    //
+    // `config` used to be asserted displaceable here too. That was wrong and is
+    // corrected in `a_shipped_configuration_file_cannot_be_displaced` — see the
+    // reasoning there. Prose is translatable; functional configuration is not.
+    let surface = ProductSurface::from_ledger_rows_for_test(vec![(
+        "docs/release-notes.md",
+        "documentation",
+        "release",
+    )]);
+    for path in ["docs/release-notes.md"] {
         let mut document = clean_value()?;
         rows_mut(&mut document)?[1]["path"] = json!(path);
         let manifest: Manifest = serde_json::from_value(document.clone())?;
@@ -2774,6 +2778,98 @@ fn resolve_tree_entry_answers_from_the_commit_not_the_worktree() -> Result<()> {
     // repository would read as "absent" and license the permissive path.
     if resolve_tree_entry(root.path(), "not-an-object-name", "docs/tracked.md").is_some() {
         bail!("a malformed commit produced an answer");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_shipped_configuration_file_cannot_be_displaced() -> Result<()> {
+    // The ledger classifies functional configuration as `config`, and twenty-one
+    // such entries sit on shipped surfaces: `crates/*/features_sot.toml` drives
+    // LSP capability claims, `integrations/lsp4ij/**` is the editor integration
+    // itself, `dist-workspace.toml` and `.docker/**` construct the release
+    // artifact. Dropping any of them ships a broken product as surely as
+    // dropping code, so `config` on a shipped surface is protected.
+    //
+    // This reverses an earlier assertion of mine. `documentation_on_a_shipped_
+    // surface_stays_displaceable` used to claim config was displaceable too, on
+    // the reasoning that "release notes and contracts are what publication
+    // translates". The flaw is that protection only applies to *displacing*
+    // actions — a config file whose `$id` names the swarm repository can still
+    // be translated, as `a_destination_context_translation_of_product_code_is_
+    // allowed` proves. Nothing legitimate needed it to be droppable.
+    let surface = ProductSurface::from_ledger_rows_for_test(vec![
+        ("crates/perl-lsp-rs/features_sot.toml", "config", "lsp"),
+        ("dist-workspace.toml", "config", "release"),
+    ]);
+
+    for path in ["crates/perl-lsp-rs/features_sot.toml", "dist-workspace.toml"] {
+        // Not already caught by a cheaper classifier, or this proves nothing
+        // about the ledger rule.
+        if is_product_or_test_path(path) || is_rust_build_manifest(path) {
+            bail!("{path} is already caught as a string; pick a sharper case");
+        }
+        for action in ["drop_swarm_only", "preserve_release", "regenerate"] {
+            let mut document = clean_value()?;
+            let row = &mut rows_mut(&mut document)?[1];
+            row["path"] = json!(path);
+            row["action"] = json!(action);
+            if action == "drop_swarm_only" {
+                row["expected_public_digest"] = Value::Null;
+            }
+
+            let manifest: Manifest = serde_json::from_value(document.clone())?;
+            let digest = canonical_digest(&document)?;
+            let receipt = evaluate_with_surface(
+                &manifest,
+                &digest,
+                Path::new("."),
+                test_loader,
+                &surface,
+                fixture_checkout,
+                fixture_tree,
+            )?;
+
+            if !receipt.findings.iter().any(|f| f.code == "row_product_bearing_exclusion") {
+                bail!("{action} on shipped config {path} was allowed: {:?}", receipt.findings);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn shipped_configuration_may_still_be_translated() -> Result<()> {
+    // The other direction, and the reason protecting config costs nothing
+    // legitimate: publication still needs to rewrite destination context inside
+    // these files — a schema `$id` naming the swarm repository, for instance.
+    // Protection applies to displacement, not translation.
+    let surface = ProductSurface::from_ledger_rows_for_test(vec![(
+        "dist-workspace.toml",
+        "config",
+        "release",
+    )]);
+
+    let mut document = clean_value()?;
+    let row = &mut rows_mut(&mut document)?[0];
+    row["path"] = json!("dist-workspace.toml");
+    row["action"] = json!("translate");
+    row["class"] = json!("repository_context");
+
+    let manifest: Manifest = serde_json::from_value(document.clone())?;
+    let digest = canonical_digest(&document)?;
+    let receipt = evaluate_with_surface(
+        &manifest,
+        &digest,
+        Path::new("."),
+        test_loader,
+        &surface,
+        fixture_checkout,
+        fixture_tree,
+    )?;
+
+    if receipt.findings.iter().any(|f| f.code == "row_product_bearing_exclusion") {
+        bail!("translating shipped config was refused: {:?}", receipt.findings);
     }
     Ok(())
 }
