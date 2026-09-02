@@ -114,7 +114,25 @@ fn probe_workspace_cleanup_covers_each_child_exit_path() -> io::Result<()> {
         r#"
 use std::{env, fs, thread, time::Duration};
 
+#[cfg(unix)]
+unsafe extern "C" {
+    fn signal(signal: i32, handler: usize) -> usize;
+}
+
+#[cfg(unix)]
+fn ignore_sigterm() {
+    // SAFETY: installing SIG_IGN for this dedicated test fixture is process
+    // local and intentionally makes escalation to SIGKILL observable.
+    unsafe {
+        let _ = signal(15, 1);
+    }
+}
+
+#[cfg(not(unix))]
+fn ignore_sigterm() {}
+
 fn main() {
+    ignore_sigterm();
     let Some(ready_file) = env::args_os().nth(1) else {
         return;
     };
