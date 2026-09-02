@@ -336,6 +336,18 @@ class WorkedLaneLedgerTests(unittest.TestCase):
         )
 
     def test_every_category_declares_every_field(self) -> None:
+        """Declaring a field means stating a value, not just printing a label.
+
+        `FIELD_LINE` deliberately matches a label carrying no value, so that an
+        empty `- **Coverage note:**` still reaches the unknown-label and
+        repeated-label rules instead of folding into its neighbour as prose.
+        The cost of that permissiveness is that an empty *required* field now
+        parses as present, where it used to register as missing here. The
+        emptiness check below repays it: `- **Terminal ruling:**` on a `COVERED`
+        row passed `assertNotEqual(ruling, "none")` because `""` is not
+        `"none"`, and an `ABSENT` row's empty `Defining transition` met no floor
+        at all, since the length floors are gated on `COVERED`.
+        """
         for category, fields in self.rows:
             missing = [name for name in REQUIRED_FIELDS if name not in fields]
             self.assertEqual(
@@ -344,6 +356,18 @@ class WorkedLaneLedgerTests(unittest.TestCase):
                 f"{category}: missing ledger field(s) {missing}; every row "
                 f"carries the same five-field accounting so that rows can be "
                 f"compared rather than read as free prose",
+            )
+            blank = sorted(
+                name
+                for name in REQUIRED_FIELDS
+                if name in fields and not fields[name].strip()
+            )
+            self.assertEqual(
+                blank,
+                [],
+                f"{category}: ledger field(s) {blank} carry a label and no "
+                f"value; a row that states nothing under a required heading "
+                f"reads as accounted for while asserting nothing",
             )
 
     def test_status_vocabulary_is_closed(self) -> None:
@@ -621,6 +645,46 @@ class WorkedLaneLedgerTests(unittest.TestCase):
             str(caught.exception),
             "an empty repeated label must still be caught",
         )
+
+    def test_a_required_field_may_not_be_left_empty(self) -> None:
+        """The two shapes that survived every status-specific check.
+
+        Both were reachable only once `FIELD_LINE` began matching empty labels,
+        and neither is caught by the checks that look like they would: the
+        `COVERED` ruling check compares against the literal `"none"`, and the
+        transition floors never run on an `ABSENT` row.
+        """
+        def ledger(status: str, blanked: str) -> str:
+            values = {
+                "Status": status,
+                "Worked lane": "`integration-trigger-and-proof-caller.md`",
+                "Source receipts": "PR #5717",
+                "Terminal ruling": "#4192 — `PROMOTE`",
+                "Defining transition": (
+                    "a check that produced no verdict is retained as NOT_PROVEN "
+                    "rather than read as a product pass or a product failure"
+                ),
+                "What remains unproved": "the lane covers a timeout only, nothing more",
+            }
+            values[blanked] = ""
+            lines = [f"- **{name}:** {values[name]}".rstrip() for name in REQUIRED_FIELDS]
+            return "\n".join([LEDGER_SECTION, "", "### example", "", *lines, ""])
+
+        for status, blanked in ((ABSENT, "Defining transition"),
+                                (COVERED, "Terminal ruling")):
+            with self.subTest(status=status, field=blanked):
+                rows = parse_ledger(ledger(status, blanked))
+                fields = rows[0][1]
+                self.assertIn(
+                    blanked,
+                    fields,
+                    "the empty label must still parse as a field, or the "
+                    "unknown-label and repeated-label rules stop seeing it",
+                )
+                self.assertEqual(fields[blanked], "")
+
+        parsed = parse_ledger(ledger(COVERED, "Status"))
+        self.assertEqual(parsed[0][1]["Status"], "", "control: parse is unchanged")
 
     def test_a_ledger_preamble_is_rejected(self) -> None:
         """A line above the first category is a claim about every category.
