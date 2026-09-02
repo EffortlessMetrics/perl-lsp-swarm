@@ -226,18 +226,36 @@ Freeze the exact ledger bytes/digest used by the publication packet.
 The projection starts from the complete tree of `S`. Every intended difference
 must be declared in the release's projection manifest before the join.
 
-The swarm currently provides `cargo xtask sync-divergence scaffold` and
-`cargo xtask sync-divergence check` for reconciliation. It does not currently
-provide a `publication-sync` projection subcommand or a swarm-owned producer for
-`P`.
+The swarm provides `cargo xtask sync-divergence scaffold` and
+`cargo xtask sync-divergence check` for reconciliation, and
+`cargo xtask publication-sync plan` for the manifest (#7972):
 
-This runbook therefore treats projection generation as a hard prerequisite, not
-as an operation that this checkout can perform. Before a release transaction,
-identify a separately reviewed producer whose output is bound to `R`, `S`, the
-reconciliation evidence, and the manifest. If no accepted producer is
-available, stop here. Do not infer one from a command name, invoke an
-unimplemented `cargo xtask` path, or replace the missing producer with a manual
-exclusion checklist.
+```bash
+cargo xtask publication-sync plan \
+  --manifest <publication_sync_manifest.v1.json> \
+  --repo-root . \
+  --receipt target/receipts/publication-sync-plan.json
+```
+
+`plan` is read-only. It validates the manifest against
+`schemas/publication_sync_manifest.v1.schema.json`, verifies every declared
+release-input digest, proves the declared reconciliation receipt passed and
+reconciled exactly this `S` against this `R`, checks each projection row, and
+emits a deterministic `pass|blocked|not_proven` receipt carrying the canonical
+manifest digest. It changes no branch, worktree, or tree.
+
+**`plan` is not a producer for `P`.** It judges a manifest you already have; it
+does not derive the projected tree, and it does not yet inventory candidate
+destination-context translations from the live `R` and `S` trees (#7973).
+
+This runbook therefore still treats projection generation as a hard
+prerequisite, not as an operation that this checkout can perform. Before a
+release transaction, identify a separately reviewed producer whose output is
+bound to `R`, `S`, the reconciliation evidence, and the manifest. If no accepted
+producer is available, stop here. Do not infer one from a command name, invoke
+an unimplemented `cargo xtask` path, or replace the missing producer with a
+manual exclusion checklist. A `pass` from `plan` is evidence about the manifest
+only; it is not authorization to publish.
 
 The final manifest must cover, where applicable:
 

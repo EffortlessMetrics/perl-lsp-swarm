@@ -650,15 +650,33 @@ impl ProductSurface {
         }
     }
 
-    /// True when the repository treats `path` as product or test work. Source
-    /// code is recognized without the ledger; everything else is the ledger's
-    /// call.
+    /// True when the repository treats `path` as product or test work.
+    ///
+    /// Three sources, because no single one is complete:
+    ///
+    /// 1. `is_product_or_test_path` recognizes source code by segment and
+    ///    extension;
+    /// 2. the non-Rust ledger classifies shipped non-source product such as
+    ///    editor clients and packaging metadata;
+    /// 3. Rust-family build manifests, which neither of the above can see —
+    ///    the extension heuristic has no `toml` rule, and the non-Rust ledger
+    ///    structurally excludes Rust-family files. `Cargo.toml` and
+    ///    `Cargo.lock` define the product's crates and pinned dependencies, so
+    ///    displacing them from publication changes what is built.
     fn bears_product_or_test(&self, path: &str) -> bool {
-        if is_product_or_test_path(path) {
+        if is_product_or_test_path(path) || is_rust_build_manifest(path) {
             return true;
         }
         self.entries.iter().any(|entry| file_policy::entry_matches_path(entry, path))
     }
+}
+
+/// Rust-family build and toolchain manifests at any depth.
+fn is_rust_build_manifest(path: &str) -> bool {
+    matches!(
+        path.rsplit('/').next().unwrap_or(path),
+        "Cargo.toml" | "Cargo.lock" | "rust-toolchain.toml" | "rust-toolchain"
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -865,7 +883,7 @@ fn evaluate_with_surface(
     validate_identity(manifest, &mut state);
     let inputs = validate_inputs(manifest, repo_root, loader, &mut state);
     validate_rows(manifest, repo_root, loader, product_surface, &mut state);
-    validate_invariants(manifest, &mut state);
+    validate_invariants(manifest, repo_root, loader, &mut state);
     validate_live_controls(manifest, repo_root, loader, &mut state);
     validate_declared_blockers(manifest, &mut state);
 
@@ -1439,7 +1457,12 @@ fn validate_row_authority(
     );
 }
 
-fn validate_invariants(manifest: &Manifest, state: &mut PlanState) {
+fn validate_invariants(
+    manifest: &Manifest,
+    repo_root: &Path,
+    loader: InputLoader,
+    state: &mut PlanState,
+) {
     let declared_inputs: BTreeSet<InputId> = manifest.inputs.iter().map(|input| input.id).collect();
     let mut seen: BTreeSet<InvariantId> = BTreeSet::new();
 
@@ -1475,6 +1498,18 @@ fn validate_invariants(manifest: &Manifest, state: &mut PlanState) {
                         "invariant_unevidenced_pass",
                         format!("invariant {} claims pass with no evidence", invariant.id.as_str()),
                         "release/ci",
+                    );
+                }
+                // A non-empty evidence array is not evidence. Resolve each
+                // reference the same way live-control evidence is resolved, so
+                // an invented citation cannot carry a required invariant.
+                for evidence in &invariant.evidence {
+                    validate_evidence_reference(
+                        &format!("invariant {}", invariant.id.as_str()),
+                        evidence,
+                        repo_root,
+                        loader,
+                        state,
                     );
                 }
             }
@@ -1554,12 +1589,78 @@ fn validate_live_controls(
         // resolved observations are hashed, so a digest on a ruling or a
         // document would read as verification that never happened.
         for evidence in &control.evidence {
+            if evidence.kind != EvidenceKind::LiveReceipt {
+                validate_evidence_reference(
+                    &format!("live control {name}"),
+                    evidence,
+                    repo_root,
+                    loader,
+                    state,
+                );
+            }
             if evidence.kind != EvidenceKind::LiveReceipt && evidence.digest.is_some() {
                 state.not_proven(
                     "live_control_evidence_digest_unexpected",
                     format!(
                         "live control {name} attaches a digest to {} evidence, which the planner does not resolve",
                         evidence.kind.as_str()
+                    ),
+                    "release/ci",
+                );
+            }
+        }
+    }
+}
+
+/// Resolve one evidence reference according to its role.
+///
+/// `live_receipt` goes through the digest-bound path. `repository_source` must
+/// name a document that exists under the repository root. `review_ruling` must
+/// be an issue reference. Anything that resolves to nothing is not evidence.
+fn validate_evidence_reference(
+    subject: &str,
+    evidence: &Evidence,
+    repo_root: &Path,
+    loader: InputLoader,
+    state: &mut PlanState,
+) {
+    match evidence.kind {
+        EvidenceKind::LiveReceipt => {
+            validate_live_receipt(subject, evidence, repo_root, loader, state);
+        }
+        EvidenceKind::RepositorySource => {
+            if !valid_repository_path(&evidence.reference) {
+                state.not_proven(
+                    "evidence_path_invalid",
+                    format!(
+                        "{subject} cites repository source {:?}, which is not a repository-relative POSIX path",
+                        evidence.reference
+                    ),
+                    "release/ci",
+                );
+                return;
+            }
+            if let Err(failure) = loader(repo_root, &evidence.reference) {
+                report_load_failure(
+                    state,
+                    "evidence",
+                    &format!("{subject}'s repository source"),
+                    &evidence.reference,
+                    &failure,
+                );
+            }
+        }
+        EvidenceKind::ReviewRuling => {
+            let reference = evidence.reference.trim();
+            let numbered = reference
+                .strip_prefix('#')
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+            if !numbered {
+                state.not_proven(
+                    "evidence_ruling_unresolved",
+                    format!(
+                        "{subject} cites review ruling {:?}, which is not an issue reference",
+                        evidence.reference
                     ),
                     "release/ci",
                 );

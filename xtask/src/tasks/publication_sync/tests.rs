@@ -1192,3 +1192,47 @@ fn the_receipt_carries_no_local_filesystem_path() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn rust_build_manifests_cannot_be_displaced() -> Result<()> {
+    // `Cargo.toml`/`Cargo.lock` define the product's crates and pinned
+    // dependencies. Neither the source-extension heuristic (no `toml` rule) nor
+    // the non-Rust ledger (which structurally excludes Rust-family files) can
+    // see them, so displacing them would otherwise plan clean.
+    for path in ["Cargo.toml", "Cargo.lock", "crates/perl-parser/Cargo.toml"] {
+        if is_product_or_test_path(path) {
+            bail!("{path} is already caught by the source heuristic; pick a sharper case");
+        }
+        for action in ["drop_swarm_only", "preserve_release", "regenerate"] {
+            let receipt = plan_displacing_row(path, action, "generated")?;
+            assert_verdict(&receipt, Verdict::Blocked)?;
+            assert_finding(&receipt, "row_product_bearing_exclusion")?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn invariant_evidence_must_resolve() -> Result<()> {
+    // A non-empty evidence array is not evidence. An invented repository
+    // citation must not carry a required invariant.
+    let mut document = clean_value()?;
+    // Outside the fixture loader's synthesizing prefix, so this genuinely
+    // resolves to nothing.
+    document["invariants"][0]["evidence"][0]["reference"] =
+        json!("docs/release/9.9.9/never_written.json");
+
+    let receipt = plan_value(&document)?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "evidence_missing")
+}
+
+#[test]
+fn an_invariant_review_ruling_must_be_an_issue_reference() -> Result<()> {
+    let mut document = clean_value()?;
+    document["invariants"][2]["evidence"][0]["reference"] = json!("we talked about it");
+
+    let receipt = plan_value(&document)?;
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "evidence_ruling_unresolved")
+}
