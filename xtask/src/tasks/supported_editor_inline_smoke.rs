@@ -11,6 +11,19 @@ use std::path::{Path, PathBuf};
 
 const LSP_CLIENT_SUPPORT_POLICY: &str = "policy/lsp-client-support.toml";
 const RECEIPT_SCHEMA_VERSION: &str = "supported-editor-inline-smoke.v2";
+const DECLARED_PLANE_STATUSES: &[&str] =
+    &["registered", "not_proven", "limited", "client_not_exposed"];
+const RECEIPT_FIELDS: &[&str] = &[
+    "schema_version",
+    "provider",
+    "provider_action",
+    "claim_boundary",
+    "route_count",
+    "all_supported_routes_registered",
+    "supported_editor_routes",
+    "next_edit_boundary",
+    "future_gated",
+];
 
 const ROUTES: &[SupportedEditorRouteRequirement] = &[
     SupportedEditorRouteRequirement {
@@ -46,8 +59,11 @@ const ROUTES: &[SupportedEditorRouteRequirement] = &[
                 owner: None,
                 declared_status: None,
                 proof_surfaces: &[ProofSurfaceRequirement {
-                    path: "xtask/src/tasks/inline_completion_smoke.rs",
-                    markers: &["fn run_static_client", "inlineCompletionProvider"],
+                    path: "crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs",
+                    markers: &[
+                        "fn initialize_static_advertises_inline_completion_when_dynamic_registration_false",
+                        "/capabilities/inlineCompletionProvider",
+                    ],
                 }],
             },
             ProofPlaneRequirement {
@@ -56,9 +72,9 @@ const ROUTES: &[SupportedEditorRouteRequirement] = &[
                 declared_status: None,
                 proof_surfaces: &[
                     ProofSurfaceRequirement {
-                        path: "xtask/src/tasks/inline_completion_smoke.rs",
+                        path: "crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs",
                         markers: &[
-                            "fn run_dynamic_client",
+                            "fn initialized_registers_inline_completion_when_dynamic_registration_supported",
                             "client/registerCapability",
                             "textDocument/inlineCompletion",
                         ],
@@ -292,6 +308,12 @@ fn summarize_supported_editor_routes(
                 },
             );
         }
+        if !proof_planes.values().any(|plane| plane.status == "registered") {
+            bail!(
+                "supported editor inline smoke route `{}` has no registered proof plane",
+                route.route
+            );
+        }
         if supported_editor_routes.contains_key(route.route) {
             bail!(
                 "supported editor inline smoke requirements declare duplicate route `{}`",
@@ -388,6 +410,15 @@ fn validate_lsp4ij_policy(root: &Path) -> Result<()> {
     let Some(protocol) = protocol else {
         bail!("intellij_lsp4ij policy is missing typed protocol-profile evidence");
     };
+    for entry in [documentation, Some(protocol)].into_iter().flatten() {
+        let evidence_path = entry.get("path").and_then(toml::Value::as_str).ok_or_else(|| {
+            color_eyre::eyre::eyre!("intellij_lsp4ij policy evidence entry is missing a path")
+        })?;
+        let resolved = root.join(evidence_path);
+        if !resolved.is_file() {
+            bail!("intellij_lsp4ij policy evidence path `{evidence_path}` does not exist");
+        }
+    }
     let profile = protocol.get("profile").and_then(toml::Value::as_table).ok_or_else(|| {
         color_eyre::eyre::eyre!("intellij_lsp4ij protocol evidence profile is missing")
     })?;
@@ -408,7 +439,7 @@ fn validate_lsp4ij_policy(root: &Path) -> Result<()> {
 }
 
 fn validate_declared_status(route: &str, plane: &str, status: &str) -> Result<()> {
-    if matches!(status, "not_proven" | "limited" | "client_not_exposed") {
+    if DECLARED_PLANE_STATUSES.contains(&status) && status != "registered" {
         return Ok(());
     }
 
@@ -507,35 +538,12 @@ fn validate_receipt_schema(value: &Value) -> Result<()> {
     let object = value
         .as_object()
         .ok_or_else(|| color_eyre::eyre::eyre!("supported editor receipt must be an object"))?;
-    for key in [
-        "schema_version",
-        "provider",
-        "provider_action",
-        "claim_boundary",
-        "route_count",
-        "all_supported_routes_registered",
-        "supported_editor_routes",
-        "next_edit_boundary",
-        "future_gated",
-    ] {
+    for &key in RECEIPT_FIELDS {
         if !object.contains_key(key) {
             bail!("supported editor receipt is missing `{key}`");
         }
     }
-    if object.keys().any(|key| {
-        ![
-            "schema_version",
-            "provider",
-            "provider_action",
-            "claim_boundary",
-            "route_count",
-            "all_supported_routes_registered",
-            "supported_editor_routes",
-            "next_edit_boundary",
-            "future_gated",
-        ]
-        .contains(&key.as_str())
-    }) {
+    if object.keys().any(|key| !RECEIPT_FIELDS.contains(&key.as_str())) {
         bail!("supported editor receipt contains an unknown top-level field");
     }
     if object.get("schema_version").and_then(Value::as_str) != Some(RECEIPT_SCHEMA_VERSION) {
@@ -554,6 +562,20 @@ fn validate_receipt_schema(value: &Value) -> Result<()> {
         .get("next_edit_boundary")
         .and_then(Value::as_object)
         .ok_or_else(|| color_eyre::eyre::eyre!("next_edit_boundary must be an object"))?;
+    reject_unknown_fields(
+        next_edit,
+        &[
+            "claim_boundary",
+            "enabled_by_default",
+            "explicit_dev_gate_enabled",
+            "runtime_provider_registered",
+            "editor_visible_suggestions",
+            "ai_candidate_source_enabled",
+            "default_response",
+            "explicit_gate_response",
+        ],
+        "next_edit_boundary",
+    )?;
     for key in [
         "claim_boundary",
         "enabled_by_default",
@@ -584,6 +606,11 @@ fn validate_receipt_schema(value: &Value) -> Result<()> {
         let response = next_edit.get(key).and_then(Value::as_object).ok_or_else(|| {
             color_eyre::eyre::eyre!("next_edit_boundary `{key}` must be an object")
         })?;
+        reject_unknown_fields(
+            response,
+            &["status", "suggestions"],
+            &format!("next_edit_boundary `{key}`"),
+        )?;
         let status = require_string(response, "status")?;
         if !matches!(status, "disabled" | "receipt_only" | "runtime_provider_not_registered") {
             bail!("next_edit_boundary `{key}` has unknown status `{status}`");
@@ -606,6 +633,11 @@ fn validate_receipt_schema(value: &Value) -> Result<()> {
         let route = route.as_object().ok_or_else(|| {
             color_eyre::eyre::eyre!("supported editor route `{route_name}` must be an object")
         })?;
+        reject_unknown_fields(
+            route,
+            &["status", "claim", "proof_plane_count", "proof_planes"],
+            &format!("supported editor route `{route_name}`"),
+        )?;
         require_string(route, "status")?;
         if route.get("status").and_then(Value::as_str) != Some("registered") {
             bail!("supported editor route `{route_name}` must be registered");
@@ -632,6 +664,11 @@ fn validate_receipt_schema(value: &Value) -> Result<()> {
                     "route `{route_name}` plane `{plane_name}` must be an object"
                 )
             })?;
+            reject_unknown_fields(
+                plane,
+                &["status", "owner", "proof_surface_count", "proof_surfaces"],
+                &format!("route `{route_name}` plane `{plane_name}`"),
+            )?;
             require_string(plane, "status")?;
             for key in ["status", "proof_surface_count", "proof_surfaces"] {
                 if !plane.contains_key(key) {
@@ -660,6 +697,11 @@ fn validate_receipt_schema(value: &Value) -> Result<()> {
                         "route `{route_name}` plane `{plane_name}` surface {index} must be an object"
                     )
                 })?;
+                reject_unknown_fields(
+                    surface,
+                    &["path", "required_marker_count", "required_markers"],
+                    &format!("route `{route_name}` plane `{plane_name}` surface {index}"),
+                )?;
                 require_string(surface, "path")?;
                 if surface.get("required_marker_count").and_then(Value::as_u64).is_none() {
                     bail!(
@@ -701,6 +743,17 @@ fn require_string<'a>(object: &'a serde_json::Map<String, Value>, key: &str) -> 
     object.get(key).and_then(Value::as_str).ok_or_else(|| {
         color_eyre::eyre::eyre!("supported editor receipt field `{key}` must be a string")
     })
+}
+
+fn reject_unknown_fields(
+    object: &serde_json::Map<String, Value>,
+    allowed: &[&str],
+    context: &str,
+) -> Result<()> {
+    if let Some(key) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
+        bail!("{context} contains unknown field `{key}`");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -894,7 +947,7 @@ mod tests {
         };
         let message = error.to_string();
         assert!(
-            message.contains("`bad_plane`"),
+            message.contains("`bad_plane` must either declare a status with no proof surfaces"),
             "error should name the malformed plane, got {message}"
         );
 
@@ -932,7 +985,7 @@ mod tests {
         fs::create_dir_all(&policy_dir)?;
         fs::write(
             policy_dir.join("lsp-client-support.toml"),
-            "[[client]]\nid = \"intellij_lsp4ij\"\nintegration_mode = \"lsp4ij_plugin\"\nsynthetic_profile = true\nevidence = [{ path = \"docs/EDITORS/INTELLIJ_IDEA_SETUP.md\" }]\nclaim_boundary = \"not an actual IntelliJ/LSP4IJ launch\"\n",
+            "[meta]\nschema = \"lsp-client-support.v1\"\n\n[[client]]\nid = \"intellij_lsp4ij\"\nintegration_mode = \"lsp4ij_plugin\"\ntier = \"configuration_documented\"\nrequires_actual_client_receipt = true\nsynthetic_profile = true\nevidence = [{ path = \"docs/EDITORS/INTELLIJ_IDEA_SETUP.md\", kind = \"documentation\" }]\nclaim_boundary = \"not an actual IntelliJ/LSP4IJ launch\"\n",
         )?;
 
         let Err(error) = validate_lsp4ij_policy(temp.path()) else {
