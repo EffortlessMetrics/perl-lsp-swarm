@@ -414,3 +414,50 @@ fn a_launch_argument_cannot_grant_unbounded_access() -> Result<(), Box<dyn std::
     }
     Ok(())
 }
+
+/// Under multiple trusted roots, a launch root naming root B cannot smuggle in
+/// a program that lives in root A.
+///
+/// `resolve_session_boundary` validates a launch root against the trust *set*
+/// rather than against the program's owner, so this launch is admitted at that
+/// gate and confined to root B — and the program, which is outside root B, is
+/// then refused. Multi-root support is new in this change, so this asymmetry
+/// gets an explicit end-to-end regression rather than being left to inference.
+#[test]
+fn a_launch_root_from_another_root_cannot_launch_an_outside_program()
+-> Result<(), Box<dyn std::error::Error>> {
+    let alpha_dir = tempfile::tempdir()?;
+    let beta_dir = tempfile::tempdir()?;
+
+    let alpha_script = alpha_dir.path().join("alpha.pl");
+    fs::write(&alpha_script, "print 'alpha';")?;
+
+    let mut adapter = DebugAdapter::with_workspace_authority(WorkspaceAuthority::from_startup(
+        &[alpha_dir.path().to_path_buf(), beta_dir.path().to_path_buf()],
+        false,
+    )?);
+    initialize_adapter(&mut adapter);
+
+    let response = adapter.handle_request(
+        2,
+        "launch",
+        Some(json!({
+            "program": must_some(alpha_script.to_str()),
+            "workspaceRoot": must_some(beta_dir.path().to_str()),
+            "args": []
+        })),
+    );
+
+    match response {
+        DapMessage::Response { success, message, .. } => {
+            assert!(!success, "a program outside the launch-selected root must not launch");
+            let msg = message.unwrap_or_default();
+            assert!(
+                msg.contains("outside your workspace") || msg.contains("outside workspace"),
+                "Expected workspace-boundary rejection, got: {msg}"
+            );
+        }
+        other => return Err(format!("Expected Response, got: {other:?}").into()),
+    }
+    Ok(())
+}

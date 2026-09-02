@@ -481,6 +481,38 @@ mod tests {
     }
 
     #[test]
+    fn a_launch_root_narrows_to_its_own_trusted_root_not_the_program_s() {
+        // The launch root is checked against the trust set, not against the
+        // program's owner, so under multiple roots a client may name a root
+        // that does not contain its program. That is a narrowing, not a
+        // widening: the boundary becomes root B, and `launch_debugger` then
+        // refuses the program for being outside it (proven end to end by
+        // `a_launch_root_from_another_root_cannot_launch_an_outside_program`
+        // in tests/dap_launch_security_test.rs). This test pins the gate's
+        // actual semantics so the asymmetry cannot change unnoticed.
+        let temp = must(tempfile::tempdir());
+        let alpha = dir(temp.path(), "alpha");
+        let beta = dir(temp.path(), "beta");
+        let script = file(&alpha, "a.pl");
+
+        let boundary = must(resolve_session_boundary(
+            &bound(&[alpha.clone(), beta.clone()]),
+            &script,
+            Some(&beta),
+        ));
+        assert_eq!(
+            boundary,
+            SessionBoundary::Bounded(beta),
+            "a launch root inside a trusted root confines the session to that root"
+        );
+        assert_ne!(
+            boundary,
+            SessionBoundary::Bounded(alpha),
+            "the program's own root must not be substituted for the requested one"
+        );
+    }
+
+    #[test]
     fn a_traversal_launch_root_is_refused() {
         let temp = must(tempfile::tempdir());
         let root = dir(temp.path(), "ws");
