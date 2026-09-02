@@ -5,6 +5,14 @@ This tool composes existing packaged VSIX/current-source smoke evidence. It does
 not reinterpret source tests as installed behavior. Missing Critic, text-sync,
 DAP, concrete host-version, topology-target, exactness, or cleanup evidence
 remains explicitly not proven.
+
+The fan-in emits ``rolling_installed_public_beta_fan_in.v1``: upstream rolling
+evidence for the canonical ``pre_freeze_public_beta_acceptance.v1`` packet. It
+deliberately does not use the canonical schema name, because the canonical
+packet has a fixed candidate-bound shape (macOS platform evidence, mechanism
+dispositions, the full journey denominator) that a three-row rolling
+observation cannot populate. Consumers that expect the canonical shape must
+keep validating it with ``xtask/examples/pre_freeze_public_beta_acceptance.rs``.
 """
 
 from __future__ import annotations
@@ -21,7 +29,9 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 ROW_SCHEMA = "rolling_installed_public_beta_row.v1"
-FAN_IN_SCHEMA = "pre_freeze_public_beta_acceptance.v1"
+FAN_IN_SCHEMA = "rolling_installed_public_beta_fan_in.v1"
+CANONICAL_PACKET_SCHEMA = "pre_freeze_public_beta_acceptance.v1"
+PRODUCT_UNIT_SCHEMA = "rolling_release_artifact_unit.v1"
 VERDICTS = {
     "pass",
     "product_defect",
@@ -29,7 +39,46 @@ VERDICTS = {
     "unsupported_or_withdrawn",
     "not_proven",
 }
-REQUIRED_ROWS = ("linux-minimum", "linux-current", "windows-current")
+# The canonical row table: each required row id is bound to exactly one
+# platform, architecture, host role, and host-version selector kind. A row
+# that keeps its id but drifts on any of these axes is not that row.
+ROW_SPECS: Mapping[str, Mapping[str, str]] = {
+    "linux-minimum": {
+        "platform": "linux",
+        "architecture": "x64",
+        "host_role": "minimum_supported",
+        "host_selector": "concrete",
+    },
+    "linux-current": {
+        "platform": "linux",
+        "architecture": "x64",
+        "host_role": "current_stable",
+        "host_selector": "stable",
+    },
+    "windows-current": {
+        "platform": "windows",
+        "architecture": "x64",
+        "host_role": "current_stable",
+        "host_selector": "stable",
+    },
+}
+REQUIRED_ROWS = tuple(ROW_SPECS)
+# The fixed cell denominator every row must report. An empty or partial cell
+# set cannot claim a pass at fan-in.
+REQUIRED_CELLS = (
+    "artifact_identity",
+    "package_creation",
+    "package_inventory",
+    "packaged_provider_edit_journey",
+    "activation_failure_recovery",
+    "crash_recovery",
+    "host_version_exactness",
+    "source_generation_exactness",
+    "native_critic_installed",
+    "full_document_utf16_installed",
+    "dap_preview_installed",
+    "process_cleanup",
+)
 ZERO_BUDGET_KEYS = (
     "wrong_binary_or_artifact",
     "partial_or_checksum_invalid_install",
@@ -46,6 +95,11 @@ ZERO_BUDGET_KEYS = (
 )
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
+CONCRETE_SELECTOR = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+# Host-resolution failures are instrument failures, never product defects.
+# The smoke instrument reports them with these reason prefixes and already
+# distinguishes `unavailable` (not proven) from network/cache/runner (failed).
+HOST_RESOLUTION_REASON = "vscode_host_resolution_"
 
 
 class ObservationError(RuntimeError):
@@ -79,6 +133,10 @@ def sha256(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
 def exact_regular_file(path: pathlib.Path, role: str) -> None:
     if not path.exists():
         raise ObservationError(f"{role} does not exist: {path}")
@@ -97,6 +155,65 @@ def require_sha(value: str) -> str:
     return normalized
 
 
+def row_spec(row_id: str) -> Mapping[str, str]:
+    spec = ROW_SPECS.get(row_id)
+    if spec is None:
+        raise ObservationError(
+            f"unknown rolling row {row_id!r}; required rows are {', '.join(REQUIRED_ROWS)}"
+        )
+    return spec
+
+
+def check_row_axes(
+    row_id: str,
+    *,
+    platform: str,
+    architecture: str,
+    host_role: str,
+    vscode_version: str,
+    findings: list[str] | None = None,
+) -> bool:
+    """Bind a row id to its canonical platform/architecture/host tuple.
+
+    Returns True when every axis matches; otherwise records one finding per
+    drifted axis (or raises when no findings sink is supplied).
+    """
+
+    problems: list[str] = []
+    spec = ROW_SPECS.get(row_id)
+    if spec is None:
+        problems.append(f"row {row_id!r} is not a required rolling row")
+    else:
+        for axis, observed in (
+            ("platform", platform),
+            ("architecture", architecture),
+            ("host_role", host_role),
+        ):
+            if observed != spec[axis]:
+                problems.append(
+                    f"row {row_id} must have {axis} {spec[axis]!r}, got {observed!r}"
+                )
+        selector_kind = spec["host_selector"]
+        if selector_kind == "stable" and vscode_version != "stable":
+            problems.append(
+                f"row {row_id} must use the current-stable VS Code selector, "
+                f"got {vscode_version!r}"
+            )
+        if selector_kind == "concrete" and not CONCRETE_SELECTOR.fullmatch(
+            vscode_version
+        ):
+            problems.append(
+                f"row {row_id} must use a concrete minimum VS Code version, "
+                f"got {vscode_version!r}"
+            )
+    if problems:
+        if findings is None:
+            raise ObservationError("; ".join(problems))
+        findings.extend(problems)
+        return False
+    return True
+
+
 def package_artifacts(args: argparse.Namespace) -> int:
     source_sha = require_sha(args.source_sha)
     server = pathlib.Path(args.server).resolve()
@@ -106,7 +223,7 @@ def package_artifacts(args: argparse.Namespace) -> int:
     exact_regular_file(dap, "perl-dap")
 
     manifest = {
-        "schema": "rolling_release_artifact_unit.v1",
+        "schema": PRODUCT_UNIT_SCHEMA,
         "source_sha": source_sha,
         "source_version": args.source_version,
         "platform": args.platform,
@@ -164,6 +281,119 @@ def package_artifacts(args: argparse.Namespace) -> int:
     return 0
 
 
+def verify_product_unit(
+    archive: pathlib.Path,
+    *,
+    server: pathlib.Path,
+    dap: pathlib.Path,
+    server_hash: str | None,
+    dap_hash: str | None,
+    source_sha: str,
+    source_version: str,
+    platform: str,
+    architecture: str,
+    findings: list[str],
+) -> str | None:
+    """Parse the product-unit archive and bind it to the current binaries.
+
+    Arbitrary nonempty bytes, a wrong member set, a manifest from another
+    source/version/platform, or member bytes that do not match the built
+    release binaries all fail: the function records findings and returns None.
+    """
+
+    archive_hash = safe_hash(archive, findings, "release-shaped product-unit archive")
+    if archive_hash is None:
+        return None
+    try:
+        with zipfile.ZipFile(archive) as unit:
+            names = sorted(unit.namelist())
+            expected_names = sorted(
+                {server.name, dap.name, "artifact-manifest.json"}
+            )
+            if names != expected_names:
+                findings.append(
+                    "product-unit archive members are "
+                    f"{names}, expected exactly {expected_names}"
+                )
+                return None
+            member_bytes = {
+                name: unit.read(name) for name in (server.name, dap.name)
+            }
+            try:
+                manifest = json.loads(unit.read("artifact-manifest.json"))
+            except (KeyError, json.JSONDecodeError) as error:
+                findings.append(
+                    f"product-unit manifest is unreadable: {error}"
+                )
+                return None
+    except zipfile.BadZipFile as error:
+        findings.append(f"product-unit archive is not a valid zip: {error}")
+        return None
+
+    if not isinstance(manifest, dict):
+        findings.append("product-unit manifest is not a JSON object")
+        return None
+    if manifest.get("schema") != PRODUCT_UNIT_SCHEMA:
+        findings.append("product-unit manifest has an unsupported schema")
+        return None
+    for field, expected in (
+        ("source_sha", source_sha),
+        ("source_version", source_version),
+        ("platform", platform),
+        ("architecture", architecture),
+    ):
+        if manifest.get(field) != expected:
+            findings.append(
+                f"product-unit manifest {field} does not match this row subject"
+            )
+            return None
+
+    members = manifest.get("members")
+    if not isinstance(members, list):
+        findings.append("product-unit manifest has no member list")
+        return None
+    by_role: dict[str, Mapping[str, Any]] = {}
+    for member in members:
+        if not isinstance(member, dict) or not isinstance(member.get("role"), str):
+            findings.append("product-unit manifest member lacks a role")
+            return None
+        if member["role"] in by_role:
+            findings.append("product-unit manifest repeats a member role")
+            return None
+        by_role[member["role"]] = member
+    for role, binary, binary_hash in (
+        ("perllsp", server, server_hash),
+        ("perl-dap", dap, dap_hash),
+    ):
+        member = by_role.get(role)
+        if member is None:
+            findings.append(f"product-unit manifest lacks the {role} member")
+            return None
+        data = member_bytes[binary.name]
+        if member.get("name") != binary.name:
+            findings.append(f"product-unit {role} member name does not match")
+            return None
+        if member.get("size") != len(data):
+            findings.append(f"product-unit {role} member size does not match")
+            return None
+        if not isinstance(member.get("sha256"), str) or not HEX64.fullmatch(
+            member["sha256"]
+        ):
+            findings.append(f"product-unit {role} member hash is malformed")
+            return None
+        if sha256_bytes(data) != member["sha256"]:
+            findings.append(
+                f"product-unit {role} bytes do not match the manifest hash"
+            )
+            return None
+        if binary_hash is not None and member["sha256"] != binary_hash:
+            findings.append(
+                f"product-unit {role} bytes are not the built release binary"
+            )
+            return None
+    return archive_hash
+
+
 def find_smoke_receipt(
     root: pathlib.Path, source_sha: str, expected_platform: str
 ) -> tuple[pathlib.Path | None, Mapping[str, Any] | None, list[str]]:
@@ -206,12 +436,26 @@ def find_smoke_receipt(
 
 
 def stage_verdict(stage: Any) -> str:
+    """Classify one smoke stage without laundering instrument failures.
+
+    A stage that failed because the VS Code host could not be resolved or
+    reached (network, cache, or runner infrastructure) is an instrument
+    defect. ``product_defect`` is reserved for failures observed after the
+    exact intended host actually ran the packaged extension.
+    """
+
     if not isinstance(stage, dict):
         return "not_proven"
     status = stage.get("status")
+    reason = stage.get("reason")
+    host_resolution = (
+        isinstance(reason, str) and reason.startswith(HOST_RESOLUTION_REASON)
+    )
     if status == "pass":
         return "pass"
     if status == "failed":
+        if host_resolution:
+            return "instrument_defect"
         return "product_defect"
     if status in {"not_proven", "not_run", None}:
         return "not_proven"
@@ -245,6 +489,15 @@ def build_row(args: argparse.Namespace) -> int:
     )
     if expected_receipt_platform is None:
         raise ObservationError(f"unsupported full-row platform: {args.platform}")
+    # A row built from drifted matrix arguments is not evidence for the row it
+    # claims to be; fail the row job instead of emitting a mislabelled row.
+    check_row_axes(
+        args.row_id,
+        platform=args.platform,
+        architecture=args.architecture,
+        host_role=args.host_role,
+        vscode_version=args.vscode_version,
+    )
 
     findings: list[str] = []
     server = pathlib.Path(args.server).resolve()
@@ -252,8 +505,17 @@ def build_row(args: argparse.Namespace) -> int:
     archive = pathlib.Path(args.archive).resolve()
     server_hash = safe_hash(server, findings, "perllsp")
     dap_hash = safe_hash(dap, findings, "perl-dap")
-    archive_hash = safe_hash(
-        archive, findings, "release-shaped product-unit archive"
+    archive_hash = verify_product_unit(
+        archive,
+        server=server,
+        dap=dap,
+        server_hash=server_hash,
+        dap_hash=dap_hash,
+        source_sha=source_sha,
+        source_version=args.source_version,
+        platform=args.platform,
+        architecture=args.architecture,
+        findings=findings,
     )
 
     receipt_path, receipt, receipt_findings = find_smoke_receipt(
@@ -273,6 +535,13 @@ def build_row(args: argparse.Namespace) -> int:
         else:
             findings.append("current-source smoke receipt has no stages object")
             identity_ok = False
+
+        instrument_failure = receipt.get("instrument_failure")
+        if isinstance(instrument_failure, str) and instrument_failure.strip():
+            findings.append(
+                "current-source smoke instrument reported a failure; affected "
+                "cells are instrument evidence, not product evidence"
+            )
 
         observed_server = receipt.get("server")
         if not isinstance(observed_server, dict):
@@ -435,6 +704,136 @@ def aggregate_status(values: Iterable[str]) -> str:
     return "pass"
 
 
+def validate_row(
+    row_id: str,
+    row: Mapping[str, Any],
+    *,
+    source_sha: str,
+    source_version: str,
+    malformed: list[str],
+) -> Mapping[str, str] | None:
+    """Validate one row against the canonical row table and cell denominator.
+
+    Returns the validated cells on success. Any drift in subject identity,
+    artifact shape, or the required cell set makes the row malformed: it can
+    never satisfy its required-row slot.
+    """
+
+    spec = ROW_SPECS.get(row_id)
+    if spec is None:
+        malformed.append(f"unexpected row {row_id!r} is not in the required row table")
+        return None
+
+    subject = row.get("subject")
+    if not isinstance(subject, dict):
+        malformed.append(f"row {row_id} lacks a subject identity")
+        return None
+    if subject.get("kind") != "exact_current_main":
+        malformed.append(f"row {row_id} subject kind is not exact_current_main")
+        return None
+    if subject.get("repository_sha") != source_sha:
+        malformed.append(f"row {row_id} is bound to another source SHA")
+        return None
+    if subject.get("source_version") != source_version:
+        malformed.append(f"row {row_id} is bound to another source version")
+        return None
+    subject_problems: list[str] = []
+    axes_ok = check_row_axes(
+        row_id,
+        platform=str(subject.get("platform")),
+        architecture=str(subject.get("architecture")),
+        host_role=str(subject.get("host_role")),
+        vscode_version=str(subject.get("vscode_selector")),
+        findings=subject_problems,
+    )
+    if not axes_ok:
+        malformed.extend(subject_problems)
+        return None
+    selector = subject.get("vscode_selector")
+    concrete = subject.get("vscode_concrete_version")
+    if selector == "stable" and concrete is not None:
+        malformed.append(f"row {row_id} stable selector carries a concrete version")
+        return None
+    if (
+        isinstance(selector, str)
+        and CONCRETE_SELECTOR.fullmatch(selector)
+        and concrete != selector
+    ):
+        malformed.append(f"row {row_id} concrete selector/version disagree")
+        return None
+
+    artifacts = row.get("artifacts")
+    if not isinstance(artifacts, dict):
+        malformed.append(f"row {row_id} lacks an artifact identity block")
+        return None
+    for artifact_key in ("perllsp", "perl_dap", "product_unit_archive"):
+        entry = artifacts.get(artifact_key)
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+            malformed.append(f"row {row_id} artifact {artifact_key} is malformed")
+            return None
+        digest = entry.get("sha256")
+        if digest is not None and not (
+            isinstance(digest, str) and HEX64.fullmatch(digest)
+        ):
+            malformed.append(
+                f"row {row_id} artifact {artifact_key} hash is malformed"
+            )
+            return None
+
+    mechanism = row.get("mechanism_receipt")
+    if not isinstance(mechanism, dict) or not (
+        mechanism.get("sha256") is None
+        or (
+            isinstance(mechanism.get("sha256"), str)
+            and HEX64.fullmatch(mechanism["sha256"])
+        )
+    ):
+        malformed.append(f"row {row_id} mechanism receipt identity is malformed")
+        return None
+
+    counts = row.get("zero_budget_counts")
+    if not isinstance(counts, dict) or set(counts) != set(ZERO_BUDGET_KEYS):
+        malformed.append(f"row {row_id} zero-budget denominator is malformed")
+        return None
+    for key, value in counts.items():
+        if value is not None and not isinstance(value, int):
+            malformed.append(f"row {row_id} zero-budget count {key} is malformed")
+            return None
+
+    row_cells = row.get("cells")
+    if not isinstance(row_cells, dict):
+        malformed.append(f"row {row_id} has no cell verdicts")
+        return None
+    missing = [name for name in REQUIRED_CELLS if name not in row_cells]
+    extra = [name for name in row_cells if name not in REQUIRED_CELLS]
+    if missing or extra:
+        malformed.append(
+            f"row {row_id} cell denominator drifted: missing={sorted(missing)} "
+            f"unexpected={sorted(extra)}"
+        )
+        return None
+    normalized: dict[str, str] = {}
+    for name in REQUIRED_CELLS:
+        verdict = row_cells[name]
+        if verdict not in VERDICTS:
+            malformed.append(
+                f"row {row_id} cell {name} has invalid verdict {verdict!r}"
+            )
+            return None
+        normalized[name] = str(verdict)
+
+    # Never trust the child's declared status: derive it from validated cells
+    # and flag any disagreement as an instrument defect.
+    derived = summarize_row(normalized)
+    declared = row.get("status")
+    if declared != derived:
+        malformed.append(
+            f"row {row_id} declares status {declared!r} but its cells derive "
+            f"{derived!r}"
+        )
+    return normalized
+
+
 def fan_in(args: argparse.Namespace) -> int:
     source_sha = require_sha(args.source_sha)
     rows_root = pathlib.Path(args.rows_root)
@@ -456,50 +855,52 @@ def fan_in(args: argparse.Namespace) -> int:
         if row_id in observed:
             malformed.append(f"duplicate row_id {row_id}")
             continue
-        subject = value.get("subject")
-        if not isinstance(subject, dict) or subject.get("repository_sha") != source_sha:
-            malformed.append(f"row {row_id} is bound to another source SHA")
-            continue
         observed[row_id] = value
 
-    missing_rows = [row_id for row_id in REQUIRED_ROWS if row_id not in observed]
+    validated_cells: dict[str, Mapping[str, str]] = {}
+    for row_id, row in sorted(observed.items()):
+        cells = validate_row(
+            row_id,
+            row,
+            source_sha=source_sha,
+            source_version=args.source_version,
+            malformed=malformed,
+        )
+        if cells is not None:
+            validated_cells[row_id] = cells
+
+    missing_rows = [
+        row_id for row_id in REQUIRED_ROWS if row_id not in validated_cells
+    ]
+    # Row status is derived from the validated cells, never from the child's
+    # declared status field.
     row_statuses = {
         row_id: (
-            observed[row_id].get("status") if row_id in observed else "not_proven"
+            summarize_row(validated_cells[row_id])
+            if row_id in validated_cells
+            else "not_proven"
         )
         for row_id in REQUIRED_ROWS
     }
-    for row_id, status in row_statuses.items():
-        if status not in {"pass", "blocked", "not_proven"}:
-            malformed.append(f"row {row_id} has invalid status {status!r}")
-            row_statuses[row_id] = "not_proven"
 
     cells: dict[str, dict[str, str]] = {}
     product_blockers: list[str] = []
     instrument_defects: list[str] = []
     not_proven_cells: list[str] = ["topology:other_retained_targets"]
     for row_id in REQUIRED_ROWS:
-        row = observed.get(row_id)
-        row_cells = row.get("cells") if isinstance(row, dict) else None
-        normalized: dict[str, str] = {}
-        if isinstance(row_cells, dict):
-            for name, verdict in sorted(row_cells.items()):
-                if verdict not in VERDICTS:
-                    malformed.append(
-                        f"row {row_id} cell {name} has invalid verdict {verdict!r}"
-                    )
-                    verdict = "instrument_defect"
-                normalized[str(name)] = str(verdict)
-                qualified = f"{row_id}:{name}"
-                if verdict == "product_defect":
-                    product_blockers.append(qualified)
-                elif verdict == "instrument_defect":
-                    instrument_defects.append(qualified)
-                elif verdict == "not_proven":
-                    not_proven_cells.append(qualified)
-        else:
-            not_proven_cells.append(f"{row_id}:row_missing")
+        normalized = dict(validated_cells.get(row_id, {}))
         cells[row_id] = normalized
+        if not normalized:
+            not_proven_cells.append(f"{row_id}:row_missing")
+            continue
+        for name, verdict in sorted(normalized.items()):
+            qualified = f"{row_id}:{name}"
+            if verdict == "product_defect":
+                product_blockers.append(qualified)
+            elif verdict == "instrument_defect":
+                instrument_defects.append(qualified)
+            elif verdict == "not_proven":
+                not_proven_cells.append(qualified)
 
     aggregate_counts: dict[str, int | None] = {}
     for key in ZERO_BUDGET_KEYS:
@@ -509,7 +910,7 @@ def fan_in(args: argparse.Namespace) -> int:
             row = observed.get(row_id)
             counts = row.get("zero_budget_counts") if isinstance(row, dict) else None
             value = counts.get(key) if isinstance(counts, dict) else None
-            if isinstance(value, int):
+            if row_id in validated_cells and isinstance(value, int):
                 values.append(value)
             else:
                 incomplete = True
@@ -532,6 +933,7 @@ def fan_in(args: argparse.Namespace) -> int:
 
     packet = {
         "schema_version": FAN_IN_SCHEMA,
+        "canonical_packet_schema": CANONICAL_PACKET_SCHEMA,
         "subject_kind": "exact_current_main",
         "repository_sha": source_sha,
         "source_version": args.source_version,
@@ -539,14 +941,16 @@ def fan_in(args: argparse.Namespace) -> int:
         "release_topology_digest": topology_digest,
         "artifact_hashes": {
             row_id: (
-                observed[row_id].get("artifacts") if row_id in observed else None
+                observed[row_id].get("artifacts")
+                if row_id in validated_cells
+                else None
             )
             for row_id in REQUIRED_ROWS
         },
         "mechanism_receipts": {
             row_id: (
                 observed[row_id].get("mechanism_receipt")
-                if row_id in observed
+                if row_id in validated_cells
                 else None
             )
             for row_id in REQUIRED_ROWS
@@ -588,7 +992,9 @@ def fan_in(args: argparse.Namespace) -> int:
         "freeze_recommendation": recommendation,
         "claim_boundary": (
             "Rolling evidence only: freezes_product=false, closes_6056=false, "
-            "closes_4346=false, can_discover_blockers=true."
+            "closes_4346=false, can_discover_blockers=true. This is the upstream "
+            f"{FAN_IN_SCHEMA} packet, not the canonical {CANONICAL_PACKET_SCHEMA} "
+            "packet validated by xtask/examples/pre_freeze_public_beta_acceptance.rs."
         ),
         "freezes_product": False,
         "closes_6056": False,
@@ -619,7 +1025,7 @@ def parser() -> argparse.ArgumentParser:
     row = commands.add_parser("row")
     row.add_argument("--source-sha", required=True)
     row.add_argument("--source-version", required=True)
-    row.add_argument("--row-id", required=True)
+    row.add_argument("--row-id", required=True, choices=REQUIRED_ROWS)
     row.add_argument("--platform", required=True, choices=("linux", "windows"))
     row.add_argument("--architecture", required=True)
     row.add_argument("--host-role", required=True)

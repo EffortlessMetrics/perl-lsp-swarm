@@ -299,7 +299,7 @@ jobs:
           retention-days: 30
 
   fan-in:
-    name: Assemble rolling pre-freeze packet
+    name: Assemble rolling observation packet
     if: always() && github.event_name == 'workflow_dispatch' && needs.subject.result == 'success'
     needs: [subject, installed-row]
     runs-on: ubuntu-24.04
@@ -318,7 +318,10 @@ jobs:
         with:
           pattern: rolling-installed-row-*
           path: target/receipts/rolling-installed/rows
-          merge-multiple: true
+          # No merge-multiple: each row artifact must land in its own
+          # rolling-installed-row-<id>/ directory. Flattening would collapse
+          # the three identical rolling-installed-row.json roots into one and
+          # silently turn two observed platforms into missing rows.
 
       - name: Generate exact topology projection
         env:
@@ -349,14 +352,14 @@ jobs:
             --source-version "$SOURCE_VERSION" \
             --rows-root target/receipts/rolling-installed/rows \
             --topology target/receipts/rolling-installed/fan-in/release-topology.json \
-            --output target/receipts/rolling-installed/fan-in/pre_freeze_public_beta_acceptance.json \
+            --output target/receipts/rolling-installed/fan-in/rolling_installed_public_beta_fan_in.json \
             "${EXTRA[@]}"
 
       - name: Render packet summary
         if: always()
         run: |
           set -euo pipefail
-          PACKET=target/receipts/rolling-installed/fan-in/pre_freeze_public_beta_acceptance.json
+          PACKET=target/receipts/rolling-installed/fan-in/rolling_installed_public_beta_fan_in.json
           if [ ! -s "$PACKET" ]; then
             echo '## Rolling installed observation' >> "$GITHUB_STEP_SUMMARY"
             echo 'No fan-in packet was produced; the instrument failed before synthesis.' >> "$GITHUB_STEP_SUMMARY"
@@ -365,7 +368,7 @@ jobs:
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
           from pathlib import Path
-          packet = json.loads(Path('target/receipts/rolling-installed/fan-in/pre_freeze_public_beta_acceptance.json').read_text(encoding='utf-8'))
+          packet = json.loads(Path('target/receipts/rolling-installed/fan-in/rolling_installed_public_beta_fan_in.json').read_text(encoding='utf-8'))
           print('## Rolling installed observation')
           print()
           print(f"- Exact main: `{packet['repository_sha']}`")
