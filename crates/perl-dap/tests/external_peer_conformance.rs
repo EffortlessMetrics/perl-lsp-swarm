@@ -1111,3 +1111,79 @@ fn peer_response_echoing_a_different_command_is_a_protocol_violation() {
     drop(backend);
     let _ = peer.handle.join();
 }
+
+/// A rejected crossed reply must not poison the session.
+///
+/// The guard returns `Protocol` for the offending request, but the stream is
+/// still parseable and `next_host_seq` hands every later request its own
+/// correlation key, so the session stays usable. This proves that directly
+/// rather than assuming it: the same connection answers a following
+/// `stackTrace` correctly after the violation.
+///
+/// The contrast is deliberate — `mark_closed_with_error` is reserved for
+/// conditions that make the stream itself unusable (resource limits), and one
+/// mislabeled reply is not that. Closing a live debug session over it would be
+/// a heavier, user-visible action than the violation warrants.
+#[test]
+fn a_rejected_crossed_reply_leaves_the_session_correctly_correlated() {
+    use perl_dap::backend::BackendError;
+
+    let stack_body = StackTraceResponseBody {
+        stack_frames: vec![WireStackFrame {
+            id: 7,
+            name: "main::after_violation".to_string(),
+            source: WireSource {
+                path: "/work/script.pl".to_string(),
+                name: Some("script.pl".to_string()),
+                source_reference: None,
+            },
+            line: 21,
+            column: 1,
+        }],
+    };
+
+    let peer = FakePeer::start(
+        full_caps(),
+        vec![
+            // Crossed: answers `evaluate` while echoing `stackTrace`.
+            PeerStep::Answer(
+                command::EVALUATE,
+                PeerResponse {
+                    seq: 0,
+                    request_seq: 0,
+                    success: false,
+                    command: command::STACK_TRACE.to_string(),
+                    message: Some("no active suspension".to_string()),
+                    body: None,
+                },
+            ),
+            // Conforming: echoes the request, as an empty template command does.
+            PeerStep::Answer(command::STACK_TRACE, ok_resp(serde_json::to_value(stack_body).ok())),
+        ],
+    );
+    let mut backend = connect(&peer);
+    must(backend.initialize(InitializeBackendParams::default()));
+
+    let err = must_err(backend.evaluate(EvaluateParams {
+        expression: "$x".to_string(),
+        frame_id: Some(FrameId(1)),
+        context: EvaluateContext::Watch,
+    }));
+    assert!(
+        matches!(err, BackendError::Protocol(_)),
+        "the crossed reply is rejected as a protocol violation, got {err:?}"
+    );
+
+    // The session survives, and the next request is answered on its own key.
+    let frames = must(backend.stack_trace(StackTraceParams {
+        thread_id: ThreadId(1),
+        start_frame: None,
+        levels: None,
+    }));
+    assert_eq!(frames.len(), 1, "the session still serves requests after the violation");
+    assert_eq!(frames[0].name, "main::after_violation");
+    assert_eq!(frames[0].line, 21);
+
+    drop(backend);
+    let _ = peer.handle.join();
+}
