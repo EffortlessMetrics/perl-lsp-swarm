@@ -110,7 +110,29 @@ fn collect_use_import(module: &str, args: &[String], map: &mut ImportMap) {
     let mut has_symbol_args = false;
     let mut has_unresolved_tag = false;
 
-    for arg in args.iter().filter(|arg| is_symbol_arg_candidate(arg)) {
+    // Tokens inside a `{ ... }` argument are a configuration hash, not a list
+    // of requested symbols: `use M 'a', { key => 'value' }` asks for `a` alone.
+    // `collect_import_symbols` skips a bare brace token but not the body
+    // between them, so the depth is tracked here — otherwise the hash's keys
+    // and values become the filter that decides which completions this module
+    // may offer.
+    let mut hash_depth = 0usize;
+
+    for arg in args {
+        match arg.trim() {
+            "{" => {
+                hash_depth = hash_depth.saturating_add(1);
+                continue;
+            }
+            "}" => {
+                hash_depth = hash_depth.saturating_sub(1);
+                continue;
+            }
+            _ => {}
+        }
+        if hash_depth > 0 || !is_symbol_arg_candidate(arg) {
+            continue;
+        }
         // The second tuple element signals an unresolvable export tag.  We used
         // to bail out on any unresolved tag, silently discarding all symbols
         // collected so far (#1700).  Now we treat it as a partial miss: the
@@ -177,6 +199,40 @@ mod tests {
         let symbols = must_some(map.get("Foo::Bar"));
         assert!(symbols.contains("alpha"), "alpha must be present; got: {symbols:?}");
         assert!(symbols.contains("beta"), "beta must be present; got: {symbols:?}");
+    }
+
+    /// A configuration hash is not an import list. These symbols become the
+    /// filter deciding which completions a module may offer, so reading the
+    /// hash body would hide every real export behind its keys and values.
+    #[test]
+    fn trailing_configuration_hash_contributes_no_import_filter_symbols() {
+        let code = "use Another::Module 'param1', 'param2', {key => 'value'};\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let map = extract_import_map(&ast);
+
+        let symbols = must_some(map.get("Another::Module"));
+        assert!(symbols.contains("param1"), "param1 is requested; got: {symbols:?}");
+        assert!(symbols.contains("param2"), "param2 is requested; got: {symbols:?}");
+        assert!(!symbols.contains("key"), "a hash key is not imported; got: {symbols:?}");
+        assert!(!symbols.contains("value"), "a hash value is not imported; got: {symbols:?}");
+    }
+
+    #[test]
+    fn a_setup_hash_contributes_no_import_filter_symbols() {
+        let code = "use Sub::Exporter -setup => { exports => [qw(foo bar)] };\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let map = extract_import_map(&ast);
+
+        if let Some(symbols) = map.get("Sub::Exporter") {
+            for leaked in ["exports", "foo", "bar"] {
+                assert!(
+                    !symbols.contains(leaked),
+                    "setup configuration leaked into the import filter: {symbols:?}"
+                );
+            }
+        }
     }
 
     #[test]

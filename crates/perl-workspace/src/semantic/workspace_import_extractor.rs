@@ -495,9 +495,29 @@ fn classify_args(args: &[String], module: &str, node: &Node) -> (ImportKind, Imp
 
     let mut explicit_names: Vec<String> = Vec::new();
     let mut tags: Vec<String> = Vec::new();
+    // Tokens inside a `{ ... }` argument are a configuration hash, not a list
+    // of requested symbols: `use M 'a', { key => 'value' }` asks for `a` alone.
+    // These names reach the live `ImportExportIndex`, so reading the hash body
+    // would make its keys and values resolve as imported symbols.
+    let mut hash_depth = 0usize;
 
     for arg in args {
         let trimmed = arg.trim();
+
+        match trimmed {
+            "{" => {
+                hash_depth = hash_depth.saturating_add(1);
+                continue;
+            }
+            "}" => {
+                hash_depth = hash_depth.saturating_sub(1);
+                continue;
+            }
+            _ => {}
+        }
+        if hash_depth > 0 {
+            continue;
+        }
 
         if let Some(inner) = parse_qw_content(trimmed) {
             for word in inner.split_whitespace() {
@@ -960,6 +980,45 @@ mod tests {
             dynamic_specs.is_empty(),
             "explicit import args must not produce a Dynamic spec, got: {dynamic_specs:#?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn trailing_configuration_hash_contributes_no_imported_symbols()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // These specs populate the live `ImportExportIndex`, so a key or value
+        // read out of a configuration hash resolves as a symbol the file
+        // imported. The statement asks for `param1` and `param2`; `key` and
+        // `value` configure the module.
+        let specs = parse_and_extract("use Another::Module 'param1', 'param2', {key => 'value'};");
+        let spec = specs
+            .iter()
+            .find(|spec| spec.module == "Another::Module")
+            .ok_or("expected an ImportSpec for Another::Module")?;
+
+        assert_eq!(
+            spec.symbols,
+            ImportSymbols::Explicit(vec!["param1".to_string(), "param2".to_string()])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_setup_hash_contributes_no_imported_symbols() -> Result<(), Box<dyn std::error::Error>> {
+        // A module configuring its own exports requests nothing, so neither the
+        // setup keys nor the names it exports are symbols this file imports.
+        let specs = parse_and_extract("use Sub::Exporter -setup => { exports => [qw(foo bar)] };");
+        let spec = specs
+            .iter()
+            .find(|spec| spec.module == "Sub::Exporter")
+            .ok_or("expected an ImportSpec for Sub::Exporter")?;
+
+        if let ImportSymbols::Explicit(names) = &spec.symbols {
+            assert!(
+                !names.iter().any(|name| ["exports", "foo", "bar"].contains(&name.as_str())),
+                "setup configuration leaked into the imported symbols: {names:?}"
+            );
+        }
         Ok(())
     }
 }
