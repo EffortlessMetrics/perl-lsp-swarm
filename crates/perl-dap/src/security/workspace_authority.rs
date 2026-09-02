@@ -415,12 +415,15 @@ pub fn resolve_session_boundary(
             // non-existent root silently refuses every source path in the
             // session. The bounded branch below yields `validate_path`'s
             // canonical result; this one must be just as concrete.
-            Some(root) => root.canonicalize().map(SessionBoundary::Bounded).map_err(|error| {
-                WorkspaceAuthorityError::UnusableLaunchRoot {
-                    launch_root: root.display().to_string(),
-                    detail: error.to_string(),
-                }
-            }),
+            Some(root) => {
+                let resolved = root.canonicalize().map_err(|error| {
+                    WorkspaceAuthorityError::UnusableLaunchRoot {
+                        launch_root: root.display().to_string(),
+                        detail: error.to_string(),
+                    }
+                })?;
+                Ok(SessionBoundary::Bounded(require_directory(root, resolved)?))
+            }
         },
         WorkspaceAuthority::WorkspaceBound { roots } => {
             let roots = roots.as_slice();
@@ -438,7 +441,7 @@ pub fn resolve_session_boundary(
                             display_roots(roots)
                         ),
                     })?;
-                return Ok(SessionBoundary::Bounded(narrowed));
+                return Ok(SessionBoundary::Bounded(require_directory(requested, narrowed)?));
             }
 
             authority
@@ -450,6 +453,28 @@ pub fn resolve_session_boundary(
                 })
         }
     }
+}
+
+/// A boundary must be a directory, on every path that can produce one.
+///
+/// `from_startup` already refuses a non-directory trusted root; a launch root
+/// has to meet the same bar. `canonicalize` succeeds for a file, and
+/// `validate_path` only checks containment, so without this a client could send
+/// `workspaceRoot: "<root>/script.pl"` and get a "boundary" that admits exactly
+/// one file and rejects every sibling. Pointed at the program itself it is worse
+/// than useless: the launch would authorize itself, which is precisely the
+/// self-validating boundary this module exists to prevent.
+fn require_directory(
+    requested: &Path,
+    resolved: PathBuf,
+) -> Result<PathBuf, WorkspaceAuthorityError> {
+    if resolved.is_dir() {
+        return Ok(resolved);
+    }
+    Err(WorkspaceAuthorityError::UnusableLaunchRoot {
+        launch_root: requested.display().to_string(),
+        detail: "a workspace root must be a directory".to_string(),
+    })
 }
 
 fn display_roots(roots: &[PathBuf]) -> String {
@@ -795,6 +820,33 @@ mod tests {
             matches!(error, WorkspaceAuthorityError::UnusableLaunchRoot { .. }),
             "expected an unusable-launch-root refusal, got {error:?}"
         );
+    }
+
+    /// A file-valued launch root is refused, on both branches.
+    ///
+    /// `canonicalize` succeeds for a file and `validate_path` only checks
+    /// containment, so without an explicit directory check a client could send
+    /// `workspaceRoot: "<root>/script.pl"` and get a boundary admitting exactly
+    /// one file. Pointed at the program, the launch would authorize itself —
+    /// the self-validating boundary this module exists to prevent.
+    /// `from_startup` already refuses a non-directory trusted root; a launch
+    /// root has to meet the same bar.
+    #[test]
+    fn a_file_valued_launch_root_is_refused_on_both_branches() {
+        let temp = must(tempfile::tempdir());
+        let root = dir(temp.path(), "ws");
+        let script = file(&root, "a.pl");
+
+        for authority in [
+            WorkspaceAuthority::unconfigured(),
+            must(WorkspaceAuthority::from_startup(&[root], false)),
+        ] {
+            let error = must_err(resolve_session_boundary(&authority, &script, Some(&script)));
+            assert!(
+                matches!(error, WorkspaceAuthorityError::UnusableLaunchRoot { .. }),
+                "a program must not be able to serve as its own boundary, got {error:?}"
+            );
+        }
     }
 
     /// A relative launch root is refused rather than silently re-anchored.

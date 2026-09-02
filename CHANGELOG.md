@@ -79,8 +79,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and neither the debugged program's own directory nor its `cwd` can establish
   one. `--allow-unbounded-workspace` makes single-file debugging outside a
   workspace an explicit operator choice. Passing both, or a root that is not an
-  existing directory, fails startup. Starting with neither flag behaves as
-  before and now logs one warning naming the remedy. The bundled VS Code
+  existing directory, fails startup, as does combining either flag with
+  `--external-peer`/`--external-peer-listen`, where the selected debugger engine
+  owns the runtime and the adapter cannot confine what it launches. Starting
+  with neither flag behaves as before and now logs one warning naming the
+  remedy. The bundled VS Code
   extension does not yet pass `--workspace-root`, so editor-launched sessions
   remain unbounded until it does; the boundary also confines the `program` and
   session source paths only, not the interpreter or launch environment (#14601)

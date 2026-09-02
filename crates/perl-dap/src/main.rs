@@ -289,6 +289,41 @@ struct Args {
     allow_unbounded_workspace: bool,
 }
 
+/// Refuse workspace-authority flags in modes that cannot honour them.
+///
+/// Returns `None` when the combination is fine, so `main` reads as a guard
+/// rather than a branch on two unrelated booleans.
+fn workspace_flags_unsupported_in_peer_mode(args: &Args) -> Option<anyhow::Error> {
+    let peer_mode = if args.external_peer.is_some() {
+        "--external-peer"
+    } else if args.external_peer_listen.is_some() {
+        "--external-peer-listen"
+    } else {
+        return None;
+    };
+
+    let workspace_flag = if !args.workspace_root.is_empty() {
+        "--workspace-root"
+    } else if args.allow_unbounded_workspace {
+        "--allow-unbounded-workspace"
+    } else {
+        return None;
+    };
+
+    Some(anyhow::anyhow!(
+        "{workspace_flag} is not supported with {peer_mode}.\n\
+         Workspace confinement applies to the native launch path, which resolves and \
+         spawns the program itself.\n\
+         In external-peer mode the selected debugger engine owns the runtime, so the \
+         adapter cannot confine what it launches.\n\
+         \n\
+         Drop {workspace_flag}, or run the native adapter:\n\
+         \n\
+         \x20 perl-dap --stdio {workspace_flag}{}",
+        if workspace_flag == "--workspace-root" { " <DIR>" } else { "" }
+    ))
+}
+
 /// Build the server configuration the shipped binary runs under.
 ///
 /// Extracted from `main` so the wiring itself is provable. The defect this
@@ -390,6 +425,18 @@ fn main() -> anyhow::Result<()> {
 
     init_logging(&args.log_level);
 
+    // Workspace authority governs the *native* launch path, which is the only
+    // path that resolves a `program` and spawns it. External-peer modes hand
+    // runtime control to a separately selected debugger engine and never build a
+    // `DapConfig`, so these flags would be silently ignored — and a security
+    // flag that silently does nothing is worse than no flag: an operator who
+    // passes `--workspace-root` would believe launches are confined when nothing
+    // is confining them. Refuse before any session starts, like the retired
+    // editor-socket flags above.
+    if let Some(error) = workspace_flags_unsupported_in_peer_mode(&args) {
+        return Err(error);
+    }
+
     // External-peer session: drive an explicitly selected debugger engine over
     // the peer protocol while the editor speaks DAP over stdio.
     if let Some(peer_addr) = args.external_peer.as_deref() {
@@ -434,6 +481,7 @@ mod tests {
     use super::{
         Args, DEFAULT_DAP_PORT, UnboundedGrant, build_config, editor_socket_retired,
         native_editor_socket_retired, resolve_socket_port, windows_shell_quote,
+        workspace_flags_unsupported_in_peer_mode,
     };
     use clap::{CommandFactory, Parser};
     use perl_lsp_rs_core::product_identity::{
@@ -674,6 +722,50 @@ mod tests {
             missing.to_str().ok_or("non-utf8 fixture path")?,
         ]);
         assert!(build_config(&args).is_err(), "a missing root must fail startup");
+        Ok(())
+    }
+
+    /// Workspace flags are refused in modes that cannot honour them.
+    ///
+    /// Both external-peer paths return from `main` before `build_config` runs,
+    /// so these flags would otherwise be silently ignored — including the
+    /// contradictory-flags refusal. An operator who passes `--workspace-root`
+    /// and gets a running adapter would reasonably believe launches are
+    /// confined; in peer mode the selected debugger engine owns the runtime and
+    /// nothing is confining them.
+    #[test]
+    fn workspace_flags_are_refused_in_external_peer_modes() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("ws");
+        std::fs::create_dir_all(&root)?;
+        let root = root.to_str().ok_or("non-utf8 fixture path")?;
+
+        for (peer_flag, peer_value) in
+            [("--external-peer", "127.0.0.1:9000"), ("--external-peer-listen", "127.0.0.1:0")]
+        {
+            for workspace in [vec!["--workspace-root", root], vec!["--allow-unbounded-workspace"]] {
+                let mut argv = vec!["perl-dap", "--stdio", peer_flag, peer_value];
+                argv.extend(workspace.iter().copied());
+                let args = Args::parse_from(argv);
+
+                let refusal = workspace_flags_unsupported_in_peer_mode(&args).ok_or_else(|| {
+                    format!("{peer_flag} with {workspace:?} must be refused, not silently ignored")
+                })?;
+                let message = refusal.to_string();
+                assert!(
+                    message.contains(peer_flag) && message.contains(workspace[0]),
+                    "the refusal must name both flags, got: {message}"
+                );
+            }
+        }
+
+        // The native path keeps working: no peer flag, no refusal.
+        let native = Args::parse_from(["perl-dap", "--stdio", "--workspace-root", root]);
+        assert!(
+            workspace_flags_unsupported_in_peer_mode(&native).is_none(),
+            "the native adapter must still accept --workspace-root"
+        );
         Ok(())
     }
 }
