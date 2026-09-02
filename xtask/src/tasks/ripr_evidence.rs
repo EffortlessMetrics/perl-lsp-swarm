@@ -7333,7 +7333,9 @@ esac
         }
 
         let shallow = tempfile::tempdir()?;
-        let source = format!("file://{}", origin.path().display());
+        // `--depth` is ignored for a plain local path, so the fixture needs a
+        // `file://` URL to actually become shallow.
+        let source = ancestry_file_url(origin.path());
         let target = shallow.path().join("clone");
         ancestry_git(
             shallow.path(),
@@ -7402,12 +7404,29 @@ esac
         Ok(())
     }
 
+    /// A `file://` URL for a local path, so `git clone --depth` is honoured on
+    /// both POSIX and Windows (`C:\a` must become `file:///C:/a`, not `file://C:\a`).
+    fn ancestry_file_url(path: &Path) -> String {
+        let text = path.display().to_string().replace('\\', "/");
+        if text.starts_with('/') { format!("file://{text}") } else { format!("file:///{text}") }
+    }
+
+    /// Runs git for the ancestry fixtures with the ambient settings that would
+    /// otherwise break a temporary repository neutralized. `GIT_CONFIG_GLOBAL`
+    /// is deliberately not pointed at `/dev/null`: that path does not exist on
+    /// Windows, and this crate's tests are in the Windows CI crate scope.
     fn ancestry_git(repository: &Path, arguments: &[&str]) -> Result<String> {
         let output = Command::new("git")
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.autocrlf=false",
+                "-c",
+                "protocol.file.allow=always",
+            ])
             .args(arguments)
             .current_dir(repository)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_SYSTEM", "/dev/null")
             .env("GIT_TERMINAL_PROMPT", "0")
             .output()
             .with_context(|| format!("running git {arguments:?}"))?;
