@@ -1,24 +1,86 @@
-#![allow(clippy::panic)] // Shape assertions report the actual AST kind on mismatch.
+//! Focused regression proof for #13898: a statement-start builtin /
+//! named-unary call's remaining expression tail applies Perl's range operator
+//! after the symbolic bitwise/logical operators and before ternary, comma, and
+//! the low-precedence word operators, so forms like `shift || $b .. $c` keep
+//! their `..` tail instead of erroring.
+//!
+//! The harness is fallible (Option-returning extractors plus `must_some`) so
+//! the workspace `clippy::panic` policy keeps covering this file; shape
+//! mismatches still report the full AST via `assert!`/`assert_eq!`.
 
 mod cpan_test_helpers;
 use cpan_test_helpers::*;
 use perl_parser_core::{Node, NodeKind};
+use perl_tdd_support::must_some;
 
-fn expression_statement(ast: &Node) -> &Node {
+#[derive(Clone, Copy)]
+enum NestedSide {
+    Left,
+    Right,
+}
+
+/// Return the expression a statement-call-tail test should inspect: the wrapped
+/// expression for ordinary expression statements, or the statement itself for
+/// the indirect-call route, which returns the operator tail unwrapped
+/// (`close FH || $b .. $c;`). `close FH;` alone yields `IndirectCall` and every
+/// other route here yields `ExpressionStatement`.
+fn expression_statement(ast: &Node) -> Option<&Node> {
     let NodeKind::Program { statements } = &ast.kind else {
-        panic!("expected Program, got {:?}", ast.kind);
+        return None;
     };
-    let Some(statement) = statements.first() else {
-        panic!("expected one expression statement");
-    };
+    let statement = statements.first()?;
     match &statement.kind {
-        NodeKind::ExpressionStatement { expression } => expression,
-        // `close FH || $b .. $c;` takes the indirect-call route, which returns the operator
-        // tail unwrapped, so the top-level node already IS the expression. `close FH;` alone
-        // yields `IndirectCall` and every other route here yields `ExpressionStatement`.
-        NodeKind::Binary { .. } => statement,
-        other => panic!("expected ExpressionStatement or Binary, got {:?}", other),
+        NodeKind::ExpressionStatement { expression } => Some(expression),
+        NodeKind::Binary { .. } => Some(statement),
+        _ => None,
     }
+}
+
+fn binary_parts(node: &Node) -> Option<(&str, &Node, &Node)> {
+    match &node.kind {
+        NodeKind::Binary { op, left, right } => Some((op.as_str(), left, right)),
+        _ => None,
+    }
+}
+
+fn function_call_parts(node: &Node) -> Option<(&str, &[Node])> {
+    match &node.kind {
+        NodeKind::FunctionCall { name, args } => Some((name.as_str(), args.as_slice())),
+        _ => None,
+    }
+}
+
+fn ternary_condition(node: &Node) -> Option<&Node> {
+    match &node.kind {
+        NodeKind::Ternary { condition, .. } => Some(condition.as_ref()),
+        _ => None,
+    }
+}
+
+fn array_elements(node: &Node) -> Option<&[Node]> {
+    match &node.kind {
+        NodeKind::ArrayLiteral { elements } => Some(elements.as_slice()),
+        _ => None,
+    }
+}
+
+/// Extract the outer binary operator of the inspected expression. The shape is
+/// asserted with the full AST before extraction so mismatches stay debuggable.
+fn outer_binary<'n>(ast: &'n Node, source: &str) -> (&'n str, &'n Node, &'n Node) {
+    let expression = expression_statement(ast);
+    assert!(
+        expression.is_some(),
+        "expected ExpressionStatement or indirect-call Binary for `{source}`, got:\n{}",
+        ast.to_sexp()
+    );
+    let expression = must_some(expression);
+    assert!(
+        matches!(&expression.kind, NodeKind::Binary { .. }),
+        "expected outer binary for `{source}`, got {:?}:\n{}",
+        expression.kind,
+        ast.to_sexp()
+    );
+    must_some(binary_parts(expression))
 }
 
 fn assert_function_call(node: &Node, name: &str, args_len: usize, context: &str) {
@@ -26,38 +88,6 @@ fn assert_function_call(node: &Node, name: &str, args_len: usize, context: &str)
         matches!(&node.kind, NodeKind::FunctionCall { name: actual, args } if actual == name && args.len() == args_len),
         "expected {name} call with {args_len} argument(s) for {context}, got {:?}",
         node.kind
-    );
-}
-
-fn assert_range_with_nested_symbolic(
-    source: &str,
-    builtin: (&str, usize),
-    nested_side: &str,
-    nested_op: &str,
-) {
-    assert_clean_parse(source);
-    let ast = parse(source);
-    let expression = expression_statement(&ast);
-    let NodeKind::Binary { op, left, right } = &expression.kind else {
-        panic!("expected outer range for `{source}`, got {:?}", expression.kind);
-    };
-    assert_eq!(op, "..", "expected range outer for `{source}`:\n{}", ast.to_sexp());
-
-    let nested = match nested_side {
-        "left" => left,
-        "right" => right,
-        other => panic!("unexpected nested side {other}"),
-    };
-    let NodeKind::Binary { op, left: nested_left, .. } = &nested.kind else {
-        panic!("expected nested {nested_op} for `{source}`, got {:?}", nested.kind);
-    };
-    assert_eq!(op, nested_op, "unexpected nested operator for `{source}`:\n{}", ast.to_sexp());
-    let (name, args_len) = builtin;
-    assert_function_call(
-        if nested_side == "left" { nested_left } else { left },
-        name,
-        args_len,
-        source,
     );
 }
 
@@ -69,19 +99,64 @@ fn assert_variable(node: &Node, name: &str, context: &str) {
     );
 }
 
+/// Assert `(builtin <nested_op> $b) .. $c` for `NestedSide::Left` and
+/// `builtin .. ($b <nested_op> $c)` for `NestedSide::Right`, including the
+/// builtin call identity so a parenthesized ordinary-expression substitute
+/// cannot pass.
+fn assert_range_with_nested_symbolic(
+    source: &str,
+    builtin: (&str, usize),
+    nested_side: NestedSide,
+    nested_op: &str,
+) {
+    assert_clean_parse(source);
+    let ast = parse(source);
+    let (op, left, right) = outer_binary(&ast, source);
+    assert_eq!(op, "..", "expected range outer for `{source}`:\n{}", ast.to_sexp());
+
+    let nested = match nested_side {
+        NestedSide::Left => left,
+        NestedSide::Right => right,
+    };
+    assert!(
+        matches!(&nested.kind, NodeKind::Binary { .. }),
+        "expected nested {nested_op} for `{source}`, got {:?}:\n{}",
+        nested.kind,
+        ast.to_sexp()
+    );
+    let (actual_nested, nested_left, _) = must_some(binary_parts(nested));
+    assert_eq!(
+        actual_nested,
+        nested_op,
+        "unexpected nested operator for `{source}`:\n{}",
+        ast.to_sexp()
+    );
+    let (name, args_len) = builtin;
+    assert_function_call(
+        match nested_side {
+            NestedSide::Left => nested_left,
+            NestedSide::Right => left,
+        },
+        name,
+        args_len,
+        source,
+    );
+}
+
 fn assert_bareword_call_route(source: &str, args_len: usize) {
     assert_clean_parse(source);
     let ast = parse(source);
-    let expression = expression_statement(&ast);
-    let NodeKind::Binary { op, left, right } = &expression.kind else {
-        panic!("expected outer range for `{source}`, got {:?}", expression.kind);
-    };
+    let (op, left, right) = outer_binary(&ast, source);
     assert_eq!(op, "..", "expected range outer for `{source}`:\n{}", ast.to_sexp());
     assert_variable(right, "c", source);
 
-    let NodeKind::Binary { op, left: call, right: rhs } = &left.kind else {
-        panic!("expected nested || for `{source}`, got {:?}", left.kind);
-    };
+    assert!(
+        matches!(&left.kind, NodeKind::Binary { .. }),
+        "expected nested || for `{source}`, got {:?}:\n{}",
+        left.kind,
+        ast.to_sexp()
+    );
+    let (op, call, rhs) = must_some(binary_parts(left));
     assert_eq!(op, "||", "unexpected nested operator for `{source}`:\n{}", ast.to_sexp());
     assert_variable(rhs, "b", source);
     if args_len == 0 {
@@ -100,23 +175,33 @@ fn assert_list_operator_route() {
     assert_clean_parse(source);
     let ast = parse(source);
     let expression = expression_statement(&ast);
-    let NodeKind::FunctionCall { name, args } = &expression.kind else {
-        panic!("expected print call for `{source}`, got {:?}", expression.kind);
-    };
+    assert!(
+        expression.is_some_and(|node| matches!(&node.kind, NodeKind::FunctionCall { .. })),
+        "expected print call for `{source}`, got:\n{}",
+        ast.to_sexp()
+    );
+    let (name, args) = must_some(function_call_parts(must_some(expression)));
     assert_eq!(name, "print", "unexpected callee for `{source}`:\n{}", ast.to_sexp());
-    let [argument] = args.as_slice() else {
-        panic!("expected one print argument for `{source}`, got {:?}", args);
-    };
+    assert_eq!(args.len(), 1, "expected one print argument for `{source}`, got {args:?}");
+    let argument = must_some(args.first());
 
-    let NodeKind::Binary { op, left, right } = &argument.kind else {
-        panic!("expected outer range for `{source}`, got {:?}", argument.kind);
-    };
+    assert!(
+        matches!(&argument.kind, NodeKind::Binary { .. }),
+        "expected outer range for `{source}`, got {:?}:\n{}",
+        argument.kind,
+        ast.to_sexp()
+    );
+    let (op, left, right) = must_some(binary_parts(argument));
     assert_eq!(op, "..", "expected range outer for `{source}`:\n{}", ast.to_sexp());
     assert_variable(right, "c", source);
 
-    let NodeKind::Binary { op, left: nested_left, right: rhs } = &left.kind else {
-        panic!("expected nested || for `{source}`, got {:?}", left.kind);
-    };
+    assert!(
+        matches!(&left.kind, NodeKind::Binary { .. }),
+        "expected nested || for `{source}`, got {:?}:\n{}",
+        left.kind,
+        ast.to_sexp()
+    );
+    let (op, nested_left, rhs) = must_some(binary_parts(left));
     assert_eq!(op, "||", "unexpected nested operator for `{source}`:\n{}", ast.to_sexp());
     assert_variable(nested_left, "x", source);
     assert_variable(rhs, "b", source);
@@ -126,16 +211,17 @@ fn assert_indirect_call_route() {
     let source = "close FH || $b .. $c;";
     assert_clean_parse(source);
     let ast = parse(source);
-    let expression = expression_statement(&ast);
-    let NodeKind::Binary { op, left, right } = &expression.kind else {
-        panic!("expected outer range for `{source}`, got {:?}", expression.kind);
-    };
+    let (op, left, right) = outer_binary(&ast, source);
     assert_eq!(op, "..", "expected range outer for `{source}`:\n{}", ast.to_sexp());
     assert_variable(right, "c", source);
 
-    let NodeKind::Binary { op, left: call, right: rhs } = &left.kind else {
-        panic!("expected nested || for `{source}`, got {:?}", left.kind);
-    };
+    assert!(
+        matches!(&left.kind, NodeKind::Binary { .. }),
+        "expected nested || for `{source}`, got {:?}:\n{}",
+        left.kind,
+        ast.to_sexp()
+    );
+    let (op, call, rhs) = must_some(binary_parts(left));
     assert_eq!(op, "||", "unexpected nested operator for `{source}`:\n{}", ast.to_sexp());
     assert_variable(rhs, "b", source);
     assert!(
@@ -162,7 +248,7 @@ fn statement_call_tail_range_is_outside_all_symbolic_operators() {
         ("time // $b .. $c;", "//"),
     ] {
         let builtin = if nested_op == "||" { "shift" } else { "time" };
-        assert_range_with_nested_symbolic(source, (builtin, 0), "left", nested_op);
+        assert_range_with_nested_symbolic(source, (builtin, 0), NestedSide::Left, nested_op);
     }
 
     for (source, nested_op) in [
@@ -173,15 +259,15 @@ fn statement_call_tail_range_is_outside_all_symbolic_operators() {
         ("time .. $b || $c;", "||"),
         ("time .. $b // $c;", "//"),
     ] {
-        assert_range_with_nested_symbolic(source, ("time", 0), "right", nested_op);
+        assert_range_with_nested_symbolic(source, ("time", 0), NestedSide::Right, nested_op);
     }
 }
 
 #[test]
 fn statement_call_tail_range_reaches_each_call_site() {
-    assert_range_with_nested_symbolic("ref $x || $b .. $c;", ("ref", 1), "left", "||");
-    assert_range_with_nested_symbolic("ref $x .. $b && $c;", ("ref", 1), "right", "&&");
-    assert_range_with_nested_symbolic("lc $x | $b .. $c;", ("lc", 1), "left", "|");
+    assert_range_with_nested_symbolic("ref $x || $b .. $c;", ("ref", 1), NestedSide::Left, "||");
+    assert_range_with_nested_symbolic("ref $x .. $b && $c;", ("ref", 1), NestedSide::Right, "&&");
+    assert_range_with_nested_symbolic("lc $x | $b .. $c;", ("lc", 1), NestedSide::Left, "|");
     assert_indirect_call_route();
 }
 
@@ -202,9 +288,12 @@ fn statement_call_tail_range_stays_inside_ternary_condition() {
     assert_clean_parse(source);
     let ast = parse(source);
     let expression = expression_statement(&ast);
-    let NodeKind::Ternary { condition, .. } = &expression.kind else {
-        panic!("expected outer ternary for `{source}`, got {:?}", expression.kind);
-    };
+    assert!(
+        expression.is_some_and(|node| matches!(&node.kind, NodeKind::Ternary { .. })),
+        "expected outer ternary for `{source}`, got:\n{}",
+        ast.to_sexp()
+    );
+    let condition = must_some(ternary_condition(must_some(expression)));
     assert!(
         matches!(&condition.kind, NodeKind::Binary { op, .. } if op == ".."),
         "expected range in ternary condition for `{source}`:\n{}",
@@ -217,10 +306,7 @@ fn statement_call_tail_word_operators_stay_outside_range() {
     for (source, word_op) in [("time .. $b or $c;", "or"), ("time .. $b and $c;", "and")] {
         assert_clean_parse(source);
         let ast = parse(source);
-        let expression = expression_statement(&ast);
-        let NodeKind::Binary { op, left, .. } = &expression.kind else {
-            panic!("expected outer word operator for `{source}`, got {:?}", expression.kind);
-        };
+        let (op, left, _) = outer_binary(&ast, source);
         assert_eq!(
             op,
             word_op,
@@ -237,23 +323,28 @@ fn statement_call_tail_word_operators_stay_outside_range() {
 
 #[test]
 fn statement_call_tail_range_preserves_adjacent_boundaries() {
-    assert_range_with_nested_symbolic("time == 1 .. 2;", ("time", 0), "left", "==");
+    assert_range_with_nested_symbolic("time == 1 .. 2;", ("time", 0), NestedSide::Left, "==");
 
     let source = "time .. $b, $c;";
     assert_clean_parse(source);
     let ast = parse(source);
     let expression = expression_statement(&ast);
-    let NodeKind::ArrayLiteral { elements } = &expression.kind else {
-        panic!("expected comma array for `{source}`, got {:?}", expression.kind);
-    };
-    assert_eq!(elements.len(), 2, "expected two comma elements for `{source}`:\n{}", ast.to_sexp());
     assert!(
-        matches!(&elements[0].kind, NodeKind::Binary { op, .. } if op == ".."),
+        expression.is_some_and(|node| matches!(&node.kind, NodeKind::ArrayLiteral { .. })),
+        "expected comma array for `{source}`, got:\n{}",
+        ast.to_sexp()
+    );
+    let elements = must_some(array_elements(must_some(expression)));
+    assert_eq!(elements.len(), 2, "expected two comma elements for `{source}`:\n{}", ast.to_sexp());
+    let first = must_some(elements.first());
+    assert!(
+        matches!(&first.kind, NodeKind::Binary { op, .. } if op == ".."),
         "expected range in comma operand for `{source}`:\n{}",
         ast.to_sexp()
     );
+    let second = must_some(elements.get(1));
     assert!(
-        matches!(&elements[1].kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "c"),
+        matches!(&second.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "c"),
         "expected `$c` after range comma for `{source}`:\n{}",
         ast.to_sexp()
     );
@@ -261,10 +352,7 @@ fn statement_call_tail_range_preserves_adjacent_boundaries() {
     let source = "time & $b .. $c ^ $d;";
     assert_clean_parse(source);
     let ast = parse(source);
-    let expression = expression_statement(&ast);
-    let NodeKind::Binary { op, left, right } = &expression.kind else {
-        panic!("expected outer range for `{source}`, got {:?}", expression.kind);
-    };
+    let (op, left, right) = outer_binary(&ast, source);
     assert_eq!(op, "..", "unexpected outer range for `{source}`:\n{}", ast.to_sexp());
     assert!(
         matches!(&left.kind, NodeKind::Binary { op, .. } if op == "&"),
@@ -276,4 +364,16 @@ fn statement_call_tail_range_preserves_adjacent_boundaries() {
         "expected bitwise-xor on range right for `{source}`:\n{}",
         ast.to_sexp()
     );
+}
+
+/// The reordered tail shares the single `parse_range_with` rung with ordinary
+/// expressions, so the non-associative range boundary (#13903) applies here
+/// too: a second unparenthesized `..` is a syntax error, not a silent
+/// left-fold, for every statement-call-tail route.
+#[test]
+fn statement_call_tail_chained_range_is_rejected() {
+    assert_has_blocking_error("time .. $b .. $c;", "range");
+    assert_has_blocking_error("shift || $b .. $c .. $d;", "range");
+    assert_has_blocking_error("ref $x || $b .. $c .. $d;", "range");
+    assert_has_blocking_error("close FH || $b .. $c .. $d;", "range");
 }
