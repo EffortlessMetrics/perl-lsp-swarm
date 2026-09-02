@@ -63,6 +63,26 @@ fn is_method_modifier_declaration(declaration: Option<&str>) -> bool {
     declaration.is_some_and(is_method_modifier_keyword)
 }
 
+/// Return `true` if `symbol` is a subroutine that its package actually contributes
+/// to method dispatch.
+///
+/// Two kinds of same-named subroutine are excluded because neither can be the
+/// method a modifier decorates:
+///
+/// - synthetic modifier symbols, which carry the introducing keyword;
+/// - lexical subs (`my sub`/`state sub`, Perl 5.18+ `feature 'lexical_subs'`).
+///   `SymbolExtractor` qualifies every named sub as `Package::name` regardless of
+///   declarator, so a lexical sub is string-indistinguishable from a real method
+///   here, yet it never enters the package's method table and `$self->name` can
+///   never reach it.
+fn is_package_method_symbol(symbol: &Symbol) -> bool {
+    if symbol.kind != crate::symbol::SymbolKind::Subroutine {
+        return false;
+    }
+    !matches!(symbol.declaration.as_deref(), Some("my" | "state"))
+        && !is_method_modifier_declaration(symbol.declaration.as_deref())
+}
+
 /// The package that declared `symbol`, taken from its qualified name.
 ///
 /// Modifier symbols are qualified as `Package::method`, so stripping the method
@@ -298,11 +318,46 @@ impl SemanticAnalyzer {
             return Some(local);
         }
 
-        let inherited = self.resolve_inherited_method_location(declaring_package, &symbol.name)?;
-        self.method_symbol_at(&symbol.name, inherited)
+        // Ancestors in the package's configured resolution order. Each is looked
+        // up in the symbol table by qualified name rather than through its class
+        // model, so a plain-Perl parent that never became a `ClassModel` still
+        // provides its method — matching the fallback inherited hover already has.
+        self.resolve_parent_chain(declaring_package)?
+            .iter()
+            .find_map(|ancestor| self.method_symbol_in_package(ancestor, symbol))
     }
 
-    /// Find the non-modifier method named `symbol.name` declared by `package` itself.
+    /// One `ClassModel` per package name, merging reopened `package` segments.
+    ///
+    /// A file may declare the same package more than once, and each declaration
+    /// produces its own `ClassModel`. Keying a lookup map straight off
+    /// `class_models` therefore lets a later segment hide an earlier one's
+    /// parents, roles, and methods — so a class that declared `extends 'Base'`
+    /// and was then reopened resolves as though it had no ancestors at all.
+    /// Perl has one package here, so the segments are combined before any
+    /// resolution decision is made.
+    fn merged_class_models(&self) -> Vec<ClassModel> {
+        let mut merged: Vec<ClassModel> = Vec::new();
+        for model in &self.class_models {
+            let Some(existing) = merged.iter_mut().find(|candidate| candidate.name == model.name)
+            else {
+                merged.push(model.clone());
+                continue;
+            };
+
+            existing.parents.extend(model.parents.iter().cloned());
+            existing.roles.extend(model.roles.iter().cloned());
+            existing.methods.extend(model.methods.iter().cloned());
+            existing.modifiers.extend(model.modifiers.iter().cloned());
+            // `use mro 'c3'` in any segment governs the whole package.
+            if matches!(model.mro, MethodResolutionOrder::C3) {
+                existing.mro = MethodResolutionOrder::C3;
+            }
+        }
+        merged
+    }
+
+    /// Find the method named `symbol.name` that `package` itself contributes.
     fn method_symbol_in_package<'a>(
         &'a self,
         package: &str,
@@ -310,19 +365,9 @@ impl SemanticAnalyzer {
     ) -> Option<&'a Symbol> {
         let qualified = format!("{package}::{}", symbol.name);
         self.symbol_table.symbols.get(&symbol.name)?.iter().find(|candidate| {
-            candidate.kind == crate::symbol::SymbolKind::Subroutine
+            is_package_method_symbol(candidate)
                 && candidate.qualified_name == qualified
                 && candidate.location != symbol.location
-                && !is_method_modifier_declaration(candidate.declaration.as_deref())
-        })
-    }
-
-    /// Find the non-modifier method named `name` declared at `location`.
-    fn method_symbol_at(&self, name: &str, location: SourceLocation) -> Option<&Symbol> {
-        self.symbol_table.symbols.get(name)?.iter().find(|candidate| {
-            candidate.kind == crate::symbol::SymbolKind::Subroutine
-                && candidate.location == location
-                && !is_method_modifier_declaration(candidate.declaration.as_deref())
         })
     }
 
@@ -367,8 +412,9 @@ impl SemanticAnalyzer {
         receiver_class: &str,
         method_name: &str,
     ) -> Option<SourceLocation> {
+        let merged = self.merged_class_models();
         let models_by_name: HashMap<&str, &ClassModel> =
-            self.class_models.iter().map(|model| (model.name.as_str(), model)).collect();
+            merged.iter().map(|model| (model.name.as_str(), model)).collect();
 
         let receiver_model = models_by_name.get(receiver_class).copied()?;
         let ancestor_order = match receiver_model.mro {
@@ -405,8 +451,9 @@ impl SemanticAnalyzer {
     ///
     /// Returns ancestors in configured method-resolution order, excluding `receiver_class`.
     pub fn resolve_parent_chain(&self, receiver_class: &str) -> Option<Vec<String>> {
+        let merged = self.merged_class_models();
         let models_by_name: HashMap<&str, &ClassModel> =
-            self.class_models.iter().map(|model| (model.name.as_str(), model)).collect();
+            merged.iter().map(|model| (model.name.as_str(), model)).collect();
         let receiver_model = models_by_name.get(receiver_class).copied()?;
 
         let chain = match receiver_model.mro {
@@ -2646,6 +2693,147 @@ my %config = (key => "value");
         assert_ne!(
             sym.location.start, bystander_save,
             "inherited resolution must not pick the unrelated Bystander::save"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_method_modifier_target_ignores_lexical_subs() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // A `my sub` is qualified `Demo::save` like any other named sub, but it
+        // never enters the package's method table, so `$self->save` cannot reach
+        // it and a modifier must not resolve to it.
+        let code = concat!(
+            "package Demo;\n",
+            "use Moo;\n",
+            "use feature 'lexical_subs';\n",
+            "\n",
+            "if (1) {\n",
+            "    my sub save {\n",
+            "        return 42;\n",
+            "    }\n",
+            "}\n",
+            "\n",
+            "before 'save' => sub {\n",
+            "    my ($self) = @_;\n",
+            "};\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let offset = modifier_target_offset(code, "before 'save'", "save")
+            .ok_or("modifier target not found")?;
+        let lexical_sub = code.find("my sub save").ok_or("lexical sub not found")?;
+
+        let sym = analyzer.find_definition(offset).ok_or("no symbol at modifier target")?;
+
+        assert_ne!(
+            sym.location.start, lexical_sub,
+            "a lexical `my sub` is not in the package method table and must not be a modifier target"
+        );
+        assert_eq!(
+            sym.declaration.as_deref(),
+            Some("before"),
+            "with no package method to reach, definition stays on the modifier declaration"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_method_modifier_target_resolves_through_plain_package_parent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // `Base` is ordinary Perl with no OO indicators, so it never becomes a
+        // `ClassModel`. It is still a real parent contributing a real method, and
+        // the decoy `Bystander::save` must not win.
+        let code = concat!(
+            "package Bystander;\n",
+            "use Moo;\n",
+            "\n",
+            "sub save {\n",
+            "    return 0;\n",
+            "}\n",
+            "\n",
+            "package Base;\n",
+            "\n",
+            "sub save {\n",
+            "    return 1;\n",
+            "}\n",
+            "\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "extends 'Base';\n",
+            "\n",
+            "before 'save' => sub {\n",
+            "    my ($self) = @_;\n",
+            "};\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let offset = modifier_target_offset(code, "before 'save'", "save")
+            .ok_or("modifier target not found")?;
+        let bystander_save = code.find("sub save").ok_or("Bystander::save not found")?;
+        let base_save = code[bystander_save + 1..]
+            .find("sub save")
+            .map(|found| found + bystander_save + 1)
+            .ok_or("Base::save not found")?;
+
+        let sym = analyzer.find_definition(offset).ok_or("no symbol at modifier target")?;
+
+        assert_eq!(
+            sym.location.start, base_save,
+            "a plain-Perl parent with no class model still provides the inherited method"
+        );
+        assert_ne!(
+            sym.location.start, bystander_save,
+            "resolution must not fall back to an unrelated package's method"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_method_modifier_target_resolves_through_reopened_parent_declaration()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // `Child` is declared twice: the first segment carries `extends 'Base'`,
+        // the second carries the modifier. The package has one ancestry, so the
+        // inherited target must still resolve.
+        let code = concat!(
+            "package Base;\n",
+            "use Moo;\n",
+            "\n",
+            "sub save {\n",
+            "    return 1;\n",
+            "}\n",
+            "\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "extends 'Base';\n",
+            "\n",
+            "package Other;\n",
+            "use Moo;\n",
+            "\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "\n",
+            "before 'save' => sub {\n",
+            "    my ($self) = @_;\n",
+            "};\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let offset = modifier_target_offset(code, "before 'save'", "save")
+            .ok_or("modifier target not found")?;
+        let base_save = code.find("sub save").ok_or("Base::save not found")?;
+
+        let sym = analyzer.find_definition(offset).ok_or("no symbol at modifier target")?;
+
+        assert_eq!(
+            sym.location.start, base_save,
+            "a reopened package keeps the ancestry declared in its earlier segment"
         );
         Ok(())
     }
