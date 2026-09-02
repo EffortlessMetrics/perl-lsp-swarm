@@ -485,13 +485,15 @@ fn uppercase_hex_marker_is_not_accepted_and_numeric_module_components_are_plain(
         InvocationDecodeError::UnrecognizedSwitch { switch: '4', .. }
     ));
 
-    let numeric_component = perl(&["-MFoo::1", "-e", "print"]);
-    let ContextFactKind::ModuleImport { spec, .. } = &numeric_component.context_facts[0].kind
-    else {
-        panic!("expected a module import");
-    };
-    assert!(spec.module_is_plain_name);
-    assert!(numeric_component.ambiguities.is_empty());
+    for module in ["Foo::1", "Foo::1::2"] {
+        let argument = format!("-M{module}");
+        let invocation = perl(&[argument.as_str(), "-e", "print"]);
+        let ContextFactKind::ModuleImport { spec, .. } = &invocation.context_facts[0].kind else {
+            panic!("expected a module import");
+        };
+        assert!(spec.module_is_plain_name, "{module} is a valid module name");
+        assert!(invocation.ambiguities.is_empty());
+    }
 }
 
 #[test]
