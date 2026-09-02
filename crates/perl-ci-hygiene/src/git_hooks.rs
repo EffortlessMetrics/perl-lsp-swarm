@@ -75,7 +75,9 @@ while IFS= read -r -d '' staged_path; do
             STAGED_INVENTORY_PATHS+=("$staged_path")
             ;;
     esac
-done < <(git diff --cached --name-only -z --diff-filter=ADRM)
+# `--root` is required for an unborn HEAD; without it, staged additions in
+# the initial commit compare against no tree and the refresh path is skipped.
+done < <(git diff --cached --root --name-only -z --diff-filter=ADRM)
 
 if [ "$STAGED_INVENTORY_CHANGE" -eq 1 ]; then
     if ! git diff --quiet -- policy/non-rust-allowlist.toml; then
@@ -808,6 +810,80 @@ mod tests {
             "docs/policy/NON_RUST_INVENTORY.md"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn pre_commit_refreshes_inventory_with_unborn_head() -> Result<()> {
+        use color_eyre::eyre::ensure;
+
+        let repo = temp_repo()?;
+        run_git(&repo, &["config", "user.email", "test@example.com"])?;
+        run_git(&repo, &["config", "user.name", "hook test"])?;
+        fs::write(repo.join("README.md"), "initial\n")?;
+        fs::create_dir_all(repo.join("docs/policy"))?;
+        fs::write(repo.join("docs/policy/NON_RUST_INVENTORY.md"), "# baseline\n")?;
+        fs::create_dir_all(repo.join("policy"))?;
+        fs::write(repo.join("policy/non-rust-allowlist.toml"), "# baseline\n")?;
+        run_git(&repo, &["add", "."])?;
+
+        let bin = repo.join("fake-bin");
+        fs::create_dir_all(&bin)?;
+        let log = repo.join("cargo.log");
+        let fake_cargo = bin.join("cargo");
+        fs::write(
+            &fake_cargo,
+            "#!/usr/bin/env bash\n\
+             printf '%s\\n' \"$*\" >> \"$FAKE_CARGO_LOG\"\n\
+             if [ \"$2\" = non-rust ]; then\n\
+               mkdir -p docs/policy\n\
+               printf '# refreshed\\n' > docs/policy/NON_RUST_INVENTORY.md\n\
+             fi\n",
+        )?;
+        #[cfg(unix)]
+        fs::set_permissions(&fake_cargo, fs::Permissions::from_mode(0o755))?;
+
+        let hook = repo.join("pre-commit");
+        fs::write(&hook, pre_commit_hook_script())?;
+        #[cfg(unix)]
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755))?;
+
+        let launcher = repo.join("run-hook.sh");
+        fs::write(
+            &launcher,
+            "#!/usr/bin/env bash\nchmod +x fake-bin/cargo\nexport PATH=\"$(pwd)/fake-bin:$PATH\"\nexport FAKE_CARGO_LOG=\"$(pwd)/cargo.log\"\nexec ./pre-commit\n",
+        )?;
+        #[cfg(unix)]
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755))?;
+
+        let bash = [
+            PathBuf::from("bash"),
+            PathBuf::from(r"C:\Program Files\Git\bin\bash.exe"),
+            PathBuf::from(r"C:\Program Files\Git\usr\bin\bash.exe"),
+        ]
+        .into_iter()
+        .find(|candidate| Command::new(candidate).arg("--version").output().is_ok())
+        .ok_or_else(|| color_eyre::eyre::eyre!("bash is required for unborn-HEAD hook test"))?;
+        let output = Command::new(&bash)
+            // A relative path keeps Git Bash from treating a Windows drive
+            // path as a POSIX command path while still executing this exact
+            // generated hook from the fixture repository.
+            .arg("run-hook.sh")
+            .current_dir(&repo)
+            .output()?;
+        ensure!(
+            output.status.success(),
+            "unborn-HEAD inventory refresh failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let calls = fs::read_to_string(&log)?;
+        assert!(calls.contains("xtask non-rust inventory --write"));
+        assert!(calls.contains("xtask precommit"));
+        assert_eq!(
+            fs::read_to_string(repo.join("docs/policy/NON_RUST_INVENTORY.md"))?,
+            "# refreshed\n"
+        );
+        fs::remove_dir_all(repo)?;
         Ok(())
     }
 
