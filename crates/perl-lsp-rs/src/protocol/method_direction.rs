@@ -758,6 +758,14 @@ mod tests {
         })
     }
 
+    fn declaration_continues_after_line_comment(line: &str) -> bool {
+        let Some(comment) = line.find("//") else { return false };
+        let before_comment = &line[..comment];
+        before_comment.contains("mod")
+            && !before_comment.contains('{')
+            && !before_comment.contains(';')
+    }
+
     fn outer_attribute_end(source: &str) -> Option<usize> {
         let bytes = source.as_bytes();
         let mut index = 2;
@@ -1246,6 +1254,72 @@ mod tests {
                         continue;
                     }
                 }
+
+                // A line comment is valid declaration trivia, but it forces
+                // the `{` or `;` onto a later physical line. Accumulate that
+                // continuation before deciding whether this is a test module;
+                // otherwise the body would be emitted as production source.
+                if declaration_continues_after_line_comment(inline_declaration) {
+                    let mut declaration_text = inline_declaration.to_owned();
+                    let mut declaration = None;
+                    let mut module_close = None;
+                    let mut lexical_state = LexicalState::Normal;
+                    while let Some(&continuation) = lines.get(line_index) {
+                        declaration_text.push('\n');
+                        declaration_text.push_str(continuation);
+                        line_index += 1;
+                        if declaration.is_none() {
+                            declaration = test_module_declaration(&declaration_text);
+                        }
+                        if let Some(found) = declaration.as_ref()
+                            && matches!(found.kind, TestModuleKind::Inline)
+                        {
+                            let (_, close) = scan_structural_braces(
+                                &declaration_text,
+                                &mut lexical_state,
+                                0,
+                                found.terminator_offset,
+                            );
+                            if close.is_some() {
+                                module_close = close;
+                                break;
+                            }
+                        } else if declaration.is_some() {
+                            break;
+                        }
+                    }
+                    if let Some(declaration) = declaration {
+                        if matches!(declaration.kind, TestModuleKind::External) {
+                            let suffix = retained_post_module_suffix(
+                                &declaration_text,
+                                declaration.terminator_offset + 1,
+                                &mut source_lexical_state,
+                            );
+                            let kept = format!("{}{}", prefix, suffix.trim_end());
+                            if !kept.trim().is_empty() {
+                                result.push_str(kept.trim_end());
+                                result.push('\n');
+                            }
+                            continue;
+                        }
+                        if let Some(close) = module_close {
+                            let suffix = retained_post_module_suffix(
+                                &declaration_text,
+                                close + 1,
+                                &mut source_lexical_state,
+                            );
+                            let kept = format!("{}{}", prefix, suffix.trim_end());
+                            if !kept.trim().is_empty() {
+                                result.push_str(kept.trim_end());
+                                result.push('\n');
+                            }
+                            continue;
+                        }
+                    }
+                    // Keep the original fallback below when the continuation
+                    // is malformed or incomplete; fail closed rather than
+                    // hiding unrelated source.
+                }
             }
 
             result.push_str(prefix);
@@ -1488,6 +1562,12 @@ pub(in /* fake ) delimiter */ crate::protocol) mod scoped_comment {
 pub(crate) mod commented /* comment containing { and } */ ;
 #[cfg(test)]
 mod adjacent/* comment containing a fake send: client.send_request("test-only/adjacent-comment"); */{ fn send() { client.send_request("test-only/adjacent-body"); } }
+#[cfg(test)] mod line_comment_before_body // declaration trivia may end a physical line
+{
+    fn send() { client.send_request("test-only/line-comment-before-body"); }
+}
+#[cfg(test)] mod line_comment_before_external // declaration trivia may end a physical line
+;
 #[cfg(test)]
 pub(crate) mod same_line; fn after_external() { send("production/after_external"); }
 #[cfg(test)]
@@ -1543,6 +1623,8 @@ pub(crate) mod visible { const KEEP: &str = "visible/production"; }
         assert!(!stripped.contains("test-only/scoped-comment"));
         assert!(!stripped.contains("test-only/adjacent-comment"));
         assert!(!stripped.contains("test-only/adjacent-body"));
+        assert!(!stripped.contains("test-only/line-comment-before-body"));
+        assert!(!stripped.contains("mod line_comment_before_external"));
         assert!(!stripped.contains("test-only/compact"));
         assert!(!stripped.contains("pub(crate) mod commented"));
         assert!(!stripped.contains("pub(crate) mod lexical_forms"));
