@@ -143,10 +143,10 @@ impl StructuralAccessChain {
     /// equality, never proof of identity.
     #[must_use]
     pub fn fingerprint(&self) -> String {
-        let mut accumulator = SemanticIdentityFingerprint::new(STRUCTURAL_ACCESS_SCHEMA_TAG)
-            .field("schema-version", &self.schema_version.to_string())
-            .field("subject", &self.subject.identity_text())
-            .field("hop-count", &self.hops.len().to_string());
+        let accumulator = SemanticIdentityFingerprint::new(STRUCTURAL_ACCESS_SCHEMA_TAG)
+            .field("schema-version", &self.schema_version.to_string());
+        let mut accumulator =
+            self.subject.fold(accumulator).field("hop-count", &self.hops.len().to_string());
         for hop in &self.hops {
             accumulator = accumulator.field("hop", &hop.fingerprint());
         }

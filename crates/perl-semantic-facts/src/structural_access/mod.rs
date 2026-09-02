@@ -67,7 +67,16 @@ pub use hop::StructuralAccessHop;
 
 use serde::{Deserialize, Serialize};
 
+use crate::semantic_identity::SemanticIdentityFingerprint;
 use crate::{BoundaryLink, FactId, FileId, SourceAnchor, SourceGeneration, ValueShape};
+
+/// Shorthand for the shared deterministic fingerprint accumulator.
+///
+/// Every component in this contract folds itself through labelled
+/// length-prefixed fields rather than being joined into one delimited string,
+/// so no payload can shift content across a field boundary and make two
+/// different records digest identically.
+type Fingerprint = SemanticIdentityFingerprint;
 
 /// `structural_access_chain.v1` schema version.
 pub const STRUCTURAL_ACCESS_CHAIN_SCHEMA_VERSION: u32 = 1;
@@ -235,18 +244,18 @@ impl StructuralAccessSelector {
         matches!(self, Self::DynamicKey(_) | Self::DynamicIndex(_))
     }
 
-    /// Canonical identity text folded into the hop fingerprint.
+    /// Fold this selector's identity into a fingerprint.
     ///
     /// A dynamic selector contributes its boundary classification rather than
     /// a value, so two dynamic hops with different boundary reasons remain
     /// distinguishable without inventing a fake key.
-    #[must_use]
-    pub fn identity_text(&self) -> String {
+    pub(super) fn fold(&self, accumulator: Fingerprint) -> Fingerprint {
+        let accumulator = accumulator.discriminant("selector-kind", self.tag());
         match self {
-            Self::StaticKey(key) => key.clone(),
-            Self::StaticIndex(index) => index.to_string(),
+            Self::StaticKey(key) => accumulator.field("selector-key", key),
+            Self::StaticIndex(index) => accumulator.field("selector-index", &index.to_string()),
             Self::DynamicKey(boundary) | Self::DynamicIndex(boundary) => {
-                format!("{:?}/{:?}", boundary.kind, boundary.reason_code)
+                fold_boundary("selector-boundary", boundary, accumulator)
             }
         }
     }
@@ -295,15 +304,23 @@ impl StructuralAccessAggregate {
         }
     }
 
-    /// Canonical identity text folded into the hop fingerprint.
-    #[must_use]
-    pub fn identity_text(&self) -> String {
+    /// Fold this aggregate's identity into a fingerprint.
+    ///
+    /// The sigil and name are folded as separate fields rather than
+    /// concatenated: `$` + `ab` and `$a` + `b` are different aggregates and
+    /// must not share a digest.
+    pub(super) fn fold(&self, accumulator: Fingerprint) -> Fingerprint {
+        let accumulator = accumulator.discriminant("aggregate-kind", self.tag());
         match self {
-            Self::Variable { sigil, name } => format!("{sigil}{name}"),
-            Self::Fact(fact_id) => fact_id.0.to_string(),
-            Self::PrecedingHop { ordinal } => ordinal.to_string(),
+            Self::Variable { sigil, name } => {
+                accumulator.field("aggregate-sigil", sigil).field("aggregate-name", name)
+            }
+            Self::Fact(fact_id) => accumulator.field("aggregate-fact", &fact_id.0.to_string()),
+            Self::PrecedingHop { ordinal } => {
+                accumulator.field("aggregate-preceding", &ordinal.to_string())
+            }
             Self::DynamicBoundary(boundary) => {
-                format!("{:?}/{:?}", boundary.kind, boundary.reason_code)
+                fold_boundary("aggregate-boundary", boundary, accumulator)
             }
         }
     }
@@ -407,25 +424,54 @@ impl StructuralAccessSubject {
         Ok(Self { document, source_generation, workspace_root, project_generation })
     }
 
-    /// Canonical identity text folded into the chain fingerprint.
-    #[must_use]
-    pub fn identity_text(&self) -> String {
-        let generation = match &self.source_generation {
-            SourceGeneration::Known(value) => value.as_str(),
-            SourceGeneration::Unknown => "",
-        };
-        let project = match self.project_generation.as_ref() {
-            Some(SourceGeneration::Known(value)) => value.as_str(),
-            Some(SourceGeneration::Unknown) | None => "",
-        };
-        format!(
-            "{}|{}|{}|{}",
-            self.document.0,
-            generation,
-            self.workspace_root.as_deref().unwrap_or_default(),
-            project
-        )
+    /// Fold this subject's identity into a fingerprint.
+    ///
+    /// Every component is folded as its own labelled field. Joining them into
+    /// one delimited string would let a delimiter inside a workspace root or a
+    /// generation shift content across a field boundary, so a root of `b|c`
+    /// under generation `a` would digest identically to a root of `c` under
+    /// generation `a|b`.
+    pub(super) fn fold(&self, accumulator: Fingerprint) -> Fingerprint {
+        let accumulator = accumulator
+            .field("subject-document", &self.document.0.to_string())
+            .field("subject-root", self.workspace_root.as_deref().unwrap_or_default())
+            .discriminant("subject-root-present", present_tag(self.workspace_root.is_some()));
+        let accumulator =
+            fold_generation("subject-generation", &self.source_generation, accumulator);
+        match self.project_generation.as_ref() {
+            Some(generation) => {
+                fold_generation("subject-project-generation", generation, accumulator)
+            }
+            None => accumulator.discriminant("subject-project-generation", "absent"),
+        }
     }
+}
+
+/// Fold a source generation, keeping `Unknown` distinct from a known-but-empty
+/// value: they are different states and must not share a digest.
+fn fold_generation(
+    label: &str,
+    generation: &SourceGeneration,
+    accumulator: Fingerprint,
+) -> Fingerprint {
+    match generation {
+        SourceGeneration::Known(value) => {
+            accumulator.discriminant(label, "known").field(label, value)
+        }
+        SourceGeneration::Unknown => accumulator.discriminant(label, "unknown"),
+    }
+}
+
+/// Fold a boundary link's classification as two separate labelled fields.
+fn fold_boundary(label: &str, boundary: &BoundaryLink, accumulator: Fingerprint) -> Fingerprint {
+    accumulator
+        .field(label, &format!("{:?}", boundary.kind))
+        .field(label, &format!("{:?}", boundary.reason_code))
+}
+
+/// Stable tag for an optional field's presence.
+const fn present_tag(present: bool) -> &'static str {
+    if present { "present" } else { "absent" }
 }
 
 /// Bounded work accounting across one hop.
@@ -605,37 +651,46 @@ impl StructuralHopOutcome {
         matches!(self, Self::Selected { .. })
     }
 
-    /// Canonical identity text folded into the hop fingerprint.
-    #[must_use]
-    pub fn identity_text(&self) -> String {
+    /// Fold this outcome's identity into a fingerprint.
+    pub(super) fn fold(&self, accumulator: Fingerprint) -> Fingerprint {
+        let accumulator = accumulator.discriminant("outcome-kind", self.tag());
         match self {
-            Self::Selected { shape, value_fact } => format!(
-                "{}/{}",
-                value_shape_identity_text(shape),
-                value_fact.map_or_else(String::new, |fact| fact.0.to_string())
-            ),
-            Self::ShapeMismatch { observed } => value_shape_identity_text(observed),
-            Self::Boundary(boundary) => {
-                format!("{:?}/{:?}", boundary.kind, boundary.reason_code)
+            Self::Selected { shape, value_fact } => {
+                let accumulator = fold_value_shape("outcome-shape", shape, accumulator);
+                match value_fact {
+                    Some(fact) => accumulator
+                        .discriminant("outcome-fact", "present")
+                        .field("outcome-fact", &fact.0.to_string()),
+                    None => accumulator.discriminant("outcome-fact", "absent"),
+                }
             }
+            Self::ShapeMismatch { observed } => {
+                fold_value_shape("outcome-observed-shape", observed, accumulator)
+            }
+            Self::Boundary(boundary) => fold_boundary("outcome-boundary", boundary, accumulator),
             Self::AbsentMember
             | Self::UnknownMember
             | Self::StaleGeneration
-            | Self::BudgetExhausted => String::new(),
+            | Self::BudgetExhausted => accumulator,
         }
     }
 }
 
-/// Canonical text for a value shape inside a fingerprint.
-fn value_shape_identity_text(shape: &ValueShape) -> String {
+/// Fold a value shape, keeping each payload in its own labelled field.
+fn fold_value_shape(label: &str, shape: &ValueShape, accumulator: Fingerprint) -> Fingerprint {
     match shape {
-        ValueShape::Unknown => "unknown".to_string(),
-        ValueShape::Scalar => "scalar".to_string(),
-        ValueShape::ArrayRef => "array-ref".to_string(),
-        ValueShape::HashRef => "hash-ref".to_string(),
-        ValueShape::CodeRef => "code-ref".to_string(),
-        ValueShape::PackageName { package } => format!("package:{package}"),
-        ValueShape::Object { package, confidence } => format!("object:{package}:{confidence:?}"),
+        ValueShape::Unknown => accumulator.discriminant(label, "unknown"),
+        ValueShape::Scalar => accumulator.discriminant(label, "scalar"),
+        ValueShape::ArrayRef => accumulator.discriminant(label, "array-ref"),
+        ValueShape::HashRef => accumulator.discriminant(label, "hash-ref"),
+        ValueShape::CodeRef => accumulator.discriminant(label, "code-ref"),
+        ValueShape::PackageName { package } => {
+            accumulator.discriminant(label, "package-name").field(label, package)
+        }
+        ValueShape::Object { package, confidence } => accumulator
+            .discriminant(label, "object")
+            .field(label, package)
+            .field(label, &format!("{confidence:?}")),
     }
 }
 

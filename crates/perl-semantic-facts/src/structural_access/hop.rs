@@ -237,15 +237,13 @@ impl StructuralAccessHop {
     /// equality, never proof of identity.
     #[must_use]
     pub fn fingerprint(&self) -> String {
-        SemanticIdentityFingerprint::new(STRUCTURAL_ACCESS_SCHEMA_TAG)
-            .field("ordinal", &self.ordinal.to_string())
-            .discriminant("aggregate-kind", self.aggregate.tag())
-            .field("aggregate", &self.aggregate.identity_text())
-            .discriminant("operator", self.operator.tag())
-            .discriminant("selector-kind", self.selector.tag())
-            .field("selector", &self.selector.identity_text())
-            .discriminant("outcome-kind", self.outcome.tag())
-            .field("outcome", &self.outcome.identity_text())
+        let accumulator = SemanticIdentityFingerprint::new(STRUCTURAL_ACCESS_SCHEMA_TAG)
+            .field("ordinal", &self.ordinal.to_string());
+        let accumulator = self.aggregate.fold(accumulator);
+        let accumulator = accumulator.discriminant("operator", self.operator.tag());
+        let accumulator = self.selector.fold(accumulator);
+        let accumulator = self.outcome.fold(accumulator);
+        accumulator
             .discriminant("certainty", self.certainty.tag())
             .discriminant("completeness", self.completeness.tag())
             .discriminant("disposition", self.disposition.tag())

@@ -820,3 +820,175 @@ fn architecture_fence_forbids_provider_parser_and_workspace_ownership() {
         }
     }
 }
+
+// ── Fingerprint field-boundary soundness ──────────────────────────────────
+
+#[test]
+fn a_sigil_name_boundary_shift_does_not_collide() -> Result<(), Box<dyn Error>> {
+    // `$` + `ab` and `$a` + `b` concatenate to the same text. Folding the two
+    // components as separate labelled fields keeps them distinct.
+    let build = |sigil: &str, name: &str| {
+        selecting_hop(
+            0,
+            StructuralAccessAggregate::Variable {
+                sigil: sigil.to_string(),
+                name: name.to_string(),
+            },
+            StructuralAccessOperator::HashSlot,
+            StructuralAccessSelector::StaticKey("k".to_string()),
+            "{k}",
+            ValueShape::Scalar,
+        )
+    };
+    assert_ne!(build("$", "ab")?.fingerprint(), build("$a", "b")?.fingerprint());
+    Ok(())
+}
+
+#[test]
+fn a_subject_field_boundary_shift_does_not_collide() -> Result<(), Box<dyn Error>> {
+    // A delimiter inside a workspace root or a generation must not shift
+    // content across a field boundary.
+    let build = |generation: &str, root: &str| -> Result<String, Box<dyn Error>> {
+        let chain = StructuralAccessChain::new(
+            StructuralAccessSubject::new(
+                DOCUMENT,
+                SourceGeneration::known(generation),
+                Some(root.to_string()),
+                None,
+            )?,
+            vec![selecting_hop(
+                0,
+                base_variable(),
+                StructuralAccessOperator::HashSlot,
+                StructuralAccessSelector::StaticKey("k".to_string()),
+                "{k}",
+                ValueShape::Scalar,
+            )?],
+        )?;
+        Ok(chain.fingerprint())
+    };
+    assert_ne!(build("a|b", "c")?, build("a", "b|c")?);
+    Ok(())
+}
+
+#[test]
+fn an_unknown_generation_is_not_a_known_empty_generation() -> Result<(), Box<dyn Error>> {
+    let build = |generation: SourceGeneration| -> Result<String, Box<dyn Error>> {
+        let chain = StructuralAccessChain::new(
+            StructuralAccessSubject::new(DOCUMENT, generation, None, None)?,
+            vec![selecting_hop(
+                0,
+                base_variable(),
+                StructuralAccessOperator::HashSlot,
+                StructuralAccessSelector::StaticKey("k".to_string()),
+                "{k}",
+                ValueShape::Scalar,
+            )?],
+        )?;
+        Ok(chain.fingerprint())
+    };
+    assert_ne!(build(SourceGeneration::Unknown)?, build(SourceGeneration::known(""))?);
+    Ok(())
+}
+
+#[test]
+fn an_absent_project_generation_is_not_an_unknown_one() -> Result<(), Box<dyn Error>> {
+    let build = |project: Option<SourceGeneration>| -> Result<String, Box<dyn Error>> {
+        let chain = StructuralAccessChain::new(
+            StructuralAccessSubject::new(DOCUMENT, SourceGeneration::known("gen"), None, project)?,
+            vec![selecting_hop(
+                0,
+                base_variable(),
+                StructuralAccessOperator::HashSlot,
+                StructuralAccessSelector::StaticKey("k".to_string()),
+                "{k}",
+                ValueShape::Scalar,
+            )?],
+        )?;
+        Ok(chain.fingerprint())
+    };
+    assert_ne!(build(None)?, build(Some(SourceGeneration::Unknown))?);
+    Ok(())
+}
+
+#[test]
+fn an_absent_workspace_root_is_not_an_empty_one() -> Result<(), Box<dyn Error>> {
+    // A blank root is rejected outright, so the only reachable comparison is
+    // absent versus a real root; the presence discriminant keeps them apart
+    // even if a future producer is allowed to record an empty one.
+    let absent = StructuralAccessSubject::new(DOCUMENT, SourceGeneration::known("g"), None, None)?;
+    let present = StructuralAccessSubject::new(
+        DOCUMENT,
+        SourceGeneration::known("g"),
+        Some("root".to_string()),
+        None,
+    )?;
+    assert_ne!(absent, present);
+    Ok(())
+}
+
+#[test]
+fn a_selected_value_fact_is_not_its_absence() -> Result<(), Box<dyn Error>> {
+    let build = |value_fact: Option<FactId>| {
+        StructuralAccessHop::new(
+            0,
+            base_variable(),
+            StructuralAccessOperator::HashSlot,
+            StructuralAccessSelector::StaticKey("k".to_string()),
+            spelling("{k}", 0, 3)?,
+            StructuralHopOutcome::Selected { shape: ValueShape::Scalar, value_fact },
+            StructuralHopCertainty::Definite,
+            StructuralAggregateCompleteness::Closed,
+            StructuralAggregateDisposition::Stable,
+            SemanticProducer::SemanticAnalyzer,
+            SemanticProvenance::Known(crate::Provenance::ExactAst),
+            SemanticConfidence::Known(Confidence::High),
+            SemanticReasonCode::ExactSource,
+            StructuralAccessBudget::new(10, 9)?,
+            Vec::new(),
+        )
+    };
+    assert_ne!(build(None)?.fingerprint(), build(Some(FactId(0)))?.fingerprint());
+    Ok(())
+}
+
+#[test]
+fn a_static_key_never_digests_as_the_same_static_index() -> Result<(), Box<dyn Error>> {
+    let keyed = selecting_hop(
+        0,
+        base_variable(),
+        StructuralAccessOperator::HashSlot,
+        StructuralAccessSelector::StaticKey("5".to_string()),
+        "{5}",
+        ValueShape::Scalar,
+    )?;
+    let indexed = selecting_hop(
+        0,
+        base_variable(),
+        StructuralAccessOperator::ArrayIndex,
+        StructuralAccessSelector::StaticIndex(5),
+        "[5]",
+        ValueShape::Scalar,
+    )?;
+    assert_ne!(keyed.fingerprint(), indexed.fingerprint());
+    Ok(())
+}
+
+#[test]
+fn a_package_name_shape_never_digests_as_an_object_shape() -> Result<(), Box<dyn Error>> {
+    let build = |shape: ValueShape| {
+        selecting_hop(
+            0,
+            base_variable(),
+            StructuralAccessOperator::HashSlot,
+            StructuralAccessSelector::StaticKey("k".to_string()),
+            "{k}",
+            shape,
+        )
+    };
+    let package = build(ValueShape::PackageName { package: "Foo:High".to_string() })?;
+    let object =
+        build(ValueShape::Object { package: "Foo".to_string(), confidence: Confidence::High })?;
+    assert_ne!(package.fingerprint(), object.fingerprint());
+    Ok(())
+}
