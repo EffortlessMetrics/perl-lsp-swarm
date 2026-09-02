@@ -234,7 +234,8 @@ proptest! {
     #[test]
     fn newline_byte_is_on_current_line_next_byte_starts_next_line(
         text in text_with_newlines(256),
-    ) {        let idx = LineIndex::new(&text);
+    ) {
+        let idx = LineIndex::new(&text);
         for (byte, ch) in text.char_indices() {
             if ch == '\n' {
                 let (nl_line, _nl_col) = idx.byte_to_position(byte);
