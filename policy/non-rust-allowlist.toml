@@ -1891,6 +1891,22 @@ created = "2026-08-16"
 review_after = "2026-11-16"
 
 [[allow]]
+id = "non-rust-publication-sync-manifest-schema"
+path = "schemas/publication_sync_manifest.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Versioned publication projection manifest binding the prepared swarm commit S, the release base R, the digest-bound release inputs, every declared projection row, the required invariants, and the live-control dispositions consumed by `cargo xtask publication-sync plan` (#7972, controller #6356)."
+covered_by = [
+  "cargo test -p xtask --bins publication_sync",
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-02"
+review_after = "2026-12-02"
+
+[[allow]]
 id = "non-rust-native-neovim-train-schema"
 path = "schemas/native_neovim_train.v1.schema.json"
 kind = "release_metadata"

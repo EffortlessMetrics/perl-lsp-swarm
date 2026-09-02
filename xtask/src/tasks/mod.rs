@@ -147,6 +147,7 @@ pub mod protocol_type_substrate_matrix;
 pub mod provider_confidence_matrix;
 pub mod provider_promotion_ledger;
 pub mod publication_facts;
+pub mod publication_sync;
 pub mod publish;
 pub mod publish_closure;
 pub mod publish_manifest_check;

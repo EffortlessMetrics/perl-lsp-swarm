@@ -6,23 +6,23 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12625 |
-| Rust-family files | 3919 |
-| Non-Rust files | 8706 |
-| Allowlisted | 6467 |
-| Unclassified | 2239 |
+| Total tracked files | 12630 |
+| Rust-family files | 3921 |
+| Non-Rust files | 8709 |
+| Allowlisted | 6468 |
+| Unclassified | 2241 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 501 |
+| config | 502 |
 | documentation | 2840 |
 | generated | 2 |
 | production | 354 |
 | test | 2090 |
 | tooling | 680 |
-| unclassified | 2239 |
+| unclassified | 2241 |
 
 ## Unclassified files
 
@@ -206,6 +206,8 @@
 | `fixtures/publication_drift/publication_manifest.v1.json` | `json` |
 | `fixtures/publication_drift/windows_arm64_target_drift.json` | `json` |
 | `fixtures/publication_drift/windows_path.json` | `json` |
+| `fixtures/publication_sync/clean_manifest.json` | `json` |
+| `fixtures/publication_sync/reconciliation_receipt.json` | `json` |
 | `fuzz/artifacts/substitution_parsing/crash-b6dd6f9afe3c18f3efa0b5bb8454be7744f2a458` | `` |
 | `fuzz/corpus/builtin_functions/add_one.txt` | `txt` |
 | `fuzz/corpus/builtin_functions/array.txt` | `txt` |
@@ -6493,6 +6495,7 @@
 | `schemas/perl_core_harness_upstream_effective_invocation_trace.v1.schema.json` | config | `non-rust-core-harness-upstream-effective-invocation-trace-schema` | compiler |
 | `schemas/perl_core_harness_upstream_runner_discovery.v1.schema.json` | config | `non-rust-core-harness-upstream-runner-discovery-schema` | compiler |
 | `schemas/publication_runtime_identity.v1.schema.json` | config | `non-rust-publication-runtime-identity-schema` | release/ci |
+| `schemas/publication_sync_manifest.v1.schema.json` | config | `non-rust-publication-sync-manifest-schema` | release/ci |
 | `schemas/release_topology.v1.schema.json` | config | `non-rust-release-topology-schema` | release/ci |
 | `schemas/stage_closure_projection.v1.schema.json` | config | `non-rust-stage-closure-projection-schema` | tooling/agent-review |
 | `schemas/standalone_candidate.v1.schema.json` | config | `non-rust-standalone-candidate-schema` | release/ci |
