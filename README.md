@@ -124,9 +124,10 @@ The published PowerShell installer is usable for x86_64 Windows and Windows 11
 ARM64 under x64 emulation. It selects the current
 `perllsp-<version>-x86_64-pc-windows-msvc.zip` release asset, installs
 `perllsp.exe`, and verifies the asset against the release `SHA256SUMS` file,
-aborting on a checksum mismatch; if the checksum file cannot be downloaded it
-prints a warning and continues without verification. Download it, inspect it,
-then run it from PowerShell:
+aborting on a checksum mismatch; any other checksum failure — the file cannot
+be downloaded, has no row for the asset, cannot be parsed, or the hash cannot
+be computed — prints a warning and continues without verification. Download
+it, inspect it, then run it from PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 -OutFile install.ps1
