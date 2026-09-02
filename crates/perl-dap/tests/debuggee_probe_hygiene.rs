@@ -13,8 +13,6 @@
 //! embed the creating pid (`perl-lsp-dap-debuggee-probe-<pid>-…`), so the
 //! scan cannot confuse artifacts from concurrently running suites.
 
-#![allow(unsafe_code)] // required for std::env::set_var/remove_var in Rust 2024 (unsafe fn)
-
 mod common;
 
 #[cfg(unix)]
@@ -32,6 +30,7 @@ use std::process::Command;
 use std::time::Duration;
 
 const PROBE_PREFIX: &str = "perl-lsp-dap-debuggee-probe-";
+const INVALID_PIN_CHILD_MODE: &str = "PERL_LSP_DAP_INVALID_PIN_CHILD";
 
 /// Temp entries whose name starts with our prefix AND carries this process's
 /// pid token — i.e., workspaces materialized by THIS binary. Matches both
@@ -89,6 +88,17 @@ fn probe_workspace_cleanup_covers_each_child_exit_path() -> io::Result<()> {
                 return Err(io::Error::other(format!($($arg)+)));
             }
         };
+    }
+
+    // Keep the invalid-pin resolver control isolated from this test process.
+    // `std::env::set_var`/`remove_var` are unsound in a multithreaded Unix
+    // test binary; the child receives the pin at process creation instead.
+    if std::env::var_os(INVALID_PIN_CHILD_MODE).is_some() {
+        require!(
+            resolve_debuggee_perl().is_none(),
+            "a nonexistent pinned interpreter must fail resolution outright"
+        );
+        return Ok(());
     }
 
     let controls = tempfile::tempdir()?;
@@ -485,23 +495,28 @@ fn main() {
     }
 
     {
-        struct Guard(Option<std::ffi::OsString>);
-        impl Drop for Guard {
-            fn drop(&mut self) {
-                match self.0.take() {
-                    Some(value) => unsafe { std::env::set_var(DEBUGGEE_PERL_OVERRIDE_ENV, value) },
-                    None => unsafe { std::env::remove_var(DEBUGGEE_PERL_OVERRIDE_ENV) },
-                }
-            }
-        }
-        let _guard = Guard(std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV));
-        unsafe { std::env::set_var(DEBUGGEE_PERL_OVERRIDE_ENV, "/definitely/not/a/real/perl") };
-
         // Drive RESOLUTION directly (not the availability gate): candidates
         // collapse to the bogus pin alone and resolution must report none.
+        // The parent environment remains untouched, including any caller pin.
+        let parent_pin = std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV);
+        let child = Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "probe_workspace_cleanup_covers_each_child_exit_path",
+                "--nocapture",
+            ])
+            .env(INVALID_PIN_CHILD_MODE, "1")
+            .env(DEBUGGEE_PERL_OVERRIDE_ENV, "/definitely/not/a/real/perl")
+            .output()?;
         require!(
-            resolve_debuggee_perl().is_none(),
-            "a nonexistent pinned interpreter must fail resolution outright"
+            child.status.success(),
+            "invalid pinned interpreter child failed: status={:?}, stderr={}",
+            child.status,
+            String::from_utf8_lossy(&child.stderr)
+        );
+        require!(
+            std::env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV) == parent_pin,
+            "parent resolver-pin environment changed while testing child override"
         );
     }
     Ok(())
