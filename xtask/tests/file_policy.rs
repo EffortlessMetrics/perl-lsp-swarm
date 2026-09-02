@@ -321,20 +321,35 @@ fn merge_gate_shards_job(root: &Path) -> Result<Value> {
 /// insertion, removal, and reordering of neighbouring gates; only actually
 /// dropping the gate from the shard fails it.
 fn policy_shard_gates(job: &Value) -> Result<Vec<String>> {
-    let row = job
+    let rows: Vec<&Value> = job
         .get("strategy")
         .and_then(|strategy| strategy.get("matrix"))
         .and_then(|matrix| matrix.get("include"))
         .and_then(Value::as_sequence)
-        .and_then(|shards| {
-            shards.iter().find(|shard| shard.get("name").and_then(Value::as_str) == Some("policy"))
+        .map(|shards| {
+            shards
+                .iter()
+                .filter(|shard| shard.get("name").and_then(Value::as_str) == Some("policy"))
+                .collect()
         })
-        .ok_or_else(|| {
-            eyre!(
-                "ci.yml no longer declares a `policy` row under \
-                 jobs.merge-gate-shards.strategy.matrix.include"
-            )
-        })?;
+        .unwrap_or_default();
+
+    // Exactly one row, not merely the first match. `include` may legally repeat
+    // a name and every matching entry becomes its own job, so taking the first
+    // would let a second `policy` row execute a different gate list unobserved
+    // — and would equally fail the assertion for a duplicate that is correctly
+    // wired. Requiring uniqueness makes the subject of every assertion below
+    // unambiguous instead.
+    ensure!(
+        rows.len() == 1,
+        "expected exactly one `policy` row under \
+         jobs.merge-gate-shards.strategy.matrix.include, found {}",
+        rows.len()
+    );
+    let row = rows
+        .first()
+        .ok_or_else(|| eyre!("ci.yml no longer declares a `policy` merge-gate shard row"))?;
+
     let gates = row.get("gates").and_then(Value::as_str).ok_or_else(|| {
         eyre!(
             "the `policy` matrix row's `gates` is missing or is not a whitespace-separated scalar"
@@ -354,7 +369,7 @@ fn shard_runner_step(job: &Value) -> Result<Value> {
                 step.get("env")
                     .and_then(|env| env.get("SHARD_GATES"))
                     .and_then(Value::as_str)
-                    .is_some_and(|binding| binding.contains("matrix.gates"))
+                    .is_some_and(binds_matrix_gates)
             })
         })
         .cloned()
@@ -364,6 +379,20 @@ fn shard_runner_step(job: &Value) -> Result<Value> {
                  the shard's gate list is no longer executed where this test looks"
             )
         })
+}
+
+/// True only when the binding resolves exactly `matrix.gates`.
+///
+/// Substring matching would also accept `matrix.gates_disabled` or
+/// `matrix.gates_legacy`, which would leave the declared gate list unexecuted
+/// while this check stayed green. Comparing the unwrapped expression instead
+/// tolerates whitespace inside `${{ }}` without tolerating a different key.
+fn binds_matrix_gates(binding: &str) -> bool {
+    binding
+        .trim()
+        .strip_prefix("${{")
+        .and_then(|rest| rest.strip_suffix("}}"))
+        .is_some_and(|expression| expression.trim() == "matrix.gates")
 }
 
 /// Every gate name defined in `.ci/gate-policy.yaml`.
