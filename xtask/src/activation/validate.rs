@@ -214,10 +214,55 @@ fn check_authority_path(
     value: &str,
     violations: &mut Vec<String>,
 ) {
-    let path_part = value.split('#').next().unwrap_or(value);
+    let mut parts = value.splitn(2, '#');
+    let path_part = parts.next().unwrap_or(value);
+    let fragment = parts.next();
     if path_part.is_empty() || !root.join(path_part).exists() {
         violations.push(format!(
             "row `{surface_id}`: missing authority path `{path_part}` referenced by {label} (`{value}`)"
         ));
+        return;
     }
+    if let Some(fragment) = fragment
+        && !authority_fragment_exists(root, path_part, fragment)
+    {
+        violations.push(format!(
+            "row `{surface_id}`: missing authority fragment `{fragment}` in `{path_part}` referenced by {label} (`{value}`)"
+        ));
+    }
+}
+
+fn authority_fragment_exists(root: &Path, path: &str, fragment: &str) -> bool {
+    let Ok(text) = fs::read_to_string(root.join(path)) else {
+        return false;
+    };
+    if path == "features.toml" {
+        return toml::from_str::<toml::Value>(&text)
+            .ok()
+            .and_then(|value| value.get("feature")?.as_array().cloned())
+            .is_some_and(|rows| {
+                rows.iter().any(|row| row.get("id").and_then(toml::Value::as_str) == Some(fragment))
+            });
+    }
+    if path == ".ci/gate-policy.yaml" {
+        return serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&text)
+            .ok()
+            .and_then(|value| value.get("gates")?.as_sequence().cloned())
+            .is_some_and(|rows| {
+                rows.iter().any(|row| {
+                    row.get("name").and_then(serde_yaml_ng::Value::as_str) == Some(fragment)
+                })
+            });
+    }
+    let Ok(document) = toml::from_str::<toml::Value>(&text) else {
+        return false;
+    };
+    let mut current = &document;
+    for component in fragment.split('.') {
+        let Some(next) = current.get(component) else {
+            return false;
+        };
+        current = next;
+    }
+    true
 }

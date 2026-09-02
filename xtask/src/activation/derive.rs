@@ -391,8 +391,13 @@ fn derive_benches(root: &Path) -> Result<RuleOutput, ActivationError> {
     for (crate_dir, manifest) in &manifests {
         let manifest_path = format!("crates/{crate_dir}/Cargo.toml");
         let name = package_name(crate_dir, manifest);
-        let Some(benches) = manifest.get("bench").and_then(toml::Value::as_array) else {
-            continue;
+        let benches = match manifest.get("bench") {
+            None => continue,
+            Some(value) => value.as_array().ok_or_else(|| {
+                ActivationError::new(format!(
+                    "{manifest_path}: `bench` must be an array of [[bench]] targets"
+                ))
+            })?,
         };
         for bench in benches {
             considered += 1;
@@ -475,8 +480,13 @@ fn derive_test_features(root: &Path) -> Result<RuleOutput, ActivationError> {
     for (crate_dir, manifest) in &manifests {
         let manifest_path = format!("crates/{crate_dir}/Cargo.toml");
         let name = package_name(crate_dir, manifest);
-        let Some(features) = manifest.get("features").and_then(toml::Value::as_table) else {
-            continue;
+        let features = match manifest.get("features") {
+            None => continue,
+            Some(value) => value.as_table().ok_or_else(|| {
+                ActivationError::new(format!(
+                    "{manifest_path}: `features` must be a table of feature arrays"
+                ))
+            })?,
         };
         let mut feature_names: Vec<&String> = features.keys().collect();
         feature_names.sort();
@@ -485,13 +495,20 @@ fn derive_test_features(root: &Path) -> Result<RuleOutput, ActivationError> {
             if !is_test_api_feature(feature_name) {
                 continue;
             }
-            let enables: Vec<String> = features
-                .get(feature_name)
-                .and_then(toml::Value::as_array)
-                .map(|entries| {
-                    entries.iter().filter_map(toml::Value::as_str).map(str::to_string).collect()
-                })
-                .unwrap_or_default();
+            let entries =
+                features.get(feature_name).and_then(toml::Value::as_array).ok_or_else(|| {
+                    ActivationError::new(format!(
+                        "{manifest_path}: feature `{feature_name}` must be an array"
+                    ))
+                })?;
+            let mut enables = Vec::with_capacity(entries.len());
+            for entry in entries {
+                enables.push(entry.as_str().ok_or_else(|| {
+                    ActivationError::new(format!(
+                        "{manifest_path}: feature `{feature_name}` contains a non-string entry"
+                    ))
+                })?.to_string());
+            }
             rows.push(ActivationRow {
                 surface_id: format!("cargo-feature:{name}/{feature_name}"),
                 class: ActivationClass::TestApi,
@@ -837,5 +854,49 @@ mod tests {
         };
         let _ = fs::remove_dir_all(&root);
         assert!(message.contains("has no non-empty string name"), "{message}");
+    }
+
+    #[test]
+    fn malformed_bench_section_fails_instead_of_disappearing() {
+        let root = scratch_root("bench-wrong-shape");
+        assert!(write(
+            &root,
+            "crates/demo/Cargo.toml",
+            "[package]\nname = \"demo\"\nbench = \"not-an-array\"\n"
+        ));
+        let message =
+            derive_benches(&root).expect_err("wrong-shaped bench data must fail").to_string();
+        let _ = fs::remove_dir_all(&root);
+        assert!(message.contains("`bench` must be an array"), "{message}");
+    }
+
+    #[test]
+    fn malformed_feature_section_fails_instead_of_disappearing() {
+        let root = scratch_root("features-wrong-shape");
+        assert!(write(
+            &root,
+            "crates/demo/Cargo.toml",
+            "[package]\nname = \"demo\"\nfeatures = [\"test-api\"]\n"
+        ));
+        let message = derive_test_features(&root)
+            .expect_err("wrong-shaped feature data must fail")
+            .to_string();
+        let _ = fs::remove_dir_all(&root);
+        assert!(message.contains("`features` must be a table"), "{message}");
+    }
+
+    #[test]
+    fn malformed_feature_entry_fails_instead_of_disappearing() {
+        let root = scratch_root("feature-entry-wrong-shape");
+        assert!(write(
+            &root,
+            "crates/demo/Cargo.toml",
+            "[package]\nname = \"demo\"\n[features]\ntest-api = \"not-an-array\"\n"
+        ));
+        let message = derive_test_features(&root)
+            .expect_err("wrong-shaped feature entry must fail")
+            .to_string();
+        let _ = fs::remove_dir_all(&root);
+        assert!(message.contains("feature `test-api` must be an array"), "{message}");
     }
 }

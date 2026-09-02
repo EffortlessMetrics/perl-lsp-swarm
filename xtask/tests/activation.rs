@@ -185,6 +185,14 @@ fn missing_authority_path_fails_validation() -> TestResult {
 }
 
 #[test]
+fn missing_authority_fragment_fails_validation() -> TestResult {
+    let mut inventory = canonical_inventory()?;
+    row_mut(&mut inventory, "feature:lsp.completion").ok_or("product row not found")?["semantic_authority"] =
+        json!("features.toml#not-a-real-feature");
+    expect_violation(&inventory, "missing authority fragment")
+}
+
+#[test]
 fn compatibility_shim_requires_retirement_owner_and_boundary() -> TestResult {
     let mut inventory = canonical_inventory()?;
     row_mut(&mut inventory, "crate:perl-tree-sitter-compat")
