@@ -28,6 +28,9 @@
 use perl_dap::backend::BackendError;
 use perl_parser_core::{ErrorCategory, ErrorClass};
 
+/// Build the error the external-peer path produces for a `success: false`
+/// reply, so each test states the peer's reported reason rather than the
+/// variant's construction noise.
 fn peer_reported(command: &str, message: &str) -> BackendError {
     BackendError::PeerReported { command: command.to_string(), message: message.to_string() }
 }
@@ -50,6 +53,8 @@ fn peer_site_samples() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
+/// One instance of every [`BackendError`] variant, so the contract test below
+/// covers the whole public surface rather than only the arms this slice touched.
 fn backend_variants() -> Vec<BackendError> {
     vec![
         BackendError::NotConnected,
