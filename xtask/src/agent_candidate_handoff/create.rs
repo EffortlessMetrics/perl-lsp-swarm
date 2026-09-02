@@ -334,14 +334,15 @@ impl StagedEnvelope {
         // happens to have — the thing this is written to avoid.
         match fs::rename(&self.directory, destination) {
             Ok(()) => {}
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
-                ) =>
-            {
-                // Replacement is refused here, so nothing this process does can
-                // overwrite a directory it does not own.
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                // `AlreadyExists` is specific evidence that this platform
+                // refuses to replace an existing directory, which is what makes
+                // releasing the reservation safe. `PermissionDenied` is
+                // deliberately *not* accepted here: it has unrelated causes — an
+                // ACL, a lock, an open handle — so treating it as the same
+                // evidence would release the reservation on a filesystem that
+                // does replace, and reopen the race this exists to close. A
+                // permission failure is simply a failure.
                 if let Err(error) = fs::remove_dir(destination) {
                     return Err(failed(error, "release the destination reservation"));
                 }
@@ -1441,25 +1442,6 @@ fn stage_envelope(
     let parent = out.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent).map_err(|error| io(error, "the destination directory"))?;
 
-    // The destination is protected differently on each platform, because the
-    // platforms already differ in what the publishing rename does when the
-    // destination exists — and the protection has to be the one that leaves no
-    // window, not the one that reads most uniformly.
-    //
-    // On Unix, `rename` onto an existing *empty* directory succeeds and
-    // replaces it (measured; a non-empty destination fails `ENOTEMPTY`). So
-    // `out.exists()` followed by a rename is two operations with a live gap,
-    // and a destination appearing in that gap was silently clobbered. The fix
-    // is to stop asking and start reserving: `create_dir` answers the same
-    // question and holds the answer in one atomic step, for the whole build.
-    //
-    // Windows never had that defect, because its rename refuses an existing
-    // destination outright. A reservation there would therefore *create* the
-    // problem it exists to prevent: the reservation would have to be released
-    // before the rename could succeed, and the gap between releasing and
-    // renaming is exactly the window Unix no longer has. So Windows takes no
-    // reservation, and the rename itself — one operation — is what enforces
-    // the `must not already exist` contract.
     // Claim the destination before building anything, and claim it by creating
     // it rather than by asking whether it exists.
     //
@@ -1475,10 +1457,25 @@ fn stage_envelope(
     let claimed = match fs::create_dir(out) {
         Ok(()) => Some(ClaimedDestination { path: out.to_path_buf(), published: false }),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            return Err((
-                HandoffOutcome::InstrumentFailure,
-                format!("`{}` already exists; a handoff envelope is immutable", out.display()),
-            ));
+            // An empty directory here is almost certainly a reservation an
+            // interrupted export left behind: `Drop` cleans one up on every
+            // ordinary failure path, but a killed process runs no destructor.
+            // Reclaiming it automatically is not available — a live export's
+            // reservation is empty too, and the two are indistinguishable from
+            // the outside, so reclaiming would trade this diagnostic for a
+            // clobber. Naming the case is what turns an unexplained block into
+            // something an operator can act on.
+            let abandoned = fs::read_dir(out).is_ok_and(|mut entries| entries.next().is_none());
+            let detail = if abandoned {
+                format!(
+                    "`{}` already exists and is empty; it is either a live export's \
+                     reservation or one left by an interrupted run. Remove it to retry.",
+                    out.display()
+                )
+            } else {
+                format!("`{}` already exists; a handoff envelope is immutable", out.display())
+            };
+            return Err((HandoffOutcome::InstrumentFailure, detail));
         }
         Err(error) => return Err(io(error, "the envelope destination")),
     };

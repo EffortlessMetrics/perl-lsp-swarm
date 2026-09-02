@@ -3594,6 +3594,52 @@ fn a_destination_created_mid_export_cannot_be_clobbered() -> Result<()> {
     Ok(())
 }
 
+/// An abandoned reservation is named as one, not reported as an envelope.
+///
+/// `Drop` releases the reservation on every ordinary failure path, but a killed
+/// process runs no destructor, so an interrupted export can leave an empty
+/// directory at the destination and every retry then fails `AlreadyExists`.
+///
+/// Reclaiming it automatically is not available and the refusal says why: a live
+/// export's reservation is an empty directory too, and the two are
+/// indistinguishable from outside, so reclaiming would trade a confusing message
+/// for a clobber. What is available is telling the operator which case they are
+/// in, which is the difference between a blocked retry and an unexplained one.
+#[test]
+fn an_abandoned_reservation_is_reported_as_one() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+
+    // Exactly what a killed export leaves behind: the destination created, and
+    // nothing in it.
+    let destination = Destination::new()?;
+    fs::create_dir(destination.envelope())?;
+
+    let (outcome, detail) = create_handoff(&request(&fixture, &destination))
+        .err()
+        .context("an occupied destination must refuse")?;
+    assert_eq!(outcome, HandoffOutcome::InstrumentFailure);
+    assert!(
+        detail.contains("empty") && detail.contains("Remove it to retry"),
+        "an empty destination must be named as a reservation, not as an envelope: {detail}"
+    );
+
+    // Anti-vacuity: a destination that is *not* empty must still get the
+    // immutability message, or the two cases would have collapsed into one.
+    let occupied = Destination::new()?;
+    fs::create_dir(occupied.envelope())?;
+    fs::write(occupied.envelope().join("something.txt"), b"not a reservation\n")?;
+    let (_, detail) = create_handoff(&request(&fixture, &occupied))
+        .err()
+        .context("a non-empty destination must also refuse")?;
+    assert!(
+        detail.contains("immutable") && !detail.contains("Remove it to retry"),
+        "a non-empty destination is not an abandoned reservation: {detail}"
+    );
+    Ok(())
+}
+
 /// A refused export leaves no reservation behind for the next attempt.
 ///
 /// The reservation is created before the build, so it has to be released when
