@@ -639,7 +639,7 @@ mod tests {
     fn pre_commit_refreshes_inventory_after_staged_tracked_changes() -> Result<()> {
         let hook = pre_commit_hook_script();
         let refresh = hook
-            .find("git diff --cached --name-only -z --diff-filter=ADRM")
+            .find("git diff --cached --root --name-only -z --diff-filter=ADRM")
             .ok_or_else(|| color_eyre::eyre::eyre!("staged inventory change scan missing"))?;
         let materialize = hook
             .find("git write-tree")
@@ -826,6 +826,15 @@ mod tests {
         fs::create_dir_all(repo.join("policy"))?;
         fs::write(repo.join("policy/non-rust-allowlist.toml"), "# baseline\n")?;
         run_git(&repo, &["add", "."])?;
+
+        // Git compares an unborn index against the empty tree even without
+        // `--root`; the fixture therefore asserts the hook's exact command so
+        // removing this explicit guard is a detectable regression.
+        ensure!(
+            pre_commit_hook_script()
+                .contains("git diff --cached --root --name-only -z --diff-filter=ADRM"),
+            "unborn-HEAD refresh must use the explicit --root diff mode"
+        );
 
         let bin = repo.join("fake-bin");
         fs::create_dir_all(&bin)?;
