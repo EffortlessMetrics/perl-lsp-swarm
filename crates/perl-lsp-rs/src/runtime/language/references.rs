@@ -38,11 +38,6 @@ use crate::runtime::routing::{IndexAccessMode, route_index_access};
 
 static QUALIFIED_NAME_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
 
-/// Half-width of the text window scanned for a fully-qualified name around the
-/// cursor. Both the cursor-component guard and the qualified-name fallback use
-/// this window, so they must agree on which match contains the cursor.
-const QUALIFIED_NAME_CURSOR_RADIUS: usize = 50;
-
 const REFERENCE_TEXT_FALLBACK_MAX_DOCUMENTS: usize = 128;
 const REFERENCE_TEXT_FALLBACK_MAX_BYTES: usize = 4 * 1024 * 1024;
 
@@ -731,47 +726,6 @@ impl LspServer {
                 if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let offset = self.pos16_to_offset(doc, line, character);
 
-                    // #1849: a cursor on a package-prefix component of a
-                    // fully-qualified name -- `Foo` or the `::` in `Foo::bar` --
-                    // does not name the sub `bar`, so it has no references to
-                    // report for it. This must run *before* any tier consumes
-                    // the symbol key: `symbol_at_cursor_with_source` below always
-                    // takes the final `::` component regardless of cursor
-                    // position, and every tier (semantic source-backed, index
-                    // `find_refs`, partial index, text fallback) is driven by
-                    // that key. Guarding only the qualified-name regex fallback
-                    // further down leaves the earlier tiers answering with the
-                    // sub's references. `navigation.rs` returns no location for
-                    // the same cursor; find-references returns no reference.
-                    #[cfg(feature = "workspace")]
-                    if let Some(qualified_name_re) = get_qualified_name_regex() {
-                        let (text_start, text_around) = self.get_text_window_around_offset(
-                            &doc.text,
-                            offset,
-                            QUALIFIED_NAME_CURSOR_RADIUS,
-                        );
-                        let cursor_in_text = offset.min(doc.text.len()).saturating_sub(text_start);
-                        if matches!(
-                            super::navigation::fqn_component_at_cursor(
-                                qualified_name_re,
-                                &text_around,
-                                cursor_in_text,
-                            ),
-                            Some(super::navigation::FqnCursorComponent::Prefix)
-                        ) {
-                            return Ok((
-                                Some(json!([])),
-                                ReferencesAnsweringTier::Empty,
-                                "none",
-                                0,
-                                0,
-                                start.elapsed().as_micros(),
-                                source_backed_attempt.clone(),
-                                fallback_receipt.clone(),
-                            ));
-                        }
-                    }
-
                     let needle = token_under_cursor(&doc.text, line as usize, character as usize)
                         .unwrap_or_default();
 
@@ -823,6 +777,73 @@ impl LspServer {
                         };
                         let workspace_symbol_key =
                             symbol_key.as_ref().map(super::to_workspace_symbol_key);
+
+                        // #1849: a cursor on a package-prefix component of a
+                        // fully-qualified sub name -- `Foo`, or the `::`, in
+                        // `Foo::bar()` -- does not name the sub `bar`, so it has no
+                        // references to report for it.
+                        //
+                        // This must run before any tier consumes the symbol key.
+                        // `symbol_at_cursor_with_source` above always takes the
+                        // final `::` component regardless of cursor position, and
+                        // every tier below (semantic source-backed, index
+                        // `find_refs`, partial index, text fallback) is driven by
+                        // that key. Guarding only the qualified-name regex fallback
+                        // further down leaves the earlier tiers answering with the
+                        // sub's references.
+                        //
+                        // Restricted to a *bare sub* key on purpose. Only there do
+                        // the `::` components name separate things, so only there is
+                        // the cursor's component the deciding fact. A package
+                        // variable (`$Foo::bar`, sigil `Some`) and a package name
+                        // (`use My::Module`, `SymKind::Pack`) are each one symbol
+                        // whose spelling merely contains `::`; the cursor refers to
+                        // the same symbol wherever it sits inside them, and
+                        // suppressing those would drop references the server
+                        // correctly reports today.
+                        //
+                        // It sits after `index_state` is derived so the decision
+                        // receipt still reports the index access mode actually
+                        // observed. The classification itself is a fact about the
+                        // buffer's own text and the cursor's own symbol; it consults
+                        // no index.
+                        //
+                        // Classify over the whole line, not a radius window: a
+                        // window can end inside a long middle component, which makes
+                        // that component look like the final one and lets the wrong
+                        // target through. A Perl qualified name cannot span a line
+                        // break, so the line always contains the whole name.
+                        let cursor_names_a_bare_sub =
+                            workspace_symbol_key.as_ref().is_some_and(|key| {
+                                key.sigil.is_none()
+                                    && matches!(key.kind, crate::workspace_index::SymKind::Sub)
+                            });
+                        if cursor_names_a_bare_sub
+                            && let Some(qualified_name_re) = get_qualified_name_regex()
+                        {
+                            let (line_start, line_text) =
+                                crate::util::line_window_around_offset(&doc.text, offset);
+                            let cursor_in_line = offset.saturating_sub(line_start);
+                            if matches!(
+                                super::navigation::fqn_component_at_cursor(
+                                    qualified_name_re,
+                                    line_text,
+                                    cursor_in_line,
+                                ),
+                                Some(super::navigation::FqnCursorComponent::Prefix)
+                            ) {
+                                return Ok((
+                                    Some(json!([])),
+                                    ReferencesAnsweringTier::Empty,
+                                    index_state,
+                                    0,
+                                    0,
+                                    start.elapsed().as_micros(),
+                                    source_backed_attempt.clone(),
+                                    fallback_receipt.clone(),
+                                ));
+                            }
+                        }
 
                         match access_mode {
                             IndexAccessMode::Full(coordinator) => {
@@ -1112,17 +1133,19 @@ impl LspServer {
                                 }
 
                                 // Regex-based fallback for fully-qualified symbols like Package::sub references
-                                let (text_start, text_around) = self.get_text_window_around_offset(
-                                    &doc.text,
-                                    offset,
-                                    QUALIFIED_NAME_CURSOR_RADIUS,
-                                );
-                                let cursor_in_text =
-                                    offset.min(doc.text.len()).saturating_sub(text_start);
+                                //
+                                // Uses the same whole-line window as the
+                                // cursor-component guard above, so both see the same
+                                // match and derive `pkg`/`name` from the complete
+                                // qualified name. A radius window could clip a long
+                                // name here and yield a truncated package.
+                                let (text_start, text_around) =
+                                    crate::util::line_window_around_offset(&doc.text, offset);
+                                let cursor_in_text = offset.saturating_sub(text_start);
 
                                 // Use cached regex to avoid per-request compilation overhead
                                 if let Some(qualified_name_re) = get_qualified_name_regex() {
-                                    for captures in qualified_name_re.captures_iter(&text_around) {
+                                    for captures in qualified_name_re.captures_iter(text_around) {
                                         if let Some(m) = captures.get(1)
                                             && cursor_in_text >= m.start()
                                             && cursor_in_text <= m.end()
@@ -3068,7 +3091,7 @@ mod tests {
         // component `bar`. The final-component case is the negative control: it
         // must NOT report the empty tier, otherwise the prefix assertion would
         // pass for the trivial reason that this fixture resolves nothing at all.
-        let answering_tier_at = |character: u64| -> Result<String, Box<dyn Error>> {
+        let receipt_at = |character: u64| -> Result<(String, String), Box<dyn Error>> {
             let output = Arc::new(Mutex::new(
                 Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
             ));
@@ -3086,28 +3109,45 @@ mod tests {
                     "arguments": [{"provider": "references"}]
                 })))?
                 .ok_or("missing explain-provider-decision response")?;
-            Ok(explanation
+            let receipt = explanation
                 .get("request_receipt")
                 .and_then(serde_json::Value::as_object)
-                .ok_or("missing request_receipt")?
-                .get("answering_tier")
-                .and_then(serde_json::Value::as_str)
-                .ok_or("missing answering_tier")?
-                .to_owned())
+                .ok_or("missing request_receipt")?;
+            let field = |key: &str| -> Result<String, Box<dyn Error>> {
+                Ok(receipt
+                    .get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| format!("missing {key}"))?
+                    .to_owned())
+            };
+            Ok((field("answering_tier")?, field("index_state")?))
         };
 
-        let final_component_tier = answering_tier_at(13)?;
+        let (final_component_tier, final_component_index_state) = receipt_at(13)?;
         assert_ne!(
             final_component_tier, "empty",
             "negative control failed: cursor on the final component `bar` must be \
              answered by a real tier, got `{final_component_tier}`"
         );
 
-        let prefix_tier = answering_tier_at(8)?;
+        let (prefix_tier, prefix_index_state) = receipt_at(8)?;
         assert_eq!(
             prefix_tier, "empty",
             "cursor on the `Foo` prefix of `Foo::bar` must answer on the empty tier, \
              got `{prefix_tier}` -- the prefix component does not name the sub `bar`"
+        );
+
+        // The prefix path returns early, but it must still report the index access
+        // mode it actually observed. Both requests run against the same server and
+        // document, so a divergence here means the early return is inventing an
+        // index state rather than reporting one -- which would make
+        // `perl.explainProviderDecision` misdescribe the workspace on exactly the
+        // path this change added.
+        assert_eq!(
+            prefix_index_state, final_component_index_state,
+            "the prefix early return reported index_state `{prefix_index_state}` while \
+             the same document and server reported `{final_component_index_state}` for a \
+             final-component cursor; the receipt must not falsify the observed index state"
         );
 
         Ok(())

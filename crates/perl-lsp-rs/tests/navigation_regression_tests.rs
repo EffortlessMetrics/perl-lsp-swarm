@@ -886,22 +886,30 @@ fn test_refs_package_qualified_prefix_does_not_report_sub_declaration() -> TestR
          of which `::` component the cursor is on (#1849)."
     );
 
-    // Cursor on the `::` separator (character 11) is on no component at all.
-    let on_separator = harness.request(
-        "textDocument/references",
-        json!({
-            "textDocument": {"uri": "file:///refs_pkg_qual_prefix.pl"},
-            "position": {"line": 8, "character": 11},
-            "context": {"includeDeclaration": true}
-        }),
-    )?;
-    let separator_lines = reported_lines(&on_separator);
-    assert!(
-        !separator_lines.contains(&2),
-        "cursor on the `::` separator in `Foo::bar()` must not report references to \
-         `sub bar`, but line 2 (`sub bar {{`) was returned; reported lines: \
-         {separator_lines:?}."
-    );
+    // Both characters of the `::` separator (11 and 12) are on no component at all.
+    //
+    // Character 12 -- the *second* colon, immediately before `b` -- is the position
+    // an off-by-one in the classifier lands on. `fqn_component_at_cursor` derives
+    // the final component's start as `rfind("::") + 2`; a `+ 1` there would put this
+    // character inside the final component and let `sub bar` through. Testing only
+    // the first colon leaves that mutation undetected, so both are asserted.
+    for separator_character in [11, 12] {
+        let on_separator = harness.request(
+            "textDocument/references",
+            json!({
+                "textDocument": {"uri": "file:///refs_pkg_qual_prefix.pl"},
+                "position": {"line": 8, "character": separator_character},
+                "context": {"includeDeclaration": true}
+            }),
+        )?;
+        let separator_lines = reported_lines(&on_separator);
+        assert!(
+            !separator_lines.contains(&2),
+            "cursor on the `::` separator in `Foo::bar()` at character \
+             {separator_character} must not report references to `sub bar`, but line 2 \
+             (`sub bar {{`) was returned; reported lines: {separator_lines:?}."
+        );
+    }
 
     Ok(())
 }
@@ -949,6 +957,27 @@ fn test_refs_three_component_qualified_middle_does_not_report_sub_declaration() 
          includeDeclaration=true must report the `sub process` declaration on line 2; \
          reported lines: {final_lines:?}."
     );
+
+    // Both characters of the final `::` separator (9 and 10). Character 10 sits
+    // immediately before `p` of `process` and is where a `rfind("::") + 1`
+    // off-by-one would misclassify the cursor as being on the final component.
+    for separator_character in [9, 10] {
+        let on_separator = harness.request(
+            "textDocument/references",
+            json!({
+                "textDocument": {"uri": "file:///refs_three_component.pl"},
+                "position": {"line": 8, "character": separator_character},
+                "context": {"includeDeclaration": true}
+            }),
+        )?;
+        let separator_lines = reported_lines(&on_separator);
+        assert!(
+            !separator_lines.contains(&2),
+            "cursor on the final `::` separator in `My::Utils::process()` at character \
+             {separator_character} must not report references to `sub process`; \
+             reported lines: {separator_lines:?}."
+        );
+    }
 
     // Cursor on `U` of `Utils` (character 4) -- the middle component.
     let on_middle = harness.request(
@@ -1332,4 +1361,170 @@ fn helper_find_pos_correctness() {
 
     let last = find_last_pos(src, "line");
     assert_eq!(last, Some((2, 0)), "find_last_pos should return (2, 0) for last 'line'");
+}
+
+/// Regression (#1849, review finding): a qualified name longer than the old
+/// fixed-radius classification window.
+///
+/// The cursor-component guard used to classify over a 50-byte window centred on the
+/// cursor. With the cursor at the start of a middle component longer than that
+/// radius, the window ended *inside* that component, so the truncated match's last
+/// `::` fell before it and the component looked like the final one. The guard then
+/// reported `Final` and let `symbol_at_cursor_with_source` resolve the trailing sub
+/// -- reproducing the exact defect this issue is about, just out of reach of the
+/// other regressions here. Classifying over the whole line removes the window.
+///
+/// Line 6 is `My::<60 chars>::process();`. The middle component alone exceeds the
+/// old 50-byte radius, so this fixture only passes if the classifier sees the
+/// complete name.
+#[test]
+fn test_refs_qualified_middle_longer_than_classification_window() -> TestResult {
+    let doc = concat!(
+        "package My::AaaaaaaaaaBbbbbbbbbbCcccccccccDdddddddddEeeeeeeeeeFfffffffff;\n", // 0
+        "\n",                                                                          // 1
+        "sub process { return 1; }\n", // 2 -- discriminator
+        "\n",                          // 3
+        "package main;\n",             // 4
+        "\n",                          // 5
+        "My::AaaaaaaaaaBbbbbbbbbbCcccccccccDdddddddddEeeeeeeeeeFfffffffff::process();\n", // 6
+    );
+
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///refs_long_middle.pl", doc)?;
+
+    // Negative control: the final component `process` begins at character 66.
+    let on_final = harness.request(
+        "textDocument/references",
+        json!({
+            "textDocument": {"uri": "file:///refs_long_middle.pl"},
+            "position": {"line": 6, "character": 66},
+            "context": {"includeDeclaration": true}
+        }),
+    )?;
+    let final_lines = reported_lines(&on_final);
+    assert!(
+        final_lines.contains(&2),
+        "negative control failed: cursor on the final component `process` must report \
+         the `sub process` declaration on line 2; reported lines: {final_lines:?}"
+    );
+
+    // Cursor on the first character of the over-long middle component.
+    let on_middle = harness.request(
+        "textDocument/references",
+        json!({
+            "textDocument": {"uri": "file:///refs_long_middle.pl"},
+            "position": {"line": 6, "character": 4},
+            "context": {"includeDeclaration": true}
+        }),
+    )?;
+    let middle_lines = reported_lines(&on_middle);
+    assert!(
+        !middle_lines.contains(&2),
+        "cursor on a middle component longer than the classification window must not \
+         report references to `sub process`, but line 2 was returned; reported lines: \
+         {middle_lines:?}. The classifier saw a truncated name and mistook the middle \
+         component for the final one (#1849)."
+    );
+
+    Ok(())
+}
+
+/// Regression (#1849, review finding): the prefix guard must not suppress a package
+/// *variable* whose name merely contains `::`.
+///
+/// `$Foo::bar` is one symbol. Unlike `Foo::bar()`, its `::` components do not name
+/// separate things -- the cursor refers to the same variable wherever it sits inside
+/// the name -- and the server resolves it correctly from any position. An earlier
+/// revision of the guard keyed only on "the cursor is before the last `::`", which
+/// swallowed this case and returned nothing where the server had always returned the
+/// variable's use sites. The guard is now restricted to a bare-sub symbol key.
+#[test]
+fn test_refs_package_variable_prefix_is_not_suppressed() -> TestResult {
+    let doc = concat!(
+        "package Foo;\n",     // 0
+        "our $bar = 1;\n",    // 1
+        "package main;\n",    // 2
+        "print $Foo::bar;\n", // 3
+        "print $Foo::bar;\n", // 4
+    );
+
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///refs_pkg_var.pl", doc)?;
+
+    // Line 3: `print $Foo::bar;`  $=6 F=7 o=8 o=9 :=10 :=11 b=12
+    let reference_lines = |harness: &mut LspHarness,
+                           character: u64|
+     -> Result<Vec<u64>, Box<dyn std::error::Error>> {
+        let result = harness.request(
+            "textDocument/references",
+            json!({
+                "textDocument": {"uri": "file:///refs_pkg_var.pl"},
+                "position": {"line": 3, "character": character},
+                "context": {"includeDeclaration": true}
+            }),
+        )?;
+        Ok(reported_lines(&result))
+    };
+
+    // Cursor on `b` of `bar` -- the final component.
+    let on_final = reference_lines(&mut harness, 12)?;
+    assert!(
+        !on_final.is_empty(),
+        "negative control failed: cursor on `bar` in `$Foo::bar` must report the \
+         variable's references; got {on_final:?}"
+    );
+
+    // Cursor on `F` of the `Foo` package qualifier -- still the same variable.
+    let on_prefix = reference_lines(&mut harness, 7)?;
+    assert_eq!(
+        on_prefix, on_final,
+        "cursor on the `Foo` qualifier of the package variable `$Foo::bar` must report \
+         the same references as the cursor on `bar`; got {on_prefix:?} vs {on_final:?}. \
+         The qualified-name prefix guard only applies to sub names, where the `::` \
+         components name separate things (#1849)."
+    );
+
+    Ok(())
+}
+
+/// Regression (#1849, review finding): the prefix guard must not suppress a module
+/// name in a `use` statement.
+///
+/// `My::Module` in `use My::Module;` is one package name, not a package plus a sub,
+/// so the cursor's `::` component is not a meaningful distinction. An earlier
+/// revision of the guard suppressed it and returned nothing.
+#[test]
+fn test_refs_use_statement_module_prefix_is_not_suppressed() -> TestResult {
+    let doc = concat!(
+        "package My;\n",     // 0
+        "sub greet { 1 }\n", // 1
+        "package main;\n",   // 2
+        "use My::Module;\n", // 3
+        "My::greet();\n",    // 4
+    );
+
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///refs_use_module.pl", doc)?;
+
+    // Line 3: `use My::Module;` -- character 4 is `M` of the `My` qualifier.
+    let result = harness.request(
+        "textDocument/references",
+        json!({
+            "textDocument": {"uri": "file:///refs_use_module.pl"},
+            "position": {"line": 3, "character": 4},
+            "context": {"includeDeclaration": true}
+        }),
+    )?;
+    let lines = reported_lines(&result);
+    assert!(
+        lines.contains(&3),
+        "cursor on `My` in `use My::Module;` must still report the module reference on \
+         line 3; got {lines:?}. A `use` module name is one package name, not a \
+         package-qualified sub, so the #1849 prefix guard must not apply to it."
+    );
+
+    Ok(())
 }

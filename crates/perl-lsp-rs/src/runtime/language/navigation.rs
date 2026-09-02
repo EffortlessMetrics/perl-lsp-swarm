@@ -975,6 +975,14 @@ pub(super) enum FqnCursorComponent {
 
 /// Resolve which component of the fully-qualified name under `cursor` the cursor
 /// is on, or `None` when the cursor is not inside a `::`-qualified match.
+///
+/// `text` must contain the *complete* qualified name around `cursor`. The final
+/// component is identified by the last `::` in the match, so a `text` that clips
+/// the name partway through a component makes that component look final and
+/// reports `Final` where the truth is `Prefix`. Pass a whole line
+/// (`util::line_window_around_offset`) rather than a fixed-radius window: a Perl
+/// qualified name cannot span a line break, but it can easily be longer than a
+/// radius.
 #[cfg(feature = "workspace")]
 pub(super) fn fqn_component_at_cursor(
     regex: &regex::Regex,

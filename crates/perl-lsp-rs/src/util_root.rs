@@ -13,9 +13,10 @@ pub use legacy::{
     byte_to_line_col, byte_to_utf16_col, code_slice, command_timeout, escape_markdown_text,
     extract_module_reference, extract_module_reference_extended, find_data_marker_byte_lexed,
     find_matching_paren, first_char, first_char_is, first_char_string, get_text_around_offset,
-    get_text_window_around_offset, is_modchar, is_word_boundary, nth_char, nth_char_is,
-    offset_to_position, pos_to_offset_bytes, position_to_offset, run_command_with_timeout,
-    slice_in_range, slice_until_stmt_end, smart_arg_anchor, token_under_cursor, uri,
+    get_text_window_around_offset, is_modchar, is_word_boundary, line_window_around_offset,
+    nth_char, nth_char_is, offset_to_position, pos_to_offset_bytes, position_to_offset,
+    run_command_with_timeout, slice_in_range, slice_until_stmt_end, smart_arg_anchor,
+    token_under_cursor, uri,
 };
 
 #[path = "util/source_decoding.rs"]
