@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 14547,
-  "reason": "Resolves perl-lsp.autoPopulateNewFiles against each created file's own workspace folder (#14547). The file-creation handler moves out of the activate() closure into the exported populateCreatedFiles, and the per-URI getConfiguration call plus its explanatory comments grow the bundled out/extension.js from 1615152 to 1616012 bytes. The measured 29-file package remains size-only: no file additions, removals, or permission loosening.",
+  "reason": "Resolves perl-lsp.autoPopulateNewFiles against each created file's own workspace folder (#14547). The file-creation handler moves out of the activate() closure into the exported populateCreatedFiles, and the per-URI getConfiguration call plus its explanatory comments grow the bundled out/extension.js from 1615152 to 1616282 bytes. The measured 29-file package is size-only: the inventory records no file additions and no removals. It makes no claim about file permissions, which this instrument does not model -- it compares presence and size alone.",
   "base_baseline_file_sha256": "c10baf7bd1d62390aeacebfb54510dddee90e4a6ddc1f538533b3b834537c56a",
-  "candidate_baseline_file_sha256": "311fcd7e462b96e44c6671dd680ff44d00cce55ef50c716428a0abe845276e5f",
+  "candidate_baseline_file_sha256": "a6275ef02db231f951520a1c3f5156df2834f350866a1b0373a81e59e4d6b404",
   "base_inventory_sha256": "4ff8fc287eaa5524348eb4afa96f6a8923ba1c9cd183ff5d3094f1b962cac6a3",
-  "candidate_inventory_sha256": "c8214aa655564d3c906eb113939b4cbe57c16780476b8505a66d213445e5c056"
+  "candidate_inventory_sha256": "88efc3605936e255562017782785b2e4266ee560245af75ead0ecfee1a83b704"
 }

@@ -2640,8 +2640,11 @@ export function maybeNudgeArrowCompletion(event: vscode.TextDocumentChangeEvent)
  * read must stay inside the loop for the declared scope to mean anything.
  *
  * A URI outside every workspace folder resolves to the global/workspace value,
- * which is the same answer the hoisted read gave — single-root workspaces and
- * unset values are unaffected.
+ * which is the same answer the hoisted read gave, as does an unset value. A
+ * workspace opened as a single folder has no workspace-folder layer to select,
+ * so it is unaffected too — but note that a `.code-workspace` listing exactly
+ * one folder is mechanically multi-root and does have that layer, so a value
+ * set on that folder now wins where it previously could not be seen.
  */
 export async function populateCreatedFiles(event: vscode.FileCreateEvent): Promise<void> {
   for (const uri of event.files) {
