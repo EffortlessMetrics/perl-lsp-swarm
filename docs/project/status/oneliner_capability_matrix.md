@@ -60,7 +60,7 @@ A command line is decoded into typed arguments: switch clusters, switch-attached
 
 | Subject | Status | Missing layer | Evidence | Boundary control | Invocable | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| whole layer | `unsupported` | — | — | `negative_controls_keep_context_errors_and_boundaries_visible` | — | No switch decoder exists in the workspace. The option-contamination control proves the boundary directly: `-ne print;` parses as a unary expression on `ne`, which is what a parser without argv decoding must do. |
+| whole layer | `unsupported` | — | — | `negative_controls_keep_context_errors_and_boundaries_visible` | — | A switch decoder now exists as a library API — `perl_parser_core::command_line::decode` (#13726), proven by `crates/perl-parser-core/tests/command_line_argv_decoding.rs` — but this row stays `unsupported`, for two separate reasons. No user-facing surface consumes it yet, so nothing is available to a user; and this checker can only anchor evidence to the parser-body corpus, so an earned row above layer 1 is not currently expressible at all (#14632). The option-contamination control still proves the parser's own boundary: `-ne print;` parses as a unary expression on `ne`, which is what a parser that is handed a body without argv decoding must do. |
 
 ## 3. Source composition and provenance
 

@@ -1,0 +1,813 @@
+//! Behavioral contract for structured `argv` decoding of a Perl invocation.
+//!
+//! The expectations below were checked against `perl` 5.38.2. Where a case is
+//! easy to get wrong, the comment names the real interpreter behavior the
+//! assertion pins, so a future edit that "simplifies" the decoder into a
+//! `getopt`-shaped one fails here rather than silently misreading command lines.
+//!
+//! These tests never execute `perl`; the interpreter was the oracle used to
+//! write them, not a runtime dependency of the suite.
+#![allow(
+    clippy::panic,
+    reason = "test-target failure reporting: `panic!` carries the decoded value into the \
+              failure message, which `assert!` on a `matches!` cannot. Matches the \
+              file-scoped convention already used by this crate's other suites (#11736)."
+)]
+
+use perl_parser_core::command_line::{
+    Ambiguity, AmbiguityKind, ArgvLead, ArgvSpan, ContextFact, ContextFactKind,
+    InvocationDecodeError, ModuleForm, NeutralSwitch, PerlInvocation, ProgramSource,
+    RecordSeparatorDigits, SourceSwitch, UnsupportedSwitchKind, decode,
+};
+
+/// Decode `argv` with a leading interpreter argument, expecting success.
+fn perl(argv: &[&str]) -> PerlInvocation {
+    let mut full = vec!["perl"];
+    full.extend_from_slice(argv);
+    match decode(&full, ArgvLead::Interpreter) {
+        Ok(invocation) => invocation,
+        Err(error) => panic!("expected {full:?} to decode, got {error}"),
+    }
+}
+
+/// Decode `argv` with a leading interpreter argument, expecting refusal.
+fn perl_error(argv: &[&str]) -> InvocationDecodeError {
+    let mut full = vec!["perl"];
+    full.extend_from_slice(argv);
+    match decode(&full, ArgvLead::Interpreter) {
+        Ok(invocation) => panic!("expected {full:?} to be refused, decoded {invocation:?}"),
+        Err(error) => error,
+    }
+}
+
+/// The fragment texts in `argv` order.
+fn fragments(invocation: &PerlInvocation) -> Vec<(SourceSwitch, &str)> {
+    invocation
+        .source_fragments
+        .iter()
+        .map(|fragment| (fragment.switch, fragment.text.as_str()))
+        .collect()
+}
+
+/// The context facts in `argv` order, without their spans.
+fn facts(invocation: &PerlInvocation) -> Vec<ContextFactKind> {
+    invocation.context_facts.iter().map(|fact| fact.kind.clone()).collect()
+}
+
+fn neutral(invocation: &PerlInvocation) -> Vec<NeutralSwitch> {
+    invocation.neutral_switches.iter().map(|switch| switch.switch).collect()
+}
+
+fn program_arguments(invocation: &PerlInvocation) -> Vec<&str> {
+    invocation.program_arguments.iter().map(|argument| argument.text.as_str()).collect()
+}
+
+fn find_fact<'a>(invocation: &'a PerlInvocation, wanted: &ContextFactKind) -> &'a ContextFact {
+    match invocation.context_facts.iter().find(|fact| &fact.kind == wanted) {
+        Some(fact) => fact,
+        None => panic!("expected fact {wanted:?}, have {:?}", facts(invocation)),
+    }
+}
+
+/// Every decoded value, paired with the span that claims to locate it.
+///
+/// The span contract is only worth something if it is checked against the
+/// original bytes, which is what [`spans_locate_their_values`] and the property
+/// test below do with this list.
+fn located_values(invocation: &PerlInvocation) -> Vec<(String, ArgvSpan)> {
+    let mut values = Vec::new();
+    for fragment in &invocation.source_fragments {
+        values.push((fragment.text.clone(), fragment.span));
+    }
+    for fact in &invocation.context_facts {
+        match &fact.kind {
+            ContextFactKind::SplitPattern { pattern } => values.push((pattern.clone(), fact.span)),
+            ContextFactKind::IncludeDirectory { directory } => {
+                values.push((directory.clone(), fact.span));
+            }
+            ContextFactKind::LineEnding { octal_digits: Some(digits) } => {
+                values.push((digits.clone(), fact.span));
+            }
+            ContextFactKind::RecordSeparator { digits: Some(digits) } => {
+                let text = match digits {
+                    RecordSeparatorDigits::Octal(text) | RecordSeparatorDigits::Hex(text) => text,
+                };
+                values.push((text.clone(), fact.span));
+            }
+            ContextFactKind::ModuleImport { spec, .. } => {
+                values.push((spec.module.clone(), spec.module_span));
+                if let (Some(arguments), Some(span)) =
+                    (&spec.import_arguments, spec.import_arguments_span)
+                {
+                    values.push((arguments.clone(), span));
+                }
+            }
+            _ => {}
+        }
+    }
+    for switch in &invocation.neutral_switches {
+        if let Some(value) = &switch.value {
+            values.push((value.clone(), switch.span));
+        }
+    }
+    for switch in &invocation.unsupported_switches {
+        values.push((switch.spelling.clone(), switch.span));
+    }
+    for argument in &invocation.program_arguments {
+        values.push((argument.text.clone(), argument.span));
+    }
+    if let ProgramSource::ScriptFile { path, span } = &invocation.program {
+        values.push((path.clone(), *span));
+    }
+    values
+}
+
+/// Assert that every non-empty decoded value is exactly the bytes its span names.
+fn spans_locate_their_values(argv: &[&str], invocation: &PerlInvocation) {
+    for (value, span) in located_values(invocation) {
+        if value.is_empty() {
+            continue;
+        }
+        let argument = match argv.get(span.argument_index) {
+            Some(argument) => *argument,
+            None => panic!("span {span:?} names argument {} of {argv:?}", span.argument_index),
+        };
+        let slice = argument.get(span.start..span.end);
+        assert_eq!(
+            slice,
+            Some(value.as_str()),
+            "span {span:?} over {argument:?} should locate {value:?}"
+        );
+    }
+}
+
+// ---- source fragments --------------------------------------------------
+
+#[test]
+fn source_fragments_accept_attached_and_separate_values() {
+    // `perl -eprint "x"` and `perl -e 'print "x"'` are both legal.
+    let attached = perl(&["-eprint 1"]);
+    assert_eq!(fragments(&attached), vec![(SourceSwitch::E, "print 1")]);
+    let separate = perl(&["-e", "print 1"]);
+    assert_eq!(fragments(&separate), vec![(SourceSwitch::E, "print 1")]);
+    assert!(attached.is_one_liner() && separate.is_one_liner());
+}
+
+#[test]
+fn capital_e_is_a_distinct_source_switch() {
+    // `-E` also enables the feature bundle, so collapsing it into `-e` would
+    // lose the only signal that `say` is available.
+    let invocation = perl(&["-E", "say 1"]);
+    assert_eq!(fragments(&invocation), vec![(SourceSwitch::BigE, "say 1")]);
+}
+
+#[test]
+fn repeated_fragments_are_kept_separately_and_in_order() {
+    // perl joins these with a newline; keeping them apart is what lets a later
+    // layer map a composed offset back to the argument it came from.
+    let invocation = perl(&["-e", "print 1", "-E", "say 2", "-eprint 3"]);
+    assert_eq!(
+        fragments(&invocation),
+        vec![
+            (SourceSwitch::E, "print 1"),
+            (SourceSwitch::BigE, "say 2"),
+            (SourceSwitch::E, "print 3"),
+        ]
+    );
+}
+
+#[test]
+fn an_empty_fragment_is_a_fragment() {
+    // `perl -e '' -e 'print 1'` runs; dropping the empty fragment would shift
+    // every later fragment's line number.
+    let invocation = perl(&["-e", "", "-e", "print 1"]);
+    assert_eq!(fragments(&invocation), vec![(SourceSwitch::E, ""), (SourceSwitch::E, "print 1")]);
+}
+
+#[test]
+fn a_fragment_is_taken_verbatim_even_when_it_looks_like_a_switch() {
+    // Real behavior: `perl -e -w` runs the program `-w`. A decoder that skips
+    // dash-prefixed arguments when looking for a value would lose the program.
+    let invocation = perl(&["-e", "-w"]);
+    assert_eq!(fragments(&invocation), vec![(SourceSwitch::E, "-w")]);
+    assert!(neutral(&invocation).is_empty(), "`-w` here is source, not a switch");
+
+    // Even the terminator: `perl -e -- 'print "x"'` compiles the program `--`
+    // and reports `syntax error at -e line 1, at EOF`, leaving `print "x"` as a
+    // program argument. Checking for `--` before reading `-e`'s value would
+    // decode a command line perl does not run.
+    let terminator_as_source = perl(&["-e", "--", "print \"x\""]);
+    assert_eq!(fragments(&terminator_as_source), vec![(SourceSwitch::E, "--")]);
+    assert_eq!(terminator_as_source.terminator, None);
+    assert_eq!(program_arguments(&terminator_as_source), vec!["print \"x\""]);
+}
+
+#[test]
+fn a_non_ascii_switch_letter_is_refused_without_splitting_a_character() {
+    // perl: `Unrecognized switch: -é`. The span must cover the whole character,
+    // not its first byte.
+    match decode(&["perl", "-é", "-e", "print"], ArgvLead::Interpreter) {
+        Err(InvocationDecodeError::UnrecognizedSwitch { switch, span }) => {
+            assert_eq!(switch, 'é');
+            assert_eq!(span, ArgvSpan::new(1, 1, 3), "`é` is two bytes wide");
+        }
+        other => panic!("expected an unrecognized-switch refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn non_ascii_fragments_survive_decoding_with_byte_accurate_spans() {
+    let argv = ["perl", "-e", "print \"héllo ☃\\n\""];
+    let invocation = match decode(&argv, ArgvLead::Interpreter) {
+        Ok(invocation) => invocation,
+        Err(error) => panic!("expected {argv:?} to decode, got {error}"),
+    };
+    assert_eq!(fragments(&invocation), vec![(SourceSwitch::E, "print \"héllo ☃\\n\"")]);
+    spans_locate_their_values(&argv, &invocation);
+}
+
+// ---- cluster bundling --------------------------------------------------
+
+#[test]
+fn lane_bundles_into_four_switches() {
+    // `-lane` is `-l -a -n -e`, and the `-e` value is the next argument.
+    let invocation = perl(&["-lane", "print $F[0]"]);
+    assert_eq!(
+        facts(&invocation),
+        vec![
+            ContextFactKind::LineEnding { octal_digits: None },
+            ContextFactKind::AutoSplit,
+            ContextFactKind::ReadLoop,
+        ]
+    );
+    assert_eq!(fragments(&invocation), vec![(SourceSwitch::E, "print $F[0]")]);
+}
+
+#[test]
+fn digit_runs_are_consumed_before_bundling_resumes() {
+    // `-0777ne` is `-0777 -n -e`: the digits belong to `-0`, and `n` and `e`
+    // are still switches. Reading `777ne` as one value loses the program.
+    let invocation = perl(&["-0777ne", "print"]);
+    assert_eq!(
+        facts(&invocation),
+        vec![
+            ContextFactKind::RecordSeparator {
+                digits: Some(RecordSeparatorDigits::Octal("777".to_owned()))
+            },
+            ContextFactKind::ReadLoop,
+        ]
+    );
+    assert_eq!(fragments(&invocation), vec![(SourceSwitch::E, "print")]);
+}
+
+#[test]
+fn line_ending_digits_are_octal_only() {
+    // `perl -l8` is rejected by perl as `Unrecognized switch: -8`, because `-l`
+    // takes octal digits and `8` is not one.
+    let with_digits = perl(&["-l012", "-e", "print"]);
+    assert_eq!(
+        facts(&with_digits)[0],
+        ContextFactKind::LineEnding { octal_digits: Some("012".to_owned()) }
+    );
+    assert!(matches!(
+        perl_error(&["-l8", "-e", "print"]),
+        InvocationDecodeError::UnrecognizedSwitch { switch: '8', .. }
+    ));
+}
+
+#[test]
+fn a_value_taking_switch_swallows_the_rest_of_its_cluster() {
+    // `perl -ine 'print'` is `-i` with the backup extension `ne`, and then
+    // `print` is a *file name*, not a program. perl reports
+    // `Can't open perl script "print"`. Treating `-i` as valueless would turn
+    // this into a one-liner that was never asked for.
+    let invocation = perl(&["-ine", "print"]);
+    assert_eq!(neutral(&invocation), vec![NeutralSwitch::InPlaceEdit]);
+    assert_eq!(invocation.neutral_switches[0].value.as_deref(), Some("ne"));
+    assert!(!invocation.is_one_liner());
+    assert!(matches!(
+        &invocation.program,
+        ProgramSource::ScriptFile { path, .. } if path == "print"
+    ));
+}
+
+#[test]
+fn unicode_flags_and_configuration_queries_take_their_cluster_tail() {
+    let invocation = perl(&["-CSD", "-V:osname", "-e", "print"]);
+    assert_eq!(
+        neutral(&invocation),
+        vec![NeutralSwitch::UnicodeFlags, NeutralSwitch::Configuration]
+    );
+    assert_eq!(invocation.neutral_switches[0].value.as_deref(), Some("SD"));
+    assert_eq!(invocation.neutral_switches[1].value.as_deref(), Some(":osname"));
+}
+
+// ---- record separator radix -------------------------------------------
+
+#[test]
+fn hexadecimal_record_separators_need_the_marker_and_a_digit() {
+    let hexadecimal = perl(&["-0x41", "-e", "print"]);
+    assert_eq!(
+        facts(&hexadecimal)[0],
+        ContextFactKind::RecordSeparator {
+            digits: Some(RecordSeparatorDigits::Hex("41".to_owned()))
+        }
+    );
+
+    // `perl -0x -e1` reports `No Perl script found in input`: the `x` was the
+    // `-x` switch, not an empty hex separator. Accepting a bare `x` here would
+    // silently swallow a switch.
+    let bare_marker = perl(&["-0x", "-e", "print"]);
+    assert_eq!(facts(&bare_marker)[0], ContextFactKind::RecordSeparator { digits: None });
+    assert_eq!(bare_marker.unsupported_switches.len(), 1);
+    assert_eq!(bare_marker.unsupported_switches[0].kind, UnsupportedSwitchKind::ScriptTextOffset);
+}
+
+#[test]
+fn record_separator_digits_stop_at_the_first_non_octal_digit() {
+    // perl reports `Unrecognized switch: -9` for `-09`.
+    assert!(matches!(
+        perl_error(&["-09", "-e", "print"]),
+        InvocationDecodeError::UnrecognizedSwitch { switch: '9', .. }
+    ));
+}
+
+#[test]
+fn slurp_mode_has_its_own_switch() {
+    let invocation = perl(&["-g", "-e", "print"]);
+    assert_eq!(facts(&invocation), vec![ContextFactKind::SlurpMode]);
+}
+
+// ---- attached-only versus separate values -----------------------------
+
+#[test]
+fn include_directories_accept_attached_and_separate_values() {
+    for argv in [vec!["-Ilib", "-e", "print"], vec!["-I", "lib"]] {
+        let invocation = perl(&argv);
+        assert_eq!(
+            find_fact(
+                &invocation,
+                &ContextFactKind::IncludeDirectory { directory: "lib".to_owned() }
+            )
+            .kind,
+            ContextFactKind::IncludeDirectory { directory: "lib".to_owned() }
+        );
+    }
+}
+
+#[test]
+fn module_imports_do_not_accept_a_separate_value() {
+    // `perl -M strict -e1` fails with `Missing argument to -M.`; a decoder that
+    // helpfully consumed the next argument would accept a command line perl
+    // refuses, and would then lose `strict` as a program argument.
+    assert!(matches!(
+        perl_error(&["-M", "strict", "-e", "print"]),
+        InvocationDecodeError::MissingValue { switch: 'M', .. }
+    ));
+    assert!(matches!(
+        perl_error(&["-m", "strict"]),
+        InvocationDecodeError::MissingValue { switch: 'm', .. }
+    ));
+}
+
+#[test]
+fn in_place_editing_does_not_accept_a_separate_value() {
+    // `perl -i .bak -e1` makes `.bak` the script name.
+    let invocation = perl(&["-i", ".bak"]);
+    assert_eq!(invocation.neutral_switches[0].value, None);
+    assert!(matches!(
+        &invocation.program,
+        ProgramSource::ScriptFile { path, .. } if path == ".bak"
+    ));
+}
+
+#[test]
+fn split_patterns_are_attached_and_may_look_like_switches() {
+    let invocation = perl(&["-F-l", "-ane", "print"]);
+    assert_eq!(facts(&invocation)[0], ContextFactKind::SplitPattern { pattern: "-l".to_owned() });
+    // The pattern is not re-scanned for switches.
+    assert_eq!(facts(&invocation).len(), 3, "only -F, -a and -n are facts");
+}
+
+#[test]
+fn a_punctuation_split_pattern_is_kept_verbatim() {
+    let invocation = perl(&["-F/,/", "-ane", "print"]);
+    assert_eq!(facts(&invocation)[0], ContextFactKind::SplitPattern { pattern: "/,/".to_owned() });
+}
+
+#[test]
+fn a_bare_split_pattern_is_reported_as_ambiguous() {
+    // perl accepts `-F` with nothing attached, but what it splits on is then
+    // not determined by argv, so the decoder says so rather than inventing one.
+    let invocation = perl(&["-F", "-ane", "print"]);
+    assert_eq!(facts(&invocation)[0], ContextFactKind::SplitPattern { pattern: String::new() });
+    assert!(
+        invocation
+            .ambiguities
+            .iter()
+            .any(|ambiguity| ambiguity.kind == AmbiguityKind::EmptySplitPattern)
+    );
+}
+
+// ---- module expressions ------------------------------------------------
+
+#[test]
+fn module_imports_decode_form_negation_and_import_arguments() {
+    let plain = perl(&["-Mstrict", "-e", "print"]);
+    assert_eq!(
+        facts(&plain)[0],
+        ContextFactKind::ModuleImport {
+            form: ModuleForm::Use,
+            spec: module_spec("strict", None, false, true, ArgvSpan::new(1, 2, 8), None),
+        }
+    );
+
+    let negated = perl(&["-M-strict", "-e", "print"]);
+    let ContextFactKind::ModuleImport { spec, .. } = &facts(&negated)[0] else {
+        panic!("expected a module import");
+    };
+    assert!(spec.negated, "`-M-strict` is `no strict`");
+    assert_eq!(spec.module, "strict");
+
+    let without_import = perl(&["-mFoo", "-e", "print"]);
+    let ContextFactKind::ModuleImport { form, .. } = &facts(&without_import)[0] else {
+        panic!("expected a module import");
+    };
+    assert_eq!(*form, ModuleForm::UseWithoutImport);
+}
+
+#[test]
+fn import_arguments_are_split_from_the_module_at_the_first_equals() {
+    let invocation = perl(&["-MList::Util=first,max", "-e", "print"]);
+    let ContextFactKind::ModuleImport { spec, .. } = &facts(&invocation)[0] else {
+        panic!("expected a module import");
+    };
+    assert_eq!(spec.module, "List::Util");
+    assert_eq!(spec.import_arguments.as_deref(), Some("first,max"));
+    assert!(spec.module_is_plain_name);
+    assert!(invocation.ambiguities.is_empty());
+    spans_locate_their_values(&["perl", "-MList::Util=first,max", "-e", "print"], &invocation);
+}
+
+#[test]
+fn a_module_expression_that_is_not_a_module_name_is_reported_as_ambiguous() {
+    // perl compiles `use <text>;` whatever the text is, so `-M'strict refs'`
+    // works and `-M'Foo; ...'` would run arbitrary code at compile time.
+    // Reporting it as a resolved module name would hide that.
+    let invocation = perl(&["-Mstrict refs", "-e", "print"]);
+    let ContextFactKind::ModuleImport { spec, .. } = &facts(&invocation)[0] else {
+        panic!("expected a module import");
+    };
+    assert!(!spec.module_is_plain_name);
+    assert_eq!(
+        invocation.ambiguities.iter().map(|ambiguity| ambiguity.kind).collect::<Vec<_>>(),
+        vec![AmbiguityKind::ModuleExpressionIsNotAModuleName]
+    );
+}
+
+#[test]
+fn an_empty_module_name_is_refused() {
+    // perl: `Module name required with -M option.`
+    assert!(matches!(
+        perl_error(&["-M=Foo", "-e", "print"]),
+        InvocationDecodeError::EmptyModuleName { switch: 'M', .. }
+    ));
+}
+
+// ---- terminator, operands and program arguments ------------------------
+
+#[test]
+fn the_terminator_ends_switch_scanning() {
+    let invocation = perl(&["-e", "print", "--", "-foo", "bar"]);
+    assert_eq!(invocation.terminator, Some(ArgvSpan::new(3, 0, 2)));
+    assert_eq!(program_arguments(&invocation), vec!["-foo", "bar"]);
+    assert!(neutral(&invocation).is_empty());
+}
+
+#[test]
+fn switch_scanning_continues_past_a_fragment_until_an_operand() {
+    // `perl -e '...' -w foo` really does enable warnings: `-w` is still a
+    // switch. Only `foo`, the first non-switch argument, ends scanning.
+    let invocation = perl(&["-e", "print", "-w", "foo", "-bar"]);
+    assert_eq!(neutral(&invocation), vec![NeutralSwitch::Warnings]);
+    assert_eq!(program_arguments(&invocation), vec!["foo", "-bar"]);
+}
+
+#[test]
+fn an_explicit_script_file_is_not_a_one_liner() {
+    // After the program file, every remaining argument belongs to the program,
+    // including one that looks like a switch.
+    let invocation = perl(&["script.pl", "-w", "foo"]);
+    assert!(!invocation.is_one_liner());
+    assert!(matches!(
+        &invocation.program,
+        ProgramSource::ScriptFile { path, .. } if path == "script.pl"
+    ));
+    assert_eq!(program_arguments(&invocation), vec!["-w", "foo"]);
+    assert!(neutral(&invocation).is_empty(), "`-w` after the script is a program argument");
+}
+
+#[test]
+fn the_terminator_can_make_a_switch_shaped_operand_the_script() {
+    // `perl -- -e 'print 1'` reports `Can't open perl script "-e"`.
+    let invocation = perl(&["--", "-e", "print 1"]);
+    assert!(!invocation.is_one_liner());
+    assert!(matches!(
+        &invocation.program,
+        ProgramSource::ScriptFile { path, .. } if path == "-e"
+    ));
+    assert_eq!(program_arguments(&invocation), vec!["print 1"]);
+}
+
+#[test]
+fn a_bare_dash_is_a_standard_input_program_not_a_switch() {
+    let invocation = perl(&["-", "-e", "1"]);
+    assert!(!invocation.is_one_liner());
+    assert!(matches!(&invocation.program, ProgramSource::StandardInput { .. }));
+    assert_eq!(program_arguments(&invocation), vec!["-e", "1"]);
+}
+
+#[test]
+fn switches_without_a_program_leave_the_program_unspecified() {
+    let invocation = perl(&["-w"]);
+    assert_eq!(invocation.program, ProgramSource::Unspecified);
+    assert!(!invocation.is_one_liner());
+    let bare = perl(&[]);
+    assert_eq!(bare.program, ProgramSource::Unspecified);
+    assert!(bare.program_arguments.is_empty());
+}
+
+// ---- neutral and unsupported switches ----------------------------------
+
+#[test]
+fn recognized_analysis_neutral_switches_are_kept_but_produce_no_facts() {
+    let invocation = perl(&["-cwT", "-e", "print"]);
+    assert_eq!(
+        neutral(&invocation),
+        vec![NeutralSwitch::CompileOnly, NeutralSwitch::Warnings, NeutralSwitch::TaintChecks]
+    );
+    assert!(invocation.context_facts.is_empty());
+}
+
+#[test]
+fn long_switches_are_limited_to_the_two_perl_accepts() {
+    let invocation = perl(&["--version"]);
+    assert_eq!(neutral(&invocation), vec![NeutralSwitch::LongVersion]);
+    assert!(matches!(
+        perl_error(&["--foo", "-e", "print"]),
+        InvocationDecodeError::UnrecognizedLongSwitch { .. }
+    ));
+}
+
+#[test]
+fn unsupported_switches_are_reported_rather_than_ignored() {
+    // `-x` moves where program text starts inside a file this decoder never
+    // reads. Silently dropping it would publish a source claim that is wrong.
+    let invocation = perl(&["-x/tmp", "script.pl"]);
+    assert_eq!(invocation.unsupported_switches.len(), 1);
+    assert_eq!(invocation.unsupported_switches[0].kind, UnsupportedSwitchKind::ScriptTextOffset);
+    assert_eq!(invocation.unsupported_switches[0].spelling, "x/tmp");
+
+    let debugging = perl(&["-Dt", "-e", "print"]);
+    assert_eq!(debugging.unsupported_switches[0].kind, UnsupportedSwitchKind::DebuggingFlags);
+}
+
+#[test]
+fn an_unrecognized_switch_is_refused_rather_than_skipped() {
+    // perl: `Unrecognized switch: -Z`.
+    assert!(matches!(
+        perl_error(&["-Z", "-e", "print"]),
+        InvocationDecodeError::UnrecognizedSwitch { switch: 'Z', .. }
+    ));
+    // And inside a cluster, after valid letters have already been consumed.
+    assert!(matches!(
+        perl_error(&["-nZ", "-e", "print"]),
+        InvocationDecodeError::UnrecognizedSwitch { switch: 'Z', .. }
+    ));
+}
+
+// ---- missing values ----------------------------------------------------
+
+#[test]
+fn value_taking_switches_at_the_end_of_argv_are_refused() {
+    // perl: `No code specified for -e.` and `No directory specified for -I.`
+    assert!(matches!(
+        perl_error(&["-ne"]),
+        InvocationDecodeError::MissingValue { switch: 'e', .. }
+    ));
+    assert!(matches!(perl_error(&["-I"]), InvocationDecodeError::MissingValue { switch: 'I', .. }));
+    // An empty separate value is a directory perl also refuses.
+    assert!(matches!(
+        perl_error(&["-I", "", "-e", "print"]),
+        InvocationDecodeError::MissingValue { switch: 'I', .. }
+    ));
+}
+
+// ---- lead declaration --------------------------------------------------
+
+#[test]
+fn the_lead_declaration_decides_whether_argv_zero_is_the_interpreter() {
+    let with_interpreter = perl(&["-e", "print"]);
+    assert_eq!(with_interpreter.interpreter, Some(ArgvSpan::new(0, 0, 4)));
+
+    let switches_only = match decode(&["-e", "print"], ArgvLead::SwitchesOnly) {
+        Ok(invocation) => invocation,
+        Err(error) => panic!("expected a switches-only argv to decode, got {error}"),
+    };
+    assert_eq!(switches_only.interpreter, None);
+    assert_eq!(fragments(&switches_only), vec![(SourceSwitch::E, "print")]);
+
+    let empty: [&str; 0] = [];
+    assert_eq!(
+        decode(&empty, ArgvLead::Interpreter),
+        Err(InvocationDecodeError::MissingInterpreter)
+    );
+    match decode(&empty, ArgvLead::SwitchesOnly) {
+        Ok(invocation) => assert_eq!(invocation.program, ProgramSource::Unspecified),
+        Err(error) => panic!("an empty switches-only argv is legal, got {error}"),
+    }
+}
+
+// ---- provenance --------------------------------------------------------
+
+#[test]
+fn every_decoded_value_is_located_by_its_span() {
+    let argv = [
+        "perl",
+        "-0777",
+        "-Ilib",
+        "-MList::Util=first",
+        "-F:",
+        "-ane",
+        "print $F[0]",
+        "--",
+        "operand",
+    ];
+    let invocation = match decode(&argv, ArgvLead::Interpreter) {
+        Ok(invocation) => invocation,
+        Err(error) => panic!("expected {argv:?} to decode, got {error}"),
+    };
+    spans_locate_their_values(&argv, &invocation);
+
+    // Spot-check the exact coordinates rather than only the round trip, so a
+    // span that is self-consistently wrong is still caught.
+    let separator = &invocation.context_facts[0];
+    assert_eq!(separator.span, ArgvSpan::new(1, 2, 5), "`777` starts after `-0`");
+    let include =
+        find_fact(&invocation, &ContextFactKind::IncludeDirectory { directory: "lib".to_owned() });
+    assert_eq!(include.span, ArgvSpan::new(2, 2, 5));
+    let fragment = &invocation.source_fragments[0];
+    assert_eq!(fragment.span, ArgvSpan::new(6, 0, "print $F[0]".len()));
+}
+
+#[test]
+fn a_separate_value_keeps_the_switch_locatable_in_its_own_argument() {
+    // Found by the accounting property below: with `-E -`, the fragment's value
+    // lives in argument 2 and the `-E` that introduced it in argument 1. A model
+    // carrying one span per item leaves the switch's own argument unreferenced,
+    // so a diagnostic about the switch has nowhere to point.
+    let invocation = perl(&["-E", "-", "--"]);
+    let fragment = &invocation.source_fragments[0];
+    assert_eq!(fragment.text, "-", "the value is taken verbatim");
+    assert_eq!(fragment.span, ArgvSpan::new(2, 0, 1));
+    assert_eq!(fragment.switch_span, ArgvSpan::new(1, 1, 2), "`E` is the second byte of `-E`");
+    assert_eq!(invocation.terminator, Some(ArgvSpan::new(3, 0, 2)));
+
+    // The same split applies to `-I`, the other switch with a separate value.
+    let include = perl(&["-I", "lib", "-e", "print"]);
+    let fact =
+        find_fact(&include, &ContextFactKind::IncludeDirectory { directory: "lib".to_owned() });
+    assert_eq!(fact.span, ArgvSpan::new(2, 0, 3));
+    assert_eq!(fact.switch_span, ArgvSpan::new(1, 1, 2));
+}
+
+#[test]
+fn a_valueless_switch_spans_its_own_letter() {
+    let invocation = perl(&["-lane", "print"]);
+    let ContextFact { span, switch_span, .. } = invocation.context_facts[1];
+    assert_eq!(span, ArgvSpan::new(1, 2, 3), "`a` is the third byte of `-lane`");
+    assert_eq!(switch_span, span, "a valueless switch is its own value location");
+    assert_eq!(span.len(), 1);
+    assert!(!span.is_empty());
+}
+
+#[test]
+fn ambiguities_point_at_the_value_that_raised_them() {
+    let invocation = perl(&["-Mstrict refs", "-e", "print"]);
+    assert_eq!(
+        invocation.ambiguities,
+        vec![Ambiguity {
+            kind: AmbiguityKind::ModuleExpressionIsNotAModuleName,
+            span: ArgvSpan::new(1, 2, "-Mstrict refs".len()),
+        }]
+    );
+}
+
+// ---- property coverage -------------------------------------------------
+
+mod properties {
+    use super::{located_values, spans_locate_their_values};
+    use perl_parser_core::command_line::{ArgvLead, ProgramSource, decode};
+    use proptest::prelude::*;
+
+    /// Arguments built from the pieces a real command line is made of, so the
+    /// generator reaches switch clusters and values rather than only noise.
+    fn argument() -> impl Strategy<Value = String> {
+        prop_oneof![
+            2 => "-[a-zA-Z0-9]{0,4}",
+            2 => "-[a-zA-Z]{1,2}[^\\p{Cc}]{0,6}",
+            1 => Just("--".to_owned()),
+            1 => Just("-".to_owned()),
+            2 => "[^\\p{Cc}]{0,8}",
+        ]
+    }
+
+    proptest! {
+        /// Arbitrary argv never panics and never reports a value it cannot locate.
+        #[test]
+        fn decoding_is_total_and_spans_stay_inside_their_arguments(
+            argv in prop::collection::vec(argument(), 0..8)
+        ) {
+            let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+            for lead in [ArgvLead::Interpreter, ArgvLead::SwitchesOnly] {
+                if let Ok(invocation) = decode(&borrowed, lead) {
+                    spans_locate_their_values(&borrowed, &invocation);
+                }
+            }
+        }
+
+        /// The decoder is a pure function of its inputs.
+        #[test]
+        fn decoding_is_deterministic(argv in prop::collection::vec(argument(), 0..8)) {
+            let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+            prop_assert_eq!(
+                decode(&borrowed, ArgvLead::Interpreter),
+                decode(&borrowed, ArgvLead::Interpreter)
+            );
+        }
+
+        /// A decode that succeeds accounts for every argument: nothing is
+        /// silently dropped on the floor.
+        #[test]
+        fn every_argument_is_accounted_for(argv in prop::collection::vec(argument(), 1..8)) {
+            let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+            if let Ok(invocation) = decode(&borrowed, ArgvLead::SwitchesOnly) {
+                let mut touched = vec![false; borrowed.len()];
+                let mut mark = |index: usize| {
+                    if let Some(slot) = touched.get_mut(index) {
+                        *slot = true;
+                    }
+                };
+                for (_, span) in located_values(&invocation) {
+                    mark(span.argument_index);
+                }
+                for fact in &invocation.context_facts {
+                    mark(fact.span.argument_index);
+                    mark(fact.switch_span.argument_index);
+                }
+                for switch in &invocation.neutral_switches {
+                    mark(switch.span.argument_index);
+                    mark(switch.switch_span.argument_index);
+                }
+                for fragment in &invocation.source_fragments {
+                    mark(fragment.span.argument_index);
+                    mark(fragment.switch_span.argument_index);
+                }
+                for unsupported in &invocation.unsupported_switches {
+                    mark(unsupported.span.argument_index);
+                }
+                if let Some(terminator) = invocation.terminator {
+                    mark(terminator.argument_index);
+                }
+                match &invocation.program {
+                    ProgramSource::ScriptFile { span, .. }
+                    | ProgramSource::StandardInput { span } => mark(span.argument_index),
+                    ProgramSource::CommandLineFragments | ProgramSource::Unspecified => {}
+                }
+                prop_assert!(
+                    touched.iter().all(|seen| *seen),
+                    "unaccounted arguments in {borrowed:?}: {touched:?}"
+                );
+            }
+        }
+    }
+}
+
+/// Build the expected `ModuleSpec` for a plain, un-negated import.
+fn module_spec(
+    module: &str,
+    import_arguments: Option<&str>,
+    negated: bool,
+    plain: bool,
+    module_span: ArgvSpan,
+    import_arguments_span: Option<ArgvSpan>,
+) -> perl_parser_core::command_line::ModuleSpec {
+    perl_parser_core::command_line::ModuleSpec {
+        negated,
+        module: module.to_owned(),
+        module_span,
+        import_arguments: import_arguments.map(str::to_owned),
+        import_arguments_span,
+        module_is_plain_name: plain,
+    }
+}
