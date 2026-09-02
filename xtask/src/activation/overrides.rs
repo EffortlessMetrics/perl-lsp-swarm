@@ -85,6 +85,7 @@ pub(crate) fn parse(text: &str) -> Result<OverridesFile, ActivationError> {
 fn publication_state(value: &str) -> Option<PublicationState> {
     Some(match value {
         "published" => PublicationState::Published,
+        "publish_allowed" => PublicationState::PublishAllowed,
         "private_workspace_member" => PublicationState::PrivateWorkspaceMember,
         "unpublished" => PublicationState::Unpublished,
         "not_applicable" => PublicationState::NotApplicable,
@@ -111,7 +112,14 @@ fn check_hand_written_authority(
     let mut halves = value.splitn(2, '#');
     let path = halves.next().unwrap_or_default();
     let fragment = halves.next();
-    if path.is_empty() || !root.join(path).exists() {
+    if !super::validate::is_repository_relative(path) {
+        violations.push(format!(
+            "override `{surface_id}`: authority path `{path}` referenced by {label} is not \
+             repository-relative"
+        ));
+        return;
+    }
+    if !root.join(path).exists() {
         violations.push(format!(
             "override `{surface_id}`: missing authority path `{path}` referenced by {label}"
         ));
@@ -145,6 +153,13 @@ fn check_hand_written_authority(
             }
         }
     }
+}
+
+/// Absent, empty, or whitespace-only — the three ways a required ledger field
+/// can carry no content. Every required-field check in this module goes
+/// through here so `None`, `""`, and `"   "` cannot diverge.
+fn is_blank(value: Option<&str>) -> bool {
+    value.unwrap_or("").trim().is_empty()
 }
 
 /// A well-formed `YYYY-MM-DD` calendar date.
@@ -229,8 +244,16 @@ pub fn validate(
     if file.status.trim().is_empty() {
         violations.push(format!("{OVERRIDES_PATH}: ledger requires a status"));
     }
-    if file.updated.trim().is_empty() {
-        violations.push(format!("{OVERRIDES_PATH}: ledger requires an updated date"));
+    // The header date is held to the same calendar rule as the row dates. It
+    // is the ledger's own freshness marker, so `soon` or `2026-13-40` makes
+    // the whole file's staleness unreviewable for exactly the reason a
+    // malformed `review_after` makes one row's expiry unreviewable.
+    match file.updated.trim() {
+        "" => violations.push(format!("{OVERRIDES_PATH}: ledger requires an updated date")),
+        value if !is_iso_date(value) => violations.push(format!(
+            "{OVERRIDES_PATH}: ledger updated `{value}` is not an ISO `YYYY-MM-DD` date"
+        )),
+        _ => {}
     }
 
     for record in &file.overrides {
@@ -238,7 +261,7 @@ pub fn validate(
             violations
                 .push(format!("duplicate surface id `{}` in {OVERRIDES_PATH}", record.surface_id));
         }
-        if record.owner.as_deref().unwrap_or("").trim().is_empty() {
+        if is_blank(record.owner.as_deref()) {
             violations.push(format!("override `{}` requires an owner", record.surface_id));
         }
         match record.review_after.as_deref().map(str::trim) {
@@ -258,7 +281,7 @@ pub fn validate(
                 record.surface_id
             ));
         }
-        if record.reason.as_deref().unwrap_or("").trim().is_empty() {
+        if is_blank(record.reason.as_deref()) {
             violations.push(format!("override `{}` requires a reason", record.surface_id));
         }
         check_hand_written_authority(
@@ -291,8 +314,13 @@ pub fn validate(
             ));
             continue;
         };
+        // Presence is not the requirement; a nameable owner and a stateable
+        // boundary are. `retirement_owner = "   "` satisfies `is_some` and
+        // would carry a blank owner all the way into the inventory, so the
+        // check is on the trimmed content.
         if class == ActivationClass::CompatibilityShim
-            && (record.retirement_owner.is_none() || record.retirement_boundary.is_none())
+            && (is_blank(record.retirement_owner.as_deref())
+                || is_blank(record.retirement_boundary.as_deref()))
         {
             violations.push(format!(
                 "override `{}`: compatibility shim requires a retirement owner and boundary",

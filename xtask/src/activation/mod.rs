@@ -207,7 +207,21 @@ mod tests {
             output(vec![row("feature:a", ActivationClass::Product, "rule-one")], "rule-one"),
             output(vec![row("feature:b", ActivationClass::Lab, "rule-two")], "rule-two"),
         ]);
-        assert!(merged.is_ok(), "distinct surface ids must merge cleanly");
+        // `is_ok` alone would also hold for a merge that dropped a row or
+        // handed a surface the wrong rule's class, so the positive control
+        // asserts the merged content, not just the absence of an error.
+        let merged = merged.unwrap_or_default();
+        let observed: Vec<(&str, &str, &str)> = merged
+            .values()
+            .map(|row| {
+                (row.surface_id.as_str(), row.class.as_str(), row.class_authority.rule.as_str())
+            })
+            .collect();
+        assert_eq!(
+            observed,
+            vec![("feature:a", "product", "rule-one"), ("feature:b", "lab", "rule-two")],
+            "both surfaces must survive the merge carrying their own rule's class"
+        );
     }
 
     #[test]

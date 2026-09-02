@@ -423,6 +423,22 @@ removal_condition = "Regenerated alongside its JSON counterpart after the crate 
 note = "Markdown projection of the substrate matrix."
 
 [[consumers]]
+path = "policy/activation-inventory.v1.json"
+reference_kind = "policy"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "The `crate:perl-tree-sitter-compat` row disappears from the generated inventory when the ledger row below is removed, which happens when the crate is deleted. It is generated, never hand-edited: `cargo xtask activation generate --write`."
+note = "The #9204 activation inventory classifies the crate as `compatibility_shim`, citing this ledger as its semantic authority and carrying the retirement owner and boundary recorded here. It reports the classification; it does not establish it."
+
+[[consumers]]
+path = "policy/activation-overrides.toml"
+reference_kind = "policy"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "The override row is deleted when the crate is deleted; `cargo xtask activation validate` fails closed on a row naming a crate with no `crates/<name>/Cargo.toml`, so a stale row cannot survive the removal silently."
+note = "The #9204 override ledger row that introduces the `compatibility_shim` classification, because no activation derivation rule settles a private, currently-unconsumed adapter crate. It cites this ledger and crates/perl-tree-sitter-compat/Cargo.toml's `publish = false` as its authorities and records zero consumers, matching the zero-Cargo-dependent finding here."
+
+[[consumers]]
 path = "policy/repository-topology.toml"
 reference_kind = "policy"
 disposition = "migration_only_entry_point"
@@ -461,3 +477,11 @@ disposition = "migration_only_entry_point"
 canonical_owner = "#8890"
 removal_condition = "Deleted with the crate it inventories, once #8889 and #8890 have consumed the ledger."
 note = "The inventory generator and validator itself. It names the package as data, not as a dependency."
+
+[[consumers]]
+path = "xtask/tests/activation.rs"
+reference_kind = "tooling"
+disposition = "migration_only_entry_point"
+canonical_owner = "#8890"
+removal_condition = "The negative-control tests that address the `crate:perl-tree-sitter-compat` row are deleted with the crate, together with the override ledger row they exercise."
+note = "Names the package as a surface id when proving that the #9204 validator fails closed on a compatibility_shim row with no retirement owner or boundary. It names the package as test data, not as a dependency."

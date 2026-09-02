@@ -149,12 +149,24 @@ fn feature_row(
     class: ActivationClass,
     rule: &str,
 ) -> Result<ActivationRow, ActivationError> {
-    let implementation_owner =
-        feature.get("implementation_owner").and_then(toml::Value::as_str).unwrap_or("missing");
-    let capability_gate =
-        feature.get("capability_gate").and_then(toml::Value::as_str).unwrap_or("missing");
-    let registration_field =
-        feature.get("registration").and_then(toml::Value::as_str).unwrap_or("missing");
+    // Absent and present-but-wrong-type are different facts here too.
+    // `features.toml` writes the literal string `missing` when it records no
+    // value, so an absent key legitimately reads as `missing`; a present
+    // non-string is malformed authority data and would otherwise be laundered
+    // into the same sentinel, fabricating provenance text.
+    let optional_string = |key: &str| -> Result<&str, ActivationError> {
+        match feature.get(key) {
+            None => Ok("missing"),
+            Some(value) => value.as_str().ok_or_else(|| {
+                ActivationError::new(format!(
+                    "{FEATURES_TOML}: feature `{id}` has a non-string `{key}`"
+                ))
+            }),
+        }
+    };
+    let implementation_owner = optional_string("implementation_owner")?;
+    let capability_gate = optional_string("capability_gate")?;
+    let registration_field = optional_string("registration")?;
     let owning_crate = crate_dir_of(implementation_owner);
 
     let consumers = owning_crate.clone().map(|dir| vec![dir]).unwrap_or_default();
@@ -902,5 +914,45 @@ mod tests {
         };
         let _ = fs::remove_dir_all(&root);
         assert!(message.contains("feature `test-api` must be an array"), "{message}");
+    }
+
+    #[test]
+    fn non_string_implementation_owner_fails_instead_of_reading_as_missing() {
+        // `features.toml` writes the literal string `missing` for a recorded
+        // absence, so a collapse of "any unreadable value" to that sentinel
+        // would turn malformed authority data into a fabricated provenance
+        // claim: the row would say the authority recorded no owner when in
+        // fact the authority said something this code could not read.
+        let root = scratch_root("feature-owner-wrong-type");
+        assert!(write(
+            &root,
+            FEATURES_TOML,
+            "[[feature]]\nid = \"lsp.example\"\nmaturity = \"preview\"\n\
+             advertised = false\nimplementation_owner = 42\n"
+        ));
+        let message = match derive_features(&root) {
+            Ok((_, preview)) => format!("unexpectedly derived {} row(s)", preview.rows.len()),
+            Err(error) => error.to_string(),
+        };
+        let _ = fs::remove_dir_all(&root);
+        assert!(message.contains("has a non-string `implementation_owner`"), "{message}");
+    }
+
+    #[test]
+    fn absent_implementation_owner_still_reads_as_the_recorded_absence() {
+        // The control that keeps the type check above from being over-strict:
+        // an absent key is the authority recording no owner, which is a fact
+        // the inventory reports as `unowned` rather than an error.
+        let root = scratch_root("feature-owner-absent");
+        assert!(write(
+            &root,
+            FEATURES_TOML,
+            "[[feature]]\nid = \"lsp.example\"\nmaturity = \"preview\"\nadvertised = false\n"
+        ));
+        let owners = derive_features(&root).map(|(_, preview)| {
+            preview.rows.iter().map(|row| row.owner.clone()).collect::<Vec<_>>()
+        });
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(owners, Ok(vec![UNOWNED.to_string()]));
     }
 }

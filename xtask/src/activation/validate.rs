@@ -10,7 +10,7 @@ use serde_json::Value;
 use super::derive;
 use super::model::{
     ActivationClass, ActivationError, ActivationInventory, ActivationRow, INVENTORY_PATH,
-    SCHEMA_PATH,
+    RegistrationState, SCHEMA_PATH,
 };
 use super::overrides;
 
@@ -174,6 +174,19 @@ fn validate_class_rules(row: &ActivationRow, violations: &mut Vec<String>) {
     if row.owner.trim().is_empty() {
         violations.push(format!("row `{}`: requires a non-blank owner", row.surface_id));
     }
+    // `established` asserts the surface is actually wired into its consuming
+    // mechanism. Without an authority naming where, the claim is unfalsifiable
+    // by the reader it exists for. The schema encodes the same rule for
+    // external consumers; this restates it so the failure reads as a rule
+    // rather than as a raw schema error.
+    if row.registration.state == RegistrationState::Established
+        && row.registration.authority.as_deref().map(str::trim).unwrap_or("").is_empty()
+    {
+        violations.push(format!(
+            "row `{}`: established registration requires an authority naming where it is registered",
+            row.surface_id
+        ));
+    }
     if row.class == ActivationClass::Product {
         // `unowned` is the closed token a derivation records when its
         // authority declares no owner. A product surface with no owner is a
@@ -217,6 +230,13 @@ fn check_authority_path(
     let mut parts = value.splitn(2, '#');
     let path_part = parts.next().unwrap_or(value);
     let fragment = parts.next();
+    if !is_repository_relative(path_part) {
+        violations.push(format!(
+            "row `{surface_id}`: authority path `{path_part}` referenced by {label} is not \
+             repository-relative (`{value}`)"
+        ));
+        return;
+    }
     if path_part.is_empty() || !root.join(path_part).exists() {
         violations.push(format!(
             "row `{surface_id}`: missing authority path `{path_part}` referenced by {label} (`{value}`)"
@@ -230,6 +250,20 @@ fn check_authority_path(
             "row `{surface_id}`: missing authority fragment `{fragment}` in `{path_part}` referenced by {label} (`{value}`)"
         ));
     }
+}
+
+/// An authority reference must name a path inside the repository.
+///
+/// `Path::join` silently discards `root` for an absolute path, and a `..`
+/// component climbs out of it, so an unconstrained check would consult the
+/// host filesystem: `/etc/hostname` would "exist" and a dangling in-repository
+/// reference could be masked by a file outside the tree. Only `Normal`
+/// components are admissible.
+pub(super) fn is_repository_relative(path: &str) -> bool {
+    !path.is_empty()
+        && std::path::Path::new(path)
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
 }
 
 fn authority_fragment_exists(root: &Path, path: &str, fragment: &str) -> bool {

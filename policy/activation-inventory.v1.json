@@ -926,14 +926,14 @@
       },
       "proof_references": [],
       "publication": {
-        "state": "published",
+        "state": "publish_allowed",
         "authority": "Cargo.toml#workspace.metadata.publish.allow"
       },
       "owner": "parser/tree-sitter",
       "promotion": {
         "state": "not_evaluated"
       },
-      "notes": "No #9204 derivation rule classifies a differential test-oracle crate. crates/tree-sitter-perl-c/Cargo.toml describes the crate as a \"Tree-sitter Perl C FFI snapshot for testing, experimentation, accuracy comparison, and baseline benchmarking\". It has two in-tree Cargo dependents, both optional and both oracle uses: crates/perl-parser-comparison gates it behind `historical = [\"dep:tree-sitter-perl-c\"]` to compare native-parser output against the legacy C grammar, and xtask gates it behind `parser-tasks = [\"legacy\", \"tree-sitter-perl-c\"]`, calling `tree_sitter_perl_c::language()` in xtask/src/tasks/compare_parsers.rs. Publication is asserted from the root Cargo.toml `[workspace.metadata.publish] allow` list rather than from a live registry lookup, so the claim stays checkable from the repository alone."
+      "notes": "No #9204 derivation rule classifies a differential test-oracle crate. crates/tree-sitter-perl-c/Cargo.toml describes the crate as a \"Tree-sitter Perl C FFI snapshot for testing, experimentation, accuracy comparison, and baseline benchmarking\". It has two in-tree Cargo dependents, both optional and both oracle uses: crates/perl-parser-comparison gates it behind `historical = [\"dep:tree-sitter-perl-c\"]` to compare native-parser output against the legacy C grammar, and xtask gates it behind `parser-tasks = [\"legacy\", \"tree-sitter-perl-c\"]`, calling `tree_sitter_perl_c::language()` in xtask/src/tasks/compare_parsers.rs. The root Cargo.toml `[workspace.metadata.publish] allow` list names this crate, which establishes that publication is permitted, not that any version was actually published — only a registry lookup could show that, and this ledger stays checkable from the repository alone. The row therefore claims `publish_allowed` rather than `published`."
     },
     {
       "surface_id": "feature:lsp.code_action",

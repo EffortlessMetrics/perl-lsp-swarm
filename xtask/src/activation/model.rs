@@ -141,10 +141,18 @@ pub struct ProofReference {
 }
 
 /// Publication state vocabulary.
+///
+/// `published` and `publish_allowed` are deliberately distinct. A repository
+/// file can prove that publication is *permitted* — a `[workspace.metadata.publish]`
+/// allow list, an absent `publish = false` — but only a registry lookup can
+/// prove a version was actually published. Collapsing the two would let an
+/// in-repository permission masquerade as an external fact, which is exactly
+/// the kind of unearned claim this inventory exists to prevent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PublicationState {
     Published,
+    PublishAllowed,
     PrivateWorkspaceMember,
     Unpublished,
     NotApplicable,

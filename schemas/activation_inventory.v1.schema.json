@@ -75,7 +75,17 @@
         "state": { "type": "string", "enum": ["established", "not_established"] },
         "authority": { "type": "string", "minLength": 1 },
         "detail": { "type": "string", "minLength": 1 }
-      }
+      },
+      "allOf": [
+        {
+          "$comment": "`established` asserts that a surface is actually wired into its consuming mechanism. That is a checkable claim only if the row names where it is wired, so the authority is required exactly when the claim is made. `not_established` carries no such burden.",
+          "if": {
+            "required": ["state"],
+            "properties": { "state": { "const": "established" } }
+          },
+          "then": { "required": ["authority"] }
+        }
+      ]
     },
     "proof_reference": {
       "type": "object",
@@ -93,7 +103,13 @@
       "properties": {
         "state": {
           "type": "string",
-          "enum": ["published", "private_workspace_member", "unpublished", "not_applicable"]
+          "enum": [
+            "published",
+            "publish_allowed",
+            "private_workspace_member",
+            "unpublished",
+            "not_applicable"
+          ]
         },
         "authority": { "type": "string", "minLength": 1 }
       }

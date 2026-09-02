@@ -448,3 +448,141 @@ fn dangling_proof_reference_fails_validation() -> TestResult {
         json!([{ "class": "integration_test", "id": "crates/nope/tests/gone.rs" }]);
     expect_violation(&inventory, "missing authority path `crates/nope/tests/gone.rs`")
 }
+
+#[test]
+fn absolute_authority_path_is_rejected_rather_than_read_from_the_host() -> TestResult {
+    // `Path::join` discards the root for an absolute path, so an unconstrained
+    // existence check would consult the host filesystem and report a file that
+    // has nothing to do with this repository as a satisfied authority.
+    let mut inventory = canonical_inventory()?;
+    row_mut(&mut inventory, "feature:lsp.completion").ok_or("product row not found")?["semantic_authority"] =
+        json!("/etc/hostname");
+    expect_violation(&inventory, "is not repository-relative")
+}
+
+#[test]
+fn parent_relative_authority_path_is_rejected() -> TestResult {
+    // A `..` component climbs out of the repository, so a dangling
+    // in-repository reference could be masked by a file in the parent tree.
+    let mut inventory = canonical_inventory()?;
+    row_mut(&mut inventory, "feature:lsp.completion").ok_or("product row not found")?["semantic_authority"] =
+        json!("../features.toml");
+    expect_violation(&inventory, "is not repository-relative")
+}
+
+#[test]
+fn override_absolute_authority_path_is_rejected() -> TestResult {
+    let (mut file, index) = overrides_and_index()?;
+    file.overrides[0].semantic_authority = "/etc/hostname".to_string();
+    expect_override_violation(&file, &index, "is not repository-relative")
+}
+
+#[test]
+fn override_parent_relative_authority_path_is_rejected() -> TestResult {
+    let (mut file, index) = overrides_and_index()?;
+    file.overrides[0].semantic_authority = "../features.toml".to_string();
+    expect_override_violation(&file, &index, "is not repository-relative")
+}
+
+#[test]
+fn established_registration_requires_an_authority() -> TestResult {
+    // `established` asserts the surface is actually wired into its consuming
+    // mechanism. A row that makes the claim without naming where it is wired
+    // is unfalsifiable by the reader the claim exists for.
+    let mut inventory = canonical_inventory()?;
+    let row = row_mut(&mut inventory, "feature:lsp.completion").ok_or("product row not found")?;
+    assert_eq!(row["registration"]["state"], json!("established"));
+    row["registration"].as_object_mut().ok_or("registration is not an object")?.remove("authority");
+    // Both surfaces must reject it independently: the schema is the contract a
+    // reader outside this crate validates against, and the Rust rule is what
+    // gives the failure a legible message. Proving only one would let the
+    // other rot.
+    expect_violation(&inventory, "established registration requires an authority")?;
+    let error = match validate_inventory_value(&repo_root(), &inventory) {
+        Ok(_) => "inventory unexpectedly validated".to_string(),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        error.contains("schema:") && error.contains("\"authority\""),
+        "the JSON Schema must reject an established registration with no authority:\n{error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn override_ledger_updated_must_be_an_iso_date() -> TestResult {
+    // The header date is the ledger's own freshness marker. An unreadable one
+    // makes the whole file's staleness unreviewable, exactly as a malformed
+    // `review_after` does for one row.
+    let (mut file, index) = overrides_and_index()?;
+    file.updated = "soon".to_string();
+    expect_override_violation(&file, &index, "ledger updated `soon` is not an ISO")
+}
+
+#[test]
+fn override_ledger_updated_rejects_an_impossible_calendar_day() -> TestResult {
+    let (mut file, index) = overrides_and_index()?;
+    file.updated = "2026-02-31".to_string();
+    expect_override_violation(&file, &index, "ledger updated `2026-02-31` is not an ISO")
+}
+
+#[test]
+fn whitespace_only_retirement_owner_does_not_satisfy_the_shim_rule() -> TestResult {
+    // Presence is not the requirement; a nameable owner is. A blank string
+    // satisfies `is_some` and would carry an empty owner into the inventory.
+    let (mut file, index) = overrides_and_index()?;
+    let shim = file
+        .overrides
+        .iter_mut()
+        .find(|record| record.class == "compatibility_shim")
+        .ok_or("no compatibility_shim override row")?;
+    shim.retirement_owner = Some("   ".to_string());
+    expect_override_violation(
+        &file,
+        &index,
+        "compatibility shim requires a retirement owner and boundary",
+    )
+}
+
+#[test]
+fn whitespace_only_retirement_boundary_does_not_satisfy_the_shim_rule() -> TestResult {
+    let (mut file, index) = overrides_and_index()?;
+    let shim = file
+        .overrides
+        .iter_mut()
+        .find(|record| record.class == "compatibility_shim")
+        .ok_or("no compatibility_shim override row")?;
+    shim.retirement_boundary = Some("\t\n ".to_string());
+    expect_override_violation(
+        &file,
+        &index,
+        "compatibility shim requires a retirement owner and boundary",
+    )
+}
+
+#[test]
+fn an_allow_list_proves_permission_to_publish_not_publication() -> TestResult {
+    // `[workspace.metadata.publish] allow` is an in-repository permission. It
+    // cannot establish that a version reached a registry, and only a registry
+    // lookup could. The vocabulary keeps the two apart so no row can present
+    // the permission as the external fact.
+    let inventory = activation::validate(&repo_root()).map_err(|error| error.to_string())?;
+    let oracle = inventory
+        .rows
+        .iter()
+        .find(|row| row.surface_id == "crate:tree-sitter-perl-c")
+        .ok_or("oracle row not found")?;
+    let state = serde_json::to_value(oracle.publication.state)?;
+    assert_eq!(state, json!("publish_allowed"), "{:?}", oracle.publication);
+    assert_eq!(oracle.publication.authority, "Cargo.toml#workspace.metadata.publish.allow");
+    for row in &inventory.rows {
+        let state = serde_json::to_value(row.publication.state)?;
+        assert_ne!(
+            (state, row.publication.authority.as_str()),
+            (json!("published"), "Cargo.toml#workspace.metadata.publish.allow"),
+            "row `{}` reads a publish allow list as proof of publication",
+            row.surface_id
+        );
+    }
+    Ok(())
+}
