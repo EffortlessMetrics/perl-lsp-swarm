@@ -68,12 +68,23 @@ a Perl-illegal `<< MARKER` — carries a typed diagnostic instead of an empty co
 reads as a clean parse.
 
 That completeness is heredoc-scoped. `Complete` means no opener lost or truncated a
-body; it is not a whole-source accounting claim, which remains #8093's row. Openers are
-recognized in term position only, so `1 << 2` stays a left shift; the budgets mirror
-`perl-lexer`'s `MAX_HEREDOC_BYTES`/`MAX_HEREDOC_DEPTH`, and production heredoc lexing
-remains `perl-lexer`'s. Expectations in `tests/heredoc_body_contract.rs` are derived
-from real `perl` behavior, not from this crate's output; keep it that way when extending
-them.
+body; it is not a whole-source accounting claim, which remains #8093's row. The budgets
+mirror `perl-lexer`'s `MAX_HEREDOC_BYTES`/`MAX_HEREDOC_DEPTH`, and production heredoc
+lexing remains `perl-lexer`'s.
+
+The pre-pass removes body lines before the grammar sees them, so a false opener deletes
+real source. Two invariants keep that safe, and both have drift guards:
+
+- term position after a bareword is decided by `heredoc::BUILTIN_LIST_OP_NAMES`, which
+  must stay equal to the grammar's `builtin_list_op_name`
+  (`grammar_builtin_list_ops_match_scanner` parses `grammar.pest` and fails on drift);
+- non-code regions own no openers — comments, strings and quote-like operators including
+  runs left open across lines, POD, and everything after `__DATA__`/`__END__`.
+
+Expectations in `tests/heredoc_body_contract.rs` are derived from real `perl` behavior,
+not from this crate's output; keep it that way when extending them. When adding a
+construct the scanner must skip, add the negative control first — it is the half of the
+suite that catches an over-eager scanner.
 
 ## Fixture evidence
 

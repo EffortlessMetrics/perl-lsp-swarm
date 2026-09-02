@@ -33,15 +33,26 @@
 //!
 //! Openers are recognized in *term* position only, mirroring the production
 //! lexer's `LexerMode::ExpectOperator` split, so `1 << 2` and `1 <<2` stay left
-//! shifts. Openers inside comments, strings, and quote-like operators are not
-//! openers. A bare marker must follow `<<`/`<<~` immediately, matching Perl's
-//! "use of bare `<<` to mean `<<\"\"` is forbidden"; quoted and escaped markers
-//! may be separated by horizontal whitespace.
+//! shifts. After a bareword, term position is decided by
+//! [`BUILTIN_LIST_OP_NAMES`], which mirrors the grammar's `builtin_list_op_name`
+//! — the scanner must agree with the grammar, because recognizing an opener the
+//! grammar rejects deletes real source. A bare marker must follow `<<`/`<<~`
+//! immediately, matching Perl's "use of bare `<<` to mean `<<\"\"` is
+//! forbidden"; quoted and escaped markers may be separated by horizontal
+//! whitespace.
+//!
+//! Non-code regions own no openers, and recognizing them needs context the
+//! current line does not carry, so the walk tracks it: comments, single-line
+//! strings and quote-like operators, quoted runs left open by a previous line,
+//! POD blocks (`=word` through `=cut`), and everything after `__DATA__` or
+//! `__END__`. `<<MARKER`-shaped text in any of them is data.
 //!
 //! A terminator line is the marker alone, followed immediately by a line ending
 //! or end of input — a trailing space does *not* terminate, matching Perl. For
-//! `<<~`, the terminator may be indented and its indentation is stripped from
-//! each body line.
+//! `<<~`, the terminator may be indented, its indentation is stripped from each
+//! body line, and that indentation must be a prefix of every non-blank body
+//! line's — Perl treats a mismatch as a fatal compile error, so a mismatch here
+//! is not a terminator rather than a `Complete` heredoc with a fabricated body.
 
 use std::collections::VecDeque;
 
@@ -290,17 +301,47 @@ impl<'a> Scanner<'a> {
     }
 
     /// Walk physical lines, emitting non-body lines and consuming owned bodies.
+    ///
+    /// Opener recognition carries lexical context across lines: POD blocks,
+    /// `__DATA__`/`__END__` sections, and quoted runs left open by the previous
+    /// line are all non-code, and `<<MARKER`-shaped text inside them is data.
     fn run(&mut self) {
         let lines = physical_lines(self.source);
         let mut index = 0;
+        let mut region = Region::Code;
+        let mut open_construct: Option<OpenConstruct> = None;
         while index < lines.len() {
             let line = lines[index];
             let text = &self.source[line.start..line.end];
+            let content = &self.source[line.start..line.content_end];
             self.stripped.push_str(text);
             index += 1;
 
+            match region {
+                // Everything after the sentinel is data, never code.
+                Region::Data => continue,
+                Region::Pod => {
+                    if content.starts_with("=cut") {
+                        region = Region::Code;
+                    }
+                    continue;
+                }
+                Region::Code => {}
+            }
+
+            if open_construct.is_none() {
+                if is_data_sentinel(content) {
+                    region = Region::Data;
+                    continue;
+                }
+                if is_pod_start(content) {
+                    region = Region::Pod;
+                    continue;
+                }
+            }
+
             let mut openers = Vec::new();
-            scan_line_openers(text, line.start, &mut openers);
+            open_construct = scan_line_openers(text, line.start, &mut openers, open_construct);
             if openers.is_empty() {
                 continue;
             }
@@ -334,6 +375,10 @@ impl<'a> Scanner<'a> {
         let mut cursor = index;
         let mut terminator: Option<usize> = None;
         let mut over_budget_at: Option<usize> = None;
+        // Common indentation of the non-blank body lines seen so far. `<<~`
+        // only accepts a terminator whose own indentation is a prefix of it.
+        let mut body_indent: Option<&str> = None;
+        let mut body_has_content = false;
 
         while cursor < lines.len() {
             let line = lines[cursor];
@@ -341,13 +386,24 @@ impl<'a> Scanner<'a> {
                 over_budget_at = Some(cursor);
                 break;
             }
+            let content = &self.source[line.start..line.content_end];
             if is_terminator_line(
-                &self.source[line.start..line.content_end],
+                content,
                 &opener.marker,
                 opener.indented,
+                body_indent,
+                body_has_content,
             ) {
                 terminator = Some(cursor);
                 break;
+            }
+            let indent = leading_horizontal_whitespace(content);
+            if indent.len() != content.len() {
+                body_has_content = true;
+                body_indent = Some(match body_indent {
+                    Some(common) => common_indent(common, indent),
+                    None => indent,
+                });
             }
             cursor += 1;
         }
@@ -530,13 +586,43 @@ fn leading_horizontal_whitespace(line: &str) -> &str {
 
 /// A terminator line is the marker alone, with no trailing bytes.
 ///
-/// For `<<~` the marker may be preceded by horizontal whitespace.
-fn is_terminator_line(line: &str, marker: &str, indented: bool) -> bool {
-    let candidate = if indented { line.trim_start_matches([' ', '\t']) } else { line };
-    candidate == marker
+/// For `<<~` the marker may be preceded by horizontal whitespace, but only when
+/// that whitespace is a prefix of every non-blank body line's indentation —
+/// mirroring `perl-lexer`'s `heredoc_terminator_line_end`. Perl treats a
+/// mismatch as a fatal compile error ("Indentation on line N of here-doc
+/// doesn't match delimiter"), so accepting one here would report a `Complete`
+/// heredoc for source Perl refuses to compile, with a fabricated body.
+fn is_terminator_line(
+    line: &str,
+    marker: &str,
+    indented: bool,
+    body_indent: Option<&str>,
+    body_has_content: bool,
+) -> bool {
+    if !indented {
+        return line == marker;
+    }
+    let indent = leading_horizontal_whitespace(line);
+    let candidate = line.get(indent.len()..).unwrap_or("");
+    if candidate != marker {
+        return false;
+    }
+    if !body_has_content {
+        return true;
+    }
+    body_indent.is_some_and(|common| common.starts_with(indent))
+}
+
+/// Longest common leading-whitespace prefix of `left` and `right`.
+fn common_indent<'a>(left: &'a str, right: &str) -> &'a str {
+    let shared = left.bytes().zip(right.bytes()).take_while(|(a, b)| a == b).count();
+    left.get(..shared).unwrap_or("")
 }
 
 /// Strip `indent` from the front of every line of `body`.
+///
+/// `is_terminator_line` has already established that `indent` is a prefix of
+/// every non-blank body line, so only blank lines can come up short.
 fn strip_body_indent(body: &str, indent: &str) -> String {
     if indent.is_empty() {
         return body.to_string();
@@ -544,7 +630,6 @@ fn strip_body_indent(body: &str, indent: &str) -> String {
     let mut out = String::with_capacity(body.len());
     for line in split_inclusive_lines(body) {
         out.push_str(line.strip_prefix(indent).unwrap_or_else(|| {
-            // Perl warns on inconsistent indentation and strips what matches.
             let matched =
                 line.bytes().zip(indent.bytes()).take_while(|(left, right)| left == right).count();
             line.get(matched..).unwrap_or(line)
@@ -559,28 +644,207 @@ fn split_inclusive_lines(text: &str) -> impl Iterator<Item = &str> {
 
 // --- Opener recognition ----------------------------------------------------
 
-/// List operators after which a `<<` is still a term, not a shift.
+/// Words after which a `<<` still starts a term rather than a left shift.
 ///
-/// `print <<EOF` is the common shape; the production lexer reaches the same
-/// conclusion through its `ExpectOperator` mode.
-const TERM_POSITION_WORDS: [&str; 12] = [
-    "print", "printf", "say", "return", "push", "unshift", "warn", "die", "join", "sprintf", "and",
-    "or",
+/// Public so the drift guard in the contract suite can compare it with the
+/// grammar without reaching into private state.
+///
+/// This must agree with the grammar, because the scanner removes body lines the
+/// grammar would otherwise parse: recognizing an opener the grammar rejects
+/// deletes real source. The grammar admits a heredoc as an argument of
+/// `builtin_list_op`, so its `builtin_list_op_name` alternation is the
+/// authority — `BUILTIN_LIST_OP_NAMES` mirrors it and
+/// `grammar_builtin_list_ops_match_scanner` in `heredoc_body_contract.rs`
+/// parses `grammar.pest` and fails if the two ever drift.
+///
+/// The remaining entries are control-flow and low-precedence operators after
+/// which Perl also expects a term. A `<<` after any other bareword is treated
+/// as a shift, matching the grammar's `shift_expression`; a heredoc opened
+/// after a user-defined sub name therefore owns no body and reports empty
+/// content rather than removing source.
+pub const BUILTIN_LIST_OP_NAMES: [&str; 108] = [
+    "print",
+    "say",
+    "warn",
+    "die",
+    "printf",
+    "bless",
+    "open",
+    "close",
+    "push",
+    "pop",
+    "shift",
+    "unshift",
+    "splice",
+    "grep",
+    "map",
+    "sort",
+    "join",
+    "split",
+    "substr",
+    "sprintf",
+    "chomp",
+    "chop",
+    "defined",
+    "undef",
+    "ref",
+    "scalar",
+    "keys",
+    "values",
+    "each",
+    "delete",
+    "exists",
+    "length",
+    "reverse",
+    "index",
+    "rindex",
+    "ord",
+    "chr",
+    "lc",
+    "uc",
+    "lcfirst",
+    "ucfirst",
+    "abs",
+    "int",
+    "hex",
+    "oct",
+    "sqrt",
+    "exp",
+    "log",
+    "sin",
+    "cos",
+    "atan2",
+    "rand",
+    "srand",
+    "time",
+    "localtime",
+    "gmtime",
+    "stat",
+    "lstat",
+    "glob",
+    "readdir",
+    "telldir",
+    "seekdir",
+    "rewinddir",
+    "closedir",
+    "opendir",
+    "rename",
+    "unlink",
+    "chmod",
+    "chown",
+    "mkdir",
+    "rmdir",
+    "symlink",
+    "readlink",
+    "link",
+    "truncate",
+    "pack",
+    "unpack",
+    "vec",
+    "binmode",
+    "eof",
+    "fileno",
+    "flock",
+    "getc",
+    "read",
+    "readline",
+    "seek",
+    "tell",
+    "sysopen",
+    "sysread",
+    "syswrite",
+    "sysseek",
+    "syscall",
+    "select",
+    "eval",
+    "exit",
+    "fork",
+    "wait",
+    "waitpid",
+    "system",
+    "exec",
+    "kill",
+    "sleep",
+    "alarm",
+    "getpgrp",
+    "getppid",
+    "getpriority",
+    "setpgrp",
+    "setpriority",
 ];
+
+/// Control-flow and operator keywords after which Perl expects a term.
+const TERM_POSITION_KEYWORDS: [&str; 8] =
+    ["return", "and", "or", "not", "if", "unless", "while", "until"];
+
+fn is_term_position_word(word: &str) -> bool {
+    BUILTIN_LIST_OP_NAMES.contains(&word) || TERM_POSITION_KEYWORDS.contains(&word)
+}
+
+/// Non-code region the line walk is currently inside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Region {
+    /// Ordinary Perl code.
+    Code,
+    /// A POD block, from `=word` to `=cut`.
+    Pod,
+    /// After `__DATA__` or `__END__`; never code again.
+    Data,
+}
+
+/// A quoted or quote-like run left open at the end of a line.
+#[derive(Debug, Clone, Copy)]
+struct OpenConstruct {
+    open: u8,
+    close: u8,
+    depth: usize,
+}
+
+/// `__DATA__` / `__END__` end the code region for the rest of the source.
+fn is_data_sentinel(line: &str) -> bool {
+    let trimmed = line.trim_end();
+    trimmed == "__DATA__" || trimmed == "__END__"
+}
+
+/// POD starts at a line beginning `=` followed by an identifier, except `=cut`.
+fn is_pod_start(line: &str) -> bool {
+    line.strip_prefix('=').is_some_and(|rest| rest.starts_with(|ch: char| ch.is_ascii_alphabetic()))
+        && !line.starts_with("=cut")
+}
 
 /// Find every heredoc opener on one physical line.
 ///
 /// `line_start` is the line's byte offset in the original source, so recorded
-/// ranges are original-source ranges.
-fn scan_line_openers(line: &str, line_start: usize, out: &mut Vec<LineOpener>) {
+/// ranges are original-source ranges. `carried` is a quoted run left open by the
+/// previous line; the return value is the run left open by this one, so a
+/// string spanning several lines never has its interior scanned for openers.
+fn scan_line_openers(
+    line: &str,
+    line_start: usize,
+    out: &mut Vec<LineOpener>,
+    carried: Option<OpenConstruct>,
+) -> Option<OpenConstruct> {
     let bytes = line.as_bytes();
     let mut index = 0;
+
+    if let Some(construct) = carried {
+        let (next, still_open) = continue_construct(bytes, construct);
+        if let Some(open) = still_open {
+            return Some(open);
+        }
+        index = next;
+    }
+
     while index < bytes.len() {
         let byte = bytes[index];
         match byte {
-            b'#' if !is_length_sigil(bytes, index) => return,
+            b'#' if !is_length_sigil(bytes, index) => return None,
             b'\'' | b'"' | b'`' => {
-                index = skip_quoted(bytes, index, byte);
+                let (next, open) = skip_quoted(bytes, index, byte);
+                if let Some(open) = open {
+                    return Some(open);
+                }
+                index = next;
             }
             b'<' if bytes.get(index + 1) == Some(&b'<') => {
                 match parse_opener(line, bytes, index, line_start) {
@@ -591,15 +855,40 @@ fn scan_line_openers(line: &str, line_start: usize, out: &mut Vec<LineOpener>) {
                     None => index += 2,
                 }
             }
-            _ => {
-                if let Some(next) = skip_quote_like(line, bytes, index) {
-                    index = next;
-                } else {
-                    index += 1;
-                }
-            }
+            _ => match skip_quote_like(line, bytes, index) {
+                Some((_next, Some(open))) => return Some(open),
+                Some((next, None)) => index = next,
+                None => index += 1,
+            },
         }
     }
+    None
+}
+
+/// Resume a construct left open by a previous line.
+///
+/// Returns the index just past its close, or the construct still open.
+fn continue_construct(bytes: &[u8], construct: OpenConstruct) -> (usize, Option<OpenConstruct>) {
+    let balanced = construct.close != construct.open;
+    let mut depth = construct.depth;
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'\\' {
+            index += 2;
+            continue;
+        }
+        if balanced && byte == construct.open {
+            depth += 1;
+        } else if byte == construct.close {
+            depth -= 1;
+            if depth == 0 {
+                return (index + 1, None);
+            }
+        }
+        index += 1;
+    }
+    (bytes.len(), Some(OpenConstruct { depth, ..construct }))
 }
 
 /// `$#array` and `$#{...}` are not comments.
@@ -609,16 +898,17 @@ fn is_length_sigil(bytes: &[u8], index: usize) -> bool {
 
 /// Skip a `'`/`"`/`` ` ``-delimited run starting at `open`. Returns the index
 /// after the closing delimiter, or the line end when unterminated.
-fn skip_quoted(bytes: &[u8], open: usize, delimiter: u8) -> usize {
+fn skip_quoted(bytes: &[u8], open: usize, delimiter: u8) -> (usize, Option<OpenConstruct>) {
     let mut index = open + 1;
     while index < bytes.len() {
         match bytes[index] {
             b'\\' => index += 2,
-            byte if byte == delimiter => return index + 1,
+            byte if byte == delimiter => return (index + 1, None),
             _ => index += 1,
         }
     }
-    bytes.len()
+    // Unterminated on this line: the run continues on the next one.
+    (bytes.len(), Some(OpenConstruct { open: delimiter, close: delimiter, depth: 1 }))
 }
 
 /// Quote-like operators whose contents must not be scanned for openers.
@@ -626,7 +916,12 @@ const QUOTE_LIKE_OPERATORS: [&str; 9] = ["qq", "qw", "qx", "qr", "tr", "q", "m",
 
 /// Skip a quote-like operator (`q{...}`, `qq(...)`, `m/.../`, `s{...}{...}`)
 /// starting at `index`. Returns `None` when no operator starts here.
-fn skip_quote_like(line: &str, bytes: &[u8], index: usize) -> Option<usize> {
+#[allow(clippy::type_complexity)]
+fn skip_quote_like(
+    line: &str,
+    bytes: &[u8],
+    index: usize,
+) -> Option<(usize, Option<OpenConstruct>)> {
     if index > 0 && is_word_byte(bytes[index - 1]) {
         return None;
     }
@@ -655,13 +950,17 @@ fn skip_quote_like(line: &str, bytes: &[u8], index: usize) -> Option<usize> {
         } else {
             open
         };
-        end = skip_delimited(bytes, end, opener)?;
+        let (next, still_open) = skip_delimited(bytes, end, opener);
+        if let Some(open) = still_open {
+            return Some((bytes.len(), Some(open)));
+        }
+        end = next;
     }
     // Trailing flags (`m/x/gi`).
     while end < bytes.len() && bytes[end].is_ascii_alphabetic() {
         end += 1;
     }
-    Some(end)
+    Some((end, None))
 }
 
 const fn closing_delimiter(open: u8) -> u8 {
@@ -676,7 +975,7 @@ const fn closing_delimiter(open: u8) -> u8 {
 
 /// Skip one delimited section beginning at `open_index`. Balanced when the
 /// delimiter is a bracket pair.
-fn skip_delimited(bytes: &[u8], open_index: usize, open: u8) -> Option<usize> {
+fn skip_delimited(bytes: &[u8], open_index: usize, open: u8) -> (usize, Option<OpenConstruct>) {
     let close = closing_delimiter(open);
     let balanced = close != open;
     let mut depth = 1usize;
@@ -692,13 +991,13 @@ fn skip_delimited(bytes: &[u8], open_index: usize, open: u8) -> Option<usize> {
         } else if byte == close {
             depth -= 1;
             if depth == 0 {
-                return Some(index + 1);
+                return (index + 1, None);
             }
         }
         index += 1;
     }
-    // Unterminated on this line: consume the rest rather than re-entering it.
-    Some(bytes.len())
+    // Unterminated on this line: the construct continues on the next one.
+    (bytes.len(), Some(OpenConstruct { open, close, depth }))
 }
 
 const fn is_word_byte(byte: u8) -> bool {
@@ -818,7 +1117,7 @@ fn is_term_position(line: &str, bytes: &[u8], index: usize) -> bool {
                 .get(..cursor)
                 .map(|head| head.trim_end_matches(is_word_char).len())
                 .unwrap_or(cursor);
-            line.get(word_start..cursor).is_some_and(|word| TERM_POSITION_WORDS.contains(&word))
+            line.get(word_start..cursor).is_some_and(is_term_position_word)
         }
         _ => true,
     }

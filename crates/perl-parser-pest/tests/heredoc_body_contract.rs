@@ -523,3 +523,144 @@ fn when_marker_form_is_recorded_then_it_matches_the_opener_spelling() {
     assert!(HeredocDelimiterForm::Escaped.is_non_interpolating());
     assert!(!HeredocDelimiterForm::DoubleQuoted.is_non_interpolating());
 }
+
+// --- Cross-line lexical context (#14563 review) -----------------------------
+//
+// The scanner removes body lines before Pest sees them, so a false opener
+// deletes real source. These regions are all data in Perl; `<<MARKER`-shaped
+// text inside them must own nothing and remove nothing.
+
+#[test]
+fn when_opener_text_is_inside_pod_then_no_body_is_owned() {
+    // perl: `perl -c` accepts this and the trailing code runs — POD is never
+    // lexed as code. A per-line scanner would queue an opener at `<<EOF`, find
+    // no unindented terminator, and swallow `=cut` plus the real code below it.
+    let source = "my $x = 1;\n=pod\n\nmy $y = <<EOF;\nhi\nEOF\n\n=cut\n\nprint \"after $x\";\n";
+    let scan = perl_parser_pest::heredoc::scan(source);
+    assert!(scan.captures().is_empty(), "POD prose must own no body");
+    assert_eq!(scan.stripped(), source, "POD must not have source removed");
+    assert!(
+        sexp(source).contains("print"),
+        "code after `=cut` must survive; got: {}",
+        sexp(source)
+    );
+}
+
+#[test]
+fn when_opener_text_is_after_a_data_sentinel_then_no_body_is_owned() {
+    // perl: everything after `__DATA__` / `__END__` is raw data, never tokens.
+    for sentinel in ["__DATA__", "__END__"] {
+        let source = format!("print \"after\";\n{sentinel}\nmy $x = <<EOF;\nhi\nEOF\n");
+        let scan = perl_parser_pest::heredoc::scan(&source);
+        assert!(scan.captures().is_empty(), "{sentinel} section must own no body");
+        assert_eq!(scan.stripped(), source, "{sentinel} section must not be removed");
+    }
+}
+
+#[test]
+fn when_opener_text_is_inside_a_multiline_quote_then_no_body_is_owned() {
+    // perl prints the `<<EOF` line as string content in both cases. A scanner
+    // without cross-line state resumes as code on line 2 and eats the rest.
+    for source in [
+        "my $x = \"line1\n<<EOF\nline3\";\nprint \"after\";\n",
+        "my $x = 'line1\n<<EOF\nline3';\nprint \"after\";\n",
+        "my $x = q{line1\n<<EOF\nline3};\nprint \"after\";\n",
+        "my $x = qq{line1\n<<EOF\nline3};\nprint \"after\";\n",
+    ] {
+        let scan = perl_parser_pest::heredoc::scan(source);
+        assert!(scan.captures().is_empty(), "multiline quote must own no body: {source:?}");
+        assert_eq!(scan.stripped(), source, "multiline quote must not be removed: {source:?}");
+    }
+}
+
+#[test]
+fn when_pod_ends_then_a_later_heredoc_is_still_owned() {
+    // The POD exemption must not swallow the rest of the file.
+    let source = "=pod\n\ntext\n\n=cut\n\nmy $x = <<EOF;\nreal body\nEOF\n";
+    assert_eq!(
+        heredoc_contents(source),
+        vec![("EOF".to_string(), "real body\n".to_string())],
+        "a heredoc after `=cut` must still own its body"
+    );
+}
+
+// --- Term position agrees with the grammar (#14563 review) ------------------
+
+#[test]
+fn when_a_builtin_list_operator_precedes_the_opener_then_the_body_is_owned() {
+    // perl accepts a heredoc term after every one of these; an allowlist that
+    // omits them leaves the body to be misparsed as code.
+    for op in ["length", "scalar", "uc", "lc", "ucfirst", "eval", "system", "defined", "ref"] {
+        let source = format!("my $x = {op} <<EOF;\nbody\nEOF\n");
+        assert_eq!(
+            heredoc_contents(&source),
+            vec![("EOF".to_string(), "body\n".to_string())],
+            "`{op} <<EOF` must own its body"
+        );
+    }
+}
+
+#[test]
+fn grammar_builtin_list_ops_match_scanner() {
+    // Drift guard: the scanner must keep agreeing with the grammar about which
+    // barewords put `<<` in term position, because disagreement here deletes
+    // source. Parses the grammar rather than trusting a hand-copied list.
+    let grammar = must(std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/grammar.pest"),
+    ));
+    let start = must(grammar.find("builtin_list_op_name = @{").ok_or("rule not found"));
+    let rest = must(grammar.get(start..).ok_or("rule slice"));
+    let end = must(rest.find('}').ok_or("rule end"));
+    let body = must(rest.get(..end).ok_or("body slice"));
+
+    let mut from_grammar: Vec<String> = body
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .filter(|token| {
+            !token.trim().is_empty() && token.chars().all(|c| c.is_ascii_alphanumeric())
+        })
+        .map(str::to_string)
+        .collect();
+    from_grammar.sort();
+    from_grammar.dedup();
+
+    let mut from_scanner: Vec<String> =
+        perl_parser_pest::heredoc::BUILTIN_LIST_OP_NAMES.iter().map(|s| (*s).to_string()).collect();
+    from_scanner.sort();
+    from_scanner.dedup();
+
+    assert!(!from_grammar.is_empty(), "grammar extraction produced nothing");
+    assert_eq!(
+        from_grammar, from_scanner,
+        "BUILTIN_LIST_OP_NAMES has drifted from grammar.pest's builtin_list_op_name"
+    );
+}
+
+// --- `<<~` indentation contract (#14563 review) -----------------------------
+
+#[test]
+fn when_indented_terminator_is_not_a_prefix_of_body_indent_then_it_does_not_terminate() {
+    // perl: "Indentation on line 1 of here-doc doesn't match delimiter" — a
+    // fatal compile error. Accepting it would report `Complete` with a
+    // fabricated body for source perl refuses.
+    for source in ["my $x = <<~EOF;\n  hi\n      EOF\n", "my $x = <<~EOF;\n  hi\n\tEOF\n"] {
+        let scan = perl_parser_pest::heredoc::scan(source);
+        assert_eq!(
+            scan.captures()[0].defect(),
+            Some(HeredocDefect::MissingTerminator),
+            "an indentation mismatch must not terminate: {source:?}"
+        );
+        assert_ne!(scan.completeness(), ParseCompleteness::Complete, "for {source:?}");
+    }
+}
+
+#[test]
+fn when_indented_terminator_is_less_indented_than_body_then_it_terminates() {
+    // perl accepts a terminator indented less than the body, stripping only the
+    // terminator's own indentation.
+    assert_eq!(
+        heredoc_contents("my $x = <<~EOF;\n    hi\n  EOF\n"),
+        vec![("EOF".to_string(), "  hi\n".to_string())]
+    );
+}
