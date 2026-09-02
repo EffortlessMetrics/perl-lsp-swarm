@@ -3,7 +3,7 @@
   "generated_at": "2026-08-24T05:27:16Z",
   "window_days": 14,
   "min_samples_for_learned": 5,
-  "lane_count": 24,
+  "lane_count": 25,
   "lanes": {
     "check_all_targets": {
       "samples": 0,
@@ -23,6 +23,11 @@
     "coverage": {
       "samples": 0,
       "static_floor": 45.0,
+      "learned": false
+    },
+    "critic_rule_proof": {
+      "samples": 0,
+      "static_floor": 8.0,
       "learned": false
     },
     "docs_gate": {
