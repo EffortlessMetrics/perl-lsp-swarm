@@ -166,6 +166,18 @@ impl EventLedger {
         &self.run_id
     }
 
+    /// How many bytes this ledger has admitted for a channel.
+    ///
+    /// Exposed so a backend can reconcile the event stream against the
+    /// `observed_bytes` it puts in the result. The ledger cannot do that join
+    /// itself — it never sees the result — so whoever holds both halves must.
+    pub fn observed_bytes(&self, channel: StreamChannel) -> u64 {
+        match channel {
+            StreamChannel::Stdout => self.stdout_observed,
+            StreamChannel::Stderr => self.stderr_observed,
+        }
+    }
+
     /// Whether the run has settled.
     pub fn is_settled(&self) -> bool {
         self.settled

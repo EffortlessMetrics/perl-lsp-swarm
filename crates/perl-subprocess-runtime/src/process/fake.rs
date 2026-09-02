@@ -435,15 +435,24 @@ impl ProcessHandle for FakeHandle {
                 }
             }
         };
-        // The ledger refuses post-terminal events. A rejection means the
-        // script itself was malformed — a terminal event placed mid-stream —
-        // and that must not read as an ordinary end of stream, or an invalid
-        // test setup silently hides the events it swallowed.
+        // The ledger refuses a malformed script — a terminal event placed
+        // mid-stream, or a chunk whose offset does not continue its channel.
+        // That must not read as an ordinary end of stream, or an invalid test
+        // setup silently hides the events it swallowed.
+        //
+        // The rejection has to *settle* the run, not merely stop it. Returning
+        // `None` while the ledger stayed open let the next poll emit the
+        // elected terminal event, announcing a success that `wait` then
+        // contradicted — the same divergence the mid-stream guard exists to
+        // prevent, reached one call later.
         match self.ledger.admit(kind) {
             Ok(event) => Some(event),
             Err(_) => {
                 self.script_rejected = true;
-                None
+                self.pending.clear();
+                self.ledger
+                    .admit(ProcessEventKind::Terminal(TerminalDisposition::SupervisorFailed))
+                    .ok()
             }
         }
     }

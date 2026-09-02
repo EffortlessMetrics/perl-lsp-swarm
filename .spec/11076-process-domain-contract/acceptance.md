@@ -406,3 +406,70 @@ sees the `ProcessResult`, so it cannot check that the chunk totals agree with
 the result's `observed_bytes`. That one is recorded as a boundary because it is
 actually outside this object's reach, not because fixing it would be
 inconvenient.
+
+### Ninth external round (Devin, `8538b86`) — a security bypass and a second live-branch regression
+
+Five findings: four repaired, one answered as a standing claim boundary.
+
+| Severity | Finding | Disposition | Mutation replay |
+|---|---|---|---|
+| security | bundled short-option clusters (`bash -lc`, `sh -ic`) bypassed the inline-command gate entirely | **Fixed** — a single-dash all-letters cluster containing `c`/`C` is an inline command | KILLED |
+| correctness | scanning every argv position refused valid plans: in `sh script.sh -c` the flag belongs to the script | **Fixed** — the scan stops at `--` or the first operand, with a multi-call exception | KILLED (×2) |
+| correctness | contradictory cancellation evidence became terminal truth | **Fixed** — election fails closed to `NotProven` | KILLED |
+| correctness | a rejected chunk left the event stream open, so a later poll could announce success | **Fixed** — the rejection settles the run | KILLED |
+| security | `Fingerprint` is unkeyed FNV-1a | **Standing boundary** — see below |
+
+**The bypass was the serious one.** `bash -lc 'curl … | sh'` is an ordinary
+idiom, and the gate compared whole argv tokens against `-c`, so every bundled
+spelling walked straight through the boundary #11076 exists to enforce. The
+detector now recognises three forms — exact flag, same-token prefix, and short
+cluster — and counts `C` alongside `c`, because over-refusing a `noclobber`
+cluster costs a caller one explicit plan while under-refusing one hands a shell
+a command string.
+
+**Fixing the over-rejection nearly opened a second bypass.** The obvious rule —
+stop scanning at the first operand — breaks on multi-call binaries, where
+`busybox sh -c 'cmd'` puts the shell's own name in the operand slot and would
+have ended the scan before `-c`. The scan therefore continues past an operand
+that is itself a shell, and stops at one that is not (`busybox ls -c` is `ls`'s
+business). Both directions are controlled.
+
+That rule also broke Windows shells on its first attempt: `/C` is not
+dash-led, so an "options have ended" test placed before the flag test returned
+early and let `cmd.exe /C` validate. `a_shell_with_an_inline_command_is_unstartable`
+caught it immediately — the flag test now runs first. A pre-existing control
+catching a regression introduced while fixing something else is the case for
+keeping controls that look redundant.
+
+**The fourth finding was a second regression of the same shape as round 11's.**
+`FakeHandle::next_event` returned `None` on any ledger admission error without
+settling. That was harmless while both error variants were unreachable on that
+path — my own adversarial review had traced exactly that and dispositioned it
+"not practically reachable," correctly, *for the code as it then stood*. Adding
+`ChunkOffsetDiscontinuous` in round 11 made the branch live and I did not
+revisit the judgement. The lesson is narrow and worth keeping: **a reachability
+disposition is scoped to the code it was made against, and adding a variant to
+an error enum invalidates every prior argument about matching on it.**
+
+#### On the fingerprint
+
+Standing claim boundary, restated rather than newly decided. `Fingerprint` is
+unkeyed FNV-1a and an adversary can construct collisions, so two distinct paths
+or plans could share a public identity. That is documented at the type, in the
+module header, and in this packet, and the type is explicitly never an
+authenticator.
+
+Applying round 10's test — *does the contract fail to express something
+ordinary?* — the answer is no. Change detection and canonical identity, the
+only properties claimed, hold. Adversarial collision resistance was never
+claimed, #11076 does not require it, and the crate's zero-dependency posture is
+itself an asserted invariant. Whoever needs integrity against an adversary
+(#11085's receipts) must layer a keyed or cryptographic digest over this, and
+the boundary says so. This is the second security-flagged item accepted rather
+than fixed, so: the first (self-authorization) was refused because #11076
+assigns that policy elsewhere; this one because the property was never claimed
+and cannot be added without breaking a stated invariant of the crate.
+
+`EventLedger::observed_bytes` was also added this round — the accessor deferred
+last round, riding along with a push that had to happen anyway, so a backend
+can perform the totals join without recomputing from events.

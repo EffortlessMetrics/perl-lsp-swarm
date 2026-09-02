@@ -52,6 +52,12 @@ const EXECUTABLE_SUFFIXES: &[&str] = &[".exe", ".com", ".bat", ".cmd"];
 const INLINE_COMMAND_FLAGS: &[&str] =
     &["-c", "-command", "/c", "/C", "-Command", "-EncodedCommand", "--command"];
 
+/// Programs that dispatch to an applet named by their first operand.
+///
+/// For these the operand that would otherwise end option parsing may be the
+/// shell itself, so the scan continues past it.
+const MULTI_CALL_PROGRAMS: &[&str] = &["busybox", "toybox"];
+
 /// The authorization-evidence scheme version this build can read.
 ///
 /// The reference itself stays opaque — the execution-authorization programme
@@ -388,10 +394,11 @@ fn validate_invocation(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     }
 }
 
-fn is_shell_invocation(logical_name: &str, argv: &[String]) -> bool {
-    let base = match logical_name.rsplit(['/', '\\']).next() {
+/// The program name with any directory prefix and executable suffix removed.
+fn program_base(name: &str) -> &str {
+    let base = match name.rsplit(['/', '\\']).next() {
         Some(base) => base,
-        None => logical_name,
+        None => name,
     };
     let stripped = EXECUTABLE_SUFFIXES.iter().find_map(|suffix| {
         let split = base.len().checked_sub(suffix.len())?;
@@ -399,21 +406,91 @@ fn is_shell_invocation(logical_name: &str, argv: &[String]) -> bool {
             .filter(|tail| tail.eq_ignore_ascii_case(suffix))
             .and_then(|_| base.get(..split))
     });
-    let base = match stripped {
+    match stripped {
         Some(base) => base,
         None => base,
-    };
-    let is_shell = SHELL_PROGRAMS.iter().any(|shell| shell.eq_ignore_ascii_case(base));
-    is_shell
-        && argv.iter().any(|arg| {
-            INLINE_COMMAND_FLAGS.iter().any(|flag| flag.eq_ignore_ascii_case(arg))
-                || INLINE_COMMAND_PREFIXES.iter().any(|prefix| {
-                    // `get` rather than a slice: a byte index that lands inside
-                    // a multi-byte character panics, and an argument is
-                    // arbitrary caller text.
-                    arg.get(..prefix.len()).is_some_and(|head| head.eq_ignore_ascii_case(prefix))
-                })
-        })
+    }
+}
+
+/// Whether a single argument hands a shell an inline command.
+///
+/// Three spellings, because a shell accepts all three:
+///
+/// - the exact flag (`-c`, `/C`, `-Command`);
+/// - a same-token prefix form (`--command=...`);
+/// - a **bundled short-option cluster** containing `c`. `bash -lc 'cmd'` and
+///   `sh -ic 'cmd'` are ordinary idioms, and comparing the whole token against
+///   `-c` misses every one of them.
+fn is_inline_command_argument(arg: &str) -> bool {
+    if INLINE_COMMAND_FLAGS.iter().any(|flag| flag.eq_ignore_ascii_case(arg)) {
+        return true;
+    }
+    if INLINE_COMMAND_PREFIXES.iter().any(|prefix| {
+        // `get` rather than a slice: a byte index that lands inside a
+        // multi-byte character panics, and an argument is arbitrary text.
+        arg.get(..prefix.len()).is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+    }) {
+        return true;
+    }
+    // A POSIX short-option cluster: one leading dash, then letters only. `-C`
+    // is counted alongside `-c` because over-refusing a `noclobber` cluster
+    // costs a caller one explicit plan, while under-refusing one hands a shell
+    // a command string.
+    match arg.strip_prefix('-') {
+        Some(letters)
+            if !letters.is_empty() && letters.chars().all(|c| c.is_ascii_alphabetic()) =>
+        {
+            letters.contains(['c', 'C'])
+        }
+        _ => false,
+    }
+}
+
+/// Whether the invocation hands a shell an inline command string.
+///
+/// Only the argument positions where a shell is still parsing *its own*
+/// options are examined. Option parsing ends at `--` or at the first operand,
+/// so in `sh script.sh -c` the `-c` belongs to the script and the plan is
+/// valid — scanning the whole argv would make ordinary shell tooling
+/// unstartable.
+///
+/// The exception is a multi-call binary: `busybox sh -c 'cmd'` puts the applet
+/// name in the first operand position, and stopping there would let every
+/// BusyBox shell invocation through. When the operand that ends option parsing
+/// is itself a shell, scanning continues past it; when it is any other applet
+/// (`busybox ls -c`), the flags after it are that applet's business.
+///
+/// One inline form this cannot see is `sh -s`, which takes its commands from
+/// standard input rather than argv. That is stdin's shape, not argv's, and it
+/// is [`StdinPolicy`](super::StdinPolicy) that describes what a run feeds a
+/// child.
+fn is_shell_invocation(logical_name: &str, argv: &[String]) -> bool {
+    let base = program_base(logical_name);
+    if !SHELL_PROGRAMS.iter().any(|shell| shell.eq_ignore_ascii_case(base)) {
+        return false;
+    }
+    let mut index = 0;
+    // A multi-call binary names its applet in the first operand slot.
+    if MULTI_CALL_PROGRAMS.iter().any(|name| name.eq_ignore_ascii_case(base))
+        && let Some(first) = argv.first()
+        && SHELL_PROGRAMS.iter().any(|shell| shell.eq_ignore_ascii_case(program_base(first)))
+    {
+        index = 1;
+    }
+    while let Some(arg) = argv.get(index) {
+        // Tested before the operand rule below, because Windows shells spell
+        // their flags `/C` — which is not dash-led, and would otherwise be
+        // mistaken for the operand that ends option parsing.
+        if is_inline_command_argument(arg) {
+            return true;
+        }
+        if arg == "--" || !arg.starts_with('-') {
+            // Options have ended; everything after belongs to the operand.
+            return false;
+        }
+        index += 1;
+    }
+    false
 }
 
 fn validate_cwd(plan: &ProcessPlan) -> Result<(), PlanRejection> {

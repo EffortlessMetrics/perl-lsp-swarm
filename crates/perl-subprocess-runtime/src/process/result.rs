@@ -347,6 +347,27 @@ impl TerminalDisposition {
             return Self::TimedOut;
         }
         if let Some(reason) = control.cancellation_requested {
+            // The control plane says whether the child had started; the
+            // settlement is the child's own account. When the two disagree,
+            // electing either cancellation state would publish a claim the
+            // other half of the evidence disproves — "cancelled while running"
+            // for a child that never started, or "cancelled before start" for
+            // one that demonstrably exited. Neither is established, so the
+            // election fails closed to the state that says exactly that.
+            //
+            // `NotObserved` contradicts nothing: not having seen how the child
+            // settled is consistent with either.
+            let contradicted = matches!(
+                (control.started_before_cancellation, settlement),
+                (true, ObservedSettlement::NotStarted)
+                    | (
+                        false,
+                        ObservedSettlement::Exited { .. } | ObservedSettlement::Signaled { .. }
+                    )
+            );
+            if contradicted {
+                return Self::NotProven;
+            }
             return if control.started_before_cancellation {
                 Self::CancelledRunning(reason)
             } else {

