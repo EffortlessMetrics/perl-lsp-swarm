@@ -386,9 +386,11 @@ impl<'a> Scanner<'a> {
                 follows_declaration,
             );
             open_construct = scanned.carried;
-            // A blank line between a declaration keyword and its name is
-            // insignificant to Perl, so it must not clear the context either.
-            if !content.trim().is_empty() {
+            // Blank and comment-only lines between a declaration keyword and
+            // its name are insignificant to Perl, so they must neither set the
+            // context nor clear it. Only a line carrying code updates it.
+            let trimmed = content.trim_start();
+            if !trimmed.is_empty() && !trimmed.starts_with('#') {
                 follows_declaration = scanned.ends_with_declaration_keyword;
             }
             if openers.is_empty() {
