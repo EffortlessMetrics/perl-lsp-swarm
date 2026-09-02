@@ -730,7 +730,7 @@ impl ProductSurface {
             return SurfaceVerdict::ProductOrTest;
         }
         let mut expired = false;
-        for entry in self.entries.iter().filter(|e| file_policy::entry_matches_path(e, path)) {
+        for entry in self.entries.iter().filter(|e| entry_governs(e, path)) {
             match (entry.expires.as_deref().and_then(parse_date), evaluated_at) {
                 // `file_policy` stops honouring an entry once it expires. Here
                 // that cannot simply drop the row: an expired classification is
@@ -755,6 +755,22 @@ enum SurfaceVerdict {
     /// Every matching classification has expired, so the answer is unknown.
     ClassificationExpired,
     NotClassified,
+}
+
+/// True when one ledger entry governs `candidate`, by exact path or glob.
+///
+/// Deliberately local rather than a shared helper in `file_policy`: that module
+/// is a whole-tree policy surface, and widening it for this consumer would put
+/// scope-sensitive churn in a file every concurrent change also touches. The
+/// matching rule is mechanical, so a local copy carries no semantic authority.
+fn entry_governs(entry: &AllowEntry, candidate: &str) -> bool {
+    if let Some(path) = entry.path.as_deref() {
+        return path == candidate;
+    }
+    match entry.glob.as_deref().map(glob::Pattern::new) {
+        Some(Ok(pattern)) => pattern.matches(candidate),
+        _ => false,
+    }
 }
 
 /// Surfaces whose files reach users. A publication projection may not displace
