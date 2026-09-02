@@ -1620,8 +1620,10 @@ fn validate_policy_table(
         }
     }
 
-    for conflict in mispaired_provenance_conflicts(&coherence_tables) {
-        errors.push(format!("{}: mispaired provenance: {conflict}", path.display()));
+    if table_name == "allow" {
+        for conflict in mispaired_provenance_conflicts(&coherence_tables) {
+            errors.push(format!("{}: mispaired provenance: {conflict}", path.display()));
+        }
     }
 
     entries.len()
