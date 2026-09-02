@@ -186,18 +186,23 @@ fn receipt_requires_typed_observed_at_and_fallback_authority() -> Result<(), Box
 }
 
 #[test]
-fn source_guards_preserve_exact_asset_cache_and_no_fallback_boundaries()
--> Result<(), Box<dyn Error>> {
+fn contract_and_receipt_authority_is_behaviorally_bound() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let source = fs::read_to_string(root.join("xtask/tests/support/zed_managed_route.rs"))?;
-    assert!(source.contains("managed_public_artifact"));
-    assert!(source.contains("perllsp --stdio"));
-    assert!(source.contains("prior_managed_cache_absent"));
-    assert!(source.contains("selected_subject_sha256"));
-    assert!(source.contains("restart_subject_sha256"));
-    assert!(source.contains("fallback_server_id"));
-    assert!(source.contains("older_versions_preserved_until_launch"));
-    assert!(source.contains("new Zed managed route"));
+    let contract = read_json(&root, CONTRACT)?;
+    assert!(zed_managed_route::validate_contract(&contract).is_ok());
+    let mut non_null = contract.clone();
+    non_null["selection"]["fallback_server_id"] = Value::String("fallback".to_string());
+    assert!(zed_managed_route::validate_contract(&non_null).is_err());
+    let mut non_null_number = contract;
+    non_null_number["selection"]["fallback_server_id"] = Value::Number(1.into());
+    assert!(zed_managed_route::validate_contract(&non_null_number).is_err());
+
+    let contract = read_json(&root, CONTRACT)?;
+    let mut receipt = read_json(&root, TEMPLATE)?;
+    valid_pass(&mut receipt)?;
+    assert!(zed_managed_route::validate_receipt(&receipt, &contract).is_ok());
+    receipt["selection"]["fallback_server_id"] = Value::String("fallback".to_string());
+    assert!(zed_managed_route::validate_receipt(&receipt, &contract).is_err());
     Ok(())
 }
 

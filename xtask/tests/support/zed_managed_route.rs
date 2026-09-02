@@ -132,6 +132,9 @@ pub fn validate_contract(contract: &Value) -> Result<(), String> {
     if contract.pointer("/selection/fallback_allowed").and_then(Value::as_bool) != Some(false) {
         return Err("selection.fallback_allowed must be false".to_string());
     }
+    if !null_or_missing(contract, "/selection/fallback_server_id") {
+        return Err("selection.fallback_server_id must be absent or null".to_string());
+    }
 
     let invariants = contract
         .get("failure_invariants")
