@@ -813,25 +813,44 @@ impl LspServer {
                         // that component look like the final one and lets the wrong
                         // target through. A Perl qualified name cannot span a line
                         // break, so the line always contains the whole name.
-                        let cursor_names_a_bare_sub =
-                            workspace_symbol_key.as_ref().is_some_and(|key| {
-                                key.sigil.is_none()
-                                    && matches!(key.kind, crate::workspace_index::SymKind::Sub)
-                            });
-                        if cursor_names_a_bare_sub
+                        let bare_sub_key = workspace_symbol_key.as_ref().filter(|key| {
+                            key.sigil.is_none()
+                                && matches!(key.kind, crate::workspace_index::SymKind::Sub)
+                        });
+                        if let Some(bare_sub_key) = bare_sub_key
                             && let Some(qualified_name_re) = get_qualified_name_regex()
                         {
                             let (line_start, line_text) =
                                 crate::util::line_window_around_offset(&doc.text, offset);
                             let cursor_in_line = offset.saturating_sub(line_start);
-                            if matches!(
-                                super::navigation::fqn_component_at_cursor(
+                            // The question the guard actually asks is "does the
+                            // cursor sit on the token that names the sub every tier
+                            // below is about to search for?".
+                            //
+                            // A prefix component never does. Nor does a *final*
+                            // component whose text disagrees with the key's name:
+                            // in `Foo::Bar->baz()` the qualified-name match stops at
+                            // the `->`, so a cursor on `Bar` is the match's final
+                            // component while the key names the method `baz`. Testing
+                            // only for `Prefix` would let that receiver through and
+                            // answer with `baz`'s references -- this issue's defect,
+                            // reached by a different route.
+                            let cursor_is_off_the_named_sub =
+                                match super::navigation::fqn_component_at_cursor(
                                     qualified_name_re,
                                     line_text,
                                     cursor_in_line,
-                                ),
-                                Some(super::navigation::FqnCursorComponent::Prefix)
-                            ) {
+                                ) {
+                                    Some(super::navigation::FqnCursorComponent::Prefix) => true,
+                                    Some(super::navigation::FqnCursorComponent::Final {
+                                        name,
+                                        ..
+                                    }) => name.as_str() != &*bare_sub_key.name,
+                                    // Not inside a `::`-qualified match at all, so the
+                                    // cursor's component is not a question worth asking.
+                                    None => false,
+                                };
+                            if cursor_is_off_the_named_sub {
                                 return Ok((
                                     Some(json!([])),
                                     ReferencesAnsweringTier::Empty,

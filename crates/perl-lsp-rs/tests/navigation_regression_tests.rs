@@ -1528,3 +1528,70 @@ fn test_refs_use_statement_module_prefix_is_not_suppressed() -> TestResult {
 
     Ok(())
 }
+
+/// Regression (#1849, review finding): a cursor on the *last* package component of a
+/// method-call receiver must not report the method's references.
+///
+/// In `Foo::Bar->baz()` the qualified-name match stops at the `->`, so a cursor on
+/// `Bar` is that match's **final** component — while `symbol_at_cursor_with_source`
+/// resolves the method `baz`. A guard that only asked "is the cursor before the last
+/// `::`?" therefore let the receiver through and answered with `baz`'s references:
+/// this issue's own defect, reached by a different route. Verified before the fix —
+/// a cursor on `Bar` returned the same locations as a cursor on `baz`, including the
+/// `sub baz` declaration on line 1.
+///
+/// The guard now also requires the classified final component to be the very token
+/// that names the resolved sub.
+#[test]
+fn test_refs_method_receiver_package_component_does_not_report_method() -> TestResult {
+    let doc = concat!(
+        "package Foo::Bar;\n",     // 0
+        "sub baz { return 1; }\n", // 1 -- discriminator
+        "package main;\n",         // 2
+        "Foo::Bar->baz();\n",      // 3
+        "Foo::Bar->baz();\n",      // 4
+    );
+
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///refs_method_receiver.pl", doc)?;
+
+    // Line 3: `Foo::Bar->baz();`
+    // F=0 o=1 o=2 :=3 :=4 B=5 a=6 r=7 -=8 >=9 b=10
+    let reference_lines = |harness: &mut LspHarness,
+                           character: u64|
+     -> Result<Vec<u64>, Box<dyn std::error::Error>> {
+        let result = harness.request(
+            "textDocument/references",
+            json!({
+                "textDocument": {"uri": "file:///refs_method_receiver.pl"},
+                "position": {"line": 3, "character": character},
+                "context": {"includeDeclaration": true}
+            }),
+        )?;
+        Ok(reported_lines(&result))
+    };
+
+    // Negative control: the cursor on the method name `baz` must report `sub baz`.
+    let on_method = reference_lines(&mut harness, 10)?;
+    assert!(
+        on_method.contains(&1),
+        "negative control failed: cursor on the method `baz` must report the \
+         `sub baz` declaration on line 1; got {on_method:?}"
+    );
+
+    // `Bar` is the receiver's final package component, and `Foo` its prefix.
+    // Neither names the method, so neither may report it.
+    for (label, character) in [("Foo", 0), ("Bar", 5)] {
+        let on_receiver = reference_lines(&mut harness, character)?;
+        assert!(
+            !on_receiver.contains(&1),
+            "cursor on `{label}` (character {character}) of the receiver in \
+             `Foo::Bar->baz()` must not report the method `baz`, but line 1 was \
+             returned; got {on_receiver:?}. The receiver's components name the \
+             package, not the method (#1849)."
+        );
+    }
+
+    Ok(())
+}
