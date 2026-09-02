@@ -1961,8 +1961,17 @@ impl Lowerer {
     ///
     /// - every name in `exports` is available on request (`Optional`);
     /// - the `default` group is what a bare `use Module;` installs (`Default`);
-    /// - every other group is a tag (`Tag`), requested as `-name` or `:name`;
+    /// - every other group is a tag (`Tag`);
     /// - the implicit `all` group holds every `exports` name.
+    ///
+    /// These `Tag` declarations are reachable from an importer through the
+    /// `:name` spelling only. Sub::Exporter's documentation leads with
+    /// `-name`, but `collect_qw_import_words` (`hir/model.rs`) strips only
+    /// `:`, so a `-name` request lands in the explicit-name list and never
+    /// reaches tag expansion. Repairing that classifier is #14532: a blanket
+    /// `-word` → tag rule would break `use parent qw(-norequire Foo::Base)`,
+    /// which this same file relies on, so it needs the target module's group
+    /// names to disambiguate.
     ///
     /// A configuration this function cannot enumerate statically records a
     /// dynamic export boundary instead of a partial or unproven export list:
