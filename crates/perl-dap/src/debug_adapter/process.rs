@@ -809,6 +809,8 @@ impl DebugAdapter {
                         } else {
                             normalized_text
                         };
+                        let prompt_was_coalesced = sanitized_text.contains("DB<")
+                            && analysis_text != sanitized_text.trim();
                         tracing::trace!(output = %text, "Debugger output");
 
                         // Fold logpoint value replies before the line reaches the
@@ -1072,6 +1074,13 @@ impl DebugAdapter {
                                 };
 
                                 if let Some(ref mut s) = *guard {
+                                    if prompt_was_coalesced {
+                                        // A prompt prefix can share a physical line with its
+                                        // context.  It belongs to this context stop and must
+                                        // consume any pending auto-continue marker rather than
+                                        // leaking into the next prompt-only suspension.
+                                        s.pending_auto_continued_stop = false;
+                                    }
                                     let was_running = matches!(s.state, DebugState::Running);
                                     let current_frame_id = current_stopped_frame_id(s, was_running);
                                     if !current_file.is_empty() && current_line > 0 {
@@ -2483,6 +2492,10 @@ while (defined(my $go = <STDIN>)) {
         print STDERR "DB<$n>\n";
         print STDERR "main::(/tmp/out-of-order.pl:20):\n";
     }
+    elsif ($go =~ /^x/) {
+        $n += 1;
+        print STDERR "DB<$n> main::(/tmp/coalesced.pl:30):\n";
+    }
     elsif ($go =~ /^m/) { print STDERR "MARKER $n\n"; }
     else { last; }
 }
@@ -2735,6 +2748,35 @@ while (defined(my $go = <STDIN>)) {
                 "out-of-order prompt/context pair must emit exactly one stopped event, got {}",
                 stopped_count(&events)
             ));
+        }
+
+        // 7. A prompt may share its physical line with the context. The
+        // coalesced prompt belongs to that context stop and must consume the
+        // pending marker instead of leaking into a later prompt-only stop.
+        {
+            let mut guard =
+                adapter.session.lock().map_err(|_| "session lock poisoned".to_string())?;
+            let s = guard.as_mut().ok_or("session was not installed")?;
+            s.state = DebugState::Running;
+            s.last_resume_mode = ResumeMode::Next;
+            s.pending_auto_continued_stop = true;
+        }
+        send("x\n")?;
+        send("m\n")?;
+        events.clear();
+        drain_until_marker(&rx, 6, &mut events)?;
+        if stopped_count(&events) != 1 {
+            return Err(format!(
+                "coalesced prompt/context stop must emit exactly once, got {}",
+                stopped_count(&events)
+            ));
+        }
+        {
+            let guard = adapter.session.lock().map_err(|_| "session lock poisoned".to_string())?;
+            let s = guard.as_ref().ok_or("session was not installed")?;
+            if s.pending_auto_continued_stop {
+                return Err("coalesced prompt/context stop leaked auto-continue state".to_string());
+            }
         }
 
         // Drop stdin: the synthetic debugger sees EOF and exits, the reader
