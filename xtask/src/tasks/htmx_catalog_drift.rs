@@ -262,13 +262,16 @@ fn section_names(document: &str, section: &SectionSpec) -> Result<Vec<String>> {
         if fence.is_some() {
             continue;
         }
-        if trimmed.starts_with('#') {
-            // A deeper heading is a subsection, so this section continues;
-            // only a heading at the same or shallower level ends it. Breaking
-            // at any heading would silently drop every row after an inserted
-            // subsection — hiding a real upstream addition behind a clean
-            // report, which is the exact failure this task exists to prevent.
-            if heading_depth(trimmed) <= depth {
+        // A deeper heading is a subsection, so this section continues; only a
+        // heading at the same or shallower level ends it. Breaking at any
+        // heading would silently drop every row after an inserted subsection —
+        // hiding a real upstream addition behind a clean report, which is the
+        // exact failure this task exists to prevent. `heading_depth` also
+        // refuses hash-prefixed prose, which would truncate the scan the same
+        // way.
+        let heading_here = heading_depth(trimmed);
+        if heading_here > 0 {
+            if heading_here <= depth {
                 break;
             }
             in_body = false;
@@ -366,9 +369,23 @@ fn locate_section(document: &str, section: &SectionSpec) -> Result<(usize, usize
     }
 }
 
-/// ATX heading depth: the number of leading `#` characters, 0 if not a heading.
+/// ATX heading depth, or 0 when the line is not a heading.
+///
+/// Markdown requires one to six `#` characters followed by whitespace or the
+/// end of the line. A bare hash run is not enough: prose such as `#hashtag` or
+/// `##css-selector` would otherwise read as a shallow heading and truncate the
+/// section, dropping every row below it into a clean report.
 fn heading_depth(trimmed_line: &str) -> usize {
-    trimmed_line.chars().take_while(|character| *character == '#').count()
+    let hashes = trimmed_line.chars().take_while(|character| *character == '#').count();
+    if !(1..=6).contains(&hashes) {
+        return 0;
+    }
+
+    match trimmed_line.chars().nth(hashes) {
+        None => hashes,
+        Some(character) if character.is_whitespace() => hashes,
+        Some(_) => 0,
+    }
 }
 
 /// A code-fence delimiter line.
@@ -687,6 +704,40 @@ mod tests {
 
         assert!(
             section_names(mixed, &CORE_ATTRIBUTES)
+                .is_ok_and(|names| names == ["hx-get", "hx-post"])
+        );
+    }
+
+    #[test]
+    fn hash_prefixed_prose_does_not_truncate_the_section() {
+        // Markdown headings need whitespace after the hash run, so `#hashtag`
+        // and `##css-selector` are prose. Reading them as shallow headings
+        // would end the scan and drop the table below into a clean report,
+        // since the rows already collected keep the vacuity check quiet.
+        // `#######` is seven hashes, which is not a heading either.
+        let prose = "\
+## Core Attribute Reference {#attributes}
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-get`](@/attributes/hx-get.md) | issues a GET |
+
+Use #hashtag routing, and note that ##css-selector is not a heading.
+####### also exceeds the six-level maximum.
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-post`](@/attributes/hx-post.md) | issues a POST |
+
+## Additional Attribute Reference {#attributes-additional}
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-boost`](@/attributes/hx-boost.md) | not part of the core section |
+";
+
+        assert!(
+            section_names(prose, &CORE_ATTRIBUTES)
                 .is_ok_and(|names| names == ["hx-get", "hx-post"])
         );
     }
