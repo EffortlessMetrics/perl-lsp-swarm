@@ -759,11 +759,84 @@ mod tests {
     }
 
     fn declaration_continues_after_line_comment(line: &str) -> bool {
-        let Some(comment) = line.find("//") else { return false };
-        let before_comment = &line[..comment];
-        before_comment.contains("mod")
-            && !before_comment.contains('{')
-            && !before_comment.contains(';')
+        let bytes = line.as_bytes();
+        let mut state = LexicalState::Normal;
+        let mut index = 0;
+        let comment = loop {
+            if index >= bytes.len() {
+                return false;
+            }
+            match state {
+                LexicalState::Normal => {
+                    if bytes[index..].starts_with(b"//") {
+                        break index;
+                    }
+                    if bytes[index..].starts_with(b"/*") {
+                        state = LexicalState::BlockComment(1);
+                        index += 2;
+                        continue;
+                    }
+                    if let Some((next, hashes)) = raw_string_start(bytes, index) {
+                        state = LexicalState::RawString { hashes };
+                        index = next;
+                        continue;
+                    }
+                    if bytes[index] == b'"'
+                        || (bytes[index] == b'b' && bytes.get(index + 1) == Some(&b'"'))
+                    {
+                        state = LexicalState::Quoted { delimiter: b'"', escaped: false };
+                        index += usize::from(bytes[index] == b'b') + 1;
+                        continue;
+                    }
+                    if bytes[index] == b'\'' && char_literal_ends_on_line(bytes, index) {
+                        state = LexicalState::Quoted { delimiter: b'\'', escaped: false };
+                        index += 1;
+                        continue;
+                    }
+                    index += 1;
+                }
+                LexicalState::BlockComment(depth) => {
+                    if bytes[index..].starts_with(b"/*") {
+                        state = LexicalState::BlockComment(depth + 1);
+                        index += 2;
+                    } else if bytes[index..].starts_with(b"*/") {
+                        index += 2;
+                        state = if depth == 1 {
+                            LexicalState::Normal
+                        } else {
+                            LexicalState::BlockComment(depth - 1)
+                        };
+                    } else {
+                        index += 1;
+                    }
+                }
+                LexicalState::Quoted { delimiter, escaped } => {
+                    if escaped {
+                        state = LexicalState::Quoted { delimiter, escaped: false };
+                    } else if bytes[index] == b'\\' {
+                        state = LexicalState::Quoted { delimiter, escaped: true };
+                    } else if bytes[index] == delimiter {
+                        state = LexicalState::Normal;
+                    }
+                    index += 1;
+                }
+                LexicalState::RawString { hashes } => {
+                    if raw_string_ends_at(bytes, index, hashes) {
+                        state = LexicalState::Normal;
+                        index += hashes + 1;
+                    } else {
+                        index += 1;
+                    }
+                }
+            }
+        };
+
+        // Parse the code before the comment with a synthetic opening brace.
+        // This recognizes a real `mod name` declaration (including attributes,
+        // visibility, and block comments) without substring matching words in
+        // function bodies or string literals.
+        let declaration = format!("{} {{", &line[..comment]);
+        test_module_declaration(&declaration).is_some()
     }
 
     fn outer_attribute_end(source: &str) -> Option<usize> {
@@ -1730,6 +1803,37 @@ fn production() { client.send_request("production/after-literal-visibility"); }
         let stripped = strip_test_modules(source);
         assert!(!stripped.contains("test-only/literal-visibility"));
         assert!(stripped.contains("production/after-literal-visibility"));
+    }
+
+    #[test]
+    fn declaration_continuation_requires_a_lexical_module_declaration() {
+        assert!(declaration_continues_after_line_comment("mod fixture // brace follows"));
+        assert!(declaration_continues_after_line_comment(
+            "pub(crate) mod fixture /* trivia */ // brace follows"
+        ));
+        assert!(!declaration_continues_after_line_comment(
+            r#"fn factory() { let mod_name = "mod fixture // not a declaration"; }"#
+        ));
+        assert!(!declaration_continues_after_line_comment(
+            r#"const TEXT: &str = "mod fixture // not a declaration";"#
+        ));
+        assert!(!declaration_continues_after_line_comment("mod fixture; // already terminated"));
+    }
+
+    #[test]
+    fn strip_test_modules_does_not_consume_production_code_with_mod_text() {
+        let source = r#"
+#[cfg(test)] fn production_fixture() {
+    let text = "mod fake // not a module";
+    let mod_name = "mod";
+}
+fn production() { client.send_request("production/after-mod-text"); }
+"#;
+
+        let stripped = strip_test_modules(source);
+
+        assert!(stripped.contains("production_fixture"));
+        assert!(stripped.contains("production/after-mod-text"));
     }
 
     fn quoted_literals(line: &str) -> Vec<&str> {
