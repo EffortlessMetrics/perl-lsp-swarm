@@ -11,7 +11,11 @@ fn collect_string_repetitions<'a>(node: &'a Node, repetitions: &mut Vec<&'a Node
     }
 }
 
-fn assert_string_repetition(source: &str) {
+fn assert_string_repetition(
+    source: &str,
+    expected_rhs: impl Fn(&NodeKind) -> bool,
+    expected_rhs_desc: &str,
+) {
     assert_clean_parse(source);
     let ast = parse(source);
     let mut repetitions = Vec::new();
@@ -35,6 +39,11 @@ fn assert_string_repetition(source: &str) {
         ast.to_sexp(),
     );
     assert!(
+        expected_rhs(&right.kind),
+        "the repetition RHS must be {expected_rhs_desc} for source:\n{source}\n\nsexp:\n{}",
+        ast.to_sexp(),
+    );
+    assert!(
         !matches!(&right.kind, NodeKind::Binary { op, .. } if op == "x"),
         "the composite RHS must not be parsed as another repetition for source:\n{source}\n\nsexp:\n{}",
         ast.to_sexp(),
@@ -43,22 +52,38 @@ fn assert_string_repetition(source: &str) {
 
 #[test]
 fn repetition_accepts_undef_rhs() {
-    assert_string_repetition(r#"my $value = "x" x undef;"#);
+    assert_string_repetition(
+        r#"my $value = "x" x undef;"#,
+        |kind| matches!(kind, NodeKind::Undef),
+        "an `undef` term",
+    );
 }
 
 #[test]
 fn repetition_accepts_do_block_rhs() {
-    assert_string_repetition(r#"my $value = "x" x do { 3 };"#);
+    assert_string_repetition(
+        r#"my $value = "x" x do { 3 };"#,
+        |kind| matches!(kind, NodeKind::Do { .. }),
+        "a `do` block",
+    );
 }
 
 #[test]
 fn repetition_accepts_anonymous_hash_rhs() {
-    assert_string_repetition(r#"my $value = "x" x { count => 3 };"#);
+    assert_string_repetition(
+        r#"my $value = "x" x { count => 3 };"#,
+        |kind| matches!(kind, NodeKind::HashLiteral { .. }),
+        "an anonymous hashref",
+    );
 }
 
 #[test]
 fn repetition_accepts_anonymous_sub_rhs() {
-    assert_string_repetition(r#"my $value = "x" x sub { 3 };"#);
+    assert_string_repetition(
+        r#"my $value = "x" x sub { 3 };"#,
+        |kind| matches!(kind, NodeKind::Subroutine { name: None, .. }),
+        "an anonymous subroutine",
+    );
 }
 
 #[test]
