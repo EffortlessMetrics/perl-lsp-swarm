@@ -521,3 +521,50 @@ absent from it is *unrecognised*, not proven safe. The list is a floor over the
 known vectors; the actual boundary is `AmbientInheritance`, and a plan wanting
 a guarantee uses `DenyAll` or `AllowListedOnly` rather than relying on this
 list to have anticipated every runtime.
+
+### Eleventh external round (Devin, `c9c27b5`) — the reconciliation was the wrong fix
+
+One finding, and it was a regression from the round before it.
+
+| Finding | Disposition | Mutation replay |
+|---|---|---|
+| pre-start cancellation cleared stream evidence a consumer had already been handed, so the result reported zero observed bytes against a delivered chunk event | **Fixed** — by refusing the premature event, not by reconciling it | KILLED |
+
+Round 13 reconciled a pre-start cancellation by emptying the scripted stream
+evidence. That is correct when nothing was emitted and wrong when something
+was: a script can emit a nonzero chunk before `Started`, and a consumer that
+polled it then held an event the result went on to deny. My own fixture used a
+**zero**-byte chunk, which is exactly why it did not catch this.
+
+The report offered two repairs — reject child output before `Started`, or
+preserve the already-emitted evidence. Only the first is consistent with a rule
+this contract already has. Round 11 established that an outcome asserting no
+child started cannot carry output bytes, so preserving the evidence would
+produce a result that same rule refuses. The event and the result would then
+disagree about which of the two contradictions to report, which is the failure
+mode this domain exists to prevent.
+
+So `EventLedger::admit` now refuses `StdoutBytes`/`StderrBytes` before a
+`Started` event with `ChildOutputBeforeStart`. Output requires a child; the
+result-level rule and the event-level rule are the same statement one step
+apart, and the earlier one is the better place to say it.
+
+That also makes round 13's clearing safe rather than merely correct-in-practice:
+a consumer can only hold a chunk if `Started` was admitted, in which case
+cancellation sees a started child and clears nothing. The scenario is now
+unreachable rather than reconciled.
+
+Two existing controls had to change, both because they scripted sequences the
+new rule refuses. `a_chunk_must_continue_from_what_its_channel_already_saw` now
+admits `Started` before its chunks. `cancelling_before_the_child_starts_is_a_pre_start_cancellation`
+needed a different way to make the poll count and the real start state diverge,
+since its chunk-before-`Started` fixture is no longer admissible; it uses a
+`TerminationPhase` instead, which is coherent before a start and keeps the
+control discriminating.
+
+Sixth self-inflicted regression, and the third in a row where the *shape* was
+the same: a repair that reconciles a contradiction after the fact, where
+refusing to create it would have been simpler and safer. The pattern is now
+explicit in this packet because it kept recurring: **when two facts contradict,
+prefer making one unrepresentable over teaching a later stage to paper over
+it.**

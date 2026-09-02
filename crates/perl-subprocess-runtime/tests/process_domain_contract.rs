@@ -3249,6 +3249,8 @@ fn a_chunk_must_continue_from_what_its_channel_already_saw() -> TestResult {
     let mut ledger = perl_subprocess_runtime::process::EventLedger::new(
         perl_subprocess_runtime::process::RunId::new("run-1"),
     );
+    // Output requires a started child, so the run starts before it speaks.
+    ledger.admit(ProcessEventKind::Started)?;
     ledger.admit(ProcessEventKind::StdoutBytes(
         perl_subprocess_runtime::process::StreamChunkEvidence {
             byte_count: 10,
@@ -3660,21 +3662,21 @@ fn cancelling_before_the_child_starts_is_a_pre_start_cancellation() -> TestResul
     // has started — the two measures diverge, and only the real start state
     // gives the honest answer.
     let supervisor = FakeSupervisor::new();
-    let mut early_chunk = ScriptedRun::exiting(0);
-    early_chunk.events = vec![
-        ProcessEventKind::StdoutBytes(perl_subprocess_runtime::process::StreamChunkEvidence {
-            byte_count: 0,
-            offset: 0,
-            retained: false,
-        }),
+    let mut early_phase = ScriptedRun::exiting(0);
+    early_phase.events = vec![
+        ProcessEventKind::TerminationPhase(
+            perl_subprocess_runtime::process::TerminationPhase::CancellationRequested(
+                CancellationReason::Shutdown,
+            ),
+        ),
         ProcessEventKind::Started,
     ];
-    supervisor.script(ScriptedOutcome::Run(Box::new(early_chunk)));
+    supervisor.script(ScriptedOutcome::Run(Box::new(early_phase)));
     let mut handle = supervisor
         .start(valid_interactive_session().validate()?)
         .map_err(|_| "the fake refused to start a valid plan")?;
     let first = handle.next_event().ok_or("the run emitted no events")?;
-    assert!(matches!(first.kind(), ProcessEventKind::StdoutBytes(_)));
+    assert!(matches!(first.kind(), ProcessEventKind::TerminationPhase(_)));
     assert_eq!(handle.cancel(CancellationReason::Shutdown), CancellationAcknowledgement::Accepted);
     while handle.next_event().is_some() {}
     let result = handle.wait();
@@ -3723,5 +3725,94 @@ fn the_loader_gate_covers_each_runtimes_library_and_startup_vectors() -> TestRes
     assert!(!perl_subprocess_runtime::process::is_code_loading_variable(&EnvVarName::new(
         "SOME_FUTURE_RUNTIME_LIB"
     )));
+    Ok(())
+}
+
+// ──────────────── controls added after the eleventh bot review round ─────────
+
+#[test]
+fn output_before_the_child_starts_is_refused_not_reconciled() -> TestResult {
+    // The wrong implementation this kills: admitting child output with no
+    // child, then trying to reconcile it away at cancellation. Result assembly
+    // already refuses a no-child outcome that carries output bytes, so a
+    // stream event before `Started` describes a run that cannot exist and is
+    // refused where it is admitted.
+    //
+    // Reconciling instead is what the previous round attempted, and it lost
+    // bytes a consumer had already been handed: clearing the streams left the
+    // result reporting zero observed while the delivered event said otherwise.
+    let mut ledger = perl_subprocess_runtime::process::EventLedger::new(
+        perl_subprocess_runtime::process::RunId::new("run-1"),
+    );
+    let premature = ledger.admit(ProcessEventKind::StdoutBytes(
+        perl_subprocess_runtime::process::StreamChunkEvidence {
+            byte_count: 100,
+            offset: 0,
+            retained: true,
+        },
+    ));
+    assert!(
+        matches!(
+            premature,
+            Err(perl_subprocess_runtime::process::EventAdmissionError::ChildOutputBeforeStart)
+        ),
+        "stdout arrived before the child started"
+    );
+    let premature_stderr = ledger.admit(ProcessEventKind::StderrBytes(
+        perl_subprocess_runtime::process::StreamChunkEvidence {
+            byte_count: 3,
+            offset: 0,
+            retained: true,
+        },
+    ));
+    assert!(
+        matches!(
+            premature_stderr,
+            Err(perl_subprocess_runtime::process::EventAdmissionError::ChildOutputBeforeStart)
+        ),
+        "stderr arrived before the child started"
+    );
+
+    // Once the child has started, the same chunk is admissible.
+    ledger.admit(ProcessEventKind::Started)?;
+    ledger.admit(ProcessEventKind::StdoutBytes(
+        perl_subprocess_runtime::process::StreamChunkEvidence {
+            byte_count: 100,
+            offset: 0,
+            retained: true,
+        },
+    ))?;
+    assert_eq!(ledger.observed_bytes(StreamChannel::Stdout), 100);
+
+    // And a run that emits a nonzero chunk before `Started` settles as a
+    // supervisor failure rather than reporting output it then denies: the
+    // announced terminal event and `wait` name the same outcome.
+    let supervisor = FakeSupervisor::new();
+    let mut lying = ScriptedRun::exiting(0);
+    lying.events = vec![
+        ProcessEventKind::StdoutBytes(perl_subprocess_runtime::process::StreamChunkEvidence {
+            byte_count: 100,
+            offset: 0,
+            retained: true,
+        }),
+        ProcessEventKind::Started,
+    ];
+    supervisor.script(ScriptedOutcome::Run(Box::new(lying)));
+    let mut handle = supervisor
+        .start(valid_interactive_session().validate()?)
+        .map_err(|_| "the fake refused to start a valid plan")?;
+    let mut terminal = None;
+    let mut polls = 0;
+    while let Some(event) = handle.next_event() {
+        polls += 1;
+        assert!(polls < 100, "the stream never settled");
+        if let ProcessEventKind::Terminal(disposition) = event.kind() {
+            terminal = Some(disposition.clone());
+        }
+    }
+    let result = handle.wait();
+    assert_eq!(terminal.as_ref(), Some(result.disposition()));
+    assert_eq!(result.disposition(), &TerminalDisposition::SupervisorFailed);
+    assert_eq!(result.stdout().observed_bytes(), 0);
     Ok(())
 }

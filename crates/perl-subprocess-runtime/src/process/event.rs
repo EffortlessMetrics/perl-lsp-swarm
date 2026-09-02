@@ -114,6 +114,12 @@ pub enum EventAdmissionError {
     AfterTerminalSettlement,
     /// The run's sequence space is exhausted.
     SequenceExhausted,
+    /// A child-output event arrived before the child started.
+    ///
+    /// Output requires a child, and a result pairing a no-child outcome with
+    /// output bytes is already refused. Admitting the event that would produce
+    /// one is the same contradiction one step earlier.
+    ChildOutputBeforeStart,
     /// A chunk's offset does not continue from what the channel already saw.
     ///
     /// An offset that skips ahead hides bytes; one that goes back double-counts
@@ -132,6 +138,9 @@ impl std::fmt::Display for EventAdmissionError {
         match self {
             Self::AfterTerminalSettlement => f.write_str("no event may follow terminal settlement"),
             Self::SequenceExhausted => f.write_str("run event sequence space is exhausted"),
+            Self::ChildOutputBeforeStart => {
+                f.write_str("a child-output event arrived before the child started")
+            }
             Self::ChunkOffsetDiscontinuous { expected, found } => {
                 write!(f, "chunk offset {found} does not continue from {expected}")
             }
@@ -153,12 +162,20 @@ pub struct EventLedger {
     settled: bool,
     stdout_observed: u64,
     stderr_observed: u64,
+    child_started: bool,
 }
 
 impl EventLedger {
     /// Open a ledger for a run.
     pub fn new(run_id: RunId) -> Self {
-        Self { run_id, next_sequence: 0, settled: false, stdout_observed: 0, stderr_observed: 0 }
+        Self {
+            run_id,
+            next_sequence: 0,
+            settled: false,
+            stdout_observed: 0,
+            stderr_observed: 0,
+            child_started: false,
+        }
     }
 
     /// The run this ledger orders.
@@ -208,6 +225,14 @@ impl EventLedger {
             _ => None,
         };
         if let Some((evidence, already_observed)) = chunk {
+            // Output requires a child. The domain already refuses a result
+            // that pairs a no-child outcome with output bytes; admitting the
+            // event that would produce such a result is the same
+            // contradiction one step earlier, so it is refused here rather
+            // than reconciled away later.
+            if !self.child_started {
+                return Err(EventAdmissionError::ChildOutputBeforeStart);
+            }
             if evidence.offset != already_observed {
                 return Err(EventAdmissionError::ChunkOffsetDiscontinuous {
                     expected: already_observed,
@@ -221,6 +246,9 @@ impl EventLedger {
                 ProcessEventKind::StdoutBytes(_) => self.stdout_observed = total,
                 _ => self.stderr_observed = total,
             }
+        }
+        if matches!(kind, ProcessEventKind::Started) {
+            self.child_started = true;
         }
         let sequence = EventSequence(self.next_sequence);
         self.next_sequence = next;
