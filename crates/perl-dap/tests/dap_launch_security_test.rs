@@ -565,6 +565,21 @@ fn a_program_with_surrounding_whitespace_still_launches() -> Result<(), Box<dyn 
     let padded = format!("  {}  ", must_some(script.to_str()));
     let response =
         adapter.handle_request(2, "launch", Some(json!({ "program": padded, "args": [] })));
-    assert_workspace_accepted(&response, "an absolute program with surrounding whitespace");
+
+    // Assert the launch actually succeeded rather than merely "was not refused
+    // by the boundary". The weaker check would also pass if the padded path
+    // failed the existence or syntax check — which is exactly the regression
+    // this test exists to catch. `test_launch_allows_valid_path` already
+    // establishes that a valid in-workspace script launches in this suite.
+    match response {
+        DapMessage::Response { success, message, .. } => {
+            assert!(
+                success,
+                "a padded absolute program must launch exactly as the unpadded one does, \
+                 got: {message:?}"
+            );
+        }
+        other => return Err(format!("Expected Response, got: {other:?}").into()),
+    }
     Ok(())
 }
