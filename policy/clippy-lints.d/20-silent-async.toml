@@ -29,14 +29,17 @@ reason = "Must-use values cannot be discarded with let-underscore."
 # therefore uncovers real lock types rather than duplicating the other row's
 # coverage.
 #
-# Known gap, measured rather than assumed: neither lint recognises parking_lot's
-# *owned* guards (`lock_arc`, `read_arc`, `write_arc` -> ArcMutexGuard,
-# ArcRwLock*Guard), so discarding one of those is silently accepted. The
-# workspace enables the `arc_lock` feature and perl-workspace's workspace_index
-# holds an ArcMutexGuard, so the family is production-reachable. Owned by #14579;
-# the boundary is asserted by
-# xtask/src/tasks/check_lint_policy/tests/lock_partition.rs so it cannot drift
-# unrecorded.
+# Known gap, measured rather than assumed: both rows recognise exactly one
+# shape, `let _ = <expr>` whose type is a known borrowed guard. Three discards
+# with identical meaning fall outside it and are silently accepted --
+# `let _ = m.lock_arc()` (owned ArcMutexGuard/ArcRwLock*Guard), `drop(m.lock())`
+# for either family, and a discarded mapped guard. The owned family is
+# production-reachable: the workspace enables `arc_lock` and perl-workspace's
+# workspace_index holds an ArcMutexGuard. `drop(m.lock())` matters for a
+# different reason -- it is the rewrite a blocked contributor reaches for, and
+# #14444 already names it a dishonest repair. Owned by #14579; the boundary is
+# asserted by xtask/src/tasks/check_lint_policy/tests/lock_partition.rs so it
+# cannot drift unrecorded.
 [[lint]]
 name = "rust::let_underscore_lock"
 level = "deny"
