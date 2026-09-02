@@ -33,8 +33,9 @@ def probe_launch(
     script: Path,
     timeout_seconds: float,
     invocations: InvocationCounter,
+    trusted_root: Path | None = None,
 ) -> int:
-    with DapProcess(binary, timeout_seconds, invocations) as dap:
+    with DapProcess(binary, timeout_seconds, invocations, trusted_root) as dap:
         dap.initialize()
         started = time.monotonic()
         dap.request("launch", _launch_arguments(script, stop_on_entry=True))
@@ -80,6 +81,7 @@ def probe_attach(
     binary: Path,
     timeout_seconds: float,
     invocations: InvocationCounter,
+    trusted_root: Path | None = None,
 ) -> int:
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -90,7 +92,7 @@ def probe_attach(
     server = threading.Thread(target=_serve_attach, args=(listener, errors), daemon=True)
     server.start()
 
-    with DapProcess(binary, timeout_seconds, invocations) as dap:
+    with DapProcess(binary, timeout_seconds, invocations, trusted_root) as dap:
         dap.initialize()
         started = time.monotonic()
         dap.request("attach", {"host": "127.0.0.1", "port": port, "timeout": 2000})
@@ -220,6 +222,7 @@ def probe_session_metrics(
     binary: Path,
     timeout_seconds: float,
     invocations: InvocationCounter,
+    trusted_root: Path | None = None,
 ) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
     script_text = """use strict;
 use warnings;
@@ -232,7 +235,7 @@ print \"marker=$marker\\n\";
     with tempfile.TemporaryDirectory(prefix="dap-scorecard-") as temp_dir:
         script = Path(temp_dir) / "scorecard_session.pl"
         script.write_text(script_text, encoding="utf-8")
-        with DapProcess(binary, timeout_seconds, invocations) as dap:
+        with DapProcess(binary, timeout_seconds, invocations, trusted_root) as dap:
             dap.initialize()
             dap.request("launch", _launch_arguments(script, stop_on_entry=False))
             breakpoints = dap.request(

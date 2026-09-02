@@ -123,6 +123,7 @@ jobs:
           python3 scripts/ci/dap_scorecard_runtime.py \
             --binary "$DAP_SCORECARD_BINARY" \
             --perl "$DAP_SCORECARD_PERL" \
+            --trusted-root "$GITHUB_WORKSPACE" \
             --fixture hello=crates/perl-dap/tests/fixtures/hello.pl \
             --fixture loops=crates/perl-dap/tests/fixtures/loops.pl \
             --fixture eval=crates/perl-dap/tests/fixtures/eval.pl \

@@ -47,6 +47,7 @@ def build_scorecard(
     perl: Path,
     fixtures: Mapping[str, Path],
     timeout_seconds: float,
+    trusted_root: Path | None = None,
 ) -> dict[str, Any]:
     started_unix_ms = time.time_ns() // 1_000_000
     started_monotonic_ns = time.monotonic_ns()
@@ -67,6 +68,7 @@ def build_scorecard(
                 fixtures[name].resolve(),
                 timeout_seconds,
                 invocations,
+                trusted_root,
             )
             launch_details.append({"name": name, "elapsed_ms": elapsed, "error": None})
         except ScorecardError as exc:
@@ -75,7 +77,7 @@ def build_scorecard(
     attach_details: list[dict[str, Any]] = []
     for _attempt in range(ATTACH_ATTEMPTS):
         try:
-            elapsed = probe_attach(binary, timeout_seconds, invocations)
+            elapsed = probe_attach(binary, timeout_seconds, invocations, trusted_root)
             attach_details.append(
                 {"name": "tcp_loopback", "elapsed_ms": elapsed, "error": None}
             )
@@ -86,7 +88,7 @@ def build_scorecard(
 
     try:
         variables, evaluate, deep_pagination, memory = probe_session_metrics(
-            binary, timeout_seconds, invocations
+            binary, timeout_seconds, invocations, trusted_root
         )
     except ScorecardError as exc:
         detail = f"exact-binary stdio session setup/teardown failed: {exc}"
@@ -132,6 +134,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--perl", required=True)
     parser.add_argument("--fixture", action="append", type=parse_fixture, default=[])
     parser.add_argument("--receipt", required=True)
+    parser.add_argument("--trusted-root", type=Path)
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     return parser
 
@@ -145,7 +148,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise ScorecardError(f"duplicate launch fixture name: {name}")
             fixtures[name] = path
         scorecard = build_scorecard(
-            Path(args.binary), Path(args.perl), fixtures, args.timeout_seconds
+            Path(args.binary), Path(args.perl), fixtures, args.timeout_seconds, args.trusted_root
         )
         write_json_atomic(Path(args.receipt), scorecard)
         failures = scorecard_failures(scorecard)
