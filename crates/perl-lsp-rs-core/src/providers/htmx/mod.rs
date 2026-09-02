@@ -136,6 +136,70 @@ mod tests {
             && provenance.reference_url.contains(&format!("/blob/{}/", provenance.reference_commit))
     }
 
+    /// Is this a real `YYYY-MM-DD` calendar date?
+    ///
+    /// Shape and numeric ranges are not enough: `2026-02-30` satisfies both and
+    /// is not a date. Month lengths and the Gregorian leap rule are short enough
+    /// to state exactly, so this states them rather than approximating — and the
+    /// controls below exercise the boundaries that make the difference.
+    fn is_calendar_date(text: &str) -> bool {
+        let parts: Vec<&str> = text.split('-').collect();
+        let [year, month, day] = parts[..] else { return false };
+
+        if (year.len(), month.len(), day.len()) != (4, 2, 2) {
+            return false;
+        }
+        if !parts.iter().all(|part| part.chars().all(|c| c.is_ascii_digit())) {
+            return false;
+        }
+
+        let (Ok(year), Ok(month), Ok(day)) =
+            (year.parse::<u32>(), month.parse::<u32>(), day.parse::<u32>())
+        else {
+            return false;
+        };
+
+        let leap_year = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+        let days_in_month = match month {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            2 if leap_year => 29,
+            2 => 28,
+            _ => return false,
+        };
+
+        (1..=days_in_month).contains(&day)
+    }
+
+    #[test]
+    fn an_impossible_calendar_date_is_rejected() {
+        // Every one of these passes a shape-and-range check, which is what this
+        // control exists to falsify.
+        for invalid in [
+            "2026-02-30",
+            "2026-04-31",
+            "2026-02-29",
+            "2100-02-29",
+            "2026-99-99",
+            "2026-00-10",
+            "2026-01-00",
+            "2026-13-01",
+            "----------",
+            "0000000000",
+            "2026-1-05",
+            "26-01-05",
+            "2026-+1-05",
+        ] {
+            assert!(!is_calendar_date(invalid), "{invalid} is not a calendar date");
+        }
+
+        // Genuine leap days must still be accepted, or the rule is just stricter
+        // rather than correct.
+        assert!(is_calendar_date("2024-02-29"));
+        assert!(is_calendar_date("2000-02-29"));
+        assert!(is_calendar_date("2026-12-31"));
+    }
+
     #[test]
     fn provenance_pins_an_immutable_reviewed_revision() {
         assert!(pins_an_immutable_revision(&HTMX_CATALOG_PROVENANCE));
@@ -193,36 +257,9 @@ mod tests {
             provenance.contract_major,
             provenance.contract_minor
         );
-        // Check the shape this assertion names. A length-plus-digits test is
-        // nearly vacuous: ten dashes and ten digits both satisfy it, so require
-        // exactly three `-`-separated all-digit parts of width 4, 2 and 2.
-        let parts: Vec<&str> = provenance.reviewed_on.split('-').collect();
-        assert_eq!(
-            parts.iter().map(|part| part.len()).collect::<Vec<_>>(),
-            vec![4, 2, 2],
-            "review date {} is not YYYY-MM-DD",
-            provenance.reviewed_on
-        );
         assert!(
-            parts.iter().all(|part| part.chars().all(|c| c.is_ascii_digit())),
-            "review date {} has a non-digit component",
-            provenance.reviewed_on
-        );
-
-        // Digit-shaped is not the same as a date: `2026-99-99` is neither. Range
-        // the month and day so a transposed or mistyped field is caught. This
-        // deliberately stops short of full calendar arithmetic, so it would
-        // still accept a February 30th.
-        let month = parts.get(1).and_then(|part| part.parse::<u32>().ok());
-        let day = parts.get(2).and_then(|part| part.parse::<u32>().ok());
-        assert!(
-            matches!(month, Some(1..=12)),
-            "review date {} has an impossible month",
-            provenance.reviewed_on
-        );
-        assert!(
-            matches!(day, Some(1..=31)),
-            "review date {} has an impossible day",
+            is_calendar_date(provenance.reviewed_on),
+            "review date {} is not a real YYYY-MM-DD calendar date",
             provenance.reviewed_on
         );
     }
