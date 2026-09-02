@@ -604,6 +604,83 @@ mod tests {
     }
 
     #[test]
+    fn merge_conflict_retains_stage_specific_failure_receipt() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        git(temp.path(), &["init", "--quiet"])?;
+        git(temp.path(), &["config", "user.name", "test"])?;
+        git(temp.path(), &["config", "user.email", "test@example.invalid"])?;
+        git(temp.path(), &["remote", "add", "origin", "https://github.com/owner/repo.git"])?;
+
+        fs::write(temp.path().join("conflict.txt"), "root\n")?;
+        git(temp.path(), &["add", "conflict.txt"])?;
+        git(temp.path(), &["commit", "--quiet", "-m", "root"])?;
+        let root = git(temp.path(), &["rev-parse", "HEAD"])?;
+
+        git(temp.path(), &["checkout", "-q", "-b", "base"])?;
+        fs::write(temp.path().join("conflict.txt"), "base\n")?;
+        git(temp.path(), &["commit", "--quiet", "-am", "base"])?;
+        let base = git(temp.path(), &["rev-parse", "HEAD"])?;
+
+        git(temp.path(), &["checkout", "-q", "-b", "head", &root])?;
+        fs::write(temp.path().join("conflict.txt"), "head\n")?;
+        git(temp.path(), &["commit", "--quiet", "-am", "head"])?;
+        let head = git(temp.path(), &["rev-parse", "HEAD"])?;
+
+        let receipt = temp.path().join("conflict-receipt.json");
+        let error = run(Config {
+            event_name: Some("explicit".to_string()),
+            event_path: None,
+            repository: Some("owner/repo".to_string()),
+            github_sha: None,
+            base_sha: Some(base),
+            head_sha: Some(head),
+            receipt: receipt.clone(),
+            env_file: None,
+            root: Some(temp.path().to_path_buf()),
+        })
+        .expect_err("conflicting base and head must fail closed");
+        ensure!(error.to_string().contains("merge-tree"));
+        let value: Value = serde_json::from_slice(&fs::read(receipt)?)?;
+        ensure!(value["outcome"] == "fail");
+        ensure!(value["failure_stage"] == "merge-tree");
+        Ok(())
+    }
+
+    #[test]
+    fn environment_export_failure_replaces_success_with_typed_failure() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        git(temp.path(), &["init", "--quiet"])?;
+        git(temp.path(), &["config", "user.name", "test"])?;
+        git(temp.path(), &["config", "user.email", "test@example.invalid"])?;
+        git(temp.path(), &["remote", "add", "origin", "https://github.com/owner/repo.git"])?;
+        fs::write(temp.path().join("tracked.txt"), "content\n")?;
+        git(temp.path(), &["add", "tracked.txt"])?;
+        git(temp.path(), &["commit", "--quiet", "-m", "initial"])?;
+        let commit = git(temp.path(), &["rev-parse", "HEAD"])?;
+
+        let env_target = temp.path().join("env-target");
+        fs::create_dir(&env_target)?;
+        let receipt = temp.path().join("environment-failure.json");
+        let result = run(Config {
+            event_name: Some("explicit".to_string()),
+            event_path: None,
+            repository: Some("owner/repo".to_string()),
+            github_sha: None,
+            base_sha: Some(commit.clone()),
+            head_sha: Some(commit),
+            receipt: receipt.clone(),
+            env_file: Some(env_target),
+            root: Some(temp.path().to_path_buf()),
+        });
+        ensure!(result.is_err());
+        let value: Value = serde_json::from_slice(&fs::read(receipt)?)?;
+        ensure!(value["outcome"] == "fail");
+        ensure!(value["failure_stage"] == "environment-export");
+        ensure!(value["derived_subject_sha"].as_str().is_some());
+        Ok(())
+    }
+
+    #[test]
     fn failed_receipt_replacement_restores_prior_receipt() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let destination = temp.path().join("receipt.json");
