@@ -310,6 +310,12 @@ impl ModuleRequest {
     }
 
     /// Record a partially static operand and why it is not exact.
+    ///
+    /// "Partially static" means at least one static fragment was actually
+    /// recovered. An empty `static_fragments` is not a partial request — it is a
+    /// fully dynamic one — so this normalizes to [`Self::Dynamic`] rather than
+    /// producing a variant whose name overstates the evidence behind it. No
+    /// evidence is lost: both variants retain the source form and span.
     #[must_use]
     pub fn partially_static(
         source_form: impl Into<String>,
@@ -317,6 +323,10 @@ impl ModuleRequest {
         span: Option<ModuleTokenSpan>,
         boundary: RequestBoundary,
     ) -> Self {
+        if static_fragments.is_empty() {
+            return Self::dynamic(source_form, span, boundary);
+        }
+
         Self::PartiallyStatic(PartialModuleRequest {
             source_form: source_form.into(),
             static_fragments,
@@ -404,7 +414,8 @@ impl fmt::Display for ModuleRequest {
 #[cfg(test)]
 mod tests {
     use super::{
-        ModuleRequest, ModuleRequestError, ModuleRequestKind, PartialModuleRequest, RequestBoundary,
+        DynamicModuleRequest, ModuleRequest, ModuleRequestError, ModuleRequestKind,
+        PartialModuleRequest, RequestBoundary,
     };
     use crate::token_core::ModuleTokenSpan;
 
@@ -474,6 +485,35 @@ mod tests {
         );
         assert_eq!(inner.and_then(PartialModuleRequest::span), Some(span));
         assert_eq!(inner.map(PartialModuleRequest::source_form), Some("\"Foo::$leaf\""));
+    }
+
+    #[test]
+    fn a_partial_request_without_evidence_is_simply_dynamic() {
+        let span = ModuleTokenSpan { start: 4, end: 10 };
+        let request = ModuleRequest::partially_static(
+            "$class",
+            Vec::new(),
+            Some(span),
+            RequestBoundary::VariableInterpolation,
+        );
+
+        assert_eq!(
+            request.kind(),
+            ModuleRequestKind::Dynamic,
+            "no recovered fragment means the operand is dynamic, not partly known"
+        );
+        assert_eq!(request.boundary(), Some(RequestBoundary::VariableInterpolation));
+
+        let source_form = match &request {
+            ModuleRequest::Dynamic(inner) => Some(DynamicModuleRequest::source_form(inner)),
+            _ => None,
+        };
+        assert_eq!(source_form, Some("$class"), "the source form survives the normalization");
+        let retained_span = match &request {
+            ModuleRequest::Dynamic(inner) => DynamicModuleRequest::span(inner),
+            _ => None,
+        };
+        assert_eq!(retained_span, Some(span), "the span survives the normalization");
     }
 
     #[test]
