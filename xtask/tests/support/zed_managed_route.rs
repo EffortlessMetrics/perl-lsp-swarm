@@ -13,6 +13,11 @@
 use serde_json::Value;
 use std::collections::BTreeSet;
 
+pub const CONTRACT_ID: &str = "zed_managed_route.v1";
+pub const CONTRACT_REVISION: u64 = 1;
+pub const RECEIPT_ID: &str = "zed_managed_route_receipt.v1";
+pub const CONTRACT_RELATIVE_PATH: &str = ".ci/fixtures/zed-perl-upstream/managed-route.v1.json";
+
 /// The only resolution route the contract admits: the managed public artifact.
 pub const MANAGED_PUBLIC_ARTIFACT: &str = "managed_public_artifact";
 
@@ -52,11 +57,14 @@ fn digest(value: &Value, pointer: &str) -> bool {
     })
 }
 
-fn opt_digest(value: &Value, pointer: &str) -> bool {
-    match value.pointer(pointer) {
-        None | Some(Value::Null) => true,
-        Some(_) => digest(value, pointer),
-    }
+fn null_or_missing(value: &Value, pointer: &str) -> bool {
+    value.pointer(pointer).is_none_or(Value::is_null)
+}
+
+fn required_text(value: &Value, pointer: &str) -> Result<(), String> {
+    text(value, pointer)
+        .map(|_| ())
+        .ok_or_else(|| format!("`{pointer}` must be a non-empty string"))
 }
 
 fn required_flag(invariants: &Value, pointer: &str) -> Result<(), String> {
@@ -70,8 +78,11 @@ fn required_flag(invariants: &Value, pointer: &str) -> Result<(), String> {
 
 /// Validate the managed-route contract document.
 pub fn validate_contract(contract: &Value) -> Result<(), String> {
-    if text(contract, "/contract").is_none() {
-        return Err("contract document lacks a `contract` identity".to_string());
+    if text(contract, "/contract") != Some(CONTRACT_ID) {
+        return Err(format!("contract identity must be `{CONTRACT_ID}`"));
+    }
+    if contract.pointer("/revision").and_then(Value::as_u64) != Some(CONTRACT_REVISION) {
+        return Err(format!("contract revision must be {CONTRACT_REVISION}"));
     }
     let route = text(contract, "/resolution_route")
         .ok_or_else(|| "contract lacks `resolution_route`".to_string())?;
@@ -111,9 +122,15 @@ pub fn validate_contract(contract: &Value) -> Result<(), String> {
     let invariants = contract
         .get("failure_invariants")
         .ok_or_else(|| "contract lacks `failure_invariants`".to_string())?;
-    for pointer in
-        ["/provider_fallback_forbidden", "/path_route_forbidden", "/worktree_route_forbidden"]
-    {
+    for pointer in [
+        "/provider_fallback_forbidden",
+        "/path_route_forbidden",
+        "/worktree_route_forbidden",
+        "/binary_override_forbidden",
+        "/partial_download_install_forbidden",
+        "/unsafe_archive_member_forbidden",
+        "/checksum_mismatch_install_forbidden",
+    ] {
         required_flag(invariants, pointer)?;
     }
 
@@ -145,8 +162,21 @@ pub fn validate_contract(contract: &Value) -> Result<(), String> {
 /// and keep the claim boundary honest about what was actually proven.
 pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String> {
     validate_contract(contract)?;
-    if text(receipt, "/receipt").is_none() {
-        return Err("receipt lacks a `receipt` identity".to_string());
+    if text(receipt, "/receipt") != Some(RECEIPT_ID) {
+        return Err(format!("receipt identity must be `{RECEIPT_ID}`"));
+    }
+    if text(receipt, "/contract/relative_path") != Some(CONTRACT_RELATIVE_PATH) {
+        return Err(
+            "receipt contract.relative_path does not identify the checked contract".to_string()
+        );
+    }
+    if text(receipt, "/contract/schema_version") != Some(CONTRACT_ID) {
+        return Err(
+            "receipt contract.schema_version does not identify the checked contract".to_string()
+        );
+    }
+    if text(receipt, "/claim_boundary/official_registry") != Some("not_proven") {
+        return Err("official registry must remain not_proven".to_string());
     }
     let result = text(receipt, "/result").ok_or_else(|| "receipt lacks `result`".to_string())?;
     if !matches!(result, "not_run" | "pass" | "mismatch" | "unsupported" | "not_proven") {
@@ -154,15 +184,40 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
     }
 
     if result == "not_run" {
-        if receipt.get("observed_at").is_none_or(Value::is_null) {
-            // A not_run template must not claim an observation time or boundary.
-        } else {
+        if !null_or_missing(receipt, "/observed_at") {
             return Err("a not_run receipt must not carry `observed_at`".to_string());
         }
-        if text(receipt, "/claim_boundary/official_registry")
-            .is_some_and(|value| value != "not_proven")
+        for pointer in [
+            "/contract/sha256",
+            "/subject/zed_version",
+            "/subject/extension_version",
+            "/subject/fixture_id",
+            "/subject/asset_sha256",
+            "/selection/resolution_route",
+            "/selection/selected_provider",
+            "/selection/fallback_server_id",
+            "/selection/prior_managed_cache_absent",
+            "/selection/selected_subject_sha256",
+            "/selection/restart_subject_sha256",
+            "/selection/older_versions_preserved_until_launch",
+        ] {
+            if !null_or_missing(receipt, pointer) {
+                return Err(format!("a not_run receipt must not carry `{pointer}`"));
+            }
+        }
+        for journey in REQUIRED_JOURNEYS {
+            if !null_or_missing(receipt, &format!("/journeys/{journey}")) {
+                return Err(format!("a not_run receipt must not carry journey `{journey}`"));
+            }
+        }
+        if receipt
+            .pointer("/recovery_observations")
+            .is_some_and(|value| !value.as_object().is_some_and(|object| object.is_empty()))
         {
-            return Err("official registry must stay not_proven on a not_run receipt".to_string());
+            return Err("a not_run receipt must not carry recovery observations".to_string());
+        }
+        if text(receipt, "/claim_boundary/real_zed_managed_route") != Some("not_proven") {
+            return Err("real Zed route must stay not_proven on a not_run receipt".to_string());
         }
         return Ok(());
     }
@@ -172,6 +227,23 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
     }
     if !digest(receipt, "/contract/sha256") {
         return Err("receipt must record the contract sha256 digest".to_string());
+    }
+
+    // Non-success outcomes are evidence that the route was not proven.  They
+    // still identify the observation and contract, but must not be forced to
+    // manufacture successful selection/journey data.
+    if result != "pass" {
+        if text(receipt, "/claim_boundary/real_zed_managed_route") != Some("not_proven") {
+            return Err(format!("a `{result}` receipt must keep the real Zed route not_proven"));
+        }
+        return Ok(());
+    }
+
+    for pointer in ["/subject/zed_version", "/subject/extension_version", "/subject/fixture_id"] {
+        required_text(receipt, pointer)?;
+    }
+    if !digest(receipt, "/subject/asset_sha256") {
+        return Err("receipt must record the exact subject asset digest".to_string());
     }
 
     let contract_route = text(contract, "/resolution_route").unwrap_or_default();
@@ -199,14 +271,42 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
     if !digest(receipt, "/selection/selected_subject_sha256") {
         return Err("receipt must record `selected_subject_sha256`".to_string());
     }
-    if !opt_digest(receipt, "/selection/restart_subject_sha256") {
-        return Err("`restart_subject_sha256` must be a sha256 digest when present".to_string());
+    if !digest(receipt, "/selection/restart_subject_sha256") {
+        return Err("receipt must record `restart_subject_sha256`".to_string());
+    }
+    if receipt.pointer("/selection/selected_subject_sha256")
+        != receipt.pointer("/subject/asset_sha256")
+    {
+        return Err("selected subject digest must equal the subject asset digest".to_string());
+    }
+    if receipt.pointer("/selection/restart_subject_sha256")
+        != receipt.pointer("/selection/selected_subject_sha256")
+    {
+        return Err("restart subject digest must equal the selected subject digest".to_string());
+    }
+    if receipt.pointer("/selection/older_versions_preserved_until_launch").and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err("receipt must record older versions preserved until launch".to_string());
     }
 
     for journey in REQUIRED_JOURNEYS {
-        if text(receipt, &format!("/journeys/{journey}")).is_none() {
-            return Err(format!("`{result}` receipt must record journey `{journey}`"));
+        if text(receipt, &format!("/journeys/{journey}")) != Some("pass") {
+            return Err(format!("`{result}` receipt must record successful journey `{journey}`"));
         }
+    }
+
+    let observations = receipt
+        .get("recovery_observations")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "receipt must carry recovery observations".to_string())?;
+    for scenario in REQUIRED_RECOVERY_SCENARIOS {
+        if observations.get(scenario).and_then(Value::as_str) != Some("pass") {
+            return Err(format!("receipt must record successful recovery scenario `{scenario}`"));
+        }
+    }
+    if observations.len() != REQUIRED_RECOVERY_SCENARIOS.len() {
+        return Err("recovery observations must be exactly the contract scenario set".to_string());
     }
 
     if text(receipt, "/claim_boundary/real_zed_managed_route") != Some("proven_for_exact_subject") {

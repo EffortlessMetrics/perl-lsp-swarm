@@ -71,13 +71,88 @@ fn pass_candidate_cannot_substitute_path_or_omit_known_good_recovery() -> Result
     let root = repo_root()?;
     let contract = read_json(&root, CONTRACT)?;
     let mut receipt = read_json(&root, TEMPLATE)?;
+    valid_pass(&mut receipt);
+    assert!(zed_managed_route::validate_receipt(&receipt, &contract).is_ok());
+    receipt["selection"]["resolution_route"] = Value::String("worktree_path".to_string());
+    assert!(zed_managed_route::validate_receipt(&receipt, &contract).is_err());
+
+    let mut missing = receipt.clone();
+    missing["recovery_observations"] = Value::Object(serde_json::Map::new());
+    assert!(zed_managed_route::validate_receipt(&missing, &contract).is_err());
+    Ok(())
+}
+
+fn valid_pass(receipt: &mut Value) {
     receipt["result"] = Value::String("pass".to_string());
     receipt["observed_at"] = Value::String("2026-08-14T00:00:00Z".to_string());
     receipt["contract"]["sha256"] = Value::String(format!("sha256:{}", "0".repeat(64)));
+    for key in ["zed_version", "extension_version", "fixture_id"] {
+        receipt["subject"][key] = Value::String(format!("{key}-fixture"));
+    }
+    receipt["subject"]["asset_sha256"] = Value::String(format!("sha256:{}", "1".repeat(64)));
     receipt["claim_boundary"]["real_zed_managed_route"] =
         Value::String("proven_for_exact_subject".to_string());
-    receipt["selection"]["resolution_route"] = Value::String("worktree_path".to_string());
+    receipt["selection"]["resolution_route"] =
+        Value::String(zed_managed_route::MANAGED_PUBLIC_ARTIFACT.to_string());
+    receipt["selection"]["selected_provider"] = Value::String("perllsp".to_string());
+    receipt["selection"]["prior_managed_cache_absent"] = Value::Bool(true);
+    receipt["selection"]["selected_subject_sha256"] = receipt["subject"]["asset_sha256"].clone();
+    receipt["selection"]["restart_subject_sha256"] = receipt["subject"]["asset_sha256"].clone();
+    receipt["selection"]["older_versions_preserved_until_launch"] = Value::Bool(true);
+    for journey in zed_managed_route::REQUIRED_JOURNEYS {
+        receipt["journeys"][journey] = Value::String("pass".to_string());
+    }
+    let observations = receipt["recovery_observations"].as_object_mut().expect("template object");
+    for scenario in zed_managed_route::REQUIRED_RECOVERY_SCENARIOS {
+        observations.insert(scenario.to_string(), Value::String("pass".to_string()));
+    }
+}
+
+#[test]
+fn receipt_contract_rejects_malformed_identity_and_claims() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let contract = read_json(&root, CONTRACT)?;
+    let template = read_json(&root, TEMPLATE)?;
+    for malformed in [
+        Value::Bool(true),
+        Value::Number(1.into()),
+        Value::Null,
+        Value::Array(vec![]),
+        Value::Object(serde_json::Map::new()),
+    ] {
+        let mut receipt = template.clone();
+        receipt["contract"]["schema_version"] = malformed;
+        assert!(zed_managed_route::validate_receipt(&receipt, &contract).is_err());
+    }
+    let mut receipt = template.clone();
+    receipt["receipt"] = Value::String("wrong".to_string());
     assert!(zed_managed_route::validate_receipt(&receipt, &contract).is_err());
+    let mut receipt = template;
+    receipt["claim_boundary"]["official_registry"] = Value::String("proven".to_string());
+    assert!(zed_managed_route::validate_receipt(&receipt, &contract).is_err());
+    Ok(())
+}
+
+#[test]
+fn contract_requires_all_failure_invariants_and_revision() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let contract = read_json(&root, CONTRACT)?;
+    for key in [
+        "provider_fallback_forbidden",
+        "path_route_forbidden",
+        "worktree_route_forbidden",
+        "binary_override_forbidden",
+        "partial_download_install_forbidden",
+        "unsafe_archive_member_forbidden",
+        "checksum_mismatch_install_forbidden",
+    ] {
+        let mut mutated = contract.clone();
+        mutated["failure_invariants"][key] = Value::Bool(false);
+        assert!(zed_managed_route::validate_contract(&mutated).is_err(), "{key}");
+    }
+    let mut revision = contract.clone();
+    revision["revision"] = Value::Number(2.into());
+    assert!(zed_managed_route::validate_contract(&revision).is_err());
     Ok(())
 }
 

@@ -45,6 +45,14 @@ Each scenario must resolve back onto the managed route (fresh download or
 last known-good managed binary) without ever falling back to a PATH,
 worktree, or explicitly overridden binary.
 
+The upstream acceptance list also names `extraction_failure` and
+`launch_failure`. They are intentionally deferred from this infrastructure
+contract: the current extension fixture has no safe injection seam for
+forcing either failure without substituting a different implementation for
+the real Zed route. The evidence issue must add those two scenarios before
+claiming complete upstream recovery coverage; this document does not count
+the seven listed scenarios as nine.
+
 ## Journeys
 
 A `pass` receipt records all four journeys:
