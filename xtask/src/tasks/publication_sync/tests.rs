@@ -1236,3 +1236,27 @@ fn an_invariant_review_ruling_must_be_an_issue_reference() -> Result<()> {
     assert_verdict(&receipt, Verdict::NotProven)?;
     assert_finding(&receipt, "evidence_ruling_unresolved")
 }
+
+#[test]
+fn the_receipt_exports_every_cited_issue_reference() -> Result<()> {
+    // Planning is offline and deterministic, so it cannot resolve `#NNNN`
+    // against GitHub. Exporting the references hands that check to a consumer
+    // that does have network access, instead of silently dropping it.
+    let receipt = plan_value(&clean_value()?)?;
+    if receipt.cited_issue_references != vec!["#6216", "#6355", "#6356"] {
+        bail!("unexpected cited issues: {:?}", receipt.cited_issue_references);
+    }
+
+    // Row authorities and review rulings are both collected, deduplicated and
+    // sorted; a repository-path authority is not an issue reference.
+    let mut document = clean_value()?;
+    rows_mut(&mut document)?[0]["authority_ref"] = json!("#9999");
+    let receipt = plan_value(&document)?;
+    if !receipt.cited_issue_references.contains(&"#9999".to_string()) {
+        bail!("a row authority issue was not exported: {:?}", receipt.cited_issue_references);
+    }
+    if receipt.cited_issue_references.iter().any(|r| r.contains('/')) {
+        bail!("a repository-path authority leaked into the issue list");
+    }
+    Ok(())
+}

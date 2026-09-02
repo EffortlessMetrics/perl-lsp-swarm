@@ -370,6 +370,12 @@ struct Receipt {
     rows: Vec<ReceiptRow>,
     invariants: Vec<ReceiptInvariant>,
     live_controls: Vec<ReceiptLiveControl>,
+    /// Every `#NNNN` the manifest cites, as row authority or as a review
+    /// ruling. Planning is offline and deterministic, so it validates the
+    /// shape of these references but cannot resolve them against GitHub.
+    /// Exporting them lets a consumer that does have network access — CI, or
+    /// the projection gate — resolve them without re-parsing the manifest.
+    cited_issue_references: Vec<String>,
     findings: Vec<Finding>,
 }
 
@@ -390,6 +396,7 @@ impl Receipt {
             rows: Vec::new(),
             invariants: Vec::new(),
             live_controls: Vec::new(),
+            cited_issue_references: Vec::new(),
             findings: vec![finding],
         }
     }
@@ -941,8 +948,45 @@ fn evaluate_with_surface(
         rows,
         invariants,
         live_controls,
+        cited_issue_references: collect_cited_issues(manifest),
         findings,
     })
+}
+
+/// Every issue reference the manifest cites, sorted and deduplicated.
+fn collect_cited_issues(manifest: &Manifest) -> Vec<String> {
+    let mut cited: BTreeSet<String> = BTreeSet::new();
+    for row in &manifest.paths {
+        let reference = row.authority_ref.trim();
+        if is_issue_reference(reference) {
+            cited.insert(reference.to_string());
+        }
+    }
+    let controls = [
+        &manifest.live_controls.branch_rules,
+        &manifest.live_controls.environments,
+        &manifest.live_controls.quality_exceptions,
+    ];
+    let evidence = manifest
+        .invariants
+        .iter()
+        .flat_map(|invariant| invariant.evidence.iter())
+        .chain(controls.into_iter().flat_map(|control| control.evidence.iter()));
+    for entry in evidence {
+        let reference = entry.reference.trim();
+        if entry.kind == EvidenceKind::ReviewRuling && is_issue_reference(reference) {
+            cited.insert(reference.to_string());
+        }
+    }
+    cited.into_iter().collect()
+}
+
+/// A `#NNNN` issue reference. Shape only — planning is offline, so whether the
+/// issue exists is a question for a consumer with network access.
+fn is_issue_reference(reference: &str) -> bool {
+    reference
+        .strip_prefix('#')
+        .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
 }
 
 fn validate_identity(manifest: &Manifest, state: &mut PlanState) {
@@ -1427,10 +1471,7 @@ fn validate_row_authority(
     if declared_inputs.contains(reference) {
         return;
     }
-    if let Some(number) = reference.strip_prefix('#')
-        && !number.is_empty()
-        && number.bytes().all(|byte| byte.is_ascii_digit())
-    {
+    if is_issue_reference(reference) {
         return;
     }
     if valid_repository_path(reference) && reference.contains('/') {
@@ -1652,10 +1693,7 @@ fn validate_evidence_reference(
         }
         EvidenceKind::ReviewRuling => {
             let reference = evidence.reference.trim();
-            let numbered = reference
-                .strip_prefix('#')
-                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
-            if !numbered {
+            if !is_issue_reference(reference) {
                 state.not_proven(
                     "evidence_ruling_unresolved",
                     format!(
