@@ -283,7 +283,7 @@ const ROWS: &[MatrixRow] = &[
         proof: "`lsp_318_negative_claims` (`document_filter_relative_pattern_is_never_emitted`); `check-lsp-318-claims`",
         owner: "negative-gated; no producer (document-selector registrations use plain language selectors)",
         priority: "P3",
-        notes: "Inventory (#8897): no current document-selector producer emits a relative pattern. The negative gate scans every dynamic registration and refuses any non-watcher filter carrying `baseUri`. Promotion requires parsing the client support capability and capability-gated emission with its own wire tests.",
+        notes: "Inventory (#8897): no current document-selector producer emits a relative pattern. Document-selector `RelativePattern` support remains unclaimed. The negative gate scans every dynamic registration and refuses any non-watcher filter carrying `baseUri`. Promotion requires parsing the client support capability and capability-gated emission with its own wire tests.",
     },
     MatrixRow {
         feature: "Notebook document-filter `relative pattern`",

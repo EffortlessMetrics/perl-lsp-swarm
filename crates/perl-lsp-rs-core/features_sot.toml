@@ -2484,7 +2484,7 @@ evidence = [
   { class = "integration_test", id = "crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs" },
 ]
 limitations = [
-  "Unsupported and negative-gated: no product path emits a relative document filter; the gate scans every dynamic registration (#8897).",
+  "Unsupported and negative-gated: no product path emits a relative document filter; Document-selector `RelativePattern` support remains unclaimed; the gate scans every dynamic registration (#8897).",
 ]
 description = "Document-filter relative-pattern support is the LSP 3.18 text-document-filter surface; unimplemented and negative-gated (identity split #8897)."
 
