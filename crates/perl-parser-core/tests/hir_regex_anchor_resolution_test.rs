@@ -142,3 +142,39 @@ fn resolution_prefers_an_exact_operator_range() {
     );
     assert_eq!(record.full_range, SourceLocation { start: 8, end: 16 });
 }
+
+#[test]
+fn a_regex_in_the_target_does_not_capture_the_operator_anchor() {
+    // The last-starting tie-break exists for this case: the anchor for
+    // `foo(/inner/) =~ s/a/b/` contains two records, and the operator is the
+    // rightmost one. A resolver that took the first or the narrowest record
+    // would bind the operation to the target's regex instead.
+    // The target contributes its own anchor, so the body carries two: the
+    // nested `/inner/` and the substitution. Each must resolve to itself.
+    let source = "foo(/inner/) =~ s/a/b/;";
+    let output = parse_source_with_regex_analysis(source);
+    let hir = lower_ast(&output.parse_output.ast);
+
+    let mut nested = Vec::new();
+    let mut operator = Vec::new();
+    for expr in hir.bodies.iter().flat_map(|body| body.exprs.iter()) {
+        match expr {
+            HirExpr::Regex(r) => nested.push(r.analysis.full_range),
+            HirExpr::Substitution(s) => operator.push(s.analysis.full_range),
+            _ => {}
+        }
+    }
+    assert_eq!(nested.len(), 1, "expected the target's own regex anchor in {source:?}");
+    assert_eq!(operator.len(), 1, "expected the substitution anchor in {source:?}");
+
+    assert_eq!(
+        resolved_operator_text(source, operator[0]),
+        "s/a/b/",
+        "the operator must win over a regex inside its own target"
+    );
+    assert_eq!(
+        resolved_operator_text(source, nested[0]),
+        "/inner/",
+        "the nested regex must still resolve to itself"
+    );
+}

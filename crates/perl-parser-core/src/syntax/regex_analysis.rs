@@ -311,6 +311,16 @@ impl RegexAnalysisTable {
     /// wholly contained in `range` — the same rule the parser's own AST
     /// compatibility projection applies, so both resolve identically.
     ///
+    /// The last-starting tie-break is what makes a bound anchor resolve to its
+    /// own operator: in `$x =~ /foo/` the operator is the rightmost part of the
+    /// binding expression, so a regex appearing in the *target* (for example
+    /// `foo(/inner/) =~ s/a/b/`) starts earlier and loses. Unlike
+    /// `regex_retention::record_for_node`, this does not additionally filter by
+    /// operator family, because a body-HIR anchor carries no family token; a
+    /// record nested *inside* the operator's own body — such as a regex within
+    /// an `/e` replacement — could therefore win the tie-break. Callers needing
+    /// that guarantee should check the resolved record's `operator`.
+    ///
     /// Returning `None` means the analysis is **unavailable** for that anchor,
     /// never that the pattern is clean.
     #[must_use]

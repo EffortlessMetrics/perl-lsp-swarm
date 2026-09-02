@@ -335,6 +335,35 @@ fn call_produced_target_is_classified_as_an_expression_and_lowered_once() {
 }
 
 #[test]
+fn declaration_wrapped_target_classifies_through_the_wrapper() {
+    // `(my $copy = $s) =~ s/a/b/` is the standard copy-then-modify idiom.
+    // `classify_regex_target` sees through the declaration to the inner lvalue,
+    // so the target classifies as a Place named "Variable" — but body lowering
+    // does not model a declaration used as an expression, so the lowered child
+    // is `Opaque { "VariableDeclaration" }` and the variable is not reachable
+    // through it.
+    //
+    // Pinning both halves keeps that boundary explicit: `ast_kind` describes
+    // the classified operand, `expr` is the lowered outer operand, and a
+    // consumer must not assume they name the same node. If declaration
+    // expressions later lower properly, this test says exactly what changed.
+    let s = substitution_of("(my $copy = $s) =~ s/a/b/;");
+    let (target_id, kind, ast_kind) = bound_of(&s.target, "`(my $copy = $s) =~ s/a/b/`");
+    assert_eq!(kind, RegexTargetKind::Place, "a declared lvalue is still a place");
+    assert_eq!(ast_kind, "Variable", "classification sees through the declaration wrapper");
+
+    let exprs = body_exprs("(my $copy = $s) =~ s/a/b/;");
+    let child = must_some_with(
+        exprs.get(target_id.0 as usize).cloned(),
+        "target id must index the body arena",
+    );
+    assert!(
+        matches!(child, HirExpr::Opaque { ref ast_kind } if ast_kind == "VariableDeclaration"),
+        "the lowered child is the unmodeled outer declaration, got {child:?}"
+    );
+}
+
+#[test]
 fn element_subscript_target_is_a_place() {
     let m = match_of("$h{k} =~ /foo/;");
     let (_, kind, _) = bound_of(&m.target, "`$h{k} =~ /foo/`");

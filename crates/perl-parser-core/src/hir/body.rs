@@ -563,12 +563,33 @@ pub enum HirRegexTarget {
     DefaultTopic,
 
     /// An explicitly bound operand, lowered exactly once in source order.
+    ///
+    /// # Reading `expr` against `kind`/`ast_kind`
+    ///
+    /// `kind` and `ast_kind` describe the *classified* operand, which for a
+    /// declaration-wrapped target is the inner declared lvalue: `classify` sees
+    /// through `my`/`our`/`state`/`local` and attribute wrappers, so
+    /// `(my $copy = $s) =~ s/a/b/` classifies as `Place` / `"Variable"`.
+    ///
+    /// `expr` is the lowered *outer* operand, and body lowering does not model
+    /// a declaration used as an expression, so for that case it is currently
+    /// `HirExpr::Opaque { ast_kind: "VariableDeclaration" }` — the declared
+    /// variable is not reachable through it, and neither is the initializer's
+    /// read. A consumer that needs the variable must not assume `ast_kind`
+    /// names the child's own shape.
+    ///
+    /// The two are consistent, not contradictory — `Place` is true of the
+    /// target, and the child is genuinely unmodeled — but they answer different
+    /// questions. Lowering declaration-expression targets so the child carries
+    /// the variable is separate work.
     Bound {
-        /// The lowered target expression.
+        /// The lowered target expression. See the variant docs: this is the
+        /// outer operand, which may be `Opaque` where `ast_kind` is not.
         expr: HirExprId,
-        /// Whether the operand is a statically known lvalue place.
+        /// Whether the classified operand is a statically known lvalue place.
         kind: RegexTargetKind,
-        /// Parser AST kind name of the bound operand, for target resolution.
+        /// Parser AST kind name of the *classified* operand — the inner
+        /// declared lvalue when the written target is declaration-wrapped.
         ast_kind: &'static str,
     },
 }
