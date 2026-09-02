@@ -127,7 +127,7 @@ pub struct ModuleSpec {
 pub enum RecordSeparatorDigits {
     /// `-0<octal>`, such as `-0777`.
     Octal(String),
-    /// `-0x<hex>` or `-0X<hex>`, such as `-0x41`.
+    /// `-0x<hex>`, such as `-0x41`.
     Hex(String),
 }
 

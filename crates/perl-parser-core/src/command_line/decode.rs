@@ -528,7 +528,7 @@ fn take_record_separator_digits(
     letter_span: ArgvSpan,
 ) -> (Option<RecordSeparatorDigits>, ArgvSpan) {
     let remaining = cluster.remaining();
-    let hexadecimal = remaining.strip_prefix(['x', 'X']).is_some_and(|after| {
+    let hexadecimal = remaining.strip_prefix('x').is_some_and(|after| {
         !after.is_empty() && after.chars().all(|character| character.is_ascii_hexdigit())
     });
 
@@ -609,10 +609,13 @@ fn decode_module_spec(
 /// than validates: a false answer means the argument is arbitrary code.
 fn is_plain_module_name(text: &str) -> bool {
     !text.is_empty()
-        && text.split("::").all(|segment| {
+        && text.split("::").enumerate().all(|(index, segment)| {
             let mut characters = segment.chars();
             match characters.next() {
-                Some(first) if first.is_alphabetic() || first == '_' => {
+                Some(first)
+                    if (index == 0 && (first.is_alphabetic() || first == '_'))
+                        || (index > 0 && (first.is_alphanumeric() || first == '_')) =>
+                {
                     characters.all(|character| character.is_alphanumeric() || character == '_')
                 }
                 _ => false,

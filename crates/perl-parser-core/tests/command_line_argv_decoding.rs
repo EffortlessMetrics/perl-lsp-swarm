@@ -479,6 +479,22 @@ fn hexadecimal_record_separators_need_the_marker_and_a_digit() {
 }
 
 #[test]
+fn uppercase_hex_marker_is_not_accepted_and_numeric_module_components_are_plain() {
+    assert!(matches!(
+        perl_error(&["-0X41", "script.pl"]),
+        InvocationDecodeError::UnrecognizedSwitch { switch: '4', .. }
+    ));
+
+    let numeric_component = perl(&["-MFoo::1", "-e", "print"]);
+    let ContextFactKind::ModuleImport { spec, .. } = &numeric_component.context_facts[0].kind
+    else {
+        panic!("expected a module import");
+    };
+    assert!(spec.module_is_plain_name);
+    assert!(numeric_component.ambiguities.is_empty());
+}
+
+#[test]
 fn record_separator_digits_stop_at_the_first_non_octal_digit() {
     // perl reports `Unrecognized switch: -9` for `-09`.
     assert!(matches!(
