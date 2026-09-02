@@ -406,11 +406,39 @@ fn when_a_quote_like_spelling_names_a_declaration_then_its_heredocs_are_owned() 
         );
     }
 
+    // perl also lets the name start the next line, so the keyword has to carry
+    // across the line break.
+    for source in [
+        "package\ns {\n  sub hi { my $x = <<EOF;\nbody\nEOF\n  return $x; }\n}\n",
+        "sub\ns { 1 }\nmy $x = <<EOF;\nbody\nEOF\n",
+    ] {
+        let scan = perl_parser_pest::heredoc::scan(source);
+        assert_eq!(scan.captures().len(), 1, "the keyword must carry across lines: {source:?}");
+        assert_eq!(
+            scan.captures().first().map(|capture| capture.content()),
+            Some("body\n"),
+            "the body must be owned for: {source:?}"
+        );
+    }
+
     // The guard must not disarm the operator itself: `s/a/b/` is still a
     // substitution and owns nothing, and no source is removed.
     for source in ["my $y = s/a/b/;\nmy $z = 3;\n", "my $y = s{a}{b};\nmy $z = 3;\n"] {
         let scan = perl_parser_pest::heredoc::scan(source);
         assert!(scan.captures().is_empty(), "substitution still owns nothing: {source:?}");
+        assert_eq!(scan.stripped(), source, "no source may be removed for: {source:?}");
+    }
+
+    // The carried keyword is read from the walk, not the raw text, so a word in
+    // a comment or a string cannot arm it — and it must be a whole word. Each
+    // of these leaves the next line's `s{a}{b}` an operator.
+    for source in [
+        "my $p = 1; # package\ns{a}{b};\nmy $z = 3;\n",
+        "my $t = \"package\";\ns{a}{b};\nmy $z = 3;\n",
+        "my $mypackage = 1;\ns{a}{b};\nmy $z = 3;\n",
+    ] {
+        let scan = perl_parser_pest::heredoc::scan(source);
+        assert!(scan.captures().is_empty(), "a non-keyword must not arm the guard: {source:?}");
         assert_eq!(scan.stripped(), source, "no source may be removed for: {source:?}");
     }
 }

@@ -334,6 +334,9 @@ impl<'a> Scanner<'a> {
         let mut index = 0;
         let mut region = Region::Code;
         let mut open_construct: Option<OpenConstruct> = None;
+        // Set when the previous code line ended with `package` or `sub`, so a
+        // quote-like spelling opening this line is that declaration's name.
+        let mut follows_declaration = false;
         while index < lines.len() {
             let line = lines[index];
             let text = &self.source[line.start..line.end];
@@ -375,7 +378,15 @@ impl<'a> Scanner<'a> {
             }
 
             let mut openers = Vec::new();
-            open_construct = scan_line_openers(text, line.start, &mut openers, open_construct);
+            let scanned = scan_line_openers(
+                text,
+                line.start,
+                &mut openers,
+                open_construct,
+                follows_declaration,
+            );
+            open_construct = scanned.carried;
+            follows_declaration = scanned.ends_with_declaration_keyword;
             if openers.is_empty() {
                 continue;
             }
@@ -828,12 +839,24 @@ fn is_format_start(line: &str) -> bool {
 /// ranges are original-source ranges. `carried` is a quoted run left open by the
 /// previous line; the return value is the run left open by this one, so a
 /// string spanning several lines never has its interior scanned for openers.
+/// What one line leaves for the next.
+struct LineScan {
+    /// A quoted or quote-like run this line left open.
+    carried: Option<OpenConstruct>,
+    /// Whether this line's *code* ends with `package` or `sub`, so a
+    /// quote-like spelling opening the next line is that declaration's name.
+    /// Computed from the walk rather than the raw text, so the word cannot come
+    /// from a comment or the inside of a string.
+    ends_with_declaration_keyword: bool,
+}
+
 fn scan_line_openers(
     line: &str,
     line_start: usize,
     out: &mut Vec<LineOpener>,
     carried: Option<OpenConstruct>,
-) -> Option<OpenConstruct> {
+    follows_declaration: bool,
+) -> LineScan {
     let bytes = line.as_bytes();
     let mut index = 0;
     // End offset of the last construct that completed a term on this line: a
@@ -846,7 +869,7 @@ fn scan_line_openers(
         let takes_modifiers = construct.takes_modifiers;
         let (next, still_open) = continue_construct(bytes, construct);
         if let Some(open) = still_open {
-            return Some(open);
+            return LineScan { carried: Some(open), ends_with_declaration_keyword: false };
         }
         index = next;
         // The same-line paths advance over trailing modifiers before marking the
@@ -863,11 +886,13 @@ fn scan_line_openers(
     while index < bytes.len() {
         let byte = bytes[index];
         match byte {
-            b'#' if !is_length_sigil(bytes, index) => return None,
+            b'#' if !is_length_sigil(bytes, index) => {
+                return LineScan { carried: None, ends_with_declaration_keyword: false };
+            }
             b'\'' | b'"' | b'`' => {
                 let (next, open) = skip_quoted(bytes, index, byte);
                 if let Some(open) = open {
-                    return Some(open);
+                    return LineScan { carried: Some(open), ends_with_declaration_keyword: false };
                 }
                 index = next;
                 last_term_end = index;
@@ -895,7 +920,10 @@ fn scan_line_openers(
             b'/' if is_term_position(line, bytes, index, last_term_end) => {
                 let (next, open) = skip_delimited(bytes, index, b'/');
                 if let Some(open) = open {
-                    return Some(OpenConstruct { takes_modifiers: true, ..open });
+                    return LineScan {
+                        carried: Some(OpenConstruct { takes_modifiers: true, ..open }),
+                        ends_with_declaration_keyword: false,
+                    };
                 }
                 index = next;
                 while index < bytes.len() && bytes[index].is_ascii_alphabetic() {
@@ -912,8 +940,10 @@ fn scan_line_openers(
                     None => index += 2,
                 }
             }
-            _ => match skip_quote_like(line, bytes, index) {
-                Some((_next, Some(open))) => return Some(open),
+            _ => match skip_quote_like(line, bytes, index, follows_declaration) {
+                Some((_next, Some(open))) => {
+                    return LineScan { carried: Some(open), ends_with_declaration_keyword: false };
+                }
                 Some((next, None)) => {
                     index = next;
                     last_term_end = index;
@@ -922,7 +952,32 @@ fn scan_line_openers(
             },
         }
     }
-    None
+    // The whole line was code — a comment or an open construct returns above —
+    // so its trailing word is a trailing code word.
+    LineScan { carried: None, ends_with_declaration_keyword: ends_with_declaration_keyword(line) }
+}
+
+/// Whether `line` ends with a bare `package` or `sub` keyword.
+///
+/// Perl lets a declaration's name start the next line, and the name may be a
+/// quote-like spelling (`package\ns { ... }`), so the next line needs to know.
+fn ends_with_declaration_keyword(line: &str) -> bool {
+    let trimmed = line.trim_end();
+    let word_start = trimmed.trim_end_matches(is_word_char).len();
+    let Some(word) = trimmed.get(word_start..) else { return false };
+    if !matches!(word, "package" | "sub") {
+        return false;
+    }
+    // The keyword must be a whole word and not a variable: neither the tail of
+    // `mypackage` nor the name in `@sub`. Both are hygiene rather than observed
+    // defects — a line ending that way cannot be followed by a bare quote-like
+    // operator in valid Perl, so neither has a discriminating perl-derived
+    // control the way the rest of this module's rules do.
+    trimmed.get(..word_start).is_none_or(|head| {
+        !head.ends_with(|character: char| {
+            is_word_char(character) || matches!(character, '$' | '@' | '%' | '&' | '*')
+        })
+    })
 }
 
 /// Resume a construct left open by a previous line.
@@ -1018,10 +1073,20 @@ const QUOTE_LIKE_OPERATORS: [&str; 9] = ["qq", "qw", "qx", "qr", "tr", "q", "m",
 ///
 /// `package` and `sub` are followed by an identifier, so a quote-like spelling
 /// there is that identifier rather than an operator.
-fn follows_declaration_keyword(line: &str, bytes: &[u8], index: usize) -> bool {
+fn follows_declaration_keyword(
+    line: &str,
+    bytes: &[u8],
+    index: usize,
+    follows_declaration: bool,
+) -> bool {
     let mut before = index;
     while before > 0 && matches!(bytes[before - 1], b' ' | b'\t') {
         before -= 1;
+    }
+    if before == 0 {
+        // Only indentation precedes the word, so the keyword — if there is one
+        // — ended the previous line.
+        return follows_declaration;
     }
     if before == index {
         // A quote-like operator may abut its delimiter, but a declaration name
@@ -1050,6 +1115,7 @@ fn skip_quote_like(
     line: &str,
     bytes: &[u8],
     index: usize,
+    follows_declaration: bool,
 ) -> Option<(usize, Option<OpenConstruct>)> {
     // `$s->trim()` is not an `s///`: a sigil, an arrow, or an adjacent word all
     // mean this letter belongs to a name, not to a quote-like operator. Firing
@@ -1067,7 +1133,7 @@ fn skip_quote_like(
     // substitution — perl accepts both, and a heredoc inside such a block is a
     // real heredoc. Reading the name as an operator consumes to a bogus
     // delimiter and the block's openers are then missed entirely.
-    if follows_declaration_keyword(line, bytes, index) {
+    if follows_declaration_keyword(line, bytes, index, follows_declaration) {
         return None;
     }
     let rest = line.get(index..)?;
