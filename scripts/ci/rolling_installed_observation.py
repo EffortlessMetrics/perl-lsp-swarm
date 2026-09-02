@@ -332,7 +332,7 @@ def verify_product_unit(
             }
             try:
                 manifest = json.loads(unit.read("artifact-manifest.json"))
-            except (KeyError, json.JSONDecodeError) as error:
+            except (KeyError, UnicodeError, json.JSONDecodeError) as error:
                 findings.append(
                     f"product-unit manifest is unreadable: {error}"
                 )
@@ -602,8 +602,13 @@ def build_row(args: argparse.Namespace) -> int:
             stages.get("activation_failure_journey")
         ),
         "crash_recovery": stage_verdict(stages.get("crash_recovery_journey")),
+        # A concrete selector is exact host evidence only when a bound smoke
+        # receipt actually ran against it; without the receipt the requested
+        # version is unobserved and stays not_proven.
         "host_version_exactness": (
-            "not_proven" if args.vscode_version == "stable" else "pass"
+            "not_proven"
+            if args.vscode_version == "stable" or receipt is None
+            else "pass"
         ),
         "source_generation_exactness": "not_proven",
         "native_critic_installed": "not_proven",

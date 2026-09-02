@@ -190,6 +190,9 @@ class ObservationTest(unittest.TestCase):
         self.assertEqual(
             row["cells"]["packaged_provider_edit_journey"], "instrument_defect"
         )
+        # A concrete requested selector without a bound receipt is unobserved
+        # host evidence, not exactness.
+        self.assertEqual(row["cells"]["host_version_exactness"], "not_proven")
         self.assertEqual(row["status"], "not_proven")
 
     def test_cross_sha_receipt_cannot_satisfy_row(self) -> None:
@@ -316,6 +319,17 @@ class ObservationTest(unittest.TestCase):
         self.assertEqual(row["cells"]["artifact_identity"], "instrument_defect")
         self.assertTrue(
             any("members" in finding for finding in row["findings"])
+        )
+
+    def test_archive_with_unreadable_manifest_is_instrument_defect(self) -> None:
+        with zipfile.ZipFile(self.archive, "w") as unit:
+            unit.writestr("perllsp", b"server-bytes")
+            unit.writestr("perl-dap", b"dap-bytes")
+            unit.writestr("artifact-manifest.json", b'\xff\xfe{"schema":')
+        row = self.build_row(receipt=smoke_receipt(self.server))
+        self.assertEqual(row["cells"]["artifact_identity"], "instrument_defect")
+        self.assertTrue(
+            any("manifest is unreadable" in finding for finding in row["findings"])
         )
 
     def test_archive_with_substituted_server_bytes_fails(self) -> None:
