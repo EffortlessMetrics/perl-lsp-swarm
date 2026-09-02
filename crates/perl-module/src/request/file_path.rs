@@ -250,12 +250,21 @@ impl TryFrom<&str> for ModuleFilePath {
     }
 }
 
-/// Whether a single-quoted token's body carries an escape Perl would decode.
+/// Whether a single-quoted token's body is anything other than its own literal value.
 ///
 /// Single quotes recognize only `\\` and `\'`; every other backslash is literal.
 /// A byte scan is exact here because both delimiters are ASCII and a UTF-8
-/// continuation byte can never be mistaken for one.
+/// continuation byte can never be mistaken for one. A trailing lone backslash is
+/// also refused, because it can only arise from a truncated token.
 fn single_quoted_needs_decoding(inner: &str) -> bool {
+    // A body ending in a lone backslash cannot come from a well-formed token:
+    // `'Foo\'` does not terminate in Perl ("Can't find string terminator"),
+    // because `\'` escapes the quote. Such input is truncated, so refuse it
+    // rather than invent an exact filename from it.
+    if inner.ends_with('\\') {
+        return true;
+    }
+
     inner
         .as_bytes()
         .windows(2)
@@ -385,6 +394,21 @@ mod tests {
                 ModuleFilePath::from_quoted_token(token),
                 Err(ModuleFilePathError::UndecodableToken),
                 "`{token}` needs decoding this crate does not perform"
+            );
+        }
+    }
+
+    #[test]
+    fn a_truncated_single_quoted_token_is_refused() {
+        // A body ending in a lone backslash cannot come from well-formed source:
+        // `perl` rejects `'Foo\'` with "Can't find string terminator", because
+        // `\'` escapes the quote. Accepting it would mint an exact filename out
+        // of a token the caller truncated.
+        for token in ["'Foo\\'", "'Foo\\\\Bar\\'", "'\\'"] {
+            assert_eq!(
+                ModuleFilePath::from_quoted_token(token),
+                Err(ModuleFilePathError::UndecodableToken),
+                "`{token}` is truncated, not an exact filename"
             );
         }
     }
