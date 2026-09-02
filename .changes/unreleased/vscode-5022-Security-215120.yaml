@@ -1,9 +1,0 @@
-project: vscode
-component: Editor behavior
-kind: Security
-body: "The AI completion toggles (perl-lsp.aiCompletion.enabled and perl-lsp.aiCompletion.streaming.enabled) are now machine-scoped, so a checked-in .vscode/settings.json can no longer turn AI completion on for a cloned repository; the first-run \"Enable\" prompt now writes to your user settings instead of workspace settings, and the extension forwards only those machine-scoped values to the server."
-time: 2026-07-28T21:51:20Z
-custom:
-  PR: "5022"
-  Slug: project-config-ai-completion-activation-extension
-  Breaking: "no"

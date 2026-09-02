@@ -1,9 +1,0 @@
-project: vscode
-component: Performance and reliability
-kind: Added
-body: "The extension now runs a liveness watchdog against the running language server, sending a workspace/symbol request every 30 seconds and restarting the server when it does not answer within 10 seconds, so a hung server recovers on its own instead of leaving the editor without Perl language features until a manual restart."
-time: 2026-07-28T08:52:53Z
-custom:
-  PR: "5152"
-  Slug: extension-liveness-watchdog
-  Breaking: "no"
