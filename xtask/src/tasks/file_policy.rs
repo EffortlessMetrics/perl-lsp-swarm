@@ -324,7 +324,7 @@ fn validate_exact_policy_bytes(policy: &[u8]) -> Result<()> {
         .ok_or_else(|| eyre!("allowlist must define an allow array"))?;
     let tables: Vec<&toml::map::Map<String, toml::Value>> =
         entries.iter().filter_map(toml::Value::as_table).collect();
-    for conflict in mispaired_provenance_conflicts(&tables) {
+    if let Some(conflict) = mispaired_provenance_conflicts(&tables).first() {
         bail!("mispaired provenance: {conflict}");
     }
     let mut matchers = std::collections::BTreeSet::new();
