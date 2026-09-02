@@ -3,6 +3,7 @@
 //! This module provides a complete Rust-native implementation of the Perl parser
 //! using Pest for grammar parsing, without any dependency on tree-sitter's C code.
 
+use crate::heredoc::{HeredocQueue, HeredocScan};
 use crate::pratt_parser::PrattParser;
 use pest::{
     Parser,
@@ -325,16 +326,32 @@ pub enum AstNode {
 /// Pure Rust Perl parser implementation
 pub struct PureRustPerlParser {
     _pratt_parser: PrattParser,
+    /// Bodies owned by the heredoc pre-pass, awaiting attachment (#8220).
+    heredocs: HeredocQueue,
 }
 
 impl PureRustPerlParser {
     pub fn new() -> Self {
-        Self { _pratt_parser: PrattParser::new() }
+        Self { _pratt_parser: PrattParser::new(), heredocs: HeredocQueue::default() }
     }
 
     #[inline(always)]
     pub fn parse(&mut self, source: &str) -> Result<AstNode, Box<dyn std::error::Error>> {
-        let normalized = Self::normalize_source(source);
+        let scan = crate::heredoc::scan(source);
+        self.parse_scanned(&scan)
+    }
+
+    /// Parse the body-stripped text of `scan`, attaching its captured bodies.
+    ///
+    /// Heredoc bodies are removed before normalization so that neither
+    /// `normalize_source` nor the grammar re-reads body text as Perl code, and
+    /// so following code resumes at the line after the terminator (#8220).
+    pub(crate) fn parse_scanned(
+        &mut self,
+        scan: &HeredocScan,
+    ) -> Result<AstNode, Box<dyn std::error::Error>> {
+        let normalized = Self::normalize_source(scan.stripped());
+        self.heredocs = HeredocQueue::from_scan(scan);
 
         match <PerlParser as Parser<Rule>>::parse(Rule::program, &normalized) {
             Ok(pairs) => self.build_ast(pairs),
@@ -343,6 +360,11 @@ impl PureRustPerlParser {
                 self.parse_with_recovery(&normalized, e)
             }
         }
+    }
+
+    /// Captured heredoc bodies no opener node claimed during the last parse.
+    pub(crate) fn queued_heredoc_bodies(&self) -> usize {
+        self.heredocs.remaining()
     }
 
     fn normalize_source(source: &str) -> String {
@@ -1385,15 +1407,15 @@ impl PureRustPerlParser {
                     }
                 }
 
-                // Note: In a real implementation, we would need to collect the heredoc content
-                // from subsequent lines until we find the marker. For now, we just create
-                // a placeholder.
-                Ok(Some(AstNode::Heredoc {
-                    marker,
-                    indented,
-                    quoted,
-                    content: Arc::from(""), // This would be filled by a stateful parser
-                }))
+                // The body was removed from the parsed text by the heredoc
+                // pre-pass (#8220) and is attached here. It is taken only when
+                // the queued capture's marker matches this opener, so a
+                // scanner/grammar disagreement leaves content empty rather than
+                // attaching another heredoc's body. An empty content therefore
+                // means an empty body, an unowned opener, or a direct
+                // `build_node` call by a bridge consumer.
+                let content = self.heredocs.take(&marker).map_or_else(|| Arc::from(""), Arc::from);
+                Ok(Some(AstNode::Heredoc { marker, indented, quoted, content }))
             }
             Rule::list => {
                 let mut elements = Vec::new();
