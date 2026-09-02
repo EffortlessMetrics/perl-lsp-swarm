@@ -24,7 +24,7 @@ class DapSupportContractTests(unittest.TestCase):
             binary.write_bytes(b"exact")
             resolved = support.resolve_dap_path(str(binary), which=lambda _: None)
             self.assertEqual(resolved, binary.resolve())
-        self.assertEqual(support.dap_command(resolved), [str(binary.resolve()), "--stdio"])
+            self.assertEqual(support.dap_command(resolved), [str(binary.resolve()), "--stdio"])
 
     def test_dap_command_adds_host_owned_trusted_root(self):
         with tempfile.TemporaryDirectory() as directory:
