@@ -665,6 +665,9 @@ fn is_plain_module_name(text: &str) -> bool {
         return false;
     }
     components.all(|component| {
+        if component.is_empty() {
+            return true;
+        }
         let mut chars = component.chars();
         matches!(chars.next(), Some(c) if c.is_ascii_alphanumeric() || c == '_')
             && chars.all(is_name_character)
