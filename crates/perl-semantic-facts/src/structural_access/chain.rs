@@ -91,9 +91,9 @@ impl StructuralAccessChain {
     ///    be the one the predecessor selected.
     /// 7. A hop cannot claim a successful selection through an operator the
     ///    predecessor's known shape cannot carry — a hash operator on a known
-    ///    array reference, the reverse, or any subscript on a plain scalar or
-    ///    code reference. `ShapeMismatch` says that honestly, and a symbolic
-    ///    dereference says so with its own boundary.
+    ///    array reference, the reverse, or any subscript on a plain scalar, a
+    ///    code reference or a package name. `ShapeMismatch` says that honestly,
+    ///    and a symbolic dereference says so with its own boundary.
     ///
     /// # Errors
     /// Returns the first violated law as a [`StructuralAccessContractError`].
@@ -161,10 +161,10 @@ impl StructuralAccessChain {
             // apparent selection through one is a symbolic dereference, which
             // has its own typed boundary and must be recorded as one.
             //
-            // `Object`, `PackageName` and `Unknown` constrain nothing. An
-            // object is a blessed reference that may be a blessed hash or a
-            // blessed array; the other two assert too little to contradict
-            // anything. Constraining them would reject honest records.
+            // Only `Object` and `Unknown` constrain nothing: an object is a
+            // blessed reference that may be a blessed hash or a blessed array,
+            // and `Unknown` asserts nothing at all. Constraining either would
+            // reject honest records.
             //
             // `ShapeMismatch` remains available to record a genuine mismatch.
             if let StructuralHopOutcome::Selected { shape, .. } = previous.outcome() {
@@ -226,16 +226,22 @@ impl StructuralAccessChain {
 
 /// Whether a known value shape can carry the next hop's operator class.
 ///
-/// Shapes that assert too little to contradict anything — `Object` (a blessed
-/// reference may be a blessed hash or a blessed array), `PackageName`, and
-/// `Unknown` — carry everything, because rejecting them would refuse honest
-/// records rather than impossible ones.
+/// A hash reference carries keyed operators, an array reference indexed ones.
+/// A plain scalar, a code reference and a package name carry neither: none is a
+/// subscriptable reference, and subscripting a package-name string is a strict
+/// refs error (`Can't use string ("Foo") as a HASH ref`) or a symbolic
+/// dereference, which belongs at this contract's own symbolic-reference
+/// boundary rather than in a plain selection.
+///
+/// Only `Object` and `Unknown` carry everything, and they do so because they
+/// assert too little to contradict anything — a blessed reference may be a
+/// blessed hash or a blessed array — not because every operator truly applies.
 fn shape_carries(shape: &ValueShape, next_is_keyed: bool) -> bool {
     match shape {
         ValueShape::HashRef => next_is_keyed,
         ValueShape::ArrayRef => !next_is_keyed,
-        ValueShape::Scalar | ValueShape::CodeRef => false,
-        ValueShape::Object { .. } | ValueShape::PackageName { .. } | ValueShape::Unknown => true,
+        ValueShape::Scalar | ValueShape::CodeRef | ValueShape::PackageName { .. } => false,
+        ValueShape::Object { .. } | ValueShape::Unknown => true,
     }
 }
 
@@ -247,6 +253,10 @@ fn shape_carries(shape: &ValueShape, next_is_keyed: bool) -> bool {
 fn shape_is_decisive(shape: &ValueShape) -> bool {
     matches!(
         shape,
-        ValueShape::HashRef | ValueShape::ArrayRef | ValueShape::Scalar | ValueShape::CodeRef
+        ValueShape::HashRef
+            | ValueShape::ArrayRef
+            | ValueShape::Scalar
+            | ValueShape::CodeRef
+            | ValueShape::PackageName { .. }
     )
 }

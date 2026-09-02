@@ -1361,12 +1361,16 @@ fn workspace_root_presence_reaches_the_chain_fingerprint() -> Result<(), Box<dyn
 }
 
 #[test]
-fn a_scalar_or_code_reference_cannot_be_subscripted_into_a_selection() -> Result<(), Box<dyn Error>>
-{
-    // A plain scalar and a code reference are not subscriptable references.
-    // Any apparent selection through one is a symbolic dereference, which has
-    // its own boundary and must be recorded as one.
-    for shape in [ValueShape::Scalar, ValueShape::CodeRef] {
+fn a_non_reference_shape_cannot_be_subscripted_into_a_selection() -> Result<(), Box<dyn Error>> {
+    // A plain scalar, a code reference and a package name are not subscriptable
+    // references — `"Foo"->{k}` is a strict-refs error, verified against the
+    // interpreter. Any apparent selection through one is a symbolic
+    // dereference, which has its own boundary and must be recorded as one.
+    for shape in [
+        ValueShape::Scalar,
+        ValueShape::CodeRef,
+        ValueShape::PackageName { package: "Foo".to_string() },
+    ] {
         let head = selecting_hop(
             0,
             base_variable(),
