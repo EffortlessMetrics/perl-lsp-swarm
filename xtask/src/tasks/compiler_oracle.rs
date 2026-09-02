@@ -272,20 +272,28 @@ for my $sub (qw(Oracle::Demo::proto)) {
 
             let elapsed = started.elapsed();
             if elapsed >= timeout {
-                if let Err(error) = child.kill() {
-                    if child
-                        .try_wait()
-                        .with_context(|| format!("poll {operation} after kill failure"))?
-                        .is_none()
-                    {
-                        return Err(error).with_context(|| format!("kill timed-out {operation}"));
+                let mut kill_race_note = String::new();
+                if let Err(kill_error) = child.kill() {
+                    match child.try_wait() {
+                        // The child exited between the last poll and the kill;
+                        // record the kill failure and fall through to reap.
+                        Ok(Some(_)) => {
+                            kill_race_note = format!("; kill raced with child exit: {kill_error}");
+                        }
+                        Ok(None) => {
+                            return Err(kill_error)
+                                .with_context(|| format!("kill timed-out {operation}"));
+                        }
+                        Err(poll_error) => {
+                            return Err(cleanup_after_poll_error(child, poll_error, operation));
+                        }
                     }
                 }
                 let output = child
                     .wait_with_output()
                     .with_context(|| format!("reap timed-out {operation}"))?;
                 bail!(
-                    "{operation} timed out after {} ms; stderr: {}",
+                    "{operation} timed out after {} ms{kill_race_note}; stderr: {}",
                     timeout.as_millis(),
                     String::from_utf8_lossy(&output.stderr).trim()
                 );
