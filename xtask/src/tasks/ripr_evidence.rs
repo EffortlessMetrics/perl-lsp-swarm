@@ -3382,11 +3382,22 @@ fn ancestry_failure_guidance(base: &str, head: &str, receipt: &AncestryReceipt) 
              before running diff-scoped RIPR locally. \
              CI is unaffected: the RIPR workflow checks out with fetch-depth: 0.",
         ),
-        AncestryDisposition::NotProvenMissingObject => message.push_str(&format!(
-            " The requested revision could not be resolved locally, which does not \
-             establish that `{base}` and `{head}` are unrelated. Confirm the spelling of \
-             `{base}` and fetch the missing objects, e.g. `git fetch origin`."
-        )),
+        AncestryDisposition::NotProvenMissingObject => {
+            // Name the side the receipt actually found missing; "the requested
+            // revision" is useless when only one of the two failed to resolve.
+            let missing = match (receipt.base_object_exists, receipt.head_object_exists) {
+                (false, true) => format!("`{base}`"),
+                (true, false) => format!("`{head}`"),
+                _ => format!("`{base}` and `{head}`"),
+            };
+            message.push_str(&format!(
+                " {missing} could not be resolved locally, which does not establish that \
+                 `{base}` and `{head}` are unrelated. Confirm the spelling, then materialize \
+                 the missing objects: `git fetch origin` covers the remote's configured \
+                 refspec, and a revision outside that refspec must be requested by its \
+                 remote-side name."
+            ));
+        }
         AncestryDisposition::Unrelated => message.push_str(&format!(
             " Both commit objects are present in a complete local graph and share no \
              common history, so `{base}...{head}` has no diff range to compute. \
@@ -7451,6 +7462,16 @@ esac
 
         let message = merge_base_failure_guidance(repo.path(), "ripr-no-such-base-xyz", "HEAD");
         assert!(message.contains("not_proven_missing_object"), "typed disposition: {message}");
+        // Only the base is unresolvable here, so the remedy must name the base
+        // rather than blaming both sides.
+        assert!(
+            message.contains("`ripr-no-such-base-xyz` could not be resolved locally"),
+            "names the missing side: {message}"
+        );
+        assert!(
+            !message.contains("`ripr-no-such-base-xyz` and `HEAD` could not be resolved"),
+            "must not blame the resolvable head: {message}"
+        );
         assert!(
             !message.contains("share no common history"),
             "a bad ref must never assert absent history: {message}"
