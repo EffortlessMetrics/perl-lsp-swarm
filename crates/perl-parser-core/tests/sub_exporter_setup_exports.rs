@@ -8,8 +8,8 @@
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
-    ExportDeclaration, ExportDeclarationKind, FrameworkAdapterRegistry, HirFile, StashConfidence,
-    StashDynamicBoundaryKind, StashProvenance, lower_ast,
+    ExportDeclaration, ExportDeclarationKind, FrameworkAdapterRegistry, HirFile, HirKind,
+    StashConfidence, StashDynamicBoundaryKind, StashProvenance, lower_ast,
 };
 
 fn lower(source: &str) -> HirFile {
@@ -1087,6 +1087,95 @@ fn a_leading_config_hashref_before_setup_publishes_no_exports() {
         "a leading config hashref must not leave the exports published"
     );
     assert!(!export_boundaries(&file, "My::Utils").is_empty());
+}
+
+#[test]
+fn a_trailing_config_hashref_after_setup_publishes_no_exports() {
+    // The configuration hashref is an ordinary argument, so it is equally valid
+    // after the `-setup` pair. This spelling redirects installation exactly as
+    // the leading one does, and it reaches this pass through a fully readable
+    // `-setup` hash — so nothing but this scan stands between it and an export
+    // list published at full confidence for a package that never receives it.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => { exports => [qw(foo)] }, { into => 'Target::Package' };\n",
+    );
+
+    assert!(
+        declarations(&file, "My::Utils").is_empty(),
+        "a trailing config hashref must not leave the exports published"
+    );
+    assert_eq!(
+        export_boundaries(&file, "My::Utils"),
+        vec![(
+            Some("into".to_string()),
+            "Sub::Exporter setup is not shown to install exports \
+             into the importing package"
+                .to_string()
+        )]
+    );
+}
+
+#[test]
+fn a_trailing_hashref_that_redirects_nothing_leaves_the_exports_published() {
+    // The negative control for the scan above: it must key on the documented
+    // installation-redirecting options, not on a configuration hashref being
+    // present at all. `generator` beside `-setup` configures how Sub::Exporter
+    // builds its own exports for this line; it moves nobody's installation.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => { exports => [qw(foo)] }, { generator => \\&build };\n",
+    );
+
+    assert_eq!(
+        declarations(&file, "My::Utils"),
+        vec![
+            (ExportDeclarationKind::Optional, None, vec!["foo".to_string()]),
+            (ExportDeclarationKind::Tag, Some("all".to_string()), vec!["foo".to_string()]),
+        ]
+    );
+    assert!(export_boundaries(&file, "My::Utils").is_empty());
+}
+
+#[test]
+fn a_trailing_configuration_hashref_survives_use_argument_capture() {
+    // The scan above can only see what the `use` arguments carry. Before this
+    // pass, argument capture stopped at the first token it had no bare-argument
+    // rule for, so `use M -setup => {...}, { into => ... };` recorded exactly
+    // the same arguments as the same line without the trailing hash — leaving
+    // the redirect undetectable rather than merely unread.
+    let file = lower(
+        "package My::Utils;\n\
+         use Sub::Exporter -setup => { exports => [qw(foo)] }, { into => 'Target::Package' };\n",
+    );
+
+    let arguments: Vec<Vec<String>> = file
+        .items
+        .iter()
+        .filter_map(|item| match &item.kind {
+            HirKind::UseDecl(use_decl) => Some(use_decl.args.clone()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        arguments,
+        vec![vec![
+            "-setup".to_string(),
+            "{".to_string(),
+            "exports".to_string(),
+            "=>".to_string(),
+            "[".to_string(),
+            "qw(foo)".to_string(),
+            "]".to_string(),
+            "}".to_string(),
+            "{".to_string(),
+            "into".to_string(),
+            "=>".to_string(),
+            "'Target::Package'".to_string(),
+            "}".to_string(),
+        ]]
+    );
 }
 
 #[test]

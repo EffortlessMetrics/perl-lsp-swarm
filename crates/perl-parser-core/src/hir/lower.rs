@@ -2025,9 +2025,18 @@ impl Lowerer {
         // and the plain form is a key the `-setup` path does not accept. A
         // custom `installer` may well install normally, but nothing here
         // proves it does.
+        //
+        // The same keys also redirect from a configuration hashref passed
+        // *beside* the `-setup` pair — `use Sub::Exporter { into => 'Target' },
+        // -setup => {...}` is the documented spelling, and the hash may sit
+        // after the pair just as well. That hash is outside the setup body
+        // this pass reads, so it has to be looked for separately or a
+        // redirected module publishes its exports as if they arrived.
         if let Some(key) = SUB_EXPORTER_INSTALL_REDIRECT_KEYS
             .iter()
+            .map(|key| (*key).to_string())
             .find(|key| hash_entry_value(setup, key).is_some())
+            .or_else(|| sub_exporter_redirect_beside_setup(args))
         {
             self.record_dynamic_stash_boundary(
                 Some(package),
@@ -3225,6 +3234,48 @@ fn sub_exporter_unknown_setup_key(setup: &[String]) -> Option<String> {
             return Some(key);
         }
         (!SUB_EXPORTER_KNOWN_SETUP_KEYS.contains(&key.as_str())).then_some(key)
+    })
+}
+
+/// An install-redirecting key in a configuration hashref beside `-setup`.
+///
+/// `use Sub::Exporter { into => 'Target::Package' }, -setup => { ... }` is the
+/// documented way to redirect installation, and the same hash is an ordinary
+/// argument, so it is equally valid after the `-setup` pair. Either way it sits
+/// outside the setup body, so the scan over that body cannot see it: without
+/// this, a module whose exports are installed into another package publishes
+/// them as though an ordinary `use` received them.
+///
+/// The documented leading spelling is stopped earlier, by the missing-`-setup`
+/// boundary: a `use` whose arguments open with a hash records only that hash,
+/// so no readable setup reaches this point. The trailing spelling does reach
+/// it, which is what this scan is for.
+///
+/// Every `-setup` value's own token range is skipped, so a key inside a setup
+/// hash is judged by the scan over that hash and not counted a second time
+/// here. All of them are skipped, not just the one this pass reads: a repeated
+/// `-setup` discards the earlier value entirely, so a key inside it redirects
+/// nothing.
+fn sub_exporter_redirect_beside_setup(args: &[String]) -> Option<String> {
+    let setup_bodies: Vec<(usize, usize)> = args
+        .iter()
+        .enumerate()
+        .filter(|(index, arg)| {
+            unquote_literal(arg) == "-setup" && args.get(index + 1).map(String::as_str) == Some("{")
+        })
+        .filter_map(|(index, _)| {
+            matching_delimiter(args, index + 1).map(|close| (index + 1, close))
+        })
+        .collect();
+
+    args.iter().enumerate().find_map(|(index, token)| {
+        if setup_bodies.iter().any(|(open, close)| index >= *open && index <= *close) {
+            return None;
+        }
+        let key = unquote_literal(token);
+        (SUB_EXPORTER_INSTALL_REDIRECT_KEYS.contains(&key)
+            && args.get(index + 1).map(String::as_str) == Some("=>"))
+        .then(|| key.to_string())
     })
 }
 

@@ -1269,6 +1269,37 @@ impl<'a> Parser<'a> {
                             }
                         }
                     }
+                    Some(TokenKind::LeftBrace) => {
+                        // A configuration hashref may follow the flag arguments,
+                        // as in `use Sub::Exporter -setup => { ... },
+                        // { into => 'Target' };`. Breaking here would drop it
+                        // and every later argument from the recorded list, so a
+                        // reader of these arguments cannot tell that spelling
+                        // from one carrying no configuration at all.
+                        let mut depth = 0usize;
+                        while !self.tokens.is_eof() {
+                            match self.peek_kind() {
+                                Some(TokenKind::LeftBrace) => {
+                                    depth = depth.saturating_add(1);
+                                    args.push(self.consume_token()?.text.to_string());
+                                }
+                                Some(TokenKind::RightBrace) => {
+                                    args.push(self.consume_token()?.text.to_string());
+                                    depth = depth.saturating_sub(1);
+                                    if depth == 0 {
+                                        break;
+                                    }
+                                }
+                                Some(_) => {
+                                    args.push(self.consume_token()?.text.to_string());
+                                }
+                                None => break,
+                            }
+                        }
+                        if self.peek_kind() == Some(TokenKind::Comma) {
+                            self.consume_token()?;
+                        }
+                    }
                     Some(TokenKind::Comma) => {
                         // Skip standalone commas (already handled after identifiers)
                         self.consume_token()?;
