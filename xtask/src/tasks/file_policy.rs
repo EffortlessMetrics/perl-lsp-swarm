@@ -890,9 +890,35 @@ fn validate_v4_subject_workflow(text: &str) -> Result<()> {
         .get(key("env"))
         .and_then(serde_yaml_ng::Value::as_mapping)
         .ok_or_else(|| eyre!("preapproved v4 exact-tree job must define env"))?;
-    for variable in ["BASE_SHA", "SUBJECT_INPUT_SHA", "PR_HEAD_SHA", "PR_NUMBER", "EVALUATOR_SHA"] {
-        if !env.contains_key(key(variable)) {
-            bail!("preapproved v4 workflow is missing {variable} identity input");
+    let expected_env = [
+        (
+            "BASE_SHA",
+            "${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event.before }}",
+        ),
+        (
+            "SUBJECT_INPUT_SHA",
+            "${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event_name == 'workflow_dispatch' && inputs.subject_sha || github.event_name == 'push' && github.sha || '' }}",
+        ),
+        (
+            "PR_HEAD_SHA",
+            "${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || '' }}",
+        ),
+        (
+            "PR_NUMBER",
+            "${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || '' }}",
+        ),
+        (
+            "EVALUATOR_SHA",
+            "${{ github.event_name == 'push' && github.sha || github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || inputs.base_sha }}",
+        ),
+    ];
+    for (variable, expected) in expected_env {
+        let actual = env
+            .get(key(variable))
+            .and_then(serde_yaml_ng::Value::as_str)
+            .ok_or_else(|| eyre!("preapproved v4 workflow identity {variable} must be a string"))?;
+        if actual != expected {
+            bail!("preapproved v4 workflow identity {variable} is not canonical");
         }
     }
     let steps = job
@@ -4306,11 +4332,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
-      BASE_SHA: ${{ github.event.before }}
-      SUBJECT_INPUT_SHA: ${{ github.sha }}
-      PR_HEAD_SHA: ''
-      PR_NUMBER: ''
-      EVALUATOR_SHA: ${{ github.sha }}
+      BASE_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event.before }}
+      SUBJECT_INPUT_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event_name == 'workflow_dispatch' && inputs.subject_sha || github.event_name == 'push' && github.sha || '' }}
+      PR_HEAD_SHA: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || '' }}
+      PR_NUMBER: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || '' }}
+      EVALUATOR_SHA: ${{ github.event_name == 'push' && github.sha || github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || inputs.base_sha }}
     steps:
       - name: Checkout trusted evaluator
         uses: actions/checkout@0123456789012345678901234567890123456789
@@ -4333,8 +4359,20 @@ jobs:
         run: exit 1
 "#;
         validate_v4_subject_workflow(workflow)?;
-        let tampered = workflow.replace("run: exit 1", "run: cargo echo unapproved");
+        let tampered = workflow.replace(
+            "      - name: Propagate subject or policy failure\n",
+            "      - name: Extra executable step\n        run: echo extra\n      - name: Propagate subject or policy failure\n",
+        );
         ensure!(validate_v4_subject_workflow(&tampered).is_err());
+        let tampered_identity = workflow.replacen(
+            "github.event_name == 'pull_request_target' && github.event.pull_request.head.sha",
+            "github.sha",
+            1,
+        );
+        ensure!(
+            validate_v4_subject_workflow(&tampered_identity).is_err(),
+            "candidate-controlled subject identity must be rejected"
+        );
         for (label, tampered) in [
             (
                 "disabled trigger",
