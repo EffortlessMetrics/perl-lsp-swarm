@@ -114,6 +114,17 @@ pub enum EventAdmissionError {
     AfterTerminalSettlement,
     /// The run's sequence space is exhausted.
     SequenceExhausted,
+    /// A chunk's offset does not continue from what the channel already saw.
+    ///
+    /// An offset that skips ahead hides bytes; one that goes back double-counts
+    /// them. Either way the event stream no longer reassembles into what the
+    /// run produced.
+    ChunkOffsetDiscontinuous {
+        /// The offset the channel's admitted bytes require.
+        expected: u64,
+        /// The offset the chunk claimed.
+        found: u64,
+    },
 }
 
 impl std::fmt::Display for EventAdmissionError {
@@ -121,6 +132,9 @@ impl std::fmt::Display for EventAdmissionError {
         match self {
             Self::AfterTerminalSettlement => f.write_str("no event may follow terminal settlement"),
             Self::SequenceExhausted => f.write_str("run event sequence space is exhausted"),
+            Self::ChunkOffsetDiscontinuous { expected, found } => {
+                write!(f, "chunk offset {found} does not continue from {expected}")
+            }
         }
     }
 }
@@ -137,12 +151,14 @@ pub struct EventLedger {
     run_id: RunId,
     next_sequence: u64,
     settled: bool,
+    stdout_observed: u64,
+    stderr_observed: u64,
 }
 
 impl EventLedger {
     /// Open a ledger for a run.
     pub fn new(run_id: RunId) -> Self {
-        Self { run_id, next_sequence: 0, settled: false }
+        Self { run_id, next_sequence: 0, settled: false, stdout_observed: 0, stderr_observed: 0 }
     }
 
     /// The run this ledger orders.
@@ -168,6 +184,32 @@ impl EventLedger {
         let Some(next) = self.next_sequence.checked_add(1) else {
             return Err(EventAdmissionError::SequenceExhausted);
         };
+        // A chunk's offset is how much of its channel was already seen, so it
+        // must be exactly what this ledger has admitted for that channel. An
+        // offset that skips forward hides bytes; one that goes backward
+        // double-counts them. Either way a consumer reassembling the stream
+        // from these events gets something the run never produced, so the
+        // offset is verified rather than trusted.
+        let chunk = match &kind {
+            ProcessEventKind::StdoutBytes(evidence) => Some((evidence, self.stdout_observed)),
+            ProcessEventKind::StderrBytes(evidence) => Some((evidence, self.stderr_observed)),
+            _ => None,
+        };
+        if let Some((evidence, already_observed)) = chunk {
+            if evidence.offset != already_observed {
+                return Err(EventAdmissionError::ChunkOffsetDiscontinuous {
+                    expected: already_observed,
+                    found: evidence.offset,
+                });
+            }
+            let Some(total) = already_observed.checked_add(evidence.byte_count) else {
+                return Err(EventAdmissionError::SequenceExhausted);
+            };
+            match kind {
+                ProcessEventKind::StdoutBytes(_) => self.stdout_observed = total,
+                _ => self.stderr_observed = total,
+            }
+        }
         let sequence = EventSequence(self.next_sequence);
         self.next_sequence = next;
         if kind.is_terminal() {

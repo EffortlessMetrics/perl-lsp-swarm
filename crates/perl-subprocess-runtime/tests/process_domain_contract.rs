@@ -2261,12 +2261,13 @@ fn only_a_settled_child_can_establish_complete_output() -> TestResult {
     // truncation markers alone, so a supervisor failure or an unproven outcome
     // with empty streams claims to be the complete output of a child whose
     // fate was never established.
+    // These can all follow a child that started, so partial output and an
+    // observed cleanup are coherent alongside them.
     for disposition in [
         TerminalDisposition::SupervisorFailed,
         TerminalDisposition::NotProven,
         TerminalDisposition::TimedOut,
         TerminalDisposition::OutputLimitExceeded,
-        TerminalDisposition::UnsupportedBackend,
     ] {
         let result = result_with(
             StreamEvidence::complete(StreamChannel::Stdout, b"partial".to_vec()),
@@ -2280,6 +2281,32 @@ fn only_a_settled_child_can_establish_complete_output() -> TestResult {
             "{disposition:?} claimed complete output without an established child settlement"
         );
         // The predicate and the published limitation must never disagree.
+        assert!(
+            result.limitations().contains(&Limitation::OutputIncomplete),
+            "{disposition:?} withheld the OutputIncomplete limitation"
+        );
+    }
+
+    // The pre-start causes reach the same conclusion, but only evidence a
+    // never-started run could actually carry is admissible alongside them.
+    for disposition in [
+        TerminalDisposition::UnsupportedBackend,
+        TerminalDisposition::CancelledBeforeStart(CancellationReason::UserRequested),
+        TerminalDisposition::SpawnFailed {
+            detail: perl_subprocess_runtime::process::SpawnFailureDetail::ExecutableNotFound,
+        },
+    ] {
+        let result = result_with(
+            StreamEvidence::empty(StreamChannel::Stdout),
+            StreamEvidence::empty(StreamChannel::Stderr),
+            disposition.clone(),
+            CleanupDisposition::NotRequired,
+            TreeDisposition::NotRequired,
+        )?;
+        assert!(
+            !result.claims_complete_output(),
+            "{disposition:?} claimed complete output without an established child settlement"
+        );
         assert!(
             result.limitations().contains(&Limitation::OutputIncomplete),
             "{disposition:?} withheld the OutputIncomplete limitation"
@@ -2963,5 +2990,340 @@ fn a_channel_that_reaches_both_bounds_can_say_so() -> TestResult {
     // observed and retention stopped at 64. It must not claim the observation
     // bound it does not carry.
     assert_eq!(hides_the_observation_bound.stdout().truncation().observation_limit(), None);
+    Ok(())
+}
+
+// ──────────────── controls added after the eighth bot review round ───────────
+
+#[test]
+fn observation_truncated_evidence_still_proves_its_content_identity() -> TestResult {
+    // The wrong implementation this kills: gating the fingerprint check on
+    // "neither bound was reached" rather than "retention was unbounded". When
+    // only observation stopped early, every byte it did see was still kept, so
+    // the retained bytes *are* the observed content and their identity must
+    // match. Gating on completeness let observation-truncated evidence publish
+    // a fingerprint of something it never held.
+    let lying_fingerprint = result_with(
+        StreamEvidence::new(
+            StreamChannel::Stdout,
+            4,
+            perl_subprocess_runtime::process::ContentFingerprint::of(b"something else"),
+            b"kept".to_vec(),
+            TruncationState::observation_truncated(4),
+        ),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::CompletedExit { code: 0 },
+        CleanupDisposition::Completed,
+        TreeDisposition::GroupTerminated,
+    );
+    assert!(
+        lying_fingerprint.is_err(),
+        "observation-truncated evidence published a fingerprint of bytes it never retained"
+    );
+
+    // The honest shape passes: the fingerprint is of exactly what was kept.
+    let honest = result_with(
+        StreamEvidence::new(
+            StreamChannel::Stdout,
+            4,
+            perl_subprocess_runtime::process::ContentFingerprint::of(b"kept"),
+            b"kept".to_vec(),
+            TruncationState::observation_truncated(4),
+        ),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::CompletedExit { code: 0 },
+        CleanupDisposition::Completed,
+        TreeDisposition::GroupTerminated,
+    )?;
+    assert!(honest.stdout().truncation().observation_was_truncated());
+    Ok(())
+}
+
+#[test]
+fn an_outcome_where_no_child_started_cannot_carry_child_evidence() -> TestResult {
+    // The wrong implementation this kills: accepting any evidence alongside a
+    // disposition that positively states no process ever ran. Output bytes, an
+    // observed cleanup, and a terminated process group each require a child
+    // that these causes say never existed.
+    let pre_start = [
+        TerminalDisposition::UnsupportedBackend,
+        TerminalDisposition::CancelledBeforeStart(CancellationReason::Shutdown),
+        TerminalDisposition::SpawnFailed {
+            detail: perl_subprocess_runtime::process::SpawnFailureDetail::ExecutableNotFound,
+        },
+    ];
+
+    for disposition in &pre_start {
+        let with_output = result_with(
+            StreamEvidence::complete(StreamChannel::Stdout, b"impossible".to_vec()),
+            StreamEvidence::empty(StreamChannel::Stderr),
+            disposition.clone(),
+            CleanupDisposition::NotRequired,
+            TreeDisposition::NotRequired,
+        );
+        assert!(with_output.is_err(), "{disposition:?} carried output from a child that never ran");
+
+        let with_cleanup = result_with(
+            StreamEvidence::empty(StreamChannel::Stdout),
+            StreamEvidence::empty(StreamChannel::Stderr),
+            disposition.clone(),
+            CleanupDisposition::Completed,
+            TreeDisposition::NotRequired,
+        );
+        assert!(
+            with_cleanup.is_err(),
+            "{disposition:?} observed cleanup completing for a child that never ran"
+        );
+
+        let with_tree = result_with(
+            StreamEvidence::empty(StreamChannel::Stdout),
+            StreamEvidence::empty(StreamChannel::Stderr),
+            disposition.clone(),
+            CleanupDisposition::NotRequired,
+            TreeDisposition::GroupTerminated,
+        );
+        assert!(
+            with_tree.is_err(),
+            "{disposition:?} terminated a process group for a child that never ran"
+        );
+
+        // The coherent shape is admissible.
+        result_with(
+            StreamEvidence::empty(StreamChannel::Stdout),
+            StreamEvidence::empty(StreamChannel::Stderr),
+            disposition.clone(),
+            CleanupDisposition::NotRequired,
+            TreeDisposition::NotRequired,
+        )?;
+    }
+
+    // A supervisor failure is NOT a pre-start cause: it can happen after the
+    // child started, so partial output must remain expressible.
+    result_with(
+        StreamEvidence::complete(StreamChannel::Stdout, b"partial".to_vec()),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::SupervisorFailed,
+        CleanupDisposition::NotObserved,
+        TreeDisposition::Unknown,
+    )?;
+    Ok(())
+}
+
+#[test]
+fn values_no_backend_could_spawn_are_refused_by_the_validator() -> TestResult {
+    // The wrong implementation this kills: checking only argv and environment
+    // strings for NUL while letting the resolved executable path, the working
+    // directory, and structurally impossible variable names through to a
+    // backend that can only fail at the syscall.
+    let nul_in_resolved_path = ProcessPlan::builder(
+        PlanId::new("plan-run-file-1"),
+        OperationId::new("run-file"),
+        OwnerDomain::RunFile,
+        ExecutionProfile::LinuxOneShot,
+        ExecutableIdentity::resolved(
+            "perl",
+            PrivatePath::new(PathBuf::from("/usr/bin/pe\0rl")),
+            ResolutionProvenance::ConfiguredAbsolutePath,
+        ),
+        allow_listed_environment(),
+    )
+    .argv(["-w", "script.pl"])
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace/project"))))
+    .deadline(DeadlinePolicy::Wall(Duration::from_secs(30)))
+    .termination(TerminationPolicy::ProcessTree {
+        graceful: Duration::from_millis(500),
+        then_forced: true,
+    })
+    .subject(current_root())
+    .authorization(user_authorization())
+    .claim_boundary(ClaimBoundary::linux_only())
+    .build();
+    assert_eq!(rejection_of(nul_in_resolved_path)?, PlanRejection::NulByteInInvocation);
+
+    let nul_in_cwd = ProcessPlan::builder(
+        PlanId::new("plan-run-file-1"),
+        OperationId::new("run-file"),
+        OwnerDomain::RunFile,
+        ExecutionProfile::LinuxOneShot,
+        resolved_perl(),
+        allow_listed_environment(),
+    )
+    .argv(["-w", "script.pl"])
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/work\0space"))))
+    .deadline(DeadlinePolicy::Wall(Duration::from_secs(30)))
+    .termination(TerminationPolicy::ProcessTree {
+        graceful: Duration::from_millis(500),
+        then_forced: true,
+    })
+    .subject(current_root())
+    .authorization(user_authorization())
+    .claim_boundary(ClaimBoundary::linux_only())
+    .build();
+    assert_eq!(rejection_of(nul_in_cwd)?, PlanRejection::NulByteInInvocation);
+
+    // `=` is the name/value separator in every platform's environment block,
+    // so a name carrying one cannot be expressed at all. An empty name has
+    // nothing to separate and is unrepresentable for the same reason.
+    for bad_name in ["PATH=/tmp", ""] {
+        let plan = ProcessPlan::builder(
+            PlanId::new("plan-run-file-1"),
+            OperationId::new("run-file"),
+            OwnerDomain::RunFile,
+            ExecutionProfile::LinuxOneShot,
+            resolved_perl(),
+            EnvironmentProjection::new("env-snapshot:1", AmbientInheritance::AllowListedOnly)
+                .allow(EnvVarName::new("PATH"))
+                .allow(EnvVarName::new(bad_name)),
+        )
+        .argv(["-w", "script.pl"])
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace/project"))))
+        .deadline(DeadlinePolicy::Wall(Duration::from_secs(30)))
+        .termination(TerminationPolicy::ProcessTree {
+            graceful: Duration::from_millis(500),
+            then_forced: true,
+        })
+        .subject(current_root())
+        .authorization(user_authorization())
+        .claim_boundary(ClaimBoundary::linux_only())
+        .build();
+        assert!(
+            matches!(
+                rejection_of(plan)?,
+                PlanRejection::UnrepresentableEnvironmentVariableName { .. }
+            ),
+            "environment name {bad_name:?} reached a backend"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_script_describing_an_impossible_run_never_announces_success() -> TestResult {
+    // The wrong implementation this kills: emitting the elected terminal event
+    // and only afterwards discovering that the result cannot be assembled.
+    // The consumer would hold a terminal event announcing a completed exit
+    // while `wait` reported a supervisor failure — the same event/result
+    // divergence this domain exists to prevent, arriving by a different route.
+    let supervisor = FakeSupervisor::new();
+    supervisor.script(ScriptedOutcome::Run(Box::new(
+        ScriptedRun::exiting(0).with_stdout_evidence(StreamEvidence::new(
+            StreamChannel::Stdout,
+            10,
+            perl_subprocess_runtime::process::ContentFingerprint::of(b"x"),
+            b"mismatched".to_vec(),
+            TruncationState::complete(),
+        )),
+    )));
+
+    let mut handle = supervisor
+        .start(valid_linux_one_shot().validate()?)
+        .map_err(|_| "the fake refused to start a valid plan")?;
+
+    let mut terminal = None;
+    while let Some(event) = handle.next_event() {
+        if let ProcessEventKind::Terminal(disposition) = event.kind() {
+            terminal = Some(disposition.clone());
+        }
+    }
+    let result = handle.wait();
+
+    assert_eq!(
+        terminal.as_ref(),
+        Some(result.disposition()),
+        "the announced terminal event disagreed with the result"
+    );
+    assert_eq!(
+        result.disposition(),
+        &TerminalDisposition::SupervisorFailed,
+        "an unassemblable script settled as something other than a supervisor failure"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_chunk_must_continue_from_what_its_channel_already_saw() -> TestResult {
+    // The wrong implementation this kills: treating `offset` as decorative.
+    // The field exists so a consumer can reassemble a channel from its events;
+    // an unverified offset lets the stream claim a shape the run never had.
+    // The two channels advance independently, so each is tracked separately.
+    let mut ledger = perl_subprocess_runtime::process::EventLedger::new(
+        perl_subprocess_runtime::process::RunId::new("run-1"),
+    );
+    ledger.admit(ProcessEventKind::StdoutBytes(
+        perl_subprocess_runtime::process::StreamChunkEvidence {
+            byte_count: 10,
+            offset: 0,
+            retained: true,
+        },
+    ))?;
+    // stderr starts at zero even though stdout is already at 10.
+    ledger.admit(ProcessEventKind::StderrBytes(
+        perl_subprocess_runtime::process::StreamChunkEvidence {
+            byte_count: 4,
+            offset: 0,
+            retained: true,
+        },
+    ))?;
+    ledger.admit(ProcessEventKind::StdoutBytes(
+        perl_subprocess_runtime::process::StreamChunkEvidence {
+            byte_count: 5,
+            offset: 10,
+            retained: true,
+        },
+    ))?;
+
+    // Skipping ahead hides bytes the consumer never receives.
+    let gap = ledger.admit(ProcessEventKind::StdoutBytes(
+        perl_subprocess_runtime::process::StreamChunkEvidence {
+            byte_count: 3,
+            offset: 99,
+            retained: true,
+        },
+    ));
+    assert!(
+        matches!(
+            gap,
+            Err(perl_subprocess_runtime::process::EventAdmissionError::ChunkOffsetDiscontinuous {
+                expected: 15,
+                found: 99
+            })
+        ),
+        "a chunk skipped forward past bytes that were never emitted"
+    );
+
+    // Going backward double-counts them.
+    let overlap = ledger.admit(ProcessEventKind::StdoutBytes(
+        perl_subprocess_runtime::process::StreamChunkEvidence {
+            byte_count: 3,
+            offset: 2,
+            retained: true,
+        },
+    ));
+    assert!(
+        matches!(
+            overlap,
+            Err(perl_subprocess_runtime::process::EventAdmissionError::ChunkOffsetDiscontinuous {
+                expected: 15,
+                ..
+            })
+        ),
+        "a chunk re-reported bytes the channel had already emitted"
+    );
+
+    // A chunk that is only counted, not retained, still advances observation.
+    ledger.admit(ProcessEventKind::StdoutBytes(
+        perl_subprocess_runtime::process::StreamChunkEvidence {
+            byte_count: 7,
+            offset: 15,
+            retained: false,
+        },
+    ))?;
+    ledger.admit(ProcessEventKind::StdoutBytes(
+        perl_subprocess_runtime::process::StreamChunkEvidence {
+            byte_count: 1,
+            offset: 22,
+            retained: true,
+        },
+    ))?;
     Ok(())
 }

@@ -354,3 +354,55 @@ New control `a_channel_that_reaches_both_bounds_can_say_so` asserts the dual
 state round-trips and that neither bound can be hidden. Mutation-verified:
 restoring the old permissiveness — dropping the "absent retention bound means
 everything observed was kept" check — kills exactly that control and no other.
+
+### Eighth external round (Devin, `8550c02`) — including a round-10 regression
+
+Five findings: four bugs, all real and all repaired, plus one analysis note that
+turned out to be half-fixable.
+
+| Severity | Finding | Disposition | Mutation replay |
+|---|---|---|---|
+| correctness | observation-truncated evidence skipped the fingerprint check, so it could publish the identity of content it never held | **Fixed** — the check is gated on retention being unbounded, not on completeness | KILLED |
+| correctness | pre-start dispositions accepted child output, an observed cleanup, and a terminated process group | **Fixed** — `PreStartOutcomeCarriesChildEvidence` | KILLED |
+| security | NUL in the resolved executable path and the cwd, and `=` or an empty string as an environment variable name, all passed validation and could only fail at the syscall | **Fixed** — refused in the validator with typed reasons | KILLED (×2) |
+| correctness | the fake emitted the *elected* terminal event and only afterwards discovered the result could not be assembled, so the announced outcome disagreed with `wait` | **Fixed** — assembly is attempted before anything is announced | KILLED |
+| analysis | chunk offsets, discontinuities, and totals are unchecked | **Half fixed** — see below | KILLED |
+
+**The first finding was mine, from the round immediately before.** Round 10
+made `retained == observed` an enforced invariant whenever retention is
+unbounded, which newly made the fingerprint check *meaningful* for
+observation-truncated evidence. I wrote the count half of that and gated the
+fingerprint half on `is_complete()` — both bounds absent — which excludes the
+very case round 10 had just made checkable. My own comment on the line stated
+the correct rule ("when those are the whole of it") while the code below it
+implemented a narrower one.
+
+That is the third repair in this PR to introduce a defect: round 3's repair
+introduced the production panic, round 4's made `events_emitted` false, and
+round 10's left this fingerprint hole. The pattern is consistent enough to be
+worth naming: a change that *strengthens* an invariant creates new checkable
+consequences, and the repair is not finished until those are checked too.
+
+**`UnsupportedBackend` in one of this packet's own fixtures was an instance of
+the second finding**, paired with `b"partial"` stdout and
+`TreeDisposition::GroupTerminated`. That is now the third fixture found writing
+the defect it was meant to guard against. The fixture is split: causes that can
+follow a started child keep their partial output, and the pre-start causes get
+evidence a never-started run could actually carry.
+
+**On the analysis note.** "Chunk coherence is backend-owned" is only half true,
+and round 10's lesson was not to reach for a documented limitation before
+checking whether the contract can just enforce the thing. `StreamChunkEvidence`
+carries `offset` and `byte_count`, so per-channel continuity is entirely within
+`EventLedger`'s reach: a chunk's offset must equal what that channel has already
+admitted. `EventLedger` now enforces exactly that, per channel, with
+`ChunkOffsetDiscontinuous`. An offset that skips ahead hides bytes and one that
+goes backward double-counts them, and either way the events no longer reassemble
+into what the run produced — the field existed to make reassembly possible and
+was previously decorative.
+
+What genuinely remains backend-owned is the cross-object half: the ledger never
+sees the `ProcessResult`, so it cannot check that the chunk totals agree with
+the result's `observed_bytes`. That one is recorded as a boundary because it is
+actually outside this object's reach, not because fixing it would be
+inconvenient.

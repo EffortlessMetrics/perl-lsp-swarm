@@ -341,26 +341,14 @@ impl FakeHandle {
         TerminalDisposition::elect(self.run.control, self.run.settlement)
     }
 
-    /// Assemble the scripted result.
+    /// Attempt the scripted result from the run's own components.
     ///
-    /// A script that describes an incoherent run — swapped channels, evidence
-    /// that claims completeness it does not have, a completed exit alongside a
-    /// failed cleanup — settles as a supervisor failure rather than becoming a
-    /// result that asserts something untrue.
-    fn build_result(&self) -> ProcessResult {
-        if self.script_rejected {
-            // The rejection settles the stream with a terminal event, so the
-            // run did emit events. Defaulting the count to zero here would
-            // contradict what the consumer just received.
-            return ProcessResult::supervisor_failure(
-                self.plan_id.clone(),
-                self.fingerprint,
-                self.run_id.clone(),
-                fake_backend(),
-                self.work_metadata(),
-            );
-        }
-        match ProcessResult::new(
+    /// Fails exactly when the script describes a run that cannot have
+    /// happened — swapped channels, evidence claiming a completeness it lacks,
+    /// a completed exit alongside a failed cleanup, output attributed to a
+    /// start that never occurred.
+    fn assemble(&self) -> Option<ProcessResult> {
+        ProcessResult::new(
             self.plan_id.clone(),
             self.fingerprint,
             self.run_id.clone(),
@@ -372,15 +360,36 @@ impl FakeHandle {
             fake_backend(),
             self.work_metadata(),
             Vec::new(),
-        ) {
-            Ok(result) => result,
-            Err(_) => ProcessResult::supervisor_failure(
-                self.plan_id.clone(),
-                self.fingerprint,
-                self.run_id.clone(),
-                fake_backend(),
-                self.work_metadata(),
-            ),
+        )
+        .ok()
+    }
+
+    /// The supervisor-failure result, carrying the events actually emitted.
+    ///
+    /// The rejection settles the stream with a terminal event, so the run did
+    /// emit events. Defaulting the count to zero would contradict what the
+    /// consumer just received.
+    fn failure_result(&self) -> ProcessResult {
+        ProcessResult::supervisor_failure(
+            self.plan_id.clone(),
+            self.fingerprint,
+            self.run_id.clone(),
+            fake_backend(),
+            self.work_metadata(),
+        )
+    }
+
+    /// Assemble the scripted result.
+    ///
+    /// A script that describes an incoherent run settles as a supervisor
+    /// failure rather than becoming a result that asserts something untrue.
+    fn build_result(&self) -> ProcessResult {
+        if self.script_rejected {
+            return self.failure_result();
+        }
+        match self.assemble() {
+            Some(result) => result,
+            None => self.failure_result(),
         }
     }
 }
@@ -411,7 +420,20 @@ impl ProcessHandle for FakeHandle {
                 ProcessEventKind::Terminal(TerminalDisposition::SupervisorFailed)
             }
             Some(kind) => kind,
-            None => ProcessEventKind::Terminal(self.elected()),
+            None => {
+                // The terminal event must name the outcome `wait` will report,
+                // so the decision is made here, before anything is announced.
+                // Assembling the result is what discovers that a script
+                // describes an impossible run; discovering it afterwards would
+                // leave the consumer holding a terminal event that the result
+                // then contradicts.
+                if self.assemble().is_none() {
+                    self.script_rejected = true;
+                    ProcessEventKind::Terminal(TerminalDisposition::SupervisorFailed)
+                } else {
+                    ProcessEventKind::Terminal(self.elected())
+                }
+            }
         };
         // The ledger refuses post-terminal events. A rejection means the
         // script itself was malformed — a terminal event placed mid-stream —

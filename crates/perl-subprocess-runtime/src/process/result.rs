@@ -368,6 +368,23 @@ impl TerminalDisposition {
         matches!(self, Self::CompletedExit { .. })
     }
 
+    /// Whether this cause asserts that no child process ever ran.
+    ///
+    /// These are positive claims that the start did not happen, not statements
+    /// that the outcome is unknown. `SupervisorFailed` and `NotProven` are
+    /// deliberately absent: they can occur after a child has started, so they
+    /// may legitimately carry partial output and an unobserved cleanup.
+    pub fn asserts_no_child_started(&self) -> bool {
+        matches!(
+            self,
+            Self::SpawnRejected(_)
+                | Self::SpawnFailed { .. }
+                | Self::CancelledBeforeStart(_)
+                | Self::UnsupportedBackend
+                | Self::StaleOrUnauthorized(_)
+        )
+    }
+
     /// Whether the run ended in an ordinary zero exit.
     ///
     /// This is the *only* success predicate. It is deliberately narrow: no
@@ -554,6 +571,14 @@ pub enum ResultInconsistency {
     /// failure above a completed exit, so this pairing would let a run whose
     /// cleanup failed report an ordinary success.
     CompletedExitWithFailedCleanup,
+    /// A no-child-started outcome carried evidence only a child could produce.
+    ///
+    /// `SpawnRejected`, `SpawnFailed`, `CancelledBeforeStart`,
+    /// `UnsupportedBackend`, and `StaleOrUnauthorized` all assert that no
+    /// process ever ran. Output bytes, an observed cleanup, or a terminated
+    /// process group would each have to have come from a child that, by the
+    /// disposition's own claim, never existed.
+    PreStartOutcomeCarriesChildEvidence,
 }
 
 impl std::fmt::Display for ResultInconsistency {
@@ -579,6 +604,9 @@ impl std::fmt::Display for ResultInconsistency {
             }
             Self::CompletedExitWithFailedCleanup => {
                 f.write_str("a completed exit cannot be paired with a failed cleanup")
+            }
+            Self::PreStartOutcomeCarriesChildEvidence => {
+                f.write_str("an outcome in which no child started cannot carry child evidence")
             }
         }
     }
@@ -677,9 +705,12 @@ fn check_stream(
         }
         _ => {}
     }
-    // The fingerprint identifies the content actually observed, so it can only
-    // be checked against the retained bytes when those are the whole of it.
-    if truncation.is_complete()
+    // The fingerprint identifies the content actually observed, so it can be
+    // checked whenever the retained bytes are the whole of it — which is
+    // exactly when retention was unbounded, established by the branch above.
+    // Observation stopping early does not weaken that: the bytes it did see
+    // were all kept, so their identity must match.
+    if truncation.retention_limit().is_none()
         && evidence.observed_fingerprint() != ContentFingerprint::of(evidence.retained())
     {
         return Err(ResultInconsistency::CompleteEvidenceFingerprintMismatch { channel: expected });
@@ -740,6 +771,24 @@ impl ProcessResult {
             && cleanup != CleanupDisposition::Failed
         {
             return Err(ResultInconsistency::CleanupContradictsDisposition);
+        }
+        // An outcome that states no child ever started cannot also carry the
+        // things only a running child produces: bytes on a stream, a cleanup
+        // someone observed completing or failing, or a terminated process
+        // group. `NotRequired`/`Unknown` are the coherent pair here, and
+        // `NotObserved` cleanup is allowed because a refused start genuinely
+        // observed nothing.
+        if disposition.asserts_no_child_started() {
+            let produced_output = stdout.observed_bytes() > 0 || stderr.observed_bytes() > 0;
+            let cleanup_claims_a_child =
+                matches!(cleanup, CleanupDisposition::Completed | CleanupDisposition::Failed);
+            let tree_claims_a_child = matches!(
+                tree,
+                TreeDisposition::GroupTerminated | TreeDisposition::ImmediateChildOnly
+            );
+            if produced_output || cleanup_claims_a_child || tree_claims_a_child {
+                return Err(ResultInconsistency::PreStartOutcomeCarriesChildEvidence);
+            }
         }
         derive_limitations(
             &mut limitations,
@@ -873,6 +922,15 @@ impl ProcessResult {
             self.disposition,
             TerminalDisposition::CompletedExit { .. } | TerminalDisposition::Signaled { .. }
         )
+    }
+
+    /// Whether this outcome asserts that no child process ever ran.
+    ///
+    /// Distinct from "the child's fate is unknown": these dispositions each
+    /// state positively that the start did not happen, so nothing a child
+    /// could have produced may accompany them.
+    pub fn asserts_no_child_started(&self) -> bool {
+        self.disposition.asserts_no_child_started()
     }
 
     /// Whether the run was an ordinary zero exit.

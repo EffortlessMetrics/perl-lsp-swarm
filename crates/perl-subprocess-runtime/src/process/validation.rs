@@ -94,8 +94,17 @@ pub enum PlanRejection {
         /// The shell's logical name.
         shell: String,
     },
-    /// An argument or the program name contains a NUL byte.
+    /// An argument, program name, path, or environment entry contains a NUL.
     NulByteInInvocation,
+    /// An environment variable name cannot be expressed in an environment block.
+    ///
+    /// `=` is the name/value separator on every supported platform, and an
+    /// empty name has nothing to separate, so neither can survive being handed
+    /// to a backend.
+    UnrepresentableEnvironmentVariableName {
+        /// The offending name.
+        variable: String,
+    },
     /// The profile requires an exact working directory and none was given.
     AmbientCwdRejected,
     /// The working directory is not an absolute path.
@@ -206,6 +215,9 @@ impl fmt::Display for PlanRejection {
                 write!(f, "shell invocation rejected: {shell} with an inline command flag")
             }
             Self::NulByteInInvocation => f.write_str("invocation contains a NUL byte"),
+            Self::UnrepresentableEnvironmentVariableName { variable } => {
+                write!(f, "environment variable name cannot be expressed: {variable:?}")
+            }
             Self::AmbientCwdRejected => f.write_str("profile requires an exact working directory"),
             Self::NonAbsoluteCwd => f.write_str("working directory is not absolute"),
             Self::ContradictoryEnvironmentRules { variable } => {
@@ -341,6 +353,14 @@ fn validate_invocation(plan: &ProcessPlan) -> Result<(), PlanRejection> {
     // Check the resolved path as well as the label. A plan that calls
     // `/bin/sh` "perl" is still handing a shell an inline command, and the
     // label is caller-supplied text that must not become authority.
+    // A NUL in the resolved path is as unspawnable as one in the argv, and a
+    // lossy view is sound for detecting it: NUL is valid UTF-8, so it survives
+    // the conversion that mangles only invalid sequences.
+    if let ExecutableResolution::Resolved { path, .. } = executable.resolution()
+        && path.expose().to_string_lossy().contains('\0')
+    {
+        return Err(PlanRejection::NulByteInInvocation);
+    }
     let resolved_file_name = match executable.resolution() {
         ExecutableResolution::Resolved { path, .. } => path
             .expose()
@@ -406,7 +426,9 @@ fn validate_cwd(plan: &ProcessPlan) -> Result<(), PlanRejection> {
             }
         }
         CwdPolicy::ExactDirectory(path) => {
-            if path.is_absolute() {
+            if path.expose().to_string_lossy().contains('\0') {
+                Err(PlanRejection::NulByteInInvocation)
+            } else if path.is_absolute() {
                 Ok(())
             } else {
                 Err(PlanRejection::NonAbsoluteCwd)
@@ -436,6 +458,22 @@ fn validate_environment(plan: &ProcessPlan) -> Result<(), PlanRejection> {
         .any(|value| value.expose().contains('\0'));
     if names_with_nul || values_with_nul {
         return Err(PlanRejection::NulByteInInvocation);
+    }
+    // `=` separates a name from its value in every platform's environment
+    // block, so a name containing one cannot be expressed at all: the backend
+    // would either refuse it or silently split it into a different variable.
+    // An empty name is unrepresentable for the same reason.
+    if let Some(name) = environment
+        .allowed()
+        .iter()
+        .chain(environment.denied())
+        .chain(environment.removed())
+        .chain(environment.addition_names())
+        .find(|name| name.as_str().is_empty() || name.as_str().contains('='))
+    {
+        return Err(PlanRejection::UnrepresentableEnvironmentVariableName {
+            variable: name.to_string(),
+        });
     }
     if let Some(variable) = environment.contradictions().first() {
         return Err(PlanRejection::ContradictoryEnvironmentRules {
