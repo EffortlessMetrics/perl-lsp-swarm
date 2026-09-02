@@ -814,19 +814,19 @@ const MANIFEST_SCHEMA: &str =
 /// Validate a candidate manifest and write the plan receipt. Read-only: the
 /// only file written is the receipt.
 pub fn plan(config: PlanConfig) -> Result<()> {
-    plan_with(config, resolve_checkout)
+    plan_with(config, resolve_checkout, resolve_tree_entry)
 }
 
 /// `plan` with the checkout resolver injected, so proof can exercise the real
 /// entry point without depending on the test runner's working tree being a
 /// checkout of the prepared swarm commit.
-fn plan_with(config: PlanConfig, checkout: CheckoutResolver) -> Result<()> {
+fn plan_with(config: PlanConfig, checkout: CheckoutResolver, tree: TreeProbe) -> Result<()> {
     let raw = fs::read(&config.manifest)
         .with_context(|| format!("reading manifest {}", config.manifest.display()))?;
 
     ensure_receipt_does_not_alias_inputs(&config, &raw)?;
 
-    let receipt = match build_receipt(&raw, &config.repo_root, checkout) {
+    let receipt = match build_receipt(&raw, &config.repo_root, checkout, tree) {
         Ok(receipt) => receipt,
         Err(failure) => Receipt::unevaluated(failure.manifest_digest, failure.finding),
     };
@@ -1009,6 +1009,7 @@ fn build_receipt(
     raw: &[u8],
     repo_root: &Path,
     checkout: CheckoutResolver,
+    tree: TreeProbe,
 ) -> Result<Receipt, UnevaluatedManifest> {
     let document: Value = serde_json::from_slice(raw).map_err(|error| UnevaluatedManifest {
         manifest_digest: None,
@@ -1062,7 +1063,7 @@ fn build_receipt(
         })?;
 
     let digest = manifest_digest.clone().unwrap_or_default();
-    evaluate(&manifest, &digest, repo_root, load_input, checkout).map_err(|error| {
+    evaluate(&manifest, &digest, repo_root, load_input, checkout, tree).map_err(|error| {
         UnevaluatedManifest {
             manifest_digest,
             finding: finding("plan_failed", format!("planning could not complete: {error}")),
@@ -1114,6 +1115,32 @@ struct CheckoutFacts {
 
 /// Resolves the checkout facts. Injected for the same reason as the loader.
 type CheckoutResolver = fn(&Path) -> Option<CheckoutFacts>;
+
+/// Whether a path exists in a commit's tree: `Some(true)` present, `Some(false)`
+/// absent, `None` when the question could not be answered.
+///
+/// The worktree cannot answer this. A sparse checkout omits tracked paths
+/// outside its cone while `HEAD` matches and `git status` stays clean, so
+/// "absent from disk" does not imply "absent from the commit". Everywhere the
+/// planner treats absence as *permission* rather than as refusal, it has to ask
+/// the tree instead.
+type TreeProbe = fn(&Path, &str, &str) -> Option<bool>;
+
+/// Ask Git whether `path` exists in `commit`.
+///
+/// `ls-tree` with a pathspec rather than `cat-file -e`, because a non-zero exit
+/// from `cat-file` cannot be told apart from a bad commit or a broken
+/// repository — and "I could not tell" must not read as "absent" on the one
+/// path where absence is permissive. A successful call with empty output is a
+/// real absence; a failed call is `None`.
+fn resolve_tree_entry(repo_root: &Path, commit: &str, path: &str) -> Option<bool> {
+    if !is_object_name(commit) {
+        return None;
+    }
+    let listing =
+        git_output_lossy(repo_root, &["ls-tree", "-r", "--name-only", commit, "--", path])?;
+    Some(!listing.trim().is_empty())
+}
 
 /// What Git reports about `repo_root`, or `None` when that cannot be
 /// established.
@@ -1240,6 +1267,7 @@ fn evaluate(
     repo_root: &Path,
     loader: InputLoader,
     checkout: CheckoutResolver,
+    tree: TreeProbe,
 ) -> Result<Receipt> {
     let mut probe = PlanState::default();
     let product_surface = ProductSurface::load(repo_root, &mut probe);
@@ -1250,6 +1278,7 @@ fn evaluate(
         loader,
         &product_surface,
         checkout,
+        tree,
     )?;
     // Surface-loading findings are raised before evaluation, so fold them in.
     let (_, findings) = probe.finish();
@@ -1269,13 +1298,14 @@ fn evaluate_with_surface(
     loader: InputLoader,
     product_surface: &ProductSurface,
     checkout: CheckoutResolver,
+    tree: TreeProbe,
 ) -> Result<Receipt> {
     let mut state = PlanState::default();
 
     validate_checkout_identity(manifest, repo_root, checkout, &mut state);
     validate_identity(manifest, &mut state);
     let inputs = validate_inputs(manifest, repo_root, loader, &mut state);
-    validate_rows(manifest, repo_root, loader, product_surface, &mut state);
+    validate_rows(manifest, repo_root, loader, tree, product_surface, &mut state);
     validate_invariants(manifest, repo_root, loader, &mut state);
     validate_live_controls(manifest, repo_root, loader, &mut state);
     validate_declared_blockers(manifest, &mut state);
@@ -1755,6 +1785,7 @@ fn validate_rows(
     manifest: &Manifest,
     repo_root: &Path,
     loader: InputLoader,
+    tree: TreeProbe,
     product_surface: &ProductSurface,
     state: &mut PlanState,
 ) {
@@ -1812,31 +1843,47 @@ fn validate_rows(
         // understates what publication displaces.
         let release_only = row.action == Action::PreserveRelease && row.source_digest.is_none();
 
-        let mut source_resolved = true;
-        match loader(repo_root, &row.path) {
-            Ok(_) if release_only => {
-                state.block(
+        // This is the planner's one *permissive* reading of absence, so it is
+        // the one place the worktree cannot be the witness. A sparse checkout
+        // omits tracked paths outside its cone while `HEAD` matches and
+        // `git status` stays clean, so "not on disk" would let a row claim to
+        // be release-only over content that is in `prepared_swarm_sha`. Ask the
+        // commit tree instead; everywhere else absence is refusal, where the
+        // worktree answer is merely over-strict rather than unsafe.
+        if release_only {
+            match tree(repo_root, &manifest.prepared_swarm_sha, &row.path) {
+                Some(true) => state.block(
                     "row_release_only_source_present",
                     format!(
-                        "row {} declares no source_digest, so it claims to be release-only, but the path is present at prepared_swarm_sha {}; declare the source it displaces",
+                        "row {} declares no source_digest, so it claims to be release-only, but the path exists in prepared_swarm_sha {}; declare the source it displaces",
                         row.path, manifest.prepared_swarm_sha
                     ),
                     "release/ci",
-                );
+                ),
+                // Genuinely release-only: the declared state, confirmed against
+                // the commit rather than inferred from the working tree.
+                Some(false) => {}
+                None => state.not_proven(
+                    "row_release_only_unverifiable",
+                    format!(
+                        "row {} claims to be release-only, but whether it exists in prepared_swarm_sha {} could not be established from the commit tree",
+                        row.path, manifest.prepared_swarm_sha
+                    ),
+                    "release/ci",
+                ),
             }
+        }
+
+        let mut source_resolved = true;
+        // A release-only row was just judged against the commit tree; asking the
+        // worktree as well would only re-raise its absence as a defect.
+        // Everything after this match still applies to it.
+        match if release_only { Err(LoadFailure::Missing) } else { loader(repo_root, &row.path) } {
+            Err(LoadFailure::Missing) if release_only => source_resolved = false,
             Ok(_) => {}
             Err(LoadFailure::Unreadable(ref reason)) if reason == NOT_A_REGULAR_FILE => {
                 source_resolved = false;
-                if release_only {
-                    state.block(
-                        "row_release_only_source_present",
-                        format!(
-                            "row {} declares no source_digest, so it claims to be release-only, but a directory is present at that path in prepared_swarm_sha {}",
-                            row.path, manifest.prepared_swarm_sha
-                        ),
-                        "release/ci",
-                    );
-                } else if displaces {
+                if displaces {
                     state.block(
                         "row_displaces_directory",
                         format!(
@@ -1861,12 +1908,6 @@ fn validate_rows(
             // Absent from this checkout. Row digests are declarative and the
             // planner resolves neither `S` nor `R` as trees, so nothing here can
             // establish what the row names. Refuse rather than assume.
-            // A release-only row declared its own absence, so this is the state
-            // the manifest describes rather than a fact the planner failed to
-            // establish.
-            Err(LoadFailure::Missing) if release_only => {
-                source_resolved = false;
-            }
             Err(LoadFailure::Missing) => {
                 source_resolved = false;
                 state.not_proven(

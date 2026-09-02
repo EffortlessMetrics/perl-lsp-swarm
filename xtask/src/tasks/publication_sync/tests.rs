@@ -139,6 +139,7 @@ fn plan_with_mutated_receipt(mutate: impl FnOnce(&mut Value)) -> Result<Receipt>
         mutating_loader,
         &test_product_surface(),
         fixture_checkout,
+        fixture_tree,
     );
     MUTATED.with(|cell| *cell.borrow_mut() = None);
     outcome
@@ -191,6 +192,7 @@ fn plan_value(document: &Value) -> Result<Receipt> {
         test_loader,
         &test_product_surface(),
         fixture_checkout,
+        fixture_tree,
     )
 }
 
@@ -206,6 +208,7 @@ fn plan_on_disk(document: &Value, root: &Path) -> Result<Receipt> {
         load_input,
         &test_product_surface(),
         fixture_checkout,
+        fixture_tree,
     )
 }
 
@@ -220,6 +223,7 @@ fn plan_with_checkout(document: &Value, checkout: CheckoutResolver) -> Result<Re
         test_loader,
         &test_product_surface(),
         checkout,
+        fixture_tree,
     )
 }
 
@@ -1007,6 +1011,18 @@ fn materialize_repo(document: &Value) -> Result<(tempfile::TempDir, PathBuf, Pat
 
 /// A checkout resolver that answers with the fixture's declared prepared swarm
 /// commit, so the end-to-end tests exercise the planner rather than git.
+/// What the prepared swarm commit contains, modelled consistently with
+/// `test_loader`. The tree and the worktree agree in the fixture; tests that
+/// need them to disagree — a sparse checkout — inject their own probe.
+fn fixture_tree(_repo_root: &Path, _commit: &str, path: &str) -> Option<bool> {
+    Some(
+        FIXTURE_ROW_PATHS.contains(&path)
+            || FIXTURE_PRESENT_PATHS.contains(&path)
+            || FIXTURE_DIRECTORY_PATHS.contains(&path)
+            || fixture_input_bytes(path).is_some(),
+    )
+}
+
 fn fixture_checkout(_repo_root: &Path) -> Option<CheckoutFacts> {
     Some(clean_checkout("1111111111111111111111111111111111111111"))
 }
@@ -1056,6 +1072,7 @@ fn plan_writes_a_pass_receipt_and_leaves_the_tree_alone() -> Result<()> {
             receipt: receipt.clone(),
         },
         fixture_checkout,
+        fixture_tree,
     )?;
 
     let written: Value = serde_json::from_slice(&fs::read(&receipt)?)?;
@@ -1081,6 +1098,7 @@ fn plan_fails_loudly_but_still_writes_the_receipt() -> Result<()> {
     let outcome = plan_with(
         PlanConfig { manifest, repo_root: root.path().to_path_buf(), receipt: receipt.clone() },
         fixture_checkout,
+        fixture_tree,
     );
     if outcome.is_ok() {
         bail!("a blocked manifest returned success");
@@ -1195,6 +1213,7 @@ fn an_unavailable_product_surface_is_not_proven() -> Result<()> {
         test_loader,
         &surface,
         fixture_checkout,
+        fixture_tree,
     )?;
 
     assert_verdict(&receipt, Verdict::NotProven)?;
@@ -1348,7 +1367,7 @@ fn an_omitted_required_digest_key_is_rejected_by_the_schema() -> Result<()> {
     }
 
     let raw = serde_json::to_vec(&document)?;
-    let receipt = build_receipt(&raw, Path::new("."), fixture_checkout)
+    let receipt = build_receipt(&raw, Path::new("."), fixture_checkout, fixture_tree)
         .unwrap_or_else(|failure| Receipt::unevaluated(failure.manifest_digest, failure.finding));
     assert_verdict(&receipt, Verdict::NotProven)?;
     assert_finding(&receipt, "manifest_schema_violation")
@@ -1364,7 +1383,7 @@ fn an_empty_invariant_list_is_rejected_by_the_schema() -> Result<()> {
     }
 
     let raw = serde_json::to_vec(&document)?;
-    let receipt = build_receipt(&raw, Path::new("."), fixture_checkout)
+    let receipt = build_receipt(&raw, Path::new("."), fixture_checkout, fixture_tree)
         .unwrap_or_else(|failure| Receipt::unevaluated(failure.manifest_digest, failure.finding));
     assert_verdict(&receipt, Verdict::NotProven)?;
     assert_finding(&receipt, "manifest_schema_violation")
@@ -1372,7 +1391,7 @@ fn an_empty_invariant_list_is_rejected_by_the_schema() -> Result<()> {
 
 #[test]
 fn an_unparsable_manifest_still_produces_a_receipt() -> Result<()> {
-    let receipt = build_receipt(b"{ not json", Path::new("."), fixture_checkout)
+    let receipt = build_receipt(b"{ not json", Path::new("."), fixture_checkout, fixture_tree)
         .unwrap_or_else(|failure| Receipt::unevaluated(failure.manifest_digest, failure.finding));
     assert_verdict(&receipt, Verdict::NotProven)?;
     if receipt.manifest_digest.is_some() {
@@ -1640,6 +1659,7 @@ fn an_expired_product_classification_is_not_proven_rather_than_ignored() -> Resu
         test_loader,
         &surface,
         fixture_checkout,
+        fixture_tree,
     )?;
 
     assert_verdict(&receipt, Verdict::NotProven)?;
@@ -1667,6 +1687,7 @@ fn an_unexpired_classification_still_blocks() -> Result<()> {
         test_loader,
         &surface,
         fixture_checkout,
+        fixture_tree,
     )?;
 
     assert_verdict(&receipt, Verdict::Blocked)?;
@@ -1784,6 +1805,7 @@ fn shipped_tooling_cannot_be_displaced_even_when_classified_tooling() -> Result<
             test_loader,
             &surface,
             fixture_checkout,
+            fixture_tree,
         )?;
 
         assert_verdict(&receipt, Verdict::Blocked)?;
@@ -1813,6 +1835,7 @@ fn documentation_on_a_shipped_surface_stays_displaceable() -> Result<()> {
             test_loader,
             &surface,
             fixture_checkout,
+            fixture_tree,
         )?;
 
         if receipt.findings.iter().any(|f| f.code == "row_product_bearing_exclusion") {
@@ -1852,6 +1875,7 @@ fn the_receipt_cannot_be_written_over_a_planning_input() -> Result<()> {
             receipt: manifest_path.clone(),
         },
         fixture_checkout,
+        fixture_tree,
     );
     if over_manifest.is_ok() {
         bail!("the receipt was allowed to overwrite the manifest");
@@ -1866,6 +1890,7 @@ fn the_receipt_cannot_be_written_over_a_planning_input() -> Result<()> {
             receipt: evidence,
         },
         fixture_checkout,
+        fixture_tree,
     );
     if over_evidence.is_ok() {
         bail!("the receipt was allowed to overwrite a declared release input");
@@ -1880,6 +1905,7 @@ fn the_receipt_cannot_be_written_over_a_planning_input() -> Result<()> {
             receipt: receipt_path.clone(),
         },
         fixture_checkout,
+        fixture_tree,
     )?;
     if !receipt_path.exists() {
         bail!("a non-aliasing receipt destination was refused");
@@ -1909,6 +1935,7 @@ fn an_expired_descendant_classification_is_not_proven() -> Result<()> {
         test_loader,
         &surface,
         fixture_checkout,
+        fixture_tree,
     )?;
 
     assert_verdict(&receipt, Verdict::NotProven)?;
@@ -1936,6 +1963,7 @@ fn an_unexpired_descendant_still_blocks_the_parent() -> Result<()> {
         test_loader,
         &surface,
         fixture_checkout,
+        fixture_tree,
     )?;
 
     assert_verdict(&receipt, Verdict::Blocked)?;
@@ -2109,6 +2137,7 @@ fn a_receipt_is_published_atomically() -> Result<()> {
         load_input,
         &test_product_surface(),
         fixture_checkout,
+        fixture_tree,
     )?;
     write_receipt(&receipt_path, &receipt)?;
 
@@ -2207,6 +2236,7 @@ fn the_receipt_cannot_be_written_over_a_row_path() -> Result<()> {
             receipt: root.path().join("README.md"),
         },
         fixture_checkout,
+        fixture_tree,
     );
     if over_row.is_ok() {
         bail!("the receipt was allowed to overwrite a declared row path");
@@ -2358,6 +2388,7 @@ fn the_receipt_cannot_be_written_through_a_symlink_to_an_input() -> Result<()> {
                 receipt: link,
             },
             fixture_checkout,
+            fixture_tree,
         );
         if through_link.is_ok() {
             bail!("the receipt was allowed to be written through a symlink to the manifest");
@@ -2385,6 +2416,7 @@ fn a_receipt_destination_under_a_missing_directory_is_still_guarded() -> Result<
             receipt: fresh.clone(),
         },
         fixture_checkout,
+        fixture_tree,
     )?;
     if !fresh.is_file() {
         bail!("the receipt was not written to a destination under missing directories");
@@ -2403,6 +2435,7 @@ fn a_receipt_destination_under_a_missing_directory_is_still_guarded() -> Result<
             receipt: aliased,
         },
         fixture_checkout,
+        fixture_tree,
     );
     if over_manifest.is_ok() {
         bail!("the receipt was allowed to overwrite the manifest through a traversing path");
@@ -2624,4 +2657,123 @@ fn a_preserving_row_that_declares_a_source_must_still_resolve_it() -> Result<()>
     let receipt = plan_value(&document)?;
     assert_verdict(&receipt, Verdict::NotProven)?;
     assert_finding(&receipt, "row_source_absent")
+}
+
+#[test]
+fn a_sparse_checkout_cannot_make_content_look_release_only() -> Result<()> {
+    // The permissive reading of absence is the one place the worktree cannot be
+    // the witness. A sparse checkout omits tracked paths outside its cone while
+    // HEAD matches and `git status` stays clean, so a row could claim to be
+    // release-only over content that is really in the prepared commit.
+    //
+    // The tree says present, the worktree says absent — exactly the sparse
+    // case — and the tree must win.
+    fn sparse_tree(_root: &Path, _commit: &str, path: &str) -> Option<bool> {
+        Some(path == "not/in/this/checkout.md")
+    }
+
+    let mut document = clean_value()?;
+    let row = &mut rows_mut(&mut document)?[2];
+    row["action"] = json!("preserve_release");
+    row["path"] = json!("not/in/this/checkout.md");
+    row["source_digest"] = Value::Null;
+
+    // The worktree really does report this path as absent, so the old
+    // worktree-only rule would have accepted the row. Assert that, or this
+    // control proves nothing about which witness is consulted.
+    if test_loader(Path::new("."), "not/in/this/checkout.md").is_ok() {
+        bail!(
+            "the harness reports the path as present on disk; pick a path the loader cannot find"
+        );
+    }
+
+    let manifest: Manifest = serde_json::from_value(document.clone())?;
+    let digest = canonical_digest(&document)?;
+    let receipt = evaluate_with_surface(
+        &manifest,
+        &digest,
+        Path::new("."),
+        test_loader,
+        &test_product_surface(),
+        fixture_checkout,
+        sparse_tree,
+    )?;
+
+    assert_verdict(&receipt, Verdict::Blocked)?;
+    assert_finding(&receipt, "row_release_only_source_present")
+}
+
+#[test]
+fn an_unanswerable_tree_query_cannot_prove_a_release_only_row() -> Result<()> {
+    // "I could not tell" must not read as "absent" on the one path where
+    // absence is permission.
+    fn unanswerable(_root: &Path, _commit: &str, _path: &str) -> Option<bool> {
+        None
+    }
+
+    let mut document = clean_value()?;
+    let row = &mut rows_mut(&mut document)?[2];
+    row["action"] = json!("preserve_release");
+    row["path"] = json!("not/in/this/checkout.md");
+    row["source_digest"] = Value::Null;
+
+    let manifest: Manifest = serde_json::from_value(document.clone())?;
+    let digest = canonical_digest(&document)?;
+    let receipt = evaluate_with_surface(
+        &manifest,
+        &digest,
+        Path::new("."),
+        test_loader,
+        &test_product_surface(),
+        fixture_checkout,
+        unanswerable,
+    )?;
+
+    assert_verdict(&receipt, Verdict::NotProven)?;
+    assert_finding(&receipt, "row_release_only_unverifiable")
+}
+
+/// The tree probe is a Git question, so prove it against real Git rather than
+/// only through the injected seam.
+#[test]
+fn resolve_tree_entry_answers_from_the_commit_not_the_worktree() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let run = |args: &[&str]| -> Result<()> {
+        let out =
+            std::process::Command::new("git").arg("-C").arg(root.path()).args(args).output()?;
+        if !out.status.success() {
+            bail!("git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        }
+        Ok(())
+    };
+    run(&["init", "-q", "."])?;
+    run(&["config", "user.email", "proof@example.invalid"])?;
+    run(&["config", "user.name", "proof"])?;
+    fs::create_dir_all(root.path().join("docs"))?;
+    fs::write(root.path().join("docs/tracked.md"), "tracked\n")?;
+    run(&["add", "-A"])?;
+    run(&["commit", "-qm", "base"])?;
+
+    let head = resolve_checkout(root.path()).ok_or_else(|| eyre!("no checkout"))?.head;
+
+    if resolve_tree_entry(root.path(), &head, "docs/tracked.md") != Some(true) {
+        bail!("a committed path was not found in its own commit tree");
+    }
+    if resolve_tree_entry(root.path(), &head, "docs/never-existed.md") != Some(false) {
+        bail!("an uncommitted path was reported present");
+    }
+
+    // The sparse case, simulated the way it actually presents: the file is gone
+    // from the worktree but still in the commit. The tree answer must not move.
+    fs::remove_file(root.path().join("docs/tracked.md"))?;
+    if resolve_tree_entry(root.path(), &head, "docs/tracked.md") != Some(true) {
+        bail!("removing the file from the worktree changed the commit-tree answer");
+    }
+
+    // An unresolvable commit is `None`, not `false` — otherwise a broken
+    // repository would read as "absent" and license the permissive path.
+    if resolve_tree_entry(root.path(), "not-an-object-name", "docs/tracked.md").is_some() {
+        bail!("a malformed commit produced an answer");
+    }
+    Ok(())
 }
