@@ -257,6 +257,7 @@ fn parser_accuracy_ast_nodekind_references_are_canonical() -> TestResult {
 }
 
 #[test]
+#[allow(clippy::expect_used)]
 fn manifest_rejects_duplicate_json_members_before_nodekind_validation() {
     let canonical = r#"{
         "fixtures": [{
@@ -368,6 +369,7 @@ fn manifest_rejects_duplicate_json_members_before_nodekind_validation() {
 }
 
 #[test]
+#[allow(clippy::expect_used)]
 fn manifest_preserves_optional_nodekind_collections_and_rejects_misspelled_keys() {
     let forbidden_only = r#"{
         "fixtures": [{
@@ -428,6 +430,7 @@ fn manifest_preserves_optional_nodekind_collections_and_rejects_misspelled_keys(
 }
 
 #[test]
+#[allow(clippy::expect_used)]
 fn manifest_rejects_arbitrary_unknown_json_keys_at_each_validated_level() {
     let mut root = json!({ "fixtures": [] });
     root.as_object_mut()
@@ -534,6 +537,7 @@ fn non_canonical_kind_controls_are_rejected_before_absence_matching() {
 }
 
 #[test]
+#[allow(clippy::expect_used)]
 fn invalid_nodekind_diagnostic_identifies_the_reference() {
     let error = validate_reference_rows(
         "quote_like",
