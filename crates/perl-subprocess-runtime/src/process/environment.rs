@@ -248,7 +248,12 @@ impl EnvironmentProjection {
     pub fn contradictions(&self) -> Vec<&EnvVarName> {
         let mut contradictions: Vec<&EnvVarName> = Vec::new();
         for name in &self.allowed {
-            if self.denied.contains(name) {
+            // Allowed-and-denied and allowed-and-removed are both undefined:
+            // one rule says inherit the variable and the other says do not,
+            // and no precedence between them exists. Two backends could
+            // project different child environments from the same validated
+            // plan, so the plan is refused instead.
+            if self.denied.contains(name) || self.removed.contains(name) {
                 contradictions.push(name);
             }
         }

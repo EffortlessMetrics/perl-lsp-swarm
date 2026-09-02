@@ -2218,3 +2218,33 @@ fn a_completed_exit_cannot_be_paired_with_a_failed_cleanup() -> TestResult {
     assert!(contradiction.is_err(), "a zero exit was admitted alongside a failed cleanup");
     Ok(())
 }
+
+#[test]
+fn allowing_and_removing_one_variable_is_a_contradiction() -> TestResult {
+    // The wrong implementation this kills: checking only allowed-and-denied,
+    // so allowed-and-removed slips through with no defined precedence and two
+    // backends can project different child environments from one validated
+    // plan.
+    let projection = EnvironmentProjection::new("env:1", AmbientInheritance::AllowListedOnly)
+        .allow(EnvVarName::new("PATH"))
+        .remove(EnvVarName::new("PATH"));
+    let plan = ProcessPlan::builder(
+        PlanId::new("plan-1"),
+        OperationId::new("run-file"),
+        OwnerDomain::RunFile,
+        ExecutionProfile::LinuxOneShot,
+        resolved_perl(),
+        projection,
+    )
+    .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+    .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+    .subject(current_root())
+    .authorization(user_authorization())
+    .claim_boundary(ClaimBoundary::linux_only())
+    .build();
+    assert_eq!(
+        rejection_of(plan)?,
+        PlanRejection::ContradictoryEnvironmentRules { variable: "PATH".to_string() }
+    );
+    Ok(())
+}

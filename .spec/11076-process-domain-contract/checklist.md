@@ -18,7 +18,7 @@ crates/perl-subprocess-runtime/src/process/
   port.rs         ProcessSupervisor, ProcessHandle, drop contract
   fake.rs         FakeSupervisor, ScriptedRun
   legacy.rs       containment record for the pre-domain seam
-crates/perl-subprocess-runtime/tests/process_domain_contract.rs   68 tests
+crates/perl-subprocess-runtime/tests/process_domain_contract.rs   69 tests
 ```
 
 ## Schema version and digest
@@ -81,6 +81,14 @@ stdin bytes.
 | #1975 (P5, inventory) | `LEGACY_CONTAINMENT` as the seed row set for the seam ledger |
 | consumer lanes (#10258, #9689, #9691, #10666, #4900) | `FakeSupervisor` for deterministic tests before any OS lane exists |
 
+## Generated artifacts
+
+`docs/policy/NON_RUST_INVENTORY.md` is regenerated: the three `.spec/` files
+this packet adds are tracked non-Rust files, and the `non_rust_inventory_check`
+merge gate requires the committed snapshot to match. They classify as
+`documentation` under the existing `non-rust-root-governance-docs` entry, so
+the unclassified count is unchanged at 2239 — no new policy debt.
+
 ## Verification run
 
 ```bash
@@ -90,4 +98,5 @@ cargo test -p perl-subprocess-runtime --all-targets --locked
 RUSTDOCFLAGS="-D warnings" cargo doc -p perl-subprocess-runtime --no-deps --locked
 cargo check -p perl-lsp-perltidy -p perl-lsp-rs-core --all-targets --locked
 just pr-fast
+cargo xtask non-rust inventory --check
 ```
