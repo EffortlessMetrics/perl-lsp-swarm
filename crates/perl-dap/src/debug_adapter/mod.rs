@@ -419,13 +419,34 @@ impl DebugAdapter {
             None => self.workspace_authority.trusted_roots(),
         };
 
-        if let Some((last, rest)) = roots.split_last() {
+        if let Some((last, _)) = roots.split_last() {
             // Any trusted root may admit the path; report the final failure so
             // the message names a concrete boundary.
-            for root in rest {
-                if let Ok(validated) = security::validate_path(Path::new(path), root) {
+            //
+            // Returning the first root that merely *validates* is wrong once
+            // there is more than one. The shared validator normalizes
+            // non-existing paths instead of rejecting them, so a relative
+            // source like "lib/Foo.pm" validates under every trusted root and
+            // the first would always win — resolving to a file that does not
+            // exist while the real one sits under a later root. Prefer a
+            // candidate that exists, and fall back deterministically to the
+            // first validated candidate so a genuinely absent file still
+            // resolves under the first root that admits it, exactly as before.
+            //
+            // Existence only chooses among candidates already validated as
+            // contained in a trusted root, so it cannot widen the boundary.
+            let mut first_validated = None;
+            for root in roots {
+                let Ok(validated) = security::validate_path(Path::new(path), root) else {
+                    continue;
+                };
+                if validated.exists() {
                     return Ok(validated);
                 }
+                first_validated.get_or_insert(validated);
+            }
+            if let Some(candidate) = first_validated {
+                return Ok(candidate);
             }
             return security::validate_path(Path::new(path), last)
                 .map_err(|e| format!("Path validation failed: {e}"));
@@ -2166,6 +2187,48 @@ print "result: $final\n";
             }
             _ => return Err("Expected response".into()),
         }
+        Ok(())
+    }
+
+    /// A relative source path resolves under the trusted root that actually has it.
+    ///
+    /// Review finding: the shared validator normalizes non-existing paths rather
+    /// than rejecting them, so a relative source validates under *every* trusted
+    /// root. Returning the first match resolved every relative path under the
+    /// first root, so a file present only under a later root came back as a
+    /// path that does not exist and the request missed it.
+    #[test]
+    fn a_relative_source_path_resolves_under_the_root_that_contains_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let alpha = temp.path().join("alpha");
+        let beta = temp.path().join("beta");
+        std::fs::create_dir_all(alpha.join("lib"))?;
+        std::fs::create_dir_all(beta.join("lib"))?;
+        let present = beta.join("lib/Only.pm");
+        std::fs::write(&present, "1;")?;
+
+        let adapter = DebugAdapter::with_workspace_authority(WorkspaceAuthority::from_startup(
+            &[alpha.clone(), beta],
+            false,
+        )?);
+
+        // No launch has run, so the startup roots govern.
+        let validated = adapter.validate_source_path("lib/Only.pm")?;
+        assert_eq!(
+            validated.canonicalize()?,
+            present.canonicalize()?,
+            "a relative source must resolve under the trusted root that actually has it"
+        );
+
+        // A genuinely absent file still resolves deterministically under the
+        // first root that admits it, rather than becoming a refusal.
+        let absent = adapter.validate_source_path("lib/Missing.pm")?;
+        assert!(
+            absent.starts_with(alpha.canonicalize()?),
+            "an absent relative source must fall back to the first admitting root, got {}",
+            absent.display()
+        );
         Ok(())
     }
 

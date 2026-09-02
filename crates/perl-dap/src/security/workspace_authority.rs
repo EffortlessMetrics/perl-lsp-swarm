@@ -431,16 +431,39 @@ pub fn resolve_session_boundary(
                 // The launch root is checked against the trust set, not against
                 // the program's owner, so a client cannot pick a root by
                 // pointing at a program.
-                let narrowed = roots
-                    .iter()
-                    .find_map(|root| validate_path(requested, root).ok())
-                    .ok_or_else(|| WorkspaceAuthorityError::LaunchRootWidensAuthority {
+                //
+                // Stopping at the first root that merely *validates* is wrong
+                // once there is more than one: the shared validator normalizes
+                // non-existing paths rather than rejecting them, so a relative
+                // `workspaceRoot` of "sub" validates under every trusted root.
+                // The first candidate would win even when `sub` exists only
+                // under a later root, and `require_directory` would then refuse
+                // a launch that names a real directory. Prefer a candidate that
+                // is an existing directory, and keep the first validated one so
+                // the "not a directory" refusal is still reported when none is.
+                //
+                // Choosing on existence cannot widen authority: every candidate
+                // considered has already been validated as contained in a
+                // trusted root, so this only decides *which* trusted root.
+                let mut usable = None;
+                let mut first_validated = None;
+                for root in roots {
+                    let Ok(candidate) = validate_path(requested, root) else { continue };
+                    if candidate.is_dir() {
+                        usable = Some(candidate);
+                        break;
+                    }
+                    first_validated.get_or_insert(candidate);
+                }
+                let narrowed = usable.or(first_validated).ok_or_else(|| {
+                    WorkspaceAuthorityError::LaunchRootWidensAuthority {
                         launch_root: requested.display().to_string(),
                         detail: format!(
                             "no configured workspace root contains it (configured roots: {})",
                             display_roots(roots)
                         ),
-                    })?;
+                    }
+                })?;
                 return Ok(SessionBoundary::Bounded(require_directory(requested, narrowed)?));
             }
 
@@ -847,6 +870,50 @@ mod tests {
                 "a program must not be able to serve as its own boundary, got {error:?}"
             );
         }
+    }
+
+    /// A relative launch root resolves under the trusted root that actually has it.
+    ///
+    /// Review finding: the shared validator normalizes non-existing paths rather
+    /// than rejecting them, so `workspaceRoot: "sub"` validates under *every*
+    /// trusted root. Selecting the first match anchored the boundary under root
+    /// A, where `sub` does not exist, and `require_directory` then refused a
+    /// launch naming a real directory under root B.
+    #[test]
+    fn a_relative_launch_root_resolves_under_the_root_that_contains_it() {
+        let temp = must(tempfile::tempdir());
+        let alpha = dir(temp.path(), "alpha");
+        let beta = dir(temp.path(), "beta");
+        let nested = dir(&beta, "sub");
+        let script = file(&nested, "a.pl");
+
+        let authority = must(WorkspaceAuthority::from_startup(&[alpha, beta], false));
+        let boundary = must(resolve_session_boundary(&authority, &script, Some(Path::new("sub"))));
+
+        assert_eq!(
+            boundary.root(),
+            Some(nested.as_path()),
+            "a relative launch root must resolve under the trusted root that has it"
+        );
+    }
+
+    /// A relative launch root under no trusted root is still a widening refusal.
+    ///
+    /// The existence-preferring search must not turn "contained nowhere" into
+    /// the "not a directory" refusal, which names a different cause.
+    #[test]
+    fn a_relative_launch_root_in_no_trusted_root_is_still_refused_as_widening() {
+        let temp = must(tempfile::tempdir());
+        let alpha = dir(temp.path(), "alpha");
+        let script = file(&alpha, "a.pl");
+        let authority = must(WorkspaceAuthority::from_startup(&[alpha], false));
+
+        let error =
+            must_err(resolve_session_boundary(&authority, &script, Some(Path::new("../escape"))));
+        assert!(
+            matches!(error, WorkspaceAuthorityError::LaunchRootWidensAuthority { .. }),
+            "a launch root outside every trusted root must be a widening refusal, got {error:?}"
+        );
     }
 
     /// A relative launch root is refused rather than silently re-anchored.
