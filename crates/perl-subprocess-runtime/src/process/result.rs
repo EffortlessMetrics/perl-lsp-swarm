@@ -475,6 +475,12 @@ pub enum ResultInconsistency {
         /// The channel whose evidence is inconsistent.
         channel: StreamChannel,
     },
+    /// A cleanup disposition contradicts the elected terminal cause.
+    ///
+    /// `TerminalDisposition::elect` ranks cleanup failure above a completed
+    /// exit and above a signal, so a failed cleanup cannot accompany either;
+    /// and a `CleanupFailed` terminal cause must carry a failed cleanup.
+    CleanupContradictsDisposition,
     /// A completed child exit was paired with a failed cleanup.
     ///
     /// The terminal precedence in [`TerminalDisposition::elect`] puts cleanup
@@ -501,6 +507,9 @@ impl std::fmt::Display for ResultInconsistency {
             Self::TruncationLimitContradicted { channel } => {
                 write!(f, "{channel:?} evidence contradicts the limit it says stopped it")
             }
+            Self::CleanupContradictsDisposition => {
+                f.write_str("the cleanup disposition contradicts the elected terminal cause")
+            }
             Self::CompletedExitWithFailedCleanup => {
                 f.write_str("a completed exit cannot be paired with a failed cleanup")
             }
@@ -509,6 +518,52 @@ impl std::fmt::Display for ResultInconsistency {
 }
 
 impl std::error::Error for ResultInconsistency {}
+
+/// Attach the limitations a result's own components imply.
+///
+/// Shared by every constructor so that no assembly path can publish a result
+/// whose limitations disagree with its predicates.
+fn derive_limitations(
+    limitations: &mut Vec<Limitation>,
+    disposition: &TerminalDisposition,
+    cleanup: CleanupDisposition,
+    tree: TreeDisposition,
+    streams: Option<(&StreamEvidence, &StreamEvidence)>,
+    backend: &BackendIdentity,
+) {
+    limitations.push(Limitation::NoIsolationClaimed);
+    if backend.evidence_class() == EvidenceClass::Fake {
+        limitations.push(Limitation::FakeEvidenceOnly);
+    }
+    match cleanup {
+        CleanupDisposition::Failed => limitations.push(Limitation::CleanupFailed),
+        CleanupDisposition::NotObserved => limitations.push(Limitation::CleanupNotObserved),
+        CleanupDisposition::Completed | CleanupDisposition::NotRequired => {}
+    }
+    if tree == TreeDisposition::ImmediateChildOnly || tree == TreeDisposition::Unknown {
+        limitations.push(Limitation::DescendantsUnaccounted);
+    }
+    let child_settled = matches!(
+        disposition,
+        TerminalDisposition::CompletedExit { .. } | TerminalDisposition::Signaled { .. }
+    );
+    let streams_complete = streams.is_some_and(|(stdout, stderr)| {
+        stdout.truncation().is_complete() && stderr.truncation().is_complete()
+    });
+    // Kept in step with `claims_complete_output` deliberately: a result whose
+    // predicate says the output is partial must say so in its limitations too.
+    if !streams_complete || !child_settled {
+        limitations.push(Limitation::OutputIncomplete);
+    }
+    if let Some((stdout, stderr)) = streams
+        && (stdout.decoded_view() == DecodedViewLimitation::LossyUtf8
+            || stderr.decoded_view() == DecodedViewLimitation::LossyUtf8)
+    {
+        limitations.push(Limitation::DecodedViewLossy);
+    }
+    limitations.sort();
+    limitations.dedup();
+}
 
 fn check_stream(
     evidence: &StreamEvidence,
@@ -593,6 +648,19 @@ impl ProcessResult {
         if disposition.is_completed_exit() && cleanup == CleanupDisposition::Failed {
             return Err(ResultInconsistency::CompletedExitWithFailedCleanup);
         }
+        // A signal is elected only when no cleanup failure was recorded, and a
+        // `CleanupFailed` cause exists only because cleanup failed. Both
+        // directions follow from the precedence rule, so both are enforced.
+        if matches!(disposition, TerminalDisposition::Signaled { .. })
+            && cleanup == CleanupDisposition::Failed
+        {
+            return Err(ResultInconsistency::CleanupContradictsDisposition);
+        }
+        if disposition == TerminalDisposition::CleanupFailed
+            && cleanup != CleanupDisposition::Failed
+        {
+            return Err(ResultInconsistency::CleanupContradictsDisposition);
+        }
         limitations.push(Limitation::NoIsolationClaimed);
         if backend.evidence_class() == EvidenceClass::Fake {
             limitations.push(Limitation::FakeEvidenceOnly);
@@ -652,22 +720,25 @@ impl ProcessResult {
         run_id: RunId,
         backend: BackendIdentity,
     ) -> Self {
-        let mut limitations = vec![Limitation::NoIsolationClaimed];
-        if backend.evidence_class() == EvidenceClass::Fake {
-            limitations.push(Limitation::FakeEvidenceOnly);
-        }
-        limitations.sort();
-        limitations.dedup();
+        // A supervisor that failed proves nothing about cleanup, and a failure
+        // can happen after the child started. Claiming cleanup was
+        // unnecessary would be a stronger statement than the situation
+        // supports, so the conservative pair is recorded instead.
+        let cleanup = CleanupDisposition::NotObserved;
+        let tree = TreeDisposition::Unknown;
+        let disposition = TerminalDisposition::SupervisorFailed;
+        let mut limitations = Vec::new();
+        derive_limitations(&mut limitations, &disposition, cleanup, tree, None, &backend);
         Self {
             schema_version: super::PROCESS_DOMAIN_SCHEMA_VERSION,
             plan_id,
             plan_fingerprint,
             run_id,
-            disposition: TerminalDisposition::SupervisorFailed,
+            disposition,
             stdout: StreamEvidence::empty(StreamChannel::Stdout),
             stderr: StreamEvidence::empty(StreamChannel::Stderr),
-            cleanup: CleanupDisposition::NotRequired,
-            tree: TreeDisposition::NotRequired,
+            cleanup,
+            tree,
             backend,
             work: WorkMetadata::default(),
             limitations,

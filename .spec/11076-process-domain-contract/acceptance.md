@@ -151,6 +151,54 @@ start attempts against one `FakeSupervisor` instance in one test process. At
 one allocation per nanosecond that is roughly 584 years. Adding code for it
 would be scaffolding, not safety.
 
+### Third external round (Devin, `e5b908b`)
+
+Ten findings. Eight repaired; two answered as accepted boundaries.
+
+| Severity | Finding | Disposition |
+|---|---|---|
+| security | `SHELL_PROGRAMS` omitted `powershell.exe`/`pwsh.exe`, so a Windows shell passed `-Command` under the name it actually has | **Fixed** — executable suffixes are stripped before matching, rather than enumerated, and `ash`/`rbash`/`busybox` added |
+| security | case-mismatched denials and the loader gate | **Fixed** — set membership now folds case like detection does; see the note below on the direction |
+| correctness | `RefuseStart` accepted `CompletedExit { code: 0 }`, so a start that never ran a child read as an ordinary success | **Fixed** — only refusal-shaped dispositions are accepted; anything else settles as `SupervisorFailed` |
+| correctness | a scripted terminal event in the final position could announce an outcome that disagreed with what `wait` returned | **Fixed** — the handle owns the terminal event; any scripted one refuses the script |
+| correctness | `Signaled` with failed cleanup, and `CleanupFailed` with completed cleanup, both validated | **Fixed** — both directions of the precedence rule are enforced |
+| correctness | `supervisor_failure` claimed cleanup was unnecessary, though a supervisor failure can happen after the child started | **Fixed** — the conservative `NotObserved`/`Unknown` pair |
+| correctness | `supervisor_failure` bypassed limitation derivation, so its predicate and its published limitations disagreed | **Fixed** — one `derive_limitations` shared by every assembly path |
+| correctness | `ObservationTruncated` could still report observing more than the limit it said stopped it | **Fixed** — exact equality |
+| hygiene | `unwrap_or_else` in production conflicts with the repository's ban on `unwrap` forms | **Fixed** — no `unwrap` spelling remains anywhere under `src/process/`, enforced by `the_domain_uses_no_unwrap_spelling_in_production` |
+| analysis | retention enforcement remains backend-owned; result assembly cannot see the plan's retention policy | **Accepted boundary** — see below |
+| analysis | text scans are incomplete ratchets | **Accepted boundary** — see below |
+
+#### On the case-mismatch direction
+
+The report described this as a bypass: "denying `perl5lib` can still inherit
+`PERL5LIB` without acknowledgement". Traced through the code, the actual
+behaviour was the opposite — the canonical name stayed in the admitted set, so
+the gate *fired* and the plan was refused. That is over-rejection, not a
+bypass: a plan that had already denied the vector was still asked to
+acknowledge it.
+
+The underlying inconsistency was real and is fixed: detection folded ASCII case
+while set membership did not. Both fold now, which matches Windows semantics
+and removes the incoherence in either direction.
+
+#### Accepted boundaries
+
+**Retention enforcement is backend-owned.** True. `ProcessResult::new` receives
+components, not the validated plan, so it cannot check retained bytes against
+`RetentionPolicy`. Passing the plan into result assembly would couple the two
+and expand this PR's surface; the policy is carried on the plan for the backend
+that applies it, and enforcing it is part of #11085's receipt work. Recorded
+here rather than left implicit.
+
+**Text scans are incomplete ratchets.** Also true, and already treated that way:
+they were hardened after a reviewer defeated three of them, and they are
+defence in depth, not the primary guarantee. The load-bearing guarantees are
+type-level — private fields on `ValidatedProcessPlan`, closed enums, a fallible
+result constructor — plus Cargo itself for the dependency claim. A scan that
+can be evaded by an alias or a macro is worth having and is not worth
+mistaking for a proof.
+
 ## Terminal precedence
 
 Fixed and total, highest first:

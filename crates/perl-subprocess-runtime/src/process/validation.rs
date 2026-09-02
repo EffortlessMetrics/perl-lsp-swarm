@@ -27,16 +27,26 @@ const SHELL_PROGRAMS: &[&str] = &[
     "sh",
     "bash",
     "dash",
+    "ash",
+    "rbash",
     "zsh",
     "ksh",
     "csh",
     "tcsh",
     "fish",
+    "busybox",
     "cmd",
-    "cmd.exe",
     "powershell",
     "pwsh",
 ];
+
+/// Executable suffixes stripped before matching a program against
+/// [`SHELL_PROGRAMS`].
+///
+/// Listing `powershell` but not `powershell.exe` would let the same shell
+/// through under the name it actually has on Windows, so the extension is
+/// removed rather than enumerated.
+const EXECUTABLE_SUFFIXES: &[&str] = &[".exe", ".com", ".bat", ".cmd"];
 
 /// Flags that hand a shell an inline command string.
 const INLINE_COMMAND_FLAGS: &[&str] =
@@ -335,8 +345,7 @@ fn validate_invocation(plan: &ProcessPlan) -> Result<(), PlanRejection> {
         ExecutableResolution::Resolved { path, .. } => path
             .expose()
             .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default(),
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
         ExecutableResolution::Unresolved => String::new(),
     };
     for candidate in [logical_name, resolved_file_name.as_str()] {
@@ -360,7 +369,20 @@ fn validate_invocation(plan: &ProcessPlan) -> Result<(), PlanRejection> {
 }
 
 fn is_shell_invocation(logical_name: &str, argv: &[String]) -> bool {
-    let base = logical_name.rsplit(['/', '\\']).next().unwrap_or(logical_name);
+    let base = match logical_name.rsplit(['/', '\\']).next() {
+        Some(base) => base,
+        None => logical_name,
+    };
+    let stripped = EXECUTABLE_SUFFIXES.iter().find_map(|suffix| {
+        let split = base.len().checked_sub(suffix.len())?;
+        base.get(split..)
+            .filter(|tail| tail.eq_ignore_ascii_case(suffix))
+            .and_then(|_| base.get(..split))
+    });
+    let base = match stripped {
+        Some(base) => base,
+        None => base,
+    };
     let is_shell = SHELL_PROGRAMS.iter().any(|shell| shell.eq_ignore_ascii_case(base));
     is_shell
         && argv.iter().any(|arg| {

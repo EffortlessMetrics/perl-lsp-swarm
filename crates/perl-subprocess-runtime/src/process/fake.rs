@@ -39,6 +39,10 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[derive(Debug, Clone)]
 pub struct ScriptedRun {
     /// Non-terminal events replayed before settlement, in order.
+    ///
+    /// A terminal event here is malformed: the handle emits the terminal event
+    /// itself, elected from `control` and `settlement`, so a scripted one could
+    /// announce an outcome that disagrees with the result `wait` returns.
     pub events: Vec<ProcessEventKind>,
     /// What the child is observed to do.
     pub settlement: ObservedSettlement,
@@ -103,6 +107,24 @@ impl ScriptedRun {
         self.tree = tree;
         self
     }
+}
+
+/// Whether a disposition can truthfully describe a refused start.
+///
+/// A start that never produced a running child cannot have completed an exit
+/// or been signalled; scripting one of those as a refusal would let a failed
+/// start read as an ordinary success.
+fn describes_a_refused_start(disposition: &TerminalDisposition) -> bool {
+    matches!(
+        disposition,
+        TerminalDisposition::SpawnRejected(_)
+            | TerminalDisposition::SpawnFailed { .. }
+            | TerminalDisposition::CancelledBeforeStart(_)
+            | TerminalDisposition::UnsupportedBackend
+            | TerminalDisposition::StaleOrUnauthorized(_)
+            | TerminalDisposition::SupervisorFailed
+            | TerminalDisposition::NotProven
+    )
 }
 
 /// What the fake does with the next start attempt.
@@ -198,6 +220,14 @@ impl ProcessSupervisor for FakeSupervisor {
         let outcome = lock(&self.outcomes).pop_front();
         match outcome {
             Some(ScriptedOutcome::RefuseStart(disposition)) => {
+                let disposition = if describes_a_refused_start(&disposition) {
+                    disposition
+                } else {
+                    // A script asking for a refusal that reads as a completed
+                    // run is malformed; it settles as a supervisor failure
+                    // rather than becoming the success it asked for.
+                    TerminalDisposition::SupervisorFailed
+                };
                 Err(Box::new(refusal_result(plan_id, fingerprint, run_id, disposition)))
             }
             Some(ScriptedOutcome::Run(run)) => Ok(Box::new(FakeHandle::new(
@@ -226,7 +256,7 @@ fn refusal_result(
     run_id: RunId,
     disposition: TerminalDisposition,
 ) -> ProcessResult {
-    ProcessResult::new(
+    match ProcessResult::new(
         plan_id.clone(),
         fingerprint,
         run_id.clone(),
@@ -238,10 +268,10 @@ fn refusal_result(
         fake_backend(),
         WorkMetadata::default(),
         Vec::new(),
-    )
-    .unwrap_or_else(|_| {
-        ProcessResult::supervisor_failure(plan_id, fingerprint, run_id, fake_backend())
-    })
+    ) {
+        Ok(result) => result,
+        Err(_) => ProcessResult::supervisor_failure(plan_id, fingerprint, run_id, fake_backend()),
+    }
 }
 
 /// A handle over a scripted run.
@@ -310,7 +340,7 @@ impl FakeHandle {
                 fake_backend(),
             );
         }
-        ProcessResult::new(
+        match ProcessResult::new(
             self.plan_id.clone(),
             self.fingerprint,
             self.run_id.clone(),
@@ -325,15 +355,15 @@ impl FakeHandle {
                 events_emitted: self.ledger.admitted_count(),
             },
             Vec::new(),
-        )
-        .unwrap_or_else(|_| {
-            ProcessResult::supervisor_failure(
+        ) {
+            Ok(result) => result,
+            Err(_) => ProcessResult::supervisor_failure(
                 self.plan_id.clone(),
                 self.fingerprint,
                 self.run_id.clone(),
                 fake_backend(),
-            )
-        })
+            ),
+        }
     }
 }
 
@@ -344,17 +374,18 @@ impl ProcessHandle for FakeHandle {
 
     fn next_event(&mut self) -> Option<ProcessEvent> {
         if self.ledger.is_settled() {
-            // Events still queued behind a terminal one mean the script placed
-            // that terminal event mid-stream. Returning `None` here is how
-            // those events get swallowed, so record the malformed script
-            // rather than letting it read as a clean end of stream.
-            if !self.pending.is_empty() {
-                self.script_rejected = true;
-                self.pending.clear();
-            }
             return None;
         }
         let kind = match self.pending.pop_front() {
+            Some(kind) if kind.is_terminal() => {
+                // The handle elects and emits the terminal event itself. A
+                // scripted one — anywhere in the list, including last — could
+                // announce an outcome that disagrees with what `wait` returns,
+                // so the script is refused rather than replayed.
+                self.script_rejected = true;
+                self.pending.clear();
+                return None;
+            }
             Some(kind) => kind,
             None => ProcessEventKind::Terminal(self.elected()),
         };
