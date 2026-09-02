@@ -186,6 +186,22 @@ impl ModuleFilePath {
     /// [`ModuleRequest::partially_static`] or [`ModuleRequest::dynamic`], which
     /// carry the recovered evidence — this constructor will not invent it.
     ///
+    /// The double-quote rule is deliberately coarse: a token containing `\`,
+    /// `$`, or `@` is refused even when the sequence would not actually
+    /// interpolate. `perl -we 'print "Foo@.pm\n"'` prints `Foo@.pm`, so
+    /// `"Foo@.pm"` is a token this constructor could in principle have decoded.
+    /// Separating those cases means implementing Perl's interpolation grammar
+    /// (`@name`, `@{...}`, `@$ref`, `@{[ ... ]}`, `@Foo::bar`, and the follower
+    /// rules that make `@.` literal), which `perl-parser-core` owns rather than
+    /// this crate. A partial second copy of that grammar would stop failing
+    /// closed and start minting filenames Perl never opens, so the coarse rule
+    /// refuses instead of guessing.
+    ///
+    /// Nothing becomes unreachable: the refusal applies only to the raw-token
+    /// shortcut. `@` is an ordinary filename byte, so a caller that decodes with
+    /// the lexer can always hand the operand to [`ModuleFilePath::parse`], which
+    /// places no restriction on it.
+    ///
     /// [`ModuleRequest::partially_static`]: super::ModuleRequest::partially_static
     /// [`ModuleRequest::dynamic`]: super::ModuleRequest::dynamic
     ///
