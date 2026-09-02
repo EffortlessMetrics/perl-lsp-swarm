@@ -217,19 +217,33 @@ impl DebugAdapter {
             let launch_root_arg =
                 args.get("workspaceRoot").and_then(|w| w.as_str()).map(PathBuf::from);
             let authority_installed = self.has_launch_authority();
+            // Authority admission and process spawning must validate the same
+            // path. A relative program would otherwise be resolved against
+            // one directory for admission and a potentially different cwd
+            // when Perl is spawned. Require callers to provide an absolute
+            // path for authority-backed launches until a single launch-local
+            // path resolver is threaded through the entire transaction.
+            if authority_installed && !program.trim().is_empty() && Path::new(program).is_relative()
+            {
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: false,
+                    command: "launch".to_string(),
+                    body: None,
+                    message: Some(
+                        "authority-backed launches require an absolute `program` path so the admitted path and executed path cannot diverge"
+                            .to_string(),
+                    ),
+                };
+            }
             let narrowed_root = if authority_installed {
                 let admission = self.admit_launch_against_authority(
                     if program.trim().is_empty() { None } else { Some(Path::new(program)) },
                     launch_root_arg.as_deref(),
                 );
                 match admission {
-                    Ok(narrowed) => {
-                        // The admitted launch begins a fresh authority
-                        // session: identity and mode stay immutable while the
-                        // session generation resets.
-                        let _ = self.begin_authority_session();
-                        narrowed
-                    }
+                    Ok(narrowed) => narrowed,
                     Err(message) => {
                         return DapMessage::Response {
                             seq,
@@ -292,6 +306,8 @@ impl DebugAdapter {
 
             // Keep the defense-in-depth workspace boundary aligned with the
             // admitted narrowing root (workspace-bound authority only).
+            let previous_workspace_root =
+                lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
             if let Some(root) = narrowed_root {
                 *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = Some(root);
             }
@@ -328,7 +344,7 @@ impl DebugAdapter {
                 .unwrap_or_default();
 
             // Launch Perl debugger
-            match self.launch_debugger(
+            let launch_result = self.launch_debugger(
                 program,
                 &perl_interpreter,
                 perl_args,
@@ -336,8 +352,18 @@ impl DebugAdapter {
                 env_overrides,
                 user_cwd,
                 debuggee_timeout_secs,
-            ) {
+            );
+            // A request's narrowing is a launch-local effective boundary;
+            // never let it constrain a later launch on the same adapter.
+            *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") =
+                previous_workspace_root;
+
+            match launch_result {
                 Ok(thread_id) => {
+                    // Failed attempts must not consume an authority session
+                    // generation. Begin it only after validation and spawn
+                    // have succeeded.
+                    let _ = self.begin_authority_session();
                     // Send stopped event if stop on entry
                     if stop_on_entry {
                         self.send_event(
