@@ -562,12 +562,12 @@ line_hashes = ["bec4226a861707286d50efdbb6d87a85c6fbc0849f9a89b8c6ea6993a9ef1324
 
 [[entry]]
 path = "docs/project/status/quality.md"
-classification = "release_readiness"
-migration_target = "independent_readiness_rails"
-owner_issue = 7191
-removal_condition = "Status output regenerates from the rails once they own the readiness decision (#7191)."
+classification = "legacy_compatibility"
+migration_target = "perl_release_readiness"
+owner_issue = 7166
+removal_condition = "Generated status output follows the package rename and release-readiness projection (#7166)."
 allowed_to_remain = true
-note = "Status generator consuming the legacy readiness score."
+note = "Generated status output; this inventory row tracks legacy projection occupancy rather than owning a readiness decision."
 line_hashes = ["f9650ac219221b90b8ef3fd098803908a63d464629408c48a456087884e13e0c"]
 
 [[entry]]
