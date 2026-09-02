@@ -35,6 +35,16 @@ fn perl_matrix_uses_default_branch_cache_producers() -> Result<(), Box<dyn std::
         triggers.contains_key(Value::String("workflow_dispatch".into())),
         "the matrix cache contract must retain its manual producer"
     );
+    let canonical: Vec<Value> = ["pull_request", "schedule", "workflow_dispatch"]
+        .iter()
+        .map(|name| Value::String((*name).into()))
+        .collect();
+    let unexpected: Vec<_> = triggers.keys().filter(|key| !canonical.contains(key)).collect();
+    assert!(
+        unexpected.is_empty(),
+        "new trigger events (workflow_run runs on the default-branch ref, workflow_call inherits \
+         the caller's ref) can silently turn candidate code into a cache producer: {unexpected:?}"
+    );
     let pull_request = triggers
         .get(Value::String("pull_request".into()))
         .and_then(Value::as_mapping)
