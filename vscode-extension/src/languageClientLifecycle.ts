@@ -56,7 +56,10 @@ export interface LanguageClientLifecycleOptions {
 }
 
 export class LanguageClientLifecycleError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly reason: 'server-path-unresolved' | 'cleanup-incomplete' | 'lifecycle',
+  ) {
     super(message);
     this.name = 'LanguageClientLifecycleError';
   }
@@ -223,7 +226,10 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
         return undefined;
       }
       if (!serverPath) {
-        throw new LanguageClientLifecycleError('Language server path could not be resolved.');
+        throw new LanguageClientLifecycleError(
+          'Language server path could not be resolved.',
+          'server-path-unresolved',
+        );
       }
 
       this.serverPath = serverPath;
@@ -404,6 +410,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
       cleanup.error ??
       new LanguageClientLifecycleError(
         'Language client cleanup calls did not complete successfully.',
+        'cleanup-incomplete',
       );
   }
 
@@ -414,6 +421,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
         : '';
     return new LanguageClientLifecycleError(
       `Language client cleanup is incomplete; replacement startup is blocked${detail}`,
+      'cleanup-incomplete',
     );
   }
 
@@ -429,6 +437,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
           reject(
             new LanguageClientLifecycleError(
               `Language client ${operation} timed out after ${this.stopTimeoutMs}ms.`,
+              'lifecycle',
             ),
           );
         }, this.stopTimeoutMs);

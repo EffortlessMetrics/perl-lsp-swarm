@@ -105,6 +105,7 @@ import { registerSupportCommandGroup } from './supportCommandGroup';
 import { reportIssueCommand } from './supportCommands';
 export { formatIssueDiagnosticInfo } from './supportCommands';
 import { ExtensionLanguageClientLifecycle } from './extensionComposition';
+import { LanguageClientLifecycleError } from './languageClientLifecycle';
 import type { LifecycleState } from './languageClientLifecycle';
 import {
   StaleDocumentReplayError,
@@ -1953,6 +1954,24 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
   } catch (startError: unknown) {
     const msg = startError instanceof Error ? startError.message : String(startError);
     outputChannel.error(`[startup] Language client failed to start: ${msg}`);
+
+    if (
+      startError instanceof LanguageClientLifecycleError &&
+      startError.reason === 'cleanup-incomplete'
+    ) {
+      healthWidget?.onStateChange(ClientState.Stopped);
+      const choice = await vscode.window.showErrorMessage(
+        'The previous Perl language client did not finish cleaning up, so replacement startup is blocked. Reload the window before trying again.',
+        'Reload Window',
+        'View Logs',
+      );
+      if (choice === 'Reload Window') {
+        void vscode.commands.executeCommand('workbench.action.reloadWindow');
+      } else if (choice === 'View Logs') {
+        outputChannel.show();
+      }
+      return false;
+    }
 
     if (!lifecycle.serverPath) {
       healthWidget?.onStateChange(ClientState.Stopped);

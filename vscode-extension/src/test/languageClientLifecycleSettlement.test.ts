@@ -70,6 +70,7 @@ describe('LanguageClientLifecycle client cleanup admission', () => {
       await jest.advanceTimersByTimeAsync(10);
 
       await expect(restart).rejects.toBeInstanceOf(LanguageClientLifecycleError);
+      await expect(restart).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
       expect(clients).toHaveLength(1);
       expect(first!.dispose).toHaveBeenCalledTimes(1);
       expect(controller.snapshot.state).toBe('failed');
