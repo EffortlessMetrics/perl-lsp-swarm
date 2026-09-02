@@ -88,7 +88,9 @@ impl LineStartsCache {
         Self { line_starts: lf_line_starts(text) }
     }
 
-    /// Builds a cache from a [`Rope`] buffer.
+    /// Builds a cache from a [`Rope`] buffer using the same LF-delimited
+    /// coordinate contract as [`Self::new`]: CRLF is one separator and its CR
+    /// is not line content.
     pub fn new_rope(rope: &Rope) -> Self {
         Self { line_starts: lf_line_starts_rope(rope) }
     }
