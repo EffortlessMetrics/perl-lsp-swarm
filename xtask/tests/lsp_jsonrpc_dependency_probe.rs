@@ -105,11 +105,23 @@ fn check_probe(probe_root: &Path) -> io::Result<Output> {
 }
 
 fn output_text(output: &Output) -> String {
+    fn bounded_stream(label: &str, bytes: &[u8]) -> String {
+        let first_non_empty = String::from_utf8_lossy(bytes)
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("<empty>")
+            .to_owned();
+        let bounded: String = first_non_empty.chars().take(200).collect();
+        let suffix = if first_non_empty.chars().count() > 200 { "..." } else { "" };
+        format!("{label}: {bounded}{suffix}")
+    }
+
     format!(
-        "status: {}\nstdout:\n{}\nstderr:\n{}",
+        "status: {}\n{}\n{}",
         output.status,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        bounded_stream("stdout diagnostic", &output.stdout),
+        bounded_stream("stderr diagnostic", &output.stderr)
     )
 }
 
