@@ -1963,12 +1963,6 @@ fn unused_entry_count(entries: &[AllowEntry], tracked: &[String]) -> usize {
         .count()
 }
 
-/// Load the allowlist from the given path (overrides root-relative default).
-fn load_allowlist_from(path: &std::path::Path) -> Result<Allowlist> {
-    let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
-}
-
 fn render_policy_report_markdown(receipt: &FilePolicyReceipt) -> String {
     let mut out = String::new();
     out.push_str("# Non-Rust File Policy Report\n\n");
@@ -2246,12 +2240,19 @@ pub fn check_file_policy(root: &std::path::Path, config: CheckFilePolicyConfig) 
         if let Some(ref r) = config.root_override { r.clone() } else { root.to_path_buf() };
     let root = effective_root.as_path();
 
-    // Load allowlist.
-    let allowlist = if let Some(ref custom_path) = config.allowlist_path {
-        load_allowlist_from(custom_path)?
-    } else {
-        load_allowlist(root)?
-    };
+    // Load the raw allowlist before deserializing it so blocking enforcement
+    // cannot bypass conflict-marker detection by going through the typed
+    // loader. The structural validation path performs the same raw scan.
+    let allowlist_path = config
+        .allowlist_path
+        .clone()
+        .unwrap_or_else(|| root.join("policy/non-rust-allowlist.toml"));
+    let allowlist_text = fs::read_to_string(&allowlist_path)
+        .with_context(|| format!("reading {}", allowlist_path.display()))?;
+    let marker_lines = policy_conflict_marker_lines(&allowlist_text);
+
+    let allowlist: Allowlist = toml::from_str(&allowlist_text)
+        .with_context(|| format!("parsing {}", allowlist_path.display()))?;
 
     let entries = &allowlist.allow;
 
@@ -2260,6 +2261,15 @@ pub fn check_file_policy(root: &std::path::Path, config: CheckFilePolicyConfig) 
     let prepared = prepare_allow_entries(entries);
 
     let mut violations: Vec<PolicyViolation> = Vec::new();
+
+    if !marker_lines.is_empty() && config.mode != CheckFilePolicyMode::Advisory {
+        violations.push(PolicyViolation {
+            kind: "conflict-marker".to_string(),
+            message: format!("Git conflict markers at lines {marker_lines:?}"),
+            path: Some(allowlist_path.display().to_string()),
+            entry_id: None,
+        });
+    }
 
     // --- Per-file classification ---
     let mut non_rust_count = 0usize;
@@ -3710,6 +3720,29 @@ review_after = "2026-06-01"
         )?;
 
         assert!(non_rust_inventory_check(temp.path()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn blocking_check_file_policy_rejects_conflict_markers_in_raw_allowlist() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let _tracked = init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
+        let allowlist = temp.path().join("allow.toml");
+        std::fs::write(
+            &allowlist,
+            "[[allow]]\nid = \"readme\"\npath = \"README.md\"\nkind = \"documentation\"\nlanguage = \"markdown\"\nowner = \"team\"\nreason = \"\"\"\n<<<<<<< HEAD\n\"\"\"\nsurface = \"docs\"\nclassification = \"documentation\"\ncovered_by = [\"fixture\"]\nreview_after = \"2099-01-01\"\n",
+        )?;
+
+        let result = check_file_policy(
+            temp.path(),
+            CheckFilePolicyConfig {
+                mode: CheckFilePolicyMode::BlockingAllowlist,
+                json_output: None,
+                allowlist_path: Some(allowlist),
+                root_override: Some(temp.path().to_path_buf()),
+            },
+        );
+        assert!(result.is_err(), "blocking policy accepted raw conflict marker");
         Ok(())
     }
 
