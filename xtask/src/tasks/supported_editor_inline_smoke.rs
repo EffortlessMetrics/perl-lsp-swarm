@@ -1,4 +1,4 @@
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::eyre::{bail, Context, Result};
 use perl_lsp_rs_core::providers::inline_completion::{
     NextEditFeatureGate, NextEditProvider, NextEditRequest, NextEditResponse, NextEditStatus,
     PreparedInlineCompletionContext,
@@ -369,15 +369,23 @@ fn validate_lsp4ij_policy(root: &Path) -> Result<()> {
         .get("client")
         .and_then(toml::Value::as_array)
         .ok_or_else(|| color_eyre::eyre::eyre!("{} must define [[client]] rows", path.display()))?;
-    let client = clients
+    let matching_clients = clients
         .iter()
-        .find(|client| client.get("id").and_then(toml::Value::as_str) == Some("intellij_lsp4ij"))
-        .ok_or_else(|| {
-            color_eyre::eyre::eyre!(
-                "{} must define the intellij_lsp4ij client authority",
-                path.display()
-            )
-        })?;
+        .filter(|client| client.get("id").and_then(toml::Value::as_str) == Some("intellij_lsp4ij"))
+        .collect::<Vec<_>>();
+    let client = match matching_clients.as_slice() {
+        [] => {
+            bail!("{} must define the intellij_lsp4ij client authority", path.display());
+        }
+        [client] => *client,
+        _ => {
+            bail!(
+                "{} must define exactly one intellij_lsp4ij client authority; found {}",
+                path.display(),
+                matching_clients.len()
+            );
+        }
+    };
     if client.get("integration_mode").and_then(toml::Value::as_str) != Some("lsp4ij_plugin") {
         bail!("intellij_lsp4ij policy integration_mode must be `lsp4ij_plugin`");
     }
@@ -502,6 +510,12 @@ fn validate_proof_surface(
     plane: &str,
     surface: &ProofSurfaceRequirement,
 ) -> Result<()> {
+    if surface.markers.is_empty() {
+        bail!(
+            "supported editor inline smoke route `{route}` proof plane `{plane}` surface `{}` must declare at least one marker",
+            surface.path
+        );
+    }
     let path = root.join(surface.path);
     let content =
         fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
@@ -722,6 +736,13 @@ fn validate_receipt_schema(value: &Value) -> Result<()> {
                 {
                     bail!(
                         "route `{route_name}` plane `{plane_name}` surface {index} marker count does not match markers"
+                    );
+                }
+                if plane.get("status").and_then(Value::as_str) == Some("registered")
+                    && markers.is_empty()
+                {
+                    bail!(
+                        "route `{route_name}` plane `{plane_name}` surface {index} must declare at least one marker"
                     );
                 }
             }
@@ -996,6 +1017,23 @@ mod tests {
     }
 
     #[test]
+    fn lsp4ij_policy_rejects_duplicate_authority_rows() -> Result<()> {
+        let temp = TempDir::new()?;
+        let policy_dir = temp.path().join("policy");
+        fs::create_dir_all(&policy_dir)?;
+        fs::write(
+            policy_dir.join("lsp-client-support.toml"),
+            "[meta]\nschema = \"lsp-client-support.v1\"\n\n[[client]]\nid = \"intellij_lsp4ij\"\nintegration_mode = \"lsp4ij_plugin\"\ntier = \"configuration_documented\"\nrequires_actual_client_receipt = true\nsynthetic_profile = true\nevidence = []\nclaim_boundary = \"not an actual IntelliJ/LSP4IJ launch\"\n\n[[client]]\nid = \"intellij_lsp4ij\"\nintegration_mode = \"lsp4ij_plugin\"\ntier = \"configuration_documented\"\nrequires_actual_client_receipt = true\nsynthetic_profile = true\nevidence = []\nclaim_boundary = \"not an actual IntelliJ/LSP4IJ launch\"\n",
+        )?;
+
+        let Err(error) = validate_lsp4ij_policy(temp.path()) else {
+            bail!("duplicate client authority must be rejected");
+        };
+        assert!(error.to_string().contains("exactly one intellij_lsp4ij"));
+        Ok(())
+    }
+
+    #[test]
     fn duplicate_route_is_rejected() -> Result<()> {
         let temp = TempDir::new()?;
         write_fixture_files(temp.path(), DUPLICATE_ROUTES)?;
@@ -1177,6 +1215,27 @@ mod tests {
             .err()
             .ok_or_else(|| color_eyre::eyre::eyre!("nested type drift must fail"))?;
         assert!(error.to_string().contains("markers must be an array"));
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_schema_rejects_empty_registered_surface_markers() -> Result<()> {
+        let mut value = sample_receipt_value()?;
+        let surface = value
+            .pointer_mut(
+                "/supported_editor_routes/stdio_cli_smoke/proof_planes/proof_surface/proof_surfaces/0",
+            )
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing proof surface"))?;
+        let object = surface
+            .as_object_mut()
+            .ok_or_else(|| color_eyre::eyre::eyre!("proof surface must be object"))?;
+        object.insert("required_marker_count".to_string(), Value::from(0_u64));
+        object.insert("required_markers".to_string(), Value::Array(Vec::new()));
+
+        let Err(error) = validate_receipt_schema(&value) else {
+            bail!("empty registered proof markers must fail");
+        };
+        assert!(error.to_string().contains("at least one marker"));
         Ok(())
     }
 
