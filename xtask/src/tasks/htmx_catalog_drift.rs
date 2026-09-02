@@ -459,21 +459,46 @@ fn fence_delimiter(trimmed_line: &str) -> Option<FenceDelimiter> {
 
 /// Read the name out of a reference table row.
 ///
-/// Names are backtick-quoted in the first cell, optionally wrapped in a link.
-/// Header and separator rows carry no backticks and are skipped.
+/// The whole first cell is validated, not just the first name in it. Upstream
+/// writes exactly one of two shapes:
 ///
-/// Both delimiters are required. Accepting an unterminated backtick would let a
-/// malformed row yield the rest of the cell as a "name", which reports as
-/// spurious drift instead of being skipped; a row with no closing backtick is
-/// not a well-formed name row, and if every row in a section is malformed the
-/// caller's zero-names check still fails closed.
+/// ```text
+/// `HX-Boosted`
+/// [`hx-get`](@/attributes/hx-get.md)
+/// ```
+///
+/// Anything else — an unterminated backtick, a second quoted token, trailing
+/// text outside the link — is a cell this task cannot fully account for, and it
+/// returns `None` so the caller fails closed. Reading the first token and
+/// discarding the rest would drop a name silently, which is the one outcome
+/// this whole task exists to prevent.
+///
+/// Header and separator rows carry no backticks and so are skipped, which is
+/// what the caller wants above a table separator.
 fn table_row_name(line: &str) -> Option<String> {
     // Markdown makes the leading pipe optional, so a row may start at its first
     // cell. Requiring it would skip such a row silently.
     let first_cell = line.strip_prefix('|').unwrap_or(line).split('|').next()?;
-    let (_, after_open) = first_cell.split_once('`')?;
-    let (name, _) = after_open.split_once('`')?;
-    (!name.is_empty()).then(|| name.to_string())
+
+    let (before, rest) = first_cell.split_once('`')?;
+    let (name, after) = rest.split_once('`')?;
+    if name.is_empty() {
+        return None;
+    }
+
+    let accounted_for = match before.trim() {
+        // `name`
+        "" => after.trim().is_empty(),
+        // [`name`](target) — the target must not itself contain a backtick, so
+        // a trailing second token cannot hide inside it.
+        "[" => {
+            let tail = after.trim();
+            tail.starts_with("](") && tail.ends_with(')') && !tail.contains('`')
+        }
+        _ => false,
+    };
+
+    accounted_for.then(|| name.to_string())
 }
 
 #[cfg(test)]
@@ -481,6 +506,7 @@ mod tests {
     use super::{
         CORE_ATTRIBUTES, DirectionChange, DriftReport, REQUEST_HEADERS, catalog_attributes,
         catalog_headers, compare_snapshot, reference_attributes, reference_headers, section_names,
+        table_row_name,
     };
     use perl_lsp_rs_core::providers::{
         HTMX_ATTRIBUTES, HTMX_CATALOG_PROVENANCE, HTMX_HEADERS, HtmxHeaderDirection,
@@ -587,6 +613,42 @@ mod tests {
 
         assert!(core.is_ok_and(|names| names == ["hx-get", "hx-on*"]));
         assert!(request.is_ok_and(|names| names == ["HX-Boosted", "HX-Trigger"]));
+    }
+
+    #[test]
+    fn a_first_cell_this_task_cannot_fully_account_for_fails_closed() {
+        // Reading the first quoted token and discarding the rest of the cell is
+        // a partial read: the discarded name never reaches the comparison, so a
+        // changed reference row could report clean. Every one of these rows must
+        // fail rather than yield its first token.
+        for malformed in [
+            "| [`hx-get`](@/attributes/hx-get.md) `hx-new` | described |",
+            "| `hx-get` `hx-new` | described |",
+            "| `hx-get` trailing prose | described |",
+            "| [`hx-get`]@/attributes/hx-get.md | described |",
+            "| prefix [`hx-get`](@/attributes/hx-get.md) | described |",
+        ] {
+            let section = format!(
+                "## Core Attribute Reference {{#attributes}}\n\n\
+                 | Attribute | Description |\n|-----------|-------------|\n{malformed}\n"
+            );
+            assert!(
+                section_names(&section, &CORE_ATTRIBUTES)
+                    .is_err_and(|error| error.to_string().contains("cannot read")),
+                "{malformed} must fail closed rather than yield a partial read"
+            );
+        }
+
+        // The two shapes upstream actually writes must still be accepted, or the
+        // rule is merely stricter rather than correct.
+        assert_eq!(
+            table_row_name("| `HX-Boosted` | indicates a boosted request"),
+            Some("HX-Boosted".to_string())
+        );
+        assert_eq!(
+            table_row_name("| [`hx-get`](@/attributes/hx-get.md)  | issues a `GET` |"),
+            Some("hx-get".to_string())
+        );
     }
 
     #[test]

@@ -136,6 +136,23 @@ mod tests {
             && provenance.reference_url.contains(&format!("/blob/{}/", provenance.reference_commit))
     }
 
+    /// Does this URL address the htmx reference document itself?
+    ///
+    /// Immutability alone does not identify a document. A commit-addressed URL
+    /// into a fork, into a different file of the same repository, or into a
+    /// rendered mirror satisfies every revision rule above while describing
+    /// something the catalog is not a transcription of. The catalog encodes one
+    /// named upstream document, so this names it exactly rather than accepting
+    /// any URL that merely looks commit-shaped.
+    ///
+    /// Takes the two fields rather than the struct so the controls below can
+    /// supply candidate URLs without leaking them to obtain `&'static str`.
+    fn addresses_the_htmx_reference_document(url: &str, commit: &str) -> bool {
+        url == format!(
+            "https://github.com/bigskysoftware/htmx/blob/{commit}/www/content/reference.md"
+        )
+    }
+
     /// Is this a real `YYYY-MM-DD` calendar date?
     ///
     /// Shape and numeric ranges are not enough: `2026-02-30` satisfies both and
@@ -243,6 +260,42 @@ mod tests {
             ..committed
         };
         assert!(!pins_an_immutable_revision(&mismatched));
+    }
+
+    #[test]
+    fn provenance_addresses_the_htmx_reference_document_itself() {
+        let provenance = HTMX_CATALOG_PROVENANCE;
+        assert!(addresses_the_htmx_reference_document(
+            provenance.reference_url,
+            provenance.reference_commit
+        ));
+    }
+
+    #[test]
+    fn a_commit_addressed_url_to_some_other_document_is_rejected() {
+        let commit = HTMX_CATALOG_PROVENANCE.reference_commit;
+
+        // Every one of these is immutably addressed and none of them is the
+        // document this catalog transcribes, which is what this control exists
+        // to falsify.
+        for elsewhere in [
+            // A fork, pinned just as immutably as the real thing.
+            format!("https://github.com/someone/htmx/blob/{commit}/www/content/reference.md"),
+            // The right repository, a different document.
+            format!("https://github.com/bigskysoftware/htmx/blob/{commit}/README.md"),
+            // The rendered site, which is a mirror rather than the source.
+            "https://htmx.org/reference/".to_string(),
+            // The right document with a fragment appended, which no longer names
+            // the whole reviewed file.
+            format!(
+                "https://github.com/bigskysoftware/htmx/blob/{commit}/www/content/reference.md#attributes"
+            ),
+        ] {
+            assert!(
+                !addresses_the_htmx_reference_document(&elsewhere, commit),
+                "{elsewhere} is not the reviewed htmx reference document"
+            );
+        }
     }
 
     #[test]
