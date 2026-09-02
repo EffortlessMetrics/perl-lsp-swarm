@@ -411,6 +411,10 @@ fn when_a_quote_like_spelling_names_a_declaration_then_its_heredocs_are_owned() 
     for source in [
         "package\ns {\n  sub hi { my $x = <<EOF;\nbody\nEOF\n  return $x; }\n}\n",
         "sub\ns { 1 }\nmy $x = <<EOF;\nbody\nEOF\n",
+        // Blank lines between the keyword and the name are insignificant to
+        // Perl, so they must not clear the context either.
+        "package\n\ns {\n  sub hi { my $x = <<EOF;\nbody\nEOF\n  return $x; }\n}\n",
+        "package\n   \n\ns {\n  sub hi { my $x = <<EOF;\nbody\nEOF\n  return $x; }\n}\n",
     ] {
         let scan = perl_parser_pest::heredoc::scan(source);
         assert_eq!(scan.captures().len(), 1, "the keyword must carry across lines: {source:?}");
@@ -436,6 +440,9 @@ fn when_a_quote_like_spelling_names_a_declaration_then_its_heredocs_are_owned() 
         "my $p = 1; # package\ns{a}{b};\nmy $z = 3;\n",
         "my $t = \"package\";\ns{a}{b};\nmy $z = 3;\n",
         "my $mypackage = 1;\ns{a}{b};\nmy $z = 3;\n",
+        // Carrying across a blank line must not resurrect a stale keyword: an
+        // ordinary line before the gap still leaves the operator armed.
+        "my $q = 1;\n\ns{a}{b};\nmy $z = 3;\n",
     ] {
         let scan = perl_parser_pest::heredoc::scan(source);
         assert!(scan.captures().is_empty(), "a non-keyword must not arm the guard: {source:?}");

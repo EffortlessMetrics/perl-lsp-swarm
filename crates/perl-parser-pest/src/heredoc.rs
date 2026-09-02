@@ -386,7 +386,11 @@ impl<'a> Scanner<'a> {
                 follows_declaration,
             );
             open_construct = scanned.carried;
-            follows_declaration = scanned.ends_with_declaration_keyword;
+            // A blank line between a declaration keyword and its name is
+            // insignificant to Perl, so it must not clear the context either.
+            if !content.trim().is_empty() {
+                follows_declaration = scanned.ends_with_declaration_keyword;
+            }
             if openers.is_empty() {
                 continue;
             }
