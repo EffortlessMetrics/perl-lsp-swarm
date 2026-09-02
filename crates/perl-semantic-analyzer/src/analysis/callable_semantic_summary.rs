@@ -543,6 +543,15 @@ fn body_identity(
         // Full operation payload (Debug covers names/operators/kinds — never
         // source text): two equal-length but different operations are
         // different bodies.
+        //
+        // Scope limit: this holds for operations that *become* PIR nodes. A
+        // construct the per-body lowering records as unsupported emits no node
+        // and so contributes nothing here — regex-family operations are the
+        // clearest case, and `/foo/i`, `/foo/g` and `/bar/i` in an otherwise
+        // identical callable currently share one identity. That predates the
+        // typed regex variants (a bound match was previously an unsupported
+        // `Call`, an unbound one an `Opaque`) and is tracked by #14645. Do not
+        // read the sentence above as covering every edit to a body.
         fingerprint = fingerprint.field("op", &format!("{:?}", node.operation)).field(
             "op-anchor",
             &node
