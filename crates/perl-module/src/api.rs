@@ -30,6 +30,23 @@ pub use crate::provenance::ModuleProvenanceClass;
 pub use crate::provenance::detect_module_provenance;
 pub use crate::provenance::module_provenance_root;
 
+// request module — validated requests and typed resolution outcomes (#8497)
+pub use crate::request::DynamicModuleRequest;
+pub use crate::request::LegacySeparatorProfile;
+pub use crate::request::ModuleFilePath;
+pub use crate::request::ModuleFilePathError;
+pub use crate::request::ModuleName;
+pub use crate::request::ModuleNameError;
+pub use crate::request::ModuleRequest;
+pub use crate::request::ModuleRequestError;
+pub use crate::request::ModuleRequestKind;
+pub use crate::request::ModuleResolutionOutcome;
+pub use crate::request::PackageSeparatorForm;
+pub use crate::request::PartialModuleRequest;
+pub use crate::request::RequestBoundary;
+pub use crate::request::outcome_from_uri_resolution;
+pub use crate::request::uri_resolution_from_outcome;
+
 // token_core module
 pub use crate::token_core::ModuleTokenSpan;
 pub use crate::token_core::has_standalone_module_token_boundaries;
