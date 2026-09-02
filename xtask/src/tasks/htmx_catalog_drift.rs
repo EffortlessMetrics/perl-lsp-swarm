@@ -600,12 +600,18 @@ fn fence_delimiter(trimmed_line: &str) -> Option<FenceDelimiter> {
 
     // Both markers are ASCII, so the run's character count is also its byte
     // offset and this slice cannot split a code point.
-    let can_close = match trimmed_line.get(length..) {
-        Some(info) => info.trim().is_empty(),
-        None => true,
-    };
+    let info = trimmed_line.get(length..).unwrap_or("");
 
-    Some(FenceDelimiter { marker, length, can_close })
+    // Markdown forbids a backtick in a backtick fence's info string, so such a
+    // line is ordinary text carrying inline code, not a fence. Opening a fence
+    // on it skips every row until the next bare run — a real upstream addition
+    // in between would vanish into a clean report. A tilde fence has no such
+    // restriction, so its info string may contain whatever it likes.
+    if marker == '`' && info.contains('`') {
+        return None;
+    }
+
+    Some(FenceDelimiter { marker, length, can_close: info.trim().is_empty() })
 }
 
 /// Read the name out of a reference table row.
@@ -986,6 +992,53 @@ let example = 1;
             error.to_string().contains("has no core attributes section"),
             "the refusal must name the missing section, not a downstream symptom: {error}"
         );
+    }
+
+    #[test]
+    fn a_backtick_fence_with_a_backtick_in_its_info_string_is_not_a_fence() {
+        // Markdown forbids a backtick in a backtick fence's info string, so
+        // this line is prose carrying inline code. Opening a fence on it skips
+        // every row until the next bare run, and the addition in between —
+        // `hx-post` here — vanishes into a clean report.
+        let invalid = concat!(
+            "## Core Attribute Reference {#attributes}\n",
+            "\n",
+            "| Attribute | Description |\n",
+            "|-----------|-------------|\n",
+            "| [`hx-get`](@/attributes/hx-get.md) | issues a GET |\n",
+            "\n",
+            "``` see `hx-get` for details\n",
+            "\n",
+            "| Attribute | Description |\n",
+            "|-----------|-------------|\n",
+            "| [`hx-post`](@/attributes/hx-post.md) | added upstream |\n",
+            "\n",
+            "```html\n",
+            "<div hx-get=\"/x\"></div>\n",
+            "```\n",
+        );
+
+        assert!(
+            section_names(invalid, &CORE_ATTRIBUTES)
+                .is_ok_and(|names| names == ["hx-get", "hx-post"])
+        );
+
+        // A tilde fence carries no such restriction, so a backtick in its info
+        // string must still open one — rejecting it would read the example's
+        // own rows as data and invent names.
+        let tilde = concat!(
+            "## Core Attribute Reference {#attributes}\n",
+            "\n",
+            "| Attribute | Description |\n",
+            "|-----------|-------------|\n",
+            "| [`hx-get`](@/attributes/hx-get.md) | issues a GET |\n",
+            "\n",
+            "~~~ see `hx-get` for details\n",
+            "| `hx-phantom` | only an example |\n",
+            "~~~\n",
+        );
+
+        assert!(section_names(tilde, &CORE_ATTRIBUTES).is_ok_and(|names| names == ["hx-get"]));
     }
 
     #[test]
