@@ -284,15 +284,19 @@ fn section_names(document: &str, section: &SectionSpec) -> Result<Vec<String>> {
             in_body = false;
             continue;
         }
-        if !trimmed.starts_with('|') {
-            continue;
-        }
         if is_separator_row(trimmed) {
             in_body = true;
             continue;
         }
         if !in_body {
-            // The table's own header row, above the separator.
+            // The table's own header row, or prose above it.
+            continue;
+        }
+        if !trimmed.contains('|') {
+            // A line with no cell separator ends the table even without a blank
+            // line before it. Requiring a leading pipe here instead would skip
+            // it silently, and Markdown makes that pipe optional.
+            in_body = false;
             continue;
         }
 
@@ -312,6 +316,15 @@ fn section_names(document: &str, section: &SectionSpec) -> Result<Vec<String>> {
         }
     }
 
+    if fence.is_some() {
+        bail!(
+            "the {} section ({}) has a code fence that is never closed; everything after it was \
+             skipped as sample text, so a later upstream entry could vanish into a clean report",
+            section.label,
+            section.anchor
+        );
+    }
+
     if names.is_empty() {
         bail!(
             "the {} section ({}) yielded no names; the reference table shape has changed and a \
@@ -326,7 +339,11 @@ fn section_names(document: &str, section: &SectionSpec) -> Result<Vec<String>> {
 
 /// Is this the `|---|---|` rule separating a table's header from its body?
 fn is_separator_row(line: &str) -> bool {
-    line.contains('-') && line.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ' | '\t'))
+    // A cell separator is required, so a thematic break (`---`) does not open a
+    // table body and turn the prose after it into unreadable data rows.
+    line.contains('-')
+        && line.contains('|')
+        && line.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ' | '\t'))
 }
 
 /// Find the one heading carrying this section's anchor, with its ATX depth.
@@ -434,7 +451,9 @@ fn fence_delimiter(trimmed_line: &str) -> Option<FenceDelimiter> {
 /// not a well-formed name row, and if every row in a section is malformed the
 /// caller's zero-names check still fails closed.
 fn table_row_name(line: &str) -> Option<String> {
-    let first_cell = line.strip_prefix('|')?.split('|').next()?;
+    // Markdown makes the leading pipe optional, so a row may start at its first
+    // cell. Requiring it would skip such a row silently.
+    let first_cell = line.strip_prefix('|').unwrap_or(line).split('|').next()?;
     let (_, after_open) = first_cell.split_once('`')?;
     let (name, _) = after_open.split_once('`')?;
     (!name.is_empty()).then(|| name.to_string())
@@ -705,6 +724,54 @@ mod tests {
         assert!(
             section_names(mixed, &CORE_ATTRIBUTES)
                 .is_ok_and(|names| names == ["hx-get", "hx-post"])
+        );
+    }
+
+    #[test]
+    fn an_unclosed_fence_fails_instead_of_swallowing_the_rest() {
+        // An unclosed fence consumes every following line as sample text. With
+        // names already collected the vacuity check stays quiet, so a later
+        // table would disappear into a clean report.
+        let unclosed = "\
+## Core Attribute Reference {#attributes}
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-get`](@/attributes/hx-get.md) | issues a GET |
+
+```markdown
+| `hx-phantom` | the fence is never closed |
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-post`](@/attributes/hx-post.md) | swallowed by the open fence |
+";
+
+        assert!(
+            section_names(unclosed, &CORE_ATTRIBUTES)
+                .is_err_and(|error| error.to_string().contains("never closed"))
+        );
+    }
+
+    #[test]
+    fn a_row_without_the_optional_leading_pipe_is_still_read() {
+        // Markdown makes the leading pipe optional. Skipping such a row would
+        // drop a genuine upstream entry silently; a thematic break must still
+        // not be mistaken for a table separator.
+        let no_leading_pipe = "\
+## Core Attribute Reference {#attributes}
+
+---
+
+Attribute | Description
+----------|------------
+[`hx-get`](@/attributes/hx-get.md) | issues a GET
+[`hx-new-thing`](@/attributes/hx-new-thing.md) | a new upstream entry
+";
+
+        assert!(
+            section_names(no_leading_pipe, &CORE_ATTRIBUTES)
+                .is_ok_and(|names| names == ["hx-get", "hx-new-thing"])
         );
     }
 
