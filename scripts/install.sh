@@ -777,9 +777,22 @@ EOF
         # records all carry data blocks. Links, directories, and specials do
         # not. Extended records are walked over rather than skipped over, so
         # the entry that follows one is still seen and classified.
+        #
+        # POSIX requires a zero size on the types that carry no data. Trusting
+        # the typeflag alone would let a directory declaring a nonzero size
+        # swallow the headers that follow it, so this walk and a conformant
+        # reader would disagree about which entries the archive holds — the
+        # divergence this classifier exists to remove. Refuse instead.
         case "$type_char" in
-            0|7|x|g|L|K) data_blocks=$(( (size + 511) / 512 )) ;;
-            *) data_blocks=0 ;;
+            0|7|x|g|L|K)
+                data_blocks=$(( (size + 511) / 512 ))
+                ;;
+            *)
+                if [ "$size" -ne 0 ]; then
+                    fail_archive_staging "archive entry declares data on a type that carries none: $name"
+                fi
+                data_blocks=0
+                ;;
         esac
         offset=$(( offset + 512 + data_blocks * 512 ))
 

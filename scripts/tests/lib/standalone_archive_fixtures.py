@@ -244,6 +244,31 @@ def oversized_entry(archive: tarfile.TarFile) -> None:
         _add_reg(archive, f"{PACKAGE}/{name}", POSIX_FILES[name])
 
 
+def sized_directory_entry(dest: Path) -> None:
+    """A directory entry declaring a nonzero size (#11508).
+
+    POSIX requires a zero size on types that carry no data. A walker that
+    trusts the typeflag alone lets this entry's phantom data block swallow the
+    header that follows it, so the walker and a conformant tar reader disagree
+    about which entries the archive holds.
+    """
+    import gzip as _gzip
+
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w") as archive:
+        info = tarfile.TarInfo(PACKAGE + "/")
+        info.type = tarfile.DIRTYPE
+        info.mode = 0o755
+        info.size = 512
+        archive.addfile(info, io.BytesIO(b"\0" * 512))
+        _add_reg(archive, f"{PACKAGE}/perllsp", POSIX_FILES["perllsp"], 0o755)
+        _add_reg(archive, f"{PACKAGE}/perl-dap", POSIX_FILES["perl-dap"], 0o755)
+        for name in ("README.md", "LICENSE-APACHE", "LICENSE-MIT", "SHA256SUMS.txt"):
+            _add_reg(archive, f"{PACKAGE}/{name}", POSIX_FILES[name])
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(_gzip.compress(raw.getvalue()))
+
+
 def truncated_garbage(dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(b"not-an-archive\n")
@@ -409,6 +434,9 @@ def main() -> int:
         return 0
     if args.case == "corrupt_header_checksum":
         corrupt_header_checksum(dest)
+        return 0
+    if args.case == "sized_directory_entry":
+        sized_directory_entry(dest)
         return 0
     if args.case in TAR_CASES:
         _posix_tar(TAR_CASES[args.case], dest)

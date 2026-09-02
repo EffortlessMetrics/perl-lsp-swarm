@@ -366,6 +366,21 @@ else
     fail_case "corrupt tar header fails closed" "status=$LAST_STATUS output=$LAST_OUTPUT"
 fi
 
+# The walk must agree with a conformant reader about which entries exist, not
+# merely fail closed by accident when it does not (#11508).
+sentinel_setup
+python3 "$FIXTURE_PY" --case sized_directory_entry --out "$TMP/sized_directory_entry.tar.gz"
+ARCHIVE_PATH="$TMP/sized_directory_entry.tar.gz"
+run_extract
+if [ "$LAST_STATUS" -ne 0 ] \
+    && [[ "$LAST_OUTPUT" == *"declares data on a type that carries none"* ]] \
+    && assert_sentinel_untouched \
+    && assert_install_untouched; then
+    pass "dataless entry type declaring a size fails closed"
+else
+    fail_case "dataless entry type declaring a size fails closed" "status=$LAST_STATUS output=$LAST_OUTPUT"
+fi
+
 # The receipt names the tar that staged the members. Inspection no longer
 # depends on it, but the profile has to be visible in installer evidence for a
 # host report to mean anything (#11508).
