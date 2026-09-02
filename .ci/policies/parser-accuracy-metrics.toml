@@ -54,7 +54,7 @@ cadences = ["pr", "merge_gate", "nightly", "release"]
 
 [[metric]]
 name = "ast_hash_stability_rate"
-family = "ast"
+family = "determinism"
 kind = "ratio"
 direction = "up"
 min = 0.0
@@ -161,7 +161,8 @@ cadences = ["pr", "merge_gate", "nightly", "release"]
 
 [[metric]]
 name = "ast_projection_ms_p95"
-family = "ast"
+# A stage timing emitted by the cost plane, not an AST accuracy score.
+family = "cost"
 kind = "duration_ms"
 direction = "down"
 min = 0.0
@@ -298,7 +299,7 @@ cadences = ["pr", "merge_gate", "nightly", "release"]
 
 [[metric]]
 name = "diagnostic_hash_stability_rate"
-family = "provider"
+family = "determinism"
 kind = "ratio"
 direction = "up"
 min = 0.0
@@ -977,7 +978,7 @@ cadences = ["pr", "merge_gate", "nightly", "release"]
 
 [[metric]]
 name = "line_span_exact_rate"
-family = "line"
+family = "span"
 kind = "ratio"
 direction = "up"
 min = 0.0

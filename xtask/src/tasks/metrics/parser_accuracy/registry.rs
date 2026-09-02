@@ -280,13 +280,25 @@ impl MetricRegistry {
     }
 
     /// Look up one metric's policy.
+    ///
+    /// Introspection accessor used by the registry's own falsifiers and by the
+    /// producing-family oracle in the parent module; the production paths read
+    /// `self.policies` directly.
+    #[cfg(test)]
     pub(super) fn policy(&self, metric: &str) -> Option<&MetricPolicy> {
         self.policies.get(metric)
     }
 
     /// Number of registered metrics.
+    #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.policies.len()
+    }
+
+    /// Every registered metric name, in sorted order.
+    #[cfg(test)]
+    pub(super) fn names(&self) -> impl Iterator<Item = &str> {
+        self.policies.keys().map(String::as_str)
     }
 
     /// Derive `direction` and `confidence` for every measured row from the registry and

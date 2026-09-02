@@ -9980,6 +9980,134 @@ sub dynamic_boundary_case {
         Ok(())
     }
 
+    /// Every metric's declared `family` must match the function that actually emits it.
+    ///
+    /// `family` is the one registry field with no counterpart on `MetricRow`, so
+    /// `validate_conformance` cannot check it against an emitted row — a misassigned plane
+    /// would otherwise be unfalsifiable. The producing function supplies the missing oracle:
+    /// each `*_metrics` function owns exactly one evidence plane, so every row it returns must
+    /// be registered under that plane.
+    ///
+    /// This is independent of the registry in the way the direction and confidence checks are
+    /// not: the expectation comes from the call graph, not from the registry the assertion
+    /// reads. It found four real mislabels on its first runs — `ast_projection_ms_p95`,
+    /// `line_span_exact_rate`, `ast_hash_stability_rate`, and
+    /// `diagnostic_hash_stability_rate` — each one a row whose registered plane had been
+    /// seeded from its name prefix rather than from the function that emits it.
+    ///
+    /// The producers cover 184 of the 192 registered rows; the other 8 are pinned as an
+    /// exact exception set below rather than left under a coverage floor, so the partition
+    /// stays closed as metrics are added.
+    #[test]
+    fn every_metric_is_registered_under_its_producing_family() {
+        let registry = registry::MetricRegistry::load().expect("authored registry parses");
+        let cadence = Cadence::Pr;
+
+        // Eight producers short-circuit to a single `insufficient` row when their gold
+        // denominator is zero, so a wholly default score would exercise only the degenerate
+        // path. Clearing each guard with a single expectation reaches the full row set; the
+        // values are irrelevant here because only the emitted metric *names* are read.
+        let line = LineScore { line_count: 1, ..LineScore::default() };
+        let ast = AstScore { expected_node_count: 1, ..AstScore::default() };
+        let symbol = SymbolScore { entity_expected_count: 1, ..SymbolScore::default() };
+        let recovery = RecoveryScore { expectation_count: 1, ..RecoveryScore::default() };
+        let incremental = IncrementalScore { expectation_count: 1, ..IncrementalScore::default() };
+        let span = SpanScore { expectation_count: 1, ..SpanScore::default() };
+        let scale = ScaleCostScore { fixture_count: 1, ..ScaleCostScore::default() };
+        let determinism = DeterminismScore { fixture_count: 1, ..DeterminismScore::default() };
+
+        let producers: Vec<(&str, Vec<MetricRow>)> = vec![
+            ("line", line_metrics(&line, cadence)),
+            ("ast", ast_metrics(&ast, cadence)),
+            ("symbol", symbol_metrics(&symbol, cadence)),
+            ("safety", safety_metrics(&line, &symbol, cadence)),
+            ("recovery", recovery_metrics(&recovery, cadence)),
+            ("incremental", incremental_metrics(&incremental, cadence)),
+            ("span", span_metrics(&span, cadence)),
+            ("confidence", confidence_metrics(&symbol, cadence)),
+            ("unsupported", unsupported_metrics(&UnsupportedScore::default(), cadence)),
+            (
+                "provider",
+                provider_impact_metrics(
+                    &MethodCompletionProviderScore::default(),
+                    &DiagnosticProviderScore::default(),
+                    &NavigationProviderScore::default(),
+                    cadence,
+                ),
+            ),
+            ("scale", scale_metrics(&scale, cadence)),
+            (
+                "cost",
+                cost_metrics(
+                    &scale,
+                    &recovery,
+                    &MethodCompletionProviderScore::default(),
+                    &NavigationProviderScore::default(),
+                    cadence,
+                ),
+            ),
+            ("cache_reuse", cache_reuse_metrics(&incremental, cadence)),
+            ("determinism", determinism_metrics(&determinism, cadence)),
+            ("gold_drift", gold_drift_metrics(&GoldDrift::default(), 1, cadence)),
+        ];
+
+        // Collect every disagreement rather than stopping at the first, so a reseeded
+        // registry reports its full correction set in one run.
+        let mut covered = BTreeSet::new();
+        let mut mismatches = Vec::new();
+        for (expected_family, rows) in producers {
+            for row in rows {
+                let name = row.name();
+                let policy = registry
+                    .policy(name)
+                    .unwrap_or_else(|| panic!("metric '{name}' is not registered"));
+                if policy.family != expected_family {
+                    mismatches.push(format!(
+                        "'{name}' is emitted by the {expected_family} plane but registered \
+                         under '{}'",
+                        policy.family
+                    ));
+                }
+                covered.insert(name.to_string());
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "{} metric(s) are registered under a family that does not emit them:\n  {}",
+            mismatches.len(),
+            mismatches.join("\n  ")
+        );
+
+        // The remaining rows are not produced by any score-taking `*_metrics` function: the
+        // runtime plane is filled in by `sync_runtime_metric_rows` /
+        // `sync_allocation_metric_rows` after the artifact is built, and the denominator row
+        // is derived from the manifest. Pinning the exception set exactly — rather than
+        // asserting a coverage floor — keeps the oracle closed: a newly registered metric
+        // must either be emitted by a producer, and so have its family checked above, or be
+        // added here deliberately.
+        let uncovered: BTreeSet<String> =
+            registry.names().filter(|name| !covered.contains(*name)).map(str::to_string).collect();
+        let expected_uncovered: BTreeSet<String> = [
+            "denominator_fixture_count",
+            "metric_artifact_size_bytes",
+            "metric_cache_hit_rate",
+            "metric_ci_runner_failure_count",
+            "metric_flake_count",
+            "metric_orphan_process_count",
+            "metric_runtime_ms",
+            "metric_timeout_count",
+        ]
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+        assert_eq!(
+            uncovered, expected_uncovered,
+            "the set of metrics no producing function emits changed; a new metric must either \
+             be emitted by a `*_metrics` producer or be listed here deliberately"
+        );
+    }
+
     /// A row introduced after `apply` must fail conformance.
     ///
     /// This guards a hazard that actually occurred while building this feature.
