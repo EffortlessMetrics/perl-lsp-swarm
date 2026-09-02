@@ -572,6 +572,19 @@ def validate_history_payload(
             value = validation.get(counter)
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 violations.append(f"validation.{counter} must be a non-negative int, got {value!r}")
+        # runs_scanned is optional (older payloads and marker-less local runs
+        # predate the listing-layer counter), but when recorded it must bound
+        # the accepted population from above (#13467).
+        runs_scanned = validation.get("runs_scanned")
+        if runs_scanned is not None:
+            if not isinstance(runs_scanned, int) or isinstance(runs_scanned, bool) or runs_scanned < 0:
+                violations.append(
+                    f"validation.runs_scanned must be a non-negative int, got {runs_scanned!r}"
+                )
+            elif isinstance(declared, int) and not isinstance(declared, bool) and runs_scanned < declared:
+                violations.append(
+                    f"validation.runs_scanned {runs_scanned} < source_run_count {declared}"
+                )
         if isinstance(validation.get("files_seen"), int) and isinstance(validation.get("files_accepted"), int):
             if validation["files_accepted"] > validation["files_seen"]:
                 violations.append("validation.files_accepted > files_seen")
@@ -681,10 +694,22 @@ def main() -> int:
     parser.add_argument("--repository", default="")
     parser.add_argument("--default-branch", default="")
     parser.add_argument("--receipt-repo", default=EXPECTED_RECEIPT_REPO)
+    parser.add_argument(
+        "--runs-scanned",
+        type=int,
+        default=None,
+        help=(
+            "Trusted run candidates found by the listing layer. Recorded in "
+            "the validation block so a starved listing is distinguishable "
+            "from a quiet window in the payload itself (#13467)."
+        ),
+    )
     args = parser.parse_args()
 
     if args.window_days <= 0:
         parser.error("--window-days must be positive")
+    if args.runs_scanned is not None and args.runs_scanned < 0:
+        parser.error("--runs-scanned must be non-negative")
     if args.require_trusted_markers and (
         not args.repository or not args.default_branch
     ):
@@ -709,6 +734,8 @@ def main() -> int:
         return 1
 
     validation = serializable_stats(raw_stats)
+    if args.runs_scanned is not None:
+        validation["runs_scanned"] = args.runs_scanned
     history = build_history(
         samples=samples,
         floors=floors,
@@ -723,20 +750,18 @@ def main() -> int:
     )
 
     learned = sum(1 for entry in history["lanes"].values() if entry["learned"])
-    print(
-        json.dumps(
-            {
-                "lanes": history["lane_count"],
-                "learned": learned,
-                "window_days": args.window_days,
-                "accepted_samples": validation["accepted_samples"],
-                "rejected_samples": sum(validation["rejected"].values()),
-                "source_runs": validation["source_run_count"],
-                "unmapped_samples": validation["unmapped_samples"],
-            },
-            allow_nan=False,
-        )
-    )
+    summary = {
+        "lanes": history["lane_count"],
+        "learned": learned,
+        "window_days": args.window_days,
+        "accepted_samples": validation["accepted_samples"],
+        "rejected_samples": sum(validation["rejected"].values()),
+        "source_runs": validation["source_run_count"],
+        "unmapped_samples": validation["unmapped_samples"],
+    }
+    if "runs_scanned" in validation:
+        summary["runs_scanned"] = validation["runs_scanned"]
+    print(json.dumps(summary, allow_nan=False))
 
     # Loudness, discriminated. A run that attributed nothing is either the
     # mechanical rollout window (warn, expiring) or a live mapping failure

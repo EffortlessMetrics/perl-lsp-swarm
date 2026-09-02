@@ -450,6 +450,84 @@ impl TestItemSnapshot {
         children
     }
 
+    /// Look up one item by stable ID.
+    #[must_use]
+    pub fn item(&self, id: &TestItemId) -> Option<&TestItem> {
+        self.items.iter().find(|item| item.id == *id)
+    }
+
+    /// Deterministic fingerprint over identity and discovery facts.
+    ///
+    /// Source digest and generation are included so two generations of the same
+    /// tree remain distinct even when item IDs are stable. Framework identity
+    /// and confidence are hashed because snapshot diff treats both as semantic
+    /// discovery facts. The value is not a publication grant:
+    /// [`Self::may_replace`] still requires a strictly newer generation of the
+    /// same logical source.
+    #[must_use]
+    pub fn fingerprint(&self) -> String {
+        let mut hasher = Sha256::new();
+        update_hash_field(&mut hasher, b"perl-lsp:test-item-snapshot-fingerprint:v1");
+        update_hash_field(&mut hasher, &self.schema_version.to_be_bytes());
+        update_hash_field(&mut hasher, &self.source_ref.schema_version().to_be_bytes());
+        update_hash_field(&mut hasher, self.source_ref.digest_sha256());
+        update_hash_field(&mut hasher, self.source_digest.as_str().as_bytes());
+        update_hash_field(&mut hasher, &self.generation.to_be_bytes());
+        update_hash_field(&mut hasher, &self.source_len.to_be_bytes());
+        for item in &self.items {
+            update_hash_field(&mut hasher, item.id.as_str().as_bytes());
+            update_hash_field(
+                &mut hasher,
+                item.parent_id.as_ref().map_or(&[][..], |parent| parent.as_str().as_bytes()),
+            );
+            update_hash_field(&mut hasher, &item.order_in_parent.to_be_bytes());
+            update_hash_field(&mut hasher, item.kind.identity_tag().as_bytes());
+            update_hash_field(&mut hasher, item.structural_key.as_bytes());
+            match &item.name {
+                TestItemName::Named(name) => {
+                    update_hash_field(&mut hasher, b"named");
+                    update_hash_field(&mut hasher, name.as_bytes());
+                }
+                TestItemName::Dynamic => update_hash_field(&mut hasher, b"dynamic"),
+            }
+            update_range(&mut hasher, item.range);
+            if let Some(name_range) = item.name_range {
+                update_hash_field(&mut hasher, b"name_range");
+                update_range(&mut hasher, name_range);
+            }
+            hash_framework(&mut hasher, item.framework.as_ref());
+            update_hash_field(&mut hasher, confidence_fingerprint_tag(item.confidence));
+            update_hash_field(&mut hasher, &[u8::from(item.capabilities.runnable)]);
+            update_hash_field(&mut hasher, &[u8::from(item.capabilities.debuggable)]);
+            update_hash_field(&mut hasher, &[u8::from(item.capabilities.focusable)]);
+            update_hash_field(&mut hasher, &[u8::from(item.capabilities.selectively_runnable)]);
+            for limitation in &item.limitations {
+                update_hash_field(&mut hasher, limitation.as_bytes());
+            }
+        }
+        format!("test_item_snapshot.v1:sha256:{}", hex_digest(hasher.finalize().as_slice()))
+    }
+
+    /// Decide whether this snapshot may replace an already published snapshot.
+    ///
+    /// Stale or non-monotonic generations cannot replace a newer snapshot even
+    /// when source bytes match. Distinct logical sources remain distinct even
+    /// when relative paths or content are equal.
+    pub fn may_replace(&self, current: &Self) -> Result<(), TestItemPublicationError> {
+        current.validate().map_err(TestItemPublicationError::InvalidCurrent)?;
+        self.validate().map_err(TestItemPublicationError::InvalidCandidate)?;
+        if self.source_ref != current.source_ref {
+            return Err(TestItemPublicationError::DifferentSource);
+        }
+        if self.generation <= current.generation {
+            return Err(TestItemPublicationError::StaleOrNonMonotonic {
+                current: current.generation,
+                candidate: self.generation,
+            });
+        }
+        Ok(())
+    }
+
     /// Find the smallest source item containing `byte_offset`.
     ///
     /// The file item is returned for gaps, end-of-file, and an empty source.
@@ -551,6 +629,50 @@ fn span_len(range: SourceRange) -> u32 {
     range.end_byte.saturating_sub(range.start_byte)
 }
 
+fn hash_framework(hasher: &mut Sha256, framework: Option<&TestFrameworkIdentity>) {
+    match framework {
+        None => update_hash_field(hasher, b"framework:none"),
+        Some(framework) => {
+            update_hash_field(hasher, b"framework:some");
+            update_hash_field(hasher, framework.family.as_bytes());
+            hash_optional_text(hasher, b"module:none", b"module:some", framework.module.as_deref());
+            hash_optional_text(
+                hasher,
+                b"version:none",
+                b"version:some",
+                framework.version.as_deref(),
+            );
+        }
+    }
+}
+
+fn hash_optional_text(hasher: &mut Sha256, none_tag: &[u8], some_tag: &[u8], value: Option<&str>) {
+    match value {
+        None => update_hash_field(hasher, none_tag),
+        Some(value) => {
+            update_hash_field(hasher, some_tag);
+            update_hash_field(hasher, value.as_bytes());
+        }
+    }
+}
+
+fn confidence_fingerprint_tag(confidence: Confidence) -> &'static [u8] {
+    match confidence {
+        Confidence::High => b"confidence:high",
+        Confidence::Medium => b"confidence:medium",
+        Confidence::Low => b"confidence:low",
+    }
+}
+
+fn update_range(hasher: &mut Sha256, range: SourceRange) {
+    update_hash_field(hasher, &range.start_byte.to_be_bytes());
+    update_hash_field(hasher, &range.end_byte.to_be_bytes());
+    update_hash_field(hasher, &range.start_line.to_be_bytes());
+    update_hash_field(hasher, &range.start_column_utf8.to_be_bytes());
+    update_hash_field(hasher, &range.end_line.to_be_bytes());
+    update_hash_field(hasher, &range.end_column_utf8.to_be_bytes());
+}
+
 /// Deterministic item changes between two snapshots.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -614,6 +736,44 @@ impl std::fmt::Display for TestItemDeltaError {
 }
 
 impl std::error::Error for TestItemDeltaError {}
+
+/// Failure to publish a newer discovery snapshot over a current one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TestItemPublicationError {
+    /// The already-published snapshot is invalid.
+    InvalidCurrent(TestItemValidationError),
+    /// The candidate snapshot is invalid.
+    InvalidCandidate(TestItemValidationError),
+    /// Snapshots refer to different logical sources.
+    DifferentSource,
+    /// Candidate generation did not advance strictly.
+    StaleOrNonMonotonic {
+        /// Generation of the currently published snapshot.
+        current: u64,
+        /// Candidate generation that attempted to replace it.
+        candidate: u64,
+    },
+}
+
+impl std::fmt::Display for TestItemPublicationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidCurrent(error) => write!(formatter, "invalid current snapshot: {error}"),
+            Self::InvalidCandidate(error) => {
+                write!(formatter, "invalid candidate snapshot: {error}")
+            }
+            Self::DifferentSource => {
+                formatter.write_str("cannot replace a snapshot for a different source")
+            }
+            Self::StaleOrNonMonotonic { current, candidate } => write!(
+                formatter,
+                "candidate generation must be greater than current generation ({candidate} <= {current})"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TestItemPublicationError {}
 
 /// Validation failure for a discovery snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1221,5 +1381,67 @@ mod tests {
         assert!(rendered.starts_with("source_identity.v1:sha256:"));
         assert!(!rendered.contains('/') && !rendered.contains('\\'));
         assert_eq!(reference.schema_version(), SOURCE_IDENTITY_REF_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn lookup_returns_the_requested_item() -> Result<(), Box<dyn std::error::Error>> {
+        let snapshot = snapshot(7)?;
+        let target = snapshot
+            .items
+            .iter()
+            .find(|item| item.structural_key == "subtest:1")
+            .ok_or_else(|| io::Error::other("missing first subtest"))?;
+        let found =
+            snapshot.item(&target.id).ok_or_else(|| io::Error::other("lookup missed item"))?;
+        assert_eq!(found.id, target.id);
+        let missing = TestItemId::new(&source_ref(9), None, TestItemKind::File, "file");
+        assert!(snapshot.item(&missing).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn fingerprint_changes_when_discovery_facts_change() -> Result<(), Box<dyn std::error::Error>> {
+        let first = snapshot(7)?;
+        let second = snapshot(7)?;
+        assert_eq!(first.fingerprint(), second.fingerprint());
+        let newer = snapshot(8)?;
+        assert_ne!(first.fingerprint(), newer.fingerprint());
+        Ok(())
+    }
+
+    #[test]
+    fn fingerprint_changes_when_framework_or_confidence_changes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let first = snapshot(7)?;
+        let mut framework_changed = first.clone();
+        framework_changed.items[0].framework = Some(TestFrameworkIdentity {
+            family: "test_more".to_string(),
+            module: Some("Test::More".to_string()),
+            version: None,
+        });
+        assert_ne!(first.fingerprint(), framework_changed.fingerprint());
+        let mut confidence_changed = first.clone();
+        confidence_changed.items[0].confidence = Confidence::Low;
+        assert_ne!(first.fingerprint(), confidence_changed.fingerprint());
+        Ok(())
+    }
+
+    #[test]
+    fn publication_requires_newer_generation_of_the_same_source()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let current = snapshot(7)?;
+        let newer = snapshot(8)?;
+        newer.may_replace(&current)?;
+
+        assert!(matches!(
+            current.may_replace(&current),
+            Err(TestItemPublicationError::StaleOrNonMonotonic { .. })
+        ));
+        let other = snapshot_with_ref(8, source_ref(2))?;
+        assert!(matches!(
+            other.may_replace(&current),
+            Err(TestItemPublicationError::DifferentSource)
+        ));
+        Ok(())
     }
 }
