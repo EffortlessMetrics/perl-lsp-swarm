@@ -600,6 +600,12 @@ pub enum ResultInconsistency {
     /// failure above a completed exit, so this pairing would let a run whose
     /// cleanup failed report an ordinary success.
     CompletedExitWithFailedCleanup,
+    /// An output-limit outcome carried no stream that reached a bound.
+    ///
+    /// `OutputLimitExceeded` says a capture budget stopped the run, so at
+    /// least one channel has to name the bound it hit. Two complete streams
+    /// contradict the cause outright.
+    OutputLimitWithoutATruncatedStream,
     /// A child that demonstrably ran carried no-child cleanup evidence.
     ///
     /// [`CleanupDisposition::NotRequired`] means cleanup was unnecessary
@@ -640,6 +646,9 @@ impl std::fmt::Display for ResultInconsistency {
             }
             Self::CompletedExitWithFailedCleanup => {
                 f.write_str("a completed exit cannot be paired with a failed cleanup")
+            }
+            Self::OutputLimitWithoutATruncatedStream => {
+                f.write_str("an output-limit outcome carried no stream that reached its bound")
             }
             Self::SettledChildCarriesNoChildCleanup => {
                 f.write_str("a child that ran cannot carry cleanup evidence saying none started")
@@ -817,6 +826,15 @@ impl ProcessResult {
         // group. `NotRequired`/`Unknown` are the coherent pair here, and
         // `NotObserved` cleanup is allowed because a refused start genuinely
         // observed nothing.
+        // The cause names a capture budget as the reason the run ended, so
+        // some channel must record the bound it reached. Both streams claiming
+        // completeness contradicts the cause directly.
+        if disposition == TerminalDisposition::OutputLimitExceeded
+            && !stdout.truncation().observation_was_truncated()
+            && !stderr.truncation().observation_was_truncated()
+        {
+            return Err(ResultInconsistency::OutputLimitWithoutATruncatedStream);
+        }
         // The inverse of the pre-start rule below: `NotRequired` cleanup means
         // nothing was started, so a disposition that proves the child ran
         // cannot carry it. `TreeDisposition::NotRequired` is different and

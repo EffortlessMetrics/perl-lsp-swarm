@@ -568,3 +568,45 @@ refusing to create it would have been simpler and safer. The pattern is now
 explicit in this packet because it kept recurring: **when two facts contradict,
 prefer making one unrepresentable over teaching a later stage to paper over
 it.**
+
+### Twelfth external round (Devin, `868c4a0`)
+
+Two findings, both repaired, both the same rule as round 11's extended to
+neighbouring fields.
+
+| Finding | Disposition | Mutation replay |
+|---|---|---|
+| `EventLedger` accepted a second `Started`, and accepted exit/signal/running-cancellation terminals with no start | **Fixed** — `ChildStartedTwice`, `ChildSettlementBeforeStart` | KILLED (×2) |
+| `OutputLimitExceeded` accepted two streams that reached no bound | **Fixed** — `OutputLimitWithoutATruncatedStream` | KILLED |
+
+Both are the round-11 statement applied one field over: *the child's own
+account requires a child*. Round 11 said it about result-level output, round 14
+about output events, and this round about terminal causes and start events. The
+pre-start dispositions stay admissible without a start, because those are
+precisely the outcomes of a run that never began — a control asserts that, so
+the rule cannot degrade into "no terminal without a start."
+
+**Two more of this packet's fixtures encoded the defect they sat beside.**
+`truncated_or_limited_output_never_claims_to_be_complete` and
+`only_a_settled_child_can_establish_complete_output` both built
+`OutputLimitExceeded` results from fully complete streams — the exact
+contradiction the new rule refuses. That is the fourth and fifth fixture in
+this PR found writing a defect. The recurring cause is the same each time: a
+fixture is written to exercise *one* property and its other fields are filled
+in with whatever constructs, so it silently asserts things nobody checked.
+
+## Standing pattern across the review rounds
+
+Recorded once rather than repeated per round, because the same three shapes
+account for most of the findings here:
+
+1. **A rule stated for one field, not its neighbours.** Output, then terminal
+   causes, then start events; the pre-start rule, then its inverse. Adding a
+   coherence rule is a reason to ask which adjacent field admits the same
+   contradiction.
+2. **Reconciling a contradiction instead of refusing it.** Three consecutive
+   regressions came from repairing evidence after the fact where refusing to
+   admit it was simpler and safer.
+3. **Fixtures asserting more than they test.** Five fixtures encoded the very
+   defect their neighbourhood was meant to guard, because their incidental
+   fields were never scrutinised.

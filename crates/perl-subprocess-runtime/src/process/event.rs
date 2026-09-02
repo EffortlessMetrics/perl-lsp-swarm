@@ -114,6 +114,20 @@ pub enum EventAdmissionError {
     AfterTerminalSettlement,
     /// The run's sequence space is exhausted.
     SequenceExhausted,
+    /// A second `Started` event arrived for a run that had already started.
+    ///
+    /// A run starts once. A second start would leave every offset and count
+    /// after it ambiguous about which start it belongs to.
+    ChildStartedTwice,
+    /// A terminal cause the child itself could only produce arrived before it
+    /// started.
+    ///
+    /// An exit, a signal, or a cancellation *while running* each require a
+    /// child. Pre-start causes — a refused or failed spawn, cancellation
+    /// before start, an unsupported backend, stale authorization — remain
+    /// admissible, because those are exactly the outcomes of a run that never
+    /// started.
+    ChildSettlementBeforeStart,
     /// A child-output event arrived before the child started.
     ///
     /// Output requires a child, and a result pairing a no-child outcome with
@@ -138,6 +152,10 @@ impl std::fmt::Display for EventAdmissionError {
         match self {
             Self::AfterTerminalSettlement => f.write_str("no event may follow terminal settlement"),
             Self::SequenceExhausted => f.write_str("run event sequence space is exhausted"),
+            Self::ChildStartedTwice => f.write_str("a run cannot start twice"),
+            Self::ChildSettlementBeforeStart => {
+                f.write_str("a child-settled terminal arrived before the child started")
+            }
             Self::ChildOutputBeforeStart => {
                 f.write_str("a child-output event arrived before the child started")
             }
@@ -219,6 +237,16 @@ impl EventLedger {
         // double-counts them. Either way a consumer reassembling the stream
         // from these events gets something the run never produced, so the
         // offset is verified rather than trusted.
+        // The same rule as the output one below, for terminal causes: an exit,
+        // a signal, or a cancellation while running are the child's own
+        // account, and a child that never started has no account to give.
+        if let ProcessEventKind::Terminal(disposition) = &kind
+            && !self.child_started
+            && (disposition.establishes_child_settlement()
+                || matches!(disposition, TerminalDisposition::CancelledRunning(_)))
+        {
+            return Err(EventAdmissionError::ChildSettlementBeforeStart);
+        }
         let chunk = match &kind {
             ProcessEventKind::StdoutBytes(evidence) => Some((evidence, self.stdout_observed)),
             ProcessEventKind::StderrBytes(evidence) => Some((evidence, self.stderr_observed)),
@@ -248,6 +276,9 @@ impl EventLedger {
             }
         }
         if matches!(kind, ProcessEventKind::Started) {
+            if self.child_started {
+                return Err(EventAdmissionError::ChildStartedTwice);
+            }
             self.child_started = true;
         }
         let sequence = EventSequence(self.next_sequence);

@@ -1045,8 +1045,16 @@ fn truncated_or_limited_output_never_claims_to_be_complete() -> TestResult {
     assert_eq!(truncated.stdout().observed_bytes(), 1024);
     assert_eq!(truncated.stdout().retained().len(), 8);
 
+    // An output-limit outcome has to name the bound that stopped it, so this
+    // stream records the observation limit it reached.
     let limited = result_with(
-        StreamEvidence::complete(StreamChannel::Stdout, b"whatever".to_vec()),
+        StreamEvidence::new(
+            StreamChannel::Stdout,
+            8,
+            perl_subprocess_runtime::process::ContentFingerprint::of(b"whatever"),
+            b"whatever".to_vec(),
+            TruncationState::observation_truncated(8),
+        ),
         StreamEvidence::empty(StreamChannel::Stderr),
         TerminalDisposition::OutputLimitExceeded,
         CleanupDisposition::Completed,
@@ -2267,7 +2275,6 @@ fn only_a_settled_child_can_establish_complete_output() -> TestResult {
         TerminalDisposition::SupervisorFailed,
         TerminalDisposition::NotProven,
         TerminalDisposition::TimedOut,
-        TerminalDisposition::OutputLimitExceeded,
     ] {
         let result = result_with(
             StreamEvidence::complete(StreamChannel::Stdout, b"partial".to_vec()),
@@ -2286,6 +2293,25 @@ fn only_a_settled_child_can_establish_complete_output() -> TestResult {
             "{disposition:?} withheld the OutputIncomplete limitation"
         );
     }
+
+    // `OutputLimitExceeded` reaches the same conclusion, but its stream has to
+    // record the bound the cause names — two complete streams would contradict
+    // it outright.
+    let limited = result_with(
+        StreamEvidence::new(
+            StreamChannel::Stdout,
+            7,
+            perl_subprocess_runtime::process::ContentFingerprint::of(b"partial"),
+            b"partial".to_vec(),
+            TruncationState::observation_truncated(7),
+        ),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::OutputLimitExceeded,
+        CleanupDisposition::Completed,
+        TreeDisposition::GroupTerminated,
+    )?;
+    assert!(!limited.claims_complete_output());
+    assert!(limited.limitations().contains(&Limitation::OutputIncomplete));
 
     // The pre-start causes reach the same conclusion, but only evidence a
     // never-started run could actually carry is admissible alongside them.
@@ -3814,5 +3840,112 @@ fn output_before_the_child_starts_is_refused_not_reconciled() -> TestResult {
     assert_eq!(terminal.as_ref(), Some(result.disposition()));
     assert_eq!(result.disposition(), &TerminalDisposition::SupervisorFailed);
     assert_eq!(result.stdout().observed_bytes(), 0);
+    Ok(())
+}
+
+// ──────────────── controls added after the twelfth bot review round ──────────
+
+#[test]
+fn a_run_starts_once_and_only_a_started_child_can_settle() -> TestResult {
+    // The wrong implementation this kills: validating chunk ordering while
+    // leaving the lifecycle itself unchecked, so a validly *sequenced* stream
+    // could describe a child that started twice, or one that exited without
+    // ever starting. Same rule as the output one: the child's own account
+    // requires a child.
+    let mut ledger = perl_subprocess_runtime::process::EventLedger::new(
+        perl_subprocess_runtime::process::RunId::new("run-1"),
+    );
+    ledger.admit(ProcessEventKind::Started)?;
+    assert!(
+        matches!(
+            ledger.admit(ProcessEventKind::Started),
+            Err(perl_subprocess_runtime::process::EventAdmissionError::ChildStartedTwice)
+        ),
+        "a run started twice"
+    );
+
+    // A child-settled terminal needs a child.
+    for disposition in [
+        TerminalDisposition::CompletedExit { code: 0 },
+        TerminalDisposition::Signaled { signal: 9 },
+        TerminalDisposition::CancelledRunning(CancellationReason::Shutdown),
+    ] {
+        let mut fresh = perl_subprocess_runtime::process::EventLedger::new(
+            perl_subprocess_runtime::process::RunId::new("run-2"),
+        );
+        assert!(
+            matches!(
+                fresh.admit(ProcessEventKind::Terminal(disposition.clone())),
+                Err(perl_subprocess_runtime::process::EventAdmissionError::ChildSettlementBeforeStart)
+            ),
+            "{disposition:?} settled a child that never started"
+        );
+    }
+
+    // The pre-start causes are exactly the outcomes of a run that never
+    // started, so they stay admissible without one.
+    for disposition in [
+        TerminalDisposition::SpawnFailed {
+            detail: perl_subprocess_runtime::process::SpawnFailureDetail::ExecutableNotFound,
+        },
+        TerminalDisposition::CancelledBeforeStart(CancellationReason::Shutdown),
+        TerminalDisposition::UnsupportedBackend,
+        TerminalDisposition::NotProven,
+    ] {
+        let mut fresh = perl_subprocess_runtime::process::EventLedger::new(
+            perl_subprocess_runtime::process::RunId::new("run-3"),
+        );
+        fresh
+            .admit(ProcessEventKind::Terminal(disposition.clone()))
+            .map_err(|_| format!("{disposition:?} was refused for a run that never started"))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn an_output_limit_outcome_must_name_the_bound_that_stopped_it() -> TestResult {
+    // The wrong implementation this kills: letting the terminal cause and the
+    // stream evidence disagree outright. `OutputLimitExceeded` says a capture
+    // budget ended the run, so two streams reporting no bound reached
+    // contradict the cause they accompany.
+    let contradicts_itself = result_with(
+        StreamEvidence::complete(StreamChannel::Stdout, b"all of it".to_vec()),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::OutputLimitExceeded,
+        CleanupDisposition::Completed,
+        TreeDisposition::GroupTerminated,
+    );
+    assert!(
+        contradicts_itself.is_err(),
+        "an output-limit outcome carried two streams that reached no bound"
+    );
+
+    // Either channel naming its bound satisfies the cause.
+    result_with(
+        StreamEvidence::new(
+            StreamChannel::Stdout,
+            4,
+            perl_subprocess_runtime::process::ContentFingerprint::of(b"kept"),
+            b"kept".to_vec(),
+            TruncationState::observation_truncated(4),
+        ),
+        StreamEvidence::empty(StreamChannel::Stderr),
+        TerminalDisposition::OutputLimitExceeded,
+        CleanupDisposition::Completed,
+        TreeDisposition::GroupTerminated,
+    )?;
+    result_with(
+        StreamEvidence::empty(StreamChannel::Stdout),
+        StreamEvidence::new(
+            StreamChannel::Stderr,
+            4,
+            perl_subprocess_runtime::process::ContentFingerprint::of(b"kept"),
+            b"kept".to_vec(),
+            TruncationState::observation_truncated(4),
+        ),
+        TerminalDisposition::OutputLimitExceeded,
+        CleanupDisposition::Completed,
+        TreeDisposition::GroupTerminated,
+    )?;
     Ok(())
 }
