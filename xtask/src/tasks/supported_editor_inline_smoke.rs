@@ -246,7 +246,10 @@ fn summarize_supported_editor_routes(
         let mut proof_planes = BTreeMap::new();
         for plane in route.proof_planes {
             let status = match (plane.declared_status, plane.proof_surfaces.is_empty()) {
-                (Some(status), true) => status,
+                (Some(status), true) => {
+                    validate_declared_status(route.route, plane.plane, status)?;
+                    status
+                }
                 (Some(_), false) | (None, true) => {
                     bail!(
                         "supported editor inline smoke route `{}` plane `{}` must either declare a status with no proof surfaces or carry proof surfaces with no declared status",
@@ -265,6 +268,13 @@ fn summarize_supported_editor_routes(
                     required_markers: surface.markers.to_vec(),
                 });
             }
+            if proof_planes.contains_key(plane.plane) {
+                bail!(
+                    "supported editor inline smoke route `{}` declares duplicate proof plane `{}`",
+                    route.route,
+                    plane.plane
+                );
+            }
             proof_planes.insert(
                 plane.plane,
                 ProofPlaneReceipt {
@@ -273,6 +283,12 @@ fn summarize_supported_editor_routes(
                     proof_surface_count: proof_surfaces.len(),
                     proof_surfaces,
                 },
+            );
+        }
+        if supported_editor_routes.contains_key(route.route) {
+            bail!(
+                "supported editor inline smoke requirements declare duplicate route `{}`",
+                route.route
             );
         }
         supported_editor_routes.insert(
@@ -307,6 +323,16 @@ fn summarize_supported_editor_routes(
         next_edit_boundary,
         future_gated,
     })
+}
+
+fn validate_declared_status(route: &str, plane: &str, status: &str) -> Result<()> {
+    if matches!(status, "not_proven" | "limited" | "client_not_exposed") {
+        return Ok(());
+    }
+
+    bail!(
+        "supported editor inline smoke route `{route}` proof plane `{plane}` has unsupported declared status `{status}`"
+    );
 }
 
 fn summarize_next_edit_supported_editor_boundary() -> Result<NextEditSupportedEditorBoundaryReceipt>
@@ -408,6 +434,19 @@ mod tests {
         claim: "test route claim",
         proof_planes: &[proof_surface_plane(TEST_PROOFS)],
     }];
+
+    const DUPLICATE_ROUTES: &[SupportedEditorRouteRequirement] = &[
+        SupportedEditorRouteRequirement {
+            route: "duplicate_route",
+            claim: "first",
+            proof_planes: &[proof_surface_plane(TEST_PROOFS)],
+        },
+        SupportedEditorRouteRequirement {
+            route: "duplicate_route",
+            claim: "second",
+            proof_planes: &[proof_surface_plane(TEST_PROOFS)],
+        },
+    ];
 
     #[test]
     fn semantic_inline_receipts_record_supported_editor_routes() -> Result<()> {
@@ -573,6 +612,43 @@ mod tests {
             "error should name the malformed plane, got {message}"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_declared_status_is_rejected() -> Result<()> {
+        let temp = TempDir::new()?;
+        write_fixture_files(temp.path(), TEST_ROUTES)?;
+
+        let malformed = &[SupportedEditorRouteRequirement {
+            route: "malformed_status",
+            claim: "malformed status claim",
+            proof_planes: &[ProofPlaneRequirement {
+                plane: "actual_host_evidence",
+                owner: Some("owner"),
+                declared_status: Some("maybe"),
+                proof_surfaces: &[],
+            }],
+        }];
+
+        let Err(error) = summarize_supported_editor_routes(temp.path(), malformed) else {
+            bail!("unknown declared status must be rejected");
+        };
+        let message = error.to_string();
+        assert!(message.contains("unsupported declared status `maybe`"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_route_is_rejected() -> Result<()> {
+        let temp = TempDir::new()?;
+        write_fixture_files(temp.path(), DUPLICATE_ROUTES)?;
+
+        let Err(error) = summarize_supported_editor_routes(temp.path(), DUPLICATE_ROUTES) else {
+            bail!("duplicate route must be rejected");
+        };
+        let message = error.to_string();
+        assert!(message.contains("duplicate route `duplicate_route`"), "{message}");
         Ok(())
     }
 
