@@ -296,7 +296,7 @@ struct Args {
 /// a log that does not say so.
 fn log_workspace_authority(authority: &WorkspaceAuthority) {
     match authority {
-        WorkspaceAuthority::WorkspaceBound { roots } => {
+        WorkspaceAuthority::WorkspaceBound { roots, .. } => {
             tracing::info!(
                 target = "perl_dap.security",
                 mode = authority.mode_identity(),
@@ -304,7 +304,7 @@ fn log_workspace_authority(authority: &WorkspaceAuthority) {
                 "Debug launches are confined to the configured workspace roots"
             );
         }
-        WorkspaceAuthority::Unbounded { grant: UnboundedGrant::OperatorFlag } => {
+        WorkspaceAuthority::Unbounded { grant: UnboundedGrant::OperatorFlag, .. } => {
             tracing::warn!(
                 target = "perl_dap.security",
                 mode = authority.mode_identity(),
@@ -313,7 +313,7 @@ fn log_workspace_authority(authority: &WorkspaceAuthority) {
                  to any workspace root"
             );
         }
-        WorkspaceAuthority::Unbounded { grant: UnboundedGrant::UnconfiguredDefault } => {
+        WorkspaceAuthority::Unbounded { grant: UnboundedGrant::UnconfiguredDefault, .. } => {
             tracing::warn!(
                 target = "perl_dap.security",
                 mode = authority.mode_identity(),
@@ -594,10 +594,8 @@ mod tests {
 
         let authority =
             WorkspaceAuthority::from_startup(&args.workspace_root, args.allow_unbounded_workspace)?;
-        assert_eq!(
-            authority,
-            WorkspaceAuthority::Unbounded { grant: UnboundedGrant::UnconfiguredDefault }
-        );
+        assert_eq!(authority.unbounded_grant(), Some(UnboundedGrant::UnconfiguredDefault));
+        assert!(!authority.is_bounded());
         Ok(())
     }
 
@@ -609,10 +607,8 @@ mod tests {
 
         let authority =
             WorkspaceAuthority::from_startup(&args.workspace_root, args.allow_unbounded_workspace)?;
-        assert_eq!(
-            authority,
-            WorkspaceAuthority::Unbounded { grant: UnboundedGrant::OperatorFlag }
-        );
+        assert_eq!(authority.unbounded_grant(), Some(UnboundedGrant::OperatorFlag));
+        assert!(!authority.is_bounded());
         Ok(())
     }
 

@@ -323,9 +323,35 @@ impl DebugAdapter {
             boundary.root().map(Path::to_path_buf);
     }
 
-    /// The boundary in force for the current session, if one was derived.
+    /// The boundary derived by the most recent launch, if any.
+    ///
+    /// This is the raw stored value. It stays set after the session it belongs
+    /// to ends, so request handlers must use [`Self::live_session_boundary`]
+    /// instead; only `launch_debugger` — which runs inside the launch that just
+    /// set it — reads it directly.
     pub(super) fn session_boundary(&self) -> Option<PathBuf> {
         lock_or_recover(&self.session_boundary, "debug_adapter.session_boundary").clone()
+    }
+
+    /// The boundary in force for a *live* launch session.
+    ///
+    /// A narrowing `workspaceRoot` belongs to the launch that sent it. Once
+    /// that session ends the narrowing must stop governing client source
+    /// paths, or a valid in-workspace file would be refused until some later
+    /// launch happened to recompute the boundary.
+    ///
+    /// Liveness is read from `session` rather than cleared during teardown, so
+    /// every path that ends a session — `disconnect`, `terminate`, reader
+    /// EOF/error cleanup, and replacement by a later launch or attach — falls
+    /// back to the startup authority automatically. There is no teardown hook
+    /// to miss and no asynchronous cleanup that could clear a newer session's
+    /// boundary, because nothing is cleared.
+    fn live_session_boundary(&self) -> Option<PathBuf> {
+        let session_active = lock_or_recover(&self.session, "debug_adapter.session").is_some();
+        if !session_active {
+            return None;
+        }
+        self.session_boundary()
     }
 
     /// Start a new session generation and reset its terminal-event gate.
@@ -377,7 +403,7 @@ impl DebugAdapter {
     /// - only a genuinely unbounded adapter reaches the shape-only fallback,
     ///   which allows the path through with a warning.
     fn validate_source_path(&self, path: &str) -> Result<PathBuf, String> {
-        let boundary = self.session_boundary();
+        let boundary = self.live_session_boundary();
         let roots: &[PathBuf] = match boundary.as_ref() {
             Some(root) => std::slice::from_ref(root),
             None => self.workspace_authority.trusted_roots(),
@@ -1900,11 +1926,12 @@ print "result: $final\n";
 
     #[test]
     fn test_inline_values_rejects_traversal() -> Result<(), Box<dyn std::error::Error>> {
-        let mut adapter = DebugAdapter::new();
-        adapter.handle_request(1, "initialize", None);
-
         let dir = tempfile::tempdir()?;
-        adapter.set_session_boundary(&SessionBoundary::Bounded(dir.path().to_path_buf()));
+        let mut adapter = DebugAdapter::with_workspace_authority(WorkspaceAuthority::from_startup(
+            &[dir.path().to_path_buf()],
+            false,
+        )?);
+        adapter.handle_request(1, "initialize", None);
 
         let response = adapter.handle_request(
             2,
@@ -1930,14 +1957,62 @@ print "result: $final\n";
         Ok(())
     }
 
+    /// A launch's narrowing must stop governing source paths once its session
+    /// ends (#14592 review).
+    ///
+    /// `session_boundary` is not cleared during teardown; liveness is read from
+    /// the session itself. With no live session, a file inside a trusted root
+    /// but outside the dead session's narrowed root must be admitted again
+    /// rather than refused until some later launch recomputes the boundary.
+    #[test]
+    fn an_ended_session_boundary_stops_governing_source_paths()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workspace = tempfile::tempdir()?;
+        let inner = workspace.path().join("sub");
+        std::fs::create_dir_all(&inner)?;
+        let sibling = workspace.path().join("sibling.pl");
+        std::fs::write(&sibling, "print 'sibling';")?;
+
+        let adapter = DebugAdapter::with_workspace_authority(WorkspaceAuthority::from_startup(
+            &[workspace.path().to_path_buf()],
+            false,
+        )?);
+
+        // Simulate a launch that narrowed to <ws>/sub. No session is live: the
+        // narrowing belongs to a session that has already ended.
+        adapter.set_session_boundary(&SessionBoundary::Bounded(inner.clone()));
+
+        let sibling_path = sibling.to_str().ok_or("non-utf8 fixture path")?;
+        let validated = adapter.validate_source_path(sibling_path);
+        assert!(
+            validated.is_ok(),
+            "a trusted-root file must be admitted once the narrowing session ended, got: {validated:?}"
+        );
+
+        // The stored value is untouched — liveness, not clearing, is what gates it.
+        assert_eq!(adapter.session_boundary(), Some(inner));
+
+        // A path outside every trusted root is still refused.
+        let outside = tempfile::tempdir()?;
+        let outside_file = outside.path().join("evil.pl");
+        std::fs::write(&outside_file, "print 'evil';")?;
+        let outside_path = outside_file.to_str().ok_or("non-utf8 fixture path")?;
+        assert!(
+            adapter.validate_source_path(outside_path).is_err(),
+            "falling back to the trusted roots must not admit an out-of-workspace path"
+        );
+        Ok(())
+    }
+
     #[test]
     fn test_source_rejects_traversal() -> Result<(), Box<dyn std::error::Error>> {
-        let mut adapter = DebugAdapter::new();
-        adapter.handle_request(1, "initialize", None);
-
-        // Bound this session to a temp directory
+        // Bound the adapter to a temp directory via real startup authority
         let dir = tempfile::tempdir()?;
-        adapter.set_session_boundary(&SessionBoundary::Bounded(dir.path().to_path_buf()));
+        let mut adapter = DebugAdapter::with_workspace_authority(WorkspaceAuthority::from_startup(
+            &[dir.path().to_path_buf()],
+            false,
+        )?);
+        adapter.handle_request(1, "initialize", None);
 
         let response = adapter.handle_request(
             2,
@@ -1964,11 +2039,12 @@ print "result: $final\n";
 
     #[test]
     fn test_breakpoint_locations_rejects_traversal() -> Result<(), Box<dyn std::error::Error>> {
-        let mut adapter = DebugAdapter::new();
-        adapter.handle_request(1, "initialize", None);
-
         let dir = tempfile::tempdir()?;
-        adapter.set_session_boundary(&SessionBoundary::Bounded(dir.path().to_path_buf()));
+        let mut adapter = DebugAdapter::with_workspace_authority(WorkspaceAuthority::from_startup(
+            &[dir.path().to_path_buf()],
+            false,
+        )?);
+        adapter.handle_request(1, "initialize", None);
 
         let response = adapter.handle_request(
             2,
@@ -1995,11 +2071,12 @@ print "result: $final\n";
 
     #[test]
     fn test_goto_targets_rejects_traversal() -> Result<(), Box<dyn std::error::Error>> {
-        let mut adapter = DebugAdapter::new();
-        adapter.handle_request(1, "initialize", None);
-
         let dir = tempfile::tempdir()?;
-        adapter.set_session_boundary(&SessionBoundary::Bounded(dir.path().to_path_buf()));
+        let mut adapter = DebugAdapter::with_workspace_authority(WorkspaceAuthority::from_startup(
+            &[dir.path().to_path_buf()],
+            false,
+        )?);
+        adapter.handle_request(1, "initialize", None);
 
         let response = adapter.handle_request(
             2,

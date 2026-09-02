@@ -61,11 +61,23 @@ pub enum WorkspaceAuthority {
     ///
     /// Roots are canonicalized and deduplicated at construction, so no two
     /// entries denote the same directory.
+    ///
+    /// Sealed against external construction: `owning_root`'s determinism rests
+    /// on the roots being canonical, deduplicated, and non-empty, and only
+    /// [`WorkspaceAuthority::from_startup`] establishes that. A caller able to
+    /// write this variant directly could hand the adapter an empty root set —
+    /// silently disabling confinement while still reporting `is_bounded()`.
+    #[non_exhaustive]
     WorkspaceBound {
         /// Canonical, deduplicated trusted roots. Never empty.
         roots: Vec<PathBuf>,
     },
     /// Launches are not confined to any root.
+    ///
+    /// Sealed for the same reason: unbounded access must come from
+    /// [`WorkspaceAuthority::from_startup`]'s explicit inputs, never from a
+    /// caller synthesising a grant.
+    #[non_exhaustive]
     Unbounded {
         /// How the unbounded state came about.
         grant: UnboundedGrant,
@@ -115,6 +127,11 @@ pub enum WorkspaceAuthorityError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionBoundary {
     /// Every client-supplied path this session is confined to this root.
+    ///
+    /// Sealed against external construction so a boundary can only come from
+    /// [`resolve_session_boundary`], which derives it from the startup
+    /// authority.
+    #[non_exhaustive]
     Bounded(PathBuf),
     /// No boundary is known; only path-shape checks apply.
     Unbounded,
@@ -194,6 +211,19 @@ impl WorkspaceAuthority {
         match self {
             Self::WorkspaceBound { roots } => roots,
             Self::Unbounded { .. } => &[],
+        }
+    }
+
+    /// How unbounded access was granted, or `None` when launches are confined.
+    ///
+    /// Callers outside this crate cannot pattern-match the sealed variants, so
+    /// this is the supported way to tell an operator's deliberate
+    /// `--allow-unbounded-workspace` from the unconfigured legacy default.
+    #[must_use]
+    pub const fn unbounded_grant(&self) -> Option<UnboundedGrant> {
+        match self {
+            Self::WorkspaceBound { .. } => None,
+            Self::Unbounded { grant, .. } => Some(*grant),
         }
     }
 
