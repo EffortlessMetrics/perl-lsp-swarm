@@ -100,7 +100,7 @@ fn a_legacy_spelling_resolves_to_the_same_module() -> TestResult {
 }
 
 #[test]
-fn a_complete_miss_is_reported_as_an_exact_absence() -> TestResult {
+fn a_legacy_miss_is_not_widened_into_a_proven_absence() -> TestResult {
     let temp = tempfile::tempdir()?;
     let workspace_uri = workspace_with_module(&temp, "Foo/Bar.pm")?;
     let roots = [lib_root()];
@@ -115,10 +115,59 @@ fn a_complete_miss_is_reported_as_an_exact_absence() -> TestResult {
 
     assert_eq!(resolution, ModuleUriResolution::NotFound);
     let outcome = outcome_from_uri_resolution(&resolution);
-    assert_eq!(outcome, ModuleResolutionOutcome::NotFound);
+    assert_eq!(outcome, ModuleResolutionOutcome::NotProvenAbsent);
     assert!(
-        outcome.has_complete_denominator(),
-        "every authorized root was inspected, so the absence is exact"
+        !outcome.has_complete_denominator(),
+        "the three-state resolver cannot prove it inspected every authorized root"
+    );
+    Ok(())
+}
+
+/// Regression: the resolver reports a clean `NotFound` for a module that exists,
+/// because the root holding it was skipped without any completeness signal.
+///
+/// `full_path_for_root` returns `None` when `validate_workspace_path` rejects the
+/// joined path, and `collect_module_uri_candidates` simply `continue`s. Nothing
+/// records that a configured root went uninspected, so `ModuleUriResolution::NotFound`
+/// cannot mean "proven absent" — which is why `outcome_from_uri_resolution` widens
+/// it to `NotProvenAbsent`.
+#[test]
+fn a_root_skipped_by_boundary_validation_still_reports_not_found() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+
+    // The module really is there — under a root that escapes the workspace.
+    let escaped = temp.path().join("escape");
+    std::fs::create_dir_all(escaped.join("Foo"))?;
+    std::fs::write(escaped.join("Foo/Bar.pm"), "package Foo::Bar; 1;")?;
+
+    let workspace_uri = url::Url::from_directory_path(&workspace)
+        .map_err(|()| "failed to build workspace URI")?
+        .to_string();
+    let roots = [IncRoot {
+        kind: IncRootKind::WorkspaceRelative,
+        path: std::path::PathBuf::from("../escape"),
+        precedence: 0,
+        source: "workspace-include-paths".to_string(),
+    }];
+
+    let resolution = resolve_module_uri_with_effective_inc(
+        "Foo::Bar",
+        &[],
+        std::slice::from_ref(&workspace_uri),
+        &roots,
+        Duration::from_secs(5),
+    );
+
+    assert_eq!(
+        resolution,
+        ModuleUriResolution::NotFound,
+        "the skipped root is indistinguishable from a clean miss in the legacy enum"
+    );
+    assert!(
+        !outcome_from_uri_resolution(&resolution).has_complete_denominator(),
+        "so the widened outcome must not claim a complete denominator"
     );
     Ok(())
 }
@@ -131,7 +180,7 @@ fn an_invalid_request_never_reaches_the_resolver() {
     let legacy_accepts_the_string = ModuleUriResolution::NotFound;
     assert_eq!(
         outcome_from_uri_resolution(&legacy_accepts_the_string),
-        ModuleResolutionOutcome::NotFound
+        ModuleResolutionOutcome::NotProvenAbsent
     );
 
     let classified = ModuleRequest::bareword("../../etc/passwd");

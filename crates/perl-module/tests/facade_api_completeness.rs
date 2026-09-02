@@ -164,7 +164,7 @@ fn test_request_module_types_are_accessible() -> Result<(), Box<dyn std::error::
 
     // Compatibility adapters.
     let widened = outcome_from_uri_resolution(&ModuleUriResolution::NotFound);
-    assert_eq!(widened, ModuleResolutionOutcome::NotFound);
+    assert_eq!(widened, ModuleResolutionOutcome::NotProvenAbsent);
     assert_eq!(uri_resolution_from_outcome(&widened), Some(ModuleUriResolution::NotFound));
     assert_eq!(
         uri_resolution_from_outcome(&ModuleResolutionOutcome::Ambiguous),
