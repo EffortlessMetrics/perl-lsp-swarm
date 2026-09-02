@@ -418,9 +418,11 @@ await_holding_lock = "deny"
 await_holding_refcell_ref = "deny"
 # let_underscore_lock: activated by #14444 after a zero-site confirmation on a
 # complete workspace --all-targets measurement (force-warn pierces allows).
-# This row covers non-std guards only — `parking_lot` mutex and read/write
-# guards. Standard-library guards are owned by the `rust::let_underscore_lock`
-# row below; the two identities partition the surface and do not overlap.
+# This row covers non-std guards only — borrowed `parking_lot` mutex and
+# read/write guards. Standard-library guards are owned by the
+# `rust::let_underscore_lock` row below; the two identities partition the
+# surface and do not overlap. Neither lint sees `parking_lot`'s owned arc
+# guards (`lock_arc`/`read_arc`/`write_arc`); that measured gap is #14579.
 let_underscore_lock = "deny"
 # mutex_atomic: prefer proper Mutex over atomic-loaded Mutex guards (#2899).
 mutex_atomic = "warn"

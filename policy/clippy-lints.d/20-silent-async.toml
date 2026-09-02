@@ -24,9 +24,19 @@ reason = "Must-use values cannot be discarded with let-underscore."
 # The two let_underscore_lock identities partition one invariant across two
 # tools; they do not overlap. Measured on the selected 1.95.0 toolchain
 # (#14444): rustc fires on `std::sync` mutex and read/write guards and is silent
-# on `parking_lot`; Clippy fires on `parking_lot` guards and is silent on the
-# standard-library guards it uplifted to rustc. Removing either row therefore
-# uncovers real lock types rather than duplicating the other row's coverage.
+# on `parking_lot`; Clippy fires on borrowed `parking_lot` guards and is silent
+# on the standard-library guards it uplifted to rustc. Removing either row
+# therefore uncovers real lock types rather than duplicating the other row's
+# coverage.
+#
+# Known gap, measured rather than assumed: neither lint recognises parking_lot's
+# *owned* guards (`lock_arc`, `read_arc`, `write_arc` -> ArcMutexGuard,
+# ArcRwLock*Guard), so discarding one of those is silently accepted. The
+# workspace enables the `arc_lock` feature and perl-workspace's workspace_index
+# holds an ArcMutexGuard, so the family is production-reachable. Owned by #14579;
+# the boundary is asserted by
+# xtask/src/tasks/check_lint_policy/tests/lock_partition.rs so it cannot drift
+# unrecorded.
 [[lint]]
 name = "rust::let_underscore_lock"
 level = "deny"
@@ -39,7 +49,7 @@ name = "clippy::let_underscore_lock"
 level = "deny"
 status = "active"
 class = "silent-failure"
-reason = "Non-std lock acquisitions (parking_lot mutex and read/write guards) must be held by named guards with visible scope; rustc does not cover these types."
+reason = "Borrowed non-std lock acquisitions (parking_lot mutex and read/write guards) must be held by named guards with visible scope; rustc does not cover these types, and owned arc guards are covered by neither lint (#14579)."
 
 [[lint]]
 name = "clippy::unused_result_ok"
