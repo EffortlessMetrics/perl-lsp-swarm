@@ -1,4 +1,4 @@
-use color_eyre::eyre::{bail, Context, Result};
+use color_eyre::eyre::{Context, Result, bail};
 use perl_lsp_rs_core::providers::inline_completion::{
     NextEditFeatureGate, NextEditProvider, NextEditRequest, NextEditResponse, NextEditStatus,
     PreparedInlineCompletionContext,

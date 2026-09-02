@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use assert_cmd::cargo::cargo_bin_cmd;
 use serde_json::{Map, Value};
 use tempfile::TempDir;
