@@ -1481,6 +1481,171 @@ mod tests {
         Ok(())
     }
 
+    fn rolling_log_contains_token(
+        dir: &std::path::Path,
+        token: &str,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        Ok(std::fs::read_dir(dir)?
+            .filter_map(Result::ok)
+            .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+            .any(|contents| contents.contains(token)))
+    }
+
+    fn spawn_log_file_child(
+        test_name: &str,
+        marker: &str,
+        log_file: &std::path::Path,
+    ) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+        Ok(std::process::Command::new(std::env::current_exe()?)
+            .args(["--exact", test_name, "--nocapture"])
+            .env(marker, "1")
+            .env("PERL_LSP_LOG_FILE", log_file)
+            .output()?)
+    }
+
+    struct CpuSaturation {
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        handles: Vec<std::thread::JoinHandle<()>>,
+    }
+
+    impl Drop for CpuSaturation {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            for handle in self.handles.drain(..) {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    /// Occupy a bounded number of cores so the non-blocking appender worker
+    /// is not the first thread scheduled. Two to four spinners recreate the
+    /// issue's load-dependent loss without saturating a whole CI machine.
+    fn saturate_cpu() -> CpuSaturation {
+        let workers = std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(2)
+            .clamp(2, 4);
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let handles = (0..workers)
+            .map(|_| {
+                let stop = std::sync::Arc::clone(&stop);
+                std::thread::spawn(move || {
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        std::hint::black_box((0..256u64).fold(0u64, |acc, n| acc.wrapping_add(n)));
+                    }
+                })
+            })
+            .collect();
+        CpuSaturation { stop, handles }
+    }
+
+    fn install_test_file_guard(
+        dir: &std::path::Path,
+        prefix: &str,
+    ) -> Result<tracing_appender::non_blocking::NonBlocking, Box<dyn std::error::Error>> {
+        let appender = tracing_appender::rolling::RollingFileAppender::builder()
+            .rotation(tracing_appender::rolling::Rotation::DAILY)
+            .filename_prefix(prefix)
+            .max_log_files(5)
+            .build(dir)?;
+        let (non_blocking, guard) = tracing_appender::non_blocking(appender);
+        *super::LOG_FILE_GUARD.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(guard);
+        Ok(non_blocking)
+    }
+
+    fn poison_log_file_guard() {
+        let _ = std::thread::spawn(|| {
+            let Ok(_guard) = super::LOG_FILE_GUARD.lock() else {
+                return;
+            };
+            let reason = std::hint::black_box("poison");
+            assert_ne!(
+                reason, "poison",
+                "intentionally poison LOG_FILE_GUARD so shutdown must recover"
+            );
+        })
+        .join();
+    }
+
+    /// Deterministic guard-drop oracle for #14537: after the child exits, the
+    /// marker must already be on disk. A post-exit poll cannot recover a record
+    /// lost because `WorkerGuard` was never dropped. CPU saturation recreates
+    /// the original flake window; `shutdown_logging` in the child is what
+    /// makes this assertion hold.
+    #[test]
+    fn init_logging_persists_marker_under_cpu_saturation_after_guard_drop()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const MARKER: &str = "PERL_LSP_WAVE_A1_LOG_CHILD_CPU_SAT";
+        const TOKEN: &str = "wave-a1-cpu-sat-token";
+        if std::env::var_os(MARKER).is_some() {
+            super::init_logging("debug");
+            tracing::info!(target: "wave_a1", "{TOKEN}");
+            super::shutdown_logging();
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        let log_file = dir.path().join("wave-a1-cpu-sat.log");
+        let output = {
+            let _load = saturate_cpu();
+            spawn_log_file_child(
+                "runtime::launcher::tests::init_logging_persists_marker_under_cpu_saturation_after_guard_drop",
+                MARKER,
+                &log_file,
+            )?
+        };
+        assert!(output.status.success(), "logging child failed: {output:?}");
+        assert!(
+            rolling_log_contains_token(dir.path(), TOKEN)?,
+            "rolling log must contain marker {TOKEN} immediately after child exit under CPU saturation"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn shutdown_logging_drains_queued_bytes_immediately_and_recovers_from_poison()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write;
+
+        // Opposite-direction control: shutdown with no appender, twice, is a no-op.
+        super::shutdown_logging();
+        super::shutdown_logging();
+
+        let dir = tempfile::tempdir()?;
+        const DRAIN_TOKEN: &str = "wave-a1-guard-drop-token";
+        let mut writer = install_test_file_guard(dir.path(), "guard-drop")?;
+        writer.write_all(format!("{DRAIN_TOKEN}\n").as_bytes())?;
+        super::shutdown_logging();
+        assert!(
+            rolling_log_contains_token(dir.path(), DRAIN_TOKEN)?,
+            "rolling log must contain marker {DRAIN_TOKEN} immediately after WorkerGuard drop"
+        );
+        assert!(
+            super::LOG_FILE_GUARD
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_none(),
+            "shutdown_logging must take the guard so a later exit cannot leak it"
+        );
+
+        let poison_dir = tempfile::tempdir()?;
+        const POISON_TOKEN: &str = "wave-a1-poison-token";
+        let mut writer = install_test_file_guard(poison_dir.path(), "guard-poison")?;
+        writer.write_all(format!("{POISON_TOKEN}\n").as_bytes())?;
+        poison_log_file_guard();
+        let found = {
+            let _load = saturate_cpu();
+            super::shutdown_logging();
+            rolling_log_contains_token(poison_dir.path(), POISON_TOKEN)?
+        };
+        assert!(
+            found,
+            "rolling log must contain marker {POISON_TOKEN} after shutdown recovers a poisoned mutex"
+        );
+        Ok(())
+    }
+
     #[test]
     fn help_mentions_log_file_env_var() {
         let text = super::help_text();
