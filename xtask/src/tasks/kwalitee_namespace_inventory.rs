@@ -674,12 +674,14 @@ mod tests {
     #[test]
     fn surface_exclusion_matches_root_components_and_prefixes_only() {
         let excluded = ["target/**", ".wt-*", "generated/**"];
-        assert!(surface_excluded("target", "target", &excluded));
-        assert!(!surface_excluded("target", "crates/x/target", &excluded));
-        assert!(surface_excluded(".wt-1234", ".wt-1234/sub/file", &excluded));
-        assert!(!surface_excluded(".wt-1234", "crates/x/.wt-1234/sub/file", &excluded));
-        assert!(surface_excluded("generated", "generated/out.json", &excluded));
-        assert!(!surface_excluded("src", "src/lib.rs", &excluded));
-        assert!(!surface_excluded("target_holder", "target_holder/f", &excluded));
+        assert!(surface_excluded("target", "target", &excluded, true));
+        assert!(!surface_excluded("target", "target/file", &excluded, false));
+        assert!(!surface_excluded("target", "crates/x/target", &excluded, true));
+        assert!(surface_excluded(".wt-1234", ".wt-1234/sub/file", &excluded, true));
+        assert!(!surface_excluded(".wt-1234", ".wt-1234/file", &excluded, false));
+        assert!(!surface_excluded(".wt-1234", "crates/x/.wt-1234/sub/file", &excluded, true));
+        assert!(surface_excluded("generated", "generated/out.json", &excluded, false));
+        assert!(!surface_excluded("src", "src/lib.rs", &excluded, false));
+        assert!(!surface_excluded("target_holder", "target_holder/f", &excluded, false));
     }
 }
