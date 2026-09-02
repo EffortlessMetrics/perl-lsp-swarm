@@ -641,7 +641,7 @@ fn scanner_and_grammar_agree_on_openers() {
     //
     // Each row is one line of Perl with no body, so the grammar's count is its
     // unclouded opinion about that `<<` alone.
-    let rows: [&str; 16] = [
+    let rows: [&str; 24] = [
         // Term position — the grammar admits `heredoc` as an unconditional
         // `primary`, so any bareword counts, not just builtins.
         "my $x = <<EOF;\n",
@@ -659,6 +659,17 @@ fn scanner_and_grammar_agree_on_openers() {
         "my $y = $a[0] <<2;\n",
         "my $y = $i++ <<2;\n",
         "my $y = $i-- <<2;\n",
+        // Completed terms the preceding byte alone cannot recognize: a regex
+        // ends in `/` or a flag letter, a special variable in punctuation, a
+        // hex literal in a letter, a qualified name in a word byte.
+        "my $y = /a/ <<2;\n",
+        "my $y = /a/i <<2;\n",
+        "my $y = $! <<2;\n",
+        "my $y = $? <<2;\n",
+        "my $y = $@ <<2;\n",
+        "my $y = Foo::BAR <<2;\n",
+        "my $y = 0xff <<2;\n",
+        "my $y = \"s\" <<2;\n",
         // Not code at all.
         "my $x = /<<EOF/;\n",
         "my $x = 1; # <<EOF\n",

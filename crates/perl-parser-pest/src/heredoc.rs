@@ -277,8 +277,11 @@ impl HeredocScan {
 
 /// Run the deterministic heredoc pre-pass over `source`.
 ///
-/// Never panics and never allocates more than `source.len()` for the stripped
-/// text plus the owned bodies. Output is a pure function of `source`.
+/// Never panics, and its output is a pure function of `source`. Work is bounded
+/// by one pass over the source plus [`MAX_HEREDOC_BODY_BYTES`] of materialized
+/// body per opener and [`MAX_HEREDOC_DEPTH`] owned openers per line; allocation
+/// is proportional to that, not to a tighter bound — the stripped text, the
+/// owned bodies, and one capture and diagnostic per opener all allocate.
 #[must_use]
 pub fn scan(source: &str) -> HeredocScan {
     let mut scanner = Scanner::new(source);
