@@ -11,7 +11,7 @@ use std::error::Error;
 use std::fmt;
 use std::io;
 use std::io::IsTerminal;
-use std::sync::{Once, OnceLock};
+use std::sync::{Mutex, Once};
 
 use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{Args, Parser};
@@ -27,8 +27,9 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, fmt as tracing_fmt};
 
 static LOGGING_INIT: Once = Once::new();
-/// Keeps the non-blocking file writer alive for the process lifetime.
-static LOG_FILE_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
+/// Owns the non-blocking file writer until the server's shutdown path drains it.
+static LOG_FILE_GUARD: Mutex<Option<tracing_appender::non_blocking::WorkerGuard>> =
+    Mutex::new(None);
 
 /// Default port used by socket transport.
 pub const DEFAULT_LSP_PORT: u16 = 9257;
@@ -107,7 +108,9 @@ fn init_logging_with_log_path(default_filter: &str, log_path: Option<String>) {
                 .build(log_dir)
             {
                 let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-                let _ = LOG_FILE_GUARD.set(guard);
+                if let Ok(mut file_guard) = LOG_FILE_GUARD.lock() {
+                    *file_guard = Some(guard);
+                }
 
                 let stderr_layer = tracing_subscriber::fmt::layer()
                     .with_writer(io::stderr)
@@ -137,6 +140,17 @@ fn init_logging_with_log_path(default_filter: &str, log_path: Option<String>) {
             .with_target(true)
             .try_init();
     });
+}
+
+/// Flush and stop the rolling-file appender, if one was configured.
+///
+/// Dropping the non-blocking writer guard drains its queue before the process
+/// exits. Call this from the server shutdown path so final diagnostics are not
+/// lost to process teardown.
+pub fn shutdown_logging() {
+    if let Ok(mut file_guard) = LOG_FILE_GUARD.lock() {
+        drop(file_guard.take());
+    }
 }
 
 fn env_truthy(var_name: &str) -> Option<bool> {
@@ -1438,6 +1452,7 @@ mod tests {
         if std::env::var_os(MARKER).is_some() {
             super::init_logging("debug");
             tracing::info!(target: "wave_a1", "{TOKEN}");
+            super::shutdown_logging();
             return Ok(());
         }
         let dir = tempfile::tempdir()?;
