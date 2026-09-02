@@ -2016,14 +2016,6 @@ fn days_to_ymd(days: u64) -> (u32, u32, u32) {
     (year as u32, month as u32, day as u32)
 }
 
-/// Returns `true` when the glob pattern looks like a "broad" glob
-/// (e.g. `**/*`, `**`, `*`).
-fn is_broad_glob(glob_str: &str) -> bool {
-    matches!(glob_str.trim(), "**" | "**/*" | "*" | "*.*")
-        || glob_str.starts_with("**/*.")
-            && glob_str.trim_start_matches("**/").trim_start_matches("*.").is_empty()
-}
-
 fn expired_entry_count(entries: &[AllowEntry]) -> usize {
     entries
         .iter()
@@ -2322,7 +2314,7 @@ fn check_allowlist_entries(
 
         // --- Broad glob without reason ---
         if let Some(ref glob_str) = entry.glob
-            && is_broad_glob(glob_str)
+            && is_policy_broad_glob(glob_str)
             && entry.broad_glob_reason.is_none()
         {
             violations.push(PolicyViolation {
@@ -3794,6 +3786,32 @@ review_after = "2026-06-01"
     }
 
     #[test]
+    fn both_production_validators_agree_on_tree_glob_breadth() {
+        // `validate-policy` and `check-file-policy --mode blocking-strict` are
+        // both advertised as enforcing the broad-glob justification rule. They
+        // used to consult different predicates, so an entry could be refused by
+        // one and waved through by the other.
+        for glob in ["docs/**/README.md", "fixtures/pkt/**/*.json", "docs/**", "**/*.md"] {
+            let entry = make_entry("tree", Some(glob), None, "documentation");
+            assert!(entry.broad_glob_reason.is_none());
+
+            let strict = check_allowlist_entries(
+                std::slice::from_ref(&entry),
+                CheckFilePolicyMode::BlockingStrict,
+                &[],
+            );
+            assert!(
+                violation_kinds(&strict).contains(&"broad-glob-no-reason"),
+                "blocking-strict must refuse {glob} without a justification"
+            );
+            assert!(
+                is_policy_broad_glob(glob),
+                "schema validation must agree that {glob} is broad"
+            );
+        }
+    }
+
+    #[test]
     fn broad_changes_tree_glob_is_rejected_without_a_reason() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let allowlist = temp.path().join("allow.toml");
@@ -4701,8 +4719,8 @@ review_after = "2026-08-13"
         assert_eq!(fmt_ymd((2026, 6, 9)), "2026-06-09");
         assert!(is_past_date("not-a-date"));
         assert!(is_policy_broad_glob("docs/**"));
-        assert!(is_broad_glob("**/*"));
-        assert!(!is_broad_glob("docs/*.md"));
+        assert!(is_policy_broad_glob("**/*"));
+        assert!(!is_policy_broad_glob("docs/*.md"));
         assert_eq!(classify_dir("docs"), "docs");
         assert_eq!(classify_dir("scripts"), "build");
         assert_eq!(classify_dir("unknown"), "tbd");
