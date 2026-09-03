@@ -1830,6 +1830,21 @@ mod tests {
             server.parse_worker().is_none(),
             "a stopped parse worker must select the synchronous fallback"
         );
+
+        let uri = "file:///shutdown-fallback.pl";
+        server
+            .test_apply_did_open(uri, "my $x = 1;\n", 1)
+            .expect("didOpen must establish the fallback document");
+        server
+            .test_apply_did_change(uri, "my $x = 2;\n", 2)
+            .expect("didChange must parse synchronously after shutdown");
+        let documents = server.documents.lock();
+        let document = documents.get(uri).expect("fallback document must be retained");
+        assert_eq!(
+            document.current_parsed().map(|snapshot| snapshot.generation()),
+            Some(1),
+            "the synchronous fallback must publish the changed generation"
+        );
     }
 
     #[test]
