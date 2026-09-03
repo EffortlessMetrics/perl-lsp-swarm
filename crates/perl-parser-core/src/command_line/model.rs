@@ -125,8 +125,10 @@ pub struct ModuleSpec {
     /// arbitrary code whatever Perl source context applies: `-M'strict;print
     /// 99'` runs at compile time, and so does `-M'strict;print "α"'` — a
     /// non-ASCII byte *inside* the code changes nothing.
-    /// [`AmbiguityKind::ModuleNameDependsOnSourceContext`] is recorded only when
-    /// the answer genuinely turns on the pragma.
+    /// [`AmbiguityKind::ModuleNameDependsOnSourceContext`] means only that this
+    /// layer cannot decide. It is **not** a claim that the argument is a module
+    /// name under `utf8` — see that variant's documentation for the
+    /// over-approximation it carries.
     ///
     /// Which applies is decided by reading the argument under both available
     /// readings, not by the single character that ended the name. `-MFooα`
@@ -420,6 +422,28 @@ pub enum AmbiguityKind {
     /// (`perl -Mutf8 -MFoo::á` and `-MFoo::a‿` both load). This layer therefore
     /// reports the question instead of guessing an answer; the module text and
     /// its span are still recorded exactly.
+    ///
+    /// # This is "cannot decide", not "a name under `utf8`"
+    ///
+    /// The scan that decides this treats *every* non-ASCII character as a name
+    /// character, which is deliberately wider than Perl's real identifier rule
+    /// — being a superset is what makes the decision possible without Unicode
+    /// property tables. A rejection is therefore conclusive, but acceptance
+    /// means only "possible":
+    ///
+    /// ```text
+    /// perl -Mutf8 -MFoo€ -e1 → Unrecognized character \x{20ac}
+    /// perl -Mutf8 -MFoo☃ -e1 → Unrecognized character \x{2603}
+    /// perl -Mutf8 -MFoo± -e1 → Unrecognized character \x{b1}
+    /// ```
+    ///
+    /// Those are not module names under any pragma, yet they are reported here
+    /// rather than as
+    /// [`AmbiguityKind::ModuleExpressionIsNotAModuleName`], because separating
+    /// them needs exactly the identifier tables this layer declines to carry.
+    /// So a consumer must treat this variant as *unknown* and never as evidence
+    /// that the text names a module. Narrowing it is tracked with the rest of
+    /// the version- and context-dependent acceptance questions.
     ModuleNameDependsOnSourceContext,
     /// `-F` written with no pattern. Perl accepts it, but the resulting split
     /// behavior is not determined by `argv`.

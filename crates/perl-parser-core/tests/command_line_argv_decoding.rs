@@ -853,6 +853,37 @@ fn a_non_ascii_module_name_is_reported_as_undecidable_rather_than_guessed() {
         );
     }
 
+    // The undecidable answer is deliberately over-broad, and that limit is
+    // pinned here rather than left to prose. The permissive reading grants name
+    // status to *every* non-ASCII character, which is wider than Perl's real
+    // identifier rule; being a superset is what makes the decision possible
+    // without Unicode property tables, so a rejection is conclusive while
+    // acceptance means only "possible". These are not module names under any
+    // pragma, yet they land here:
+    //
+    //   perl -Mutf8 -MFoo€ -e1 → Unrecognized character \x{20ac}
+    //   perl -Mutf8 -MFoo☃ -e1 → Unrecognized character \x{2603}
+    //   perl -Mutf8 -MFoo± -e1 → Unrecognized character \x{b1}
+    //
+    // Separating them from `-MFooα`, which really does load under the pragma,
+    // needs exactly the identifier tables this layer declines to carry. The
+    // consequence a consumer must respect: this kind means *unknown*, never
+    // "names a module under utf8".
+    for module in ["Foo€", "Foo☃", "Foo±"] {
+        let argv = format!("-M{module}");
+        let invocation = perl(&[argv.as_str(), "-e", "print"]);
+        let ContextFactKind::ModuleImport { form, spec } = &facts(&invocation)[0] else {
+            panic!("expected a module import for {module}");
+        };
+        assert!(!spec.module_is_plain_name, "{module:?} is never claimed as a name");
+        assert_eq!(spec.import_action(*form), ModuleImportAction::Undetermined);
+        assert_eq!(
+            invocation.ambiguities.iter().map(|a| a.kind).collect::<Vec<_>>(),
+            vec![AmbiguityKind::ModuleNameDependsOnSourceContext],
+            "{module:?} is over-approximated as undecidable; see the note above",
+        );
+    }
+
     // Ordinary ASCII names stay decidable, so the boundary is not a blanket
     // refusal: `perl -MFoo2` looks for `Foo2.pm` with or without the pragma.
     let plain = perl(&["-MFoo2", "-e", "print"]);
