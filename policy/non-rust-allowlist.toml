@@ -4068,3 +4068,20 @@ reason = "Driver template for declared launches only; carries placeholders and z
 covered_by = ["python3 -m unittest discover -s integrations/lsp4ij/host-journey/tests -p test_*.py", "cargo xtask check-file-policy"]
 created = "2026-08-26"
 review_after = "2027-02-26"
+
+[[allow]]
+id = "non-rust-first-ten-minutes-fixture-set"
+glob = "testdata/ux/first_ten_minutes/**/*"
+kind = "test_fixture"
+language = "mixed"
+surface = "fixtures"
+classification = "test"
+owner = "release/ux-study"
+reason = "Content-addressed representative project set for the #5902 packaged first-ten-minutes study: one Perl project per experience family, each bound in manifest.json by a deterministic sha256 tree digest; drift, family coverage, and receipt-to-fixture binding are enforced by the first_ten_minutes xtask example."
+covered_by = [
+  "cargo run -p xtask --locked --example first_ten_minutes -- --verify-fixture-set testdata/ux/first_ten_minutes",
+  "cargo test -p xtask --locked --example first_ten_minutes",
+]
+broad_glob_reason = "The whole tree is one finite, content-addressed testdata set: fixture file names and layout follow each fixture project's own Perl structure (bin/, lib/, t/, script/), so per-file allowlist rows would only mirror manifest.json, which already enumerates the set and binds every fixture byte by deterministic sha256 tree digest; drift, extra families, and unsafe fixture paths are rejected by the first_ten_minutes xtask verifier, so the glob marks an accounting boundary, not a trust boundary."
+created = "2026-08-29"
+review_after = "2027-02-28"
