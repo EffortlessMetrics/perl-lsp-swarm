@@ -82,7 +82,11 @@ DISPATCH_FN_RE = re.compile(r"\bfn\s+dispatch_request\b")
 PRODUCTION_DISPATCH_FN_RE = re.compile(
     r"\bfn\s+(?:dispatch|dispatch_request|handle_request)\s*\(",
 )
-PEER_DISPATCH_FN_RE = re.compile(r"\bpub\s+fn\s+dispatch\s*\(")
+# The public `dispatch` wrapper is the capability-admission seam.  The
+# table-owned route body is kept in the private `dispatch_unchecked` method so
+# callers cannot bypass admission while this authority still pins the exact
+# request-table shape.
+PEER_DISPATCH_FN_RE = re.compile(r"\bfn\s+dispatch_unchecked\s*\(")
 PEER_ROUTE_MATCH_RE = re.compile(
     r"\bmatch\s+DapRequestRoute::from_command\s*\(\s*command\s*\)\s*"
     r"\.filter\s*\(\s*DapRequestRoute::available_in_peer_frontends\s*\)"
