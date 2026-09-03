@@ -395,6 +395,11 @@ path = "tests/debugger_output_origin.rs"
 # #8746: originated stack/variable parse classification by caller-supplied origin
 
 [[test]]
+name = "backend_error_class"
+path = "tests/backend_error_class.rs"
+# #8758: a peer-reported failure is a reported outcome, never an adapter bug
+
+[[test]]
 name = "wave_h_security_edge_cases"
 path = "tests/wave_h_security_edge_cases.rs"
 # Green TDD: edge cases and boundary conditions for security module

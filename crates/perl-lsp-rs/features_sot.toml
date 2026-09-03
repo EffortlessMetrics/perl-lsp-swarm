@@ -1340,7 +1340,7 @@ spec = "DAP 1.0"
 area = "debug"
 policy_class = "debug_adapter"
 maturity = "not_proven"
-advertised = true
+advertised = false
 counts_in_coverage = false
 direction = "client_to_server"
 capability_gate = "dap capabilities advertisement"
@@ -1352,7 +1352,8 @@ evidence = [
   { class = "integration_test", id = "crates/perl-dap/tests/dap_watchpoints_tests.rs" },
 ]
 limitations = [
-  "Qualifying integration-test citations exist, but complete implementation/state ownership is not yet recorded; promotion awaits metadata (#7029).",
+  "Native data breakpoints are fail-closed (#9091): dataBreakpointInfo never mints a name-only or context-qualified dataId, and setDataBreakpoints performs no debugger mutation, retains no watchpoint registry, and reports every entry unverified. Capability advertisement is false until the #9091 re-enable gate proves identity, install acknowledgement, and hit attribution.",
+  "Re-enable requires the #9091 gate: frame/container-bound session-stable dataId, backend install request through the mutation broker with parsed acknowledgement, target-value-change stop attributed to that exact watchpoint, and replacement/removal/restart cleanup.",
 ]
 description = "Data breakpoints (watchpoints) via Perl debugger w/W commands"
 
@@ -2440,6 +2441,76 @@ limitations = [
   "Qualifying integration-test citations exist, but complete implementation/state ownership is not yet recorded; promotion awaits metadata (#7029).",
 ]
 description = "workspace/applyEdit request (server->client)"
+
+[[feature]]
+id = "lsp.file_watcher_relative_pattern"
+spec = "LSP 3.17"
+area = "workspace"
+policy_class = "document_sync"
+maturity = "not_proven"
+advertised = false
+counts_in_coverage = false
+direction = "server_to_client"
+capability_gate = "workspace.didChangeWatchedFiles.relativePatternSupport"
+registration = "dynamic_registration"
+implementation_owner = "missing"
+state_owner = "missing"
+tests = [
+  "crates/perl-lsp-rs/tests/lsp_registration_tests.rs",
+  "crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs",
+]
+evidence = [
+  { class = "integration_test", id = "crates/perl-lsp-rs/tests/lsp_registration_tests.rs" },
+  { class = "integration_test", id = "crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs" },
+]
+limitations = [
+  "Watcher-glob relative patterns are the LSP 3.17 watcher surface only; document-filter and notebook-filter relative patterns are separate 3.18 rows (#8897).",
+]
+description = "Relative-pattern watcher globs for workspace/didChangeWatchedFiles (LSP 3.17 watcher surface; identity split #8897)."
+
+[[feature]]
+id = "lsp.document_filter_relative_pattern"
+spec = "LSP 3.18"
+area = "workspace"
+policy_class = "document_sync"
+maturity = "unsupported"
+advertised = false
+counts_in_coverage = false
+direction = "server_to_client"
+capability_gate = "not_implemented"
+registration = "dynamic_registration"
+implementation_owner = "missing"
+state_owner = "missing"
+tests = ["crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs"]
+evidence = [
+  { class = "integration_test", id = "crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs" },
+]
+limitations = [
+  "Unsupported and negative-gated: no product path emits a relative document filter; document-selector relative-pattern support remains unclaimed; the gate scans every dynamic registration (#8897).",
+]
+description = "Document-filter relative-pattern support is the LSP 3.18 text-document-filter surface; unimplemented and negative-gated (identity split #8897)."
+
+[[feature]]
+id = "lsp.notebook_document_filter_relative_pattern"
+spec = "LSP 3.18"
+area = "notebook"
+policy_class = "editor_dependent"
+maturity = "unsupported"
+advertised = false
+counts_in_coverage = false
+direction = "server_to_client"
+capability_gate = "not_implemented"
+registration = "dynamic_registration"
+implementation_owner = "missing"
+state_owner = "missing"
+tests = ["crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs"]
+evidence = [
+  { class = "integration_test", id = "crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs" },
+]
+limitations = [
+  "Unsupported and negative-gated: the preview profile may advertise notebookDocumentSync, but no notebook selectors are registered and no selector carries a relative-pattern baseUri (#8897).",
+]
+description = "Notebook document-filter relative-pattern support is the LSP 3.18 notebook-filter surface; independently unclaimed from text-document filters (identity split #8897)."
 
 [[feature]]
 id = "lsp.apply_edit_metadata"
