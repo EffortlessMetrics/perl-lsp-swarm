@@ -74,9 +74,20 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn ci_runner_fmt_check_routes_to_package_formatter() -> Result<()> {
-        let fake_cargo = crate::test_support::FakeCargo::install()?;
+        if crate::test_support::FakeCargo::child_requested() {
+            return run_fmt_check();
+        }
 
-        run_fmt_check()?;
+        let fake_cargo = crate::test_support::FakeCargoChild::run(
+            "tasks::ci::runner::tests::ci_runner_fmt_check_routes_to_package_formatter",
+        )?;
+
+        if !fake_cargo.status().success() {
+            return Err(color_eyre::eyre::eyre!(
+                "fake cargo child failed: {}",
+                String::from_utf8_lossy(fake_cargo.stderr()),
+            ));
+        }
 
         let invocations = fake_cargo.invocations();
         assert!(invocations.iter().any(|line| line == "metadata --format-version 1 --no-deps"));

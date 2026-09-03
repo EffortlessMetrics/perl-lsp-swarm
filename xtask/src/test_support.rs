@@ -7,6 +7,7 @@ use std::{
     fs,
     os::unix::fs::PermissionsExt,
     path::PathBuf,
+    process::{Command, Output},
     sync::{Mutex, MutexGuard},
 };
 #[cfg(unix)]
@@ -26,9 +27,15 @@ pub struct FakeCargo {
 }
 
 #[cfg(unix)]
-impl FakeCargo {
-    pub fn install() -> Result<Self> {
-        let guard = ENV_LOCK.lock().map_err(|_| eyre!("fake cargo environment lock poisoned"))?;
+struct FakeCargoFiles {
+    _dir: TempDir,
+    log_path: PathBuf,
+    metadata_path: PathBuf,
+}
+
+#[cfg(unix)]
+impl FakeCargoFiles {
+    fn create() -> Result<Self> {
         let dir = TempDir::new().context("create fake cargo tempdir")?;
         let log_path = dir.path().join("cargo.log");
         let metadata_path = dir.path().join("metadata.json");
@@ -43,9 +50,6 @@ impl FakeCargo {
         fs::write(
             &metadata_path,
             format!(
-                // `edition` mirrors the fake manifest above. Real `cargo metadata`
-                // emits it for every package, and staged formatting reads it to
-                // pass `rustfmt --edition` (bare rustfmt would default to 2015).
                 "{{\"packages\":[{{\"id\":\"fake 0.1.0 (path+file:///fake)\",\"name\":\"fake\",\"manifest_path\":{manifest_json},\"edition\":\"2024\"}}],\"workspace_members\":[\"fake 0.1.0 (path+file:///fake)\"]}}"
             ),
         )
@@ -61,6 +65,64 @@ impl FakeCargo {
             fs::metadata(&cargo_path).context("stat fake cargo script")?.permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(&cargo_path, permissions).context("chmod fake cargo script")?;
+
+        Ok(Self { _dir: dir, log_path, metadata_path })
+    }
+
+    fn child_command(&self, test_name: &str) -> Result<Command> {
+        let mut path_entries = vec![self._dir.path().to_path_buf()];
+        if let Some(path) = env::var_os("PATH") {
+            path_entries.extend(env::split_paths(&path));
+        }
+        let joined_path = env::join_paths(path_entries).context("join fake cargo PATH")?;
+        let mut command = Command::new(env::current_exe().context("locate test executable")?);
+        command.args(["--exact", test_name, "--nocapture"]);
+        command.env("PATH", joined_path);
+        command.env("XTASK_FAKE_CARGO_LOG", &self.log_path);
+        command.env("XTASK_FAKE_CARGO_METADATA", &self.metadata_path);
+        command.env("XTASK_FAKE_CARGO_CHILD", "1");
+        Ok(command)
+    }
+}
+
+#[cfg(unix)]
+pub struct FakeCargoChild {
+    files: FakeCargoFiles,
+    output: Output,
+}
+
+#[cfg(unix)]
+impl FakeCargoChild {
+    pub fn run(test_name: &str) -> Result<Self> {
+        let files = FakeCargoFiles::create()?;
+        let output = files
+            .child_command(test_name)
+            .context("configure fake cargo child")?
+            .output()
+            .context("run fake cargo child")?;
+        Ok(Self { files, output })
+    }
+
+    pub fn status(&self) -> std::process::ExitStatus {
+        self.output.status
+    }
+
+    pub fn stderr(&self) -> &[u8] {
+        &self.output.stderr
+    }
+
+    pub fn invocations(&self) -> Vec<String> {
+        let raw = fs::read_to_string(&self.files.log_path).unwrap_or_default();
+        raw.lines().map(str::to_string).collect()
+    }
+}
+
+#[cfg(unix)]
+impl FakeCargo {
+    pub fn install() -> Result<Self> {
+        let guard = ENV_LOCK.lock().map_err(|_| eyre!("fake cargo environment lock poisoned"))?;
+        let files = FakeCargoFiles::create()?;
+        let FakeCargoFiles { _dir: dir, log_path, metadata_path } = files;
 
         let previous_path = env::var_os("PATH");
         let previous_log = env::var_os("XTASK_FAKE_CARGO_LOG");
@@ -92,6 +154,10 @@ impl FakeCargo {
     pub fn invocations(&self) -> Vec<String> {
         let raw = fs::read_to_string(&self.log_path).unwrap_or_default();
         raw.lines().map(str::to_string).collect()
+    }
+
+    pub fn child_requested() -> bool {
+        env::var_os("XTASK_FAKE_CARGO_CHILD").is_some()
     }
 }
 
