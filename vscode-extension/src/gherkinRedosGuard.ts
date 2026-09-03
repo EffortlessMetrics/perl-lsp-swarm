@@ -325,8 +325,9 @@ const atomDomainCache = new Map<string, Set<string> | null>();
 // complemented, Unicode, or otherwise unsupported atom stays fail-closed.
 function simpleAtomDomain(atom: string, flags: string): Set<string> | null {
   const caseInsensitive = flags.includes('i');
+  const dotAll = flags.includes('s');
   const retainable = isRetainableCacheKey(atom);
-  const key = `${caseInsensitive ? 'i' : ''}\u0000${atom}`;
+  const key = `${caseInsensitive ? 'i' : ''}${dotAll ? 's' : ''}\u0000${atom}`;
   if (retainable) {
     const cached = atomDomainCache.get(key);
     if (cached !== undefined) {
@@ -334,7 +335,7 @@ function simpleAtomDomain(atom: string, flags: string): Set<string> | null {
     }
   }
 
-  const domain = computeSimpleAtomDomain(atom, caseInsensitive);
+  const domain = computeSimpleAtomDomain(atom, caseInsensitive, dotAll);
   if (retainable) {
     if (atomDomainCache.size >= MAX_ATOM_DOMAIN_CACHE_ENTRIES) {
       atomDomainCache.clear();
@@ -344,13 +345,18 @@ function simpleAtomDomain(atom: string, flags: string): Set<string> | null {
   return domain;
 }
 
-function computeSimpleAtomDomain(atom: string, caseInsensitive: boolean): Set<string> | null {
+function computeSimpleAtomDomain(
+  atom: string,
+  caseInsensitive: boolean,
+  dotAll: boolean,
+): Set<string> | null {
   if (!hasBoundedAtomShape(atom)) {
     return null;
   }
 
   try {
-    const matcher = new RegExp(`^(?:${atom})$`, caseInsensitive ? 'i' : '');
+    const matcherFlags = `${caseInsensitive ? 'i' : ''}${dotAll ? 's' : ''}`;
+    const matcher = new RegExp(`^(?:${atom})$`, matcherFlags);
     const domain = new Set<string>();
     for (let code = 0; code <= 0x7f; code += 1) {
       const witness = String.fromCharCode(code);

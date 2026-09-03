@@ -150,6 +150,18 @@ describe('gherkin ReDoS guard: variable-width atom chains (#9806)', () => {
     expect(isPotentiallyExpensiveRegex('^(a+)(A+)(a+)b$')).toBe(false);
   });
 
+  test('rejects a bounded wildcard chain that overlaps only under dotAll', () => {
+    // The wildcard has a finite upper bound, so the earlier unbounded-wildcard
+    // policy does not decide this case. Without `s`, the atom-domain probe
+    // correctly keeps `.` separate from a literal line feed; with `s`, those
+    // two seams overlap and exceed the chain ambiguity budget.
+    const lineFeed = String.fromCharCode(10);
+    const source = `^(${lineFeed}+)(.{1,512})(${lineFeed}+)z$`;
+
+    expect(isPotentiallyExpensiveRegex(source)).toBe(false);
+    expect(isPotentiallyExpensiveRegex(source, 's')).toBe(true);
+  });
+
   // Negative controls. Each differs minimally from a rejected source above, so
   // a rule that over-rejects fails here rather than silently reintroducing the
   // #859 false negatives.
