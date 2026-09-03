@@ -3456,6 +3456,33 @@
       "selector_identity": "invocation:d807999dfac34249:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/protocol/effective_surface/tests.rs",
+      "enclosing_test_or_function": "build_ok",
+      "macro_family": "panic!",
+      "normalized_snippet": "Err(error) => panic!(\"surface construction refused: {error}\"),",
+      "selector_identity": "invocation:42013e9d2c24b3d9:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/protocol/effective_surface/tests.rs",
+      "enclosing_test_or_function": "inline_completion_selector_cannot_be_static_and_planned_simultaneously",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected downgraded-to-planned-dynamic, got {other:?}\"),",
+      "selector_identity": "invocation:ba7ce4cefeb79ca4:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/protocol/effective_surface/tests.rs",
+      "enclosing_test_or_function": "watcher_registration_requires_claimed_support_active_symbol_and_no_jetbrains_exception",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected watcher registration with relative patterns, got {other:?}\"),",
+      "selector_identity": "invocation:1b9f3f2f758cdec6:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
