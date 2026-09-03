@@ -250,6 +250,46 @@
       "exit_condition": "Keep non-default and route through explicit bounded test profiles."
     },
     {
+      "name": "anyhow",
+      "classification": "parser_kernel",
+      "disposition": "retain",
+      "owner": "#2477",
+      "target_owner": "perl-parser",
+      "isolation": "dependencies_only",
+      "default": false,
+      "exit_condition": "Retain as Cargo's implicit optional-dependency feature."
+    },
+    {
+      "name": "lsp-types",
+      "classification": "parser_output_contract",
+      "disposition": "retain",
+      "owner": "#2477",
+      "target_owner": "perl-parser",
+      "isolation": "dependencies_only",
+      "default": false,
+      "exit_condition": "Retain as Cargo's implicit optional-dependency feature."
+    },
+    {
+      "name": "perl-line-index",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#6701",
+      "target_owner": "perl-parser",
+      "isolation": "dependencies_only",
+      "default": false,
+      "exit_condition": "Retain as Cargo's implicit optional-dependency feature."
+    },
+    {
+      "name": "tracing",
+      "classification": "parser_kernel",
+      "disposition": "retain",
+      "owner": "#2477",
+      "target_owner": "perl-parser",
+      "isolation": "dependencies_only",
+      "default": false,
+      "exit_condition": "Retain as Cargo's implicit optional-dependency feature."
+    },
+    {
       "name": "doc-coverage",
       "classification": "experimental",
       "disposition": "gate",
