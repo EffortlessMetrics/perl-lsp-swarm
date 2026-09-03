@@ -98,31 +98,54 @@ impl FakeCargo {
 #[cfg(unix)]
 impl Drop for FakeCargo {
     fn drop(&mut self) {
-        restore_env("PATH", self.previous_path.as_ref());
-        restore_env("XTASK_FAKE_CARGO_LOG", self.previous_log.as_ref());
-        restore_env("XTASK_FAKE_CARGO_METADATA", self.previous_metadata.as_ref());
+        let mut process_environment = ProcessEnvironment;
+        restore_env(&mut process_environment, "PATH", self.previous_path.as_ref());
+        restore_env(&mut process_environment, "XTASK_FAKE_CARGO_LOG", self.previous_log.as_ref());
+        restore_env(
+            &mut process_environment,
+            "XTASK_FAKE_CARGO_METADATA",
+            self.previous_metadata.as_ref(),
+        );
     }
 }
 
 #[cfg(unix)]
-fn restore_env(key: &str, value: Option<&OsString>) {
+trait EnvironmentRestorer {
+    fn set_var(&mut self, key: &str, value: &OsString);
+    fn remove_var(&mut self, key: &str);
+}
+
+#[cfg(unix)]
+struct ProcessEnvironment;
+
+#[cfg(unix)]
+impl EnvironmentRestorer for ProcessEnvironment {
+    fn set_var(&mut self, key: &str, value: &OsString) {
+        // SAFETY: FakeCargo holds ENV_LOCK for its lifetime and restores the
+        // process environment before releasing the lock.
+        unsafe { env::set_var(key, value) }
+    }
+
+    fn remove_var(&mut self, key: &str) {
+        // SAFETY: FakeCargo holds ENV_LOCK for its lifetime and restores the
+        // process environment before releasing the lock.
+        unsafe { env::remove_var(key) }
+    }
+}
+
+#[cfg(unix)]
+fn restore_env<E: EnvironmentRestorer>(environment: &mut E, key: &str, value: Option<&OsString>) {
     match value {
-        Some(value) => {
-            // SAFETY: callers restore while FakeCargo holds ENV_LOCK.
-            unsafe { env::set_var(key, value) }
-        }
-        None => {
-            // SAFETY: callers restore while FakeCargo holds ENV_LOCK.
-            unsafe { env::remove_var(key) }
-        }
+        Some(value) => environment.set_var(key, value),
+        None => environment.remove_var(key),
     }
 }
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::{ENV_LOCK, FakeCargo, restore_env};
-    use color_eyre::eyre::{Context, Result, eyre};
-    use std::{env, process::Command};
+    use super::{EnvironmentRestorer, FakeCargo, restore_env};
+    use color_eyre::eyre::{Context, Result};
+    use std::{ffi::OsString, process::Command};
 
     #[test]
     fn fake_cargo_records_invocations_through_log_path() -> Result<()> {
@@ -140,14 +163,31 @@ mod tests {
 
     #[test]
     fn restore_env_removes_vars_that_were_absent() -> Result<()> {
-        let _guard = ENV_LOCK.lock().map_err(|_| eyre!("fake cargo environment lock poisoned"))?;
-        let key = "XTASK_FAKE_CARGO_RESTORE_NONE_TEST";
+        #[derive(Default)]
+        struct RecordingEnvironment {
+            removals: Vec<String>,
+            assignments: Vec<(String, OsString)>,
+        }
 
-        // SAFETY: this test holds ENV_LOCK while mutating process environment.
-        unsafe { env::set_var(key, "present") };
-        restore_env(key, None);
+        impl EnvironmentRestorer for RecordingEnvironment {
+            fn set_var(&mut self, key: &str, value: &OsString) {
+                self.assignments.push((key.to_owned(), value.clone()));
+            }
 
-        assert!(env::var_os(key).is_none(), "restore_env(None) should remove {key}");
+            fn remove_var(&mut self, key: &str) {
+                self.removals.push(key.to_owned());
+            }
+        }
+
+        let mut environment = RecordingEnvironment::default();
+        restore_env(&mut environment, "XTASK_FAKE_CARGO_RESTORE_NONE_TEST", None);
+
+        assert_eq!(
+            environment.removals,
+            vec!["XTASK_FAKE_CARGO_RESTORE_NONE_TEST"],
+            "restore_env(None) should request removal without mutating process state",
+        );
+        assert!(environment.assignments.is_empty());
         Ok(())
     }
 }
