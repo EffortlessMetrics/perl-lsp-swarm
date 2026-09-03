@@ -756,6 +756,23 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         )
         self.assertNotIn("nested-detectors-test-gate", gates)
 
+    def test_feature_gate_inventory_resolves_multiline_path_with_comments(self) -> None:
+        self.write(
+            "crates/perl-parser/src/detectors.rs",
+            '#[path =\n'
+            '    "support/fixtures.rs"] // keep this path\n'
+            '// an allowed comment between attributes\n'
+            "#[cfg(test)]\nmod tests;\n",
+        )
+        self.write(
+            "crates/perl-parser/src/support/fixtures.rs",
+            '#[cfg(feature = "multiline-path-test-gate")]\nfn gated() {}\n',
+        )
+        gates = feature_source_gates(
+            self.root / "crates/perl-parser", ("src",), skip_test_modules=True
+        )
+        self.assertNotIn("multiline-path-test-gate", gates)
+
     def test_review_row_target_owner_must_be_actionable(self) -> None:
         row = next(r for r in self.ledger["features"] if r["disposition"] == "review")
         row["target_owner"] = "the parser team"
