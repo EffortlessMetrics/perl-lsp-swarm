@@ -486,6 +486,62 @@ fn compiler_upstream_conformance_status_rejects_row_from_different_valid_snapsho
 }
 
 #[test]
+fn compiler_upstream_conformance_status_rejects_wrong_snapshot_at_every_packet_ingress()
+-> TestResult {
+    let dir = TempDir::new()?;
+    let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+    write_inputs(dir.path(), &manifest, &[agreement_row("op-ingress", "perl-5.38")])?;
+    let valid = project_from(dir.path())?;
+    let mut invalid = valid.clone();
+    invalid.rows[0].upstream_case.snapshot_ref = "upstream:v5.40.0".to_string();
+    let packet_path = dir.path().join("invalid.json");
+    let valid_path = dir.path().join("valid.json");
+    let view_path = dir.path().join("view.md");
+    fs::write(&packet_path, canonical_bytes(&invalid)?)?;
+    fs::write(&valid_path, canonical_bytes(&valid)?)?;
+
+    for result in [
+        validate_packet(&invalid).map(|_| ()),
+        run_check(&packet_path).map(|_| ()),
+        run_show(&packet_path, None, None).map(|_| ()),
+        run_diff(&valid_path, &packet_path).map(|_| ()),
+        run_docs(&packet_path, &view_path).map(|_| ()),
+        run_docs_check(&packet_path, &view_path).map(|_| ()),
+    ] {
+        let message = error_message(result);
+        assert!(
+            message.contains("does not match selected snapshot"),
+            "wrong snapshot must be rejected at packet ingress: {message}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn compiler_upstream_conformance_status_limitation_requires_installed_witness() -> TestResult {
+    let dir = TempDir::new()?;
+    let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+    let mut row = agreement_row("op-limited-witness", "perl-5.38");
+    row.terminal_state = TerminalState::AgreementWithDeclaredLimitation;
+    row.limitation = Some(LimitationRecord {
+        statement: "agreement holds for the declared slice".to_string(),
+        nonclaims: vec!["no broader claim".to_string()],
+        claim_ceiling: "declared slice only".to_string(),
+    });
+    write_inputs(dir.path(), &manifest, std::slice::from_ref(&row))?;
+    project_from(dir.path())?;
+
+    let witness = installed_witness("t/op/op-limited-witness.t")
+        .ok_or_else(|| anyhow::anyhow!("fixture witness must be present"))?;
+    row.witness =
+        Some(WitnessRecord { installation: WitnessInstallation::NotInstalled, ..witness });
+    write_inputs(dir.path(), &manifest, &[row])?;
+    let message = error_message(project_from(dir.path()));
+    assert!(message.contains("requires an installed witness"), "{message}");
+    Ok(())
+}
+
+#[test]
 fn compiler_upstream_conformance_status_build_writes_canonical_file() -> TestResult {
     let dir = TempDir::new()?;
     let inputs = dir.path().join("inputs");

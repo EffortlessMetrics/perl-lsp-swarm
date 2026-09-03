@@ -659,7 +659,7 @@ fn validate_performance(
 
 fn validate_row_against_series(
     row: &PublishedRow,
-    snapshot_present_by_series: &BTreeMap<String, bool>,
+    selected_snapshot_by_series: &BTreeMap<String, Option<String>>,
 ) -> Vec<String> {
     let mut v = Violations::new(&row.row_id);
 
@@ -681,13 +681,25 @@ fn validate_row_against_series(
 
     // Currentness selection law: absence of an accepted series snapshot
     // surfaces exactly as no_current_snapshot, never as a preferred state.
-    if let Some(snapshot_present) = snapshot_present_by_series.get(&row.series_id) {
-        if !snapshot_present && row.terminal_state != TerminalState::NoCurrentSnapshot {
-            v.add(format!(
-                "series `{}` selects no accepted snapshot so the row state must be no_current_snapshot, found `{}`",
-                row.series_id,
-                row.terminal_state.as_str()
-            ));
+    if let Some(selected_snapshot) = selected_snapshot_by_series.get(&row.series_id) {
+        match selected_snapshot {
+            Some(selected_snapshot) => {
+                v.reject_unless(
+                    row.upstream_case.snapshot_ref == *selected_snapshot,
+                    format!(
+                        "row snapshot_ref `{}` does not match selected snapshot `{}` for series `{}`",
+                        row.upstream_case.snapshot_ref, selected_snapshot, row.series_id
+                    ),
+                );
+            }
+            None if row.terminal_state != TerminalState::NoCurrentSnapshot => {
+                v.add(format!(
+                    "series `{}` selects no accepted snapshot so the row state must be no_current_snapshot, found `{}`",
+                    row.series_id,
+                    row.terminal_state.as_str()
+                ));
+            }
+            None => {}
         }
     } else {
         v.add(format!("row references undeclared series `{}`", row.series_id));
@@ -714,12 +726,24 @@ fn validate_row_against_series(
                     .to_string(),
             );
         }
-        TerminalState::AgreementWithDeclaredLimitation => match &row.limitation {
-            Some(limitation) => validate_limitation(&mut v, limitation),
-            None => {
-                v.add("agreement_with_declared_limitation requires a limitation record".to_string())
+        TerminalState::AgreementWithDeclaredLimitation => {
+            match &row.limitation {
+                Some(limitation) => validate_limitation(&mut v, limitation),
+                None => v.add(
+                    "agreement_with_declared_limitation requires a limitation record".to_string(),
+                ),
             }
-        },
+            match &row.witness {
+                Some(witness) => v.reject_unless(
+                    witness.installation == WitnessInstallation::Installed,
+                    "agreement_with_declared_limitation requires an installed witness".to_string(),
+                ),
+                None => v.add(
+                    "agreement_with_declared_limitation requires a recorded installed witness"
+                        .to_string(),
+                ),
+            }
+        }
         TerminalState::UnsupportedOrExternalBoundary => {
             v.reject_unless(
                 matches!(row.support_boundary, SupportBoundary::ExternalBoundary),
@@ -863,12 +887,12 @@ pub fn validate_packet(packet: &ConformanceStatusPacket) -> Result<()> {
     }
     global.extend(v.out);
 
-    let presence = packet
+    let selected_snapshot_by_series = packet
         .subject_binding
         .maintained_series
         .iter()
-        .map(|series| (series.series_id.clone(), series.snapshot_identity.is_some()))
-        .collect::<BTreeMap<String, bool>>();
+        .map(|series| (series.series_id.clone(), series.snapshot_identity.clone()))
+        .collect::<BTreeMap<String, Option<String>>>();
 
     let mut row_ids_seen = BTreeSet::new();
     let mut ordered_keys: Vec<(&str, &str, &str, &str, &str)> = Vec::new();
@@ -877,7 +901,7 @@ pub fn validate_packet(packet: &ConformanceStatusPacket) -> Result<()> {
             global.push(format!("[rows]: duplicate row_id `{}`", row.row_id));
             continue;
         }
-        global.extend(validate_row_against_series(row, &presence));
+        global.extend(validate_row_against_series(row, &selected_snapshot_by_series));
         ordered_keys.push(row.sort_key());
     }
     let mut ordered_sorted = ordered_keys.clone();
