@@ -65,10 +65,10 @@
   },
   "findings": [
     {
-      "id": "beta-conventional-navigation",
+      "id": "beta-testmore-completion-boundary",
       "class": "expected_beta_boundary",
-      "summary": "Import navigation from the bin entry into the multi-file lib packages resolved with bounded, current results.",
-      "evidence_ref": "receipt://provider-decision/conventional-imports",
+      "summary": "Completion near Test::More usage stays bounded to parsed project symbols; framework-provided test subs are not manufactured.",
+      "evidence_ref": "receipt://provider-decision/testmore-completion-boundary",
       "linked_issue": null
     }
   ],
