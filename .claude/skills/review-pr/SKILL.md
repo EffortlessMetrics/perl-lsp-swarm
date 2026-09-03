@@ -114,7 +114,7 @@ subject-bound marker from the current PR diff:
 
 ```bash
 python3 scripts/ci/check-pr-semantic-review-currentness.py \
-  <pr> <owner/repo> --emit-marker
+  <pr> <owner/repo> --emit-marker --result REVIEW_CURRENT
 ```
 
 Append the emitted `semantic-review:v1` marker — an HTML comment bound to the current
