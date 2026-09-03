@@ -345,13 +345,18 @@ impl SemanticAnalyzer {
                 continue;
             };
 
-            existing.parents.extend(model.parents.iter().cloned());
-            existing.roles.extend(model.roles.iter().cloned());
-            existing.methods.extend(model.methods.iter().cloned());
-            existing.modifiers.extend(model.modifiers.iter().cloned());
-            // `use mro 'c3'` in any segment governs the whole package.
-            if matches!(model.mro, MethodResolutionOrder::C3) {
-                existing.mro = MethodResolutionOrder::C3;
+            // Reopened package segments are declarations of one package.  A
+            // later segment replaces the earlier methods/roles/ancestry when
+            // it speaks about those facts; a silent segment does not erase
+            // ancestry that was declared earlier.  In particular, do not
+            // union competing `extends` lists: that fabricates a dispatch
+            // graph no segment declared.
+            let recovered_parents = std::mem::take(&mut existing.parents);
+            let recovered_roles = std::mem::take(&mut existing.roles);
+            *existing = model.clone();
+            if existing.parents.is_empty() && existing.roles.is_empty() {
+                existing.parents = recovered_parents;
+                existing.roles = recovered_roles;
             }
         }
         merged
@@ -2835,6 +2840,34 @@ my %config = (key => "value");
             sym.location.start, base_save,
             "a reopened package keeps the ancestry declared in its earlier segment"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_reopened_package_later_ancestry_is_not_combined_with_earlier()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A later `extends` declaration replaces the earlier one.  Unioning
+        // both segments would let a stale parent win method dispatch.
+        let code = concat!(
+            "package First;\nuse Moo;\nsub save { 1 }\n",
+            "package Second;\nuse Moo;\nsub save { 2 }\n",
+            "package Child;\nuse Moo;\nextends 'First';\n",
+            "package Child;\nuse Moo;\nextends 'Second';\n",
+            "before 'save' => sub { };\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let chain =
+            analyzer.resolve_parent_chain("Child").ok_or("reopened Child model not found")?;
+        assert_eq!(chain, vec!["Second"], "later ancestry must replace earlier ancestry");
+
+        let offset = modifier_target_offset(code, "before 'save'", "save")
+            .ok_or("modifier target not found")?;
+        let second_save = code.find("sub save { 2 }").ok_or("Second::save not found")?;
+        let symbol = analyzer.find_definition(offset).ok_or("no modifier definition")?;
+        assert_eq!(symbol.location.start, second_save);
         Ok(())
     }
 
