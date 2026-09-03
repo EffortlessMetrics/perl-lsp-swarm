@@ -97,7 +97,7 @@ const COMPATIBILITY_CLASSES: &[&str] = &["published", "internal"];
 /// API kinds discovery can produce; a ledger row must declare one of these.
 const API_KINDS: &[&str] = &[
     "struct", "enum", "fn", "const", "static", "type", "trait", "union", "module", "reexport",
-    "feature",
+    "macro", "feature",
 ];
 
 // ---------------------------------------------------------------------------
@@ -166,6 +166,24 @@ fn needs_space(out: &str, next: char) -> bool {
     let prev = out.chars().next_back().unwrap_or(' ');
     let joinable = |c: char| c.is_alphanumeric() || c == '_' || c == '"';
     joinable(prev) && joinable(next)
+}
+
+/// AND an enclosing module's `cfg` predicate onto an item's own.
+///
+/// A `#[cfg(..)]` on a module gates every item inside it, so a consumer must
+/// satisfy the module's predicate and the item's together. Recording only the
+/// item's local `cfg` would mark, for example, the functions inside the
+/// `#[cfg(feature = "lsp-compat")]` `lsp_integration` module as unconditional.
+fn combine_cfg(inherited: &str, local: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in inherited.split(" + ").chain(local.split(" + ")) {
+        // An item under a `#[cfg(windows)]` module that also carries its own
+        // `#[cfg(windows)]` yields one `windows`, not `windows + windows`.
+        if !part.is_empty() && !parts.contains(&part) {
+            parts.push(part);
+        }
+    }
+    parts.join(" + ")
 }
 
 /// True when the item is compiled out of every non-test build.
@@ -248,7 +266,7 @@ pub(crate) fn discover_surface(root: &Path) -> Result<Vec<Discovered>> {
         bail!("cannot discover {SUBJECT_CRATE} surface: {} does not exist", lib.display());
     }
     let mut out = Vec::new();
-    walk_module_file(&src_dir, &[], &lib, &mut out)?;
+    walk_module_file(&src_dir, &[], "", &lib, &mut out)?;
     out.extend(discover_features(root)?);
     out.sort();
     out.dedup();
@@ -258,6 +276,7 @@ pub(crate) fn discover_surface(root: &Path) -> Result<Vec<Discovered>> {
 fn walk_module_file(
     src_dir: &Path,
     module_path: &[String],
+    inherited_cfg: &str,
     file: &Path,
     out: &mut Vec<Discovered>,
 ) -> Result<()> {
@@ -265,17 +284,18 @@ fn walk_module_file(
         fs::read_to_string(file).wrap_err_with(|| format!("failed to read {}", file.display()))?;
     let parsed = syn::parse_file(&source)
         .wrap_err_with(|| format!("failed to parse {} with syn", file.display()))?;
-    walk_items(src_dir, module_path, &parsed.items, out)
+    walk_items(src_dir, module_path, inherited_cfg, &parsed.items, out)
 }
 
 fn walk_items(
     src_dir: &Path,
     module_path: &[String],
+    inherited_cfg: &str,
     items: &[Item],
     out: &mut Vec<Discovered>,
 ) -> Result<()> {
     for item in items {
-        walk_item(src_dir, module_path, item, out)?;
+        walk_item(src_dir, module_path, inherited_cfg, item, out)?;
     }
     Ok(())
 }
@@ -283,6 +303,7 @@ fn walk_items(
 fn walk_item(
     src_dir: &Path,
     module_path: &[String],
+    inherited_cfg: &str,
     item: &Item,
     out: &mut Vec<Discovered>,
 ) -> Result<()> {
@@ -293,7 +314,7 @@ fn walk_item(
                 out.push(Discovered::new(
                     $kind,
                     qualify(module_path, &node.ident.to_string()),
-                    cfg_of(&node.attrs),
+                    combine_cfg(inherited_cfg, &cfg_of(&node.attrs)),
                     String::new(),
                 ));
             }
@@ -308,7 +329,7 @@ fn walk_item(
                 out.push(Discovered::new(
                     "fn",
                     qualify(module_path, &node.sig.ident.to_string()),
-                    cfg_of(&node.attrs),
+                    combine_cfg(inherited_cfg, &cfg_of(&node.attrs)),
                     String::new(),
                 ));
             }
@@ -318,16 +339,37 @@ fn walk_item(
         Item::Type(node) => simple!(node, "type"),
         Item::Trait(node) => simple!(node, "trait"),
         Item::Union(node) => simple!(node, "union"),
-        Item::Mod(node) => walk_mod(src_dir, module_path, node, out)?,
-        Item::Use(node) => walk_use(module_path, node, out)?,
+        Item::Mod(node) => walk_mod(src_dir, module_path, inherited_cfg, node, out)?,
+        Item::Use(node) => walk_use(module_path, inherited_cfg, node, out)?,
+        // A `macro_rules!` with `#[macro_export]` is public surface reachable as
+        // `perl_tdd_support::<name>`, independent of module visibility. Its
+        // identity is the macro name; there is no signature to spell here.
+        Item::Macro(node) => {
+            if !is_cfg_test(&node.attrs) && has_macro_export(&node.attrs) {
+                if let Some(ident) = &node.ident {
+                    out.push(Discovered::new(
+                        "macro",
+                        format!("{SUBJECT_ROOT_PATH}::{ident}"),
+                        combine_cfg(inherited_cfg, &cfg_of(&node.attrs)),
+                        String::new(),
+                    ));
+                }
+            }
+        }
         _ => {}
     }
     Ok(())
 }
 
+/// True when an item carries `#[macro_export]`.
+fn has_macro_export(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| attr.path().is_ident("macro_export"))
+}
+
 fn walk_mod(
     src_dir: &Path,
     module_path: &[String],
+    inherited_cfg: &str,
     node: &syn::ItemMod,
     out: &mut Vec<Discovered>,
 ) -> Result<()> {
@@ -343,15 +385,17 @@ fn walk_mod(
     let name = node.ident.to_string();
     let mut child_path = module_path.to_vec();
     child_path.push(name.clone());
+    // The module's own gate applies to it and to everything inside it.
+    let module_cfg = combine_cfg(inherited_cfg, &cfg_of(&node.attrs));
     out.push(Discovered::new(
         "module",
         qualify(module_path, &name),
-        cfg_of(&node.attrs),
+        module_cfg.clone(),
         String::new(),
     ));
 
     if let Some((_, items)) = &node.content {
-        return walk_items(src_dir, &child_path, items, out);
+        return walk_items(src_dir, &child_path, &module_cfg, items, out);
     }
     let Some(file) = module_file(src_dir, &child_path) else {
         bail!(
@@ -363,14 +407,19 @@ fn walk_mod(
             src_dir.display()
         );
     };
-    walk_module_file(src_dir, &child_path, &file, out)
+    walk_module_file(src_dir, &child_path, &module_cfg, &file, out)
 }
 
-fn walk_use(module_path: &[String], node: &syn::ItemUse, out: &mut Vec<Discovered>) -> Result<()> {
+fn walk_use(
+    module_path: &[String],
+    inherited_cfg: &str,
+    node: &syn::ItemUse,
+    out: &mut Vec<Discovered>,
+) -> Result<()> {
     if !is_pub(&node.vis) || is_cfg_test(&node.attrs) {
         return Ok(());
     }
-    let cfg = cfg_of(&node.attrs);
+    let cfg = combine_cfg(inherited_cfg, &cfg_of(&node.attrs));
     let mut leaves = Vec::new();
     collect_use_tree(&node.tree, Vec::new(), &mut leaves)?;
     for (source, name) in leaves {
@@ -881,9 +930,22 @@ pub(crate) fn discover_consumers(root: &Path) -> Result<Vec<ConsumerEdge>> {
 }
 
 fn declared_dep_kind(manifest: &toml::Value) -> Option<String> {
+    // Production over dev over build: a crate that depends on the subject in
+    // more than one table is classified by its strongest edge, so a
+    // test-only-import claim can never hide a production dependency.
     for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
         if manifest.get(section).and_then(|table| table.get(SUBJECT_CRATE)).is_some() {
             return Some(section.to_string());
+        }
+        // A platform-gated dependency (`[target.'cfg(..)'.<section>]`) is a real
+        // consumer too; a later migration must not drop it just because it is
+        // only declared under a target table.
+        if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
+            for spec in targets.values() {
+                if spec.get(section).and_then(|table| table.get(SUBJECT_CRATE)).is_some() {
+                    return Some(section.to_string());
+                }
+            }
         }
     }
     None
@@ -1181,7 +1243,7 @@ pub fn run(
     let projection = render_projection(&ledger, &edges);
     let projection_path = root.join(PROJECTION_PATH);
     if write {
-        if let Some(parent) = projection_path.parent() {
+        if let Some(parent) = projection_path.parent().filter(|p| !p.as_os_str().is_empty()) {
             fs::create_dir_all(parent)
                 .wrap_err_with(|| format!("failed to create directory {}", parent.display()))?;
         }
@@ -1253,7 +1315,7 @@ fn write_json_receipt(
     });
     let absolute =
         if json_path.is_absolute() { json_path.to_path_buf() } else { root.join(json_path) };
-    if let Some(parent) = absolute.parent() {
+    if let Some(parent) = absolute.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)
             .wrap_err_with(|| format!("failed to create directory {}", parent.display()))?;
     }

@@ -617,6 +617,110 @@ fn any_test_predicate_is_not_treated_as_test_only() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Inherited cfg
+// ---------------------------------------------------------------------------
+
+/// An item inside a `#[cfg(..)]` module inherits that gate.
+#[test]
+fn item_inherits_enclosing_module_cfg() -> Result<()> {
+    let dir = fixture_root(
+        "#[cfg(feature = \"x\")]\npub mod gated { pub struct Inner; pub fn f() {} }\n",
+        MINIMAL_MANIFEST,
+    )?;
+    let discovered = discover_surface(dir.path())?;
+    for path in ["perl_tdd_support::gated::Inner", "perl_tdd_support::gated::f"] {
+        let item = discovered
+            .iter()
+            .find(|d| d.path == path)
+            .ok_or_else(|| color_eyre::eyre::eyre!("{path} not discovered"))?;
+        if item.cfg != "feature=\"x\"" {
+            bail!("{path} should inherit `feature=\"x\"`, recorded {:?}", item.cfg);
+        }
+    }
+    Ok(())
+}
+
+/// A module gate and an identical item gate collapse to one term.
+#[test]
+fn duplicate_cfg_terms_are_deduplicated() -> Result<()> {
+    let dir = fixture_root(
+        "#[cfg(windows)]\npub mod w { #[cfg(windows)] pub fn f() {} }\n",
+        MINIMAL_MANIFEST,
+    )?;
+    let discovered = discover_surface(dir.path())?;
+    let f = discovered
+        .iter()
+        .find(|d| d.path == "perl_tdd_support::w::f")
+        .ok_or_else(|| color_eyre::eyre::eyre!("w::f not discovered"))?;
+    if f.cfg != "windows" {
+        bail!("expected deduplicated `windows`, recorded {:?}", f.cfg);
+    }
+    Ok(())
+}
+
+/// The real crate's `lsp_integration` functions carry their module's feature
+/// gate, not an empty cfg.
+#[test]
+fn real_lsp_integration_functions_carry_the_feature_gate() -> Result<()> {
+    let root = repo_root()?;
+    let discovered = discover_surface(&root)?;
+    let f = discovered
+        .iter()
+        .find(|d| d.path.ends_with("lsp_integration::coverage_to_diagnostics"))
+        .ok_or_else(|| color_eyre::eyre::eyre!("lsp_integration function not discovered"))?;
+    if !f.cfg.contains("lsp-compat") {
+        bail!("expected the lsp-compat gate to be inherited, recorded {:?}", f.cfg);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Exported macros
+// ---------------------------------------------------------------------------
+
+/// A `#[macro_export] macro_rules!` is public surface and needs a row.
+#[test]
+fn exported_macro_is_governed_surface() -> Result<()> {
+    let dir =
+        fixture_root("#[macro_export]\nmacro_rules! shout { () => {}; }\n", MINIMAL_MANIFEST)?;
+    let discovered = discover_surface(dir.path())?;
+    if !discovered.iter().any(|d| d.id == "macro:perl_tdd_support::shout") {
+        bail!("`#[macro_export] macro_rules! shout` was not discovered as public surface");
+    }
+    Ok(())
+}
+
+/// A macro_rules! WITHOUT `#[macro_export]` is not crate-public and is skipped.
+#[test]
+fn non_exported_macro_is_not_governed() -> Result<()> {
+    let dir = fixture_root("macro_rules! local { () => {}; }\n", MINIMAL_MANIFEST)?;
+    let discovered = discover_surface(dir.path())?;
+    if discovered.iter().any(|d| d.path == "perl_tdd_support::local") {
+        bail!("a non-exported macro must not be governed public surface");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Target-specific dependency edges
+// ---------------------------------------------------------------------------
+
+/// A consumer that depends on the crate only under a `[target.'cfg(..)']`
+/// table is still discovered as an edge.
+#[test]
+fn target_specific_dependency_is_a_consumer_edge() -> Result<()> {
+    let manifest: toml::Value = toml::from_str(
+        "[package]\nname = \"c\"\n\n\
+         [target.'cfg(windows)'.dependencies]\nperl-tdd-support = { path = \"..\" }\n",
+    )?;
+    let kind = declared_dep_kind(&manifest);
+    if kind.as_deref() != Some("dependencies") {
+        bail!("target-specific production dependency was not recognized, got {kind:?}");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Derived consumers
 // ---------------------------------------------------------------------------
 
