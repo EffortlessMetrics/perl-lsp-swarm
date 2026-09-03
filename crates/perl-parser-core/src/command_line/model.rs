@@ -126,9 +126,10 @@ pub struct ModuleSpec {
 
 /// What perl calls on the module for one `-M`/`-m` spec.
 ///
-/// A boolean cannot answer this: `-M-Foo` compiles `no Foo;`, which calls
+/// A boolean cannot answer this. `-M-Foo` compiles `no Foo;`, which calls
 /// `unimport` rather than nothing, and a consumer modelling compile-time effects
-/// needs to know which of the two runs.
+/// needs to know which of the two runs — while an argument that is not a module
+/// name at all may call neither.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ModuleImportAction {
     /// `Module->import(...)` runs.
@@ -137,12 +138,39 @@ pub enum ModuleImportAction {
     Unimport,
     /// Neither runs: perl appends `()`, as in `-mFoo` (`use Foo ()`) and
     /// `-m-Foo` (`no Foo ()`).
-    None,
+    NoCall,
+    /// The argument is not a plain module name, so no method call can be
+    /// claimed from argv structure alone. See
+    /// [`ModuleSpec::module_is_plain_name`].
+    Undetermined,
 }
 
 impl ModuleSpec {
     /// What perl calls on the module for this spec under `form`.
     ///
+    /// Answered only for a plain module name. Perl splices the argument into a
+    /// `use`/`no` statement, and two accepted shapes reach a compiler path with
+    /// no method dispatch in it at all:
+    ///
+    /// - a **version declaration**. `-M5.010` is `use 5.010;` and `-M-5.010` is
+    ///   `no 5.010;`. Neither loads a file nor calls a method: `perl -M5.010`
+    ///   attempts no `@INC` lookup (compare `perl -MNoSuchModule`, which reports
+    ///   `Can't locate NoSuchModule.pm`), enables the feature bundle so that
+    ///   `say` compiles, and leaves `strict` off; `perl -M-5.010` reports
+    ///   `Perls since v5.10.0 too modern`, a version ceiling rather than an
+    ///   `unimport`. `-Mv5.10` behaves the same way. The `-m` spelling never
+    ///   reaches this shape — `perl -m5.010` dies with `Can't use '.' after
+    ///   -mname`;
+    /// - **arbitrary code**. `-M'strict;print 99'` compiles two statements, and
+    ///   whether the first one imports is a question about Perl source, not
+    ///   about argv.
+    ///
+    /// Both are already marked by [`ModuleSpec::module_is_plain_name`], so that
+    /// one flag draws the line here too and this layer invents no
+    /// version-literal grammar of its own.
+    ///
+    /// For a plain name a call happens unless the `-m` spelling carries no
+    /// arguments, and the call is `unimport` exactly when the spec is negated.
     /// Checked against the interpreter with `strict`, whose import and unimport
     /// are both observable:
     ///
@@ -151,20 +179,20 @@ impl ModuleSpec {
     /// | `-Mstrict` | refused | `Import` |
     /// | `-M-strict` | allowed | `Unimport` |
     /// | `-M-strict=vars` | allowed | `Unimport` |
-    /// | `-mstrict` | allowed | `None` |
-    /// | `-m-strict` | refused | `None` |
+    /// | `-mstrict` | allowed | `NoCall` |
+    /// | `-m-strict` | refused | `NoCall` |
     /// | `-m-strict=vars` | allowed | `Unimport` |
-    ///
-    /// So a call happens unless the `-m` spelling carries no arguments, and the
-    /// call is `unimport` exactly when the spec is negated.
     #[must_use]
     pub fn import_action(&self, form: ModuleForm) -> ModuleImportAction {
+        if !self.module_is_plain_name {
+            return ModuleImportAction::Undetermined;
+        }
         let calls = match form {
             ModuleForm::Use => true,
             ModuleForm::UseSuppressingDefaultImport => self.import_arguments.is_some(),
         };
         if !calls {
-            ModuleImportAction::None
+            ModuleImportAction::NoCall
         } else if self.negated {
             ModuleImportAction::Unimport
         } else {

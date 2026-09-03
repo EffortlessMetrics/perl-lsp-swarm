@@ -41,6 +41,10 @@
 //!   looks like another switch;
 //! - `-M`, `-m`, `-F` and `-i` accept an attached value only — `perl -M strict`
 //!   fails with `Missing argument to -M.`;
+//! - `-M` takes its whole remaining argument as one module expression once the
+//!   name scan stops, while `-m` refuses whatever the scan did not read. So
+//!   `-M5.010` is the version declaration `use 5.010`, which calls no module
+//!   method, and `-m5.010` dies with `Can't use '.' after -mname`;
 //! - a value-taking switch consumes the rest of its cluster, so `-ine` is `-i`
 //!   with the extension `ne`, not `-i -n -e`;
 //! - `-l` and `-0` consume octal digits and then keep bundling, so `-lane` is

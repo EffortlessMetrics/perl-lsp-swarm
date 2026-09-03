@@ -732,16 +732,16 @@ fn lowercase_module_switch_still_imports_with_explicit_arguments() {
     //   -Mstrict       refused   Import
     //   -M-strict      allowed   Unimport
     //   -M-strict=vars allowed   Unimport
-    //   -mstrict       allowed   None      (use strict ())
-    //   -m-strict      refused   None      (no strict () calls nothing)
+    //   -mstrict       allowed   NoCall    (use strict ())
+    //   -m-strict      refused   NoCall    (no strict () calls nothing)
     //   -m-strict=vars allowed   Unimport
     for (argv, expected) in [
         ("-Mstrict", ModuleImportAction::Import),
         ("-MPOSIX=floor", ModuleImportAction::Import),
         ("-M-strict", ModuleImportAction::Unimport),
         ("-M-strict=vars", ModuleImportAction::Unimport),
-        ("-mstrict", ModuleImportAction::None),
-        ("-m-strict", ModuleImportAction::None),
+        ("-mstrict", ModuleImportAction::NoCall),
+        ("-m-strict", ModuleImportAction::NoCall),
         ("-mPOSIX=floor", ModuleImportAction::Import),
         ("-m-strict=vars", ModuleImportAction::Unimport),
     ] {
@@ -760,6 +760,57 @@ fn lowercase_module_switch_still_imports_with_explicit_arguments() {
     };
     assert_eq!(*form, ModuleForm::UseSuppressingDefaultImport);
     assert_eq!(spec.import_arguments.as_deref(), Some("floor"));
+}
+
+#[test]
+fn an_argument_that_is_not_a_module_name_claims_no_method_call() {
+    // `-M` splices its argument into a `use`/`no` statement, and two accepted
+    // shapes reach a compiler path with no method dispatch in it.
+    //
+    // A version declaration is the sharp case. Verified against perl 5.38.2:
+    //
+    //   perl -MNoSuchModule -e1  → Can't locate NoSuchModule.pm in @INC
+    //   perl -M5.010        -e1  → no error and no @INC lookup at all
+    //   perl -M5.010 -e 'say 1'  → say compiles, so the feature bundle is on,
+    //                              which only `use VERSION` does
+    //   perl -M5.010 -e '$x = 1' → allowed, so strict is off: nothing imported
+    //   perl -M-5.010       -e1  → Perls since v5.10.0 too modern
+    //                              (a version ceiling, not an unimport)
+    //   perl -Mv5.10 -e 'say 1'  → same, in vstring spelling
+    //
+    // Arbitrary code is the other: `-M'strict;print 99'` compiles two
+    // statements, and whether the first imports is a question about Perl
+    // source rather than about argv.
+    for argv in ["-M5.010", "-M-5.010", "-Mv5.10", "-M-v5.10", "-M5.010=foo", "-Mstrict;print 99"] {
+        let invocation = perl(&[argv, "-e", "print"]);
+        let ContextFactKind::ModuleImport { form, spec } = &facts(&invocation)[0] else {
+            panic!("expected a module import for {argv}");
+        };
+        assert!(!spec.module_is_plain_name, "{argv} is not a module name");
+        assert_eq!(
+            spec.import_action(*form),
+            ModuleImportAction::Undetermined,
+            "{argv} must not claim a method call",
+        );
+    }
+
+    // The `-m` spelling never reaches a version declaration: perl refuses the
+    // `.` before it ever builds a statement.
+    assert!(
+        matches!(
+            perl_error(&["-m5.010", "-e", "print"]),
+            InvocationDecodeError::UnexpectedModuleSuffix { character: '.', .. }
+        ),
+        "perl -m5.010 dies with `Can't use '.' after -mname`",
+    );
+
+    // Negative control: the same accessor still answers for a plain name, so
+    // `Undetermined` is not a blanket refusal.
+    let plain = perl(&["-Mstrict", "-e", "print"]);
+    let ContextFactKind::ModuleImport { form, spec } = &facts(&plain)[0] else {
+        panic!("expected a module import");
+    };
+    assert_eq!(spec.import_action(*form), ModuleImportAction::Import);
 }
 
 #[test]
