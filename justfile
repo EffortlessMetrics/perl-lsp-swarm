@@ -1447,6 +1447,8 @@ ci-policy:
     just ci-check-todos
     @python3 scripts/ci/test_validate_cargo_lock_conflict_policy.py
     @python3 scripts/ci/validate_cargo_lock_conflict_policy.py --repo-root .
+    @python3 scripts/ci/test_validate_cargo_feature_roles.py
+    @python3 scripts/ci/validate_cargo_feature_roles.py --repo-root .
     @cargo xtask check-from-raw
     @cargo xtask check-tautology --check
     @cargo xtask check-memory-lifecycle-policy

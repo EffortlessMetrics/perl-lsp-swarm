@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12647 |
+| Total tracked files | 12650 |
 | Rust-family files | 3936 |
-| Non-Rust files | 8711 |
-| Allowlisted | 6472 |
+| Non-Rust files | 8714 |
+| Allowlisted | 6475 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 501 |
+| config | 502 |
 | documentation | 2845 |
 | generated | 2 |
 | production | 354 |
 | test | 2090 |
-| tooling | 680 |
+| tooling | 682 |
 | unclassified | 2239 |
 
 ## Unclassified files
@@ -6422,6 +6422,7 @@
 | `plans/spec-governance/implementation-plan.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `policy/allow.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/cadence-records.json` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/cargo-feature-roles.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/changelog.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/ci-budget.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/ci-exceptions.toml` | config | `non-rust-policy-ledgers` | release/ci |
@@ -6720,6 +6721,7 @@
 | `scripts/ci/test_rustfmt_check.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_rustfmt_required_workflow.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_scope_cache_key.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_validate_cargo_feature_roles.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_cargo_lock_conflict_policy.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_gate_enforcement_contract.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_validate_gate_lane_mapping.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6732,6 +6734,7 @@
 | `scripts/ci/test_verify_homebrew_formula_digests.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_verify_rustfmt_receipt.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_workflow_security_ratchet.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/validate_cargo_feature_roles.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_cargo_lock_conflict_policy.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_gate_enforcement_contract.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/validate_gate_lane_mapping.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |

@@ -40,6 +40,14 @@ on:
       - 'scripts/tests/test-validate-exposed-surface-disposition.py'
       - 'scripts/tests/fixtures/exposed-surface-disposition/**'
       - 'scripts/ci/fixtures/cargo_lock_conflict_policy.json'
+      # #8409 reconciles policy/cargo-feature-roles.toml against every
+      # workspace manifest, so any manifest that can declare a Cargo feature
+      # must execute the validator. `crates/**/Cargo.toml` above covers the
+      # member crates; these cover the remaining feature-declaring manifests.
+      - 'Cargo.toml'
+      - 'xtask/Cargo.toml'
+      - 'scripts/ci/validate_cargo_feature_roles.py'
+      - 'scripts/ci/test_validate_cargo_feature_roles.py'
       - 'docs/how-to/DEPENDENCY_QUICK_REFERENCE.md'
       - 'docs/how-to/DEPENDENCY_MANAGEMENT.md'
       - 'docs/reference/WORKTREE_PROTOCOL.md'
@@ -141,6 +149,14 @@ jobs:
         run: |
           python3 scripts/ci/test_validate_cargo_lock_conflict_policy.py
           python3 scripts/ci/validate_cargo_lock_conflict_policy.py --repo-root .
+
+      # #8409: every governed Cargo feature carries one classified role and its
+      # discovered consumer evidence. Adding a feature to any workspace manifest
+      # without classifying it fails here.
+      - name: Validate Cargo feature roles
+        run: |
+          python3 scripts/ci/test_validate_cargo_feature_roles.py
+          python3 scripts/ci/validate_cargo_feature_roles.py --repo-root .
 
       - name: Validate exposed-surface disposition contract
         run: |
