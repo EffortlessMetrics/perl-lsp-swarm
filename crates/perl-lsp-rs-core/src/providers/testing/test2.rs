@@ -805,24 +805,41 @@ fn scan_import_transforms(
     TransformScan::Recognized { renames, stripped }
 }
 
-/// Whether a recognizer's captured transform value covers the whole Perl value
-/// it was taken from.
+/// Whether a recognizer's captured transform value is the whole Perl value.
 ///
 /// Both patterns read a value as `['"]?(\w+)['"]?`, which happily matches a
 /// *prefix* of anything longer, and the trailing `[^}]*?` then swallows the
-/// rest: `-as => "my_\x6fk"` captured `my_`, and `-as => 'my ok'` captured
-/// `my`. Either published a name that does not exist, as a clean result.
+/// rest. Every one of these published a name Perl never installs, as a clean
+/// result:
 ///
-/// A quoted value must therefore end at its closing quote, and a bare one at a
-/// value terminator — `\w+` is greedy, so anything else following it is more
-/// of the value that the capture did not take.
+/// ```text
+/// -as => "my_\x6fk"    captured my_    Perl value my_ok
+/// -as => 'my ok'       captured my     Perl value "my ok"
+/// -as => 'my' . '_ok'  captured my     Perl value my_ok
+/// -as => lc 'MY_OK'    captured lc     Perl value my_ok
+/// ```
+///
+/// A capture is the whole value only when it runs to the value's own end *and*
+/// the map entry ends there. The first three characters of `'my' . '_ok'`
+/// satisfy the first condition and not the second, so both are required: after
+/// the value (through its closing quote, when quoted) the next thing must be
+/// the entry separator or the map's close, never more expression.
 fn capture_covers_whole_value(raw_args: &str, start: usize, end: usize) -> bool {
     let opened_with = raw_args[..start].chars().next_back();
-    let follows = raw_args[end..].chars().next();
-    match opened_with {
-        Some(quote @ ('\'' | '"')) => follows == Some(quote),
-        _ => follows.is_none_or(|next| next.is_whitespace() || matches!(next, ',' | '}' | ')')),
-    }
+    let after_value = match opened_with {
+        Some(quote @ ('\'' | '"')) => {
+            let Some(rest) = raw_args[end..].strip_prefix(quote) else {
+                // The capture stopped inside the quoted value.
+                return false;
+            };
+            rest
+        }
+        // `\w+` is greedy, so a bare value already ends at a non-word
+        // character; whether it ends the *entry* is the question below.
+        _ => &raw_args[end..],
+    };
+
+    matches!(after_value.trim_start().chars().next(), Some(',' | '}'))
 }
 
 /// Resolve the imported symbols and pragma effect of a single Test2 `use`

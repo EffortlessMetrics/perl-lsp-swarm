@@ -1227,11 +1227,24 @@ fn test2_truncated_transform_value_fails_closed_instead_of_publishing_a_prefix()
     // Perl's own values there are `my_ok` and `my ok`; neither is `my_` or
     // `my`. This is not specific to escapes — any value the capture cannot
     // consume whole has the same shape.
+    //
+    // The second round of this finding (also @devin-ai-integration) showed that
+    // ending at the value's own close is not enough either: in `'my' . '_ok'`
+    // the capture *does* run to a closing quote, but the entry continues. So a
+    // capture is the whole value only when the map entry ends there too.
+    //
+    //   ok => {-as => 'my' . '_ok'}   ->  symbols {"my"},   limited=false
+    //   ok => {-as => lc 'MY_OK'}     ->  symbols {"lc"},   limited=false
+    //   ok => {-prefix => 'x' . '_'}  ->  symbols {"xok"},  limited=false
     for (args, truncated) in [
         (r#"ok => {-as => "my_\x6fk"}"#, "my_"),
         (r#"ok => {-as => 'my ok'}"#, "my"),
         (r#"ok => {-prefix => "x\x5f"}"#, "x"),
         (r#"ok => {-postfix => '_z z'}"#, "_z"),
+        ("ok => {-as => 'my' . '_ok'}", "my"),
+        ("ok => {-as => lc 'MY_OK'}", "lc"),
+        ("ok => {-prefix => 'x' . '_'}", "xok"),
+        ("ok => {-postfix => '_' . 'z'}", "ok_"),
     ] {
         let resolved = resolve_with_analysis("Test2::V0", args);
         assert!(resolved.analysis_limited, "{args}: a partly-read value is never a clean result");
@@ -1254,6 +1267,9 @@ fn test2_truncated_transform_value_fails_closed_instead_of_publishing_a_prefix()
         ("ok => {-as => 'my_ok'}", "my_ok"),
         ("ok => {-as => my_ok}", "my_ok"),
         ("ok => {-prefix => 'x_'}", "x_ok"),
+        // A following entry is a terminator, not a continuation.
+        ("ok => {-as => 'my_ok', -other => 1}", "my_ok"),
+        ("is => {-as => 'my_is' }, ok", "my_is"),
     ] {
         let resolved = resolve_with_analysis("Test2::V0", args);
         assert!(!resolved.analysis_limited, "{args}: a fully-read value resolves");
