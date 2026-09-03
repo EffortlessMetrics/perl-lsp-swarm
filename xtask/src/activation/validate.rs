@@ -237,7 +237,9 @@ fn check_authority_path(
         ));
         return;
     }
-    if path_part.is_empty() || !root.join(path_part).exists() {
+    // An empty path is already rejected above as non-repository-relative, so
+    // only existence remains to check here.
+    if !root.join(path_part).exists() {
         violations.push(format!(
             "row `{surface_id}`: missing authority path `{path_part}` referenced by {label} (`{value}`)"
         ));
@@ -259,6 +261,12 @@ fn check_authority_path(
 /// host filesystem: `/etc/hostname` would "exist" and a dangling in-repository
 /// reference could be masked by a file outside the tree. Only `Normal`
 /// components are admissible.
+///
+/// This constrains the *reference*, not the resolution: a `Normal`-only path
+/// is still resolved through symlinks by `Path::exists`. The repository has
+/// one tracked symlink and it points inside the tree, so nothing escapes
+/// today; a tracked symlink out of the tree would be the gap, and it is the
+/// symlink that would need policing, not this predicate.
 pub(super) fn is_repository_relative(path: &str) -> bool {
     !path.is_empty()
         && std::path::Path::new(path)

@@ -15,7 +15,10 @@
     "rows"
   ],
   "properties": {
-    "schema": { "type": "string", "minLength": 1 },
+    "schema": {
+      "$comment": "Pinned like schema_version, policy, and controlling_issue: validation always loads this exact path, so a loose string would let a hand edit point a reader at a contract the artifact was never checked against. `owner` below stays open because ownership can legitimately change hands without the contract changing.",
+      "const": "schemas/activation_inventory.v1.schema.json"
+    },
     "schema_version": { "const": "activation_inventory.v1" },
     "policy": { "const": "activation-inventory" },
     "owner": { "type": "string", "minLength": 1 },

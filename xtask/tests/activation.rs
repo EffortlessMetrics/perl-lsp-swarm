@@ -586,3 +586,45 @@ fn an_allow_list_proves_permission_to_publish_not_publication() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn artifact_schema_field_is_pinned_to_the_contract_it_was_checked_against() -> TestResult {
+    // Validation always loads `SCHEMA_PATH`. A loose `schema` string would let
+    // a hand edit point a reader at a contract the artifact was never checked
+    // against, while `schema_version`, `policy`, and `controlling_issue` are
+    // already pinned — an inconsistency in the contract's own identity block.
+    let mut inventory = canonical_inventory()?;
+    inventory["schema"] = json!("schemas/some-other-contract.schema.json");
+    expect_violation(&inventory, "schema:")
+}
+
+#[test]
+fn override_authority_naming_a_list_must_prove_membership() -> TestResult {
+    // Key existence is enough for a scalar authority, but a list authority is
+    // cited to prove the surface is ON the list. `[workspace.metadata.publish]
+    // allow` exists whatever it contains, so without a membership check the
+    // `publish_allowed` claim would survive the crate being dropped from it.
+    let (mut file, index) = overrides_and_index()?;
+    let oracle = file
+        .overrides
+        .iter_mut()
+        .find(|record| record.surface_id == "crate:tree-sitter-perl-c")
+        .ok_or("oracle override row not found")?;
+    // A real list in a real manifest that genuinely does not contain this
+    // crate — so the path and the fragment both resolve and only membership
+    // can fail.
+    oracle.publication_authority = "Cargo.toml#workspace.members".to_string();
+    expect_override_violation(&file, &index, "does not contain `tree-sitter-perl-c`")
+}
+
+#[test]
+fn override_authority_naming_a_list_that_does_contain_the_surface_is_accepted() -> TestResult {
+    // The control that keeps the membership rule from rejecting the real row.
+    let (file, index) = overrides_and_index()?;
+    let violations = validate_overrides(&repo_root(), &file, &index);
+    assert!(
+        !violations.iter().any(|violation| violation.contains("does not contain")),
+        "the committed allow-list authority must satisfy the membership rule: {violations:?}"
+    );
+    Ok(())
+}

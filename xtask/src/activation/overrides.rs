@@ -153,11 +153,31 @@ fn check_hand_written_authority(
             }
         }
     }
+    // Key existence is the right check for a scalar authority: pointing at
+    // `package.publish` proves the manifest states a disposition. It is NOT
+    // enough for a LIST. `Cargo.toml#workspace.metadata.publish.allow` proves
+    // only that an allow list exists, while the row citing it claims the
+    // surface is ON that list — so without this, dropping the crate from the
+    // list would leave the row green and its claim false. When the fragment
+    // resolves to an array of strings, the surface must be a member of it.
+    if let Some(entries) = cursor.as_array()
+        && let Some(name) = surface_id.strip_prefix("crate:")
+        && entries.iter().all(|entry| entry.as_str().is_some())
+        && !entries.iter().any(|entry| entry.as_str() == Some(name))
+    {
+        violations.push(format!(
+            "override `{surface_id}`: authority `{path}` list `{fragment}` referenced by \
+             {label} does not contain `{name}`"
+        ));
+    }
 }
 
 /// Absent, empty, or whitespace-only — the three ways a required ledger field
-/// can carry no content. Every required-field check in this module goes
-/// through here so `None`, `""`, and `"   "` cannot diverge.
+/// can carry no content. Every required-field presence check in this module
+/// goes through here so `None`, `""`, and `"   "` cannot diverge. The header
+/// `updated` field is the one place that also branches on *which* of the three
+/// it is, because "no date recorded" and "date unreadable" are different
+/// things to report; it uses the same blankness meaning.
 fn is_blank(value: Option<&str>) -> bool {
     value.unwrap_or("").trim().is_empty()
 }
@@ -238,10 +258,10 @@ pub fn validate(
             file.policy
         ));
     }
-    if file.owner.trim().is_empty() {
+    if is_blank(Some(&file.owner)) {
         violations.push(format!("{OVERRIDES_PATH}: ledger requires an owner"));
     }
-    if file.status.trim().is_empty() {
+    if is_blank(Some(&file.status)) {
         violations.push(format!("{OVERRIDES_PATH}: ledger requires a status"));
     }
     // The header date is held to the same calendar rule as the row dates. It

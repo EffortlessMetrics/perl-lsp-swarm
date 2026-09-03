@@ -183,7 +183,14 @@ fn feature_row(
         )
     });
 
-    let established = capability_gate != "missing" && registration_field != "missing";
+    // `established` is the strongest claim a row carries, so it must rest on
+    // content, not merely on a value that is not the `missing` sentinel.
+    // `capability_gate = ""` is not a capability gate; treating it as one
+    // would let a row assert it is wired into its consuming mechanism on the
+    // strength of an empty string — the same blank-is-not-content hole the
+    // override ledger closes with `is_blank`.
+    let recorded = |value: &str| value != "missing" && !value.trim().is_empty();
+    let established = recorded(capability_gate) && recorded(registration_field);
     let registration = Registration {
         state: if established {
             RegistrationState::Established
@@ -293,18 +300,41 @@ fn derive_gates(root: &Path) -> Result<RuleOutput, ActivationError> {
             })?
             .to_string();
         {
-            let tier = gate.get("tier").and_then(serde_yaml_ng::Value::as_str).unwrap_or("");
-            // `required` is optional in gate-policy.yaml, and the gate runner
+            // `GateDefinition` (xtask/src/tasks/gates.rs:145-151) declares
+            // `tier: String` and `description: String` with no serde default,
+            // so a gate missing either one fails the gate runner's own
+            // deserialization. Substituting `""` here would be more permissive
+            // than the authority being consumed: the inventory would record a
+            // gate the runner rejects as a well-formed row.
+            let required_str = |key: &str| -> Result<&str, ActivationError> {
+                gate.get(key)
+                    .and_then(serde_yaml_ng::Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        ActivationError::new(format!(
+                            "{GATE_POLICY_YAML}: gate `{name}` has no non-empty string `{key}`"
+                        ))
+                    })
+            };
+            let tier = required_str("tier")?;
+            let description = required_str("description")?;
+            // `required` IS optional in gate-policy.yaml, and the gate runner
             // reads an absent value as TRUE (`#[serde(default = "default_true")]`
-            // on `GateDefinition::required`, xtask/src/tasks/gates.rs:149).
-            // Defaulting to false here would record a required gate as optional
-            // — the inventory would understate enforcement, which is the exact
-            // dishonesty it exists to prevent. Consume the authority's own
-            // default rather than inventing a different one.
-            let required =
-                gate.get("required").and_then(serde_yaml_ng::Value::as_bool).unwrap_or(true);
-            let description =
-                gate.get("description").and_then(serde_yaml_ng::Value::as_str).unwrap_or("");
+            // on `GateDefinition::required`). Defaulting to false here would
+            // record a required gate as optional — the inventory would
+            // understate enforcement, which is the exact dishonesty it exists
+            // to prevent. So absence consumes the authority's own default,
+            // while a present non-boolean is malformed data and fails: reading
+            // `required: "yes"` as the absent-default `true` would report a
+            // value the authority never stated.
+            let required = match gate.get("required") {
+                None => true,
+                Some(value) => value.as_bool().ok_or_else(|| {
+                    ActivationError::new(format!(
+                        "{GATE_POLICY_YAML}: gate `{name}` has a non-boolean `required`"
+                    ))
+                })?,
+            };
             rows.push(ActivationRow {
                 surface_id: format!("gate:{name}"),
                 class: ActivationClass::Gate,
@@ -714,7 +744,7 @@ mod tests {
         assert!(write(
             &root,
             GATE_POLICY_YAML,
-            "gates:\n  - name: real_gate\n    tier: pr_fast\n  - tier: pr_fast\n"
+            "gates:\n  - name: real_gate\n    tier: pr_fast\n    description: d\n  - tier: pr_fast\n    description: d\n"
         ));
         let message = match derive_gates(&root) {
             Ok(output) => format!("unexpectedly derived {} row(s)", output.rows.len()),
@@ -725,12 +755,63 @@ mod tests {
     }
 
     #[test]
+    fn gate_without_a_tier_fails_instead_of_recording_an_empty_one() {
+        // `GateDefinition` declares `tier: String` with no serde default, so
+        // this gate is one the gate runner itself rejects. Recording it with
+        // `tier = ""` would let the inventory legitimize policy that cannot
+        // actually run.
+        let root = scratch_root("gate-no-tier");
+        assert!(write(
+            &root,
+            GATE_POLICY_YAML,
+            "gates:\n  - name: real_gate\n    description: does a thing\n"
+        ));
+        let message = match derive_gates(&root) {
+            Ok(output) => format!("unexpectedly derived {} row(s)", output.rows.len()),
+            Err(error) => error.to_string(),
+        };
+        let _ = fs::remove_dir_all(&root);
+        assert!(message.contains("has no non-empty string `tier`"), "{message}");
+    }
+
+    #[test]
+    fn gate_without_a_description_fails_instead_of_recording_an_empty_one() {
+        let root = scratch_root("gate-no-description");
+        assert!(write(&root, GATE_POLICY_YAML, "gates:\n  - name: real_gate\n    tier: pr_fast\n"));
+        let message = match derive_gates(&root) {
+            Ok(output) => format!("unexpectedly derived {} row(s)", output.rows.len()),
+            Err(error) => error.to_string(),
+        };
+        let _ = fs::remove_dir_all(&root);
+        assert!(message.contains("has no non-empty string `description`"), "{message}");
+    }
+
+    #[test]
+    fn non_boolean_required_fails_instead_of_reading_as_the_absent_default() {
+        // Absent `required` legitimately means true. A present non-boolean is
+        // malformed data, and collapsing it into that same default would
+        // report an enforcement value the authority never stated.
+        let root = scratch_root("gate-required-wrong-type");
+        assert!(write(
+            &root,
+            GATE_POLICY_YAML,
+            "gates:\n  - name: real_gate\n    tier: pr_fast\n    description: d\n    required: yes-please\n"
+        ));
+        let message = match derive_gates(&root) {
+            Ok(output) => format!("unexpectedly derived {} row(s)", output.rows.len()),
+            Err(error) => error.to_string(),
+        };
+        let _ = fs::remove_dir_all(&root);
+        assert!(message.contains("has a non-boolean `required`"), "{message}");
+    }
+
+    #[test]
     fn well_formed_gates_still_derive() {
         let root = scratch_root("gate-ok");
         assert!(write(
             &root,
             GATE_POLICY_YAML,
-            "gates:\n  - name: real_gate\n    tier: pr_fast\n    required: true\n"
+            "gates:\n  - name: real_gate\n    tier: pr_fast\n    description: d\n    required: true\n"
         ));
         let derived = derive_gates(&root)
             .map(|output| output.rows.iter().map(|row| row.surface_id.clone()).collect::<Vec<_>>());
@@ -776,7 +857,11 @@ mod tests {
         // an absent value as true. Recording false here would understate
         // enforcement for any future gate that omits the field.
         let root = scratch_root("gate-required-default");
-        assert!(write(&root, GATE_POLICY_YAML, "gates:\n  - name: implicit\n    tier: pr_fast\n"));
+        assert!(write(
+            &root,
+            GATE_POLICY_YAML,
+            "gates:\n  - name: implicit\n    tier: pr_fast\n    description: d\n"
+        ));
         let detail = derive_gates(&root).map(|output| {
             output.rows.first().and_then(|row| row.registration.detail.clone()).unwrap_or_default()
         });
@@ -936,6 +1021,59 @@ mod tests {
         };
         let _ = fs::remove_dir_all(&root);
         assert!(message.contains("has a non-string `implementation_owner`"), "{message}");
+    }
+
+    #[test]
+    fn blank_capability_gate_does_not_establish_registration() {
+        // `established` asserts the surface is wired into its consuming
+        // mechanism. An empty string is not a capability gate, so a row must
+        // not obtain the strongest claim it carries on the strength of one.
+        let root = scratch_root("feature-blank-gate");
+        assert!(write(
+            &root,
+            FEATURES_TOML,
+            "[[feature]]\nid = \"lsp.example\"\nmaturity = \"preview\"\nadvertised = false\n\
+             capability_gate = \"\"\nregistration = \"registered\"\n"
+        ));
+        let states = derive_features(&root).map(|(_, preview)| {
+            preview.rows.iter().map(|row| row.registration.state).collect::<Vec<_>>()
+        });
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(states, Ok(vec![RegistrationState::NotEstablished]));
+    }
+
+    #[test]
+    fn whitespace_only_registration_does_not_establish_registration() {
+        let root = scratch_root("feature-blank-registration");
+        assert!(write(
+            &root,
+            FEATURES_TOML,
+            "[[feature]]\nid = \"lsp.example\"\nmaturity = \"preview\"\nadvertised = false\n\
+             capability_gate = \"gated\"\nregistration = \"   \"\n"
+        ));
+        let states = derive_features(&root).map(|(_, preview)| {
+            preview.rows.iter().map(|row| row.registration.state).collect::<Vec<_>>()
+        });
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(states, Ok(vec![RegistrationState::NotEstablished]));
+    }
+
+    #[test]
+    fn real_capability_gate_and_registration_still_establish() {
+        // The control that keeps the blankness rule from rejecting a row that
+        // genuinely records both.
+        let root = scratch_root("feature-established");
+        assert!(write(
+            &root,
+            FEATURES_TOML,
+            "[[feature]]\nid = \"lsp.example\"\nmaturity = \"preview\"\nadvertised = false\n\
+             capability_gate = \"gated\"\nregistration = \"registered\"\n"
+        ));
+        let states = derive_features(&root).map(|(_, preview)| {
+            preview.rows.iter().map(|row| row.registration.state).collect::<Vec<_>>()
+        });
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(states, Ok(vec![RegistrationState::Established]));
     }
 
     #[test]
