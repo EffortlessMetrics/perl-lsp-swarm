@@ -257,8 +257,10 @@ mod tests {
             })
             .collect();
 
+        // Propagate worker failures: `let _ = join()` would discard a panicked
+        // assertion inside a thread and let the test pass regardless.
         for handle in handles {
-            let _ = handle.join();
+            assert!(handle.join().is_ok(), "a worker thread panicked");
         }
 
         assert_eq!(
@@ -330,8 +332,11 @@ mod tests {
         let refused = u32::from(gate.try_acquire().is_none());
         contender_done.store(true, Ordering::SeqCst);
 
+        // Propagate holder failures: `let _ = join()` would discard the
+        // admission assertion inside a holder thread, so a gate that refused a
+        // holder could still reach the counter assertions below.
         for handle in holders {
-            let _ = handle.join();
+            assert!(handle.join().is_ok(), "a holder thread panicked");
         }
 
         // The ceiling, in both directions. `max_seen <= N` alone is vacuous:
