@@ -351,8 +351,12 @@ impl SemanticAnalyzer {
             // would no longer dispatch through. An empty later segment carries
             // no ancestry declaration and therefore leaves the prior value
             // intact.
-            if !model.parents.is_empty() {
-                existing.parents = model.parents.clone();
+            if model.parents_explicit {
+                if model.parents_additive {
+                    existing.parents.extend(model.parents.iter().cloned());
+                } else {
+                    existing.parents = model.parents.clone();
+                }
             }
             if !model.roles.is_empty() {
                 existing.roles = model.roles.clone();
@@ -658,8 +662,14 @@ impl SemanticAnalyzer {
             .methods
             .iter()
             .rev()
-            .find(|method| method.name == method_name)
-            .or_else(|| model.methods.iter().rev().find(|method| method.name == "AUTOLOAD"))
+            .find(|method| method.name == method_name && method.declarator.is_none())
+            .or_else(|| {
+                model
+                    .methods
+                    .iter()
+                    .rev()
+                    .find(|method| method.name == "AUTOLOAD" && method.declarator.is_none())
+            })
             .map(|method| method.location)
     }
 
@@ -2904,6 +2914,68 @@ my %config = (key => "value");
         let new_parent_save = code.find("sub save { 2 }").ok_or("NewParent::save not found")?;
         let target = analyzer.find_definition(offset).ok_or("modifier definition")?;
         assert_eq!(target.location.start, new_parent_save);
+        Ok(())
+    }
+
+    #[test]
+    fn test_reopened_package_additive_parent_declarations_keep_all_ancestors()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = concat!(
+            "package First; use Moo; sub save { 1 }\n",
+            "package Second; use Moo; sub save { 2 }\n",
+            "package Child; use Moo; use parent 'First';\n",
+            "package Child; use Moo; use base 'Second';\n",
+            "before 'save' => sub { };\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+        let chain = analyzer.resolve_parent_chain("Child").ok_or("parent chain")?;
+        assert_eq!(chain, vec!["First", "Second"]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_reopened_package_empty_isa_clears_prior_ancestry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = concat!(
+            "package Base; use Moo; sub save { 1 }\n",
+            "package Child; use Moo; extends 'Base';\n",
+            "package Child; use Moo; @ISA = ();\n",
+            "before 'save' => sub { };\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+        let child = analyzer
+            .merged_class_models()
+            .into_iter()
+            .find(|model| model.name == "Child")
+            .ok_or("Child model")?;
+        assert!(child.parents.is_empty());
+        assert!(analyzer.resolve_inherited_method_location("Child", "save").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_empty_mro_directives_do_not_override_prior_selection()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = concat!(
+            "package Root; use Moo; sub save { 1 }\n",
+            "package Left; use Moo; extends 'Root';\n",
+            "package Right; use Moo; extends 'Root'; sub save { 2 }\n",
+            "package Child; use Moo; extends 'Left', 'Right'; use mro 'c3';\n",
+            "package Child; use Moo; no mro;\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+        let child = analyzer
+            .merged_class_models()
+            .into_iter()
+            .find(|model| model.name == "Child")
+            .ok_or("Child model")?;
+        assert_eq!(child.mro, MethodResolutionOrder::C3);
         Ok(())
     }
 

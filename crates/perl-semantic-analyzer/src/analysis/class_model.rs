@@ -164,6 +164,8 @@ pub struct MethodInfo {
     pub accessor_mode: Option<ClassAccessorMode>,
     /// Narrow provenance for synthetic methods whose name came from a writer trait.
     pub generated_kind: Option<GeneratedMethodKind>,
+    /// The declarator, when present (`my`/`state` lexical subroutine).
+    pub declarator: Option<String>,
 }
 
 /// Provenance used to resolve generated writer collisions deterministically.
@@ -176,7 +178,25 @@ pub enum GeneratedMethodKind {
 impl MethodInfo {
     /// Construct a regular declared method.
     pub fn new(name: String, location: SourceLocation) -> Self {
-        Self { name, location, synthetic: false, accessor_mode: None, generated_kind: None }
+        Self {
+            name,
+            location,
+            synthetic: false,
+            accessor_mode: None,
+            generated_kind: None,
+            declarator: None,
+        }
+    }
+
+    /// Construct a declared method while retaining its scope declarator.
+    pub fn with_declarator(
+        name: String,
+        location: SourceLocation,
+        declarator: Option<String>,
+    ) -> Self {
+        let mut method = Self::new(name, location);
+        method.declarator = declarator;
+        method
     }
 
     /// Construct a synthetic method generated from framework metadata.
@@ -185,7 +205,14 @@ impl MethodInfo {
         location: SourceLocation,
         accessor_mode: Option<ClassAccessorMode>,
     ) -> Self {
-        Self { name, location, synthetic: true, accessor_mode, generated_kind: None }
+        Self {
+            name,
+            location,
+            synthetic: true,
+            accessor_mode,
+            generated_kind: None,
+            declarator: None,
+        }
     }
 
     fn synthetic_writer(name: String, location: SourceLocation) -> Self {
@@ -195,6 +222,7 @@ impl MethodInfo {
             synthetic: true,
             accessor_mode: None,
             generated_kind: Some(GeneratedMethodKind::Writer),
+            declarator: None,
         }
     }
 }
@@ -220,6 +248,12 @@ pub struct ClassModel {
     pub mro: MethodResolutionOrder,
     /// Whether this package segment explicitly selected its MRO.
     pub(crate) mro_explicit: bool,
+    /// Whether this package segment explicitly declared ancestry, including an
+    /// explicit empty `@ISA = ()` reset.
+    pub(crate) parents_explicit: bool,
+    /// Whether this segment's ancestry declarations are additive (`use parent`,
+    /// `use base`, or `push @ISA`) rather than replacing prior package state.
+    pub(crate) parents_additive: bool,
     /// Roles consumed via `with 'Role'`
     pub roles: Vec<String>,
     /// Method modifiers (before/after/around/override/augment)
@@ -280,6 +314,8 @@ pub struct ClassModelBuilder {
     current_parents: Vec<String>,
     current_mro: MethodResolutionOrder,
     current_mro_explicit: bool,
+    current_parents_explicit: bool,
+    current_parents_additive: bool,
     current_roles: Vec<String>,
     current_modifiers: Vec<MethodModifier>,
     current_exports: Vec<String>,
@@ -312,6 +348,8 @@ impl ClassModelBuilder {
             current_parents: Vec::new(),
             current_mro: MethodResolutionOrder::Dfs,
             current_mro_explicit: false,
+            current_parents_explicit: false,
+            current_parents_additive: false,
             current_roles: Vec::new(),
             current_modifiers: Vec::new(),
             current_exports: Vec::new(),
@@ -360,6 +398,8 @@ impl ClassModelBuilder {
                 parents: std::mem::take(&mut self.current_parents),
                 mro: self.current_mro,
                 mro_explicit: self.current_mro_explicit,
+                parents_explicit: self.current_parents_explicit,
+                parents_additive: self.current_parents_additive,
                 roles: std::mem::take(&mut self.current_roles),
                 modifiers: std::mem::take(&mut self.current_modifiers),
                 exports: std::mem::take(&mut self.current_exports),
@@ -377,6 +417,8 @@ impl ClassModelBuilder {
             self.current_parents.clear();
             self.current_mro = MethodResolutionOrder::Dfs;
             self.current_mro_explicit = false;
+            self.current_parents_explicit = false;
+            self.current_parents_additive = false;
             self.current_roles.clear();
             self.current_modifiers.clear();
             self.current_exports.clear();
@@ -402,6 +444,8 @@ impl ClassModelBuilder {
                     self.framework_map.get(name).copied().unwrap_or(Framework::None);
                 self.current_mro = MethodResolutionOrder::Dfs;
                 self.current_mro_explicit = false;
+                self.current_parents_explicit = false;
+                self.current_parents_additive = false;
                 self.current_uses_exporter = false;
 
                 if let Some(block) = block {
@@ -413,20 +457,19 @@ impl ClassModelBuilder {
                 self.visit_statement_list(statements);
             }
 
-            NodeKind::Subroutine { name, body, .. } => {
+            NodeKind::Subroutine { name, body, declarator, .. } => {
                 if let Some(sub_name) = name {
-                    self.current_methods.push(MethodInfo::new(sub_name.clone(), node.location));
+                    self.current_methods.push(MethodInfo::with_declarator(
+                        sub_name.clone(),
+                        node.location,
+                        declarator.clone(),
+                    ));
                 }
                 self.visit_node(body);
             }
 
             NodeKind::Use { module, args, .. } => {
                 self.detect_framework(module, args);
-            }
-
-            NodeKind::No { module, .. } if module == "mro" => {
-                self.current_mro = MethodResolutionOrder::Dfs;
-                self.current_mro_explicit = true;
             }
 
             // `our @ISA = qw(Parent1 Parent2);` / `our @EXPORT = qw(...);` / `our @EXPORT_OK = qw(...);`
@@ -443,7 +486,12 @@ impl ClassModelBuilder {
                         && let Some(init) = initializer
                     {
                         match name.as_str() {
-                            "ISA" => self.extract_isa_from_node(init),
+                            "ISA" => {
+                                self.current_parents_explicit = true;
+                                self.current_parents_additive = false;
+                                self.current_parents = collect_symbol_names(init);
+                                self.note_parent_framework();
+                            }
                             "EXPORT" => {
                                 self.current_exports.extend(collect_symbol_names(init));
                             }
@@ -468,7 +516,12 @@ impl ClassModelBuilder {
                     && sigil == "@"
                 {
                     match name.as_str() {
-                        "ISA" => self.extract_isa_from_node(rhs),
+                        "ISA" => {
+                            self.current_parents_explicit = true;
+                            self.current_parents_additive = false;
+                            self.current_parents = collect_symbol_names(rhs);
+                            self.note_parent_framework();
+                        }
                         "EXPORT" => {
                             self.current_exports.extend(collect_symbol_names(rhs));
                         }
@@ -498,6 +551,8 @@ impl ClassModelBuilder {
                             && sigil == "@"
                             && var_name == "ISA"
                         {
+                            self.current_parents_explicit = true;
+                            self.current_parents_additive = true;
                             for arg in args.iter().skip(1) {
                                 self.extract_isa_from_node(arg);
                             }
@@ -670,6 +725,8 @@ impl ClassModelBuilder {
                     }
                 }
 
+                self.current_parents_explicit = true;
+                self.current_parents_additive = true;
                 self.current_parents.extend(captured_parents.clone());
 
                 let inherits_dbix_class =
@@ -700,11 +757,8 @@ impl ClassModelBuilder {
             return;
         }
 
-        if args.is_empty() {
-            self.current_mro = MethodResolutionOrder::Dfs;
-            self.current_mro_explicit = true;
-            return;
-        }
+        // Bare `use mro;` and `no mro;` are inert in Perl. Only a recognized
+        // named strategy is an explicit selection.
 
         for arg in args {
             let trimmed = arg.trim().trim_matches('\'').trim_matches('"');
@@ -1075,6 +1129,9 @@ impl ClassModelBuilder {
             let names: Vec<String> = args.iter().flat_map(collect_symbol_names).collect();
             if !names.is_empty() {
                 if name == "extends" {
+                    self.current_parents_explicit = true;
+                    self.current_parents_additive = false;
+                    self.current_parents.clear();
                     self.current_parents.extend(names);
                 } else {
                     self.current_roles.extend(names);
@@ -1111,6 +1168,9 @@ impl ClassModelBuilder {
         }
 
         if keyword == "extends" {
+            self.current_parents_explicit = true;
+            self.current_parents_additive = false;
+            self.current_parents.clear();
             self.current_parents.extend(names);
         } else {
             self.current_roles.extend(names);
@@ -1496,6 +1556,9 @@ impl ClassModelBuilder {
     /// Extract parent class names from an `@ISA` RHS node (ArrayLiteral or qw-word-list).
     fn extract_isa_from_node(&mut self, node: &Node) {
         let parents = collect_symbol_names(node);
+        self.current_parents_explicit = true;
+        self.current_parents_additive = true;
+        self.note_parent_framework();
         if !parents.is_empty() {
             if parents.iter().any(|parent| parent == "Exporter") {
                 self.current_uses_exporter = true;
@@ -1506,6 +1569,13 @@ impl ClassModelBuilder {
                 self.framework_map.insert(self.current_package.clone(), Framework::PlainOO);
             }
             self.current_parents.extend(parents);
+        }
+    }
+
+    fn note_parent_framework(&mut self) {
+        if self.current_framework == Framework::None {
+            self.current_framework = Framework::PlainOO;
+            self.framework_map.insert(self.current_package.clone(), Framework::PlainOO);
         }
     }
 
@@ -2351,6 +2421,8 @@ has [qw(first_name last_name)] => (is => 'ro');
             parents: Vec::new(),
             mro: MethodResolutionOrder::Dfs,
             mro_explicit: false,
+            parents_explicit: false,
+            parents_additive: false,
             roles: Vec::new(),
             modifiers: Vec::new(),
             exports: Vec::new(),
