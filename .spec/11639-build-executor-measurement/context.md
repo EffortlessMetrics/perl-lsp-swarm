@@ -16,8 +16,11 @@ schema to record against, and the #11642 decision has no admitted-evidence forma
 
 ## Status: implemented this lane — protocol and harness only
 
-Verified live on 2026-08-31 against `origin/main@f0c15033dd` (current head) and
-live GitHub state:
+Verified live on 2026-08-31 against `origin/main@f0c15033dd` (head at lane
+start) and refreshed against `origin/main@32a40405fb` after that landed
+mid-lane (#14538, LSP4IJ claim registry; no overlap with this surface — the
+candidate was rebased and the non-Rust inventory regenerated from the merged
+tree). Live GitHub state:
 
 | Fact | State when verified |
 |---|---|
@@ -28,7 +31,8 @@ live GitHub state:
 | Open PRs referencing #11639 | none (`gh search prs` empty) |
 | Existing measurement symbols | no `build_executor_measurement`, no `build_measurement` module on current main |
 
-## Current-main facts the builder consumes (`main@f0c15033dd`)
+## Current-main facts the builder consumes (`main@32a40405fb` post-rebase;
+unchanged on `f0c15033dd`)
 
 ### The mechanism being measured (NOT changed by this claim)
 

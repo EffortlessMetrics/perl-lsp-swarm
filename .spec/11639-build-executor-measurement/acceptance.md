@@ -15,7 +15,8 @@ changes.
 - No executor model is recommended or selected.
 - No native-POSIX or native-Windows observation matrix is captured here.
 - `scripts/cargo-safe`, `justfile`, devplane paths, locks, and cache policy are
-  byte-identical to `main@f0c15033dd`.
+  byte-identical to `main@32a40405fb` (candidate basis; unchanged from the
+  lane-start basis `f0c15033dd`).
 - No production crate behavior changes; only `xtask` gains a library module.
 
 ## Acceptance predicates (each maps to executable proof)

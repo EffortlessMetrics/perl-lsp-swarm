@@ -5,7 +5,9 @@
 - [x] Re-verify #9547 controller split and #11639 readiness on live GitHub
       (maintainer `SPEC_READY · IMPLEMENTABLE_ON_CURRENT_MAIN`, 2026-08-22).
 - [x] Confirm no open/closed carrier PR for #11639; no rival candidate.
-- [x] Pin basis `origin/main@f0c15033dd`; confirm `scripts/cargo-safe` split
+- [x] Pin basis `origin/main@f0c15033dd`, refreshed/rebased to
+      `origin/main@32a40405fb` when it landed mid-lane (#14538, no overlap);
+      confirm `scripts/cargo-safe` split
       behavior still current (direct leaf vs xtask environment-only).
 - [x] Worktree `agent/build-measurement-protocol`, writer key
       `build.measurement_protocol`, single writer.
