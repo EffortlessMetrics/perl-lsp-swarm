@@ -1427,6 +1427,22 @@ impl TransformationPlan {
                     self.class.tag()
                 );
             }
+            // The class records that a rewrite is *not* applicable, so the plan
+            // must carry the precondition that makes it so. Without this the
+            // refusal would depend on which precondition an author happened to
+            // mark dynamic, and a fully proven plan of this class could reach
+            // an applied result.
+            if self
+                .preconditions
+                .iter()
+                .all(|precondition| precondition.truth.satisfies_exact_legality())
+            {
+                bail!(
+                    "plan {:?} of class {} must carry the unproven or dynamic precondition that makes it inapplicable",
+                    self.id.as_str(),
+                    self.class.tag()
+                );
+            }
         } else if self.intended_changes.is_empty() {
             bail!("plan {:?} must intend at least one change", self.id.as_str());
         }
@@ -4002,6 +4018,30 @@ mod tests {
             "must intend no change",
             "an unsupported plan cannot intend a change",
         );
+
+        // The refusal is a class invariant, not an accident of this fixture's
+        // chosen dynamic precondition: an unsupported plan whose preconditions
+        // are all proven is rejected, so it can never reach an applied result.
+        let mut all_proven = unsupported_plan.clone();
+        for precondition in &mut all_proven.preconditions {
+            precondition.truth = PreconditionTruth::ProvenExact;
+        }
+        assert_invalid(
+            &all_proven,
+            "must carry the unproven or dynamic precondition",
+            "a fully proven unsupported plan cannot exist",
+        );
+        let mut applied = shape_fixtures::conforming_observation(&all_proven, &unsupported_law)?;
+        applied.work = WorkReceipt { useful_operations: 2, elapsed_micros: 10 };
+        match all_proven.evaluate(&applied)? {
+            TransformationResult::InvalidPlan { reason } => {
+                assert!(reason.contains("must carry the unproven"), "got {reason}");
+            }
+            other => unreachable!(
+                "an unsupported plan must never reach an applied result, got {}",
+                other.tag()
+            ),
+        }
 
         let mut observed =
             shape_fixtures::conforming_observation(&unsupported_plan, &unsupported_law)?;
