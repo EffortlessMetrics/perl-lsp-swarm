@@ -366,10 +366,38 @@ impl Coordinator {
     /// iff this call newly claimed `active` ownership of the URI (nothing
     /// was queued or in-flight for it) -- see the doc comment on
     /// `ParseWorker::enqueue`, the public wrapper this backs.
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
     fn enqueue(&self, job: ParseJob) -> bool {
+        let mut state = self.state.lock();
+        let newly_active = self.enqueue_locked(&mut state, job);
+        drop(state);
+        if newly_active {
+            self.cvar.notify_one();
+        }
+        newly_active
+    }
+
+    /// Enqueue only while the coordinator is still accepting asynchronous
+    /// work. The shutdown flag is checked under the same lock that orders
+    /// `take_next`'s final empty-queue check, so a caller cannot select a
+    /// worker, lose the last worker to shutdown, and then strand a job in a
+    /// queue that no thread will drain.
+    fn try_enqueue(&self, job: ParseJob) -> Result<bool, ParseJob> {
+        let mut state = self.state.lock();
+        if self.shutdown.load(Ordering::SeqCst) {
+            return Err(job);
+        }
+        let newly_active = self.enqueue_locked(&mut state, job);
+        drop(state);
+        if newly_active {
+            self.cvar.notify_one();
+        }
+        Ok(newly_active)
+    }
+
+    fn enqueue_locked(&self, state: &mut QueueState, job: ParseJob) -> bool {
         self.metrics.jobs_enqueued.fetch_add(1, Ordering::SeqCst);
         let uri = job.normalized_uri.clone();
-        let mut state = self.state.lock();
         let replaced = state.pending.insert(uri.clone(), job).is_some();
         self.metrics.bump_queue_depth(state.pending.len());
         let newly_active = state.active.insert(uri.clone());
@@ -393,8 +421,6 @@ impl Coordinator {
             // `on_settled` decrement for this same lifecycle, full stop --
             // not merely "before `notify_one()`, which is usually enough."
             (self.on_activated)(&uri);
-            drop(state);
-            self.cvar.notify_one();
         } else if replaced {
             // Already owned by a worker (queued or in-flight); this enqueue
             // replaced a not-yet-started job that was waiting behind it.
@@ -998,6 +1024,7 @@ impl ParseWorker {
     /// burst increments the counter once per coalesced-away edit but only
     /// ever decrements it once (when the *one* surviving job eventually
     /// publishes), permanently over-counting (#3660).
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(crate) fn enqueue(
         &self,
         uri: String,
@@ -1014,6 +1041,32 @@ impl ParseWorker {
             text,
             enqueued_at: Instant::now(),
         })
+    }
+
+    /// Try to enqueue a job, rejecting it when shutdown has already won the
+    /// admission race. The caller owns the synchronous fallback for a
+    /// rejected job.
+    pub(crate) fn try_enqueue(
+        &self,
+        uri: String,
+        normalized_uri: String,
+        generation: u32,
+        generation_handle: Arc<AtomicU32>,
+        text: Arc<str>,
+    ) -> Result<bool, ()> {
+        if !self.is_operational() {
+            return Err(());
+        }
+        self.coordinator
+            .try_enqueue(ParseJob {
+                uri,
+                normalized_uri,
+                generation,
+                generation_handle,
+                text,
+                enqueued_at: Instant::now(),
+            })
+            .map_err(|_| ())
     }
 
     /// Test-API-only consumer (`test_parse_worker_metrics`); dead in the
@@ -2296,6 +2349,24 @@ mod tests {
             !worker.is_operational(),
             "a pool with only finished (dead) handles must report not-operational (#3664)"
         );
+    }
+
+    #[test]
+    fn try_enqueue_rejects_after_shutdown_without_retaining_a_job() {
+        let uri = "file:///rejected-after-shutdown.pl";
+        let (documents, generation_handle) = one_doc(uri, "my $x = 1;\n");
+        let (callback, _calls) = counting_callback();
+        let worker = ParseWorker::spawn(documents, callback);
+        worker.coordinator.request_shutdown();
+
+        let result = worker.try_enqueue(
+            uri.to_string(),
+            uri.to_string(),
+            1,
+            generation_handle,
+            Arc::from("my $x = 2;\n"),
+        );
+        assert!(result.is_err(), "shutdown must reject new async work");
     }
 
     // ---- Lifecycle: LspServer <-> ParseWorker must not form an Arc cycle -
