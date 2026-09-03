@@ -583,6 +583,26 @@ impl RuntimeServices {
         // distinct. Recorded after the slot guard is released: `install_*`
         // takes `tasks` and then the slot, so classifying under the slot lock
         // would invert that order.
+        //
+        // That release opens a cross-lifetime window: a *concurrent*
+        // `install_diagnostic_debouncer` can call `begin_task_lifetime`
+        // between the take above and the record below, and the retired
+        // worker's terminal then settles the fresh lifetime, so shutdown can
+        // finish without ever observing the replacement. Unreachable in this
+        // candidate -- production installs once, on one thread, and eviction
+        // only runs on a refused admission -- and deliberately not patched
+        // here.
+        //
+        // It is one instance of a hazard class this component has three of:
+        // `install_*` vs. this eviction, `install_*` vs. `request_cancel`,
+        // and `install_*` vs. the promote-after-`observed_exit` step in
+        // `begin_application_shutdown`. All three share the same shape --
+        // the slot lock is released before `tasks` is taken -- so closing
+        // one alone would read as complete while leaving the others open.
+        // The single fix is to bind the lifetime generation to the slot
+        // contents and reject a terminal recorded against a superseded
+        // generation; that belongs with #9508, which is also what makes any
+        // of it reachable by landing a concurrent caller.
         if let Some(debouncer) = evicted {
             // Only reached once `has_exited()` held, so both readings below
             // are settled rather than racing the teardown.
