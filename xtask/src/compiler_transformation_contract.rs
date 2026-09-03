@@ -562,7 +562,13 @@ impl ChangedProposition {
 }
 
 /// Closed claim ceiling a law and its plans may reach.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+///
+/// The four ceilings are deliberately **not** ordered. Bounded execution is
+/// not "more" than analysis and diagnostics; they are different claims, so a
+/// law that proves one does not license the other. Only
+/// [`ClaimCeiling::InternalFactOnly`] is universally weaker, because every
+/// ceiling already proves its internal facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaimCeiling {
     /// Internal facts only.
     InternalFactOnly,
@@ -591,6 +597,15 @@ impl ClaimCeiling {
             Self::BoundedExecution => "bounded_execution",
             Self::AuthorizedSourceEdit => "authorized_source_edit",
         }
+    }
+
+    /// Whether a law with this ceiling licenses a plan claiming `claimed`.
+    ///
+    /// A plan may always claim less by dropping to internal facts, and may
+    /// claim its law's own ceiling. It may never cross to a sibling ceiling:
+    /// a bounded-execution law does not license diagnostic consumption.
+    pub fn permits(self, claimed: Self) -> bool {
+        claimed == self || claimed == Self::InternalFactOnly
     }
 }
 
@@ -964,13 +979,19 @@ impl TransformationSubject {
 }
 
 /// Exact identity of one stage's IR or fact subject.
+///
+/// The digest covers everything the named subject asserts at that stage --
+/// its IR shape *and* the facts attached to it -- not the IR shape alone. A
+/// transformation that strengthens a fact without rewriting any IR therefore
+/// still produces a different output digest; only an attempt that changed
+/// nothing at all reproduces the input digest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StageSubject {
     /// Stage that owns the subject.
     pub stage: CompilerStage,
     /// Exact IR or fact identity.
     pub ir_identity: SubjectRef,
-    /// Digest of the identified subject.
+    /// Digest of everything the subject asserts at its stage.
     pub digest: ContractDigest,
 }
 
@@ -1334,6 +1355,14 @@ pub struct TransformationPlan {
     pub equivalence_obligations: Vec<EquivalenceObligation>,
     /// Work, resource, cancellation, and cleanup contract.
     pub work: WorkContract,
+    /// Partial-application policy, mirrored from the law.
+    ///
+    /// The policy lives on the plan rather than on an application-time
+    /// observation so that the prohibition is enforced against the law the
+    /// plan is bound to, not against a claim the caller makes at application
+    /// time. `verify_law_conformance` pins it to the law, and it is part of
+    /// the plan's canonical bytes, so changing it creates another plan.
+    pub partial_application: PartialApplicationPolicy,
     /// Consumers this plan may serve.
     pub consumers: BTreeSet<ConsumerClass>,
     /// Highest claim this plan may reach.
@@ -1346,6 +1375,7 @@ impl TransformationPlan {
     /// Validate every closed-vocabulary and legality invariant of the plan
     /// that does not require the law itself.
     pub fn validate(&self) -> Result<()> {
+        self.partial_application.validate()?;
         if self.locations.is_empty() {
             bail!("plan {:?} must select at least one location", self.id.as_str());
         }
@@ -1385,7 +1415,19 @@ impl TransformationPlan {
                 );
             }
         }
-        if self.intended_changes.is_empty() {
+        // A law of the unsupported class permits no change at all, so its
+        // plans must intend none. Requiring a change unconditionally would
+        // make every such law unconformable: a non-empty set can never be a
+        // subset of the empty permitted set.
+        if self.class == TransformationClass::UnsupportedOrNotApplicable {
+            if !self.intended_changes.is_empty() {
+                bail!(
+                    "plan {:?} of class {} must intend no change",
+                    self.id.as_str(),
+                    self.class.tag()
+                );
+            }
+        } else if self.intended_changes.is_empty() {
             bail!("plan {:?} must intend at least one change", self.id.as_str());
         }
         for change in &self.intended_changes {
@@ -1549,9 +1591,16 @@ impl TransformationPlan {
                 );
             }
         }
-        if self.claim_ceiling > law.claim_ceiling {
+        if self.partial_application != law.partial_application {
             bail!(
-                "plan {:?} claims {} above the ceiling {} of law {:?}",
+                "plan {:?} declares its own partial-application policy; law {:?} owns it",
+                self.id.as_str(),
+                law.id.as_str()
+            );
+        }
+        if !law.claim_ceiling.permits(self.claim_ceiling) {
+            bail!(
+                "plan {:?} claims {} which the ceiling {} of law {:?} does not permit",
                 self.id.as_str(),
                 self.claim_ceiling.tag(),
                 law.claim_ceiling.tag(),
@@ -1609,7 +1658,9 @@ impl TransformationPlan {
             obligation.write_canonical(&mut out);
         }
         self.work.write_canonical(&mut out);
-        out.push_str("consumers[");
+        out.push_str("partial_application ");
+        self.partial_application.write_canonical(&mut out);
+        out.push_str("\nconsumers[");
         for consumer in &self.consumers {
             let _ = write!(out, "{},", consumer.tag());
         }
@@ -1633,6 +1684,18 @@ impl TransformationPlan {
     /// then work and output.  Measured elapsed time is never consulted, so a
     /// faster attempt cannot upgrade a failed legality, verifier, or
     /// equivalence outcome.
+    ///
+    /// Settlement precedes legality on purpose: an attempt that was cancelled,
+    /// timed out, or failed cleanup did not settle, so its precondition and
+    /// verifier observations are not trustworthy evidence about the subject.
+    /// The cost is that such a result reports the settlement failure and not a
+    /// partial mutation that may also have occurred; a consumer auditing for
+    /// law violations must therefore treat a non-`Completed` settlement as
+    /// "unknown legality", never as "no violation".
+    ///
+    /// Within the legality step the choice is order-independent: unproven
+    /// preconditions are ranked by kind and then by identity, so reordering a
+    /// plan's precondition vector cannot change the reported refusal.
     pub fn evaluate(&self, observation: &ApplicationObservation) -> Result<TransformationResult> {
         if let Err(error) = self.validate() {
             return Ok(TransformationResult::InvalidPlan { reason: truncate_reason(&error) });
@@ -1670,15 +1733,26 @@ impl TransformationPlan {
             }
         }
 
-        let unproven: Vec<&Precondition> = self
+        // Sorted by identity, then dynamic/unsupported before merely unknown:
+        // the refusal a caller sees must not depend on the order preconditions
+        // happen to be declared in, and a named dynamic concept is strictly
+        // more informative than "not proven".
+        let mut unproven: Vec<&Precondition> = self
             .preconditions
             .iter()
             .filter(|precondition| !precondition.truth.satisfies_exact_legality())
             .collect();
+        unproven.sort_by_key(|precondition| {
+            let dynamic_first =
+                u8::from(!matches!(precondition.truth, PreconditionTruth::DynamicOrUnsupported(_)));
+            (dynamic_first, precondition.id.clone())
+        });
         if let Some(first) = unproven.first() {
             // A prohibited plan that nevertheless mutated locations is not a
             // clean refusal: reporting it as one would hide the mutation.
-            if !observation.applied_operations.is_empty() && !self.admits_residual(observation) {
+            if !observation.applied_operations.is_empty()
+                && !self.partial_application.admits_residual()
+            {
                 return Ok(TransformationResult::InvalidOutput {
                     reason: format!(
                         "partial application of {} location(s) after precondition {:?} was not proven",
@@ -1694,6 +1768,8 @@ impl TransformationPlan {
                         concept,
                     }
                 }
+                // `unproven` was filtered on `!satisfies_exact_legality`, so
+                // `ProvenExact` cannot appear here.
                 PreconditionTruth::Unknown | PreconditionTruth::ProvenExact => {
                     TransformationResult::RefusedPreconditionUnproven {
                         precondition: first.id.clone(),
@@ -1765,7 +1841,7 @@ impl TransformationPlan {
                 work: observation.work,
             });
         }
-        match (&observation.residual, self.admits_residual(observation)) {
+        match (&observation.residual, self.partial_application.admits_residual()) {
             (Some(residual), true) => {
                 Ok(TransformationResult::AppliedWithDeclaredResidualBoundary {
                     output: output.clone(),
@@ -1780,10 +1856,6 @@ impl TransformationPlan {
                 reason: "a partial application declared no residual boundary".to_owned(),
             }),
         }
-    }
-
-    fn admits_residual(&self, observation: &ApplicationObservation) -> bool {
-        observation.partial_application.admits_residual()
     }
 }
 
@@ -1876,9 +1948,6 @@ pub struct ApplicationObservation {
     pub observed_subject: TransformationSubject,
     /// Input stage subject observed at application time.
     pub observed_input: StageSubject,
-    /// Partial-application policy of the plan's law, resolved at application
-    /// time.
-    pub partial_application: PartialApplicationPolicy,
     /// Operations the attempt actually applied.
     pub applied_operations: BTreeSet<OperationId>,
     /// Equivalence obligations the attempt actually discharged.
@@ -2278,6 +2347,7 @@ pub mod shape_fixtures {
             excluded_concepts: law.excluded_concepts.clone(),
             equivalence_obligations: obligations,
             work: work_contract("fold each selected exact-value operation exactly once")?,
+            partial_application: law.partial_application.clone(),
             consumers: [ConsumerClass::InternalStageRewrite, ConsumerClass::Analysis]
                 .into_iter()
                 .collect(),
@@ -2379,6 +2449,7 @@ pub mod shape_fixtures {
                 },
             ],
             work: work_contract("prune each proven-unreachable edge exactly once")?,
+            partial_application: law.partial_application.clone(),
             consumers: [ConsumerClass::InternalStageRewrite, ConsumerClass::Diagnostic]
                 .into_iter()
                 .collect(),
@@ -2499,6 +2570,7 @@ pub mod shape_fixtures {
                 },
             ],
             work: work_contract("remove each proven-unreachable effect-free block or edge once")?,
+            partial_application: law.partial_application.clone(),
             consumers: [ConsumerClass::InternalStageRewrite, ConsumerClass::BoundedExecution]
                 .into_iter()
                 .collect(),
@@ -2585,6 +2657,7 @@ pub mod shape_fixtures {
                 },
             ],
             work: work_contract("project exactly one authorized defined-or edit")?,
+            partial_application: law.partial_application.clone(),
             consumers: [ConsumerClass::SourceEdit].into_iter().collect(),
             claim_ceiling: ClaimCeiling::AuthorizedSourceEdit,
             refactor_relation: Some(RefactorPlanRelation {
@@ -2604,10 +2677,10 @@ pub mod shape_fixtures {
         plan: &TransformationPlan,
         law: &TransformationLaw,
     ) -> Result<ApplicationObservation> {
+        let _ = law;
         Ok(ApplicationObservation {
             observed_subject: plan.subject.clone(),
             observed_input: plan.input.clone(),
-            partial_application: law.partial_application.clone(),
             applied_operations: plan
                 .selected_operations()
                 .into_iter()
@@ -2634,14 +2707,55 @@ pub mod shape_fixtures {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApplicationObservation, ChangedProposition, ClaimCeiling, CompilerStage, ConsumerClass,
-        DynamicConcept, EquivalenceObligation, EquivalenceOracle, EquivalenceOutcome, Generation,
-        LawId, LawVersion, LocationSelector, MAX_TEXT_LEN, OperationId, PartialApplicationPolicy,
-        PreconditionTruth, PreservedProposition, ResidualBoundary, Result, Settlement,
+        ApplicationObservation, CancellationContract, ChangedProposition, ClaimCeiling,
+        CleanupContract, CompilerStage, ConsumerClass, ContractDigest, DynamicConcept,
+        EquivalenceObligation, EquivalenceOracle, EquivalenceOutcome, Generation, LawId,
+        LawVersion, LocationSelector, MAX_SELECTED_LOCATIONS, MAX_TEXT_LEN, OperationId,
+        PartialApplicationPolicy, PlanId, Precondition, PreconditionId, PreconditionTruth,
+        PreservedProposition, RefactorPlanRelation, ResidualBoundary, Result, Settlement,
         SourceProvenance, SubjectRef, TransformationClass, TransformationLaw, TransformationPlan,
-        TransformationResult, VerifierOutcome, WorkReceipt, shape_fixtures,
+        TransformationResult, VerifierOutcome, WorkReceipt, WorkScope, shape_fixtures,
     };
     use std::collections::BTreeSet;
+
+    fn subject_ref(value: &str) -> SubjectRef {
+        match SubjectRef::new(value) {
+            Ok(reference) => reference,
+            Err(error) => unreachable!("subject reference builds: {error}"),
+        }
+    }
+
+    fn work_scope(value: &str) -> WorkScope {
+        match WorkScope::new(value) {
+            Ok(scope) => scope,
+            Err(error) => unreachable!("work scope builds: {error}"),
+        }
+    }
+
+    fn text_id(value: &str) -> PlanId {
+        match PlanId::new(value) {
+            Ok(id) => id,
+            Err(error) => unreachable!("plan id builds: {error}"),
+        }
+    }
+
+    fn law_version(value: &str) -> LawVersion {
+        match LawVersion::new(value) {
+            Ok(version) => version,
+            Err(error) => unreachable!("law version builds: {error}"),
+        }
+    }
+
+    fn seeded_digest(seed: u8) -> ContractDigest {
+        let mut hex = String::with_capacity(64);
+        for index in 0..32u8 {
+            hex.push_str(&format!("{:02x}", seed.wrapping_add(index)));
+        }
+        match ContractDigest::from_hex(&hex) {
+            Ok(digest) => digest,
+            Err(error) => unreachable!("seeded digest builds: {error}"),
+        }
+    }
 
     fn folding() -> (TransformationLaw, TransformationPlan) {
         match (
@@ -2807,18 +2921,54 @@ mod tests {
         };
         assert!(error.contains("omits the load-bearing preservation warnings"), "got {error}");
 
-        let mut unproven = plan.clone();
-        unproven
-            .equivalence_obligations
-            .retain(|obligation| obligation.proposition != PreservedProposition::Exceptions);
-        let error = match unproven.verify_law_conformance(&law) {
-            Err(error) => format!("{error:#}"),
-            Ok(()) => unreachable!("a preservation without an obligation must fail conformance"),
-        };
-        assert!(
-            error.contains("preserves exceptions without an independent equivalence obligation"),
-            "got {error}"
-        );
+        // The falsifier names six propositions; the folding law selects all
+        // six, so each one is dropped independently in both directions.
+        for proposition in [
+            PreservedProposition::Warnings,
+            PreservedProposition::Exceptions,
+            PreservedProposition::Effects,
+            PreservedProposition::EvaluationOrder,
+            PreservedProposition::Context,
+            PreservedProposition::SourceMapping,
+        ] {
+            assert!(
+                law.load_bearing_preservations.contains(&proposition),
+                "{} must be selected by the law under test",
+                proposition.tag()
+            );
+
+            let mut dropped_preservation = plan.clone();
+            assert!(dropped_preservation.preserved.remove(&proposition));
+            let error = match dropped_preservation.verify_law_conformance(&law) {
+                Err(error) => format!("{error:#}"),
+                Ok(()) => unreachable!("dropping {} must fail conformance", proposition.tag()),
+            };
+            assert!(
+                error.contains(&format!(
+                    "omits the load-bearing preservation {}",
+                    proposition.tag()
+                )),
+                "got {error}"
+            );
+
+            let mut dropped_obligation = plan.clone();
+            dropped_obligation
+                .equivalence_obligations
+                .retain(|obligation| obligation.proposition != proposition);
+            let error = match dropped_obligation.verify_law_conformance(&law) {
+                Err(error) => format!("{error:#}"),
+                Ok(()) => {
+                    unreachable!("dropping the {} obligation must fail", proposition.tag())
+                }
+            };
+            assert!(
+                error.contains(&format!(
+                    "preserves {} without an independent equivalence obligation",
+                    proposition.tag()
+                )),
+                "got {error}"
+            );
+        }
         Ok(())
     }
 
@@ -2862,6 +3012,10 @@ mod tests {
     {
         let (law, plan) = folding();
         assert_eq!(law.partial_application, PartialApplicationPolicy::Prohibited);
+        assert_eq!(
+            plan.partial_application, law.partial_application,
+            "the plan mirrors the law's policy; the caller never supplies it"
+        );
 
         let mut half_applied = plan.clone();
         half_applied.preconditions[1].truth = PreconditionTruth::Unknown;
@@ -2909,19 +3063,22 @@ mod tests {
         applied_but_uncounted.work = WorkReceipt { useful_operations: 0, elapsed_micros: 5 };
         assert_eq!(plan.evaluate(&applied_but_uncounted)?.tag(), "zero_useful_work");
 
-        // Every refusal and non-applied state is independently representable
-        // and none of them reads as applied.
-        for result in [
-            plan.evaluate(&empty)?,
-            TransformationResult::RefusedPreconditionUnproven {
-                precondition: plan.preconditions[0].id.clone(),
-            },
-            TransformationResult::RefusedDynamicOrUnsupported {
-                precondition: plan.preconditions[0].id.clone(),
-                concept: DynamicConcept::Magic,
-            },
+        // Refusals produced by `evaluate` from a real failing scenario --
+        // not hand-constructed values -- must not read as applied, and must
+        // not be reported as an applied transformation with an empty effect.
+        for truth in [
+            PreconditionTruth::Unknown,
+            PreconditionTruth::DynamicOrUnsupported(DynamicConcept::Magic),
         ] {
+            let mut refusing = plan.clone();
+            refusing.preconditions[0].truth = truth;
+            let mut observed = observation(&refusing, &law);
+            observed.applied_operations = BTreeSet::new();
+            observed.work = WorkReceipt { useful_operations: 0, elapsed_micros: 5 };
+            let result = refusing.evaluate(&observed)?;
+            assert!(result.is_refusal(), "{} must be a refusal", result.tag());
             assert!(!result.is_applied(), "{} must not read as applied", result.tag());
+            assert_ne!(result.tag(), "zero_useful_work", "a refusal is not zero-work");
         }
         Ok(())
     }
@@ -3077,6 +3234,38 @@ mod tests {
                     source_provenance: None,
                 };
             },
+            // Every remaining field `canonical_semantic_text` writes is
+            // load-bearing too -- the acceptance list names output and work
+            // identity explicitly, so neither may be invisible to the digest.
+            |plan| plan.id = text_id("plan.other"),
+            |plan| plan.law.version = law_version("v9"),
+            |plan| plan.subject.source = subject_ref("lib/Other.pm"),
+            |plan| plan.subject.candidate = subject_ref("candidate/other"),
+            |plan| plan.subject.perl_version = subject_ref("perl-5.42.0"),
+            |plan| plan.subject.platform = subject_ref("aarch64-apple-darwin"),
+            |plan| plan.subject.capability = subject_ref("xs-permitted"),
+            |plan| plan.input.ir_identity = subject_ref("another hir body"),
+            |plan| plan.expected_output.digest = seeded_digest(0xaa),
+            |plan| {
+                plan.preserved.remove(&PreservedProposition::Context);
+            },
+            |plan| plan.work.useful_work = work_scope("a different useful-work scope"),
+            |plan| plan.work.resource_bound = work_scope("a different resource bound"),
+            |plan| {
+                plan.work.cleanup = CleanupContract::RequiredScope(work_scope("clean the graph"))
+            },
+            |plan| plan.work.cancellation = CancellationContract::NotCancellable,
+            |plan| plan.equivalence_obligations[0].subject = subject_ref("another gold subject"),
+            |plan| plan.equivalence_obligations[0].oracle = EquivalenceOracle::VerifierMutation,
+            |plan| plan.preconditions[0].statement = "a different statement".to_owned(),
+            |plan| plan.preconditions[0].evidence = subject_ref("different evidence"),
+            |plan| {
+                plan.partial_application =
+                    match PartialApplicationPolicy::independent_subplans(&["only-one"]) {
+                        Ok(policy) => policy,
+                        Err(error) => unreachable!("subplan policy builds: {error}"),
+                    };
+            },
         ];
         for (index, mutate) in mutations.iter().enumerate() {
             let mut changed = plan.clone();
@@ -3087,6 +3276,20 @@ mod tests {
                 "semantic mutation {index} must change plan identity"
             );
         }
+
+        // `class` is in the digest too. It cannot be mutated in isolation on
+        // this plan -- the fixture's consumers are legal only for its current
+        // class -- so narrow the consumers first and vary the class from there.
+        let mut narrowed = plan.clone();
+        narrowed.consumers = [ConsumerClass::InternalStageRewrite].into_iter().collect();
+        let narrowed_digest = narrowed.semantic_fingerprint()?;
+        let mut reclassified = narrowed.clone();
+        reclassified.class = TransformationClass::InternalCanonicalization;
+        assert_ne!(
+            reclassified.semantic_fingerprint()?,
+            narrowed_digest,
+            "the transformation class must be part of plan identity"
+        );
 
         assert!(plan.canonical_semantic_text()?.len() <= super::MAX_CANONICAL_TEXT_BYTES);
         Ok(())
@@ -3116,9 +3319,49 @@ mod tests {
         let (_, plan) = folding();
         let canonical = plan.canonical_semantic_text()?;
         assert!(!canonical.contains("/home/"), "canonical bytes must not carry a host path");
+        // Every retained field is capped at MAX_TEXT_LEN, so no single line can
+        // be unbounded.
         for line in canonical.lines() {
-            assert!(line.len() <= super::MAX_CANONICAL_TEXT_BYTES, "canonical lines stay bounded");
+            assert!(
+                line.len() <= MAX_TEXT_LEN * 8,
+                "canonical line is unbounded: {} bytes",
+                line.len()
+            );
         }
+        // The whole-text bound is enforced, not merely never approached.
+        // Every individual field is legal here; it is their sum that overruns,
+        // which is exactly the case a per-field cap alone would miss.
+        let mut wide = plan.clone();
+        wide.locations = (0..256usize)
+            .map(|index| {
+                let padded = format!("hir:op:{index:08}:{}", "p".repeat(MAX_TEXT_LEN - 32));
+                Ok(LocationSelector::CanonicalOperation {
+                    stage: CompilerStage::Hir,
+                    operation_id: OperationId::new(&padded)?,
+                    source_provenance: None,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let error = match wide.canonical_semantic_text() {
+            Err(error) => format!("{error:#}"),
+            Ok(text) => unreachable!("{} bytes must exceed the canonical bound", text.len()),
+        };
+        assert!(error.contains("canonical plan text"), "got {error}");
+        assert!(error.contains("above the bound of"), "got {error}");
+
+        // The selected-location bound is enforced separately, by validate,
+        // before any canonical text is built.
+        let mut many = plan.clone();
+        many.locations = (0..=MAX_SELECTED_LOCATIONS)
+            .map(|index| {
+                Ok(LocationSelector::CanonicalOperation {
+                    stage: CompilerStage::Hir,
+                    operation_id: OperationId::new(&format!("hir:op:{index:08}"))?,
+                    source_provenance: None,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        assert_invalid(&many, "locations, above the bound of", "the location bound is enforced");
 
         let overlong = "x".repeat(MAX_TEXT_LEN + 1);
         assert!(SubjectRef::new(&overlong).is_err(), "text fields are bounded");
@@ -3275,15 +3518,23 @@ mod tests {
             other => unreachable!("an undeclared residual must not apply, got {}", other.tag()),
         }
 
-        // The same partial shape under a prohibiting law is invalid output.
-        let mut prohibited = partial.clone();
-        prohibited.partial_application = PartialApplicationPolicy::Prohibited;
-        match plan.evaluate(&prohibited)? {
+        // The same partial shape under a prohibiting plan is invalid output,
+        // and the policy is the plan's own — an observation cannot launder it.
+        let mut prohibited_plan = plan.clone();
+        prohibited_plan.partial_application = PartialApplicationPolicy::Prohibited;
+        match prohibited_plan.evaluate(&partial)? {
             TransformationResult::InvalidOutput { reason } => {
                 assert!(reason.contains("prohibited"), "got {reason}");
             }
             other => unreachable!("a prohibited partial must not apply, got {}", other.tag()),
         }
+        // And that laundering is caught before evaluation: a plan whose policy
+        // disagrees with its law fails conformance.
+        let error = match prohibited_plan.verify_law_conformance(&law) {
+            Err(error) => format!("{error:#}"),
+            Ok(()) => unreachable!("a plan cannot restate its law's partial-application policy"),
+        };
+        assert!(error.contains("declares its own partial-application policy"), "got {error}");
         Ok(())
     }
 
@@ -3314,9 +3565,34 @@ mod tests {
         let law = shape_fixtures::branch_pruning_law()?;
         let error = match ceiling_climb.verify_law_conformance(&law) {
             Err(error) => format!("{error:#}"),
-            Ok(()) => unreachable!("a plan cannot claim above its law's ceiling"),
+            Ok(()) => unreachable!("a plan cannot cross to a sibling ceiling"),
         };
-        assert!(error.contains("above the ceiling"), "got {error}");
+        assert!(error.contains("does not permit"), "got {error}");
+
+        // The ceilings are siblings, not a ladder: only dropping to internal
+        // facts is universally licensed.
+        for law_ceiling in ClaimCeiling::ALL {
+            for claimed in ClaimCeiling::ALL {
+                let expected = claimed == law_ceiling || claimed == ClaimCeiling::InternalFactOnly;
+                assert_eq!(
+                    law_ceiling.permits(claimed),
+                    expected,
+                    "{} must {}permit {}",
+                    law_ceiling.tag(),
+                    if expected { "" } else { "not " },
+                    claimed.tag()
+                );
+            }
+        }
+        assert!(
+            !ClaimCeiling::BoundedExecution.permits(ClaimCeiling::AnalysisAndDiagnostic),
+            "a bounded-execution law does not license diagnostic consumption"
+        );
+
+        // Dropping to internal facts is accepted.
+        let mut modest = shape_fixtures::branch_pruning_plan()?;
+        modest.claim_ceiling = ClaimCeiling::InternalFactOnly;
+        modest.verify_law_conformance(&law)?;
         Ok(())
     }
 
@@ -3338,6 +3614,369 @@ mod tests {
         renamed.version = LawVersion::new("v2")?;
         assert!(plan.verify_law_conformance(&renamed).is_err());
         assert!(LawVersion::new("2").is_err(), "law versions are v-prefixed");
+        Ok(())
+    }
+
+    // Acceptance: every shape invariant `TransformationPlan::validate`
+    // declares actually rejects. Without this, a plan builder could break any
+    // of these and the falsifier suite would still be green.
+    #[test]
+    fn plan_validation_rejects_every_invalid_shape() -> Result<()> {
+        let (_, plan) = folding();
+        plan.validate()?;
+
+        let cases: Vec<(&str, &str, fn(&mut TransformationPlan))> = vec![
+            ("must select at least one location", "no locations", |plan| plan.locations.clear()),
+            ("selects operation", "a duplicate operation", |plan| {
+                plan.locations.push(plan.locations[0].clone());
+            }),
+            ("must instantiate at least one precondition", "no preconditions", |plan| {
+                plan.preconditions.clear();
+            }),
+            ("instantiates precondition", "a duplicate precondition", |plan| {
+                plan.preconditions.push(plan.preconditions[0].clone());
+            }),
+            ("must intend at least one change", "no intended change", |plan| {
+                plan.intended_changes.clear();
+            }),
+            ("must name at least one consumer class", "no consumer", |plan| {
+                plan.consumers.clear();
+            }),
+            (
+                "declares a RefactorPlan relation without projecting a source edit",
+                "an unrelated refactor relation",
+                |plan| {
+                    plan.refactor_relation = Some(RefactorPlanRelation {
+                        refactor_plan_id: subject_ref("refactor-plan/unrelated"),
+                        edit_set_equality: subject_ref("equality"),
+                        application_proof: subject_ref("application"),
+                        post_edit_proof: subject_ref("post-edit"),
+                    });
+                },
+            ),
+            (
+                "intends to change the IR shape but expects the input digest unchanged",
+                "an unchanged output digest",
+                |plan| plan.expected_output = plan.input.clone(),
+            ),
+            (
+                "both preserves source_mapping and intends to change source_text",
+                "a preserved-and-changed proposition",
+                |plan| {
+                    plan.intended_changes.insert(ChangedProposition::SourceText);
+                },
+            ),
+            ("must be at most", "an overlong precondition statement", |plan| {
+                plan.preconditions[0].statement = "x".repeat(MAX_TEXT_LEN + 1);
+            }),
+        ];
+        for (expected, context, mutate) in cases {
+            let mut broken = plan.clone();
+            mutate(&mut broken);
+            assert_invalid(&broken, expected, context);
+        }
+        Ok(())
+    }
+
+    // Acceptance: every invariant `TransformationLaw::validate` declares
+    // actually rejects. T02 validates laws standalone, before any plan exists.
+    #[test]
+    fn law_validation_rejects_every_invalid_shape() -> Result<()> {
+        let base = shape_fixtures::exact_value_folding_law()?;
+        base.validate()?;
+
+        let cases: Vec<(&str, &str, fn(&mut TransformationLaw))> = vec![
+            ("must name at least one required precondition", "no precondition", |law| {
+                law.required_preconditions.clear();
+            }),
+            ("must permit at least one intended change", "no permitted change", |law| {
+                law.permitted_changes.clear();
+            }),
+            ("must not name the consumer", "a consumer outside the class", |law| {
+                law.consumers.insert(ConsumerClass::BoundedExecution);
+            }),
+            ("must name at least one consumer class", "no consumer", |law| law.consumers.clear()),
+            ("must not be empty", "an empty statement", |law| law.statement = "  ".to_owned()),
+            (
+                "strengthens facts without an IR rewrite",
+                "a fact-strengthening law that crosses stages",
+                |law| {
+                    law.class = TransformationClass::FactStrengtheningWithoutIrRewrite;
+                    law.consumers = [ConsumerClass::FactStore].into_iter().collect();
+                    law.permitted_changes =
+                        [ChangedProposition::FactStrength].into_iter().collect();
+                    law.output_stage = CompilerStage::Eir;
+                },
+            ),
+            ("must name at least one subplan", "an empty subplan set", |law| {
+                law.partial_application =
+                    PartialApplicationPolicy::IndependentCompleteSubplans(BTreeSet::new());
+            }),
+            ("must not permit the change", "an unsupported law that permits a change", |law| {
+                law.class = TransformationClass::UnsupportedOrNotApplicable;
+                law.consumers = [ConsumerClass::NoConsumer].into_iter().collect();
+            }),
+        ];
+        for (expected, context, mutate) in cases {
+            let mut broken = base.clone();
+            mutate(&mut broken);
+            let error = match broken.validate() {
+                Err(error) => format!("{error:#}"),
+                Ok(()) => unreachable!("{context} must fail law validation"),
+            };
+            assert!(error.contains(expected), "{context}: expected {expected:?}, got {error}");
+        }
+        Ok(())
+    }
+
+    // Acceptance: every law/plan divergence `verify_law_conformance` declares
+    // actually rejects. This is the gate T02/T03/T04 will call.
+    #[test]
+    fn conformance_rejects_every_law_plan_divergence() -> Result<()> {
+        let (law, plan) = folding();
+        plan.verify_law_conformance(&law)?;
+
+        let cases: Vec<(&str, &str, fn(&mut TransformationPlan))> = vec![
+            ("declares class", "a class mismatch", |plan| {
+                plan.class = TransformationClass::ExecutionOptimization;
+                plan.consumers = [ConsumerClass::InternalStageRewrite].into_iter().collect();
+            }),
+            ("produces stage", "an output-stage mismatch alone", |plan| {
+                plan.expected_output.stage = CompilerStage::Eir;
+            }),
+            ("omits law-required precondition", "a missing law precondition", |plan| {
+                plan.preconditions
+                    .retain(|precondition| precondition.id.as_str() != "operation-is-effect-free");
+            }),
+            ("which law", "an unpermitted intended change", |plan| {
+                plan.intended_changes.insert(ChangedProposition::ExecutionCost);
+            }),
+            ("drops the law-excluded concept", "a dropped exclusion", |plan| {
+                plan.excluded_concepts.remove(&DynamicConcept::Tie);
+            }),
+        ];
+        for (expected, context, mutate) in cases {
+            let mut broken = plan.clone();
+            mutate(&mut broken);
+            let error = match broken.verify_law_conformance(&law) {
+                Err(error) => format!("{error:#}"),
+                Ok(()) => unreachable!("{context} must fail conformance"),
+            };
+            assert!(error.contains(expected), "{context}: expected {expected:?}, got {error}");
+        }
+
+        // A plan naming a consumer its class permits but its law does not.
+        let mut narrowed_law = law.clone();
+        narrowed_law.consumers = [ConsumerClass::InternalStageRewrite].into_iter().collect();
+        let mut rebound = plan.clone();
+        rebound.law = narrowed_law.binding()?;
+        let error = match rebound.verify_law_conformance(&narrowed_law) {
+            Err(error) => format!("{error:#}"),
+            Ok(()) => unreachable!("a consumer outside the law must fail conformance"),
+        };
+        assert!(error.contains("which law"), "got {error}");
+        Ok(())
+    }
+
+    // Acceptance: the identity constructors reject malformed input, so a
+    // digest, subplan set, or named field cannot be empty or ill-formed.
+    #[test]
+    fn identity_constructors_reject_malformed_input() -> Result<()> {
+        for bad in [
+            String::new(),
+            "0123456789abcdef".to_owned(),
+            "0".repeat(63),
+            "0".repeat(65),
+            "g".repeat(64),
+            "ABCDEF0123456789".repeat(4),
+        ] {
+            assert!(
+                ContractDigest::from_hex(&bad).is_err(),
+                "{bad:?} must not be a contract digest"
+            );
+        }
+        ContractDigest::from_hex(&"ab".repeat(32))?;
+
+        assert!(
+            PartialApplicationPolicy::independent_subplans(&[]).is_err(),
+            "a subplan policy naming nothing is not a subplan policy"
+        );
+        assert!(PartialApplicationPolicy::independent_subplans(&["  "]).is_err());
+        PartialApplicationPolicy::independent_subplans(&["one"])?;
+
+        for blank in ["", "   ", "\t\n"] {
+            assert!(SubjectRef::new(blank).is_err(), "{blank:?} must not be a subject");
+            assert!(OperationId::new(blank).is_err(), "{blank:?} must not be an operation id");
+            assert!(LawId::new(blank).is_err(), "{blank:?} must not be a law id");
+            assert!(WorkScope::new(blank).is_err(), "{blank:?} must not be a work scope");
+            assert!(PreconditionId::new(blank).is_err(), "{blank:?} must not be a precondition id");
+            assert!(PlanId::new(blank).is_err(), "{blank:?} must not be a plan id");
+        }
+        assert!(ResidualBoundary::new("", "boundary").is_err());
+        assert!(ResidualBoundary::new("subplan", "").is_err());
+        Ok(())
+    }
+
+    // Acceptance: every class that names a consumer has a valid instance, so
+    // "the classes remain distinct" is proven by construction and not only by
+    // rejection. An unsupported law must also admit a conforming plan: a law
+    // no plan can instantiate would be an unreachable branch of the contract.
+    #[test]
+    fn every_transformation_class_has_a_conforming_plan() -> Result<()> {
+        let (_, folding_plan) = folding();
+
+        // Internal canonicalization: an IR rewrite serving only the internal
+        // stage consumer.
+        let mut canonical_law = shape_fixtures::exact_value_folding_law()?;
+        canonical_law.id = LawId::new("hir.assignment-place-canonicalization")?;
+        canonical_law.class = TransformationClass::InternalCanonicalization;
+        canonical_law.consumers = [ConsumerClass::InternalStageRewrite].into_iter().collect();
+        canonical_law.claim_ceiling = ClaimCeiling::InternalFactOnly;
+        canonical_law.validate()?;
+
+        let mut canonical_plan = folding_plan.clone();
+        canonical_plan.id = text_id("plan.hir.assignment-place-canonicalization");
+        canonical_plan.law = canonical_law.binding()?;
+        canonical_plan.class = canonical_law.class;
+        canonical_plan.consumers = canonical_law.consumers.clone();
+        canonical_plan.claim_ceiling = ClaimCeiling::InternalFactOnly;
+        canonical_plan.verify_law_conformance(&canonical_law)?;
+
+        // Fact strengthening: no IR rewrite, so the plan intends only a fact
+        // change and its consumers never include an internal stage rewrite.
+        let mut fact_law = shape_fixtures::exact_value_folding_law()?;
+        fact_law.id = LawId::new("hir.bounded-value-fact-strengthening")?;
+        fact_law.class = TransformationClass::FactStrengtheningWithoutIrRewrite;
+        fact_law.consumers =
+            [ConsumerClass::FactStore, ConsumerClass::Analysis].into_iter().collect();
+        fact_law.permitted_changes = [ChangedProposition::FactStrength].into_iter().collect();
+        fact_law.validate()?;
+
+        let mut fact_plan = folding_plan.clone();
+        fact_plan.id = text_id("plan.hir.bounded-value-fact-strengthening");
+        fact_plan.law = fact_law.binding()?;
+        fact_plan.class = fact_law.class;
+        fact_plan.consumers = fact_law.consumers.clone();
+        fact_plan.intended_changes = [ChangedProposition::FactStrength].into_iter().collect();
+        fact_plan.verify_law_conformance(&fact_law)?;
+        let observed = shape_fixtures::conforming_observation(&fact_plan, &fact_law)?;
+        assert_eq!(fact_plan.evaluate(&observed)?.tag(), "applied_exact");
+
+        // Unsupported / not-applicable: the law permits no change, so its plan
+        // must intend none. A plan that intends one is rejected, and the
+        // conforming plan refuses on its dynamic precondition.
+        let mut unsupported_law = shape_fixtures::exact_value_folding_law()?;
+        unsupported_law.id = LawId::new("hir.overloaded-operand-not-applicable")?;
+        unsupported_law.class = TransformationClass::UnsupportedOrNotApplicable;
+        unsupported_law.consumers = [ConsumerClass::NoConsumer].into_iter().collect();
+        unsupported_law.permitted_changes = BTreeSet::new();
+        unsupported_law.claim_ceiling = ClaimCeiling::InternalFactOnly;
+        unsupported_law.validate()?;
+
+        let mut unsupported_plan = folding_plan.clone();
+        unsupported_plan.id = text_id("plan.hir.overloaded-operand-not-applicable");
+        unsupported_plan.law = unsupported_law.binding()?;
+        unsupported_plan.class = unsupported_law.class;
+        unsupported_plan.consumers = unsupported_law.consumers.clone();
+        unsupported_plan.claim_ceiling = ClaimCeiling::InternalFactOnly;
+        unsupported_plan.intended_changes = BTreeSet::new();
+        unsupported_plan.preconditions[0].truth =
+            PreconditionTruth::DynamicOrUnsupported(DynamicConcept::Overload);
+        unsupported_plan.verify_law_conformance(&unsupported_law)?;
+
+        let mut intends_a_change = unsupported_plan.clone();
+        intends_a_change.intended_changes = [ChangedProposition::IrShape].into_iter().collect();
+        assert_invalid(
+            &intends_a_change,
+            "must intend no change",
+            "an unsupported plan cannot intend a change",
+        );
+
+        let mut observed =
+            shape_fixtures::conforming_observation(&unsupported_plan, &unsupported_law)?;
+        observed.applied_operations = BTreeSet::new();
+        observed.work = WorkReceipt { useful_operations: 0, elapsed_micros: 3 };
+        match unsupported_plan.evaluate(&observed)? {
+            TransformationResult::RefusedDynamicOrUnsupported { concept, .. } => {
+                assert_eq!(concept, DynamicConcept::Overload);
+            }
+            other => unreachable!("an unsupported plan must refuse, got {}", other.tag()),
+        }
+
+        for class in TransformationClass::ALL {
+            assert_eq!(
+                class.permitted_consumers().contains(&ConsumerClass::NoConsumer),
+                class == TransformationClass::UnsupportedOrNotApplicable,
+                "{} consumer contract is misclassified",
+                class.tag()
+            );
+        }
+        Ok(())
+    }
+
+    // Acceptance: the refusal a caller sees does not depend on the order the
+    // plan happens to declare its preconditions in, and a named dynamic
+    // concept outranks a bare "not proven".
+    #[test]
+    fn refusal_selection_is_order_independent_and_most_informative() -> Result<()> {
+        let (law, plan) = folding();
+        let mut both_failing = plan.clone();
+        both_failing.preconditions[0].truth = PreconditionTruth::Unknown;
+        both_failing.preconditions[1].truth =
+            PreconditionTruth::DynamicOrUnsupported(DynamicConcept::Tie);
+
+        let mut observed = observation(&both_failing, &law);
+        observed.applied_operations = BTreeSet::new();
+        observed.work = WorkReceipt { useful_operations: 0, elapsed_micros: 3 };
+
+        let forward = both_failing.evaluate(&observed)?;
+        let mut reversed = both_failing.clone();
+        reversed.preconditions.reverse();
+        let backward = reversed.evaluate(&observed)?;
+        assert_eq!(forward, backward, "declaration order must not change the refusal");
+        match forward {
+            TransformationResult::RefusedDynamicOrUnsupported { concept, .. } => {
+                assert_eq!(concept, DynamicConcept::Tie, "the named concept is more informative");
+            }
+            other => unreachable!("a tied precondition must be reported, got {}", other.tag()),
+        }
+
+        // With two unknowns, the reported precondition is still order-stable.
+        let mut two_unknown = plan.clone();
+        two_unknown.preconditions[0].truth = PreconditionTruth::Unknown;
+        two_unknown.preconditions[1].truth = PreconditionTruth::Unknown;
+        let mut flipped = two_unknown.clone();
+        flipped.preconditions.reverse();
+        assert_eq!(two_unknown.evaluate(&observed)?, flipped.evaluate(&observed)?);
+        Ok(())
+    }
+
+    // Acceptance: the source-projection plan's refactor relation and every
+    // precondition's evidence are part of plan identity.
+    #[test]
+    fn refactor_relation_and_evidence_are_part_of_plan_identity() -> Result<()> {
+        let projection = shape_fixtures::source_projection_plan()?;
+        let expected = projection.semantic_fingerprint()?;
+
+        let mut repointed = projection.clone();
+        match &mut repointed.refactor_relation {
+            Some(relation) => {
+                relation.application_proof = subject_ref("a different application result");
+            }
+            None => unreachable!("the source projection fixture carries a refactor relation"),
+        }
+        assert_ne!(
+            repointed.semantic_fingerprint()?,
+            expected,
+            "re-pointing the application proof must create another plan"
+        );
+
+        let mut other_evidence = projection.clone();
+        other_evidence.preconditions[0] = Precondition {
+            evidence: subject_ref("evidence from somewhere else"),
+            ..other_evidence.preconditions[0].clone()
+        };
+        assert_ne!(other_evidence.semantic_fingerprint()?, expected);
         Ok(())
     }
 }
