@@ -633,6 +633,118 @@ class DiscoveryUnitTests(unittest.TestCase):
             self.assertEqual(facts.cfg_uses, 0)
             self.assertEqual(facts.observed_signals(), ())
 
+    def test_include_from_src_into_an_excluded_dir_is_a_compiled_consumer(self) -> None:
+        # The exclusion is about what the compiler sees, not about the
+        # directory's name. crates/perl-lexer/src/lexer/helpers/cursor.rs really
+        # does `include!("../../../tests/fixtures/...inc")` into production src/,
+        # so a gate reached that way is compiled in and must be counted.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.write_workspace(
+                root,
+                {"demo": '[package]\nname = "demo"\n[features]\nalpha = []\n'},
+            )
+            crate = root / "crates" / "demo"
+            (crate / "src" / "lib.rs").write_text(
+                'include!("../tests/fixtures/gate.inc");\n', encoding="utf-8"
+            )
+            buried = crate / "tests" / "fixtures" / "gate.inc"
+            buried.parent.mkdir(parents=True, exist_ok=True)
+            buried.write_text('#[cfg(feature = "alpha")]\nfn g() {}\n', encoding="utf-8")
+            facts = validator.discover(root)[("demo", "alpha")]
+            self.assertEqual(facts.cfg_uses, 1)
+            self.assertEqual(facts.observed_signals(), ("cfg_gated",))
+
+    def test_excluded_dir_not_reached_by_include_stays_data(self) -> None:
+        # The discriminating half: reaching one file in an excluded directory
+        # must not drag in its neighbours. This is the perl-lexer/simd salvage
+        # finding — those selectors are read as text, never include!d.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.write_workspace(
+                root,
+                {
+                    "demo": (
+                        "[package]\nname = \"demo\"\n"
+                        "[features]\nalpha = []\nsimd = []\n"
+                    )
+                },
+            )
+            crate = root / "crates" / "demo"
+            (crate / "src" / "lib.rs").write_text(
+                'include!("../tests/fixtures/gate.inc");\n', encoding="utf-8"
+            )
+            fixtures = crate / "tests" / "fixtures"
+            fixtures.mkdir(parents=True, exist_ok=True)
+            (fixtures / "gate.inc").write_text(
+                '#[cfg(feature = "alpha")]\nfn g() {}\n', encoding="utf-8"
+            )
+            (fixtures / "selector.rs").write_text(
+                '#[cfg(feature = "simd")]\nfn s() {}\n', encoding="utf-8"
+            )
+            discovered = validator.discover(root)
+            self.assertEqual(discovered[("demo", "alpha")].cfg_uses, 1)
+            self.assertEqual(discovered[("demo", "simd")].cfg_uses, 0)
+            self.assertEqual(discovered[("demo", "simd")].observed_signals(), ())
+
+    def test_include_inside_a_string_literal_is_not_followed(self) -> None:
+        # An include! that is quoted text is inert, for the same reason a quoted
+        # cfg predicate is not a consumer.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.write_workspace(
+                root,
+                {"demo": '[package]\nname = "demo"\n[features]\nalpha = []\n'},
+            )
+            crate = root / "crates" / "demo"
+            (crate / "src" / "lib.rs").write_text(
+                'const S: &str = "include!(\\"../tests/fixtures/gate.inc\\")";\n',
+                encoding="utf-8",
+            )
+            buried = crate / "tests" / "fixtures" / "gate.inc"
+            buried.parent.mkdir(parents=True, exist_ok=True)
+            buried.write_text('#[cfg(feature = "alpha")]\nfn g() {}\n', encoding="utf-8")
+            facts = validator.discover(root)[("demo", "alpha")]
+            self.assertEqual(facts.cfg_uses, 0)
+
+    def test_include_of_generated_build_output_is_not_followed(self) -> None:
+        # include!(concat!(env!("OUT_DIR"), ...)) names build output, which is
+        # why target/ is skipped at all. It has no literal path to resolve.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.write_workspace(
+                root,
+                {"demo": '[package]\nname = "demo"\n[features]\nalpha = []\n'},
+            )
+            crate = root / "crates" / "demo"
+            (crate / "src" / "lib.rs").write_text(
+                'include!(concat!(env!("OUT_DIR"), "/generated.rs"));\n',
+                encoding="utf-8",
+            )
+            generated = crate / "target" / "generated.rs"
+            generated.parent.mkdir(parents=True, exist_ok=True)
+            generated.write_text(
+                '#[cfg(feature = "alpha")]\nfn g() {}\n', encoding="utf-8"
+            )
+            facts = validator.discover(root)[("demo", "alpha")]
+            self.assertEqual(facts.cfg_uses, 0)
+
+    def test_include_cycle_terminates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.write_workspace(
+                root,
+                {"demo": '[package]\nname = "demo"\n[features]\nalpha = []\n'},
+            )
+            src = root / "crates" / "demo" / "src"
+            (src / "lib.rs").write_text('include!("a.rs");\n', encoding="utf-8")
+            (src / "a.rs").write_text(
+                'include!("lib.rs");\n#[cfg(feature = "alpha")]\nfn g() {}\n',
+                encoding="utf-8",
+            )
+            facts = validator.discover(root)[("demo", "alpha")]
+            self.assertEqual(facts.cfg_uses, 1)
+
     def test_real_test_target_at_the_top_level_still_counts(self) -> None:
         # The exclusion must not swallow `tests/*.rs`, which Cargo does compile.
         with tempfile.TemporaryDirectory() as temp:
