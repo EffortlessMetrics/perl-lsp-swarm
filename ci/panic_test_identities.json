@@ -3080,6 +3080,51 @@
       "state": "active"
     },
     {
+      "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/security.rs",
+      "enclosing_test_or_function": "interpolated_prepare_is_flagged_with_exact_range",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"interpolated prepare must be flagged as PL607: {diags:?}\"));",
+      "selector_identity": "invocation:58896686da31eee9:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/security.rs",
+      "enclosing_test_or_function": "ampersand_match_variable_sql_is_flagged_with_exact_range",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"`$&` match text in SQL must be flagged as PL607: {diags:?}\")",
+      "selector_identity": "invocation:288a8026a09d3545:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/security.rs",
+      "enclosing_test_or_function": "pre_match_variable_sql_is_flagged_with_exact_range",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"`` $` `` pre-match text in SQL must be flagged as PL607: {diags:?}\")",
+      "selector_identity": "invocation:7872b73c02a8cf47:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/security.rs",
+      "enclosing_test_or_function": "post_match_variable_sql_is_flagged_with_exact_range",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"`$'` post-match text in SQL must be flagged as PL607: {diags:?}\")",
+      "selector_identity": "invocation:9320150ca5679517:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/security.rs",
+      "enclosing_test_or_function": "highest_capture_group_variable_sql_is_flagged_with_exact_range",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"`$+` capture text in SQL must be flagged as PL607: {diags:?}\")",
+      "selector_identity": "invocation:1d579b7ef990bd57:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
       "path": "crates/perl-dap/src/backend/native_perldb.rs",
       "enclosing_test_or_function": "production_adapter_does_not_consume_the_partial_backend",
       "macro_family": "panic!",
