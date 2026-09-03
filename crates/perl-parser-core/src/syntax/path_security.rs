@@ -520,11 +520,13 @@ mod tests {
 
     #[test]
     fn test_traversal_encoded_dot_segments_completion() {
-        // Typical web-style encoded traversal patterns must also be caught
-        // at the completion sanitisation layer.
-        assert!(
-            sanitize_completion_path_input("..%2f..%2fetc%2fpasswd").is_some()
-                || sanitize_completion_path_input("..%2f..%2fetc%2fpasswd").is_none()
+        // Parser-owned boundary: completion sanitization does not percent-decode.
+        // Encoded `..%2f` is one Normal component, not ParentDir / literal "../".
+        // URI/percent-decode before path security belongs to crate `perl-uri`
+        // (`uri_to_fs_path` / `normalize_uri`).
+        assert_eq!(
+            sanitize_completion_path_input("..%2f..%2fetc%2fpasswd"),
+            Some("..%2f..%2fetc%2fpasswd".to_string())
         );
         // The literal "../" pattern triggers rejection:
         assert!(sanitize_completion_path_input("../foo").is_none());
