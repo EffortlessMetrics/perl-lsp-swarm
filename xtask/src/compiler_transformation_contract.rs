@@ -1498,6 +1498,7 @@ impl TransformationPlan {
                     );
                 }
                 let mut claimed: BTreeSet<&OperationId> = BTreeSet::new();
+                // Declared below: the subplans must partition the selection.
                 for (name, binding) in &self.subplans {
                     if binding.expected_output.stage != self.expected_output.stage {
                         bail!(
@@ -1528,6 +1529,19 @@ impl TransformationPlan {
                                 operation.as_str()
                             );
                         }
+                    }
+                }
+                // Independent *complete* subplans partition the selection: an
+                // operation bound to none of them could never be applied except
+                // in the full application, which the vocabulary has no way to
+                // express. Requiring full coverage removes that ambiguity.
+                for operation in &selected_ids {
+                    if !claimed.contains(operation) {
+                        bail!(
+                            "plan {:?} selects operation {:?} but binds it to no subplan",
+                            self.id.as_str(),
+                            operation.as_str()
+                        );
                     }
                 }
             }
@@ -1938,10 +1952,9 @@ impl TransformationPlan {
             }
         }
 
-        if observation.applied_operations.is_empty() || observation.work.useful_operations == 0 {
+        if observation.applied_operations.is_empty() {
             return Ok(TransformationResult::ZeroUsefulWork {
-                reason: "the attempt applied no location and performed no useful operation"
-                    .to_owned(),
+                reason: "the attempt applied no location".to_owned(),
             });
         }
         // The receipt is denominated in applied locations, so it can never
@@ -3369,9 +3382,20 @@ mod tests {
         counted_but_unapplied.applied_operations = BTreeSet::new();
         assert_eq!(plan.evaluate(&counted_but_unapplied)?.tag(), "zero_useful_work");
 
+        // Applying locations while reporting no useful work is a contradictory
+        // receipt, not an honest zero-work result: calling it zero-work would
+        // hand a consumer a non-applied verdict for a subject that changed.
         let mut applied_but_uncounted = observation(&plan, &law);
         applied_but_uncounted.work = WorkReceipt { useful_operations: 0, elapsed_micros: 5 };
-        assert_eq!(plan.evaluate(&applied_but_uncounted)?.tag(), "zero_useful_work");
+        match plan.evaluate(&applied_but_uncounted)? {
+            TransformationResult::InvalidOutput { reason } => {
+                assert!(reason.contains("reported only 0 useful operation"), "got {reason}");
+            }
+            other => unreachable!(
+                "applied locations with no reported work must not read as zero work, got {}",
+                other.tag()
+            ),
+        }
 
         // Refusals produced by `evaluate` from a real failing scenario --
         // not hand-constructed values -- must not read as applied, and must
@@ -4848,5 +4872,48 @@ mod tests {
     ) -> Result<TransformationResult> {
         let observed = shape_fixtures::conforming_observation(plan, law)?;
         plan.evaluate(&observed)
+    }
+
+    // Review question: disjoint subplans could leave selected operations bound
+    // to none of them, so applying every subplan would still not equal the
+    // whole plan. Independent *complete* subplans partition the selection.
+    #[test]
+    fn declared_subplans_partition_the_selection() -> Result<()> {
+        let law = shape_fixtures::effect_free_control_law()?;
+        let plan = shape_fixtures::effect_free_control_plan()?;
+        plan.validate()?;
+
+        // Every selected operation is bound to exactly one subplan.
+        let selected: BTreeSet<OperationId> =
+            plan.selected_operations().into_iter().cloned().collect();
+        let mut covered: BTreeSet<OperationId> = BTreeSet::new();
+        for binding in plan.subplans.values() {
+            for operation in &binding.operations {
+                assert!(covered.insert(operation.clone()), "subplans must stay disjoint");
+            }
+        }
+        assert_eq!(covered, selected, "the subplans must cover the whole selection");
+
+        // Selecting one more operation without binding it leaves a gap.
+        let mut gap = plan.clone();
+        gap.locations.push(LocationSelector::CanonicalOperation {
+            stage: CompilerStage::Eir,
+            operation_id: operation_id("eir:block:0009"),
+            source_provenance: None,
+        });
+        assert_invalid(
+            &gap,
+            "binds it to no subplan",
+            "an operation reserved for full application only is not expressible",
+        );
+
+        // Dropping a subplan's operation leaves the same gap from the other
+        // direction, and the law's names are still all bound.
+        let mut shrunk = plan.clone();
+        if let Some(binding) = shrunk.subplans.get_mut("unreachable-edges") {
+            binding.operations = [operation_id("eir:block:0002")].into_iter().collect();
+        }
+        assert_invalid(&shrunk, "more than one subplan", "shrinking must not overlap");
+        Ok(())
     }
 }
