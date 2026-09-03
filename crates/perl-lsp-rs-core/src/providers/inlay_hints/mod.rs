@@ -18,8 +18,10 @@
 //! ```
 
 mod impl_inlay_hints;
+mod resolve_subject;
 
 pub use impl_inlay_hints::{
     InlayHint, InlayHintKind, InlayHintsProvider, extract_param_names, parameter_hints,
     parameter_hints_with_resolver, trivial_type_hints,
 };
+pub use resolve_subject::InlayHintResolveSubjectV1;

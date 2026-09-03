@@ -166,9 +166,14 @@ fn lsp_inlay_hint_resolve_no_op_when_complete() -> Result<(), Box<dyn std::error
 
 /// Test that inlayHint/resolve adds labelDetails.location for click-to-definition
 ///
-/// When a client advertises "label.location" in resolveSupport and the hint has
-/// a data.uri pointing to an open document with a matching subroutine, the resolved
+/// When a client advertises "label.location" in resolveSupport and the item was
+/// issued by this server's own `textDocument/inlayHint` response, the resolved
 /// hint must include labelDetails.location with uri and range fields.
+///
+/// This test used to hand-write `data` and never call the parent provider, which
+/// is precisely the fabricated-item path #14672 closes. It now performs the real
+/// list→resolve round trip; the refusal of a fabricated item is asserted in
+/// `lsp_inlay_hint_resolve_identity_tests.rs`.
 #[test]
 fn lsp_inlay_hint_resolve_adds_label_location() -> Result<(), Box<dyn std::error::Error>> {
     let srv = LspServer::new();
@@ -200,9 +205,10 @@ fn lsp_inlay_hint_resolve_adds_label_location() -> Result<(), Box<dyn std::error
     };
     srv.handle_request(initialized);
 
-    // Open a document with a named subroutine definition
+    // Open a document with a named subroutine definition and a call site, so
+    // the provider emits a parameter hint for it.
     let doc_uri = "file:///test_label_location.pl";
-    let text = "sub my_func { my ($x) = @_; return $x; }";
+    let text = "sub my_func($first, $second) { return $first; }\nmy_func(1, 2);\n";
     let open = JsonRpcRequest {
         _jsonrpc: "2.0".into(),
         id: None,
@@ -218,19 +224,32 @@ fn lsp_inlay_hint_resolve_adds_label_location() -> Result<(), Box<dyn std::error
     };
     srv.handle_request(open);
 
-    // Resolve a parameter hint referencing that subroutine
-    let hint = json!({
-        "position": {"line": 0, "character": 15},
-        "label": "x:",
-        "kind": 2,
-        "paddingLeft": false,
-        "paddingRight": true,
-        "data": {
-            "uri": doc_uri,
-            "function": "my_func",
-            "paramIndex": 0
-        }
-    });
+    // Ask the parent provider first and keep the exact item it returned.
+    let hints_req = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(10_i64)),
+        method: "textDocument/inlayHint".into(),
+        params: Some(json!({
+            "textDocument": {"uri": doc_uri},
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 999, "character": 0}
+            }
+        })),
+    };
+    let hints = srv
+        .handle_request(hints_req)
+        .and_then(|r| r.result)
+        .and_then(|r| r.as_array().cloned())
+        .ok_or("textDocument/inlayHint returned no hints")?;
+
+    let hint = hints
+        .into_iter()
+        .find(|h| {
+            h.pointer("/data/functionName").and_then(|v| v.as_str()) == Some("my_func")
+                && h.pointer("/data/resolveEnvelope").is_some()
+        })
+        .ok_or("expected a resolvable parameter hint for my_func")?;
 
     let req = JsonRpcRequest {
         _jsonrpc: "2.0".into(),
