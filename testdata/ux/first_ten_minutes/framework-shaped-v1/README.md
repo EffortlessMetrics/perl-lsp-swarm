@@ -13,5 +13,9 @@ clear, bounded explanation rather than manufactured exactness; whether
 route handlers still get ordinary Perl navigation; and whether completion
 near the DSL stays quiet instead of noisy.
 
+Proof boundary: this fixture's syntax is verified only by `perl -c` against
+a local stub that supplies the Mojolicious::Lite DSL symbols; the app is
+never executed, and the real framework module stays uninstalled.
+
 Do not edit files in this directory without refreshing `../manifest.json`
 and any receipt that binds `framework-shaped-v1`.

@@ -20,7 +20,7 @@
   },
   "project": {
     "fixture_id": "dynamic-boundary-v1",
-    "content_sha256": "0bd679fca27bab6d91dc8e62e59630af9b9f2fd6e96028d8387db50c5adf7bfe",
+    "content_sha256": "d72fc32c859eb6dc11f5ed73cbbdee9c437cc47fc891a60631f703f10a8c5c46",
     "family": "dynamic_boundary_control"
   },
   "steps": [

@@ -25,12 +25,30 @@ all files in the fixture directory:
 3. feed, per file: path bytes, LF, decimal byte length, LF, file bytes;
 4. SHA-256 of the concatenation.
 
+Digests are over LF-normalized checkout bytes: the root `.gitattributes`
+(`* text eol=lf`) pins fixture bytes identically on every platform, so the
+manifest's identity is checkout-independent. Any future eol or `-text`
+attribute override under `testdata/` invalidates the manifests and fails
+verification as `content drifted`; that message means byte-level drift
+against the pinned attributes, not upstream file changes.
+
 The `first_ten_minutes` xtask example verifies the set and rejects:
 
 - byte drift in any fixture without a manifest refresh;
 - a missing or extra family;
-- duplicate fixture ids or unsafe fixture paths;
-- a checked-in receipt whose `project` does not bind a real fixture.
+- duplicate fixture ids; duplicate, nested, or otherwise unsafe fixture
+  paths; project directories under the set root that `manifest.json` does
+  not register; symbolic links anywhere in a fixture directory or at the
+  set root; and a manifest whose `hash_recipe` differs from the canonical
+  recipe the verifier executes.
+
+Receipt-to-fixture binding (`assert_receipt_binds_fixture_set`) runs
+whenever `--receipt` and `--verify-fixture-set` are provided together, and
+`--verified-output` requires both, so a verified child artifact can never
+be written from a receipt that is not bound to this checked-in set.
+Binding of every checked-in receipt is enforced continuously by
+`cargo test -p xtask --locked`
+(`checked_in_receipts_bind_checked_in_fixtures`).
 
 ```bash
 cargo run -p xtask --locked --example first_ten_minutes -- \

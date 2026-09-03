@@ -21,21 +21,21 @@
       "fixture_id": "framework-shaped-v1",
       "family": "framework_shaped",
       "path": "framework-shaped-v1",
-      "content_sha256": "5532e38e4644d308ac8a408eadc42ea09f14e692e5d287d3cbaee2c926a57bee",
+      "content_sha256": "02264e9564e2ae7830ceabdb7d0337c0e32788334456d42e1443bd98ec460f7f",
       "exercises": "a bounded Mojolicious::Lite-style routing app whose framework module is intentionally uninstalled"
     },
     {
       "fixture_id": "environment-sensitive-v1",
       "family": "environment_sensitive",
       "path": "environment-sensitive-v1",
-      "content_sha256": "ba8700beb604ac25f887dce5701429444f40e4599b60a8f6153bbdce99b3ade7",
+      "content_sha256": "7684d6cf700fbbef9723c838758d51b32726a048de32ece93f0c647a496c8664",
       "exercises": "use lib and local/lib/perl5 include-path resolution plus a cpanfile, without ambient PERL5LIB"
     },
     {
       "fixture_id": "dynamic-boundary-v1",
       "family": "dynamic_boundary_control",
       "path": "dynamic-boundary-v1",
-      "content_sha256": "0bd679fca27bab6d91dc8e62e59630af9b9f2fd6e96028d8387db50c5adf7bfe",
+      "content_sha256": "d72fc32c859eb6dc11f5ed73cbbdee9c437cc47fc891a60631f703f10a8c5c46",
       "exercises": "AUTOLOAD, symbolic method dispatch, and a string eval that must produce bounded explained fallback"
     }
   ]
