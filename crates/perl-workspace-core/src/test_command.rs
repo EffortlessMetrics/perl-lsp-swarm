@@ -796,7 +796,11 @@ fn classify_runner(role: &ToolCandidateRole, logical_name: &str) -> Option<Runne
         ToolCandidateRole::TestRunner if logical_name == "prove" => Some(RunnerShape::Prove),
         ToolCandidateRole::TestRunner | ToolCandidateRole::BuildTool => {
             let flavor = match logical_name {
-                "make" | "gmake" => MakeFlavor::Gnu,
+                // Only `gmake` names GNU make. A bare `make` is GNU on Linux
+                // and BSD make on a BSD; treating it as GNU would guess the
+                // host, which the doctrine above forbids.
+                "gmake" => MakeFlavor::Gnu,
+                "make" => MakeFlavor::Portable,
                 "nmake" => MakeFlavor::Nmake,
                 "dmake" => MakeFlavor::Dmake,
                 _ => return None,
@@ -932,25 +936,36 @@ fn relative_test_directories(
 /// read that file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MakeFlavor {
-    /// GNU make — the `make` on Linux, `gmake` elsewhere. Discovers
-    /// `GNUmakefile`, `makefile`, then `Makefile`.
+    /// `gmake` — unambiguously GNU make. Discovers `GNUmakefile`, `makefile`,
+    /// then `Makefile`.
     Gnu,
-    /// Microsoft nmake. Without `/F`, discovers `MAKEFILE` in the working
-    /// directory; the Windows filesystem is case-insensitive at the FS layer
-    /// but the observation is a captured string, so both spellings are
-    /// accepted.
+    /// A bare `make`, whose implementation is not named. On Linux it is
+    /// normally GNU make; on a BSD it is BSD make, which never reads
+    /// `GNUmakefile`. Nothing in the snapshot says which, and this module does
+    /// not guess from the host it happens to run on, so only the names every
+    /// implementation discovers count.
+    Portable,
+    /// Microsoft nmake.
     Nmake,
-    /// Digital Mars dmake. Discovers `makefile` and `Makefile` by default.
+    /// Digital Mars dmake.
     Dmake,
 }
 
 impl MakeFlavor {
     /// Whether this launcher will discover the makefile at `name` without a
     /// filename passed on the command line.
+    ///
+    /// Case sensitivity is a property of the *filesystem*, not the launcher, so
+    /// it is only relaxed where the launcher pins the platform: `nmake` is
+    /// Windows-only, and Windows lookup is case-insensitive, so `MAKEFILE` —
+    /// the spelling Microsoft's documentation uses — names the same file as
+    /// `Makefile`. `gmake`, `make`, and `dmake` all run on case-sensitive
+    /// filesystems too, so for those the observed spelling must match.
     fn discovers(self, name: &str) -> bool {
         match self {
             Self::Gnu => matches!(name, "Makefile" | "makefile" | "GNUmakefile"),
-            Self::Nmake | Self::Dmake => matches!(name, "Makefile" | "makefile"),
+            Self::Portable | Self::Dmake => matches!(name, "Makefile" | "makefile"),
+            Self::Nmake => name.eq_ignore_ascii_case("Makefile"),
         }
     }
 }
@@ -1580,9 +1595,11 @@ mod tests {
             classify_runner(&ToolCandidateRole::TestRunner, "prove"),
             Some(RunnerShape::Prove)
         ));
+        // A bare `make` must not classify as GNU: the name does not say which
+        // implementation it is, and BSD make discovers a different set.
         assert!(matches!(
             classify_runner(&ToolCandidateRole::BuildTool, "make"),
-            Some(RunnerShape::Make(MakeFlavor::Gnu))
+            Some(RunnerShape::Make(MakeFlavor::Portable))
         ));
         assert!(matches!(
             classify_runner(&ToolCandidateRole::BuildTool, "gmake"),

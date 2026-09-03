@@ -1202,23 +1202,40 @@ fn a_windows_backslash_child_still_resolves() -> Result<(), FixtureError> {
     Ok(())
 }
 
-/// `nmake` does not discover `GNUmakefile` — without `/F`, it looks for
-/// `MAKEFILE` in the current directory. Applying GNU make's default filenames
-/// to every classified make launcher would mark `nmake test` Ready against
-/// evidence pointing at a file that command would never read. Rules out: a
-/// launcher-blind discovery set.
+/// Makefile discovery is a property of the launcher, not of `make` generally.
+/// Without `-f` / `/F` the launcher finds its makefile *by name*, and the names
+/// differ: only GNU make reads `GNUmakefile`, and only `gmake` names GNU make
+/// unambiguously — a bare `make` is GNU on Linux and BSD make on a BSD, and BSD
+/// make never reads `GNUmakefile`. Rules out: a launcher-blind discovery set,
+/// and a bare `make` silently assumed to be the GNU one.
 #[test]
 fn discoverable_makefile_names_depend_on_the_launcher() -> Result<(), FixtureError> {
     for (launcher, location, expected) in [
-        // GNU make discovers all three.
-        ("make", "/ws/GNUmakefile", TestCommandAdmission::Ready),
+        // `gmake` is unambiguously GNU make, which discovers all three.
+        ("gmake", "/ws/GNUmakefile", TestCommandAdmission::Ready),
+        ("gmake", "/ws/makefile", TestCommandAdmission::Ready),
+        ("gmake", "/ws/Makefile", TestCommandAdmission::Ready),
+        // A bare `make` does not name an implementation. The portable names
+        // every implementation discovers are usable; `GNUmakefile` is not,
+        // because BSD make would ignore it and nothing here says which `make`
+        // this is. EU::MM generates `Makefile`, so the common case is unaffected.
         ("make", "/ws/makefile", TestCommandAdmission::Ready),
         ("make", "/ws/Makefile", TestCommandAdmission::Ready),
-        ("gmake", "/ws/GNUmakefile", TestCommandAdmission::Ready),
-        // nmake does not discover the GNU variant.
+        ("make", "/ws/GNUmakefile", TestCommandAdmission::NotProvenGeneratedState),
+        // nmake does not discover the GNU variant, and is Windows-only — so its
+        // filesystem is case-insensitive and `MAKEFILE`, the spelling
+        // Microsoft's own documentation uses, must be accepted.
         ("nmake", "/ws/GNUmakefile", TestCommandAdmission::NotProvenGeneratedState),
         ("nmake", "/ws/Makefile", TestCommandAdmission::Ready),
-        // dmake likewise.
+        ("nmake", "/ws/makefile", TestCommandAdmission::Ready),
+        ("nmake", "/ws/MAKEFILE", TestCommandAdmission::Ready),
+        ("nmake", "/ws/MakeFile", TestCommandAdmission::Ready),
+        // A case-folded name is *not* accepted for the cross-platform
+        // launchers: case-insensitivity is a filesystem property, and only
+        // `nmake` pins the filesystem.
+        ("gmake", "/ws/MAKEFILE", TestCommandAdmission::NotProvenGeneratedState),
+        ("make", "/ws/MAKEFILE", TestCommandAdmission::NotProvenGeneratedState),
+        // dmake discovers the portable names only.
         ("dmake", "/ws/GNUmakefile", TestCommandAdmission::NotProvenGeneratedState),
         ("dmake", "/ws/Makefile", TestCommandAdmission::Ready),
     ] {
@@ -1543,6 +1560,12 @@ fn a_detached_test_root_does_not_block_build_system_managed_runners() -> Result<
 /// working directory. A current observation of some other direct child is
 /// evidence about a file this command would never read. Rules out: treating any
 /// direct child as proof that `make test` can run.
+///
+/// Uses `gmake` so the full GNU discovery set applies; which *launcher*
+/// discovers which names is the separate axis covered by
+/// `discoverable_makefile_names_depend_on_the_launcher`. The load-bearing rows
+/// here are the near-misses — especially `Makefile.PL`, which every EU::MM
+/// distribution contains.
 #[test]
 fn only_a_name_make_discovers_proves_the_command_is_ready() -> Result<(), FixtureError> {
     for (location, expected) in [
@@ -1559,7 +1582,7 @@ fn only_a_name_make_discovers_proves_the_command_is_ready() -> Result<(), Fixtur
         let snapshot = builder
             .with_input(tool_input.clone())
             .with_input(build_input.clone())
-            .with_tool_candidate(make_tool("make", tool_input.id.clone()))
+            .with_tool_candidate(make_tool("gmake", tool_input.id.clone()))
             .with_build_system(build_fact(
                 BuildSystemKind::ExtUtilsMakeMaker,
                 build_input.id.clone(),
