@@ -1,0 +1,15 @@
+project: product
+component: Developer experience
+kind: Performance
+body: >-
+  Run focused control-plane owner proofs (the ci_subject digest-oracle target
+  and the xtask gate-runner, route-plan, workflow-policy, generated-inventory,
+  and badge-producer owner modules) before the unit_routed_full cohort in the
+  pr_fast tier, and let a failed required focused gate short-circuit the
+  remaining plan with typed saved-work receipt rows so deterministic CI defects
+  surface minutes earlier without weakening the broad backstop (#13698).
+time: 2026-08-31T08:05:00Z
+custom:
+  PR: "13698"
+  Slug: prfast-focused-owner-gates
+  Breaking: "no"

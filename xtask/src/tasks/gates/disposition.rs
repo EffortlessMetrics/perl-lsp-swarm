@@ -1057,6 +1057,7 @@ mod gate_disposition_spec {
                 role: GatePlanningRole::Static,
                 packages: Vec::new(),
             }),
+            short_circuit: false,
         }
     }
 

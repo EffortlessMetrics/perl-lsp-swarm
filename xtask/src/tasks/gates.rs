@@ -165,6 +165,14 @@ pub struct GateDefinition {
     pub matrix: Option<serde_yaml_ng::Value>,
     #[serde(default)]
     pub planning: Option<GatePlanningConfig>,
+    /// Policy-typed early exit (#13698): when this required gate ends in a
+    /// blocking status (fail/timeout/error), the runner records every remaining
+    /// planned gate as a typed `skip` row ("saved work") and stops before them.
+    /// The gate itself stays required and blocking, so the run is still red and
+    /// the receipt is still produced. Distinct from the CLI `--fail-fast` flag,
+    /// whose run-wide semantics this field does not touch.
+    #[serde(default)]
+    pub short_circuit: bool,
 }
 
 #[allow(dead_code)]
@@ -1590,6 +1598,65 @@ fn run_gate_plan(
                 pb.finish_with_message("Gate failed, stopping (fail-fast mode)");
             }
             results.push(result);
+            break;
+        }
+
+        // Policy-typed short-circuit (#13698): a failed required gate that
+        // declares `short_circuit: true` stops the remaining plan, because no
+        // later gate can change the run's red disposition — the remaining work
+        // is recorded as typed skip rows (saved work) instead of vanishing from
+        // the receipt. Receipts, logs, and the blocking failure are all still
+        // produced; nothing becomes advisory and no timeout moved.
+        //
+        // Scoped to pr_fast plans (#14409 review): merge-gate and nightly
+        // plans inherit the focused pr_fast gates, but their remaining tiers
+        // are the independent backstop evidence for those runs, so a focused
+        // pr_fast failure must let them execute instead of retiring them as
+        // skip rows.
+        if plan.tier == GateTier::PrFast
+            && gate.short_circuit
+            && is_blocking_gate_status(&result.status)
+            && gate.required
+        {
+            // The failing gate keeps its plan-order receipt row first; the
+            // remaining planned gates follow as typed saved-work rows.
+            results.push(result);
+            let saved_count = plan.selected.len() - idx - 1;
+            for remaining in &plan.selected[idx + 1..] {
+                let skip_result = GateResult {
+                    gate_name: remaining.gate.name.clone(),
+                    tier: remaining.gate.tier.clone(),
+                    status: "skip".to_string(),
+                    required: Some(remaining.gate.required),
+                    duration_ms: 0,
+                    command: remaining.gate.command.clone(),
+                    exit_code: None,
+                    output_summary: Some(format!(
+                        "not run: short-circuited by failed required gate '{}'",
+                        gate.name
+                    )),
+                    log_path: None,
+                    metrics: None,
+                    artifacts: None,
+                    first_failure: None,
+                };
+                let tier_summary = tier_summaries.entry(skip_result.tier.clone()).or_default();
+                tier_summary.total += 1;
+                tier_summary.skipped += 1;
+                if let Some(ref pb) = spinner {
+                    pb.println(format!(
+                        "[{:>4}] {} (short-circuited)",
+                        "SKIP", skip_result.gate_name
+                    ));
+                }
+                results.push(skip_result);
+            }
+            if let Some(ref pb) = spinner {
+                pb.finish_with_message(format!(
+                    "Gate {} failed; short-circuited {} remaining gate(s)",
+                    gate.name, saved_count
+                ));
+            }
             break;
         }
 
@@ -3488,6 +3555,7 @@ mod tests {
             artifacts: Vec::new(),
             matrix: None,
             planning: Some(GatePlanningConfig { role, packages: Vec::new() }),
+            short_circuit: false,
         }
     }
 
@@ -5507,6 +5575,7 @@ gates:
                 role: GatePlanningRole::AlwaysOn,
                 packages: Vec::new(),
             }),
+            short_circuit: false,
         };
         let policy = policy_with_gates(vec![gate.clone()]);
         let tmp = tempdir()?;
@@ -5564,6 +5633,7 @@ gates:
                 role: GatePlanningRole::AlwaysOn,
                 packages: Vec::new(),
             }),
+            short_circuit: false,
         };
         let policy = policy_with_gates(vec![gate.clone()]);
         let tmp = tempdir()?;
@@ -5619,6 +5689,7 @@ gates:
                 role: GatePlanningRole::AlwaysOn,
                 packages: Vec::new(),
             }),
+            short_circuit: false,
         };
         let policy = policy_with_gates(vec![gate.clone()]);
         let tmp = tempdir()?;
@@ -5667,6 +5738,7 @@ gates:
                 role: GatePlanningRole::AlwaysOn,
                 packages: Vec::new(),
             }),
+            short_circuit: false,
         };
         let policy = policy_with_gates(vec![gate.clone()]);
         let tmp = tempdir()?;
@@ -7080,6 +7152,229 @@ error: aborting due to previous error
             Some(&["gate_a_fails".to_string()][..])
         );
 
+        Ok(())
+    }
+
+    fn short_circuit_pr_gate(name: &str, command: &str) -> GateDefinition {
+        GateDefinition { short_circuit: true, ..pr_gate(name, GatePlanningRole::AlwaysOn, command) }
+    }
+
+    /// (#13698) The focused control-plane owner gates must be declared before
+    /// `unit_routed_full` (declaration order is execution order), must stay
+    /// required with `short_circuit: true`, and the broad cohort must keep its
+    /// exact identity — a focused pass can never remove or weaken the backstop
+    /// (issue falsifier 4), and the backstop itself must never short-circuit.
+    #[test]
+    fn focused_control_plane_gates_precede_unit_routed_full_and_pin_the_backstop()
+    -> color_eyre::eyre::Result<()> {
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        let gate_index = |name: &str| {
+            policy.gates.iter().position(|gate| gate.name == name).ok_or_else(|| {
+                color_eyre::eyre::eyre!("gate '{name}' missing from .ci/gate-policy.yaml")
+            })
+        };
+        let subject = gate_index("ci_subject_digest_oracle")?;
+        let bins = gate_index("unit_control_plane_bins")?;
+        let cohort = gate_index("unit_routed_full")?;
+
+        assert!(
+            subject < cohort && bins < cohort,
+            "focused owner gates (#13698) must be declared before unit_routed_full so a \
+             deterministic control-plane failure surfaces before the broad cohort \
+             (subject={subject}, bins={bins}, cohort={cohort})"
+        );
+
+        for (name, expected_command, expected_packages) in [
+            (
+                "ci_subject_digest_oracle",
+                "cargo test -p xtask --locked --test ci_subject",
+                vec!["xtask"],
+            ),
+            (
+                "unit_control_plane_bins",
+                "cargo test -p xtask --locked --bin xtask -- tasks::gates:: tasks::ci_scope:: \
+                 tasks::workflow_policy_lint:: tasks::workflow_trigger_lint:: \
+                 -- --test-threads=1",
+                vec!["xtask"],
+            ),
+        ] {
+            let gate = &policy.gates[gate_index(name)?];
+            assert_eq!(gate.tier, "pr_fast", "focused gate '{name}' tier drifted");
+            assert_eq!(gate.command, expected_command, "focused gate '{name}' command drifted");
+            // Denominator honesty (#14409 review): the bin-target projection
+            // names only owners that publish bin-target unit tests. The
+            // generated-inventory and badge owners have no `#[test]` functions
+            // in `--bin xtask`; their proof lives in the `xtask/tests/`
+            // integration suites the broad `unit_routed_full` cohort runs.
+            if name == "unit_control_plane_bins" {
+                assert!(
+                    !gate.command.contains("tasks::generated_files::")
+                        && !gate.command.contains("tasks::badges::"),
+                    "focused bin-target gate '{name}' must not claim owners without \
+                     bin-target unit tests"
+                );
+            }
+            assert!(gate.required, "focused gate '{name}' must stay required");
+            assert!(
+                gate.short_circuit,
+                "focused gate '{name}' must declare short_circuit: true (#13698)"
+            );
+            let planning = gate
+                .planning
+                .as_ref()
+                .ok_or_else(|| color_eyre::eyre::eyre!("focused gate '{name}' missing planning"))?;
+            assert_eq!(planning.role, GatePlanningRole::RustPackageScoped);
+            assert_eq!(
+                planning.packages,
+                expected_packages.iter().map(|package| package.to_string()).collect::<Vec<_>>(),
+                "focused gate '{name}' must stay exactly-subject routed to its owner crate"
+            );
+        }
+
+        // Backstop pin: the broad cohort keeps its exact identity and budget
+        // (#13698 acceptance — broad unit proof remains authoritative; no
+        // timeout increase, no required-to-advisory downgrade).
+        let cohort_gate = &policy.gates[cohort];
+        assert_eq!(
+            cohort_gate.command,
+            "cargo build -p perllsp --locked && cargo test --locked --tests {package_args}"
+        );
+        assert_eq!(cohort_gate.timeout_seconds, 1500);
+        assert_eq!(cohort_gate.retry_count, 1);
+        assert!(cohort_gate.required);
+        assert!(!cohort_gate.short_circuit, "the backstop must never short-circuit");
+        Ok(())
+    }
+
+    /// (#13698 falsifier 6) A failed required gate that declares
+    /// `short_circuit: true` stops the remaining plan, but every remaining
+    /// planned gate is still recorded as a typed skip row naming its cause —
+    /// saved work stays visible in the receipt, and the run stays red.
+    #[test]
+    fn short_circuit_failure_stops_the_cohort_and_records_saved_work()
+    -> color_eyre::eyre::Result<()> {
+        let focused_fails = short_circuit_pr_gate("gate_focused_fails", "exit 1");
+        let cohort = pr_gate("gate_cohort_never_runs", GatePlanningRole::AlwaysOn, "exit 0");
+        let policy = policy_with_gates(vec![focused_fails.clone(), cohort.clone()]);
+        let plan = static_gate_plan(
+            GateTier::PrFast,
+            "HEAD".to_string(),
+            vec![focused_fails, cohort],
+            None,
+        );
+        let config = GateRunnerConfig {
+            tier: GateTier::PrFast,
+            output_format: OutputFormat::Summary,
+            fail_fast: false,
+            ..GateRunnerConfig::default()
+        };
+
+        let receipt = run_gate_plan(&plan, &policy, &config)?;
+
+        assert_eq!(receipt.gates.len(), 2, "the failing gate plus its saved-work row");
+        assert_eq!(receipt.gates[0].gate_name, "gate_focused_fails");
+        assert_eq!(receipt.gates[0].status, "fail");
+        assert_eq!(receipt.gates[1].gate_name, "gate_cohort_never_runs");
+        assert_eq!(receipt.gates[1].status, "skip", "the cohort is recorded, not executed");
+        assert_eq!(receipt.gates[1].exit_code, None);
+        assert!(
+            receipt.gates[1]
+                .output_summary
+                .as_deref()
+                .unwrap_or_default()
+                .contains("short-circuited by failed required gate 'gate_focused_fails'"),
+            "the saved-work row must name its cause: {:?}",
+            receipt.gates[1].output_summary
+        );
+        assert_eq!(receipt.summary.failed, 1);
+        assert_eq!(receipt.summary.skipped, 1);
+        assert_eq!(receipt.summary.overall_status, "fail");
+        assert_eq!(
+            receipt.summary.blocking_failures.as_deref(),
+            Some(&["gate_focused_fails".to_string()][..])
+        );
+        Ok(())
+    }
+
+    /// (#13698 falsifier 3) A focused pass never short-circuits anything: the
+    /// broad cohort still runs and both dispositions are independently
+    /// recorded.
+    #[test]
+    fn focused_pass_keeps_the_broad_cohort_running() -> color_eyre::eyre::Result<()> {
+        let focused_passes = short_circuit_pr_gate("gate_focused_passes", "exit 0");
+        let cohort = pr_gate("gate_cohort_runs", GatePlanningRole::AlwaysOn, "exit 0");
+        let policy = policy_with_gates(vec![focused_passes.clone(), cohort.clone()]);
+        let plan = static_gate_plan(
+            GateTier::PrFast,
+            "HEAD".to_string(),
+            vec![focused_passes, cohort],
+            None,
+        );
+        let config = GateRunnerConfig {
+            tier: GateTier::PrFast,
+            output_format: OutputFormat::Summary,
+            fail_fast: false,
+            ..GateRunnerConfig::default()
+        };
+
+        let receipt = run_gate_plan(&plan, &policy, &config)?;
+
+        assert_eq!(receipt.gates.len(), 2);
+        assert_eq!(receipt.gates[0].status, "pass");
+        assert_eq!(
+            receipt.gates[1].status, "pass",
+            "a focused pass must not remove the broad cohort"
+        );
+        assert!(receipt.gates[1].log_path.is_some());
+        assert_eq!(receipt.summary.overall_status, "pass");
+        Ok(())
+    }
+
+    /// (#14409 review — tier scope) `short_circuit` is a pr_fast-only
+    /// behavior. Merge-gate and nightly plans inherit the focused pr_fast
+    /// gates, but their remaining tiers are the independent backstop evidence
+    /// for those runs, so a focused pr_fast failure there must let them
+    /// execute: no skip rows, no early stop, real execution evidence for every
+    /// remaining gate.
+    #[test]
+    fn short_circuit_does_not_fire_outside_pr_fast_plans() -> color_eyre::eyre::Result<()> {
+        for tier in [GateTier::MergeGate, GateTier::Nightly] {
+            let label = tier.to_string();
+            let focused_fails = short_circuit_pr_gate("gate_focused_fails", "exit 1");
+            let backstop =
+                pr_gate("gate_backstop_still_runs", GatePlanningRole::AlwaysOn, "exit 0");
+            let policy = policy_with_gates(vec![focused_fails.clone(), backstop.clone()]);
+            let plan = static_gate_plan(
+                tier.clone(),
+                "HEAD".to_string(),
+                vec![focused_fails, backstop],
+                None,
+            );
+            let config = GateRunnerConfig {
+                tier,
+                output_format: OutputFormat::Summary,
+                fail_fast: false,
+                ..GateRunnerConfig::default()
+            };
+
+            let receipt = run_gate_plan(&plan, &policy, &config)?;
+
+            assert_eq!(receipt.gates.len(), 2, "{label}: both gates must be recorded");
+            assert_eq!(receipt.gates[0].gate_name, "gate_focused_fails");
+            assert_eq!(receipt.gates[0].status, "fail");
+            assert_eq!(
+                receipt.gates[1].status, "pass",
+                "{label}: the backstop must run, not be short-circuited into a skip row"
+            );
+            assert!(
+                receipt.gates[1].log_path.is_some(),
+                "{label}: the backstop needs real execution evidence"
+            );
+            assert_eq!(receipt.summary.failed, 1);
+            assert_eq!(receipt.summary.skipped, 0, "{label}: no saved-work skip rows");
+        }
         Ok(())
     }
 }
