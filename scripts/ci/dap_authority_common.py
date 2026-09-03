@@ -87,6 +87,7 @@ PRODUCTION_DISPATCH_FN_RE = re.compile(
 # callers cannot bypass admission while this authority still pins the exact
 # request-table shape.
 PEER_DISPATCH_FN_RE = re.compile(r"\b(?:pub\s+)?fn\s+dispatch(?:_unchecked)?\s*\(")
+PEER_FLOOR_FN_RE = re.compile(r"\b(?:pub\s+)?fn\s+dispatch_with_capability_floor\s*\(")
 PEER_ROUTE_MATCH_RE = re.compile(
     r"\bmatch\s+DapRequestRoute::from_command\s*\(\s*command\s*\)\s*"
     r"\.filter\s*\(\s*DapRequestRoute::available_in_peer_frontends\s*\)"
@@ -659,6 +660,41 @@ def parse_peer_dispatch_routes(source: str, owner: Path) -> set[str]:
     functions = list(PEER_DISPATCH_FN_RE.finditer(masked))
     route_functions = [function for function in functions if "dispatch_unchecked" in function.group(0)]
     if route_functions:
+        public_functions = [
+            function
+            for function in functions
+            if "dispatch_unchecked" not in function.group(0)
+        ]
+        if len(public_functions) != 1:
+            raise AuthorityError(
+                f"found {len(public_functions)} public dispatch wrappers in {owner}; expected one"
+            )
+        wrapper = public_functions[0]
+        wrapper_open = masked.index("{", masked.index(")", wrapper.end() - 1))
+        wrapper_close = _balanced(masked, wrapper_open)
+        wrapper_body = _normalise_tokens(masked[wrapper_open + 1 : wrapper_close])
+        admission_tokens = (
+            "self.dispatch_with_capability_floor(",
+            "self.secondary_floor_response(",
+        )
+        if not any(token in wrapper_body for token in admission_tokens):
+            raise AuthorityError(
+                f"{owner} public dispatch does not delegate through the capability floor"
+            )
+        if "self.dispatch_with_capability_floor(" in wrapper_body:
+            floor_functions = list(PEER_FLOOR_FN_RE.finditer(masked))
+            if len(floor_functions) != 1:
+                raise AuthorityError(
+                    f"found {len(floor_functions)} capability-floor dispatch functions in {owner}; expected one"
+                )
+            floor = floor_functions[0]
+            floor_open = masked.index("{", masked.index(")", floor.end() - 1))
+            floor_close = _balanced(masked, floor_open)
+            floor_body = masked[floor_open + 1 : floor_close]
+            if "self.secondary_floor_response(" not in floor_body:
+                raise AuthorityError(
+                    f"{owner} capability-floor dispatch does not apply the capability floor"
+                )
         functions = route_functions
     if len(functions) != 1:
         raise AuthorityError(
