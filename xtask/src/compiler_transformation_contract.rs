@@ -1500,6 +1500,14 @@ impl TransformationPlan {
         // plans must intend none. Requiring a change unconditionally would
         // make every such law unconformable: a non-empty set can never be a
         // subset of the empty permitted set.
+        if self.class == TransformationClass::FactStrengtheningWithoutIrRewrite
+            && self.expected_output.ir_identity != self.input.ir_identity
+        {
+            bail!(
+                "plan {:?} strengthens facts without an IR rewrite, so its output must keep the input's IR identity",
+                self.id.as_str()
+            );
+        }
         if self.class == TransformationClass::UnsupportedOrNotApplicable {
             if !self.intended_changes.is_empty() {
                 bail!(
@@ -1978,14 +1986,20 @@ impl TransformationPlan {
             (dynamic_first, precondition.id.clone())
         });
         if let Some(first) = unproven.first() {
-            // A plan that mutated locations anyway is not a clean refusal:
-            // reporting it as one would hide the mutation. Preconditions are
-            // plan-wide and conjunctive, so a subplan policy does not license
-            // applying part of the plan while one of them is unproven.
-            if !observation.applied_operations.is_empty() {
+            // A plan that mutated anyway is not a clean refusal: reporting it
+            // as one would hide the mutation. Preconditions are plan-wide and
+            // conjunctive, so a subplan policy does not license applying part
+            // of the plan while one of them is unproven -- and a moved output
+            // is a mutation just as an applied location is, whether or not the
+            // attempt attributed it to one.
+            let moved_output = observation
+                .output
+                .as_ref()
+                .is_some_and(|output| *output != observation.observed_input);
+            if !observation.applied_operations.is_empty() || moved_output {
                 return Ok(TransformationResult::InvalidOutput {
                     reason: bounded_reason(&format!(
-                        "partial application of {} location(s) after precondition {:?} was not proven",
+                        "the attempt mutated the subject ({} location(s) applied, output moved: {moved_output}) after precondition {:?} was not proven",
                         observation.applied_operations.len(),
                         first.id.as_str()
                     )),
@@ -3264,6 +3278,7 @@ mod tests {
         unknown.preconditions[0].truth = PreconditionTruth::Unknown;
         let mut observed = observation(&unknown, &law);
         observed.applied_operations = BTreeSet::new();
+        observed.output = None;
         observed.work = WorkReceipt { useful_operations: 0, elapsed_micros: 12 };
         match unknown.evaluate(&observed)? {
             TransformationResult::RefusedPreconditionUnproven { precondition } => {
@@ -3276,6 +3291,7 @@ mod tests {
         tied.preconditions[0].truth = PreconditionTruth::DynamicOrUnsupported(DynamicConcept::Tie);
         let mut observed = observation(&tied, &law);
         observed.applied_operations = BTreeSet::new();
+        observed.output = None;
         observed.work = WorkReceipt { useful_operations: 0, elapsed_micros: 12 };
         match tied.evaluate(&observed)? {
             TransformationResult::RefusedDynamicOrUnsupported { concept, .. } => {
@@ -3461,7 +3477,7 @@ mod tests {
         observed.work = WorkReceipt { useful_operations: 1, elapsed_micros: 400 };
         match half_applied.evaluate(&observed)? {
             TransformationResult::InvalidOutput { reason } => {
-                assert!(reason.contains("partial application"), "got {reason}");
+                assert!(reason.contains("mutated the subject"), "got {reason}");
                 assert!(reason.contains("operation-is-effect-free"), "got {reason}");
             }
             other => unreachable!(
@@ -3474,6 +3490,7 @@ mod tests {
         // complete refusal.
         let mut untouched = observation(&half_applied, &law);
         untouched.applied_operations = BTreeSet::new();
+        untouched.output = None;
         untouched.work = WorkReceipt { useful_operations: 0, elapsed_micros: 400 };
         assert!(half_applied.evaluate(&untouched)?.is_refusal());
         Ok(())
@@ -3489,6 +3506,7 @@ mod tests {
         // nothing: it reports no changed output.
         let mut empty = observation(&plan, &law);
         empty.applied_operations = BTreeSet::new();
+        empty.output = None;
         empty.work = WorkReceipt { useful_operations: 0, elapsed_micros: 5 };
         empty.output = None;
         let result = plan.evaluate(&empty)?;
@@ -3545,6 +3563,7 @@ mod tests {
             refusing.preconditions[0].truth = truth;
             let mut observed = observation(&refusing, &law);
             observed.applied_operations = BTreeSet::new();
+            observed.output = None;
             observed.work = WorkReceipt { useful_operations: 0, elapsed_micros: 5 };
             let result = refusing.evaluate(&observed)?;
             assert!(result.is_refusal(), "{} must be a refusal", result.tag());
@@ -4378,6 +4397,8 @@ mod tests {
         fact_plan.class = fact_law.class;
         fact_plan.consumers = fact_law.consumers.clone();
         fact_plan.intended_changes = [ChangedProposition::FactStrength].into_iter().collect();
+        // A fact-only rewrite moves the facts, not the IR: same identity, new digest.
+        fact_plan.expected_output.ir_identity = fact_plan.input.ir_identity.clone();
         fact_plan.verify_law_conformance(&fact_law)?;
         let observed = shape_fixtures::conforming_observation(&fact_plan, &fact_law)?;
         assert_eq!(fact_plan.evaluate(&observed)?.tag(), "applied_exact");
@@ -4439,6 +4460,7 @@ mod tests {
         let mut observed =
             shape_fixtures::conforming_observation(&unsupported_plan, &unsupported_law)?;
         observed.applied_operations = BTreeSet::new();
+        observed.output = None;
         observed.work = WorkReceipt { useful_operations: 0, elapsed_micros: 3 };
         match unsupported_plan.evaluate(&observed)? {
             TransformationResult::RefusedDynamicOrUnsupported { concept, .. } => {
@@ -4471,6 +4493,7 @@ mod tests {
 
         let mut observed = observation(&both_failing, &law);
         observed.applied_operations = BTreeSet::new();
+        observed.output = None;
         observed.work = WorkReceipt { useful_operations: 0, elapsed_micros: 3 };
 
         let forward = both_failing.evaluate(&observed)?;
@@ -4602,7 +4625,7 @@ mod tests {
             Some(ResidualBoundary::new("unreachable-blocks", "edges left untouched")?);
         match refusing.evaluate(&mutated)? {
             TransformationResult::InvalidOutput { reason } => {
-                assert!(reason.contains("partial application"), "got {reason}");
+                assert!(reason.contains("mutated the subject"), "got {reason}");
             }
             other => unreachable!(
                 "a subplan policy does not license mutating under an unproven precondition, got {}",
@@ -5125,6 +5148,7 @@ mod tests {
 
         let mut observed = shape_fixtures::conforming_observation(&plan, &law)?;
         observed.applied_operations = BTreeSet::new();
+        observed.output = None;
         observed.work = WorkReceipt { useful_operations: 0, elapsed_micros: 1 };
         match plan.evaluate(&observed)? {
             TransformationResult::RefusedDynamicOrUnsupported { concept, .. } => {
@@ -5226,6 +5250,80 @@ mod tests {
         };
         assert!(error.contains("no plan could conform"), "got {error}");
         assert!(error.contains("source_mapping"), "got {error}");
+        Ok(())
+    }
+
+    // Review findings: a refusal must not conceal a moved output, and a
+    // fact-only rewrite must not move the IR identity.
+    #[test]
+    fn a_refusal_cannot_conceal_a_moved_output() -> Result<()> {
+        let (law, plan) = folding();
+        let mut refusing = plan.clone();
+        refusing.preconditions[0].truth = PreconditionTruth::Unknown;
+
+        // Nothing applied and nothing produced is an honest refusal.
+        let mut honest = observation(&refusing, &law);
+        honest.applied_operations = BTreeSet::new();
+        honest.output = None;
+        honest.work = WorkReceipt { useful_operations: 0, elapsed_micros: 3 };
+        assert!(refusing.evaluate_under_law(&law, &honest)?.is_refusal());
+
+        // Nothing applied but an output that moved is a mutation the attempt
+        // simply did not attribute to a location, so it is not a refusal.
+        let mut concealed = honest.clone();
+        concealed.output = Some(plan.expected_output.clone());
+        match refusing.evaluate_under_law(&law, &concealed)? {
+            TransformationResult::InvalidOutput { reason } => {
+                assert!(reason.contains("output moved: true"), "got {reason}");
+                assert!(reason.contains("was not proven"), "got {reason}");
+            }
+            other => unreachable!(
+                "a moved output under an unproven precondition must not refuse, got {}",
+                other.tag()
+            ),
+        }
+
+        // Echoing the input subject back is not a mutation.
+        let mut echoed = honest.clone();
+        echoed.output = Some(echoed.observed_input.clone());
+        assert!(refusing.evaluate_under_law(&law, &echoed)?.is_refusal());
+        Ok(())
+    }
+
+    // Review finding: a fact-strengthening plan could declare a different
+    // output IR identity so long as the digest moved, which is an IR rewrite by
+    // the class that exists to forbid one.
+    #[test]
+    fn a_fact_only_plan_cannot_move_the_ir_identity() -> Result<()> {
+        let (_, folding_plan) = folding();
+
+        let mut law = shape_fixtures::exact_value_folding_law()?;
+        law.id = LawId::new("hir.fact-only-identity")?;
+        law.class = TransformationClass::FactStrengtheningWithoutIrRewrite;
+        law.consumers = [ConsumerClass::FactStore].into_iter().collect();
+        law.permitted_changes = [ChangedProposition::FactStrength].into_iter().collect();
+        law.claim_ceiling = ClaimCeiling::InternalFactOnly;
+        law.validate()?;
+
+        let mut plan = folding_plan.clone();
+        plan.id = text_id("plan.hir.fact-only-identity");
+        plan.law = law.binding()?;
+        plan.class = law.class;
+        plan.consumers = law.consumers.clone();
+        plan.claim_ceiling = ClaimCeiling::InternalFactOnly;
+        plan.intended_changes = [ChangedProposition::FactStrength].into_iter().collect();
+        plan.expected_output.ir_identity = plan.input.ir_identity.clone();
+        plan.verify_law_conformance(&law)?;
+
+        // Moving the identity while keeping a changed digest is the rewrite the
+        // class forbids.
+        let mut rewritten = plan.clone();
+        rewritten.expected_output.ir_identity = subject_ref("a different hir body");
+        assert_invalid(
+            &rewritten,
+            "must keep the input's IR identity",
+            "a fact-only rewrite does not move the IR",
+        );
         Ok(())
     }
 }
