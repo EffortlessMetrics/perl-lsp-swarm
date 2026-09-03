@@ -3429,6 +3429,33 @@
       "selector_identity": "invocation:1bba59215b990c28:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/hir_data_section_shell.rs",
+      "enclosing_test_or_function": "data_section_decl",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected DataSectionDecl, got {other:?}\"),",
+      "selector_identity": "invocation:d807999dfac34249:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/hir_data_section_shell.rs",
+      "enclosing_test_or_function": "marker_range_is_exactly_the_marker_bytes_and_smaller_than_the_whole_node",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected DataSectionDecl, got {other:?}\"),",
+      "selector_identity": "invocation:d807999dfac34249:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/tests/hir_data_section_shell.rs",
+      "enclosing_test_or_function": "marker_and_payload_ranges_are_exact_and_the_separator_belongs_to_neither",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected DataSectionDecl, got {other:?}\"),",
+      "selector_identity": "invocation:d807999dfac34249:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
