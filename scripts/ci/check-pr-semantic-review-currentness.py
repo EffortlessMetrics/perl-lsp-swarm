@@ -30,6 +30,17 @@ REQUIRED_SECTIONS = (
     "## Residual risk / not proved",
     "## Substantive review result",
 )
+# The substantive review vocabulary owned by the `review-pr` skill. Only
+# REVIEW_CURRENT carries a subject-bound marker; the marker asserts that a review
+# reached that conclusion, so no other result may mint one.
+SUBSTANTIVE_REVIEW_RESULTS = (
+    "REVIEW_CURRENT",
+    "CHANGES_REQUIRED",
+    "NOT_PROVEN",
+    "BLOCKED_BY_PREREQUISITE",
+    "SUPERSEDED_OR_CLOSE",
+)
+MARKER_RESULT = "REVIEW_CURRENT"
 
 
 class Review(NamedTuple):
@@ -60,12 +71,32 @@ def _run(
     check: bool = True,
     text: bool = True,
 ) -> subprocess.CompletedProcess[Any]:
+    """Run a child process, decoding text output as UTF-8 regardless of host locale.
+
+    Text mode without an explicit encoding decodes through
+    `locale.getpreferredencoding(False)`, so the same command yields different results
+    on different hosts. Git emits UTF-8 paths and `gh` emits UTF-8 JSON, and review
+    bodies in this repository routinely carry non-ASCII prose, so the locale default
+    is wrong for every text call site here — in two ways. Under the C locale the ASCII
+    codec raises `UnicodeDecodeError` on the first non-ASCII byte. Under cp1252 a
+    Windows reviewer usually gets something worse: most bytes map to the wrong
+    characters silently, and only the five undefined ones (0x81, 0x8d, 0x8f, 0x90,
+    0x9d) raise. Pinning UTF-8 removes both.
+
+    `errors="strict"` keeps a genuine decode failure loud: it reaches `main` as an
+    instrument failure rather than replacing bytes that feed a digest or a path
+    comparison.
+    """
+    encoding = "utf-8" if text else None
+    errors = "strict" if text else None
     return subprocess.run(
         args,
         cwd=cwd,
         check=check,
         capture_output=True,
         text=text,
+        encoding=encoding,
+        errors=errors,
     )
 
 
@@ -398,7 +429,18 @@ def fetch_pr(repo: str, pr: int, root: Path) -> tuple[str, str, list[Review]]:
     return current_head, base_head, reviews
 
 
-def emit_marker(root: Path, repo: str, pr: int) -> str:
+class MarkerRefused(RuntimeError):
+    """The substantive review result does not carry a marker; not an instrument failure."""
+
+
+def emit_marker(root: Path, repo: str, pr: int, result: str = MARKER_RESULT) -> str:
+    if result not in SUBSTANTIVE_REVIEW_RESULTS:
+        raise CurrentnessError(f"unknown substantive review result: {result!r}")
+    if result != MARKER_RESULT:
+        raise MarkerRefused(
+            f"{result} does not carry a subject-bound marker; "
+            f"only {MARKER_RESULT} does"
+        )
     current_head, base_head, _ = fetch_pr(repo, pr, root)
     ensure_commit(root, current_head)
     ensure_commit(root, base_head)
@@ -408,7 +450,7 @@ def emit_marker(root: Path, repo: str, pr: int) -> str:
         "head": current_head,
         "merge_base": merge_base,
         "pr": pr,
-        "result": "REVIEW_CURRENT",
+        "result": result,
         "subject_sha256": digest,
     }
     return "<!-- semantic-review:v1 " + json.dumps(
@@ -423,6 +465,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--root", type=Path, default=Path("."))
     parser.add_argument("--fixture", type=Path)
     parser.add_argument("--emit-marker", action="store_true")
+    parser.add_argument(
+        "--result",
+        choices=SUBSTANTIVE_REVIEW_RESULTS,
+        default=MARKER_RESULT,
+        help=(
+            "the substantive review result this marker would bind. "
+            f"Only {MARKER_RESULT} (the default) emits a marker; every other "
+            "result is refused so a marker cannot assert a conclusion the review "
+            "did not reach."
+        ),
+    )
     args = parser.parse_args(argv)
     root = args.root.resolve()
     fixture = args.fixture
@@ -430,7 +483,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         fixture = Path(os.environ["SEMANTIC_REVIEW_TEST_FIXTURE"])
     try:
         if args.emit_marker:
-            print(emit_marker(root, args.repo, args.pr))
+            print(emit_marker(root, args.repo, args.pr, args.result))
             return 0
         if fixture:
             raw = json.loads(fixture.read_text(encoding="utf-8"))
@@ -444,6 +497,22 @@ def main(argv: Optional[list[str]] = None) -> int:
             current_head=current_head,
             reviews=reviews,
         )
+    except MarkerRefused as refusal:
+        # A refusal is a correct outcome of a non-REVIEW_CURRENT review, not a broken
+        # instrument, so it stays distinguishable from both verdicts and failures.
+        print(
+            json.dumps(
+                {
+                    "classification": "MARKER_REFUSED",
+                    "reason": "result_does_not_carry_a_marker",
+                    "detail": str(refusal),
+                    "pr": args.pr,
+                    "result": args.result,
+                },
+                sort_keys=True,
+            )
+        )
+        return 3
     except (
         CurrentnessError,
         KeyError,

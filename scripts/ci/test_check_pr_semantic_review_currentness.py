@@ -3,8 +3,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
+import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -49,6 +53,27 @@ def setup_repo() -> tuple[tempfile.TemporaryDirectory[str], Path, str, str]:
     return tmp, root, base, reviewed
 
 
+# Every section `parse_marker` requires, with the REVIEW_CURRENT conclusion, and no
+# marker. Tests append exactly one marker so the emitter and the checker share a body.
+REVIEW_SECTIONS = """## Review scope
+- cumulative candidate
+
+## Evidence and falsifiers
+- focused proof
+
+## No material findings
+
+## What this establishes
+- claim supported
+
+## Residual risk / not proved
+- external state
+
+## Substantive review result
+- REVIEW_CURRENT
+"""
+
+
 def body(
     pr: int,
     root: Path,
@@ -66,25 +91,7 @@ def body(
         "subject_sha256": digest,
     }
     encoded = json.dumps(marker, sort_keys=True, separators=(",", ":"))
-    return f"""## Review scope
-- cumulative candidate
-
-## Evidence and falsifiers
-- focused proof
-
-## No material findings
-
-## What this establishes
-- claim supported
-
-## Residual risk / not proved
-- external state
-
-## Substantive review result
-- REVIEW_CURRENT
-
-<!-- semantic-review:v1 {encoded} -->
-"""
+    return f"{REVIEW_SECTIONS}\n<!-- semantic-review:v1 {encoded} -->\n"
 
 
 def review(pr: int, root: Path, base: str, head: str, **kwargs):
@@ -96,6 +103,219 @@ def review(pr: int, root: Path, base: str, head: str, **kwargs):
         commit_oid=head,
         submitted_at=kwargs.get("submitted_at", "2026-08-12T00:00:00Z"),
     )
+
+
+# A locale whose preferred encoding is ASCII. This is the portable stand-in for the
+# Windows cp1252 host that produced the reported `'charmap' codec can't decode byte
+# 0x8f`: both decode subprocess text output through a non-UTF-8 locale codec, so both
+# fail on the first non-ASCII byte. `PYTHONUTF8`/`PYTHONCOERCECLOCALE` are pinned off
+# because either one would silently restore UTF-8 and make the control vacuous.
+NON_UTF8_ENV = {
+    "LC_ALL": "C",
+    "LANG": "C",
+    "PYTHONUTF8": "0",
+    "PYTHONCOERCECLOCALE": "0",
+}
+
+# café — arrow → : ordinary non-ASCII prose of the kind review bodies carry.
+NON_ASCII_BYTES = b"caf\xc3\xa9 \xe2\x80\x94 arrow \xe2\x86\x92"
+NON_ASCII_TEXT = NON_ASCII_BYTES.decode("utf-8")
+
+
+def run_in_child(snippet: str, *, env_overrides: dict[str, str], cwd: Path):
+    """Execute `snippet` against the script module in a separate interpreter.
+
+    Locale is fixed when the interpreter starts, so a decode contract that depends on
+    it cannot be exercised by mutating this process; it needs a real child.
+    """
+    env = {**os.environ, **env_overrides}
+    driver = (
+        "import importlib.util, sys\n"
+        f"spec = importlib.util.spec_from_file_location('m', {str(SCRIPT)!r})\n"
+        "m = importlib.util.module_from_spec(spec)\n"
+        "sys.modules['m'] = m\n"
+        "spec.loader.exec_module(m)\n"
+    ) + snippet
+    return subprocess.run(
+        [sys.executable, "-c", driver],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
+class HostLocaleDecodingTests(unittest.TestCase):
+    """`_run` must decode child output as UTF-8 whatever the host locale is.
+
+    Text mode without an explicit encoding uses `locale.getpreferredencoding(False)`.
+    Git emits UTF-8 paths and `gh` emits UTF-8 JSON, so on a cp1252 or C-locale host
+    the marker script used to fail on the first non-ASCII byte of a review body and
+    degrade the whole run to `NOT_PROVEN / instrument_failure`.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def test_control_child_locale_is_really_not_utf8(self) -> None:
+        """Negative control: without this, the decode tests could pass vacuously."""
+        probe = run_in_child(
+            "import locale\nprint(locale.getpreferredencoding(False))\n",
+            env_overrides=NON_UTF8_ENV,
+            cwd=self.root,
+        )
+        self.assertEqual(0, probe.returncode, probe.stderr)
+        self.assertNotIn("utf", probe.stdout.strip().lower())
+
+    def test_run_decodes_non_ascii_child_output_under_non_utf8_locale(self) -> None:
+        snippet = (
+            "import sys, pathlib\n"
+            f"payload = {NON_ASCII_BYTES!r}\n"
+            "child = 'import sys;sys.stdout.buffer.write(%r)' % payload\n"
+            "out = m._run([sys.executable, '-c', child], cwd=pathlib.Path('.')).stdout\n"
+            "sys.stdout.buffer.write(out.encode('utf-8'))\n"
+        )
+        result = run_in_child(snippet, env_overrides=NON_UTF8_ENV, cwd=self.root)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(NON_ASCII_TEXT, result.stdout)
+
+    @unittest.skipIf(os.name == "nt", "the gh shim needs a POSIX shell")
+    def test_fetch_pr_reads_non_ascii_review_bodies_under_non_utf8_locale(self) -> None:
+        """The production surface: `gh` returns UTF-8 JSON, review prose is non-ASCII.
+
+        The sibling `_run` test carries this contract on Windows, where the host
+        codec is cp1252 and an unfixed read silently mojibakes instead of raising.
+        """
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        payload = json.dumps(
+            [
+                {
+                    "user": {"login": "reviewer", "type": "User"},
+                    "state": "COMMENTED",
+                    "body": NON_ASCII_TEXT,
+                    "commit_id": "a" * 40,
+                    "submitted_at": "2026-08-12T00:00:00Z",
+                }
+            ],
+            ensure_ascii=False,
+        )
+        metadata = json.dumps({"headRefOid": "b" * 40, "baseRefOid": "c" * 40})
+        # GitHub returns UTF-8 JSON carrying literal non-ASCII, not \\u escapes, so the
+        # fixtures are written as bytes and the shim streams them back verbatim.
+        (bin_dir / "meta.json").write_bytes(metadata.encode("utf-8"))
+        (bin_dir / "reviews.json").write_bytes(payload.encode("utf-8"))
+        shim = bin_dir / "gh"
+        shim.write_text(
+            '#!/bin/sh\nif [ "$1" = pr ]; then cat "$(dirname "$0")/meta.json"\n'
+            'else cat "$(dirname "$0")/reviews.json"\nfi\n',
+            encoding="utf-8",
+        )
+        shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+        snippet = (
+            "import sys, pathlib\n"
+            "head, base, reviews = m.fetch_pr('o/r', 7, pathlib.Path('.'))\n"
+            "sys.stdout.buffer.write(reviews[0].body.encode('utf-8'))\n"
+        )
+        result = run_in_child(
+            snippet,
+            env_overrides={**NON_UTF8_ENV, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"},
+            cwd=self.root,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(NON_ASCII_TEXT, result.stdout)
+
+    def test_binary_subject_digest_is_unchanged_by_the_text_contract(self) -> None:
+        """The digest reads raw bytes; the encoding fix must not touch it."""
+        tmp, root, base, head = setup_repo()
+        self.addCleanup(tmp.cleanup)
+        (root / "docs/route.md").write_text(
+            f"route = {NON_ASCII_TEXT}\n", encoding="utf-8"
+        )
+        head = commit(root, "non-ascii content")
+        self.assertRegex(module.subject_digest(root, base, head), r"^[0-9a-f]{64}$")
+
+
+class MarkerResultTests(unittest.TestCase):
+    """A marker asserts the review reached REVIEW_CURRENT, so nothing else may mint one."""
+
+    def setUp(self) -> None:
+        self.tmp, self.root, self.base, self.head = setup_repo()
+        self.addCleanup(self.tmp.cleanup)
+        merge_base = self.base
+
+        def fake_fetch_pr(repo: str, pr: int, root: Path):
+            return self.head, merge_base, []
+
+        self._real_fetch_pr = module.fetch_pr
+        module.fetch_pr = fake_fetch_pr
+        self.addCleanup(lambda: setattr(module, "fetch_pr", self._real_fetch_pr))
+
+    def test_review_current_still_emits_a_valid_marker_by_default(self) -> None:
+        emitted = module.emit_marker(self.root, "o/r", 42)
+        payload = json.loads(module.MARKER_RE.findall(emitted)[0])
+        self.assertEqual("REVIEW_CURRENT", payload["result"])
+        self.assertEqual(42, payload["pr"])
+        self.assertEqual(self.head, payload["head"])
+
+    def test_emitted_marker_is_accepted_by_the_verifier(self) -> None:
+        """Round-trip: the emitter and the checker must agree on one subject.
+
+        Guards the `--result` plumbing against emitting a marker the checker rejects.
+        """
+        emitted = module.emit_marker(self.root, "o/r", 42)
+        review_body = REVIEW_SECTIONS + "\n" + emitted + "\n"
+        marker = module.parse_marker(review_body, 42, self.head)
+        self.assertIsNotNone(marker)
+        self.assertEqual("REVIEW_CURRENT", marker.result)
+        self.assertEqual(self.head, marker.head)
+
+    def test_non_review_current_results_are_refused(self) -> None:
+        for result in module.SUBSTANTIVE_REVIEW_RESULTS:
+            if result == module.MARKER_RESULT:
+                continue
+            with self.subTest(result=result):
+                with self.assertRaises(module.MarkerRefused):
+                    module.emit_marker(self.root, "o/r", 42, result)
+
+    def test_unknown_result_is_an_instrument_error_not_a_refusal(self) -> None:
+        with self.assertRaises(module.CurrentnessError):
+            module.emit_marker(self.root, "o/r", 42, "LGTM")
+
+    def test_cli_refusal_prints_no_marker_and_exits_distinctly(self) -> None:
+        """The refusal must not be mistaken for a verdict or an instrument failure."""
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = module.main(
+                [
+                    "42",
+                    "o/r",
+                    "--root",
+                    str(self.root),
+                    "--emit-marker",
+                    "--result",
+                    "CHANGES_REQUIRED",
+                ]
+            )
+        self.assertEqual(3, code)
+        emitted = stdout.getvalue()
+        self.assertNotIn("semantic-review:v1", emitted)
+        payload = json.loads(emitted)
+        self.assertEqual("MARKER_REFUSED", payload["classification"])
+        self.assertEqual("CHANGES_REQUIRED", payload["result"])
+
+    def test_cli_review_current_emits_the_marker(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = module.main(
+                ["42", "o/r", "--root", str(self.root), "--emit-marker"]
+            )
+        self.assertEqual(0, code)
+        self.assertIn("semantic-review:v1", stdout.getvalue())
 
 
 class SemanticReviewCurrentnessTests(unittest.TestCase):
