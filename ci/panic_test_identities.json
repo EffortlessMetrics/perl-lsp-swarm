@@ -2934,6 +2934,24 @@
       "selector_identity": "invocation:5f17dd077ce6f948:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "step_runner_propagates_success_nonzero_and_spawn_classification",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"a failing step must propagate as an error\");",
+      "selector_identity": "invocation:ba225aaa13b5ae51:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/rust_small_proof.rs",
+      "enclosing_test_or_function": "step_runner_propagates_success_nonzero_and_spawn_classification",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"a missing instrument must propagate as an error\");",
+      "selector_identity": "invocation:120d9cc00bf771ae:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
