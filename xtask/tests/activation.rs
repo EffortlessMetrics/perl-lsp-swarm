@@ -65,7 +65,7 @@ const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
     ("product", 16),
     ("preview", 2),
     ("compatibility_shim", 1),
-    ("test_api", 27),
+    ("test_api", 26),
     ("lab", 21),
     ("oracle", 1),
     ("benchmark", 14),
@@ -686,7 +686,7 @@ fn every_test_api_row_records_which_signal_classified_it() -> TestResult {
             }
         }
     }
-    assert_eq!((by_name, by_usage), (13, 14), "test_api signal split drifted");
+    assert_eq!((by_name, by_usage), (13, 13), "test_api signal split drifted");
     Ok(())
 }
 
@@ -735,6 +735,21 @@ fn quoted_cfg_text_in_a_test_does_not_classify_an_unused_feature() -> TestResult
     assert!(
         !ids.contains(&"cargo-feature:perl-lexer/simd"),
         "an unused feature mentioned only in test data must not be inventoried"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_feature_forwarding_into_production_code_is_not_a_test_api() -> TestResult {
+    // `perl-lsp-rs/lsp-ga-lock = ["perl-lsp-rs-core/lsp-ga-lock"]` has only
+    // test-side cfg sites in its own crate, but the feature it enables gates
+    // production capability selection in the dependency. Usage evidence is
+    // only sound over the whole enablement closure.
+    let inventory = activation::validate(&repo_root()).map_err(|error| error.to_string())?;
+    let ids: Vec<&str> = inventory.rows.iter().map(|row| row.surface_id.as_str()).collect();
+    assert!(
+        !ids.contains(&"cargo-feature:perl-lsp-rs/lsp-ga-lock"),
+        "a production capability switch must not be inventoried as a test API"
     );
     Ok(())
 }

@@ -8,7 +8,7 @@
 //! regardless of caller CWD or filesystem iteration order because every
 //! collection is explicitly sorted before being returned.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -541,13 +541,14 @@ enum TestApiSignal {
 /// a claim that everything unmatched is an ordinary build feature.
 fn test_api_signal(
     root: &Path,
+    index: &GateIndex,
     crate_dir: &str,
     feature: &str,
 ) -> Result<Option<TestApiSignal>, ActivationError> {
     if declared_test_api_name(feature) {
         return Ok(Some(TestApiSignal::DeclaredByName));
     }
-    let sites = feature_cfg_sites(root, crate_dir, feature)?;
+    let sites = feature_usage_closure(root, index, crate_dir, feature)?;
     // No usage at all proves nothing: a declared-but-unused feature is
     // neither shown to gate tests nor shown not to. Only a non-empty,
     // wholly test-side population is evidence.
@@ -615,62 +616,212 @@ fn compiled_target_files(
     Ok(files)
 }
 
-/// Does this line apply a `cfg` predicate on `feature`?
+/// Every feature name this file gates on.
 ///
-/// Only the three forms that actually gate compilation count: an outer or
-/// inner attribute (`#[cfg(…)]`, `#![cfg(…)]`, `#[cfg_attr(…)]`) or the
-/// `cfg!(…)` macro. Requiring the attribute at the START of the line is what
-/// separates a real gate from the same text quoted inside a string literal or
-/// a comment — `assert!(f(r#"#[cfg(feature = "simd")]"#))` is test data, not a
-/// usage of the feature.
-fn line_gates_on_feature(line: &str, feature: &str) -> bool {
-    let needle = format!("feature = \"{feature}\"");
-    let trimmed = line.trim_start();
-    let attribute = (trimmed.starts_with("#[cfg(")
-        || trimmed.starts_with("#![cfg(")
-        || trimmed.starts_with("#[cfg_attr(")
-        || trimmed.starts_with("#![cfg_attr("))
-        && trimmed.contains(&needle);
-    let macro_call = line
-        .split("cfg!(")
-        .skip(1)
-        .any(|rest| rest.split(')').next().is_some_and(|args| args.contains(&needle)));
-    attribute || macro_call
+/// Only forms that actually gate compilation count: an outer or inner
+/// attribute (`#[cfg(…)]`, `#![cfg(…)]`, `#[cfg_attr(…)]`) or the `cfg!(…)`
+/// macro. Requiring the attribute to START a line is what separates a real
+/// gate from the same text quoted inside a string literal — the fixture
+/// `assert!(f(r#"#[cfg(feature = "simd")]"#))` is test data, not a usage, and
+/// reading it as one classified an unused no-op as a test API.
+///
+/// An attribute may span lines, so once one opens, continuation lines are
+/// joined until its parentheses balance. Whitespace is normalised away,
+/// because `feature="x"` and `feature = "x"` are the same gate. Missing a
+/// gate is not a harmless under-count: an unseen production gate leaves an
+/// all-tests population behind it and turns a product feature into a claimed
+/// test API.
+fn gated_features(text: &str) -> BTreeSet<String> {
+    let mut found = BTreeSet::new();
+
+    for rest in text.split("cfg!(").skip(1) {
+        if let Some(args) = rest.split(')').next() {
+            extract_feature_names(&squeeze(args), &mut found);
+        }
+    }
+
+    let opens = ["#[cfg(", "#![cfg(", "#[cfg_attr(", "#![cfg_attr("];
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim_start();
+        if !opens.iter().any(|open| trimmed.starts_with(open)) {
+            continue;
+        }
+        let mut attribute = trimmed.to_string();
+        // Join continuations until the brackets balance, bounded so a
+        // malformed file cannot consume the rest of the source.
+        for _ in 0..64 {
+            if attribute.matches('(').count() <= attribute.matches(')').count() {
+                break;
+            }
+            match lines.next() {
+                Some(next) => {
+                    attribute.push(' ');
+                    attribute.push_str(next.trim());
+                }
+                None => break,
+            }
+        }
+        extract_feature_names(&squeeze(&attribute), &mut found);
+    }
+    found
 }
 
-/// Every compiled file in the crate that gates on this feature, sorted so the
-/// result does not depend on filesystem iteration order.
+fn squeeze(value: &str) -> String {
+    value.chars().filter(|character| !character.is_whitespace()).collect()
+}
+
+/// Pull every `feature="NAME"` out of already-whitespace-squeezed text.
+fn extract_feature_names(squeezed: &str, out: &mut BTreeSet<String>) {
+    for rest in squeezed.split("feature=\"").skip(1) {
+        if let Some(name) = rest.split('"').next()
+            && !name.is_empty()
+        {
+            out.insert(name.to_string());
+        }
+    }
+}
+
+/// Which features each compiled file gates on, per crate.
 ///
-/// An earlier version scanned every `.rs` file for the substring
-/// `feature = "…"`, and its doc comment claimed the only possible error was
-/// under-classification. That was wrong, and review produced the
-/// counterexample: `perl-lexer`'s unused `simd = []` no-op was classified
-/// `test_api` because three fixtures under `tests/fixtures/` and two string
-/// literals in a test mentioned the text — one of them the test's own
-/// NEGATIVE control, asserting that `let feature = "simd";` is not a feature
-/// selection. Over-classification is the more dangerous direction, because it
-/// puts a surface in the inventory that no authority supports.
-fn feature_cfg_sites(
+/// `crate directory -> feature -> sorted site paths`. Built once and shared,
+/// because the naive shape — rescanning a crate's sources for every feature,
+/// and again for every crate its features forward into — took generation from
+/// under a second to three and a half minutes on this repository.
+type GateIndex = BTreeMap<String, BTreeMap<String, Vec<String>>>;
+
+/// Read every compiled file of every workspace crate once and record the
+/// features it gates on.
+fn build_gate_index(root: &Path) -> Result<GateIndex, ActivationError> {
+    let mut index = GateIndex::new();
+    let crates_dir = root.join("crates");
+    let Ok(entries) = fs::read_dir(&crates_dir) else {
+        return Ok(index);
+    };
+    let mut crate_dirs = Vec::new();
+    for entry in entries {
+        let entry = entry
+            .map_err(|error| ActivationError::new(format!("crates: cannot read entry: {error}")))?;
+        if entry.path().is_dir()
+            && let Some(name) = entry.file_name().to_str()
+        {
+            crate_dirs.push(name.to_string());
+        }
+    }
+    crate_dirs.sort();
+
+    for crate_dir in crate_dirs {
+        let mut per_feature: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for path in compiled_target_files(root, &crate_dir)? {
+            // Skipping an unreadable file would silently remove evidence: a
+            // production gate that cannot be read looks like no gate at all,
+            // and the feature is then classified test-only on an incomplete
+            // population. Absence of evidence must not be manufactured here.
+            let text = fs::read_to_string(&path).map_err(|error| {
+                let relative = path.strip_prefix(root).unwrap_or(&path);
+                ActivationError::new(format!("{}: cannot read: {error}", relative.display()))
+            })?;
+            let relative = path.strip_prefix(root).unwrap_or(&path);
+            let site = relative.to_string_lossy().replace('\\', "/");
+            for feature in gated_features(&text) {
+                per_feature.entry(feature).or_default().push(site.clone());
+            }
+        }
+        for sites in per_feature.values_mut() {
+            sites.sort();
+            sites.dedup();
+        }
+        index.insert(crate_dir, per_feature);
+    }
+    Ok(index)
+}
+
+/// Every cfg site reached by a feature, including the ones in the crates its
+/// own definition forwards to.
+///
+/// A Cargo feature may be a pure forwarder: `perl-lsp-rs`'s `lsp-ga-lock` is
+/// declared as `["perl-lsp-rs-core/lsp-ga-lock"]`, and every cfg site in
+/// `perl-lsp-rs` itself is under `tests/`. Judging it on local sites alone
+/// classifies a PRODUCTION capability switch as a test API, because the
+/// behaviour it actually enables lives in the dependency
+/// (`perl-lsp-rs-core/src/protocol/capabilities.rs`). Usage evidence is only
+/// sound over the whole enablement closure.
+///
+/// Cycles are possible in principle, so a visited set bounds the walk.
+fn feature_usage_closure(
     root: &Path,
+    index: &GateIndex,
     crate_dir: &str,
     feature: &str,
 ) -> Result<Vec<String>, ActivationError> {
+    let mut visited = BTreeSet::new();
     let mut sites = Vec::new();
-    for path in compiled_target_files(root, crate_dir)? {
-        let Ok(text) = fs::read_to_string(&path) else {
+    collect_feature_usage(root, index, crate_dir, feature, &mut visited, &mut sites)?;
+    sites.sort();
+    sites.dedup();
+    Ok(sites)
+}
+
+fn collect_feature_usage(
+    root: &Path,
+    index: &GateIndex,
+    crate_dir: &str,
+    feature: &str,
+    visited: &mut BTreeSet<(String, String)>,
+    sites: &mut Vec<String>,
+) -> Result<(), ActivationError> {
+    if !visited.insert((crate_dir.to_string(), feature.to_string())) {
+        return Ok(());
+    }
+    let manifest_path = root.join("crates").join(crate_dir).join("Cargo.toml");
+    if !manifest_path.is_file() {
+        // A forwarded target outside `crates/` (a registry dependency) has no
+        // in-repository source to read, so it contributes no evidence either
+        // way. That is a recorded absence, not a failure.
+        return Ok(());
+    }
+    if let Some(found) = index.get(crate_dir).and_then(|features| features.get(feature)) {
+        sites.extend(found.iter().cloned());
+    }
+
+    let text = fs::read_to_string(&manifest_path).map_err(|error| {
+        ActivationError::new(format!("crates/{crate_dir}/Cargo.toml: cannot read: {error}"))
+    })?;
+    let manifest: toml::Value = toml::from_str(&text).map_err(|error| {
+        ActivationError::new(format!("crates/{crate_dir}/Cargo.toml: invalid TOML: {error}"))
+    })?;
+    let Some(entries) = manifest
+        .get("features")
+        .and_then(toml::Value::as_table)
+        .and_then(|table| table.get(feature))
+    else {
+        return Ok(());
+    };
+    let entries = entries.as_array().ok_or_else(|| {
+        ActivationError::new(format!(
+            "crates/{crate_dir}/Cargo.toml: feature `{feature}` must be an array"
+        ))
+    })?;
+    for entry in entries {
+        let entry = entry.as_str().ok_or_else(|| {
+            ActivationError::new(format!(
+                "crates/{crate_dir}/Cargo.toml: feature `{feature}` contains a non-string entry"
+            ))
+        })?;
+        // `dep:name` enables an optional dependency and gates nothing by
+        // itself; `pkg/feat` and `pkg?/feat` forward into that package.
+        let Some((package, forwarded)) = entry.split_once('/') else {
             continue;
         };
-        if text.lines().any(|line| line_gates_on_feature(line, feature)) {
-            let relative = path.strip_prefix(root).unwrap_or(&path);
-            sites.push(relative.to_string_lossy().replace('\\', "/"));
-        }
+        let package = package.trim_end_matches('?').trim_start_matches("dep:");
+        collect_feature_usage(root, index, package, forwarded, visited, sites)?;
     }
-    sites.sort();
-    Ok(sites)
+    Ok(())
 }
 
 fn derive_test_features(root: &Path) -> Result<RuleOutput, ActivationError> {
     let manifests = sorted_crate_manifests(root)?;
+    let gate_index = build_gate_index(root)?;
     let mut rows = Vec::new();
     let mut considered = 0usize;
 
@@ -689,7 +840,7 @@ fn derive_test_features(root: &Path) -> Result<RuleOutput, ActivationError> {
         feature_names.sort();
         considered += feature_names.len();
         for feature_name in feature_names {
-            let Some(signal) = test_api_signal(root, crate_dir, feature_name)? else {
+            let Some(signal) = test_api_signal(root, &gate_index, crate_dir, feature_name)? else {
                 continue;
             };
             let entries =
@@ -1189,6 +1340,130 @@ mod tests {
             &root,
             "crates/demo/tests/fixtures/sample/input.rs",
             "#[cfg(feature = \"quiet-feature\")]\nfn f() {}\n"
+        ));
+        let ids = derive_test_features(&root)
+            .map(|output| output.rows.iter().map(|row| row.surface_id.clone()).collect::<Vec<_>>());
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(ids, Ok(Vec::new()));
+    }
+
+    #[test]
+    fn a_forwarding_feature_is_judged_on_the_crate_it_enables() {
+        // The real `perl-lsp-rs/lsp-ga-lock` shape: every local cfg site is a
+        // test, but the feature forwards to a dependency where it gates
+        // production code. Judged locally it looks test-only; judged over the
+        // enablement closure it is a production capability switch.
+        let root = scratch_root("feature-forwarding");
+        assert!(write(
+            &root,
+            "crates/wrapper/Cargo.toml",
+            "[package]\nname = \"wrapper\"\n[features]\nga-lock = [\"core-dep/ga-lock\"]\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/wrapper/tests/only.rs",
+            "#[cfg(feature = \"ga-lock\")]\nfn t() {}\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/core-dep/Cargo.toml",
+            "[package]\nname = \"core-dep\"\n[features]\nga-lock = []\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/core-dep/src/lib.rs",
+            "#[cfg(feature = \"ga-lock\")]\npub fn production() {}\n"
+        ));
+        let ids = derive_test_features(&root)
+            .map(|output| output.rows.iter().map(|row| row.surface_id.clone()).collect::<Vec<_>>());
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(ids, Ok(Vec::new()));
+    }
+
+    #[test]
+    fn a_forwarding_feature_whose_closure_is_all_tests_is_still_seeded() {
+        // The control: following forwarding edges must not reject a feature
+        // that really is test-only everywhere it reaches.
+        let root = scratch_root("feature-forwarding-tests");
+        assert!(write(
+            &root,
+            "crates/wrapper/Cargo.toml",
+            "[package]\nname = \"wrapper\"\n[features]\nquiet = [\"core-dep/quiet\"]\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/wrapper/tests/only.rs",
+            "#[cfg(feature = \"quiet\")]\nfn t() {}\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/core-dep/Cargo.toml",
+            "[package]\nname = \"core-dep\"\n[features]\nquiet = []\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/core-dep/tests/also.rs",
+            "#[cfg(feature = \"quiet\")]\nfn t() {}\n"
+        ));
+        let ids = derive_test_features(&root)
+            .map(|output| output.rows.iter().map(|row| row.surface_id.clone()).collect::<Vec<_>>());
+        let _ = fs::remove_dir_all(&root);
+        // `core-dep/quiet` is seeded on its own merits too: its only cfg site
+        // is in that crate's own tests. Both rows are correct.
+        assert_eq!(
+            ids,
+            Ok(vec![
+                "cargo-feature:core-dep/quiet".to_string(),
+                "cargo-feature:wrapper/quiet".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_multiline_production_gate_is_not_missed() {
+        // A line-anchored matcher that did not join continuations would miss
+        // this `src/` gate, leaving an all-tests population behind it and
+        // turning a production feature into a claimed test API.
+        let root = scratch_root("feature-multiline-gate");
+        assert!(write(
+            &root,
+            "crates/demo/Cargo.toml",
+            "[package]\nname = \"demo\"\n[features]\nquiet-feature = []\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/demo/tests/only.rs",
+            "#[cfg(feature = \"quiet-feature\")]\nfn t() {}\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/demo/src/lib.rs",
+            "#[cfg(all(\n    unix,\n    feature = \"quiet-feature\"\n))]\npub fn p() {}\n"
+        ));
+        let ids = derive_test_features(&root)
+            .map(|output| output.rows.iter().map(|row| row.surface_id.clone()).collect::<Vec<_>>());
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(ids, Ok(Vec::new()));
+    }
+
+    #[test]
+    fn a_whitespace_variant_gate_is_not_missed() {
+        // `feature="x"` and `feature = "x"` are the same gate.
+        let root = scratch_root("feature-tight-gate");
+        assert!(write(
+            &root,
+            "crates/demo/Cargo.toml",
+            "[package]\nname = \"demo\"\n[features]\nquiet-feature = []\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/demo/tests/only.rs",
+            "#[cfg(feature = \"quiet-feature\")]\nfn t() {}\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/demo/src/lib.rs",
+            "#[cfg(feature=\"quiet-feature\")]\npub fn p() {}\n"
         ));
         let ids = derive_test_features(&root)
             .map(|output| output.rows.iter().map(|row| row.surface_id.clone()).collect::<Vec<_>>());
