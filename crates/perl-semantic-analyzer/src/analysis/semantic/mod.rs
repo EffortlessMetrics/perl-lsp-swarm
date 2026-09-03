@@ -332,10 +332,10 @@ impl SemanticAnalyzer {
     /// A file may declare the same package more than once, and each declaration
     /// produces its own `ClassModel`. Keying a lookup map straight off
     /// `class_models` therefore lets a later segment hide an earlier one's
-    /// parents, roles, and methods — so a class that declared `extends 'Base'`
-    /// and was then reopened resolves as though it had no ancestors at all.
-    /// Perl has one package here, so the segments are combined before any
-    /// resolution decision is made.
+    /// parents, roles, and methods. Perl has one package here, so the segments
+    /// are combined before any resolution decision is made. Repeated methods
+    /// are replaced by their later declaration, and a later non-empty ancestry
+    /// declaration replaces the earlier parent/role list for that package.
     fn merged_class_models(&self) -> Vec<ClassModel> {
         let mut merged: Vec<ClassModel> = Vec::new();
         for model in &self.class_models {
@@ -345,9 +345,26 @@ impl SemanticAnalyzer {
                 continue;
             };
 
-            existing.parents.extend(model.parents.iter().cloned());
-            existing.roles.extend(model.roles.iter().cloned());
-            existing.methods.extend(model.methods.iter().cloned());
+            // `extends`, `use parent`, `use base`, and `@ISA` describe the
+            // package's current ancestry. A later declaration supersedes an
+            // earlier one; blindly unioning the lists invents parents that Perl
+            // would no longer dispatch through. An empty later segment carries
+            // no ancestry declaration and therefore leaves the prior value
+            // intact.
+            if !model.parents.is_empty() {
+                existing.parents = model.parents.clone();
+            }
+            if !model.roles.is_empty() {
+                existing.roles = model.roles.clone();
+            }
+
+            // Reopening a package can redefine a method. Keep declaration
+            // order authoritative so every consumer selects the later symbol,
+            // rather than retaining a stale earlier body in the merged view.
+            for method in &model.methods {
+                existing.methods.retain(|candidate| candidate.name != method.name);
+                existing.methods.push(method.clone());
+            }
             existing.modifiers.extend(model.modifiers.iter().cloned());
             // `use mro 'c3'` in any segment governs the whole package.
             if matches!(model.mro, MethodResolutionOrder::C3) {
@@ -364,11 +381,16 @@ impl SemanticAnalyzer {
         symbol: &'a Symbol,
     ) -> Option<&'a Symbol> {
         let qualified = format!("{package}::{}", symbol.name);
-        self.symbol_table.symbols.get(&symbol.name)?.iter().find(|candidate| {
-            is_package_method_symbol(candidate)
-                && candidate.qualified_name == qualified
-                && candidate.location != symbol.location
-        })
+        self.symbol_table
+            .symbols
+            .get(&symbol.name)?
+            .iter()
+            .filter(|candidate| {
+                is_package_method_symbol(candidate)
+                    && candidate.qualified_name == qualified
+                    && candidate.location != symbol.location
+            })
+            .max_by_key(|candidate| candidate.location.start)
     }
 
     /// Check if an operator is a file test operator.
@@ -383,8 +405,8 @@ impl SemanticAnalyzer {
 
     /// Resolve hover info for a method by walking the same-file parent chain.
     ///
-    /// Given a receiver package name and a method name, walks the `parents` of
-    /// each `ClassModel` in `self.class_models` (BFS) and returns `HoverInfo` for
+    /// Given a receiver package name and a method name, walks the merged
+    /// `parents` of each package model (BFS) and returns `HoverInfo` for
     /// the first class in the chain that defines the method.
     ///
     /// For packages not in `class_models` (plain packages with no OO indicators),
@@ -468,8 +490,9 @@ impl SemanticAnalyzer {
         receiver_class: &str,
         method_name: &str,
     ) -> Option<HoverInfo> {
+        let merged = self.merged_class_models();
         let models_by_name: HashMap<&str, &ClassModel> =
-            self.class_models.iter().map(|model| (model.name.as_str(), model)).collect();
+            merged.iter().map(|model| (model.name.as_str(), model)).collect();
 
         let Some(receiver_model) = models_by_name.get(receiver_class).copied() else {
             return self.resolve_plain_package_method_hover(receiver_class, method_name);
@@ -633,8 +656,9 @@ impl SemanticAnalyzer {
         model
             .methods
             .iter()
+            .rev()
             .find(|method| method.name == method_name)
-            .or_else(|| model.methods.iter().find(|method| method.name == "AUTOLOAD"))
+            .or_else(|| model.methods.iter().rev().find(|method| method.name == "AUTOLOAD"))
             .map(|method| method.location)
     }
 
@@ -2835,6 +2859,106 @@ my %config = (key => "value");
             sym.location.start, base_save,
             "a reopened package keeps the ancestry declared in its earlier segment"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_reopened_package_later_ancestry_replaces_parents_and_roles()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = concat!(
+            "package OldParent;\n",
+            "use Moo;\n",
+            "sub save { 1 }\n",
+            "package NewParent;\n",
+            "use Moo;\n",
+            "sub save { 2 }\n",
+            "package OldRole;\n",
+            "use Moo::Role;\n",
+            "package NewRole;\n",
+            "use Moo::Role;\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "extends 'OldParent';\n",
+            "with 'OldRole';\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "extends 'NewParent';\n",
+            "with 'NewRole';\n",
+            "before 'save' => sub { };\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let child = analyzer
+            .merged_class_models()
+            .into_iter()
+            .find(|model| model.name == "Child")
+            .ok_or("Child model not found")?;
+        assert_eq!(child.parents, vec!["NewParent"]);
+        assert_eq!(child.roles, vec!["NewRole"]);
+
+        let offset = modifier_target_offset(code, "before 'save'", "save")
+            .ok_or("modifier target not found")?;
+        let new_parent_save = code.find("sub save { 2 }").ok_or("NewParent::save not found")?;
+        let target = analyzer.find_definition(offset).ok_or("modifier definition")?;
+        assert_eq!(target.location.start, new_parent_save);
+        Ok(())
+    }
+
+    #[test]
+    fn test_reopened_package_duplicate_method_uses_later_definition()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = concat!(
+            "package Child;\n",
+            "use Moo;\n",
+            "sub save { 1 }\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "sub save { 2 }\n",
+            "before 'save' => sub { };\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let offset = modifier_target_offset(code, "before 'save'", "save")
+            .ok_or("modifier target not found")?;
+        let later_save = code.rfind("sub save { 2 }").ok_or("later Child::save not found")?;
+        let target = analyzer.find_definition(offset).ok_or("modifier definition")?;
+        assert_eq!(target.qualified_name, "Child::save");
+        assert_eq!(target.location.start, later_save);
+        Ok(())
+    }
+
+    #[test]
+    fn test_reopened_parent_definition_and_hover_share_merged_view()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = concat!(
+            "package Base;\n",
+            "use Moo;\n",
+            "sub save { 1 }\n",
+            "package Base;\n",
+            "use Moo;\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "extends 'Base';\n",
+            "before 'save' => sub { };\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let offset = modifier_target_offset(code, "before 'save'", "save")
+            .ok_or("modifier target not found")?;
+        let base_save = code.find("sub save { 1 }").ok_or("Base::save not found")?;
+        let target = analyzer.find_definition(offset).ok_or("modifier definition")?;
+        assert_eq!(target.location.start, base_save);
+
+        let hover = analyzer
+            .resolve_inherited_method_hover("Child", "save")
+            .ok_or("inherited hover not found")?;
+        assert_eq!(hover.signature, "sub Base::save");
         Ok(())
     }
 
