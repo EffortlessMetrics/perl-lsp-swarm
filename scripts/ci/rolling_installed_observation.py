@@ -685,18 +685,20 @@ def build_row(args: argparse.Namespace) -> int:
     # The journey stages carry the orchestrator's post-host-exit scan of their
     # isolated profiles. A surviving bundled server is an observed orphaned
     # candidate process; a stage without the scan field is unobserved
-    # evidence and can never count toward a clean cleanup pass.
-    post_exit_observed = False
+    # evidence. Both journeys install and launch the bundled server, so a
+    # clean cleanup pass requires a scan result from every one of them.
+    post_exit_observed = True
     post_exit_survivors: list[str] = []
     for stage_name in ("activation_failure_journey", "crash_recovery_journey"):
         stage = stages.get(stage_name)
         if isinstance(stage, dict) and isinstance(
             stage.get("post_host_exit_processes"), list
         ):
-            post_exit_observed = True
             post_exit_survivors.extend(
                 str(item) for item in stage["post_host_exit_processes"]
             )
+        else:
+            post_exit_observed = False
     if post_exit_survivors:
         findings.append(
             "post-host-exit scan observed surviving candidate server "

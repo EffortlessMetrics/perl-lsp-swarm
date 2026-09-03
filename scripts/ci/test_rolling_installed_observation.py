@@ -450,6 +450,22 @@ class ObservationTest(unittest.TestCase):
         )
         self.assertEqual(row["cells"]["process_cleanup"], "not_proven")
 
+    def test_partial_post_host_exit_scan_is_not_clean_cleanup(self) -> None:
+        # One journey reports a clean scan while the other failed before its
+        # scan ran; the unscanned journey can still leak a server process.
+        row = self.build_row(
+            receipt=smoke_receipt(
+                self.server,
+                stages={
+                    "crash_recovery_journey": {
+                        "status": "not_proven",
+                        "reason": "crash_recovery_journey_leg_did_not_exit_cleanly",
+                    }
+                },
+            )
+        )
+        self.assertEqual(row["cells"]["process_cleanup"], "not_proven")
+
     def test_surviving_server_processes_are_orphaned_product_defect(self) -> None:
         row = self.build_row(
             receipt=smoke_receipt(
