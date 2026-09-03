@@ -1527,6 +1527,14 @@ impl TransformationPlan {
                 let mut claimed: BTreeSet<&OperationId> = BTreeSet::new();
                 // Declared below: the subplans must partition the selection.
                 for (name, binding) in &self.subplans {
+                    if binding.expected_output.stage == self.input.stage
+                        && binding.expected_output.digest == self.input.digest
+                    {
+                        bail!(
+                            "plan {:?} binds subplan {name:?} to the unchanged input subject, but a subplan applies operations",
+                            self.id.as_str()
+                        );
+                    }
                     if binding.expected_output.stage != self.expected_output.stage {
                         bail!(
                             "plan {:?} binds subplan {name:?} to an output at stage {}, but the plan produces stage {}",
@@ -1994,6 +2002,18 @@ impl TransformationPlan {
         }
 
         if observation.applied_operations.is_empty() {
+            // Nothing applied must mean nothing produced: an output that moved
+            // while no location was applied is a contradictory observation, and
+            // reporting it as zero work would say nothing happened when the
+            // subject changed.
+            if let Some(output) = &observation.output
+                && *output != observation.observed_input
+            {
+                return Ok(TransformationResult::InvalidOutput {
+                    reason: "the attempt applied no location but reported a changed output"
+                        .to_owned(),
+                });
+            }
             return Ok(TransformationResult::ZeroUsefulWork {
                 reason: "the attempt applied no location".to_owned(),
             });
@@ -3412,15 +3432,38 @@ mod tests {
     fn falsifier_07_refusal_is_never_an_applied_empty_transformation() -> Result<()> {
         let (law, plan) = folding();
 
+        // An honest zero-work observation applied nothing *and* produced
+        // nothing: it reports no changed output.
         let mut empty = observation(&plan, &law);
         empty.applied_operations = BTreeSet::new();
         empty.work = WorkReceipt { useful_operations: 0, elapsed_micros: 5 };
+        empty.output = None;
         let result = plan.evaluate(&empty)?;
         assert_eq!(result.tag(), "zero_useful_work");
         assert!(!result.is_applied(), "zero useful work is not an applied transformation");
 
+        // Reporting the input subject back is the same honest shape.
+        let mut unchanged_output = empty.clone();
+        unchanged_output.output = Some(unchanged_output.observed_input.clone());
+        assert_eq!(plan.evaluate(&unchanged_output)?.tag(), "zero_useful_work");
+
+        // But an output that moved while nothing was applied is contradictory:
+        // calling it zero work would say nothing happened to a changed subject.
+        let mut moved_output = empty.clone();
+        moved_output.output = Some(plan.expected_output.clone());
+        match plan.evaluate(&moved_output)? {
+            TransformationResult::InvalidOutput { reason } => {
+                assert!(reason.contains("reported a changed output"), "got {reason}");
+            }
+            other => unreachable!(
+                "a changed output with nothing applied must not read as zero work, got {}",
+                other.tag()
+            ),
+        }
+
         let mut counted_but_unapplied = observation(&plan, &law);
         counted_but_unapplied.applied_operations = BTreeSet::new();
+        counted_but_unapplied.output = None;
         assert_eq!(plan.evaluate(&counted_but_unapplied)?.tag(), "zero_useful_work");
 
         // Applying locations while reporting no useful work is a contradictory
@@ -5056,6 +5099,26 @@ mod tests {
                 other.tag()
             ),
         }
+        Ok(())
+    }
+
+    // Review finding: a subplan applies operations, so binding it to the
+    // unchanged input subject would let a partial application report success
+    // for output that never moved -- the same rule the whole plan carries.
+    #[test]
+    fn a_subplan_cannot_produce_the_unchanged_input_subject() -> Result<()> {
+        let plan = shape_fixtures::effect_free_control_plan()?;
+        plan.validate()?;
+
+        let mut unchanged = plan.clone();
+        if let Some(binding) = unchanged.subplans.get_mut("unreachable-blocks") {
+            binding.expected_output = unchanged.input.clone();
+        }
+        assert_invalid(
+            &unchanged,
+            "the unchanged input subject",
+            "a subplan that applies operations must move its output",
+        );
         Ok(())
     }
 }
