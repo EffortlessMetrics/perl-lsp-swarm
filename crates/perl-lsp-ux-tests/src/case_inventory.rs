@@ -1040,6 +1040,21 @@ pub enum UxInventoryLimitation {
     CargoLockDigestUnknown,
     /// The package manifest digest could not be established.
     PackageManifestDigestUnknown,
+    /// Compiler wrappers declared through Cargo configuration rather than the
+    /// environment are not resolved into the subject.
+    ///
+    /// `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER` are read from the
+    /// environment and do move `subject_digest`. A wrapper declared as
+    /// `build.rustc-wrapper` in a `config.toml` does not, because resolving it
+    /// correctly means reproducing Cargo's whole configuration hierarchy —
+    /// the workspace file, every parent directory, and `$CARGO_HOME` — under
+    /// environment-over-configuration precedence. Reading only the workspace
+    /// file would miss `$CARGO_HOME/config.toml`, the usual place a global
+    /// `rustc-wrapper` is set, while presenting the subject as complete.
+    ///
+    /// So the gap is declared rather than half-closed: two builds that differ
+    /// only by a configuration-declared wrapper can share one `subject_digest`.
+    CargoConfigWrapperNotResolved,
     /// At least one executable lives outside both the workspace and the
     /// declared Cargo target directory.
     ///
@@ -1632,6 +1647,9 @@ pub fn discover_cases(
 
     let mut limitations: BTreeSet<UxInventoryLimitation> = BTreeSet::new();
     limitations.insert(UxInventoryLimitation::IgnoreStateNotObservable);
+    // Standing, not conditional: discovery cannot prove the absence of a
+    // configuration-declared wrapper, so the subject never claims to cover one.
+    limitations.insert(UxInventoryLimitation::CargoConfigWrapperNotResolved);
     if !zero_case_targets.is_empty() {
         limitations.insert(UxInventoryLimitation::ZeroCaseTargetPresent);
     }

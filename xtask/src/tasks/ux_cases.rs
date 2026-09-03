@@ -175,11 +175,24 @@ fn file_digest(path: &Path) -> Option<String> {
     Some(format!("sha256:{hex}"))
 }
 
-/// Deterministic description of any configured compiler wrapper.
+/// Deterministic description of any environment-declared compiler wrapper.
 ///
 /// `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER` sit between Cargo and the
-/// compiler; two otherwise identical toolchains with different wrappers are
+/// compiler, so two otherwise identical toolchains with different wrappers are
 /// different build environments and must not share a subject digest.
+///
+/// This reads the **environment only**. A wrapper declared as
+/// `build.rustc-wrapper` in a Cargo `config.toml` — which this repository
+/// documents in `.cargo/config.local.toml.example` — is not seen here, and two
+/// builds differing only by such a wrapper share a subject digest.
+///
+/// That is deliberate rather than overlooked. Cargo resolves the setting across
+/// the workspace file, every parent directory, and `$CARGO_HOME`, with the
+/// environment taking precedence; reading just the workspace file would still
+/// miss `$CARGO_HOME/config.toml`, where a global `rustc-wrapper` usually
+/// lives, while making the subject look complete. The gap is therefore declared
+/// as the `cargo_config_wrapper_not_resolved` limitation instead of being
+/// half-closed. Full resolution is tracked separately.
 fn compiler_wrappers() -> Option<String> {
     let mut declared: Vec<String> = Vec::new();
     for key in ["RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"] {

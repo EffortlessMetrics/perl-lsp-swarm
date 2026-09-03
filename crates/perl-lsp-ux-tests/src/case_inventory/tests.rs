@@ -301,6 +301,27 @@ fn ignored_cases_stay_in_the_denominator_and_the_gap_is_declared() -> TestResult
     Ok(())
 }
 
+/// The subject reads wrappers from the environment only, so a wrapper declared
+/// in a Cargo `config.toml` leaves `subject_digest` unmoved. That gap must be
+/// declared on every inventory rather than inferred from its absence — a
+/// consumer comparing two subject digests has no other way to learn that a
+/// configuration-declared wrapper could differ between them.
+#[test]
+fn every_inventory_declares_that_config_declared_wrappers_are_unresolved() -> TestResult {
+    let executable = exe("ux_scenario_01_simple_file-1111");
+    let stdout =
+        artifact_line("perl-lsp-ux-tests", "test", "ux_scenario_01_simple_file", &executable, &[]);
+    let commands = FixtureCommands::new(stdout).listing(&executable, terse(&["only_case"]));
+
+    let inventory = discover_cases(&commands, &request(UxCiTier::Pr))?;
+    assert!(
+        inventory.limitations.contains(&UxInventoryLimitation::CargoConfigWrapperNotResolved),
+        "the inventory must declare that config-declared wrappers are outside the subject: {:?}",
+        inventory.limitations
+    );
+    Ok(())
+}
+
 #[test]
 fn duplicate_cargo_artifact_messages_describe_one_target() -> TestResult {
     let executable = exe("ux_scenario_01_simple_file-5555");
