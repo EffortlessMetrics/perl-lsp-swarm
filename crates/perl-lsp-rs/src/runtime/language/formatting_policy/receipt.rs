@@ -9,6 +9,12 @@ use perl_lsp_rs_core::tooling::perltidy::native::FormatReasonCode;
 const UNSUPPORTED_SYNTAX_REASON: &str = "unsupported_syntax";
 const UNSUPPORTED_NATIVE_FORMATTING_MESSAGE: &str = "Native formatting left the source unchanged because its syntax is outside the formatter's current safe subset. Format a smaller supported range or select explicit external Perl::Tidy compatibility.";
 
+#[cfg(test)]
+thread_local! {
+    static BEFORE_FORMATTING_NOTIFICATION_HOOK: std::cell::RefCell<Option<Box<dyn Fn()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 impl LspServer {
     pub(super) fn stale_error(
         &self,
@@ -166,7 +172,7 @@ impl LspServer {
     /// The identity includes the canonical URI, source generation, formatting
     /// configuration, and surface. Request options and mixed multi-range plans
     /// are outside this narrow consecutive-refusal claim.
-    fn should_notify_unsupported_syntax(
+    pub(super) fn should_notify_unsupported_syntax(
         &self,
         snapshot: &Snapshot,
         reason: FormatReasonCode,
@@ -193,22 +199,49 @@ impl LspServer {
         })
     }
 
-    pub(super) fn maybe_notify_unsupported_syntax(
+    /// Re-check source currency while holding the document lock through the
+    /// notification enqueue. A separate check followed by `showMessage`
+    /// leaves a race in which `didChange` or `didClose` can commit between the
+    /// two operations and make an obsolete warning observable.
+    pub(super) fn notify_unsupported_syntax_if_current(
         &self,
         snapshot: &Snapshot,
-        decision: &FormattingDecision,
-        disposition: FormatDisposition,
-        edit_count: usize,
-    ) {
-        let notify = self.should_notify_unsupported_syntax(
-            snapshot,
-            decision.outcome.reason,
-            disposition,
-            edit_count,
-        );
-        if notify {
-            self.show_message_or_log(MessageType::Warning, UNSUPPORTED_NATIVE_FORMATTING_MESSAGE);
+        notify: bool,
+        actual_engine: Option<&str>,
+    ) -> Result<(), JsonRpcError> {
+        if !notify {
+            return Ok(());
         }
+
+        let documents = self.documents_guard();
+        let current = self.get_document(&documents, &snapshot.uri).is_some_and(|document| {
+            document.version == snapshot.version
+                && u64::from(document.current_generation()) == snapshot.generation
+        });
+        if !current {
+            drop(documents);
+            return Err(self.stale_error_with_engine(
+                snapshot,
+                "stale_source",
+                "Document changed while formatting was running; no edits were returned.",
+                actual_engine,
+            ));
+        }
+
+        // Keep `documents` alive until after enqueueing the notification. The
+        // lifecycle handlers use the same mutex, so a change or close cannot
+        // interleave in the check-to-notification interval.
+        self.show_message_or_log(MessageType::Warning, UNSUPPORTED_NATIVE_FORMATTING_MESSAGE);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn run_before_formatting_notification_hook(&self) {
+        BEFORE_FORMATTING_NOTIFICATION_HOOK.with(|hook| {
+            if let Some(hook) = hook.borrow().as_ref() {
+                hook();
+            }
+        });
     }
 
     pub(crate) fn clear_formatting_receipt_for_close(&self, uri: &str) {
@@ -261,9 +294,13 @@ impl LspServer {
             Some(outcome),
         );
         self.ensure_current_with_engine(snapshot, Some(actual_engine))?;
-        if notify_unsupported {
-            self.show_message_or_log(MessageType::Warning, UNSUPPORTED_NATIVE_FORMATTING_MESSAGE);
-        }
+        #[cfg(test)]
+        self.run_before_formatting_notification_hook();
+        self.notify_unsupported_syntax_if_current(
+            snapshot,
+            notify_unsupported,
+            Some(actual_engine),
+        )?;
 
         match disposition {
             FormatDisposition::Applied if edit_count > 0 => {
@@ -690,6 +727,52 @@ mod tests {
         verify(
             show_message_count(&messages) == 0,
             format!("stale projection emitted an obsolete warning: {messages:?}"),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn source_change_after_final_check_cannot_emit_unsupported_warning() -> TestResult {
+        let (server, output) = server_with_output();
+        let server = Arc::new(server);
+        let uri = "file:///post-check-stale-native-formatting.pl";
+        server.test_apply_did_open(uri, "sub f {\nreturn 1;\n}\n", 1)?;
+
+        let params = document_formatting_params(uri, 1);
+        let snapshot = server.admit(Surface::Document, &params)?;
+        // Seed the prior receipt so this unsupported decision is eligible to
+        // warn, without depending on a separate handler invocation.
+        server.record_formatting_receipt(
+            &snapshot,
+            "blocked",
+            json!(UNSUPPORTED_SYNTAX_REASON),
+            "native",
+            "no_edit",
+            0,
+            None,
+        );
+        let changed_server = Arc::clone(&server);
+        BEFORE_FORMATTING_NOTIFICATION_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                changed_server
+                    .test_replace_document_without_index(uri, "my $x = 1;\n", 2)
+                    .expect("test interleaving should commit the document replacement");
+            }));
+        });
+        server.ensure_current_with_engine(&snapshot, Some("native"))?;
+        server.run_before_formatting_notification_hook();
+        let result = server.notify_unsupported_syntax_if_current(&snapshot, true, Some("native"));
+        BEFORE_FORMATTING_NOTIFICATION_HOOK.with(|hook| *hook.borrow_mut() = None);
+        let error = result.err().ok_or_else(|| {
+            io::Error::other("post-check stale projection unexpectedly succeeded")
+        })?;
+        verify(error.code == CONTENT_MODIFIED, format!("wrong stale error: {error:?}"))?;
+
+        drop(server);
+        let messages = outbound_messages(&output.lock())?;
+        verify(
+            show_message_count(&messages) == 0,
+            format!("post-check source change emitted an obsolete warning: {messages:?}"),
         )?;
         Ok(())
     }

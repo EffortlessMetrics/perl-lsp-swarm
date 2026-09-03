@@ -627,14 +627,15 @@ pub(super) fn handle(
             .and_then(Value::as_str)
             .unwrap_or("unknown")
             .to_string();
-        if uniformly_unsupported_refusals(&decisions) {
-            server.maybe_notify_unsupported_syntax(
+        let notify_unsupported = uniformly_unsupported_refusals(&decisions)
+            && server.should_notify_unsupported_syntax(
                 &snapshot,
-                blocked,
+                blocked.outcome.reason,
                 FormatDisposition::Refused,
                 0,
             );
-        }
+        #[cfg(test)]
+        server.run_before_formatting_notification_hook();
         server.record_formatting_receipt(
             &snapshot,
             "blocked",
@@ -644,6 +645,11 @@ pub(super) fn handle(
             0,
             Some(plan_evidence(&plan, outcomes, None)),
         );
+        server.notify_unsupported_syntax_if_current(
+            &snapshot,
+            notify_unsupported,
+            Some(&engine),
+        )?;
         return Ok(Some(json!([])));
     }
 
