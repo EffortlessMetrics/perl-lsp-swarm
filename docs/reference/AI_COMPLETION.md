@@ -232,9 +232,11 @@ the server falls back to deterministic pattern-based completions when
   concurrent request, rapid typing will hit both limits. Exceeding
   `rateLimitRps` is reported as `RateLimited` ("too frequent"); exceeding
   `maxInflight` is reported as `Saturated` ("nowhere to run"). Both are
-  handled silently and fall back to deterministic completions.
+  handled silently, and what happens next depends on `fallback`: with
+  `fallback` enabled (the default) the request falls back to deterministic
+  completions; with `fallback` disabled it returns no completion at all.
 - Requests never queue for a slot. If `maxInflight` is already reached the
-  request falls back immediately rather than waiting behind a remote call.
+  request resolves immediately rather than waiting behind a remote call.
   Waiting would hold one of the language server's four shared read slots — the
   same pool that serves hover and go-to-definition — so a busy AI backend would
   slow down unrelated editor features.

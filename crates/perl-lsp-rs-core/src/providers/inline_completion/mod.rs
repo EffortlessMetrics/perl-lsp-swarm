@@ -350,6 +350,18 @@ pub struct InlineCompletionList {
 // ── AI backend interface ─────────────────────────────────────────────────────
 
 /// Error type for backend operations.
+///
+/// # The 0.18.0 `Saturated` addition
+///
+/// This enum is not `#[non_exhaustive]`, so a downstream `match` that
+/// enumerates every variant without a wildcard arm stops compiling when a
+/// variant is added. [`BackendError::Saturated`] (`#8300`) is such an addition.
+///
+/// This crate is published and pre-1.0, so the minor component is the
+/// breaking-change vehicle, and the change lands in the 0.18.0 release
+/// (`docs/releases/v0.18-release-topology.md`) rather than a patch. Downstream
+/// matches that already carry a `_` arm — the shape recommended for an error
+/// enum that is expected to grow — need no change.
 #[derive(Debug)]
 pub enum BackendError {
     /// Network or IO error.

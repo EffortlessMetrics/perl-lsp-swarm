@@ -116,11 +116,15 @@ impl InflightGate {
     pub fn try_acquire(&self) -> Option<InflightPermit<'_>> {
         let mut state = self.lock();
         if state.active >= self.capacity {
-            state.saturated_rejections += 1;
+            // Lifetime counters saturate rather than wrap. u64 makes overflow
+            // unreachable in practice, but a telemetry counter that panics an
+            // overflow-checked build, or silently resets, is never the right
+            // failure mode for a diagnostic — and `release` already saturates.
+            state.saturated_rejections = state.saturated_rejections.saturating_add(1);
             return None;
         }
         state.active += 1;
-        state.admitted += 1;
+        state.admitted = state.admitted.saturating_add(1);
         state.peak_active = state.peak_active.max(state.active);
         Some(InflightPermit { gate: self })
     }
@@ -138,7 +142,7 @@ impl InflightGate {
     fn release(&self) {
         let mut state = self.lock();
         state.active = state.active.saturating_sub(1);
-        state.released += 1;
+        state.released = state.released.saturating_add(1);
     }
 }
 
