@@ -631,7 +631,7 @@ impl MirrorPeerBridge {
     /// [`Self::dispatch_with_capability_floor`], which applies the #9581
     /// floor ahead of this route match; this body stays the fixed,
     /// table-owned shape the protocol-authority gate pins.
-    pub fn dispatch(
+    fn dispatch(
         &mut self,
         request_seq: i64,
         command: &str,
