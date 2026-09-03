@@ -2487,3 +2487,147 @@ fn a_deletion_without_renumbering_is_still_rejected() -> Result<(), Box<dyn Erro
     );
     Ok(())
 }
+
+// ── Limitations restating a typed field (found by Devin review) ───────────
+
+/// Build a hop carrying `limitations` against the given honesty fields.
+///
+/// The outcome is a parameter because completeness already constrains it under
+/// law 3 — an open aggregate takes `UnknownMember` and a closed one
+/// `AbsentMember` — and a fixture that ignored that would fail on law 3 while
+/// appearing to exercise law 11.
+fn hop_with_limitations(
+    completeness: StructuralAggregateCompleteness,
+    disposition: StructuralAggregateDisposition,
+    outcome: StructuralHopOutcome,
+    limitations: Vec<StructuralAccessLimitation>,
+) -> Result<StructuralAccessHop, StructuralAccessContractError> {
+    StructuralAccessHop::new(
+        0,
+        hash_variable(),
+        StructuralAccessOperator::HashSlot,
+        StructuralAccessSelector::StaticKey("k".to_string()),
+        spelling("{k}", 0, 3)?,
+        outcome,
+        StructuralHopCertainty::Possible,
+        completeness,
+        disposition,
+        SemanticProducer::SemanticAnalyzer,
+        SemanticProvenance::Known(crate::Provenance::ExactAst),
+        SemanticConfidence::Known(Confidence::High),
+        SemanticReasonCode::ExactSource,
+        StructuralAccessBudget::new(10, 9)?,
+        limitations,
+    )
+}
+
+#[test]
+fn an_open_aggregate_limitation_cannot_annotate_a_closed_aggregate() -> Result<(), Box<dyn Error>> {
+    // `OpenAggregate` says the member set is not closed; `Closed` says every
+    // member is known. One record cannot say both.
+    let error = contract_error(hop_with_limitations(
+        StructuralAggregateCompleteness::Closed,
+        StructuralAggregateDisposition::Stable,
+        StructuralHopOutcome::AbsentMember,
+        vec![StructuralAccessLimitation::OpenAggregate],
+    ))?;
+    assert!(
+        matches!(error, StructuralAccessContractError::ContradictoryStatus(_)),
+        "an open-aggregate limitation on a closed aggregate must be rejected, got {error:?}"
+    );
+    // Negative control: the same limitation on the aggregate it describes.
+    hop_with_limitations(
+        StructuralAggregateCompleteness::Open,
+        StructuralAggregateDisposition::Stable,
+        StructuralHopOutcome::UnknownMember,
+        vec![StructuralAccessLimitation::OpenAggregate],
+    )?;
+    Ok(())
+}
+
+#[test]
+fn a_mutation_limitation_cannot_annotate_a_stable_aggregate() -> Result<(), Box<dyn Error>> {
+    let error = contract_error(hop_with_limitations(
+        StructuralAggregateCompleteness::Open,
+        StructuralAggregateDisposition::Stable,
+        StructuralHopOutcome::UnknownMember,
+        vec![StructuralAccessLimitation::MutatedAggregate],
+    ))?;
+    assert!(
+        matches!(error, StructuralAccessContractError::ContradictoryStatus(_)),
+        "a mutation limitation on a stable aggregate must be rejected, got {error:?}"
+    );
+    // Both dispositions that genuinely include mutation must still validate.
+    hop_with_limitations(
+        StructuralAggregateCompleteness::Open,
+        StructuralAggregateDisposition::Mutated,
+        StructuralHopOutcome::UnknownMember,
+        vec![StructuralAccessLimitation::MutatedAggregate],
+    )?;
+    hop_with_limitations(
+        StructuralAggregateCompleteness::Open,
+        StructuralAggregateDisposition::EscapedAndMutated,
+        StructuralHopOutcome::UnknownMember,
+        vec![StructuralAccessLimitation::MutatedAggregate],
+    )?;
+    Ok(())
+}
+
+#[test]
+fn an_escape_limitation_cannot_annotate_an_unescaped_aggregate() -> Result<(), Box<dyn Error>> {
+    // `Mutated` is the discriminating case: it is not `Stable`, but it is not
+    // escape either, so a law testing merely "not stable" would wrongly pass.
+    let error = contract_error(hop_with_limitations(
+        StructuralAggregateCompleteness::Open,
+        StructuralAggregateDisposition::Mutated,
+        StructuralHopOutcome::UnknownMember,
+        vec![StructuralAccessLimitation::EscapedAggregate],
+    ))?;
+    assert!(
+        matches!(error, StructuralAccessContractError::ContradictoryStatus(_)),
+        "an escape limitation on a merely mutated aggregate must be rejected, got {error:?}"
+    );
+    hop_with_limitations(
+        StructuralAggregateCompleteness::Open,
+        StructuralAggregateDisposition::Escaped,
+        StructuralHopOutcome::UnknownMember,
+        vec![StructuralAccessLimitation::EscapedAggregate],
+    )?;
+    Ok(())
+}
+
+#[test]
+fn limitations_that_restate_no_field_stay_unconstrained() -> Result<(), Box<dyn Error>> {
+    // The law must not widen. `StaleDependency` is about a dependency's
+    // generation, not this aggregate's, and `BudgetExhausted` as a limitation
+    // is deliberately weaker than the outcome of the same name — only that
+    // outcome forces zero remaining units. Both must annotate a stable, closed
+    // aggregate with units left over.
+    hop_with_limitations(
+        StructuralAggregateCompleteness::Closed,
+        StructuralAggregateDisposition::Stable,
+        StructuralHopOutcome::AbsentMember,
+        vec![
+            StructuralAccessLimitation::DynamicSelector,
+            StructuralAccessLimitation::RecoveredSyntax,
+            StructuralAccessLimitation::BudgetExhausted,
+            StructuralAccessLimitation::StaleDependency,
+            StructuralAccessLimitation::CompatibilityBridge,
+            StructuralAccessLimitation::Unsupported,
+        ],
+    )?;
+    Ok(())
+}
+
+#[test]
+fn a_contradictory_limitation_cannot_survive_the_transport_boundary() -> Result<(), Box<dyn Error>>
+{
+    let mut value = serde_json::to_value(nested_chain()?)?;
+    value["hops"][0]["limitations"] = serde_json::json!(["MutatedAggregate"]);
+    let decoded: StructuralAccessChain = serde_json::from_value(value)?;
+    assert!(
+        decoded.validate().is_err(),
+        "a limitation contradicting the disposition must not survive transport"
+    );
+    Ok(())
+}

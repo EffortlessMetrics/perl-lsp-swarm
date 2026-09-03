@@ -299,6 +299,13 @@ fn every_non_selecting_outcome_round_trips() -> Result<(), Box<dyn Error>> {
 fn every_limitation_round_trips_and_stays_canonical() -> Result<(), Box<dyn Error>> {
     // Supplied deliberately out of order and with a duplicate: the constructor
     // canonicalises, and the canonical order must survive the wire.
+    //
+    // The disposition is `EscapedAndMutated` and the completeness `Open`
+    // because this hop carries the `EscapedAggregate`, `MutatedAggregate` and
+    // `OpenAggregate` limitations, each of which restates one of those fields.
+    // An earlier version of this fixture paired them with a `Stable`
+    // aggregate, which made the all-variants coverage rest on a record the
+    // contract should never have accepted.
     let chain = StructuralAccessChain::new(
         StructuralAccessSubject::new(DOCUMENT, SourceGeneration::known("g"), None, None)?,
         vec![hop(
@@ -313,7 +320,7 @@ fn every_limitation_round_trips_and_stays_canonical() -> Result<(), Box<dyn Erro
             StructuralHopOutcome::UnknownMember,
             StructuralHopCertainty::Possible,
             StructuralAggregateCompleteness::Open,
-            StructuralAggregateDisposition::Stable,
+            StructuralAggregateDisposition::EscapedAndMutated,
             vec![
                 StructuralAccessLimitation::Unsupported,
                 StructuralAccessLimitation::CompatibilityBridge,

@@ -233,6 +233,14 @@ impl StructuralAccessHop {
     ///     `$`, `&` and `*` all dereference legitimately. This is a
     ///     reachability law, so it is gated on the outcome claiming a member
     ///     answer.
+    /// 11. A limitation that restates a typed field must not contradict it.
+    ///     `OpenAggregate`, `MutatedAggregate` and `EscapedAggregate` each
+    ///     assert word for word what a completeness or disposition field on
+    ///     this same record asserts, so carrying one binds that field. The
+    ///     law is one-directional — omitting a limitation asserts nothing —
+    ///     and covers only those three; the remaining limitations either
+    ///     restate no field or are deliberately weaker than the outcome that
+    ///     shares their name.
     ///
     /// # Errors
     /// Returns the first violated law as a [`StructuralAccessContractError`].
@@ -456,6 +464,65 @@ impl StructuralAccessHop {
             return Err(StructuralAccessContractError::ContradictoryStatus(
                 "limitations must be sorted and free of duplicates",
             ));
+        }
+
+        // Law 11: a limitation that restates a typed field must not contradict
+        // it. Three limitations assert the same proposition as a field on this
+        // same record, word for word, so a record carrying both must agree:
+        //
+        // - `OpenAggregate` says "the member set is not closed", which is what
+        //   `StructuralAggregateCompleteness::Open` says;
+        // - `MutatedAggregate` says "written after construction", which is what
+        //   `StructuralAggregateDisposition::Mutated` says;
+        // - `EscapedAggregate` says "reached unanalyzed code", which is what
+        //   `StructuralAggregateDisposition::Escaped` says.
+        //
+        // A consumer reading the limitation and a consumer reading the field
+        // would otherwise reach opposite conclusions from one record, which is
+        // the collapse this contract exists to prevent.
+        //
+        // The law is deliberately one-directional. Carrying the limitation
+        // asserts the proposition and so binds the field; omitting it asserts
+        // nothing, because limitations are the producer's notes rather than an
+        // exhaustive projection, and requiring one for every `Open` aggregate
+        // would reject honest records that simply did not annotate.
+        //
+        // The other limitations are *not* covered, and deliberately:
+        // `StaleDependency` is about a dependency's generation while the
+        // `StaleGeneration` outcome is about this aggregate against its own
+        // subject — different claims that may hold independently — and
+        // `BudgetExhausted` as a limitation is weaker than the outcome by the
+        // design recorded above, where only the outcome forces zero remaining
+        // units. `DynamicSelector`, `RecoveredSyntax`, `CompatibilityBridge`
+        // and `Unsupported` restate no field at all.
+        for limitation in &self.limitations {
+            let contradiction = match limitation {
+                StructuralAccessLimitation::OpenAggregate => {
+                    matches!(self.completeness, StructuralAggregateCompleteness::Closed)
+                        .then_some("an open-aggregate limitation contradicts a closed aggregate")
+                }
+                StructuralAccessLimitation::MutatedAggregate => (!matches!(
+                    self.disposition,
+                    StructuralAggregateDisposition::Mutated
+                        | StructuralAggregateDisposition::EscapedAndMutated
+                ))
+                .then_some("a mutated-aggregate limitation contradicts an unmutated aggregate"),
+                StructuralAccessLimitation::EscapedAggregate => (!matches!(
+                    self.disposition,
+                    StructuralAggregateDisposition::Escaped
+                        | StructuralAggregateDisposition::EscapedAndMutated
+                ))
+                .then_some("an escaped-aggregate limitation contradicts an unescaped aggregate"),
+                StructuralAccessLimitation::DynamicSelector
+                | StructuralAccessLimitation::RecoveredSyntax
+                | StructuralAccessLimitation::BudgetExhausted
+                | StructuralAccessLimitation::StaleDependency
+                | StructuralAccessLimitation::CompatibilityBridge
+                | StructuralAccessLimitation::Unsupported => None,
+            };
+            if let Some(reason) = contradiction {
+                return Err(StructuralAccessContractError::ContradictoryStatus(reason));
+            }
         }
 
         Ok(())
