@@ -839,7 +839,25 @@ fn capture_covers_whole_value(raw_args: &str, start: usize, end: usize) -> bool 
         _ => &raw_args[end..],
     };
 
-    matches!(after_value.trim_start().chars().next(), Some(',' | '}'))
+    matches!(skip_blanks_and_comments(after_value).chars().next(), Some(',' | '}'))
+}
+
+/// Skip whitespace and Perl comments at the front of `text`.
+///
+/// A `use` statement may span lines and carry comments, so a complete value can
+/// be separated from its entry terminator by one. Requiring the terminator to
+/// follow immediately would read `{-as => 'my_ok' # alias` as a continuation
+/// and cost the statement its symbols.
+///
+/// Only reached after a complete value, where a `#` can only open a comment —
+/// this is not a general comment stripper and never sees a `$#array` sigil or a
+/// `#` inside a string.
+fn skip_blanks_and_comments(text: &str) -> &str {
+    let mut rest = text.trim_start();
+    while let Some(comment) = rest.strip_prefix('#') {
+        rest = comment.find('\n').map_or("", |line_end| &comment[line_end..]).trim_start();
+    }
+    rest
 }
 
 /// Resolve the imported symbols and pragma effect of a single Test2 `use`
