@@ -117,7 +117,10 @@ class SublimePerlDapAdapterJourney(DeferrableTestCase):
         }
         transport = _complete_immediate(adapter.start(log, configuration))
         self.assertIsInstance(transport, dap.StdioTransport)
-        self.assertEqual(transport.command, [str(self.binary), "--stdio"])
+        self.assertEqual(
+            transport.command,
+            [str(self.binary), "--stdio", "--trusted-root", str(self.fixture.parent)],
+        )
         self.assertEqual(transport.cwd, str(self.fixture.parent))
 
         snippets = adapter.configuration_snippets
@@ -145,7 +148,10 @@ class SublimePerlDapAdapterJourney(DeferrableTestCase):
         self.assertIsNone(process.process.poll(), "Debugger did not keep perl-dap running on stdio")
         launched_pid = process.pid
         launched_args = list(process.process.args)
-        self.assertEqual(launched_args, [str(self.binary), "--stdio"])
+        self.assertEqual(
+            launched_args,
+            [str(self.binary), "--stdio", "--trusted-root", str(self.fixture.parent)],
+        )
         transport.dispose()
         self.assertIsNotNone(process.process.poll(), "Debugger left the perl-dap process alive")
 

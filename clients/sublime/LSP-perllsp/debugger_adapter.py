@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import sublime
@@ -155,10 +156,11 @@ def register_debugger_adapter() -> bool:
                 core_error = getattr(dap, "Error", RuntimeError)
                 raise core_error(str(error)) from error
 
-            command = dap_command(binary)
+            cwd = configuration.get("cwd") if hasattr(configuration, "get") else None
+            trusted_root = Path(cwd) if isinstance(cwd, str) and cwd else None
+            command = dap_command(binary, trusted_root)
             if hasattr(log, "info"):
                 log.info(f"Using perl-dap `{binary}` over stdio")
-            cwd = configuration.get("cwd") if hasattr(configuration, "get") else None
             return StdioTransport(command=command, cwd=cwd)
 
     _REGISTERED_CLASS = PerlDapAdapter

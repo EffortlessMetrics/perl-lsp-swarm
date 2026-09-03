@@ -110,6 +110,7 @@ impl DapWorkflowSession {
         let mut adapter = DebugAdapter::new();
         let (tx, rx) = sync_channel(64);
         adapter.set_event_sender(tx);
+        install_unbounded_test_authority(&adapter);
 
         let mut session = Self {
             adapter,
@@ -2933,4 +2934,23 @@ pub fn wait_for_event(
             }
         }
     }
+}
+
+/// Install an explicitly unbounded startup authority (#8656).
+///
+/// Workflow scenarios exercise debugging behavior, not the launch-authority
+/// contract; without an installed authority every launch is refused.
+pub fn install_unbounded_test_authority(adapter: &DebugAdapter) {
+    use perl_dap::{
+        LaunchAuthority, LaunchAuthoritySource, LaunchAuthorityStartup, UnboundedAcknowledgement,
+    };
+    let authority = LaunchAuthority::resolve(&LaunchAuthorityStartup {
+        trusted_roots: Vec::new(),
+        allow_unbounded: Some(UnboundedAcknowledgement::new(
+            LaunchAuthoritySource::CommandLine,
+            "test: unbounded session",
+        )),
+    })
+    .expect("test authority resolution");
+    adapter.set_launch_authority(authority);
 }

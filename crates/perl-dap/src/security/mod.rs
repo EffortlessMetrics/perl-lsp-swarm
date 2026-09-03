@@ -16,6 +16,13 @@
 use perl_parser_core::path_security::{WorkspacePathError, validate_workspace_path};
 use std::path::{Path, PathBuf};
 
+pub mod launch_authority;
+
+pub use launch_authority::{
+    LaunchAuthority, LaunchAuthorityError, LaunchAuthorityMode, LaunchAuthorityReceipt,
+    LaunchAuthoritySource, LaunchAuthorityStartup, TrustedRoot, UnboundedAcknowledgement,
+};
+
 /// Security validation errors
 #[derive(Debug, PartialEq, thiserror::Error)]
 pub enum SecurityError {

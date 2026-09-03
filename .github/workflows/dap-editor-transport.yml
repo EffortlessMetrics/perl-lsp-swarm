@@ -118,6 +118,13 @@ jobs:
             --runtime-receipt target/receipts/dap-editor-transport-security.json \
             --canary dap-10567-peer-token-canary
 
+      - name: Re-materialize inventory receipt for publication
+        run: |
+          python3 scripts/ci/dap_editor_transport_inventory.py check \
+            --root . \
+            --manifest .ci/dap/editor-transport-inventory.v1.json \
+            --receipt target/receipts/dap-editor-transport.json
+
       - name: Publish inventory summary
         shell: bash
         run: |

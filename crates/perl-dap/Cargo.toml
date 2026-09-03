@@ -39,6 +39,10 @@ perl-source-identity = { workspace = true }
 # Error handling
 anyhow.workspace = true
 
+# Stable authority/digest identities for the launch-authority contract (#8656,
+# previously the #9590 public stdio proof receipt dev-dependency)
+sha2.workspace = true
+
 # OS-backed entropy for external-peer session bearer tokens (#6949)
 getrandom = "0.4.2"
 
@@ -78,9 +82,6 @@ criterion.workspace = true
 
 # Test fixtures
 tempfile.workspace = true
-
-# Exact subject-identity digests for the #9590 public stdio proof receipt
-sha2.workspace = true
 
 perl-tdd-support = { workspace = true }
 

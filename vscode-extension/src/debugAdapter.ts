@@ -656,7 +656,10 @@ function resolveExternalPeerListenBind(
  * This function intentionally remains a pure argv projection for unit tests and
  * callers that have already validated the explicit backend selection.
  */
-export function buildDapExecutableArgs(config: vscode.DebugConfiguration | undefined): string[] {
+export function buildDapExecutableArgs(
+  config: vscode.DebugConfiguration | undefined,
+  hostWorkspaceRoot?: string,
+): string[] {
   const peer = resolveExternalPeerAddress(config);
   if (peer) {
     return ['--external-peer', peer];
@@ -664,6 +667,12 @@ export function buildDapExecutableArgs(config: vscode.DebugConfiguration | undef
   const listen = resolveExternalPeerListenBind(config);
   if (listen) {
     return ['--external-peer-listen', listen];
+  }
+  // The editor workspace is host-owned startup authority. Supplying it to
+  // perl-dap keeps native launches usable without allowing launch.json data to
+  // create or widen authority.
+  if (hostWorkspaceRoot && hostWorkspaceRoot.trim().length > 0) {
+    return ['--trusted-root', hostWorkspaceRoot];
   }
   return [];
 }
@@ -705,7 +714,10 @@ export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
       return undefined;
     }
 
-    const args = buildDapExecutableArgs(session?.configuration);
+    const args = buildDapExecutableArgs(
+      session?.configuration,
+      session?.workspaceFolder?.uri.fsPath,
+    );
     return new vscode.DebugAdapterExecutable(dapPath, args, {
       env: { ...process.env, RUST_LOG: 'debug' },
     });

@@ -53,9 +53,10 @@ function asDebugConfiguration(value: Record<string, unknown>): vscode.DebugConfi
   return value as unknown as vscode.DebugConfiguration;
 }
 
-function buildDapExecutableArgs(value: unknown): string[] {
+function buildDapExecutableArgs(value: unknown, hostWorkspaceRoot?: string): string[] {
   return productionBuildDapExecutableArgs(
     value as unknown as vscode.DebugConfiguration | undefined,
+    hostWorkspaceRoot,
   );
 }
 
@@ -723,6 +724,13 @@ describe('buildDapExecutableArgs', () => {
   test('the native backend (or absent debuggerBackend) yields no bridge args', () => {
     expect(buildDapExecutableArgs({ debuggerBackend: 'native', program: '/x.pl' })).toEqual([]);
     expect(buildDapExecutableArgs({ request: 'launch', program: '/x.pl' })).toEqual([]);
+  });
+
+  test('native editor sessions receive host-owned workspace authority', () => {
+    expect(buildDapExecutableArgs({ request: 'launch', program: '/x.pl' }, '/workspace')).toEqual([
+      '--trusted-root',
+      '/workspace',
+    ]);
   });
 
   test('never emits an editor --socket or --port flag', () => {
