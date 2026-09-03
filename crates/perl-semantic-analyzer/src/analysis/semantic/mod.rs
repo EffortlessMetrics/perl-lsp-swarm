@@ -334,8 +334,8 @@ impl SemanticAnalyzer {
     /// `class_models` therefore lets a later segment hide an earlier one's
     /// parents, roles, and methods. Perl has one package here, so the segments
     /// are combined before any resolution decision is made. Repeated methods
-    /// are replaced by their later declaration, and a later non-empty ancestry
-    /// declaration replaces the earlier parent/role list for that package.
+    /// are replaced by their later declaration, and later explicit ancestry or
+    /// MRO declarations replace earlier package state.
     fn merged_class_models(&self) -> Vec<ClassModel> {
         let mut merged: Vec<ClassModel> = Vec::new();
         for model in &self.class_models {
@@ -366,9 +366,10 @@ impl SemanticAnalyzer {
                 existing.methods.push(method.clone());
             }
             existing.modifiers.extend(model.modifiers.iter().cloned());
-            // `use mro 'c3'` in any segment governs the whole package.
-            if matches!(model.mro, MethodResolutionOrder::C3) {
-                existing.mro = MethodResolutionOrder::C3;
+            // An explicit `use mro 'dfs'` must be able to reset an earlier
+            // explicit C3. Silent reopened segments carry no MRO decision.
+            if model.mro_explicit {
+                existing.mro = model.mro;
             }
         }
         merged
@@ -2959,6 +2960,56 @@ my %config = (key => "value");
             .resolve_inherited_method_hover("Child", "save")
             .ok_or("inherited hover not found")?;
         assert_eq!(hover.signature, "sub Base::save");
+        Ok(())
+    }
+
+    #[test]
+    fn test_reopened_package_explicit_dfs_replaces_prior_c3_for_navigation_and_hover()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = concat!(
+            "package Root;\n",
+            "use Moo;\n",
+            "sub save { 1 }\n",
+            "package Left;\n",
+            "use Moo;\n",
+            "extends 'Root';\n",
+            "package Right;\n",
+            "use Moo;\n",
+            "extends 'Root';\n",
+            "sub save { 2 }\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "extends 'Left', 'Right';\n",
+            "use mro 'c3';\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "use mro 'dfs';\n",
+            "before 'save' => sub { };\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let child = analyzer
+            .merged_class_models()
+            .into_iter()
+            .find(|model| model.name == "Child")
+            .ok_or("Child model not found")?;
+        assert_eq!(child.mro, MethodResolutionOrder::Dfs);
+
+        let chain = analyzer.resolve_parent_chain("Child").ok_or("parent chain")?;
+        assert_eq!(chain, vec!["Left", "Root", "Right"]);
+
+        let offset = modifier_target_offset(code, "before 'save'", "save")
+            .ok_or("modifier target not found")?;
+        let root_save = code.find("sub save { 1 }").ok_or("Root::save not found")?;
+        let target = analyzer.find_definition(offset).ok_or("modifier definition")?;
+        assert_eq!(target.location.start, root_save);
+
+        let hover = analyzer
+            .resolve_inherited_method_hover("Child", "save")
+            .ok_or("inherited hover not found")?;
+        assert_eq!(hover.signature, "sub Root::save");
         Ok(())
     }
 

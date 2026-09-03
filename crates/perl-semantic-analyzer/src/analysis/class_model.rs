@@ -218,6 +218,8 @@ pub struct ClassModel {
     pub parents: Vec<String>,
     /// Method-resolution order for inherited method lookup.
     pub mro: MethodResolutionOrder,
+    /// Whether this package segment explicitly selected its MRO.
+    pub(crate) mro_explicit: bool,
     /// Roles consumed via `with 'Role'`
     pub roles: Vec<String>,
     /// Method modifiers (before/after/around/override/augment)
@@ -277,6 +279,7 @@ pub struct ClassModelBuilder {
     current_adjusts: Vec<MethodInfo>,
     current_parents: Vec<String>,
     current_mro: MethodResolutionOrder,
+    current_mro_explicit: bool,
     current_roles: Vec<String>,
     current_modifiers: Vec<MethodModifier>,
     current_exports: Vec<String>,
@@ -308,6 +311,7 @@ impl ClassModelBuilder {
             current_adjusts: Vec::new(),
             current_parents: Vec::new(),
             current_mro: MethodResolutionOrder::Dfs,
+            current_mro_explicit: false,
             current_roles: Vec::new(),
             current_modifiers: Vec::new(),
             current_exports: Vec::new(),
@@ -352,6 +356,7 @@ impl ClassModelBuilder {
                 adjusts: std::mem::take(&mut self.current_adjusts),
                 parents: std::mem::take(&mut self.current_parents),
                 mro: self.current_mro,
+                mro_explicit: self.current_mro_explicit,
                 roles: std::mem::take(&mut self.current_roles),
                 modifiers: std::mem::take(&mut self.current_modifiers),
                 exports: std::mem::take(&mut self.current_exports),
@@ -368,6 +373,7 @@ impl ClassModelBuilder {
             self.current_adjusts.clear();
             self.current_parents.clear();
             self.current_mro = MethodResolutionOrder::Dfs;
+            self.current_mro_explicit = false;
             self.current_roles.clear();
             self.current_modifiers.clear();
             self.current_exports.clear();
@@ -392,6 +398,7 @@ impl ClassModelBuilder {
                 self.current_framework =
                     self.framework_map.get(name).copied().unwrap_or(Framework::None);
                 self.current_mro = MethodResolutionOrder::Dfs;
+                self.current_mro_explicit = false;
                 self.current_uses_exporter = false;
 
                 if let Some(block) = block {
@@ -416,6 +423,7 @@ impl ClassModelBuilder {
 
             NodeKind::No { module, .. } if module == "mro" => {
                 self.current_mro = MethodResolutionOrder::Dfs;
+                self.current_mro_explicit = true;
             }
 
             // `our @ISA = qw(Parent1 Parent2);` / `our @EXPORT = qw(...);` / `our @EXPORT_OK = qw(...);`
@@ -507,6 +515,7 @@ impl ClassModelBuilder {
                     Framework::NativeClass
                 };
                 self.current_mro = MethodResolutionOrder::Dfs;
+                self.current_mro_explicit = false;
                 self.framework_map.insert(name.clone(), self.current_framework);
                 self.current_package_aliases.clear();
                 // Populate parent classes from `:isa(Parent)` attributes
@@ -690,6 +699,7 @@ impl ClassModelBuilder {
 
         if args.is_empty() {
             self.current_mro = MethodResolutionOrder::Dfs;
+            self.current_mro_explicit = true;
             return;
         }
 
@@ -698,10 +708,12 @@ impl ClassModelBuilder {
             match trimmed {
                 "c3" => {
                     self.current_mro = MethodResolutionOrder::C3;
+                    self.current_mro_explicit = true;
                     return;
                 }
                 "dfs" => {
                     self.current_mro = MethodResolutionOrder::Dfs;
+                    self.current_mro_explicit = true;
                     return;
                 }
                 _ => {}
@@ -2314,6 +2326,7 @@ has [qw(first_name last_name)] => (is => 'ro');
             adjusts: Vec::new(),
             parents: Vec::new(),
             mro: MethodResolutionOrder::Dfs,
+            mro_explicit: false,
             roles: Vec::new(),
             modifiers: Vec::new(),
             exports: Vec::new(),
