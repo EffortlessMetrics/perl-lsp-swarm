@@ -216,6 +216,16 @@ pub struct SymbolTable {
     current_package: String,
 }
 
+/// Return `true` if `name` introduces a Moo/Moose method modifier.
+///
+/// This module mints the synthetic modifier symbols, so it owns the keyword set.
+/// Consumers that need to recognise those symbols later (for example definition
+/// redirection in `analysis::semantic`) share this predicate rather than
+/// repeating the list and drifting from it.
+pub(crate) fn is_method_modifier_keyword(name: &str) -> bool {
+    matches!(name, "before" | "after" | "around" | "override" | "augment")
+}
+
 /// Return `true` if the method is one of Perl's always-available `UNIVERSAL` methods.
 ///
 /// Used in analyze/index workflow stages to keep method lookup behavior
@@ -1618,7 +1628,7 @@ impl SymbolExtractor {
     }
 
     fn is_moose_method_modifier(name: &str) -> bool {
-        matches!(name, "before" | "after" | "around" | "override" | "augment")
+        is_method_modifier_keyword(name)
     }
 
     /// Detect Moo/Moose `extends 'Parent'` and `with 'Role'` declarations.
