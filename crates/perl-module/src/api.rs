@@ -31,8 +31,8 @@ pub use crate::provenance::detect_module_provenance;
 pub use crate::provenance::module_provenance_root;
 
 // request module — validated requests and typed resolution outcomes (#8497)
+pub use crate::request::AbsenceEvidence;
 pub use crate::request::DynamicModuleRequest;
-pub use crate::request::ExactResolutionEvidence;
 pub use crate::request::LegacySeparatorProfile;
 pub use crate::request::ModuleFilePath;
 pub use crate::request::ModuleFilePathError;
@@ -45,6 +45,7 @@ pub use crate::request::ModuleResolutionOutcome;
 pub use crate::request::PackageSeparatorForm;
 pub use crate::request::PartialModuleRequest;
 pub use crate::request::RequestBoundary;
+pub use crate::request::ResolvedEvidence;
 pub use crate::request::outcome_from_uri_resolution;
 pub use crate::request::uri_resolution_from_outcome;
 
