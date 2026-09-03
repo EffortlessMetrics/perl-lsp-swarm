@@ -776,6 +776,38 @@ review_after = "2026-08-07"
 # =============================================================================
 
 [[allow]]
+id = "non-rust-rename-subroutine-diagnostics-gold"
+path = "test_corpus/gold/rename_subroutine/expected.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "parser/lsp-fixtures"
+reason = "Hand-verified diagnostics gold sidecar for the rename_subroutine Perl corpus fixture; the perl-corpus loader and editor-intelligence scorecard consume it as a regression oracle."
+covered_by = [
+  "cargo test -p perl-corpus --test gold_repository_contract --locked",
+  "cargo test -p perl-lsp-rs --test editor_intelligence_scorecard --locked",
+]
+created = "2026-09-02"
+review_after = "2026-12-02"
+
+[[allow]]
+id = "non-rust-rename-subroutine-rename-gold"
+path = "test_corpus/gold/rename_subroutine/expected_rename.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "parser/lsp-fixtures"
+reason = "Hand-verified rename gold sidecar for the rename_subroutine Perl corpus fixture; the perl-corpus loader and editor-intelligence scorecard consume it as a regression oracle."
+covered_by = [
+  "cargo test -p perl-corpus --test gold_repository_contract --locked",
+  "cargo test -p perl-lsp-rs --test editor_intelligence_scorecard --locked",
+]
+created = "2026-09-02"
+review_after = "2026-12-02"
+
+[[allow]]
 id = "non-rust-insta-snapshots"
 glob = "**/*.snap"
 kind = "test_snapshot"
