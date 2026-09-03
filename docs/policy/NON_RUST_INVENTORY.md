@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12657 |
+| Total tracked files | 12659 |
 | Rust-family files | 3941 |
-| Non-Rust files | 8716 |
-| Allowlisted | 6477 |
+| Non-Rust files | 8718 |
+| Allowlisted | 6479 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -19,7 +19,7 @@
 | config | 501 |
 | documentation | 2847 |
 | generated | 2 |
-| production | 354 |
+| production | 356 |
 | test | 2093 |
 | tooling | 680 |
 | unclassified | 2239 |
@@ -8493,6 +8493,7 @@
 | `vscode-extension/src/downloader.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/extension.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/extensionComposition.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/extensionOwnedResourceCensus.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/extensionWorkspaceEvents.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/extensionWorkspaceGuidance.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/featureActivationMetrics.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -8580,6 +8581,7 @@
 | `vscode-extension/src/test/documentFeatureGroup.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/downloader.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/extensionComposition.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/extensionOwnedResourceCensus.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/extensionUx.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/extensionWorkspaceEvents.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/extensionWorkspaceGuidance.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
