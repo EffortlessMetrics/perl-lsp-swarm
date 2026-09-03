@@ -153,14 +153,20 @@ fn loop_without_label_has_none_label_field() -> TestResult {
 /// exercised negatively by [`labels_do_not_leak_to_sibling_loops`].
 #[test]
 fn labeled_loop_binds_label_to_loop_expr() -> TestResult {
-    let file = parse("OUTER: while ($ready) { }");
+    let source = "OUTER: while ($ready) { }";
+    let file = parse(source);
     let body = root_body(&file)?;
     let HirExpr::Loop { label, .. } = first_expr(body)? else {
         return Err("expected structured loop".into());
     };
     let label = label.as_ref().ok_or_else(|| "labelled loop must carry its label".to_string())?;
     assert_eq!(label.name, "OUTER");
-    assert!(label.range.end > label.range.start, "label range must be non-empty");
+    assert_eq!(label.range.start, 0, "label span starts at the label token");
+    assert_eq!(
+        label.range.end,
+        source.len(),
+        "label span follows the parser's full labeled-statement range"
+    );
     Ok(())
 }
 

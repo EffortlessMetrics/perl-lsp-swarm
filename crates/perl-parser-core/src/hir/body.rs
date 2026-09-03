@@ -364,15 +364,16 @@ impl BinaryOp {
 /// loop (or loop-form postfix modifier) so that `next LABEL` / `last LABEL` /
 /// `redo LABEL` can target that specific enclosing loop.
 ///
-/// The `range` covers the label token in source (excluding the trailing colon
-/// separator). It is anchored on the label itself, not the whole labeled
-/// statement — so an editor query at the label position resolves back to this
-/// exact loop region.
+/// The `range` is the parser's `LabeledStatement` span: it starts at the label
+/// token and extends through the subordinate statement. The trailing colon is
+/// therefore included as part of the enclosing statement span. Consumers that
+/// need the token-only extent should use the label spelling and source text
+/// rather than treating this range as a token range.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HirLoopLabel {
     /// Label spelling as written in source (e.g. `"OUTER"`).
     pub name: String,
-    /// Source range of the label token.
+    /// Source range of the enclosing labeled statement.
     pub range: SourceLocation,
 }
 
