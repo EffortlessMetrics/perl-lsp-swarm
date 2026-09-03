@@ -922,7 +922,7 @@ mod tests {
              fi\n",
         )?;
         #[cfg(unix)]
-        fs::set_permissions(&bin.join("cargo"), fs::Permissions::from_mode(0o755))?;
+        fs::set_permissions(bin.join("cargo"), fs::Permissions::from_mode(0o755))?;
         let hook = repo.join("pre-commit");
         fs::write(&hook, pre_commit_hook_script())?;
         #[cfg(unix)]
@@ -1014,7 +1014,7 @@ mod tests {
              fi\n",
         )?;
         #[cfg(unix)]
-        fs::set_permissions(&bin.join("cargo"), fs::Permissions::from_mode(0o755))?;
+        fs::set_permissions(bin.join("cargo"), fs::Permissions::from_mode(0o755))?;
         let hook = repo.join("pre-commit");
         fs::write(&hook, pre_commit_hook_script())?;
         #[cfg(unix)]
