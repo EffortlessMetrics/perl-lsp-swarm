@@ -413,7 +413,7 @@
       "normalized_snippet": "panic!(\"matching version must prepare\");",
       "selector_identity": "invocation:09928f68c6cd7c52:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/providers/semantic_tokens/semantic_tokens.rs",
@@ -449,7 +449,7 @@
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"aiCompletion.{activation_field} must stay documented\"));",
       "selector_identity": "invocation:3d3bc6714fe6f064:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs-core/tests/ripr_seam_proof_protocol_schema_window.rs",
@@ -458,7 +458,7 @@
       "normalized_snippet": ".unwrap_or_else(|error| panic!(\"{method} should validate: {error}\"));",
       "selector_identity": "invocation:a10d63e2c54fbb97:occurrence:1",
       "accepted_reason": "Intentional capability-structure assertion diagnostic in LSP protocol pin test; panics when the server builds the wrong capability variant or the variant does not match the required advertised shape.",
-      "state": "active"
+      "state": "retired"
     },
     {
       "path": "crates/perl-lsp-rs/src/runtime/language/completion.rs",
