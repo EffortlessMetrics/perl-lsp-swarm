@@ -158,13 +158,6 @@ run_source_build() {
     )
 }
 
-# Whole-argument membership check over the NUL-separated install argv log.
-# The install log excludes the toolchain guard's bare `cargo --version` probe,
-# so a selector check can never be satisfied by the guard call.
-cargo_argv_contains() {
-    tr -d '\n' < "$FAKE_CARGO_INSTALL_LOG" | grep -qz -- "$1"
-}
-
 cargo_argv_has_exact_pair() {
     python3 - "$FAKE_CARGO_INSTALL_LOG" "$1" "$2" <<'PY'
 import sys
@@ -173,6 +166,18 @@ with open(sys.argv[1], "rb") as handle:
     argv = handle.read().split(b"\0")[:-1]
 flag, value = sys.argv[2].encode(), sys.argv[3].encode()
 if any(argv[index:index + 2] == [flag, value] for index in range(len(argv) - 1)):
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+cargo_argv_has_exact_arg() {
+    python3 - "$FAKE_CARGO_INSTALL_LOG" "$1" <<'PY'
+import sys
+
+with open(sys.argv[1], "rb") as handle:
+    argv = handle.read().split(b"\0")[:-1]
+if sys.argv[2].encode() in argv:
     raise SystemExit(0)
 raise SystemExit(1)
 PY
@@ -252,6 +257,16 @@ expect_failure_with \
     "no parseable perllsp version token" \
     "v0.12.0" "0.12.0" ok "other-tool"
 
+expect_failure_with \
+    "a two-component staged version is rejected by the output grammar" \
+    "no parseable perllsp version token" \
+    "v0.12.0" "1.2" ok
+
+expect_failure_with \
+    "a four-component staged version is rejected by the output grammar" \
+    "no parseable perllsp version token" \
+    "v0.12.0" "1.2.3.4" ok
+
 # Exact version absent from the registry: a distinct failure reason naming the
 # requested subject, not a generic build failure.
 expect_failure_with \
@@ -268,7 +283,7 @@ expect_failure_with \
 # Explicit latest: no version selector may reach cargo, and the resolved
 # subject identity is surfaced.
 expect_success "explicit latest resolves without a pin" "latest" "0.99.0" ok
-if cargo_argv_contains --version; then
+if cargo_argv_has_exact_arg --version; then
     fail "latest request passes no --version selector" \
         "cargo argv contained --version: $(tr '\0' ' ' < "$FAKE_CARGO_LOG")"
 else
@@ -280,6 +295,14 @@ if [[ "$latest_output" == *"resolved registry subject: perllsp 0.99.0"* ]]; then
 else
     fail "latest request surfaces the resolved registry subject" \
         "resolved identity was not surfaced: $latest_output"
+fi
+
+combined_latest_output="$(run_source_build latest "0.12.0-alpha+build.7" ok 2>&1)"
+if [[ "$combined_latest_output" == *"resolved registry subject: perllsp 0.12.0-alpha+build.7"* ]]; then
+    pass "latest accepts and surfaces a combined prerelease/build identity"
+else
+    fail "latest accepts and surfaces a combined prerelease/build identity" \
+        "combined identity was not surfaced: $combined_latest_output"
 fi
 
 # ---------------------------------------------------------------------------
