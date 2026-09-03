@@ -703,6 +703,42 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         self.assertIn("real-gate", gates)
         self.assertNotIn("path-test-only-gate", gates)
 
+    def test_feature_gate_inventory_keeps_path_attributes_adjacent(self) -> None:
+        self.write(
+            "crates/perl-parser/src/lib.rs",
+            '#[path = "unrelated.rs"]\nmod unrelated;\n'
+            '#[cfg(test)]\nmod test_support;\n',
+        )
+        self.write(
+            "crates/perl-parser/src/test_support.rs",
+            '#[cfg(feature = "path-test-only-gate")]\nfn gated() {}\n',
+        )
+        self.write(
+            "crates/perl-parser/src/unrelated.rs",
+            '#[cfg(feature = "production-gate")]\nfn real() {}\n',
+        )
+        gates = feature_source_gates(
+            self.root / "crates/perl-parser", ("src",), skip_test_modules=True
+        )
+        self.assertIn("production-gate", gates)
+        self.assertNotIn("path-test-only-gate", gates)
+
+    def test_feature_gate_inventory_excludes_nested_test_module_ancestry(self) -> None:
+        self.write(
+            "crates/perl-parser/src/lib.rs", "#[cfg(test)]\nmod foo;\n"
+        )
+        self.write(
+            "crates/perl-parser/src/foo.rs", "#[cfg(test)]\nmod tests;\n"
+        )
+        self.write(
+            "crates/perl-parser/src/foo/tests.rs",
+            '#[cfg(feature = "nested-test-only-gate")]\nfn gated() {}\n',
+        )
+        gates = feature_source_gates(
+            self.root / "crates/perl-parser", ("src",), skip_test_modules=True
+        )
+        self.assertNotIn("nested-test-only-gate", gates)
+
     def test_review_row_target_owner_must_be_actionable(self) -> None:
         row = next(r for r in self.ledger["features"] if r["disposition"] == "review")
         row["target_owner"] = "the parser team"
