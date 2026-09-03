@@ -1478,6 +1478,7 @@ impl DebugAdapter {
         let seq = self.seq.clone();
         let sender = self.event_sender.clone();
         let termination_state = self.termination_state.clone();
+        let operation_broker = self.operation_broker.clone();
         let session_generation = self.current_session_generation();
         let timeout = Duration::from_secs(timeout_secs);
 
@@ -1542,6 +1543,13 @@ impl DebugAdapter {
                 );
                 return;
             }
+
+            // Settle framed-query waiters before killing the process. The EOF
+            // reader will also observe the death, but it may be blocked on a
+            // partial frame; broker waiters must not remain pending until that
+            // path drains. The reservation above proves this is still the
+            // current session, so settling cannot affect a replacement.
+            operation_broker.settle_all("debuggee_timeout");
 
             // Kill the debuggee process.  The output reader will see EOF and
             // clean up session state via clear_active_session_state_for_generation.
@@ -3380,6 +3388,7 @@ mod tests {
         use std::time::Duration;
 
         use super::{DebugSession, DebugState, ResumeMode, VariableCache, lock_or_recover};
+        use crate::debug_adapter::operation_broker::{BrokerOperationSpec, OperationClass};
 
         let mut cmd = if cfg!(windows) {
             let mut c = Command::new("ping");
@@ -3407,6 +3416,16 @@ mod tests {
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(sender);
         adapter.initialized.store(true, std::sync::atomic::Ordering::Release);
+        let operation = adapter
+            .operation_broker
+            .submit(BrokerOperationSpec {
+                class: OperationClass::Query,
+                session_generation: adapter.operation_broker.current_session_generation(),
+                suspension_generation: None,
+                timeout: Duration::from_secs(2),
+                cancellation: None,
+            })
+            .map_err(|error| format!("watchdog regression operation must be admitted: {error:?}"))?;
 
         let session = DebugSession {
             process: child,
@@ -3421,6 +3440,26 @@ mod tests {
         *lock_or_recover(&adapter.session, "test.session") = Some(session);
 
         adapter.start_debuggee_watchdog(1);
+
+        // The watchdog must settle brokered waiters before attempting the kill.
+        // No output reader is started in this fixture, so EOF cannot mask a
+        // missing pre-kill settlement.
+        let terminal = adapter.operation_broker.await_framed_payload(
+            &operation,
+            "never-begin",
+            "never-end",
+            &adapter.recent_output,
+            &adapter.cancel_requested,
+        );
+        if terminal
+            != crate::debug_adapter::operation_broker::BrokerTerminal::SessionGone(
+                "debuggee_timeout",
+            )
+        {
+            return Err(format!(
+                "watchdog must settle a pending query before kill, got {terminal:?}"
+            ));
+        }
 
         // Bounded-timeout poll: with the fix, the kill runs before the (permanently
         // blocked) event send, so the process dies well within this deadline.
