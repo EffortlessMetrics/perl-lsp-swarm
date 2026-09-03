@@ -1,0 +1,3343 @@
+//! Dependency-neutral contracts for proof-carrying compiler transformations
+//! (#12616, train row T01, parent controller #12575).
+//!
+//! This module owns the in-memory vocabulary for three versioned contracts:
+//!
+//! ```text
+//! compiler_transformation_law.v1     -> `TransformationLaw`
+//! compiler_transformation_plan.v1    -> `TransformationPlan`
+//! compiler_transformation_result.v1  -> `TransformationResult`
+//! ```
+//!
+//! A law states one reviewed semantic rewrite rule: its class, its exact input
+//! and output stage, the preconditions a plan must discharge, the propositions
+//! that are load-bearing for it, the changes it is permitted to make, the
+//! dynamic concepts it excludes, its partial-application policy, its permitted
+//! consumers, and its claim ceiling.  A plan instantiates one law against one
+//! exact candidate/source/generation/profile/version/platform/capability
+//! subject and one exact input IR subject, selecting stable operation
+//! identities.  A result is the closed terminal vocabulary for one application
+//! attempt of one plan.
+//!
+//! Deliberately absent (issue non-goals): no law registry, no transformation
+//! implementation, no optimizer pipeline, no source refactor, no provider
+//! promotion, no serde derives, no file or manifest syntax, no CLI, no
+//! process, network, or compiler execution.  T02 (registry), T03
+//! (implementations), and T04 (equivalence proof) instantiate this vocabulary;
+//! they must not invent a second one.
+//!
+//! Legality laws expressed and validated here:
+//!
+//! - preconditions are conjunctive and exact-subject-bound: only
+//!   [`PreconditionTruth::ProvenExact`] satisfies exact legality, so unknown,
+//!   overloaded, tied, magical, ambient, or externally effectful state can
+//!   never discharge one ([`PreconditionTruth::satisfies_exact_legality`]);
+//! - one stage cannot borrow another stage's proof: a precondition's evidence
+//!   must be gathered at the precondition's own [`CompilerStage`], and every
+//!   selected location must sit at the plan's exact input stage;
+//! - preserved propositions the law declares load-bearing must be preserved by
+//!   the plan *and* carry an independent equivalence obligation naming them;
+//! - a plan is identified by stable canonical operation identities, never by
+//!   source text ranges or by a property of current transformed output
+//!   ([`LocationSelector::validate`]);
+//! - partial application is prohibited unless the law explicitly declares
+//!   independent complete subplans ([`PartialApplicationPolicy`]);
+//! - source projection requires a separate canonical `RefactorPlan` relation,
+//!   and no internal class may name [`ConsumerClass::SourceEdit`]
+//!   ([`TransformationClass::permitted_consumers`]);
+//! - refusal is a terminal result, never an applied-empty transformation, and
+//!   measured speed is evaluated strictly after legality, verifier, and
+//!   equivalence ([`TransformationPlan::evaluate`]);
+//! - canonical bytes are deterministic under location and obligation order,
+//!   bounded, and private-safe: [`SourceProvenance`] retains a relative path
+//!   and a byte span, never source text or a host path.
+
+use anyhow::{Context, Result, bail};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
+use std::fmt::Write as _;
+
+/// Maximum length of any free-text field retained by these contracts.
+///
+/// Bounding every text field is what makes canonical bytes bounded without
+/// truncating them at render time (truncation would make two different
+/// subjects share one fingerprint).
+pub const MAX_TEXT_LEN: usize = 512;
+
+/// Maximum number of operation locations one plan may select.
+pub const MAX_SELECTED_LOCATIONS: usize = 1024;
+
+/// Maximum size of the canonical semantic text of one law or plan.
+pub const MAX_CANONICAL_TEXT_BYTES: usize = 65_536;
+
+// ---------------------------------------------------------------------------
+// Identity types
+// ---------------------------------------------------------------------------
+
+fn non_empty(field: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        bail!("{field} must not be empty");
+    }
+    if value.len() > MAX_TEXT_LEN {
+        bail!("{field} must be at most {MAX_TEXT_LEN} bytes, got {}", value.len());
+    }
+    Ok(())
+}
+
+/// Exact identity of one reviewed transformation law.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LawId(String);
+
+impl LawId {
+    /// Construct a non-empty bounded law identity.
+    pub fn new(value: &str) -> Result<Self> {
+        non_empty("transformation law id", value)?;
+        Ok(Self(value.to_owned()))
+    }
+
+    /// Borrow the identity text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Exact version of one reviewed transformation law.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LawVersion(String);
+
+impl LawVersion {
+    /// Construct a non-empty `v`-prefixed law version.
+    pub fn new(value: &str) -> Result<Self> {
+        non_empty("transformation law version", value)?;
+        if !value.starts_with('v') {
+            bail!("transformation law version {value:?} must start with 'v'");
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    /// Borrow the version text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Deterministic semantic fingerprint of a law or plan.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ContractDigest(String);
+
+impl ContractDigest {
+    /// Construct a digest from exactly 64 lowercase hex characters.
+    pub fn from_hex(value: &str) -> Result<Self> {
+        if value.len() != 64
+            || !value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            bail!("contract digest must be 64 lowercase hex characters, got {value:?}");
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    /// Borrow the digest text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Exact identity of one transformation plan.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PlanId(String);
+
+impl PlanId {
+    /// Construct a non-empty bounded plan identity.
+    pub fn new(value: &str) -> Result<Self> {
+        non_empty("transformation plan id", value)?;
+        Ok(Self(value.to_owned()))
+    }
+
+    /// Borrow the identity text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Stable identity of one operation inside a fixed canonical IR subject.
+///
+/// This is the only admissible way to select a transformation location; a
+/// source range is provenance, not identity.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct OperationId(String);
+
+impl OperationId {
+    /// Construct a non-empty bounded operation identity.
+    pub fn new(value: &str) -> Result<Self> {
+        non_empty("operation id", value)?;
+        Ok(Self(value.to_owned()))
+    }
+
+    /// Borrow the identity text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Exact identity of one precondition named by a law and instantiated by a plan.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PreconditionId(String);
+
+impl PreconditionId {
+    /// Construct a non-empty bounded precondition identity.
+    pub fn new(value: &str) -> Result<Self> {
+        non_empty("precondition id", value)?;
+        Ok(Self(value.to_owned()))
+    }
+
+    /// Borrow the identity text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Exact named subject or evidence reference.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SubjectRef(String);
+
+impl SubjectRef {
+    /// Construct a non-empty bounded subject reference.
+    pub fn new(value: &str) -> Result<Self> {
+        non_empty("subject reference", value)?;
+        Ok(Self(value.to_owned()))
+    }
+
+    /// Borrow the subject text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Non-empty scope of required or measured work.  Zero-work scope cannot be
+/// constructed, so "no work" is never expressible as a work contract.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct WorkScope(String);
+
+impl WorkScope {
+    /// Construct a non-empty bounded work scope.
+    pub fn new(value: &str) -> Result<Self> {
+        non_empty("work scope", value)?;
+        Ok(Self(value.to_owned()))
+    }
+
+    /// Borrow the work scope text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Monotonic compiler generation of an input subject.
+///
+/// A plan is bound to the generation it was built against; a later generation
+/// makes the plan stale rather than reusable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Generation(pub u64);
+
+// ---------------------------------------------------------------------------
+// Closed independent dimensions
+// ---------------------------------------------------------------------------
+
+/// Exact compiler stage that owns a fact, a location, or a proof.
+///
+/// The five stages are independent proof planes.  Evidence gathered at one
+/// stage can never discharge a precondition stated at another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CompilerStage {
+    /// Syntactic parser stage.
+    Parser,
+    /// Canonical high-level IR.
+    Hir,
+    /// Canonical place/access IR.
+    PirA,
+    /// Compile-effect stage.
+    Effects,
+    /// Canonical execution IR.
+    Eir,
+}
+
+impl CompilerStage {
+    /// Closed list of every compiler stage.
+    pub const ALL: [Self; 5] = [Self::Parser, Self::Hir, Self::PirA, Self::Effects, Self::Eir];
+
+    /// Stable canonical tag.
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::Parser => "parser",
+            Self::Hir => "hir",
+            Self::PirA => "pir_a",
+            Self::Effects => "effects",
+            Self::Eir => "eir",
+        }
+    }
+}
+
+/// Closed transformation class.  Each class declares the consumers it may
+/// serve; a class never widens because source mapping happens to exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TransformationClass {
+    /// Canonicalization internal to one stage.
+    InternalCanonicalization,
+    /// Simplification that preserves every analysis-visible proposition.
+    AnalysisPreservingSimplification,
+    /// Rewrite whose purpose is bounded execution cost.
+    ExecutionOptimization,
+    /// Strengthening of facts without rewriting any IR.
+    FactStrengtheningWithoutIrRewrite,
+    /// Candidate for a separately authorized source edit.
+    SourceProjectionCandidate,
+    /// Explicitly unsupported or not-applicable rewrite.
+    UnsupportedOrNotApplicable,
+}
+
+impl TransformationClass {
+    /// Closed list of every transformation class.
+    pub const ALL: [Self; 6] = [
+        Self::InternalCanonicalization,
+        Self::AnalysisPreservingSimplification,
+        Self::ExecutionOptimization,
+        Self::FactStrengtheningWithoutIrRewrite,
+        Self::SourceProjectionCandidate,
+        Self::UnsupportedOrNotApplicable,
+    ];
+
+    /// Stable canonical tag.
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::InternalCanonicalization => "internal_canonicalization",
+            Self::AnalysisPreservingSimplification => "analysis_preserving_simplification",
+            Self::ExecutionOptimization => "execution_optimization",
+            Self::FactStrengtheningWithoutIrRewrite => "fact_strengthening_without_ir_rewrite",
+            Self::SourceProjectionCandidate => "source_projection_candidate",
+            Self::UnsupportedOrNotApplicable => "unsupported_or_not_applicable",
+        }
+    }
+
+    /// Closed set of consumers this class may serve.
+    ///
+    /// [`ConsumerClass::SourceEdit`] appears for exactly one class, so an
+    /// internal rewrite can never become a source edit by declaration.
+    pub fn permitted_consumers(self) -> BTreeSet<ConsumerClass> {
+        let permitted: &[ConsumerClass] = match self {
+            Self::InternalCanonicalization => &[ConsumerClass::InternalStageRewrite],
+            Self::AnalysisPreservingSimplification => &[
+                ConsumerClass::InternalStageRewrite,
+                ConsumerClass::Analysis,
+                ConsumerClass::Diagnostic,
+            ],
+            Self::ExecutionOptimization => {
+                &[ConsumerClass::InternalStageRewrite, ConsumerClass::BoundedExecution]
+            }
+            Self::FactStrengtheningWithoutIrRewrite => {
+                &[ConsumerClass::FactStore, ConsumerClass::Analysis, ConsumerClass::Diagnostic]
+            }
+            Self::SourceProjectionCandidate => &[ConsumerClass::SourceEdit],
+            Self::UnsupportedOrNotApplicable => &[ConsumerClass::NoConsumer],
+        };
+        permitted.iter().copied().collect()
+    }
+
+    /// Changes this class may never make, whatever a law declares.
+    fn forbidden_changes(self) -> BTreeSet<ChangedProposition> {
+        let forbidden: &[ChangedProposition] = match self {
+            Self::FactStrengtheningWithoutIrRewrite => {
+                &[ChangedProposition::IrShape, ChangedProposition::SourceText]
+            }
+            Self::SourceProjectionCandidate => &[],
+            Self::UnsupportedOrNotApplicable => &[
+                ChangedProposition::IrShape,
+                ChangedProposition::FactStrength,
+                ChangedProposition::ExecutionCost,
+                ChangedProposition::RedundantOperationCount,
+                ChangedProposition::UnreachableEdgeCount,
+                ChangedProposition::SourceText,
+            ],
+            _ => &[ChangedProposition::SourceText],
+        };
+        forbidden.iter().copied().collect()
+    }
+}
+
+/// Closed consumer class a transformation may serve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ConsumerClass {
+    /// Rewrite of the canonical IR inside the compiler.
+    InternalStageRewrite,
+    /// Analysis that reads the transformed facts.
+    Analysis,
+    /// Diagnostic production.
+    Diagnostic,
+    /// Bounded execution of the transformed subject.
+    BoundedExecution,
+    /// Storage of strengthened facts without an IR rewrite.
+    FactStore,
+    /// A separately authorized source edit.
+    SourceEdit,
+    /// No consumer at all.
+    NoConsumer,
+}
+
+impl ConsumerClass {
+    /// Closed list of every consumer class.
+    pub const ALL: [Self; 7] = [
+        Self::InternalStageRewrite,
+        Self::Analysis,
+        Self::Diagnostic,
+        Self::BoundedExecution,
+        Self::FactStore,
+        Self::SourceEdit,
+        Self::NoConsumer,
+    ];
+
+    /// Stable canonical tag.
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::InternalStageRewrite => "internal_stage_rewrite",
+            Self::Analysis => "analysis",
+            Self::Diagnostic => "diagnostic",
+            Self::BoundedExecution => "bounded_execution",
+            Self::FactStore => "fact_store",
+            Self::SourceEdit => "source_edit",
+            Self::NoConsumer => "no_consumer",
+        }
+    }
+}
+
+/// Closed dynamic or unsupported concept.
+///
+/// None of these can satisfy an exact precondition; a law names the ones it
+/// excludes so that the exclusion survives into the plan and the result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DynamicConcept {
+    /// Operator overloading.
+    Overload,
+    /// Tied variables.
+    Tie,
+    /// Magical variables.
+    Magic,
+    /// Symbolic references.
+    SymbolicReference,
+    /// Ambient host or environment input.
+    AmbientInput,
+    /// Externally observable effect.
+    ExternalEffect,
+    /// Arbitrary call to unknown code.
+    ArbitraryCall,
+    /// XS boundary.
+    XsBoundary,
+    /// Platform-dependent behavior.
+    PlatformDependent,
+}
+
+impl DynamicConcept {
+    /// Closed list of every dynamic or unsupported concept.
+    pub const ALL: [Self; 9] = [
+        Self::Overload,
+        Self::Tie,
+        Self::Magic,
+        Self::SymbolicReference,
+        Self::AmbientInput,
+        Self::ExternalEffect,
+        Self::ArbitraryCall,
+        Self::XsBoundary,
+        Self::PlatformDependent,
+    ];
+
+    /// Stable canonical tag.
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::Overload => "overload",
+            Self::Tie => "tie",
+            Self::Magic => "magic",
+            Self::SymbolicReference => "symbolic_reference",
+            Self::AmbientInput => "ambient_input",
+            Self::ExternalEffect => "external_effect",
+            Self::ArbitraryCall => "arbitrary_call",
+            Self::XsBoundary => "xs_boundary",
+            Self::PlatformDependent => "platform_dependent",
+        }
+    }
+}
+
+/// Closed proposition a transformation may be required to preserve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PreservedProposition {
+    /// Emitted warnings and their classes.
+    Warnings,
+    /// Raised exceptions.
+    Exceptions,
+    /// Observable effects.
+    Effects,
+    /// Evaluation order.
+    EvaluationOrder,
+    /// Scalar/list/void context.
+    Context,
+    /// Aliasing relationships.
+    Aliasing,
+    /// Source mapping used by diagnostics and edits.
+    SourceMapping,
+    /// Value, container, and subroutine identities.
+    Identity,
+    /// Cleanup and destruction behavior.
+    Cleanup,
+    /// The declared unsupported boundary.
+    UnsupportedBoundary,
+}
+
+impl PreservedProposition {
+    /// Closed list of every preservable proposition.
+    pub const ALL: [Self; 10] = [
+        Self::Warnings,
+        Self::Exceptions,
+        Self::Effects,
+        Self::EvaluationOrder,
+        Self::Context,
+        Self::Aliasing,
+        Self::SourceMapping,
+        Self::Identity,
+        Self::Cleanup,
+        Self::UnsupportedBoundary,
+    ];
+
+    /// Stable canonical tag.
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::Warnings => "warnings",
+            Self::Exceptions => "exceptions",
+            Self::Effects => "effects",
+            Self::EvaluationOrder => "evaluation_order",
+            Self::Context => "context",
+            Self::Aliasing => "aliasing",
+            Self::SourceMapping => "source_mapping",
+            Self::Identity => "identity",
+            Self::Cleanup => "cleanup",
+            Self::UnsupportedBoundary => "unsupported_boundary",
+        }
+    }
+}
+
+/// Closed proposition a transformation may intend to change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ChangedProposition {
+    /// Shape of the canonical IR.
+    IrShape,
+    /// Strength of a derived fact.
+    FactStrength,
+    /// Bounded execution cost.
+    ExecutionCost,
+    /// Count of proven-redundant operations.
+    RedundantOperationCount,
+    /// Count of proven-unreachable control edges.
+    UnreachableEdgeCount,
+    /// Program source text.
+    SourceText,
+}
+
+impl ChangedProposition {
+    /// Closed list of every changeable proposition.
+    pub const ALL: [Self; 6] = [
+        Self::IrShape,
+        Self::FactStrength,
+        Self::ExecutionCost,
+        Self::RedundantOperationCount,
+        Self::UnreachableEdgeCount,
+        Self::SourceText,
+    ];
+
+    /// Stable canonical tag.
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::IrShape => "ir_shape",
+            Self::FactStrength => "fact_strength",
+            Self::ExecutionCost => "execution_cost",
+            Self::RedundantOperationCount => "redundant_operation_count",
+            Self::UnreachableEdgeCount => "unreachable_edge_count",
+            Self::SourceText => "source_text",
+        }
+    }
+}
+
+/// Closed claim ceiling a law and its plans may reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ClaimCeiling {
+    /// Internal facts only.
+    InternalFactOnly,
+    /// Analysis and diagnostic consumption.
+    AnalysisAndDiagnostic,
+    /// Bounded execution.
+    BoundedExecution,
+    /// A separately authorized source edit.
+    AuthorizedSourceEdit,
+}
+
+impl ClaimCeiling {
+    /// Closed list of every claim ceiling.
+    pub const ALL: [Self; 4] = [
+        Self::InternalFactOnly,
+        Self::AnalysisAndDiagnostic,
+        Self::BoundedExecution,
+        Self::AuthorizedSourceEdit,
+    ];
+
+    /// Stable canonical tag.
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::InternalFactOnly => "internal_fact_only",
+            Self::AnalysisAndDiagnostic => "analysis_and_diagnostic",
+            Self::BoundedExecution => "bounded_execution",
+            Self::AuthorizedSourceEdit => "authorized_source_edit",
+        }
+    }
+}
+
+/// Truth state of one precondition against one exact subject.
+///
+/// Only [`Self::ProvenExact`] discharges a precondition.  Unknown and dynamic
+/// state are explicit typed values, never an absent or false precondition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreconditionTruth {
+    /// Proven exactly for the plan's subject.
+    ProvenExact,
+    /// Not proven either way.
+    Unknown,
+    /// Governed by a named dynamic or unsupported concept.
+    DynamicOrUnsupported(DynamicConcept),
+}
+
+impl PreconditionTruth {
+    /// True only for [`Self::ProvenExact`].
+    ///
+    /// Unknown is not false, and a dynamic concept is not pure: neither may be
+    /// optimistically read as satisfying exact legality.
+    pub fn satisfies_exact_legality(self) -> bool {
+        matches!(self, Self::ProvenExact)
+    }
+
+    fn write_canonical(self, out: &mut String) {
+        match self {
+            Self::ProvenExact => out.push_str("proven_exact"),
+            Self::Unknown => out.push_str("unknown"),
+            Self::DynamicOrUnsupported(concept) => {
+                let _ = write!(out, "dynamic_or_unsupported({})", concept.tag());
+            }
+        }
+    }
+}
+
+/// Independent oracle admitted for an equivalence obligation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum EquivalenceOracle {
+    /// Independently produced per-stage gold.
+    IndependentStageGold,
+    /// An original upstream case.
+    OriginalUpstreamCase,
+    /// A provenance-preserving minimized upstream case.
+    MinimizedUpstreamCase,
+    /// A version-bound structural relation.
+    StructuralRelation,
+    /// Bounded real-Perl behavior.
+    BoundedRealPerlBehavior,
+    /// A deliberate verifier mutation.
+    VerifierMutation,
+    /// The candidate's own transformed output.  Circular; never independent.
+    TransformedCandidateOutput,
+}
+
+impl EquivalenceOracle {
+    /// Closed list of every oracle, including the circular one this contract
+    /// names so that it can be rejected rather than silently admitted.
+    pub const ALL: [Self; 7] = [
+        Self::IndependentStageGold,
+        Self::OriginalUpstreamCase,
+        Self::MinimizedUpstreamCase,
+        Self::StructuralRelation,
+        Self::BoundedRealPerlBehavior,
+        Self::VerifierMutation,
+        Self::TransformedCandidateOutput,
+    ];
+
+    /// Stable canonical tag.
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::IndependentStageGold => "independent_stage_gold",
+            Self::OriginalUpstreamCase => "original_upstream_case",
+            Self::MinimizedUpstreamCase => "minimized_upstream_case",
+            Self::StructuralRelation => "structural_relation",
+            Self::BoundedRealPerlBehavior => "bounded_real_perl_behavior",
+            Self::VerifierMutation => "verifier_mutation",
+            Self::TransformedCandidateOutput => "transformed_candidate_output",
+        }
+    }
+
+    /// False only for the candidate's own transformed output.
+    pub fn is_independent(self) -> bool {
+        !matches!(self, Self::TransformedCandidateOutput)
+    }
+}
+
+/// Whether a law admits independent complete subplans.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PartialApplicationPolicy {
+    /// Partial application is prohibited: the plan applies completely or not
+    /// at all.
+    Prohibited,
+    /// The law explicitly defines named independent complete subplans.
+    IndependentCompleteSubplans(BTreeSet<String>),
+}
+
+impl PartialApplicationPolicy {
+    /// Construct a subplan policy with a non-empty named subplan set.
+    pub fn independent_subplans(names: &[&str]) -> Result<Self> {
+        if names.is_empty() {
+            bail!("independent subplan policy must name at least one subplan");
+        }
+        let mut set = BTreeSet::new();
+        for name in names {
+            non_empty("independent subplan name", name)?;
+            set.insert((*name).to_owned());
+        }
+        Ok(Self::IndependentCompleteSubplans(set))
+    }
+
+    /// True when a residual boundary may be declared instead of applying
+    /// every selected location.
+    pub fn admits_residual(&self) -> bool {
+        matches!(self, Self::IndependentCompleteSubplans(_))
+    }
+
+    fn validate(&self) -> Result<()> {
+        match self {
+            Self::Prohibited => Ok(()),
+            Self::IndependentCompleteSubplans(names) => {
+                if names.is_empty() {
+                    bail!("independent subplan policy must name at least one subplan");
+                }
+                for name in names {
+                    non_empty("independent subplan name", name)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn write_canonical(&self, out: &mut String) {
+        match self {
+            Self::Prohibited => out.push_str("prohibited"),
+            Self::IndependentCompleteSubplans(names) => {
+                out.push_str("independent_complete_subplans[");
+                for name in names {
+                    let _ = write!(out, "{name:?},");
+                }
+                out.push(']');
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Law components
+// ---------------------------------------------------------------------------
+
+/// `compiler_transformation_law.v1`: one reviewed semantic rewrite rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransformationLaw {
+    /// Exact law identity.
+    pub id: LawId,
+    /// Exact law version.
+    pub version: LawVersion,
+    /// Closed transformation class.
+    pub class: TransformationClass,
+    /// Human-readable statement of the rule.
+    pub statement: String,
+    /// Exact stage the law consumes.
+    pub input_stage: CompilerStage,
+    /// Exact stage the law produces.
+    pub output_stage: CompilerStage,
+    /// Preconditions every plan must instantiate and discharge.
+    pub required_preconditions: BTreeSet<PreconditionId>,
+    /// Propositions that are load-bearing for this law.
+    pub load_bearing_preservations: BTreeSet<PreservedProposition>,
+    /// Changes the law permits a plan to intend.
+    pub permitted_changes: BTreeSet<ChangedProposition>,
+    /// Dynamic or unsupported concepts the law excludes.
+    pub excluded_concepts: BTreeSet<DynamicConcept>,
+    /// Whether independent complete subplans exist.
+    pub partial_application: PartialApplicationPolicy,
+    /// Consumers this law may serve.
+    pub consumers: BTreeSet<ConsumerClass>,
+    /// Highest claim this law can reach.
+    pub claim_ceiling: ClaimCeiling,
+}
+
+impl TransformationLaw {
+    /// Validate every closed-vocabulary and legality invariant of the law.
+    pub fn validate(&self) -> Result<()> {
+        non_empty("transformation law statement", &self.statement)?;
+        self.partial_application.validate()?;
+        if self.required_preconditions.is_empty()
+            && self.class != TransformationClass::UnsupportedOrNotApplicable
+        {
+            bail!("law {:?} must name at least one required precondition", self.id.as_str());
+        }
+        if self.permitted_changes.is_empty()
+            && self.class != TransformationClass::UnsupportedOrNotApplicable
+        {
+            bail!("law {:?} must permit at least one intended change", self.id.as_str());
+        }
+        let forbidden = self.class.forbidden_changes();
+        for change in &self.permitted_changes {
+            if forbidden.contains(change) {
+                bail!(
+                    "law {:?} of class {} must not permit the change {}",
+                    self.id.as_str(),
+                    self.class.tag(),
+                    change.tag()
+                );
+            }
+        }
+        let permitted_consumers = self.class.permitted_consumers();
+        for consumer in &self.consumers {
+            if !permitted_consumers.contains(consumer) {
+                bail!(
+                    "law {:?} of class {} must not name the consumer {}",
+                    self.id.as_str(),
+                    self.class.tag(),
+                    consumer.tag()
+                );
+            }
+        }
+        if self.consumers.is_empty() {
+            bail!("law {:?} must name at least one consumer class", self.id.as_str());
+        }
+        if self.claim_ceiling == ClaimCeiling::AuthorizedSourceEdit
+            && self.class != TransformationClass::SourceProjectionCandidate
+        {
+            bail!(
+                "law {:?} of class {} must not reach the authorized-source-edit ceiling",
+                self.id.as_str(),
+                self.class.tag()
+            );
+        }
+        if self.class == TransformationClass::FactStrengtheningWithoutIrRewrite
+            && self.input_stage != self.output_stage
+        {
+            bail!(
+                "law {:?} strengthens facts without an IR rewrite, so its input and output stage must match",
+                self.id.as_str()
+            );
+        }
+        Ok(())
+    }
+
+    /// Deterministic canonical semantic text of the law.
+    pub fn canonical_semantic_text(&self) -> Result<String> {
+        self.validate()?;
+        let mut out = String::new();
+        let _ = writeln!(out, "law {:?}", self.id.as_str());
+        let _ = writeln!(out, "version {:?}", self.version.as_str());
+        let _ = writeln!(out, "class {}", self.class.tag());
+        let _ = writeln!(out, "statement {:?}", self.statement);
+        let _ = writeln!(out, "input_stage {}", self.input_stage.tag());
+        let _ = writeln!(out, "output_stage {}", self.output_stage.tag());
+        out.push_str("required_preconditions[");
+        for id in &self.required_preconditions {
+            let _ = write!(out, "{:?},", id.as_str());
+        }
+        out.push_str("]\nload_bearing_preservations[");
+        for proposition in &self.load_bearing_preservations {
+            let _ = write!(out, "{},", proposition.tag());
+        }
+        out.push_str("]\npermitted_changes[");
+        for change in &self.permitted_changes {
+            let _ = write!(out, "{},", change.tag());
+        }
+        out.push_str("]\nexcluded_concepts[");
+        for concept in &self.excluded_concepts {
+            let _ = write!(out, "{},", concept.tag());
+        }
+        out.push_str("]\npartial_application ");
+        self.partial_application.write_canonical(&mut out);
+        out.push_str("\nconsumers[");
+        for consumer in &self.consumers {
+            let _ = write!(out, "{},", consumer.tag());
+        }
+        let _ = writeln!(out, "]\nclaim_ceiling {}", self.claim_ceiling.tag());
+        bounded_canonical("law", self.id.as_str(), out)
+    }
+
+    /// Deterministic semantic fingerprint over [`Self::canonical_semantic_text`].
+    pub fn semantic_fingerprint(&self) -> Result<ContractDigest> {
+        fingerprint(&self.canonical_semantic_text()?)
+    }
+
+    /// Binding a plan must carry to reference this exact law revision.
+    pub fn binding(&self) -> Result<LawBinding> {
+        Ok(LawBinding {
+            id: self.id.clone(),
+            version: self.version.clone(),
+            digest: self.semantic_fingerprint()?,
+        })
+    }
+}
+
+/// Exact reference from a plan to one law revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LawBinding {
+    /// Referenced law identity.
+    pub id: LawId,
+    /// Referenced law version.
+    pub version: LawVersion,
+    /// Semantic fingerprint of the referenced law revision.
+    pub digest: ContractDigest,
+}
+
+impl LawBinding {
+    fn write_canonical(&self, out: &mut String) {
+        let _ = writeln!(
+            out,
+            "law_binding id={:?} version={:?} digest={:?}",
+            self.id.as_str(),
+            self.version.as_str(),
+            self.digest.as_str()
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Plan components
+// ---------------------------------------------------------------------------
+
+/// Exact candidate subject a plan is bound to.
+///
+/// Every dimension is load-bearing: a change in any of them creates another
+/// plan subject rather than permitting reuse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransformationSubject {
+    /// Exact candidate identity.
+    pub candidate: SubjectRef,
+    /// Exact source identity.
+    pub source: SubjectRef,
+    /// Compiler generation of the input facts.
+    pub generation: Generation,
+    /// Compiler operating profile.
+    pub profile: SubjectRef,
+    /// Exact Perl version subject.
+    pub perl_version: SubjectRef,
+    /// Exact platform subject.
+    pub platform: SubjectRef,
+    /// Exact capability subject.
+    pub capability: SubjectRef,
+}
+
+impl TransformationSubject {
+    /// True when every non-generation dimension matches.
+    ///
+    /// The generation is deliberately excluded: a generation change is
+    /// staleness, which is a different terminal result from a subject
+    /// mismatch.
+    pub fn matches_ignoring_generation(&self, other: &Self) -> bool {
+        self.candidate == other.candidate
+            && self.source == other.source
+            && self.profile == other.profile
+            && self.perl_version == other.perl_version
+            && self.platform == other.platform
+            && self.capability == other.capability
+    }
+
+    fn write_canonical(&self, out: &mut String) {
+        let _ = writeln!(
+            out,
+            "subject candidate={:?} source={:?} generation={} profile={:?} perl_version={:?} platform={:?} capability={:?}",
+            self.candidate.as_str(),
+            self.source.as_str(),
+            self.generation.0,
+            self.profile.as_str(),
+            self.perl_version.as_str(),
+            self.platform.as_str(),
+            self.capability.as_str()
+        );
+    }
+}
+
+/// Exact identity of one stage's IR or fact subject.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StageSubject {
+    /// Stage that owns the subject.
+    pub stage: CompilerStage,
+    /// Exact IR or fact identity.
+    pub ir_identity: SubjectRef,
+    /// Digest of the identified subject.
+    pub digest: ContractDigest,
+}
+
+impl StageSubject {
+    fn write_canonical(&self, label: &str, out: &mut String) {
+        let _ = writeln!(
+            out,
+            "{label} stage={} identity={:?} digest={:?}",
+            self.stage.tag(),
+            self.ir_identity.as_str(),
+            self.digest.as_str()
+        );
+    }
+}
+
+/// Relative source provenance retained alongside an operation identity.
+///
+/// This is provenance for diagnostics and edits, never selection identity.
+/// It carries a workspace-relative path and a byte span; it never carries
+/// source text or a host-absolute path, so canonical bytes stay private-safe.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SourceProvenance {
+    relative_path: String,
+    start_byte: u32,
+    end_byte: u32,
+}
+
+impl SourceProvenance {
+    /// Construct provenance from a workspace-relative path and a byte span.
+    ///
+    /// Rejects absolute paths, parent traversal, Windows drive prefixes, and
+    /// any embedded newline (the shape a raw source excerpt would take).
+    pub fn new(relative_path: &str, start_byte: u32, end_byte: u32) -> Result<Self> {
+        non_empty("source provenance path", relative_path)?;
+        if relative_path.starts_with('/') || relative_path.starts_with('\\') {
+            bail!("source provenance path {relative_path:?} must be workspace-relative");
+        }
+        if relative_path.contains(':') {
+            bail!("source provenance path {relative_path:?} must not carry a host drive prefix");
+        }
+        if relative_path.split(['/', '\\']).any(|segment| segment == "..") {
+            bail!(
+                "source provenance path {relative_path:?} must not traverse outside the workspace"
+            );
+        }
+        if relative_path.contains(['\n', '\r']) {
+            bail!("source provenance path {relative_path:?} must not embed source text");
+        }
+        if end_byte < start_byte {
+            bail!("source provenance span {start_byte}..{end_byte} must be non-decreasing");
+        }
+        Ok(Self { relative_path: relative_path.to_owned(), start_byte, end_byte })
+    }
+
+    /// Borrow the workspace-relative path.
+    pub fn relative_path(&self) -> &str {
+        &self.relative_path
+    }
+
+    /// Byte span of the provenance.
+    pub fn span(&self) -> (u32, u32) {
+        (self.start_byte, self.end_byte)
+    }
+
+    fn write_canonical(&self, out: &mut String) {
+        let _ = write!(
+            out,
+            "provenance({:?},{},{})",
+            self.relative_path, self.start_byte, self.end_byte
+        );
+    }
+}
+
+/// How a plan selects one transformation location.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LocationSelector {
+    /// A stable operation identity inside the fixed canonical IR subject,
+    /// optionally annotated with relative source provenance.
+    CanonicalOperation {
+        /// Stage that owns the operation.
+        stage: CompilerStage,
+        /// Stable operation identity.
+        operation_id: OperationId,
+        /// Optional relative source provenance.
+        source_provenance: Option<SourceProvenance>,
+    },
+    /// Selection expressed only as a source text range.  Rejected: once the
+    /// canonical IR subject is fixed, source ranges are provenance, not
+    /// identity.
+    SourceTextRange(SourceProvenance),
+    /// Selection expressed only as a property of current transformed output.
+    /// Rejected: that makes the plan's own result its selection authority.
+    CurrentOutputShape(String),
+}
+
+impl LocationSelector {
+    /// Stable operation identity, if this selector has one.
+    pub fn operation_id(&self) -> Option<&OperationId> {
+        match self {
+            Self::CanonicalOperation { operation_id, .. } => Some(operation_id),
+            Self::SourceTextRange(_) | Self::CurrentOutputShape(_) => None,
+        }
+    }
+
+    /// Validate the selector against the plan's fixed input stage.
+    pub fn validate(&self, input_stage: CompilerStage) -> Result<()> {
+        match self {
+            Self::CanonicalOperation { stage, operation_id, source_provenance } => {
+                if *stage != input_stage {
+                    bail!(
+                        "location {:?} is owned by stage {} but the plan's input stage is {}",
+                        operation_id.as_str(),
+                        stage.tag(),
+                        input_stage.tag()
+                    );
+                }
+                if let Some(provenance) = source_provenance {
+                    non_empty("source provenance path", &provenance.relative_path)?;
+                }
+                Ok(())
+            }
+            Self::SourceTextRange(provenance) => bail!(
+                "location selection by source range {:?} is not a plan identity; select a canonical operation",
+                provenance.relative_path
+            ),
+            Self::CurrentOutputShape(shape) => bail!(
+                "location selection by current transformed output {shape:?} is circular; select a canonical operation"
+            ),
+        }
+    }
+
+    fn write_canonical(&self, out: &mut String) {
+        match self {
+            Self::CanonicalOperation { stage, operation_id, source_provenance } => {
+                let _ =
+                    write!(out, "canonical_operation({},{:?}", stage.tag(), operation_id.as_str());
+                match source_provenance {
+                    Some(provenance) => {
+                        out.push(',');
+                        provenance.write_canonical(out);
+                    }
+                    None => out.push_str(",none"),
+                }
+                out.push(')');
+            }
+            Self::SourceTextRange(provenance) => {
+                out.push_str("source_text_range(");
+                provenance.write_canonical(out);
+                out.push(')');
+            }
+            Self::CurrentOutputShape(shape) => {
+                let _ = write!(out, "current_output_shape({shape:?})");
+            }
+        }
+    }
+}
+
+/// One precondition a plan must discharge, with the stage that owns its
+/// evidence and its current truth.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Precondition {
+    /// Exact precondition identity, matching a law-required identity.
+    pub id: PreconditionId,
+    /// Statement of the precondition.
+    pub statement: String,
+    /// Stage at which the precondition is stated.
+    pub stage: CompilerStage,
+    /// Stage at which the discharging evidence was gathered.
+    pub evidence_stage: CompilerStage,
+    /// Exact reference to that evidence.
+    pub evidence: SubjectRef,
+    /// Current truth of the precondition for the plan's subject.
+    pub truth: PreconditionTruth,
+}
+
+impl Precondition {
+    fn validate(&self) -> Result<()> {
+        non_empty("precondition statement", &self.statement)?;
+        if self.stage != self.evidence_stage {
+            bail!(
+                "precondition {:?} is stated at stage {} but its evidence was gathered at stage {}; one stage cannot borrow another stage's proof",
+                self.id.as_str(),
+                self.stage.tag(),
+                self.evidence_stage.tag()
+            );
+        }
+        Ok(())
+    }
+
+    fn write_canonical(&self, out: &mut String) {
+        let _ = write!(
+            out,
+            "precondition id={:?} statement={:?} stage={} evidence_stage={} evidence={:?} truth=",
+            self.id.as_str(),
+            self.statement,
+            self.stage.tag(),
+            self.evidence_stage.tag(),
+            self.evidence.as_str()
+        );
+        self.truth.write_canonical(out);
+        out.push('\n');
+    }
+}
+
+/// One equivalence obligation: an independent oracle for one preserved
+/// proposition on one exact subject.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EquivalenceObligation {
+    /// Independent oracle that discharges the obligation.
+    pub oracle: EquivalenceOracle,
+    /// Proposition the obligation covers.
+    pub proposition: PreservedProposition,
+    /// Exact subject the obligation is evaluated against.
+    pub subject: SubjectRef,
+}
+
+impl EquivalenceObligation {
+    fn validate(&self) -> Result<()> {
+        if !self.oracle.is_independent() {
+            bail!(
+                "equivalence obligation for {} uses the candidate's own transformed output as its oracle",
+                self.proposition.tag()
+            );
+        }
+        Ok(())
+    }
+
+    fn write_canonical(&self, out: &mut String) {
+        let _ = writeln!(
+            out,
+            "equivalence oracle={} proposition={} subject={:?}",
+            self.oracle.tag(),
+            self.proposition.tag(),
+            self.subject.as_str()
+        );
+    }
+}
+
+/// Cancellation contract of one plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CancellationContract {
+    /// Cancellation is observed cooperatively within the named scope.
+    Cooperative(WorkScope),
+    /// The plan cannot be cancelled once started.
+    NotCancellable,
+}
+
+impl CancellationContract {
+    fn write_canonical(&self, out: &mut String) {
+        match self {
+            Self::Cooperative(scope) => {
+                let _ = write!(out, "cooperative({:?})", scope.as_str());
+            }
+            Self::NotCancellable => out.push_str("not_cancellable"),
+        }
+    }
+}
+
+/// Cleanup contract of one plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CleanupContract {
+    /// Cleanup is required within the named scope.
+    RequiredScope(WorkScope),
+    /// The plan owns nothing that needs cleaning up.
+    NothingToClean,
+}
+
+impl CleanupContract {
+    fn write_canonical(&self, out: &mut String) {
+        match self {
+            Self::RequiredScope(scope) => {
+                let _ = write!(out, "required_scope({:?})", scope.as_str());
+            }
+            Self::NothingToClean => out.push_str("nothing_to_clean"),
+        }
+    }
+}
+
+/// Work, resource, cancellation, and cleanup contract of one plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkContract {
+    /// Non-empty scope of the useful work the plan must perform.
+    pub useful_work: WorkScope,
+    /// Non-empty scope of the resource bound the plan runs inside.
+    pub resource_bound: WorkScope,
+    /// Cancellation behavior.
+    pub cancellation: CancellationContract,
+    /// Cleanup behavior.
+    pub cleanup: CleanupContract,
+}
+
+impl WorkContract {
+    fn write_canonical(&self, out: &mut String) {
+        let _ = write!(
+            out,
+            "work useful={:?} resource_bound={:?} cancellation=",
+            self.useful_work.as_str(),
+            self.resource_bound.as_str()
+        );
+        self.cancellation.write_canonical(out);
+        out.push_str(" cleanup=");
+        self.cleanup.write_canonical(out);
+        out.push('\n');
+    }
+}
+
+/// Relation from a source-projection candidate to its separate canonical
+/// `RefactorPlan` transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefactorPlanRelation {
+    /// Identity of the immutable canonical refactor plan.
+    pub refactor_plan_id: SubjectRef,
+    /// Reference to the authorized-plan/edit-set equality proof.
+    pub edit_set_equality: SubjectRef,
+    /// Reference to the independent application result.
+    pub application_proof: SubjectRef,
+    /// Reference to the post-edit parse/semantic/project currentness proof.
+    pub post_edit_proof: SubjectRef,
+}
+
+impl RefactorPlanRelation {
+    fn write_canonical(&self, out: &mut String) {
+        let _ = writeln!(
+            out,
+            "refactor_relation plan={:?} edit_set_equality={:?} application={:?} post_edit={:?}",
+            self.refactor_plan_id.as_str(),
+            self.edit_set_equality.as_str(),
+            self.application_proof.as_str(),
+            self.post_edit_proof.as_str()
+        );
+    }
+}
+
+/// `compiler_transformation_plan.v1`: one law instantiated against one exact
+/// subject and one exact input IR subject.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransformationPlan {
+    /// Exact plan identity.
+    pub id: PlanId,
+    /// Exact law revision this plan instantiates.
+    pub law: LawBinding,
+    /// Closed transformation class, mirrored from the law.
+    pub class: TransformationClass,
+    /// Exact candidate subject.
+    pub subject: TransformationSubject,
+    /// Exact input stage subject.
+    pub input: StageSubject,
+    /// Expected output stage subject identity.
+    pub expected_output: StageSubject,
+    /// Selected locations, all at the input stage.
+    pub locations: Vec<LocationSelector>,
+    /// Preconditions instantiated from the law.
+    pub preconditions: Vec<Precondition>,
+    /// Propositions this plan preserves.
+    pub preserved: BTreeSet<PreservedProposition>,
+    /// Propositions this plan intends to change.
+    pub intended_changes: BTreeSet<ChangedProposition>,
+    /// Dynamic or unsupported concepts excluded from this plan.
+    pub excluded_concepts: BTreeSet<DynamicConcept>,
+    /// Independent equivalence obligations.
+    pub equivalence_obligations: Vec<EquivalenceObligation>,
+    /// Work, resource, cancellation, and cleanup contract.
+    pub work: WorkContract,
+    /// Consumers this plan may serve.
+    pub consumers: BTreeSet<ConsumerClass>,
+    /// Highest claim this plan may reach.
+    pub claim_ceiling: ClaimCeiling,
+    /// Separate canonical refactor relation, required for source projection.
+    pub refactor_relation: Option<RefactorPlanRelation>,
+}
+
+impl TransformationPlan {
+    /// Validate every closed-vocabulary and legality invariant of the plan
+    /// that does not require the law itself.
+    pub fn validate(&self) -> Result<()> {
+        if self.locations.is_empty() {
+            bail!("plan {:?} must select at least one location", self.id.as_str());
+        }
+        if self.locations.len() > MAX_SELECTED_LOCATIONS {
+            bail!(
+                "plan {:?} selects {} locations, above the bound of {MAX_SELECTED_LOCATIONS}",
+                self.id.as_str(),
+                self.locations.len()
+            );
+        }
+        for location in &self.locations {
+            location.validate(self.input.stage)?;
+        }
+        let mut seen_operations = BTreeSet::new();
+        for location in &self.locations {
+            if let Some(operation) = location.operation_id()
+                && !seen_operations.insert(operation.clone())
+            {
+                bail!(
+                    "plan {:?} selects operation {:?} more than once",
+                    self.id.as_str(),
+                    operation.as_str()
+                );
+            }
+        }
+        if self.preconditions.is_empty() {
+            bail!("plan {:?} must instantiate at least one precondition", self.id.as_str());
+        }
+        let mut seen_preconditions = BTreeSet::new();
+        for precondition in &self.preconditions {
+            precondition.validate()?;
+            if !seen_preconditions.insert(precondition.id.clone()) {
+                bail!(
+                    "plan {:?} instantiates precondition {:?} more than once",
+                    self.id.as_str(),
+                    precondition.id.as_str()
+                );
+            }
+        }
+        if self.intended_changes.is_empty() {
+            bail!("plan {:?} must intend at least one change", self.id.as_str());
+        }
+        for change in &self.intended_changes {
+            // A proposition cannot be preserved and changed at once.
+            if let Some(overlap) = preserved_counterpart(*change)
+                && self.preserved.contains(&overlap)
+            {
+                bail!(
+                    "plan {:?} both preserves {} and intends to change {}",
+                    self.id.as_str(),
+                    overlap.tag(),
+                    change.tag()
+                );
+            }
+        }
+        for obligation in &self.equivalence_obligations {
+            obligation.validate()?;
+        }
+        if self.consumers.is_empty() {
+            bail!("plan {:?} must name at least one consumer class", self.id.as_str());
+        }
+        let permitted_consumers = self.class.permitted_consumers();
+        for consumer in &self.consumers {
+            if !permitted_consumers.contains(consumer) {
+                bail!(
+                    "plan {:?} of class {} must not name the consumer {}",
+                    self.id.as_str(),
+                    self.class.tag(),
+                    consumer.tag()
+                );
+            }
+        }
+        let names_source_edit = self.consumers.contains(&ConsumerClass::SourceEdit)
+            || self.claim_ceiling == ClaimCeiling::AuthorizedSourceEdit
+            || self.intended_changes.contains(&ChangedProposition::SourceText);
+        if names_source_edit && self.refactor_relation.is_none() {
+            bail!(
+                "plan {:?} projects a source edit without a separate canonical RefactorPlan relation",
+                self.id.as_str()
+            );
+        }
+        if !names_source_edit && self.refactor_relation.is_some() {
+            bail!(
+                "plan {:?} declares a RefactorPlan relation without projecting a source edit",
+                self.id.as_str()
+            );
+        }
+        if self.expected_output.stage == self.input.stage
+            && self.expected_output.digest == self.input.digest
+            && self.intended_changes.contains(&ChangedProposition::IrShape)
+        {
+            bail!(
+                "plan {:?} intends to change the IR shape but expects the input digest unchanged",
+                self.id.as_str()
+            );
+        }
+        Ok(())
+    }
+
+    /// Verify the plan against the exact law revision it names.
+    pub fn verify_law_conformance(&self, law: &TransformationLaw) -> Result<()> {
+        self.validate()?;
+        law.validate()?;
+        let binding = law.binding()?;
+        if self.law != binding {
+            bail!(
+                "plan {:?} binds law {:?}@{:?} digest {:?} but the supplied law is {:?}@{:?} digest {:?}",
+                self.id.as_str(),
+                self.law.id.as_str(),
+                self.law.version.as_str(),
+                self.law.digest.as_str(),
+                binding.id.as_str(),
+                binding.version.as_str(),
+                binding.digest.as_str()
+            );
+        }
+        if self.class != law.class {
+            bail!(
+                "plan {:?} declares class {} but law {:?} is class {}",
+                self.id.as_str(),
+                self.class.tag(),
+                law.id.as_str(),
+                law.class.tag()
+            );
+        }
+        if self.input.stage != law.input_stage {
+            bail!(
+                "plan {:?} consumes stage {} but law {:?} consumes stage {}",
+                self.id.as_str(),
+                self.input.stage.tag(),
+                law.id.as_str(),
+                law.input_stage.tag()
+            );
+        }
+        if self.expected_output.stage != law.output_stage {
+            bail!(
+                "plan {:?} produces stage {} but law {:?} produces stage {}",
+                self.id.as_str(),
+                self.expected_output.stage.tag(),
+                law.id.as_str(),
+                law.output_stage.tag()
+            );
+        }
+        let instantiated: BTreeSet<&PreconditionId> =
+            self.preconditions.iter().map(|precondition| &precondition.id).collect();
+        for required in &law.required_preconditions {
+            if !instantiated.contains(required) {
+                bail!(
+                    "plan {:?} omits law-required precondition {:?}",
+                    self.id.as_str(),
+                    required.as_str()
+                );
+            }
+        }
+        for proposition in &law.load_bearing_preservations {
+            if !self.preserved.contains(proposition) {
+                bail!(
+                    "plan {:?} omits the load-bearing preservation {}",
+                    self.id.as_str(),
+                    proposition.tag()
+                );
+            }
+            if !self
+                .equivalence_obligations
+                .iter()
+                .any(|obligation| obligation.proposition == *proposition)
+            {
+                bail!(
+                    "plan {:?} preserves {} without an independent equivalence obligation",
+                    self.id.as_str(),
+                    proposition.tag()
+                );
+            }
+        }
+        for change in &self.intended_changes {
+            if !law.permitted_changes.contains(change) {
+                bail!(
+                    "plan {:?} intends the change {} which law {:?} does not permit",
+                    self.id.as_str(),
+                    change.tag(),
+                    law.id.as_str()
+                );
+            }
+        }
+        for concept in &law.excluded_concepts {
+            if !self.excluded_concepts.contains(concept) {
+                bail!(
+                    "plan {:?} drops the law-excluded concept {}",
+                    self.id.as_str(),
+                    concept.tag()
+                );
+            }
+        }
+        for consumer in &self.consumers {
+            if !law.consumers.contains(consumer) {
+                bail!(
+                    "plan {:?} names the consumer {} which law {:?} does not admit",
+                    self.id.as_str(),
+                    consumer.tag(),
+                    law.id.as_str()
+                );
+            }
+        }
+        if self.claim_ceiling > law.claim_ceiling {
+            bail!(
+                "plan {:?} claims {} above the ceiling {} of law {:?}",
+                self.id.as_str(),
+                self.claim_ceiling.tag(),
+                law.claim_ceiling.tag(),
+                law.id.as_str()
+            );
+        }
+        Ok(())
+    }
+
+    /// Stable operation identities this plan selects.
+    pub fn selected_operations(&self) -> BTreeSet<&OperationId> {
+        self.locations.iter().filter_map(LocationSelector::operation_id).collect()
+    }
+
+    /// Deterministic canonical semantic text of the plan.  Location and
+    /// obligation order cannot change it.
+    pub fn canonical_semantic_text(&self) -> Result<String> {
+        self.validate()?;
+        let mut out = String::new();
+        let _ = writeln!(out, "plan {:?}", self.id.as_str());
+        self.law.write_canonical(&mut out);
+        let _ = writeln!(out, "class {}", self.class.tag());
+        self.subject.write_canonical(&mut out);
+        self.input.write_canonical("input", &mut out);
+        self.expected_output.write_canonical("expected_output", &mut out);
+        let mut locations = self.locations.clone();
+        locations.sort();
+        out.push_str("locations[");
+        for location in &locations {
+            location.write_canonical(&mut out);
+            out.push(',');
+        }
+        out.push_str("]\n");
+        let mut preconditions = self.preconditions.clone();
+        preconditions.sort_by(|a, b| a.id.cmp(&b.id));
+        for precondition in &preconditions {
+            precondition.write_canonical(&mut out);
+        }
+        out.push_str("preserved[");
+        for proposition in &self.preserved {
+            let _ = write!(out, "{},", proposition.tag());
+        }
+        out.push_str("]\nintended_changes[");
+        for change in &self.intended_changes {
+            let _ = write!(out, "{},", change.tag());
+        }
+        out.push_str("]\nexcluded_concepts[");
+        for concept in &self.excluded_concepts {
+            let _ = write!(out, "{},", concept.tag());
+        }
+        out.push_str("]\n");
+        let mut obligations = self.equivalence_obligations.clone();
+        obligations.sort();
+        for obligation in &obligations {
+            obligation.write_canonical(&mut out);
+        }
+        self.work.write_canonical(&mut out);
+        out.push_str("consumers[");
+        for consumer in &self.consumers {
+            let _ = write!(out, "{},", consumer.tag());
+        }
+        let _ = writeln!(out, "]\nclaim_ceiling {}", self.claim_ceiling.tag());
+        match &self.refactor_relation {
+            Some(relation) => relation.write_canonical(&mut out),
+            None => out.push_str("refactor_relation none\n"),
+        }
+        bounded_canonical("plan", self.id.as_str(), out)
+    }
+
+    /// Deterministic semantic fingerprint over [`Self::canonical_semantic_text`].
+    pub fn semantic_fingerprint(&self) -> Result<ContractDigest> {
+        fingerprint(&self.canonical_semantic_text()?)
+    }
+
+    /// Classify one application attempt into the closed result vocabulary.
+    ///
+    /// The precedence is deliberate and fixed: plan validity, subject
+    /// identity, currentness, settlement, legality, verifier, equivalence,
+    /// then work and output.  Measured elapsed time is never consulted, so a
+    /// faster attempt cannot upgrade a failed legality, verifier, or
+    /// equivalence outcome.
+    pub fn evaluate(&self, observation: &ApplicationObservation) -> Result<TransformationResult> {
+        if let Err(error) = self.validate() {
+            return Ok(TransformationResult::InvalidPlan { reason: truncate_reason(&error) });
+        }
+        if !self.subject.matches_ignoring_generation(&observation.observed_subject) {
+            return Ok(TransformationResult::SubjectMismatch {
+                reason: "the observed candidate subject is not the plan's subject".to_owned(),
+            });
+        }
+        if self.subject.generation != observation.observed_subject.generation
+            || self.input.digest != observation.observed_input.digest
+            || self.input.stage != observation.observed_input.stage
+        {
+            return Ok(TransformationResult::Stale {
+                reason: "the observed input generation or digest is not the plan's input"
+                    .to_owned(),
+            });
+        }
+        match &observation.settlement {
+            Settlement::Completed => {}
+            Settlement::Cancelled(reason) => {
+                return Ok(TransformationResult::Cancelled { reason: reason.clone() });
+            }
+            Settlement::TimedOut(reason) => {
+                return Ok(TransformationResult::TimedOut { reason: reason.clone() });
+            }
+            Settlement::LimitExceeded(reason) => {
+                return Ok(TransformationResult::LimitExceeded { reason: reason.clone() });
+            }
+            Settlement::InstrumentFailed(reason) => {
+                return Ok(TransformationResult::InstrumentFailed { reason: reason.clone() });
+            }
+            Settlement::CleanupFailed(reason) => {
+                return Ok(TransformationResult::CleanupFailed { reason: reason.clone() });
+            }
+        }
+
+        let unproven: Vec<&Precondition> = self
+            .preconditions
+            .iter()
+            .filter(|precondition| !precondition.truth.satisfies_exact_legality())
+            .collect();
+        if let Some(first) = unproven.first() {
+            // A prohibited plan that nevertheless mutated locations is not a
+            // clean refusal: reporting it as one would hide the mutation.
+            if !observation.applied_operations.is_empty() && !self.admits_residual(observation) {
+                return Ok(TransformationResult::InvalidOutput {
+                    reason: format!(
+                        "partial application of {} location(s) after precondition {:?} was not proven",
+                        observation.applied_operations.len(),
+                        first.id.as_str()
+                    ),
+                });
+            }
+            return Ok(match first.truth {
+                PreconditionTruth::DynamicOrUnsupported(concept) => {
+                    TransformationResult::RefusedDynamicOrUnsupported {
+                        precondition: first.id.clone(),
+                        concept,
+                    }
+                }
+                PreconditionTruth::Unknown | PreconditionTruth::ProvenExact => {
+                    TransformationResult::RefusedPreconditionUnproven {
+                        precondition: first.id.clone(),
+                    }
+                }
+            });
+        }
+
+        match &observation.verifier {
+            VerifierOutcome::Passed => {}
+            VerifierOutcome::Failed(reason) => {
+                return Ok(TransformationResult::VerifierFailed { reason: reason.clone() });
+            }
+            VerifierOutcome::NotRun => {
+                return Ok(TransformationResult::VerifierFailed {
+                    reason: "the plan's verifier did not run".to_owned(),
+                });
+            }
+        }
+        if let EquivalenceOutcome::NotProven(reason) = &observation.equivalence {
+            return Ok(TransformationResult::EquivalenceNotProven { reason: reason.clone() });
+        }
+        for obligation in &self.equivalence_obligations {
+            if !observation.discharged_obligations.contains(obligation) {
+                return Ok(TransformationResult::EquivalenceNotProven {
+                    reason: format!(
+                        "the {} obligation on {} was not discharged",
+                        obligation.oracle.tag(),
+                        obligation.proposition.tag()
+                    ),
+                });
+            }
+        }
+
+        if observation.applied_operations.is_empty() || observation.work.useful_operations == 0 {
+            return Ok(TransformationResult::ZeroUsefulWork {
+                reason: "the attempt applied no location and performed no useful operation"
+                    .to_owned(),
+            });
+        }
+        let selected: BTreeSet<OperationId> =
+            self.selected_operations().into_iter().cloned().collect();
+        if !observation.applied_operations.is_subset(&selected) {
+            return Ok(TransformationResult::InvalidOutput {
+                reason: "the attempt applied an operation the plan did not select".to_owned(),
+            });
+        }
+        let output = match &observation.output {
+            Some(output) => output,
+            None => {
+                return Ok(TransformationResult::InvalidOutput {
+                    reason: "the attempt reported no output stage subject".to_owned(),
+                });
+            }
+        };
+        if output.stage != self.expected_output.stage {
+            return Ok(TransformationResult::InvalidOutput {
+                reason: format!(
+                    "the attempt produced stage {} but the plan expects stage {}",
+                    output.stage.tag(),
+                    self.expected_output.stage.tag()
+                ),
+            });
+        }
+
+        if observation.applied_operations == selected {
+            return Ok(TransformationResult::AppliedExact {
+                output: output.clone(),
+                work: observation.work,
+            });
+        }
+        match (&observation.residual, self.admits_residual(observation)) {
+            (Some(residual), true) => {
+                Ok(TransformationResult::AppliedWithDeclaredResidualBoundary {
+                    output: output.clone(),
+                    work: observation.work,
+                    residual: residual.clone(),
+                })
+            }
+            (_, false) => Ok(TransformationResult::InvalidOutput {
+                reason: "partial application is prohibited by the plan's law".to_owned(),
+            }),
+            (None, true) => Ok(TransformationResult::InvalidOutput {
+                reason: "a partial application declared no residual boundary".to_owned(),
+            }),
+        }
+    }
+
+    fn admits_residual(&self, observation: &ApplicationObservation) -> bool {
+        observation.partial_application.admits_residual()
+    }
+}
+
+fn preserved_counterpart(change: ChangedProposition) -> Option<PreservedProposition> {
+    match change {
+        ChangedProposition::SourceText => Some(PreservedProposition::SourceMapping),
+        ChangedProposition::ExecutionCost
+        | ChangedProposition::IrShape
+        | ChangedProposition::FactStrength
+        | ChangedProposition::RedundantOperationCount
+        | ChangedProposition::UnreachableEdgeCount => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Result contract
+// ---------------------------------------------------------------------------
+
+/// Measured work of one application attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkReceipt {
+    /// Number of useful operations actually performed.
+    pub useful_operations: u64,
+    /// Elapsed time, retained for reporting only.
+    pub elapsed_micros: u64,
+}
+
+/// How one application attempt settled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Settlement {
+    /// The attempt ran to completion.
+    Completed,
+    /// The attempt was cancelled.
+    Cancelled(String),
+    /// The attempt exceeded its time budget.
+    TimedOut(String),
+    /// The attempt exceeded a declared limit.
+    LimitExceeded(String),
+    /// The instrument itself failed.
+    InstrumentFailed(String),
+    /// Cleanup failed after the attempt.
+    CleanupFailed(String),
+}
+
+/// Verifier outcome of one application attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerifierOutcome {
+    /// The verifier ran and passed.
+    Passed,
+    /// The verifier ran and failed.
+    Failed(String),
+    /// The verifier did not run; absence is never a pass.
+    NotRun,
+}
+
+/// Equivalence outcome of one application attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EquivalenceOutcome {
+    /// Equivalence was proven for every obligation.
+    Proven,
+    /// Equivalence was not proven, for the named reason.
+    NotProven(String),
+}
+
+/// Declared residual boundary of a partially applied plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResidualBoundary {
+    /// Named subplan that was applied.
+    pub subplan: String,
+    /// Named boundary that was not crossed.
+    pub boundary: String,
+}
+
+impl ResidualBoundary {
+    /// Construct a residual boundary with a non-empty subplan and boundary.
+    pub fn new(subplan: &str, boundary: &str) -> Result<Self> {
+        non_empty("residual subplan", subplan)?;
+        non_empty("residual boundary", boundary)?;
+        Ok(Self { subplan: subplan.to_owned(), boundary: boundary.to_owned() })
+    }
+}
+
+/// Everything observed about one application attempt of one plan.
+///
+/// This is the input to [`TransformationPlan::evaluate`]; it carries no
+/// verdict of its own, so the terminal result is derived, never asserted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplicationObservation {
+    /// Candidate subject observed at application time.
+    pub observed_subject: TransformationSubject,
+    /// Input stage subject observed at application time.
+    pub observed_input: StageSubject,
+    /// Partial-application policy of the plan's law, resolved at application
+    /// time.
+    pub partial_application: PartialApplicationPolicy,
+    /// Operations the attempt actually applied.
+    pub applied_operations: BTreeSet<OperationId>,
+    /// Equivalence obligations the attempt actually discharged.
+    pub discharged_obligations: BTreeSet<EquivalenceObligation>,
+    /// Verifier outcome.
+    pub verifier: VerifierOutcome,
+    /// Equivalence outcome.
+    pub equivalence: EquivalenceOutcome,
+    /// Measured work.
+    pub work: WorkReceipt,
+    /// Settlement of the attempt.
+    pub settlement: Settlement,
+    /// Output stage subject, when one was produced.
+    pub output: Option<StageSubject>,
+    /// Residual boundary, when the attempt was partial.
+    pub residual: Option<ResidualBoundary>,
+}
+
+/// `compiler_transformation_result.v1`: the closed terminal vocabulary for one
+/// application attempt.
+///
+/// Refusal, staleness, invalidity, verifier failure, unproven equivalence, and
+/// instrument failure are independently representable states.  None of them is
+/// an applied transformation with an empty effect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransformationResult {
+    /// Every selected location was applied and every obligation discharged.
+    AppliedExact {
+        /// Produced output subject.
+        output: StageSubject,
+        /// Measured work.
+        work: WorkReceipt,
+    },
+    /// A law-declared independent subplan was applied, with a named residual.
+    AppliedWithDeclaredResidualBoundary {
+        /// Produced output subject.
+        output: StageSubject,
+        /// Measured work.
+        work: WorkReceipt,
+        /// Declared residual boundary.
+        residual: ResidualBoundary,
+    },
+    /// A precondition was not proven exactly.
+    RefusedPreconditionUnproven {
+        /// The first unproven precondition.
+        precondition: PreconditionId,
+    },
+    /// A precondition is governed by a dynamic or unsupported concept.
+    RefusedDynamicOrUnsupported {
+        /// The governing precondition.
+        precondition: PreconditionId,
+        /// The named dynamic concept.
+        concept: DynamicConcept,
+    },
+    /// The plan's input generation or digest is no longer current.
+    Stale {
+        /// Why the plan is stale.
+        reason: String,
+    },
+    /// The observed candidate subject is not the plan's subject.
+    SubjectMismatch {
+        /// Why the subjects differ.
+        reason: String,
+    },
+    /// The plan itself does not satisfy its own contract.
+    InvalidPlan {
+        /// Why the plan is invalid.
+        reason: String,
+    },
+    /// The attempt produced an output the plan cannot accept.
+    InvalidOutput {
+        /// Why the output is invalid.
+        reason: String,
+    },
+    /// The plan's verifier failed or did not run.
+    VerifierFailed {
+        /// Why the verifier did not pass.
+        reason: String,
+    },
+    /// One or more equivalence obligations were not discharged.
+    EquivalenceNotProven {
+        /// Which obligation is missing.
+        reason: String,
+    },
+    /// The attempt performed no useful work.
+    ZeroUsefulWork {
+        /// Why no useful work occurred.
+        reason: String,
+    },
+    /// The attempt was cancelled.
+    Cancelled {
+        /// Cancellation reason.
+        reason: String,
+    },
+    /// The attempt exceeded its time budget.
+    TimedOut {
+        /// Timeout reason.
+        reason: String,
+    },
+    /// The attempt exceeded a declared limit.
+    LimitExceeded {
+        /// Limit reason.
+        reason: String,
+    },
+    /// The instrument itself failed.
+    InstrumentFailed {
+        /// Instrument failure reason.
+        reason: String,
+    },
+    /// Cleanup failed after the attempt.
+    CleanupFailed {
+        /// Cleanup failure reason.
+        reason: String,
+    },
+}
+
+impl TransformationResult {
+    /// Number of distinct terminal states in the closed result vocabulary.
+    pub const VARIANT_COUNT: usize = 16;
+
+    /// Stable canonical tag.
+    pub fn tag(&self) -> &'static str {
+        match self {
+            Self::AppliedExact { .. } => "applied_exact",
+            Self::AppliedWithDeclaredResidualBoundary { .. } => {
+                "applied_with_declared_residual_boundary"
+            }
+            Self::RefusedPreconditionUnproven { .. } => "refused_precondition_unproven",
+            Self::RefusedDynamicOrUnsupported { .. } => "refused_dynamic_or_unsupported",
+            Self::Stale { .. } => "stale",
+            Self::SubjectMismatch { .. } => "subject_mismatch",
+            Self::InvalidPlan { .. } => "invalid_plan",
+            Self::InvalidOutput { .. } => "invalid_output",
+            Self::VerifierFailed { .. } => "verifier_failed",
+            Self::EquivalenceNotProven { .. } => "equivalence_not_proven",
+            Self::ZeroUsefulWork { .. } => "zero_useful_work",
+            Self::Cancelled { .. } => "cancelled",
+            Self::TimedOut { .. } => "timed_out",
+            Self::LimitExceeded { .. } => "limit_exceeded",
+            Self::InstrumentFailed { .. } => "instrument_failed",
+            Self::CleanupFailed { .. } => "cleanup_failed",
+        }
+    }
+
+    /// True only for the two applied states.
+    ///
+    /// Every other state, refusal included, changed nothing that a consumer
+    /// may read as a transformation.
+    pub fn is_applied(&self) -> bool {
+        matches!(self, Self::AppliedExact { .. } | Self::AppliedWithDeclaredResidualBoundary { .. })
+    }
+
+    /// True for the two typed refusals, which are terminal and complete.
+    pub fn is_refusal(&self) -> bool {
+        matches!(
+            self,
+            Self::RefusedPreconditionUnproven { .. } | Self::RefusedDynamicOrUnsupported { .. }
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Canonical helpers
+// ---------------------------------------------------------------------------
+
+fn bounded_canonical(kind: &str, id: &str, text: String) -> Result<String> {
+    if text.len() > MAX_CANONICAL_TEXT_BYTES {
+        bail!(
+            "canonical {kind} text for {id:?} is {} bytes, above the bound of {MAX_CANONICAL_TEXT_BYTES}",
+            text.len()
+        );
+    }
+    Ok(text)
+}
+
+fn fingerprint(canonical: &str) -> Result<ContractDigest> {
+    let digest = Sha256::digest(canonical.as_bytes());
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    ContractDigest::from_hex(&hex).context("sha256 hex output must satisfy the digest invariant")
+}
+
+fn truncate_reason(error: &anyhow::Error) -> String {
+    let text = format!("{error:#}");
+    match text.char_indices().nth(MAX_TEXT_LEN) {
+        Some((index, _)) => text[..index].to_owned(),
+        None => text,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shape fixtures
+// ---------------------------------------------------------------------------
+
+/// Minimal representable shapes for the three initial T03 transformation
+/// families and the T05b source-projection candidate.
+///
+/// These exist so that T02 (law registry), T03 (implementations), and T04
+/// (equivalence proof) can be built against this vocabulary without inventing
+/// a second one.  They are shapes, not reviewed laws: registering a reviewed
+/// law is T02's claim, not this contract's.
+pub mod shape_fixtures {
+    use super::{
+        ApplicationObservation, CancellationContract, ChangedProposition, ClaimCeiling,
+        CleanupContract, CompilerStage, ConsumerClass, ContractDigest, DynamicConcept,
+        EquivalenceObligation, EquivalenceOracle, EquivalenceOutcome, Generation, LawId,
+        LawVersion, LocationSelector, OperationId, PartialApplicationPolicy, PlanId, Precondition,
+        PreconditionId, PreconditionTruth, PreservedProposition, RefactorPlanRelation, Result,
+        Settlement, SourceProvenance, StageSubject, SubjectRef, TransformationClass,
+        TransformationLaw, TransformationPlan, TransformationSubject, VerifierOutcome,
+        WorkContract, WorkReceipt, WorkScope,
+    };
+    use std::collections::BTreeSet;
+
+    fn digest(seed: u8) -> Result<ContractDigest> {
+        let mut hex = String::with_capacity(64);
+        for index in 0..32u8 {
+            hex.push_str(&format!("{:02x}", seed.wrapping_add(index)));
+        }
+        ContractDigest::from_hex(&hex)
+    }
+
+    /// The exact subject every fixture is bound to.
+    pub fn subject() -> Result<TransformationSubject> {
+        Ok(TransformationSubject {
+            candidate: SubjectRef::new("candidate/shape-fixture")?,
+            source: SubjectRef::new("lib/Shape.pm")?,
+            generation: Generation(7),
+            profile: SubjectRef::new("compiler_static_project.v1")?,
+            perl_version: SubjectRef::new("perl-5.40.0")?,
+            platform: SubjectRef::new("x86_64-unknown-linux-gnu")?,
+            capability: SubjectRef::new("no-xs, no-ambient-input")?,
+        })
+    }
+
+    fn stage_subject(stage: CompilerStage, identity: &str, seed: u8) -> Result<StageSubject> {
+        Ok(StageSubject { stage, ir_identity: SubjectRef::new(identity)?, digest: digest(seed)? })
+    }
+
+    fn proven(
+        id: &str,
+        statement: &str,
+        stage: CompilerStage,
+        evidence: &str,
+    ) -> Result<Precondition> {
+        Ok(Precondition {
+            id: PreconditionId::new(id)?,
+            statement: statement.to_owned(),
+            stage,
+            evidence_stage: stage,
+            evidence: SubjectRef::new(evidence)?,
+            truth: PreconditionTruth::ProvenExact,
+        })
+    }
+
+    fn work_contract(useful: &str) -> Result<WorkContract> {
+        Ok(WorkContract {
+            useful_work: WorkScope::new(useful)?,
+            resource_bound: WorkScope::new("bounded to the selected operations of one body")?,
+            cancellation: CancellationContract::Cooperative(WorkScope::new(
+                "checked between selected operations",
+            )?),
+            cleanup: CleanupContract::NothingToClean,
+        })
+    }
+
+    /// T03a shape: exact bounded value propagation and folding in HIR.
+    pub fn exact_value_folding_law() -> Result<TransformationLaw> {
+        Ok(TransformationLaw {
+            id: LawId::new("hir.exact-value-folding")?,
+            version: LawVersion::new("v1")?,
+            class: TransformationClass::AnalysisPreservingSimplification,
+            statement:
+                "fold an operation whose operands are exact bounded values into that exact value"
+                    .to_owned(),
+            input_stage: CompilerStage::Hir,
+            output_stage: CompilerStage::Hir,
+            required_preconditions: [
+                PreconditionId::new("operands-are-exact-bounded-values")?,
+                PreconditionId::new("operation-is-effect-free")?,
+            ]
+            .into_iter()
+            .collect(),
+            load_bearing_preservations: [
+                PreservedProposition::Warnings,
+                PreservedProposition::Exceptions,
+                PreservedProposition::Effects,
+                PreservedProposition::EvaluationOrder,
+                PreservedProposition::Context,
+                PreservedProposition::SourceMapping,
+            ]
+            .into_iter()
+            .collect(),
+            permitted_changes: [
+                ChangedProposition::IrShape,
+                ChangedProposition::RedundantOperationCount,
+            ]
+            .into_iter()
+            .collect(),
+            excluded_concepts: [
+                DynamicConcept::Overload,
+                DynamicConcept::Tie,
+                DynamicConcept::Magic,
+                DynamicConcept::ExternalEffect,
+            ]
+            .into_iter()
+            .collect(),
+            partial_application: PartialApplicationPolicy::Prohibited,
+            consumers: [ConsumerClass::InternalStageRewrite, ConsumerClass::Analysis]
+                .into_iter()
+                .collect(),
+            claim_ceiling: ClaimCeiling::AnalysisAndDiagnostic,
+        })
+    }
+
+    /// The conforming plan for [`exact_value_folding_law`].
+    pub fn exact_value_folding_plan() -> Result<TransformationPlan> {
+        let law = exact_value_folding_law()?;
+        let obligations = vec![
+            EquivalenceObligation {
+                oracle: EquivalenceOracle::IndependentStageGold,
+                proposition: PreservedProposition::Warnings,
+                subject: SubjectRef::new("hir gold for lib/Shape.pm")?,
+            },
+            EquivalenceObligation {
+                oracle: EquivalenceOracle::BoundedRealPerlBehavior,
+                proposition: PreservedProposition::Exceptions,
+                subject: SubjectRef::new("bounded real-perl run of lib/Shape.pm")?,
+            },
+            EquivalenceObligation {
+                oracle: EquivalenceOracle::OriginalUpstreamCase,
+                proposition: PreservedProposition::Effects,
+                subject: SubjectRef::new("upstream case t/op/const.t")?,
+            },
+            EquivalenceObligation {
+                oracle: EquivalenceOracle::StructuralRelation,
+                proposition: PreservedProposition::EvaluationOrder,
+                subject: SubjectRef::new("structural order relation for the folded body")?,
+            },
+            EquivalenceObligation {
+                oracle: EquivalenceOracle::StructuralRelation,
+                proposition: PreservedProposition::Context,
+                subject: SubjectRef::new("structural context relation for the folded body")?,
+            },
+            EquivalenceObligation {
+                oracle: EquivalenceOracle::IndependentStageGold,
+                proposition: PreservedProposition::SourceMapping,
+                subject: SubjectRef::new("source map gold for the folded body")?,
+            },
+        ];
+        Ok(TransformationPlan {
+            id: PlanId::new("plan.hir.exact-value-folding.shape")?,
+            law: law.binding()?,
+            class: law.class,
+            subject: subject()?,
+            input: stage_subject(CompilerStage::Hir, "hir body lib/Shape.pm#area", 0x10)?,
+            expected_output: stage_subject(
+                CompilerStage::Hir,
+                "hir body lib/Shape.pm#area (folded)",
+                0x20,
+            )?,
+            locations: vec![
+                LocationSelector::CanonicalOperation {
+                    stage: CompilerStage::Hir,
+                    operation_id: OperationId::new("hir:op:0007")?,
+                    source_provenance: Some(SourceProvenance::new("lib/Shape.pm", 120, 138)?),
+                },
+                LocationSelector::CanonicalOperation {
+                    stage: CompilerStage::Hir,
+                    operation_id: OperationId::new("hir:op:0011")?,
+                    source_provenance: None,
+                },
+            ],
+            preconditions: vec![
+                proven(
+                    "operands-are-exact-bounded-values",
+                    "both operands carry exact bounded values",
+                    CompilerStage::Hir,
+                    "bounded value analysis for lib/Shape.pm#area",
+                )?,
+                proven(
+                    "operation-is-effect-free",
+                    "the folded operation has no proven effect",
+                    CompilerStage::Hir,
+                    "effect summary for lib/Shape.pm#area",
+                )?,
+            ],
+            preserved: law.load_bearing_preservations.clone(),
+            intended_changes: [
+                ChangedProposition::IrShape,
+                ChangedProposition::RedundantOperationCount,
+            ]
+            .into_iter()
+            .collect(),
+            excluded_concepts: law.excluded_concepts.clone(),
+            equivalence_obligations: obligations,
+            work: work_contract("fold each selected exact-value operation exactly once")?,
+            consumers: [ConsumerClass::InternalStageRewrite, ConsumerClass::Analysis]
+                .into_iter()
+                .collect(),
+            claim_ceiling: ClaimCeiling::AnalysisAndDiagnostic,
+            refactor_relation: None,
+        })
+    }
+
+    /// T03b shape: branch pruning from a proven truth/definedness predicate.
+    pub fn branch_pruning_law() -> Result<TransformationLaw> {
+        Ok(TransformationLaw {
+            id: LawId::new("pir-a.proven-branch-pruning")?,
+            version: LawVersion::new("v1")?,
+            class: TransformationClass::AnalysisPreservingSimplification,
+            statement: "prune a branch whose guard has a proven exact truth or definedness value"
+                .to_owned(),
+            input_stage: CompilerStage::PirA,
+            output_stage: CompilerStage::PirA,
+            required_preconditions: [PreconditionId::new("guard-truth-is-proven-exact")?]
+                .into_iter()
+                .collect(),
+            load_bearing_preservations: [
+                PreservedProposition::Exceptions,
+                PreservedProposition::Effects,
+                PreservedProposition::EvaluationOrder,
+            ]
+            .into_iter()
+            .collect(),
+            permitted_changes: [
+                ChangedProposition::IrShape,
+                ChangedProposition::UnreachableEdgeCount,
+            ]
+            .into_iter()
+            .collect(),
+            excluded_concepts: [
+                DynamicConcept::Overload,
+                DynamicConcept::Tie,
+                DynamicConcept::Magic,
+                DynamicConcept::SymbolicReference,
+            ]
+            .into_iter()
+            .collect(),
+            partial_application: PartialApplicationPolicy::Prohibited,
+            consumers: [ConsumerClass::InternalStageRewrite, ConsumerClass::Diagnostic]
+                .into_iter()
+                .collect(),
+            claim_ceiling: ClaimCeiling::AnalysisAndDiagnostic,
+        })
+    }
+
+    /// The conforming plan for [`branch_pruning_law`].
+    pub fn branch_pruning_plan() -> Result<TransformationPlan> {
+        let law = branch_pruning_law()?;
+        Ok(TransformationPlan {
+            id: PlanId::new("plan.pir-a.proven-branch-pruning.shape")?,
+            law: law.binding()?,
+            class: law.class,
+            subject: subject()?,
+            input: stage_subject(CompilerStage::PirA, "pir-a body lib/Shape.pm#area", 0x30)?,
+            expected_output: stage_subject(
+                CompilerStage::PirA,
+                "pir-a body lib/Shape.pm#area (pruned)",
+                0x40,
+            )?,
+            locations: vec![LocationSelector::CanonicalOperation {
+                stage: CompilerStage::PirA,
+                operation_id: OperationId::new("pir:edge:0003")?,
+                source_provenance: None,
+            }],
+            preconditions: vec![proven(
+                "guard-truth-is-proven-exact",
+                "the guard's truth is proven exactly and is not overloaded, tied, or magical",
+                CompilerStage::PirA,
+                "truth/definedness predicate for lib/Shape.pm#area",
+            )?],
+            preserved: law.load_bearing_preservations.clone(),
+            intended_changes: [
+                ChangedProposition::IrShape,
+                ChangedProposition::UnreachableEdgeCount,
+            ]
+            .into_iter()
+            .collect(),
+            excluded_concepts: law.excluded_concepts.clone(),
+            equivalence_obligations: vec![
+                EquivalenceObligation {
+                    oracle: EquivalenceOracle::MinimizedUpstreamCase,
+                    proposition: PreservedProposition::Exceptions,
+                    subject: SubjectRef::new("minimized upstream case for guard exceptions")?,
+                },
+                EquivalenceObligation {
+                    oracle: EquivalenceOracle::IndependentStageGold,
+                    proposition: PreservedProposition::Effects,
+                    subject: SubjectRef::new("pir-a effect gold for the pruned body")?,
+                },
+                EquivalenceObligation {
+                    oracle: EquivalenceOracle::VerifierMutation,
+                    proposition: PreservedProposition::EvaluationOrder,
+                    subject: SubjectRef::new("order-mutation of the pruned body")?,
+                },
+            ],
+            work: work_contract("prune each proven-unreachable edge exactly once")?,
+            consumers: [ConsumerClass::InternalStageRewrite, ConsumerClass::Diagnostic]
+                .into_iter()
+                .collect(),
+            claim_ceiling: ClaimCeiling::AnalysisAndDiagnostic,
+            refactor_relation: None,
+        })
+    }
+
+    /// T03c shape: effect-free unreachable-control and graph simplification.
+    pub fn effect_free_control_law() -> Result<TransformationLaw> {
+        Ok(TransformationLaw {
+            id: LawId::new("eir.effect-free-control-simplification")?,
+            version: LawVersion::new("v1")?,
+            class: TransformationClass::ExecutionOptimization,
+            statement:
+                "remove proven-unreachable effect-free blocks and edges while the verifier still accepts the graph"
+                    .to_owned(),
+            input_stage: CompilerStage::Eir,
+            output_stage: CompilerStage::Eir,
+            required_preconditions: [
+                PreconditionId::new("block-is-proven-unreachable")?,
+                PreconditionId::new("block-is-effect-free")?,
+            ]
+            .into_iter()
+            .collect(),
+            load_bearing_preservations: [
+                PreservedProposition::Effects,
+                PreservedProposition::Cleanup,
+                PreservedProposition::UnsupportedBoundary,
+            ]
+            .into_iter()
+            .collect(),
+            permitted_changes: [
+                ChangedProposition::IrShape,
+                ChangedProposition::ExecutionCost,
+                ChangedProposition::UnreachableEdgeCount,
+            ]
+            .into_iter()
+            .collect(),
+            excluded_concepts: [DynamicConcept::ExternalEffect, DynamicConcept::ArbitraryCall]
+                .into_iter()
+                .collect(),
+            partial_application: PartialApplicationPolicy::independent_subplans(&[
+                "unreachable-blocks",
+                "unreachable-edges",
+            ])?,
+            consumers: [ConsumerClass::InternalStageRewrite, ConsumerClass::BoundedExecution]
+                .into_iter()
+                .collect(),
+            claim_ceiling: ClaimCeiling::BoundedExecution,
+        })
+    }
+
+    /// The conforming plan for [`effect_free_control_law`].
+    pub fn effect_free_control_plan() -> Result<TransformationPlan> {
+        let law = effect_free_control_law()?;
+        Ok(TransformationPlan {
+            id: PlanId::new("plan.eir.effect-free-control-simplification.shape")?,
+            law: law.binding()?,
+            class: law.class,
+            subject: subject()?,
+            input: stage_subject(CompilerStage::Eir, "eir graph lib/Shape.pm#area", 0x50)?,
+            expected_output: stage_subject(
+                CompilerStage::Eir,
+                "eir graph lib/Shape.pm#area (simplified)",
+                0x60,
+            )?,
+            locations: vec![
+                LocationSelector::CanonicalOperation {
+                    stage: CompilerStage::Eir,
+                    operation_id: OperationId::new("eir:block:0002")?,
+                    source_provenance: None,
+                },
+                LocationSelector::CanonicalOperation {
+                    stage: CompilerStage::Eir,
+                    operation_id: OperationId::new("eir:edge:0005")?,
+                    source_provenance: None,
+                },
+            ],
+            preconditions: vec![
+                proven(
+                    "block-is-proven-unreachable",
+                    "the block is proven unreachable on every path",
+                    CompilerStage::Eir,
+                    "eir reachability for lib/Shape.pm#area",
+                )?,
+                proven(
+                    "block-is-effect-free",
+                    "the block performs no proven effect",
+                    CompilerStage::Eir,
+                    "eir effect summary for lib/Shape.pm#area",
+                )?,
+            ],
+            preserved: law.load_bearing_preservations.clone(),
+            intended_changes: [
+                ChangedProposition::IrShape,
+                ChangedProposition::ExecutionCost,
+                ChangedProposition::UnreachableEdgeCount,
+            ]
+            .into_iter()
+            .collect(),
+            excluded_concepts: law.excluded_concepts.clone(),
+            equivalence_obligations: vec![
+                EquivalenceObligation {
+                    oracle: EquivalenceOracle::IndependentStageGold,
+                    proposition: PreservedProposition::Effects,
+                    subject: SubjectRef::new("eir effect gold for the simplified graph")?,
+                },
+                EquivalenceObligation {
+                    oracle: EquivalenceOracle::BoundedRealPerlBehavior,
+                    proposition: PreservedProposition::Cleanup,
+                    subject: SubjectRef::new("bounded real-perl cleanup observation")?,
+                },
+                EquivalenceObligation {
+                    oracle: EquivalenceOracle::VerifierMutation,
+                    proposition: PreservedProposition::UnsupportedBoundary,
+                    subject: SubjectRef::new("verifier mutation of the unsupported boundary")?,
+                },
+            ],
+            work: work_contract("remove each proven-unreachable effect-free block or edge once")?,
+            consumers: [ConsumerClass::InternalStageRewrite, ConsumerClass::BoundedExecution]
+                .into_iter()
+                .collect(),
+            claim_ceiling: ClaimCeiling::BoundedExecution,
+            refactor_relation: None,
+        })
+    }
+
+    /// T05b shape: a source-projection candidate with its separate canonical
+    /// refactor relation.
+    pub fn source_projection_law() -> Result<TransformationLaw> {
+        Ok(TransformationLaw {
+            id: LawId::new("hir.defined-or-canonical-source-projection")?,
+            version: LawVersion::new("v1")?,
+            class: TransformationClass::SourceProjectionCandidate,
+            statement:
+                "project a proven defined-or canonicalization into an authorized source edit"
+                    .to_owned(),
+            input_stage: CompilerStage::Hir,
+            output_stage: CompilerStage::Hir,
+            required_preconditions: [PreconditionId::new("defined-or-shape-is-proven-exact")?]
+                .into_iter()
+                .collect(),
+            load_bearing_preservations: [
+                PreservedProposition::Warnings,
+                PreservedProposition::EvaluationOrder,
+                PreservedProposition::Identity,
+            ]
+            .into_iter()
+            .collect(),
+            permitted_changes: [ChangedProposition::SourceText].into_iter().collect(),
+            excluded_concepts: [DynamicConcept::Overload, DynamicConcept::Magic]
+                .into_iter()
+                .collect(),
+            partial_application: PartialApplicationPolicy::Prohibited,
+            consumers: [ConsumerClass::SourceEdit].into_iter().collect(),
+            claim_ceiling: ClaimCeiling::AuthorizedSourceEdit,
+        })
+    }
+
+    /// The conforming plan for [`source_projection_law`].
+    pub fn source_projection_plan() -> Result<TransformationPlan> {
+        let law = source_projection_law()?;
+        Ok(TransformationPlan {
+            id: PlanId::new("plan.hir.defined-or-canonical-source-projection.shape")?,
+            law: law.binding()?,
+            class: law.class,
+            subject: subject()?,
+            input: stage_subject(CompilerStage::Hir, "hir body lib/Shape.pm#name", 0x70)?,
+            expected_output: stage_subject(
+                CompilerStage::Hir,
+                "hir body lib/Shape.pm#name (canonical defined-or)",
+                0x80,
+            )?,
+            locations: vec![LocationSelector::CanonicalOperation {
+                stage: CompilerStage::Hir,
+                operation_id: OperationId::new("hir:op:0042")?,
+                source_provenance: Some(SourceProvenance::new("lib/Shape.pm", 300, 341)?),
+            }],
+            preconditions: vec![proven(
+                "defined-or-shape-is-proven-exact",
+                "the ternary defined-check is exactly the defined-or canonical form",
+                CompilerStage::Hir,
+                "hir shape match for lib/Shape.pm#name",
+            )?],
+            preserved: law.load_bearing_preservations.clone(),
+            intended_changes: [ChangedProposition::SourceText].into_iter().collect(),
+            excluded_concepts: law.excluded_concepts.clone(),
+            equivalence_obligations: vec![
+                EquivalenceObligation {
+                    oracle: EquivalenceOracle::IndependentStageGold,
+                    proposition: PreservedProposition::Warnings,
+                    subject: SubjectRef::new("warning gold for the projected edit")?,
+                },
+                EquivalenceObligation {
+                    oracle: EquivalenceOracle::StructuralRelation,
+                    proposition: PreservedProposition::EvaluationOrder,
+                    subject: SubjectRef::new("structural order relation for the projected edit")?,
+                },
+                EquivalenceObligation {
+                    oracle: EquivalenceOracle::BoundedRealPerlBehavior,
+                    proposition: PreservedProposition::Identity,
+                    subject: SubjectRef::new("bounded real-perl identity observation")?,
+                },
+            ],
+            work: work_contract("project exactly one authorized defined-or edit")?,
+            consumers: [ConsumerClass::SourceEdit].into_iter().collect(),
+            claim_ceiling: ClaimCeiling::AuthorizedSourceEdit,
+            refactor_relation: Some(RefactorPlanRelation {
+                refactor_plan_id: SubjectRef::new("refactor-plan/defined-or/lib-shape-name")?,
+                edit_set_equality: SubjectRef::new("authorized plan equals applied edit set")?,
+                application_proof: SubjectRef::new("independent application result")?,
+                post_edit_proof: SubjectRef::new("post-edit parse and project currentness")?,
+            }),
+        })
+    }
+
+    /// An observation under which the supplied plan applies exactly.
+    ///
+    /// Tests mutate one field of this conforming shape at a time, so each
+    /// falsifier changes exactly one thing.
+    pub fn conforming_observation(
+        plan: &TransformationPlan,
+        law: &TransformationLaw,
+    ) -> Result<ApplicationObservation> {
+        Ok(ApplicationObservation {
+            observed_subject: plan.subject.clone(),
+            observed_input: plan.input.clone(),
+            partial_application: law.partial_application.clone(),
+            applied_operations: plan
+                .selected_operations()
+                .into_iter()
+                .cloned()
+                .collect::<BTreeSet<OperationId>>(),
+            discharged_obligations: plan.equivalence_obligations.iter().cloned().collect(),
+            verifier: VerifierOutcome::Passed,
+            equivalence: EquivalenceOutcome::Proven,
+            work: WorkReceipt {
+                useful_operations: plan.locations.len() as u64,
+                elapsed_micros: 900,
+            },
+            settlement: Settlement::Completed,
+            output: Some(plan.expected_output.clone()),
+            residual: None,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ApplicationObservation, ChangedProposition, ClaimCeiling, CompilerStage, ConsumerClass,
+        DynamicConcept, EquivalenceObligation, EquivalenceOracle, EquivalenceOutcome, Generation,
+        LawId, LawVersion, LocationSelector, MAX_TEXT_LEN, OperationId, PartialApplicationPolicy,
+        PreconditionTruth, PreservedProposition, ResidualBoundary, Result, Settlement,
+        SourceProvenance, SubjectRef, TransformationClass, TransformationLaw, TransformationPlan,
+        TransformationResult, VerifierOutcome, WorkReceipt, shape_fixtures,
+    };
+    use std::collections::BTreeSet;
+
+    fn folding() -> (TransformationLaw, TransformationPlan) {
+        match (
+            shape_fixtures::exact_value_folding_law(),
+            shape_fixtures::exact_value_folding_plan(),
+        ) {
+            (Ok(law), Ok(plan)) => (law, plan),
+            (Err(error), _) | (_, Err(error)) => {
+                unreachable!("exact value folding fixture builds: {error}")
+            }
+        }
+    }
+
+    fn observation(plan: &TransformationPlan, law: &TransformationLaw) -> ApplicationObservation {
+        match shape_fixtures::conforming_observation(plan, law) {
+            Ok(observation) => observation,
+            Err(error) => unreachable!("conforming observation builds: {error}"),
+        }
+    }
+
+    fn assert_invalid(plan: &TransformationPlan, expected: &str, context: &str) {
+        let error = match plan.validate() {
+            Err(error) => error,
+            Ok(()) => unreachable!("{context}"),
+        };
+        let text = format!("{error:#}");
+        assert!(text.contains(expected), "{context}: expected {expected:?}, got {text}");
+    }
+
+    // Falsifier 1: the plan is identified only by a source range or by a
+    // property of current transformed output.
+    #[test]
+    fn falsifier_01_plan_identity_is_never_source_range_or_current_output() -> Result<()> {
+        let (_, plan) = folding();
+
+        let mut by_range = plan.clone();
+        by_range.locations = vec![LocationSelector::SourceTextRange(SourceProvenance::new(
+            "lib/Shape.pm",
+            120,
+            138,
+        )?)];
+        assert_invalid(
+            &by_range,
+            "is not a plan identity",
+            "a source range is provenance, never selection identity",
+        );
+
+        let mut by_output = plan.clone();
+        by_output.locations =
+            vec![LocationSelector::CurrentOutputShape("the folded constant node".to_owned())];
+        assert_invalid(
+            &by_output,
+            "is circular",
+            "current transformed output cannot select the plan's own locations",
+        );
+
+        // The admissible selector keeps provenance without letting it become
+        // identity: dropping the provenance leaves the plan valid.
+        let mut without_provenance = plan.clone();
+        without_provenance.locations[0] = LocationSelector::CanonicalOperation {
+            stage: CompilerStage::Hir,
+            operation_id: OperationId::new("hir:op:0007")?,
+            source_provenance: None,
+        };
+        without_provenance.validate()?;
+        Ok(())
+    }
+
+    // Falsifier 2: unknown or dynamic preconditions are read as false, empty,
+    // or pure.
+    #[test]
+    fn falsifier_02_unknown_and_dynamic_preconditions_never_satisfy_legality() -> Result<()> {
+        assert!(PreconditionTruth::ProvenExact.satisfies_exact_legality());
+        assert!(!PreconditionTruth::Unknown.satisfies_exact_legality());
+        for concept in DynamicConcept::ALL {
+            assert!(
+                !PreconditionTruth::DynamicOrUnsupported(concept).satisfies_exact_legality(),
+                "{} must never discharge an exact precondition",
+                concept.tag()
+            );
+        }
+
+        let (law, plan) = folding();
+        let mut unknown = plan.clone();
+        unknown.preconditions[0].truth = PreconditionTruth::Unknown;
+        let mut observed = observation(&unknown, &law);
+        observed.applied_operations = BTreeSet::new();
+        observed.work = WorkReceipt { useful_operations: 0, elapsed_micros: 12 };
+        match unknown.evaluate(&observed)? {
+            TransformationResult::RefusedPreconditionUnproven { precondition } => {
+                assert_eq!(precondition.as_str(), "operands-are-exact-bounded-values");
+            }
+            other => unreachable!("an unknown precondition must refuse, got {}", other.tag()),
+        }
+
+        let mut tied = plan.clone();
+        tied.preconditions[0].truth = PreconditionTruth::DynamicOrUnsupported(DynamicConcept::Tie);
+        let mut observed = observation(&tied, &law);
+        observed.applied_operations = BTreeSet::new();
+        observed.work = WorkReceipt { useful_operations: 0, elapsed_micros: 12 };
+        match tied.evaluate(&observed)? {
+            TransformationResult::RefusedDynamicOrUnsupported { concept, .. } => {
+                assert_eq!(concept, DynamicConcept::Tie);
+            }
+            other => unreachable!("a tied precondition must refuse, got {}", other.tag()),
+        }
+        Ok(())
+    }
+
+    // Falsifier 3: parser/HIR/PIR/effects/EIR proof cross-satisfies.
+    #[test]
+    fn falsifier_03_one_stage_cannot_borrow_another_stages_proof() -> Result<()> {
+        let (law, plan) = folding();
+
+        let mut borrowed = plan.clone();
+        borrowed.preconditions[0].evidence_stage = CompilerStage::Parser;
+        assert_invalid(
+            &borrowed,
+            "cannot borrow another stage's proof",
+            "HIR legality is not discharged by parser evidence",
+        );
+
+        let mut foreign_location = plan.clone();
+        foreign_location.locations[0] = LocationSelector::CanonicalOperation {
+            stage: CompilerStage::Eir,
+            operation_id: OperationId::new("eir:block:0002")?,
+            source_provenance: None,
+        };
+        assert_invalid(
+            &foreign_location,
+            "the plan's input stage is hir",
+            "an EIR operation is not selectable by a HIR plan",
+        );
+
+        let mut wrong_input_stage = plan.clone();
+        wrong_input_stage.input.stage = CompilerStage::PirA;
+        wrong_input_stage.expected_output.stage = CompilerStage::PirA;
+        for location in &mut wrong_input_stage.locations {
+            if let LocationSelector::CanonicalOperation { stage, .. } = location {
+                *stage = CompilerStage::PirA;
+            }
+        }
+        let error = match wrong_input_stage.verify_law_conformance(&law) {
+            Err(error) => format!("{error:#}"),
+            Ok(()) => unreachable!("a PIR-A plan cannot instantiate a HIR law"),
+        };
+        assert!(error.contains("consumes stage pir_a"), "got {error}");
+        Ok(())
+    }
+
+    // Falsifier 4: a load-bearing preservation selected by the law is omitted
+    // by the plan, or preserved without an independent obligation.
+    #[test]
+    fn falsifier_04_load_bearing_preservations_cannot_be_dropped() -> Result<()> {
+        let (law, plan) = folding();
+        plan.verify_law_conformance(&law)?;
+
+        let mut dropped = plan.clone();
+        assert!(dropped.preserved.remove(&PreservedProposition::Warnings));
+        let error = match dropped.verify_law_conformance(&law) {
+            Err(error) => format!("{error:#}"),
+            Ok(()) => unreachable!("a dropped load-bearing preservation must fail conformance"),
+        };
+        assert!(error.contains("omits the load-bearing preservation warnings"), "got {error}");
+
+        let mut unproven = plan.clone();
+        unproven
+            .equivalence_obligations
+            .retain(|obligation| obligation.proposition != PreservedProposition::Exceptions);
+        let error = match unproven.verify_law_conformance(&law) {
+            Err(error) => format!("{error:#}"),
+            Ok(()) => unreachable!("a preservation without an obligation must fail conformance"),
+        };
+        assert!(
+            error.contains("preserves exceptions without an independent equivalence obligation"),
+            "got {error}"
+        );
+        Ok(())
+    }
+
+    // Falsifier 5: a changed input generation or profile lets a plan be
+    // reused.
+    #[test]
+    fn falsifier_05_changed_generation_or_profile_cannot_reuse_a_plan() -> Result<()> {
+        let (law, plan) = folding();
+        let baseline = plan.semantic_fingerprint()?;
+
+        let mut later_generation = plan.clone();
+        later_generation.subject.generation = Generation(8);
+        assert_ne!(
+            later_generation.semantic_fingerprint()?,
+            baseline,
+            "a generation change must create another plan subject"
+        );
+
+        let mut other_profile = plan.clone();
+        other_profile.subject.profile = SubjectRef::new("compiler_bounded_execution.v1")?;
+        assert_ne!(other_profile.semantic_fingerprint()?, baseline);
+
+        let mut advanced = observation(&plan, &law);
+        advanced.observed_subject.generation = Generation(8);
+        assert_eq!(plan.evaluate(&advanced)?.tag(), "stale");
+
+        let mut rebuilt_input = observation(&plan, &law);
+        rebuilt_input.observed_input.digest = plan.expected_output.digest.clone();
+        assert_eq!(plan.evaluate(&rebuilt_input)?.tag(), "stale");
+
+        let mut other_candidate = observation(&plan, &law);
+        other_candidate.observed_subject.candidate = SubjectRef::new("candidate/other")?;
+        assert_eq!(plan.evaluate(&other_candidate)?.tag(), "subject_mismatch");
+        Ok(())
+    }
+
+    // Falsifier 6: the attempt silently partially applies after one failed
+    // precondition.
+    #[test]
+    fn falsifier_06_partial_application_after_a_failed_precondition_is_not_a_refusal() -> Result<()>
+    {
+        let (law, plan) = folding();
+        assert_eq!(law.partial_application, PartialApplicationPolicy::Prohibited);
+
+        let mut half_applied = plan.clone();
+        half_applied.preconditions[1].truth = PreconditionTruth::Unknown;
+        let mut observed = observation(&half_applied, &law);
+        observed.applied_operations = [OperationId::new("hir:op:0007")?].into_iter().collect();
+        observed.work = WorkReceipt { useful_operations: 1, elapsed_micros: 400 };
+        match half_applied.evaluate(&observed)? {
+            TransformationResult::InvalidOutput { reason } => {
+                assert!(reason.contains("partial application"), "got {reason}");
+                assert!(reason.contains("operation-is-effect-free"), "got {reason}");
+            }
+            other => unreachable!(
+                "a mutation after a failed precondition must not report a clean refusal, got {}",
+                other.tag()
+            ),
+        }
+
+        // The same failed precondition with nothing applied is an honest,
+        // complete refusal.
+        let mut untouched = observation(&half_applied, &law);
+        untouched.applied_operations = BTreeSet::new();
+        untouched.work = WorkReceipt { useful_operations: 0, elapsed_micros: 400 };
+        assert!(half_applied.evaluate(&untouched)?.is_refusal());
+        Ok(())
+    }
+
+    // Falsifier 7: refusal is represented as an applied but empty
+    // transformation.
+    #[test]
+    fn falsifier_07_refusal_is_never_an_applied_empty_transformation() -> Result<()> {
+        let (law, plan) = folding();
+
+        let mut empty = observation(&plan, &law);
+        empty.applied_operations = BTreeSet::new();
+        empty.work = WorkReceipt { useful_operations: 0, elapsed_micros: 5 };
+        let result = plan.evaluate(&empty)?;
+        assert_eq!(result.tag(), "zero_useful_work");
+        assert!(!result.is_applied(), "zero useful work is not an applied transformation");
+
+        let mut counted_but_unapplied = observation(&plan, &law);
+        counted_but_unapplied.applied_operations = BTreeSet::new();
+        assert_eq!(plan.evaluate(&counted_but_unapplied)?.tag(), "zero_useful_work");
+
+        let mut applied_but_uncounted = observation(&plan, &law);
+        applied_but_uncounted.work = WorkReceipt { useful_operations: 0, elapsed_micros: 5 };
+        assert_eq!(plan.evaluate(&applied_but_uncounted)?.tag(), "zero_useful_work");
+
+        // Every refusal and non-applied state is independently representable
+        // and none of them reads as applied.
+        for result in [
+            plan.evaluate(&empty)?,
+            TransformationResult::RefusedPreconditionUnproven {
+                precondition: plan.preconditions[0].id.clone(),
+            },
+            TransformationResult::RefusedDynamicOrUnsupported {
+                precondition: plan.preconditions[0].id.clone(),
+                concept: DynamicConcept::Magic,
+            },
+        ] {
+            assert!(!result.is_applied(), "{} must not read as applied", result.tag());
+        }
+        Ok(())
+    }
+
+    // Falsifier 8: a faster result overrides failed legality or equivalence.
+    #[test]
+    fn falsifier_08_speed_never_overrides_failed_legality_or_equivalence() -> Result<()> {
+        let (law, plan) = folding();
+
+        let mut verifier_failed = observation(&plan, &law);
+        verifier_failed.verifier = VerifierOutcome::Failed("output graph rejected".to_owned());
+        let slow = plan.evaluate(&verifier_failed)?;
+        verifier_failed.work = WorkReceipt { useful_operations: 2, elapsed_micros: 1 };
+        let fast = plan.evaluate(&verifier_failed)?;
+        assert_eq!(slow.tag(), "verifier_failed");
+        assert_eq!(fast.tag(), "verifier_failed");
+
+        let mut not_run = observation(&plan, &law);
+        not_run.verifier = VerifierOutcome::NotRun;
+        assert_eq!(plan.evaluate(&not_run)?.tag(), "verifier_failed");
+
+        let mut not_proven = observation(&plan, &law);
+        not_proven.equivalence = EquivalenceOutcome::NotProven("warning class differs".to_owned());
+        not_proven.work = WorkReceipt { useful_operations: 2, elapsed_micros: 1 };
+        assert_eq!(plan.evaluate(&not_proven)?.tag(), "equivalence_not_proven");
+
+        let mut undischarged = observation(&plan, &law);
+        undischarged
+            .discharged_obligations
+            .retain(|obligation| obligation.proposition != PreservedProposition::SourceMapping);
+        undischarged.work = WorkReceipt { useful_operations: 2, elapsed_micros: 1 };
+        match plan.evaluate(&undischarged)? {
+            TransformationResult::EquivalenceNotProven { reason } => {
+                assert!(reason.contains("source_mapping"), "got {reason}");
+            }
+            other => unreachable!("an undischarged obligation must not apply, got {}", other.tag()),
+        }
+        Ok(())
+    }
+
+    // Falsifier 9: source edits are permitted without a separate RefactorPlan
+    // relation, or an internal class reaches the source-edit consumer.
+    #[test]
+    fn falsifier_09_source_edits_require_a_separate_refactor_relation() -> Result<()> {
+        let projection = shape_fixtures::source_projection_plan()?;
+        let projection_law = shape_fixtures::source_projection_law()?;
+        projection.verify_law_conformance(&projection_law)?;
+
+        let mut unrelated = projection.clone();
+        unrelated.refactor_relation = None;
+        assert_invalid(
+            &unrelated,
+            "without a separate canonical RefactorPlan relation",
+            "a source projection without a refactor relation must fail",
+        );
+
+        // No internal class may name the source-edit consumer, whatever a law
+        // declares.
+        for class in TransformationClass::ALL {
+            let permits_source_edit =
+                class.permitted_consumers().contains(&ConsumerClass::SourceEdit);
+            assert_eq!(
+                permits_source_edit,
+                class == TransformationClass::SourceProjectionCandidate,
+                "{} must not admit the source-edit consumer",
+                class.tag()
+            );
+        }
+
+        let (_, folding_plan) = folding();
+        let mut widened = folding_plan.clone();
+        widened.consumers.insert(ConsumerClass::SourceEdit);
+        assert_invalid(
+            &widened,
+            "must not name the consumer source_edit",
+            "an analysis-preserving simplification is not a source edit",
+        );
+
+        let mut widened_law = shape_fixtures::exact_value_folding_law()?;
+        widened_law.claim_ceiling = ClaimCeiling::AuthorizedSourceEdit;
+        let error = match widened_law.validate() {
+            Err(error) => format!("{error:#}"),
+            Ok(()) => unreachable!("an internal law cannot reach the source-edit ceiling"),
+        };
+        assert!(error.contains("authorized-source-edit ceiling"), "got {error}");
+        Ok(())
+    }
+
+    // Falsifier 10: current transformed output is used as expected proof.
+    #[test]
+    fn falsifier_10_transformed_output_is_never_its_own_oracle() -> Result<()> {
+        let (_, plan) = folding();
+        for oracle in EquivalenceOracle::ALL {
+            assert_eq!(
+                oracle.is_independent(),
+                oracle != EquivalenceOracle::TransformedCandidateOutput,
+                "{} independence is misclassified",
+                oracle.tag()
+            );
+        }
+
+        let mut circular = plan.clone();
+        circular.equivalence_obligations.push(EquivalenceObligation {
+            oracle: EquivalenceOracle::TransformedCandidateOutput,
+            proposition: PreservedProposition::Effects,
+            subject: SubjectRef::new("the candidate's own folded output")?,
+        });
+        assert_invalid(
+            &circular,
+            "uses the candidate's own transformed output as its oracle",
+            "an obligation cannot be discharged by the result it is proving",
+        );
+        Ok(())
+    }
+
+    // Falsifier 11: semantic bytes change under location or obligation order.
+    #[test]
+    fn falsifier_11_canonical_bytes_are_order_independent_and_bounded() -> Result<()> {
+        let (_, plan) = folding();
+        let expected = plan.semantic_fingerprint()?;
+
+        let mut reordered = plan.clone();
+        reordered.locations.reverse();
+        reordered.preconditions.reverse();
+        reordered.equivalence_obligations.reverse();
+        assert_eq!(
+            reordered.semantic_fingerprint()?,
+            expected,
+            "location, precondition, and obligation order must not change plan identity"
+        );
+
+        // Order-independence is not blindness: any semantic field change must
+        // move the fingerprint.
+        let mutations: Vec<fn(&mut TransformationPlan)> = vec![
+            |plan| plan.claim_ceiling = ClaimCeiling::InternalFactOnly,
+            |plan| {
+                plan.intended_changes.remove(&ChangedProposition::RedundantOperationCount);
+            },
+            |plan| {
+                plan.excluded_concepts.insert(DynamicConcept::XsBoundary);
+            },
+            |plan| plan.preconditions[0].truth = PreconditionTruth::Unknown,
+            |plan| {
+                plan.consumers.remove(&ConsumerClass::Analysis);
+            },
+            |plan| {
+                plan.locations[0] = LocationSelector::CanonicalOperation {
+                    stage: CompilerStage::Hir,
+                    operation_id: match OperationId::new("hir:op:0099") {
+                        Ok(id) => id,
+                        Err(error) => unreachable!("operation id builds: {error}"),
+                    },
+                    source_provenance: None,
+                };
+            },
+        ];
+        for (index, mutate) in mutations.iter().enumerate() {
+            let mut changed = plan.clone();
+            mutate(&mut changed);
+            assert_ne!(
+                changed.semantic_fingerprint()?,
+                expected,
+                "semantic mutation {index} must change plan identity"
+            );
+        }
+
+        assert!(plan.canonical_semantic_text()?.len() <= super::MAX_CANONICAL_TEXT_BYTES);
+        Ok(())
+    }
+
+    // Falsifier 12: source or private state leaks into the retained contract.
+    #[test]
+    fn falsifier_12_provenance_is_private_safe_and_bounded() -> Result<()> {
+        for rejected in [
+            "/home/someone/lib/Shape.pm",
+            "\\\\host\\share\\Shape.pm",
+            "C:/Users/someone/Shape.pm",
+            "../../etc/passwd",
+            "lib/Shape.pm\nmy $secret = 1;",
+        ] {
+            assert!(
+                SourceProvenance::new(rejected, 0, 1).is_err(),
+                "{rejected:?} must not be retainable as provenance"
+            );
+        }
+        assert!(
+            SourceProvenance::new("lib/Shape.pm", 10, 4).is_err(),
+            "a decreasing span is not a span"
+        );
+        SourceProvenance::new("lib/Shape.pm", 10, 40)?;
+
+        let (_, plan) = folding();
+        let canonical = plan.canonical_semantic_text()?;
+        assert!(!canonical.contains("/home/"), "canonical bytes must not carry a host path");
+        for line in canonical.lines() {
+            assert!(line.len() <= super::MAX_CANONICAL_TEXT_BYTES, "canonical lines stay bounded");
+        }
+
+        let overlong = "x".repeat(MAX_TEXT_LEN + 1);
+        assert!(SubjectRef::new(&overlong).is_err(), "text fields are bounded");
+        assert!(OperationId::new(&overlong).is_err(), "operation ids are bounded");
+        assert!(LawId::new(&overlong).is_err(), "law ids are bounded");
+        Ok(())
+    }
+
+    // Acceptance: the closed vocabularies are exactly the ones the contract
+    // declares, and their tags are distinct and stable.
+    #[test]
+    fn closed_vocabularies_are_complete_and_distinct() -> Result<()> {
+        let mut tags = BTreeSet::new();
+        for stage in CompilerStage::ALL {
+            assert!(tags.insert(format!("stage:{}", stage.tag())));
+        }
+        for class in TransformationClass::ALL {
+            assert!(tags.insert(format!("class:{}", class.tag())));
+            assert!(!class.permitted_consumers().is_empty());
+        }
+        for consumer in ConsumerClass::ALL {
+            assert!(tags.insert(format!("consumer:{}", consumer.tag())));
+        }
+        for concept in DynamicConcept::ALL {
+            assert!(tags.insert(format!("concept:{}", concept.tag())));
+        }
+        for proposition in PreservedProposition::ALL {
+            assert!(tags.insert(format!("preserved:{}", proposition.tag())));
+        }
+        for change in ChangedProposition::ALL {
+            assert!(tags.insert(format!("changed:{}", change.tag())));
+        }
+        for oracle in EquivalenceOracle::ALL {
+            assert!(tags.insert(format!("oracle:{}", oracle.tag())));
+        }
+        for ceiling in ClaimCeiling::ALL {
+            assert!(tags.insert(format!("ceiling:{}", ceiling.tag())));
+        }
+
+        let (law, plan) = folding();
+        let mut result_tags = BTreeSet::new();
+        for result in [
+            plan.evaluate(&observation(&plan, &law))?,
+            TransformationResult::AppliedWithDeclaredResidualBoundary {
+                output: plan.expected_output.clone(),
+                work: WorkReceipt { useful_operations: 1, elapsed_micros: 1 },
+                residual: ResidualBoundary::new("unreachable-edges", "blocks left untouched")?,
+            },
+            TransformationResult::RefusedPreconditionUnproven {
+                precondition: plan.preconditions[0].id.clone(),
+            },
+            TransformationResult::RefusedDynamicOrUnsupported {
+                precondition: plan.preconditions[0].id.clone(),
+                concept: DynamicConcept::Overload,
+            },
+            TransformationResult::Stale { reason: "r".to_owned() },
+            TransformationResult::SubjectMismatch { reason: "r".to_owned() },
+            TransformationResult::InvalidPlan { reason: "r".to_owned() },
+            TransformationResult::InvalidOutput { reason: "r".to_owned() },
+            TransformationResult::VerifierFailed { reason: "r".to_owned() },
+            TransformationResult::EquivalenceNotProven { reason: "r".to_owned() },
+            TransformationResult::ZeroUsefulWork { reason: "r".to_owned() },
+            TransformationResult::Cancelled { reason: "r".to_owned() },
+            TransformationResult::TimedOut { reason: "r".to_owned() },
+            TransformationResult::LimitExceeded { reason: "r".to_owned() },
+            TransformationResult::InstrumentFailed { reason: "r".to_owned() },
+            TransformationResult::CleanupFailed { reason: "r".to_owned() },
+        ] {
+            assert!(result_tags.insert(result.tag()), "{} is not a distinct tag", result.tag());
+        }
+        assert_eq!(result_tags.len(), TransformationResult::VARIANT_COUNT);
+        Ok(())
+    }
+
+    // Acceptance: every non-completed settlement is its own terminal state and
+    // never collapses into a refusal or an applied transformation.
+    #[test]
+    fn settlement_states_remain_independently_representable() -> Result<()> {
+        let (law, plan) = folding();
+        for (settlement, expected) in [
+            (Settlement::Cancelled("client cancelled".to_owned()), "cancelled"),
+            (Settlement::TimedOut("budget exhausted".to_owned()), "timed_out"),
+            (Settlement::LimitExceeded("location bound".to_owned()), "limit_exceeded"),
+            (Settlement::InstrumentFailed("verifier crashed".to_owned()), "instrument_failed"),
+            (Settlement::CleanupFailed("temp graph retained".to_owned()), "cleanup_failed"),
+        ] {
+            let mut observed = observation(&plan, &law);
+            observed.settlement = settlement;
+            let result = plan.evaluate(&observed)?;
+            assert_eq!(result.tag(), expected);
+            assert!(!result.is_applied());
+            assert!(!result.is_refusal());
+        }
+        Ok(())
+    }
+
+    // Acceptance: T02/T03/T04 can instantiate the three initial families and
+    // the source projection without a second plan vocabulary.
+    #[test]
+    fn shape_fixtures_instantiate_every_initial_family() -> Result<()> {
+        let pairs: Vec<(TransformationLaw, TransformationPlan)> = vec![
+            (
+                shape_fixtures::exact_value_folding_law()?,
+                shape_fixtures::exact_value_folding_plan()?,
+            ),
+            (shape_fixtures::branch_pruning_law()?, shape_fixtures::branch_pruning_plan()?),
+            (
+                shape_fixtures::effect_free_control_law()?,
+                shape_fixtures::effect_free_control_plan()?,
+            ),
+            (shape_fixtures::source_projection_law()?, shape_fixtures::source_projection_plan()?),
+        ];
+        // A registry keyed by exact law revision is all T02 needs; every
+        // fixture is a distinct revision with a distinct plan identity.
+        let mut registry = BTreeSet::new();
+        let mut plan_digests = BTreeSet::new();
+        for (law, plan) in &pairs {
+            law.validate()?;
+            plan.verify_law_conformance(law)?;
+            assert!(registry.insert((
+                law.id.clone(),
+                law.version.clone(),
+                law.semantic_fingerprint()?
+            )));
+            assert!(plan_digests.insert(plan.semantic_fingerprint()?));
+            let observed = shape_fixtures::conforming_observation(plan, law)?;
+            assert_eq!(plan.evaluate(&observed)?.tag(), "applied_exact");
+        }
+        assert_eq!(registry.len(), 4);
+        Ok(())
+    }
+
+    // Acceptance: a law-declared independent subplan is the only route to a
+    // partial application, and it must name its residual boundary.
+    #[test]
+    fn residual_boundaries_require_a_law_declared_subplan() -> Result<()> {
+        let law = shape_fixtures::effect_free_control_law()?;
+        let plan = shape_fixtures::effect_free_control_plan()?;
+        assert!(law.partial_application.admits_residual());
+
+        let mut partial = shape_fixtures::conforming_observation(&plan, &law)?;
+        partial.applied_operations = [OperationId::new("eir:block:0002")?].into_iter().collect();
+        partial.work = WorkReceipt { useful_operations: 1, elapsed_micros: 300 };
+        partial.residual =
+            Some(ResidualBoundary::new("unreachable-blocks", "edges left untouched")?);
+        assert_eq!(plan.evaluate(&partial)?.tag(), "applied_with_declared_residual_boundary");
+
+        let mut undeclared = partial.clone();
+        undeclared.residual = None;
+        match plan.evaluate(&undeclared)? {
+            TransformationResult::InvalidOutput { reason } => {
+                assert!(reason.contains("declared no residual boundary"), "got {reason}");
+            }
+            other => unreachable!("an undeclared residual must not apply, got {}", other.tag()),
+        }
+
+        // The same partial shape under a prohibiting law is invalid output.
+        let mut prohibited = partial.clone();
+        prohibited.partial_application = PartialApplicationPolicy::Prohibited;
+        match plan.evaluate(&prohibited)? {
+            TransformationResult::InvalidOutput { reason } => {
+                assert!(reason.contains("prohibited"), "got {reason}");
+            }
+            other => unreachable!("a prohibited partial must not apply, got {}", other.tag()),
+        }
+        Ok(())
+    }
+
+    // Acceptance: a fact-strengthening law cannot rewrite IR, and an
+    // unsupported law cannot change anything.
+    #[test]
+    fn class_change_boundaries_hold_against_a_declaring_law() -> Result<()> {
+        let mut fact_only = shape_fixtures::exact_value_folding_law()?;
+        fact_only.class = TransformationClass::FactStrengtheningWithoutIrRewrite;
+        fact_only.consumers = [ConsumerClass::FactStore].into_iter().collect();
+        let error = match fact_only.validate() {
+            Err(error) => format!("{error:#}"),
+            Ok(()) => unreachable!("fact strengthening cannot permit an IR rewrite"),
+        };
+        assert!(error.contains("must not permit the change ir_shape"), "got {error}");
+
+        let mut unsupported = shape_fixtures::branch_pruning_law()?;
+        unsupported.class = TransformationClass::UnsupportedOrNotApplicable;
+        unsupported.consumers = [ConsumerClass::NoConsumer].into_iter().collect();
+        let error = match unsupported.validate() {
+            Err(error) => format!("{error:#}"),
+            Ok(()) => unreachable!("an unsupported law cannot permit any change"),
+        };
+        assert!(error.contains("must not permit the change"), "got {error}");
+
+        let mut ceiling_climb = shape_fixtures::branch_pruning_plan()?;
+        ceiling_climb.claim_ceiling = ClaimCeiling::BoundedExecution;
+        let law = shape_fixtures::branch_pruning_law()?;
+        let error = match ceiling_climb.verify_law_conformance(&law) {
+            Err(error) => format!("{error:#}"),
+            Ok(()) => unreachable!("a plan cannot claim above its law's ceiling"),
+        };
+        assert!(error.contains("above the ceiling"), "got {error}");
+        Ok(())
+    }
+
+    // Acceptance: a plan may not bind a law revision it does not match.
+    #[test]
+    fn law_binding_is_exact_revision_bound() -> Result<()> {
+        let (law, plan) = folding();
+        plan.verify_law_conformance(&law)?;
+
+        let mut revised = law.clone();
+        revised.statement = "a revised statement of the same rule".to_owned();
+        let error = match plan.verify_law_conformance(&revised) {
+            Err(error) => format!("{error:#}"),
+            Ok(()) => unreachable!("a revised law must not satisfy the old binding"),
+        };
+        assert!(error.contains("digest"), "got {error}");
+
+        let mut renamed = law.clone();
+        renamed.version = LawVersion::new("v2")?;
+        assert!(plan.verify_law_conformance(&renamed).is_err());
+        assert!(LawVersion::new("2").is_err(), "law versions are v-prefixed");
+        Ok(())
+    }
+}
