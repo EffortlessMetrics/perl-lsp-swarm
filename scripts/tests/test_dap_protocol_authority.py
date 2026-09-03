@@ -8,6 +8,9 @@ import hashlib
 import importlib.util
 import json
 import re
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,7 +21,7 @@ assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
-from dap_authority_common import PEER_DISPATCH_PATHS
+from dap_authority_common import PEER_DISPATCH_PATHS, parse_request_table
 
 COMMIT = "a" * 40
 DOC = f"""# DAP Protocol Authority and Compatibility
@@ -422,6 +425,28 @@ macro_rules! dap_request_table {
     def assertAuthorityError(self, callback) -> None:  # noqa: N802 - unittest helper
         with self.assertRaises(MODULE.AuthorityError):
             callback()
+
+    def assertAuthorityErrorMatching(  # noqa: N802 - unittest helper
+        self, expected: str, callback
+    ) -> None:
+        """Fail unless the *named* rule rejected the input.
+
+        A bare `assertRaises` cannot tell a rule firing from an unrelated
+        parse failure, so a test can keep passing after the rule it names
+        stops being reachable.
+        """
+        with self.assertRaises(MODULE.AuthorityError) as caught:
+            callback()
+        self.assertIn(expected, str(caught.exception))
+
+    @classmethod
+    def _table_from_rows(cls, *rows: str) -> str:
+        body = "".join(f"    {row}\n" for row in rows)
+        return f"{cls.MACRO_DEFINITION}\ndap_request_table! {{\n{body}}}\n"
+
+    def _receipt(self) -> dict:
+        validated, observed, production = self._validate()
+        return json.loads(json.dumps(MODULE.build_receipt(validated, observed, production)))
 
     def test_happy_path_validates_authority_docs_and_production_boundary(self) -> None:
         validated, observed, production = self._validate()
@@ -1358,30 +1383,38 @@ macro_rules! dap_request_table {
         self._write_production(dispatch_source="impl DebugAdapter {}\n")
         self.assertAuthorityError(self._production_rows)
 
+    # Each uniqueness test below varies exactly one field and keeps every
+    # other field distinct and well formed, so only the named rule can reject
+    # the table. Rows written in a row syntax the table regex no longer
+    # accepts would be rejected as unparsed residue instead, which passes
+    # while leaving the rule itself unproven.
+
     def test_duplicate_wire_name_fails_closed(self) -> None:
-        # Distinct handlers, so only the wire-name uniqueness rule can
-        # reject this pair.
-        source = (
-            self.MACRO_DEFINITION
-            + "dap_request_table! {\n"
-            '    standard "initialize" => handle_initialize(arguments),\n'
-            '    standard "initialize" => handle_initialize_again(arguments),\n'
-            '    extension "inlineValues" => handle_inline_values(arguments),\n'
-            "}\n"
+        source = self._table_from_rows(
+            'standard all_frontends Initialize "initialize" => handle_initialize(arguments),',
+            'standard native_only InitializeTwice "initialize" '
+            "=> handle_initialize_again(arguments),",
         )
         self._write_production(dispatch_source=source)
-        self.assertAuthorityError(self._production_rows)
+        self.assertAuthorityErrorMatching("duplicate wire names", self._production_rows)
 
     def test_two_rows_sharing_one_handler_fail_closed(self) -> None:
-        source = (
-            self.MACRO_DEFINITION
-            + "dap_request_table! {\n"
-            '    standard "initialize" => handle_shared(arguments),\n'
-            '    extension "inlineValues" => handle_shared(arguments),\n'
-            "}\n"
+        source = self._table_from_rows(
+            'standard all_frontends Initialize "initialize" => handle_shared(arguments),',
+            'extension native_only InlineValues "inlineValues" => handle_shared(arguments),',
         )
         self._write_production(dispatch_source=source)
-        self.assertAuthorityError(self._production_rows)
+        self.assertAuthorityErrorMatching("route to the same handler", self._production_rows)
+
+    def test_two_rows_sharing_one_route_variant_fail_closed(self) -> None:
+        # A shared variant collapses two wire names onto one `DapRequestRoute`,
+        # so the peer frontends could no longer tell them apart.
+        source = self._table_from_rows(
+            'standard all_frontends Shared "initialize" => handle_initialize(arguments),',
+            'extension native_only Shared "inlineValues" => handle_inline_values(arguments),',
+        )
+        self._write_production(dispatch_source=source)
+        self.assertAuthorityErrorMatching("duplicate route variants", self._production_rows)
 
     def test_unparsed_trailing_table_content_fails_closed(self) -> None:
         source = self._render_table(
@@ -1418,6 +1451,176 @@ macro_rules! dap_request_table {
         source = self._render_table(("initialize", "inlineValues"), standard=())
         self._write_production(dispatch_source=source)
         self.assertAuthorityError(self._production_rows)
+
+    # --- #9527 falsifier 8: semantically neutral formatting is not identity ---
+
+    def test_comments_and_reflow_do_not_change_row_identity(self) -> None:
+        # Row order is covered above; this covers the rest of "no semantic
+        # change". The rows carry the identical tokens either way, so any
+        # difference in the result would come from formatting alone.
+        baseline = self._production_rows()["request_rows"]
+        rows = [
+            self._render_row(command, standard=("initialize",))
+            for command in ("initialize", "inlineValues")
+        ]
+        decorated = (
+            "    // a leading line comment\n"
+            + rows[0].replace(" => ", "\n        =>\n        ")
+            + "  // a trailing line comment\n"
+            + "    /* a block comment\n       spanning several lines */\n"
+            + rows[1]
+            + " /* a trailing block comment */\n"
+        )
+        source = f"{self.MACRO_DEFINITION}\ndap_request_table! {{\n{decorated}}}\n"
+        self._write_production(dispatch_source=source)
+        self.assertEqual(baseline, self._production_rows()["request_rows"])
+
+    # --- #9527 falsifier 10: near-identical wire names stay distinct rows ---
+
+    def test_near_duplicate_wire_names_do_not_collapse_to_one_row(self) -> None:
+        # Namespacing, case, and dotted names are the realistic ways a project
+        # request comes to read like a standard one. Each must keep its own
+        # row identity rather than merging with the name it resembles.
+        commands = ("pause", "Pause", "perlLsp/pause", "trace.pause")
+        rows = parse_request_table(
+            self._table_from_rows(
+                'extension native_only Pause "pause" => handle_pause(arguments),',
+                'extension native_only PauseUpper "Pause" => handle_pause_upper(arguments),',
+                'extension native_only PerlLspPause "perlLsp/pause" '
+                "=> handle_perllsp_pause(arguments),",
+                'extension native_only TracePause "trace.pause" => handle_trace_pause(arguments),',
+            )
+        )
+        self.assertEqual([row["command"] for row in rows], list(commands))
+        self.assertEqual(
+            [row["row_id"] for row in rows],
+            [f"dap.request.{command}" for command in commands],
+        )
+        self.assertEqual(len({row["row_id"] for row in rows}), len(commands))
+
+    def test_a_standard_and_an_extension_row_cannot_share_a_wire_name(self) -> None:
+        # The same spelling classified both ways is the collapse the rule
+        # exists to prevent; the classes differ, so only uniqueness can reject.
+        source = self._table_from_rows(
+            'standard all_frontends Initialize "initialize" => handle_initialize(arguments),',
+            'extension native_only InitializeExt "initialize" => handle_initialize_ext(arguments),',
+        )
+        self._write_production(dispatch_source=source)
+        self.assertAuthorityErrorMatching("duplicate wire names", self._production_rows)
+
+    # --- #9527 falsifier 9: a stale extractor or source graph is rejected ---
+
+    def test_receipt_binds_the_extractor_and_the_production_source_graph(self) -> None:
+        production = self._receipt()["production"]
+        self.assertRegex(production["extractor"]["digest"], r"^[0-9a-f]{64}$")
+        self.assertIn(
+            "dap_authority_common.py",
+            {row["module"] for row in production["extractor"]["modules"]},
+        )
+        graph = production["source_graph"]
+        self.assertRegex(graph["digest"], r"^[0-9a-f]{64}$")
+        self.assertEqual(graph["root"], "crates/perl-dap/src")
+        self.assertGreater(graph["file_count"], 0)
+
+    def test_verify_accepts_a_receipt_that_is_current_for_its_tree(self) -> None:
+        receipt = self._receipt()
+        binding = MODULE.verify_inventory_binding(self.root, receipt)
+        self.assertEqual(
+            binding["extractor_digest"], receipt["production"]["extractor"]["digest"]
+        )
+        self.assertEqual(
+            binding["source_graph_digest"], receipt["production"]["source_graph"]["digest"]
+        )
+
+    def test_a_changed_governed_source_is_rejected_against_its_receipt(self) -> None:
+        receipt = self._receipt()
+        events = self.root / MODULE.DEBUG_ADAPTER_ROOT / "events.rs"
+        events.write_text(events.read_text(encoding="utf-8") + "\n// unrelated\n", encoding="utf-8")
+
+        # The derived inventory is untouched, so nothing already in the
+        # receipt can reveal the edit. Only the bound source identity can.
+        current = self._production_rows()
+        self.assertEqual(current["commands"], receipt["production"]["commands"])
+        self.assertEqual(current["events"], receipt["production"]["events"])
+        self.assertEqual(current["request_rows"], receipt["production"]["request_rows"])
+        self.assertAuthorityErrorMatching(
+            "different production source graph",
+            lambda: MODULE.verify_inventory_binding(self.root, receipt),
+        )
+
+    def test_an_added_governed_source_file_is_rejected_against_its_receipt(self) -> None:
+        receipt = self._receipt()
+        added = self.root / MODULE.DEBUG_ADAPTER_ROOT / "added.rs"
+        added.write_text("// a new governed file\n", encoding="utf-8")
+        self.assertAuthorityErrorMatching(
+            "different production source graph",
+            lambda: MODULE.verify_inventory_binding(self.root, receipt),
+        )
+
+    def test_a_receipt_without_the_binding_is_rejected(self) -> None:
+        # A receipt produced before the binding existed must fail closed
+        # rather than be accepted for want of anything to compare.
+        for key in ("extractor", "source_graph"):
+            with self.subTest(missing=key):
+                stale = copy.deepcopy(self._receipt())
+                del stale["production"][key]
+                self.assertAuthorityError(
+                    lambda receipt=stale: MODULE.verify_inventory_binding(self.root, receipt)
+                )
+
+    def test_a_malformed_binding_is_rejected_as_an_authority_error(self) -> None:
+        # A binding of the wrong shape must fail the gate cleanly rather than
+        # escape as an uncaught exception the caller does not classify.
+        for key in ("extractor", "source_graph"):
+            for value in ("not-an-object", ["not-an-object"], None):
+                with self.subTest(field=key, value=value):
+                    malformed = copy.deepcopy(self._receipt())
+                    malformed["production"][key] = value
+                    self.assertAuthorityError(
+                        lambda receipt=malformed: MODULE.verify_inventory_binding(
+                            self.root, receipt
+                        )
+                    )
+
+    def test_a_changed_extractor_module_is_rejected_against_its_receipt(self) -> None:
+        # End to end through the real entrypoint: an extractor copy with one
+        # guard silently removed must not be able to reuse this receipt. The
+        # unmodified copy is the control — content identity, not location, is
+        # what the binding compares.
+        receipt_path = self.root / "receipt.json"
+        receipt_path.write_text(json.dumps(self._receipt()), encoding="utf-8")
+        extractor = self.root / "extractor"
+        shutil.copytree(SCRIPT.parent, extractor)
+
+        def verify() -> subprocess.CompletedProcess:
+            return subprocess.run(
+                [
+                    sys.executable,
+                    str(extractor / SCRIPT.name),
+                    "verify-receipt",
+                    "--root",
+                    str(self.root),
+                    "--receipt",
+                    str(receipt_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        control = verify()
+        self.assertEqual(control.returncode, 0, control.stderr)
+
+        guard = extractor / "dap_authority_common.py"
+        source = guard.read_text(encoding="utf-8")
+        removed = '        raise AuthorityError("two request rows route to the same handler")'
+        self.assertIn(removed, source)
+        guard.write_text(source.replace(removed, "        pass"), encoding="utf-8")
+
+        mutated = verify()
+        self.assertEqual(mutated.returncode, 1)
+        self.assertIn("different DAP authority extractor", mutated.stderr)
+        self.assertIn("dap_authority_common.py", mutated.stderr)
 
     def test_removing_a_route_removes_it_from_the_inventory(self) -> None:
         # The inventory follows executable routing: a withdrawn route cannot

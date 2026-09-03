@@ -13,10 +13,13 @@ from dap_authority_common import (
     SEND_EVENT_LITERAL_RE,
     AuthorityError,
     array_value,
+    extractor_identity,
     manifest_rows,
+    object_value,
     parse_request_table,
     parse_peer_dispatch_routes,
     production_dispatch_sources,
+    production_source_graph,
     read_text,
     string_value,
 )
@@ -78,6 +81,64 @@ def _request_routes(row: Mapping[str, str]) -> list[dict[str, str]]:
             }
         )
     return routes
+
+
+def verify_inventory_binding(root: Path, receipt: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Reject a receipt whose extractor or source graph is no longer current.
+
+    `check` always regenerates, so it cannot catch staleness; the risk is a
+    receipt kept and consumed after the extractor or the governed sources
+    moved. Recompute both identities from the tree in hand and refuse the
+    receipt on any drift, including a receipt that predates the binding and
+    therefore carries no identity to compare at all.
+    """
+    production = object_value(receipt.get("production"), "receipt.production")
+
+    recorded_extractor = object_value(production.get("extractor"), "receipt.production.extractor")
+    recorded_graph = object_value(
+        production.get("source_graph"), "receipt.production.source_graph"
+    )
+
+    current_extractor = extractor_identity()
+    current_graph = production_source_graph(root)
+
+    recorded_extractor_digest = string_value(
+        recorded_extractor.get("digest"), "receipt.production.extractor.digest"
+    )
+    if recorded_extractor_digest != current_extractor["digest"]:
+        recorded_modules = {
+            string_value(row.get("module"), "receipt extractor module"): row.get("git_blob_sha1")
+            for row in array_value(
+                recorded_extractor.get("modules"), "receipt.production.extractor.modules"
+            )
+        }
+        current_modules = {row["module"]: row["git_blob_sha1"] for row in current_extractor["modules"]}
+        changed = sorted(
+            name
+            for name in recorded_modules.keys() | current_modules.keys()
+            if recorded_modules.get(name) != current_modules.get(name)
+        )
+        raise AuthorityError(
+            "receipt was produced by a different DAP authority extractor: "
+            f"recorded={recorded_extractor_digest}, current={current_extractor['digest']}, "
+            f"changed modules={changed}"
+        )
+
+    recorded_graph_digest = string_value(
+        recorded_graph.get("digest"), "receipt.production.source_graph.digest"
+    )
+    if recorded_graph_digest != current_graph["digest"]:
+        raise AuthorityError(
+            "receipt was produced from a different production source graph: "
+            f"recorded={recorded_graph_digest} ({recorded_graph.get('file_count')} files), "
+            f"current={current_graph['digest']} ({current_graph['file_count']} files)"
+        )
+
+    return {
+        "extractor_digest": current_extractor["digest"],
+        "source_graph_digest": current_graph["digest"],
+        "source_graph_file_count": current_graph["file_count"],
+    }
 
 
 def validate_production_boundary(
@@ -196,6 +257,13 @@ def validate_production_boundary(
     return {
         "dispatch_path": DISPATCH_PATH.as_posix(),
         "source_root": DEBUG_ADAPTER_ROOT.as_posix(),
+        # Which extractor produced these rows, and from what source content.
+        # Without this an inventory is self-describing only: the rows are
+        # reported, but nothing says they were derived by the current
+        # extractor from the current tree, so a receipt kept past either
+        # change stays indistinguishable from a fresh one (#9527 falsifier 9).
+        "extractor": extractor_identity(),
+        "source_graph": production_source_graph(root),
         "request_rows": [
             {
                 "row_id": row["row_id"],

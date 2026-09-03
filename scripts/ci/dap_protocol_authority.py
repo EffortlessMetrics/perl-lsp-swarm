@@ -28,7 +28,10 @@ from dap_authority_common import (  # noqa: E402
     write_json,
 )
 from dap_authority_docs import validate_docs  # noqa: E402
-from dap_authority_production import validate_production_boundary  # noqa: E402
+from dap_authority_production import (  # noqa: E402
+    validate_production_boundary,
+    verify_inventory_binding,
+)
 from dap_authority_receipt import build_receipt  # noqa: E402
 from dap_authority_schema import fetch_schema, validate_schema_bytes  # noqa: E402
 
@@ -60,17 +63,32 @@ def _parser() -> argparse.ArgumentParser:
     docs = subparsers.add_parser("check-docs")
     docs.add_argument("--root", default=".")
     docs.add_argument("--manifest", default=".ci/dap/protocol-authority.json")
+
+    verify = subparsers.add_parser("verify-receipt")
+    verify.add_argument("--root", default=".")
+    verify.add_argument("--receipt", required=True)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     root = Path(args.root).resolve()
-    manifest_path = Path(args.manifest)
+    # `verify-receipt` compares a receipt against the tree; it takes no manifest.
+    manifest_path = Path(getattr(args, "manifest", ".ci/dap/protocol-authority.json"))
     if not manifest_path.is_absolute():
         manifest_path = root / manifest_path
 
     try:
+        if args.command == "verify-receipt":
+            binding = verify_inventory_binding(root, read_json(Path(args.receipt)))
+            print(f"DAP authority extractor: {binding['extractor_digest']}")
+            print(
+                f"DAP production source graph: {binding['source_graph_digest']} "
+                f"({binding['source_graph_file_count']} files)"
+            )
+            print(f"DAP authority receipt is current for: {root}")
+            return 0
+
         require_sha256 = args.command == "check"
         manifest = validate_manifest(read_json(manifest_path), require_sha256=require_sha256)
         validate_docs(root, manifest)
