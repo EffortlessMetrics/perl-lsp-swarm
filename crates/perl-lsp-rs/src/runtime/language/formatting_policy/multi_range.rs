@@ -7,6 +7,12 @@ use serde::Serialize;
 use perl_lsp_rs_core::providers::formatting::range_admission::{
     RangePositionError, SourceGeometry, admit_wire_endpoints,
 };
+use perl_lsp_rs_core::tooling::perltidy::native::FormatReasonCode;
+
+#[cfg(test)]
+use std::cell::RefCell;
+#[cfg(test)]
+use std::collections::VecDeque;
 
 use super::super::{
     FormatContext, FormatDisposition, FormatTextEdit, FormattingDecision, JsonRpcError, JsonRpcId,
@@ -368,11 +374,49 @@ fn plan_outcomes(plan: &RangePlan, decisions: &[FormattingDecision]) -> Vec<Valu
 }
 
 fn blocked_decision(decisions: &[FormattingDecision]) -> Option<&FormattingDecision> {
-    decisions.iter().find(|decision| {
-        matches!(
-            decision.outcome.disposition,
-            FormatDisposition::Refused | FormatDisposition::FailedOrNotProven
-        )
+    decisions.iter().find(|decision| decision.outcome.disposition == FormatDisposition::Refused)
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_DECISIONS: RefCell<Option<VecDeque<FormattingDecision>>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_decisions<T>(
+    decisions: impl IntoIterator<Item = FormattingDecision>,
+    operation: impl FnOnce() -> T,
+) -> T {
+    let previous = TEST_DECISIONS.with(|slot| slot.replace(Some(decisions.into_iter().collect())));
+    let result = operation();
+    TEST_DECISIONS.with(|slot| slot.replace(previous));
+    result
+}
+
+#[cfg(test)]
+fn next_test_decision() -> Option<FormattingDecision> {
+    TEST_DECISIONS.with(|slot| slot.borrow_mut().as_mut().and_then(VecDeque::pop_front))
+}
+
+/// The first unproven range in the plan, wherever it was ordered.
+///
+/// Unproven outcomes are selected before any refusal or edit handling, so an
+/// instrument failure cannot be hidden by an earlier refusal.
+fn unproven_decision(decisions: &[FormattingDecision]) -> Option<&FormattingDecision> {
+    decisions
+        .iter()
+        .find(|decision| decision.outcome.disposition == FormatDisposition::FailedOrNotProven)
+}
+
+/// True when no refused range cites a reason other than unsupported syntax.
+///
+/// The unsupported-syntax warning describes the first blocked range, so the
+/// plan may surface that advice only when every refusal shares the reason; a
+/// differently-refused range must not inherit it.
+fn uniformly_unsupported_refusals(decisions: &[FormattingDecision]) -> bool {
+    decisions.iter().all(|decision| {
+        decision.outcome.disposition != FormatDisposition::Refused
+            || decision.outcome.reason == FormatReasonCode::UnsupportedSyntax
     })
 }
 
@@ -497,12 +541,28 @@ pub(super) fn handle(
             }),
         )?;
         formatter_started = true;
-        let decision = match formatter.format_range_decision(
-            &snapshot.text,
-            &admitted.wire(),
-            &snapshot.options,
-            &context,
-        ) {
+        let decision = match {
+            #[cfg(test)]
+            if let Some(decision) = next_test_decision() {
+                Ok(decision)
+            } else {
+                formatter.format_range_decision(
+                    &snapshot.text,
+                    &admitted.wire(),
+                    &snapshot.options,
+                    &context,
+                )
+            }
+            #[cfg(not(test))]
+            {
+                formatter.format_range_decision(
+                    &snapshot.text,
+                    &admitted.wire(),
+                    &snapshot.options,
+                    &context,
+                )
+            }
+        } {
             Ok(decision) => decision,
             Err(error) => {
                 server.ensure_not_cancelled(
@@ -534,8 +594,23 @@ pub(super) fn handle(
     server.ensure_current_with_engine(&snapshot, actual_engine)?;
     let outcomes = plan_outcomes(&plan, &decisions);
 
+    if let Some(failed) = unproven_decision(&decisions) {
+        // An unproven range anywhere in the plan is an instrument failure for
+        // the whole plan, regardless of refusal order or already-produced edits.
+        return Err(typed_outcome_error(
+            server,
+            &snapshot,
+            &plan,
+            outcomes,
+            failed,
+            "formatting returned an unproven successful value; no edits were returned",
+        ));
+    }
+
     if let Some(blocked) = blocked_decision(&decisions) {
         if decisions.iter().any(|decision| !decision.document.edits.is_empty()) {
+            // A mixed blocked/edit plan is a contract failure, not the pure
+            // unsupported-refusal outcome covered by the warning claim.
             return Err(typed_outcome_error(
                 server,
                 &snapshot,
@@ -545,16 +620,6 @@ pub(super) fn handle(
                 "one range was blocked after another produced edits; no edits were returned",
             ));
         }
-        if blocked.outcome.disposition == FormatDisposition::FailedOrNotProven {
-            return Err(typed_outcome_error(
-                server,
-                &snapshot,
-                &plan,
-                outcomes,
-                blocked,
-                "formatting returned an unproven successful value; no edits were returned",
-            ));
-        }
         let outcome = sanitized_outcome(blocked);
         let reason = outcome.get("reason").cloned().unwrap_or_else(|| json!("unknown"));
         let engine = outcome
@@ -562,6 +627,14 @@ pub(super) fn handle(
             .and_then(Value::as_str)
             .unwrap_or("unknown")
             .to_string();
+        if uniformly_unsupported_refusals(&decisions) {
+            server.maybe_notify_unsupported_syntax(
+                &snapshot,
+                blocked,
+                FormatDisposition::Refused,
+                0,
+            );
+        }
         server.record_formatting_receipt(
             &snapshot,
             "blocked",
@@ -633,7 +706,10 @@ mod tests {
     // unwraps; the workspace-wide deny is a production-code rule.
     #![allow(clippy::expect_used)]
     use super::*;
-    use crate::features::formatting::{FormatPosition, FormatRange};
+    use crate::features::formatting::{
+        CodeFormatter, FormatPosition, FormatRange, FormattingOptions, PerlTidyConfig,
+    };
+    use perl_lsp_rs_core::config::FormatterMode;
 
     fn range(sl: u32, sc: u32, el: u32, ec: u32) -> Value {
         json!({
@@ -988,6 +1064,157 @@ mod tests {
         .err()
         .ok_or("overlapping same-line edits must refuse")?;
         assert_eq!(conflict.reason, "edit_conflict");
+        Ok(())
+    }
+
+    fn native_decision(
+        disposition: FormatDisposition,
+        reason: FormatReasonCode,
+    ) -> Result<FormattingDecision, Box<dyn std::error::Error>> {
+        let formatter =
+            CodeFormatter::with_config_and_mode(PerlTidyConfig::default(), FormatterMode::Native);
+        let options = FormattingOptions {
+            tab_size: 4,
+            insert_spaces: true,
+            trim_trailing_whitespace: None,
+            insert_final_newline: None,
+            trim_final_newlines: None,
+        };
+        let context = FormatContext::new(None, Some(1));
+        let mut decision =
+            formatter.format_document_decision("my $x = 1;\n", &options, &context)?;
+        decision.outcome.disposition = disposition;
+        decision.outcome.reason = reason;
+        decision.document.edits.clear();
+        Ok(decision)
+    }
+
+    fn applied_decision() -> Result<FormattingDecision, Box<dyn std::error::Error>> {
+        let mut decision = native_decision(FormatDisposition::Applied, FormatReasonCode::Applied)?;
+        decision.document.edits.push(FormatTextEdit {
+            range: FormatRange::new(FormatPosition::new(1, 0), FormatPosition::new(1, 1)),
+            new_text: "X".to_string(),
+        });
+        Ok(decision)
+    }
+
+    #[test]
+    fn handler_prioritizes_unproven_ranges_over_refusals_and_edits()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (label, decisions) in [
+            (
+                "refusal-edit-failure",
+                vec![
+                    native_decision(
+                        FormatDisposition::Refused,
+                        FormatReasonCode::UnsupportedSyntax,
+                    )?,
+                    applied_decision()?,
+                    native_decision(
+                        FormatDisposition::FailedOrNotProven,
+                        FormatReasonCode::InstrumentFailure,
+                    )?,
+                ],
+            ),
+            (
+                "failure-edit-refusal",
+                vec![
+                    native_decision(
+                        FormatDisposition::FailedOrNotProven,
+                        FormatReasonCode::InstrumentFailure,
+                    )?,
+                    applied_decision()?,
+                    native_decision(
+                        FormatDisposition::Refused,
+                        FormatReasonCode::UnsupportedSyntax,
+                    )?,
+                ],
+            ),
+        ] {
+            let server = LspServer::new();
+            server.advertised_feature_ids.lock().push(Surface::Ranges.feature_id());
+            let uri = format!("file:///mixed-plan-{label}.pl");
+            server.test_apply_did_open(&uri, "a\nb\nc\n", 1)?;
+            let params = json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "ranges": [
+                    { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } },
+                    { "start": { "line": 1, "character": 0 }, "end": { "line": 1, "character": 1 } },
+                    { "start": { "line": 2, "character": 0 }, "end": { "line": 2, "character": 1 } }
+                ],
+                "options": { "tabSize": 4, "insertSpaces": true }
+            });
+
+            let error = with_test_decisions(decisions, || {
+                server.handle_ranges_formatting_policy(Some(params), None)
+            })
+            .err()
+            .ok_or_else(|| format!("{label}: mixed plan unexpectedly succeeded"))?;
+            let data = error.data.ok_or_else(|| format!("{label}: missing error data"))?;
+            assert_eq!(data["error_kind"], "formatting_outcome_contract", "{label}");
+            assert_eq!(data["reason"], "instrument_failure", "{label}");
+            assert_eq!(data["formatting_receipt"]["decision"], "blocked", "{label}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unproven_range_fails_the_whole_plan_in_either_order()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let unsupported =
+            native_decision(FormatDisposition::Refused, FormatReasonCode::UnsupportedSyntax)?;
+        let failed = native_decision(
+            FormatDisposition::FailedOrNotProven,
+            FormatReasonCode::InstrumentFailure,
+        )?;
+        for (label, decisions) in [
+            ("unsupported-then-failed", vec![unsupported.clone(), failed.clone()]),
+            ("failed-then-unsupported", vec![failed, unsupported]),
+        ] {
+            let unproven = unproven_decision(&decisions)
+                .ok_or("an unproven range must fail the whole plan")?;
+            assert_eq!(
+                unproven.outcome.reason,
+                FormatReasonCode::InstrumentFailure,
+                "{label}: the recorded reason must be the failed range's own reason"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn differently_refused_range_suppresses_unsupported_advice_in_either_order()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let unsupported =
+            native_decision(FormatDisposition::Refused, FormatReasonCode::UnsupportedSyntax)?;
+        let literal = native_decision(
+            FormatDisposition::Refused,
+            FormatReasonCode::LiteralPreservationUnsupported,
+        )?;
+        for (label, decisions) in [
+            ("unsupported-then-literal", vec![unsupported.clone(), literal.clone()]),
+            ("literal-then-unsupported", vec![literal, unsupported.clone()]),
+        ] {
+            assert!(
+                !uniformly_unsupported_refusals(&decisions),
+                "{label}: a differently-refused range must not inherit unsupported-syntax advice"
+            );
+        }
+        let uniform = vec![unsupported.clone(), unsupported];
+        assert!(
+            uniformly_unsupported_refusals(&uniform),
+            "a uniformly unsupported plan must keep the warning"
+        );
+        let canonical =
+            native_decision(FormatDisposition::NoChange, FormatReasonCode::AlreadyFormatted)?;
+        let with_no_change = vec![
+            canonical,
+            native_decision(FormatDisposition::Refused, FormatReasonCode::UnsupportedSyntax)?,
+        ];
+        assert!(
+            uniformly_unsupported_refusals(&with_no_change),
+            "an already-formatted range must not suppress the warning"
+        );
         Ok(())
     }
 }

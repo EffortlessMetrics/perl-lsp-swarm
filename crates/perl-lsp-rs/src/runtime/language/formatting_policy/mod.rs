@@ -30,6 +30,30 @@ const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 impl LspServer {
+    fn canonical_uri(&self, raw: &str) -> String {
+        let normalized = self.normalize_uri_key(raw);
+        let bytes = normalized.as_bytes();
+        let mut canonical = String::with_capacity(normalized.len());
+        let mut index = 0;
+        while index < bytes.len() {
+            if bytes[index] == b'%'
+                && index + 2 < bytes.len()
+                && let (Some(high), Some(low)) =
+                    (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+            {
+                let decoded = (high << 4) | low;
+                if is_uri_unreserved(decoded) {
+                    canonical.push(decoded as char);
+                    index += 3;
+                    continue;
+                }
+            }
+            canonical.push(bytes[index] as char);
+            index += 1;
+        }
+        canonical
+    }
+
     fn formatter_for(&self, config: PerlTidyConfig, mode: FormatterMode) -> CodeFormatter {
         #[cfg(any(test, feature = "expose_lsp_test_api"))]
         if let Some(runtime) = self.formatter_runtime_override.lock().clone() {
@@ -104,6 +128,19 @@ fn digest(text: &str) -> String {
         hash = hash.wrapping_mul(FNV_PRIME);
     }
     format!("{hash:016x}")
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn is_uri_unreserved(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
 }
 
 fn value<T: Serialize>(item: &T) -> Value {
@@ -294,7 +331,7 @@ impl LspServer {
     fn admit(&self, surface: Surface, params: &Value) -> Result<Snapshot, JsonRpcError> {
         self.ensure_surface_advertised(surface)?;
 
-        let uri = req_uri(params)?.to_string();
+        let uri = self.normalize_uri_key(req_uri(params)?);
         let (text, version, generation) = {
             let documents = self.documents_guard();
             let document =
@@ -307,7 +344,7 @@ impl LspServer {
         };
         let snapshot = Snapshot {
             surface,
-            uri_hash: digest(&uri),
+            uri_hash: digest(&self.canonical_uri(&uri)),
             uri,
             text,
             version,
