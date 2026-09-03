@@ -2110,8 +2110,7 @@ function main() {
             // Propagate the launched runtime version the bound child
             // observed; downstream exactness claims must bind to this, never
             // to the requested selector alone.
-            receipt.observed_vscode_version =
-              childReceipt.receipt.environment.vscode_version;
+            receipt.observed_vscode_version = childReceipt.receipt.environment.vscode_version;
           }
         }
       } else {
