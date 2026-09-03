@@ -728,6 +728,16 @@ pub enum PartialApplicationPolicy {
     /// at all.
     Prohibited,
     /// The law explicitly defines named independent complete subplans.
+    ///
+    /// One attempt completes one subplan or the whole plan; there is no
+    /// third landing place. Each subplan owns an exact output subject, and a
+    /// union of subplans has no declared output subject to land on — naming
+    /// one would require the plan to enumerate every subset of its subplans.
+    /// An attempt that applied two of three subplans is therefore
+    /// [`TransformationResult::InvalidOutput`], not a residual application:
+    /// the vocabulary can describe it only as an output nobody declared.
+    /// Splitting such work into separately declared subplans is how a law
+    /// admits it.
     IndependentCompleteSubplans(BTreeSet<String>),
 }
 
@@ -1377,6 +1387,10 @@ impl RefactorPlanRelation {
 /// applies and the exact output subject that application lands on. Without the
 /// output half, a partial application could apply the right operations and
 /// report an unrelated subject.
+///
+/// That ownership is also why one attempt completes exactly one subplan or the
+/// whole plan: a combination of subplans owns no declared output subject. See
+/// [`PartialApplicationPolicy::IndependentCompleteSubplans`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubplanBinding {
     /// Exact operations this subplan applies.
@@ -2150,6 +2164,21 @@ impl TransformationPlan {
                 )),
             });
         }
+        // The remainder is not the attempt's to describe. Subplans partition
+        // the selection, so applying exactly one of them leaves exactly the
+        // others; a residual claiming any other remainder misstates how much
+        // work is left, which is the whole point of declaring a boundary.
+        let expected_unapplied: BTreeSet<&String> =
+            subplans.iter().filter(|name| *name != &residual.subplan).collect();
+        let declared_unapplied: BTreeSet<&String> = residual.unapplied_subplans.iter().collect();
+        if declared_unapplied != expected_unapplied {
+            return Ok(TransformationResult::InvalidOutput {
+                reason: bounded_reason(&format!(
+                    "the residual for subplan {:?} does not name exactly the plan's remaining subplans",
+                    residual.subplan
+                )),
+            });
+        }
         // "Complete" is the load-bearing word: the attempt must have applied
         // exactly the operations that subplan completes, not an arbitrary
         // subset wearing its name.
@@ -2277,20 +2306,56 @@ pub enum EquivalenceOutcome {
 }
 
 /// Declared residual boundary of a partially applied plan.
+///
+/// The boundary prose says what was *not* crossed, and prose alone cannot be
+/// checked. [`Self::unapplied_subplans`] states the same remainder in the
+/// plan's own vocabulary, so the claim "this much is left" is verified against
+/// the law's declared subplans instead of being taken on the attempt's word.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResidualBoundary {
     /// Named subplan that was applied.
     pub subplan: String,
+    /// Named subplans this attempt left unapplied.
+    ///
+    /// Subplans partition the selection, so for a legal partial application
+    /// this is exactly the law's declared subplans minus [`Self::subplan`],
+    /// and never empty: an attempt leaving nothing unapplied is a complete
+    /// application, not a residual one.
+    pub unapplied_subplans: BTreeSet<String>,
     /// Named boundary that was not crossed.
     pub boundary: String,
 }
 
 impl ResidualBoundary {
-    /// Construct a residual boundary with a non-empty subplan and boundary.
-    pub fn new(subplan: &str, boundary: &str) -> Result<Self> {
+    /// Construct a residual boundary naming the applied subplan, the subplans
+    /// left unapplied, and the boundary prose.
+    ///
+    /// Rejects an empty subplan or boundary, an empty or self-referential
+    /// remainder, and a remainder naming the same subplan twice under
+    /// different spellings of emptiness. Whether the remainder is the *right*
+    /// one is a plan-relative question, settled by
+    /// [`TransformationPlan::evaluate_under_law`].
+    pub fn new(subplan: &str, unapplied_subplans: &[&str], boundary: &str) -> Result<Self> {
         non_empty("residual subplan", subplan)?;
         non_empty("residual boundary", boundary)?;
-        Ok(Self { subplan: subplan.to_owned(), boundary: boundary.to_owned() })
+        if unapplied_subplans.is_empty() {
+            bail!(
+                "residual boundary for subplan {subplan:?} must name at least one unapplied subplan"
+            );
+        }
+        let mut unapplied = BTreeSet::new();
+        for name in unapplied_subplans {
+            non_empty("residual unapplied subplan name", name)?;
+            if *name == subplan {
+                bail!("residual boundary names subplan {subplan:?} as both applied and unapplied");
+            }
+            unapplied.insert((*name).to_owned());
+        }
+        Ok(Self {
+            subplan: subplan.to_owned(),
+            unapplied_subplans: unapplied,
+            boundary: boundary.to_owned(),
+        })
     }
 }
 
@@ -3930,7 +3995,11 @@ mod tests {
             TransformationResult::AppliedWithDeclaredResidualBoundary {
                 output: plan.expected_output.clone(),
                 work: WorkReceipt { useful_operations: 1, elapsed_micros: 1 },
-                residual: ResidualBoundary::new("unreachable-edges", "blocks left untouched")?,
+                residual: ResidualBoundary::new(
+                    "unreachable-edges",
+                    &["unreachable-blocks"],
+                    "blocks left untouched",
+                )?,
             },
             TransformationResult::RefusedPreconditionUnproven {
                 precondition: plan.preconditions[0].id.clone(),
@@ -4027,8 +4096,11 @@ mod tests {
         let mut partial = shape_fixtures::conforming_observation(&plan, &law)?;
         partial.applied_operations = [OperationId::new("eir:block:0002")?].into_iter().collect();
         partial.work = WorkReceipt { useful_operations: 1, elapsed_micros: 300 };
-        partial.residual =
-            Some(ResidualBoundary::new("unreachable-blocks", "edges left untouched")?);
+        partial.residual = Some(ResidualBoundary::new(
+            "unreachable-blocks",
+            &["unreachable-edges"],
+            "edges left untouched",
+        )?);
         partial.output = Some(subplan_output(&plan, "unreachable-blocks"));
         assert_eq!(plan.evaluate(&partial)?.tag(), "applied_with_declared_residual_boundary");
 
@@ -4351,8 +4423,8 @@ mod tests {
             assert!(PreconditionId::new(blank).is_err(), "{blank:?} must not be a precondition id");
             assert!(PlanId::new(blank).is_err(), "{blank:?} must not be a plan id");
         }
-        assert!(ResidualBoundary::new("", "boundary").is_err());
-        assert!(ResidualBoundary::new("subplan", "").is_err());
+        assert!(ResidualBoundary::new("", &["other"], "boundary").is_err());
+        assert!(ResidualBoundary::new("subplan", &["other"], "").is_err());
         Ok(())
     }
 
@@ -4578,7 +4650,8 @@ mod tests {
         // A complete application that also declares a residual is
         // self-contradictory, not an exact success.
         let mut contradictory = observation(&plan, &law);
-        contradictory.residual = Some(ResidualBoundary::new("everything", "nothing left")?);
+        contradictory.residual =
+            Some(ResidualBoundary::new("everything", &["other"], "nothing left")?);
         match plan.evaluate(&contradictory)? {
             TransformationResult::InvalidOutput { reason } => {
                 assert!(reason.contains("after applying every selected location"), "got {reason}");
@@ -4598,14 +4671,20 @@ mod tests {
         let mut partial = shape_fixtures::conforming_observation(&plan, &law)?;
         partial.applied_operations = [operation_id("eir:block:0002")].into_iter().collect();
         partial.work = WorkReceipt { useful_operations: 1, elapsed_micros: 300 };
-        partial.residual =
-            Some(ResidualBoundary::new("unreachable-blocks", "edges left untouched")?);
+        partial.residual = Some(ResidualBoundary::new(
+            "unreachable-blocks",
+            &["unreachable-edges"],
+            "edges left untouched",
+        )?);
         partial.output = Some(subplan_output(&plan, "unreachable-blocks"));
         assert_eq!(plan.evaluate(&partial)?.tag(), "applied_with_declared_residual_boundary");
 
         let mut undeclared = partial.clone();
-        undeclared.residual =
-            Some(ResidualBoundary::new("something-the-law-never-named", "boundary")?);
+        undeclared.residual = Some(ResidualBoundary::new(
+            "something-the-law-never-named",
+            &["unreachable-edges"],
+            "boundary",
+        )?);
         match plan.evaluate(&undeclared)? {
             TransformationResult::InvalidOutput { reason } => {
                 assert!(reason.contains("does not declare"), "got {reason}");
@@ -4621,8 +4700,11 @@ mod tests {
         let mut mutated = shape_fixtures::conforming_observation(&refusing, &law)?;
         mutated.applied_operations = [operation_id("eir:block:0002")].into_iter().collect();
         mutated.work = WorkReceipt { useful_operations: 1, elapsed_micros: 300 };
-        mutated.residual =
-            Some(ResidualBoundary::new("unreachable-blocks", "edges left untouched")?);
+        mutated.residual = Some(ResidualBoundary::new(
+            "unreachable-blocks",
+            &["unreachable-edges"],
+            "edges left untouched",
+        )?);
         match refusing.evaluate(&mutated)? {
             TransformationResult::InvalidOutput { reason } => {
                 assert!(reason.contains("mutated the subject"), "got {reason}");
@@ -4632,6 +4714,181 @@ mod tests {
                 other.tag()
             ),
         }
+        Ok(())
+    }
+
+    // Review finding: a successful partial application could misstate how much
+    // work was left. The boundary prose is unchecked text, so an attempt that
+    // completed one of two subplans could report "nothing meaningful remains"
+    // and still be accepted. The remainder is now stated in the plan's own
+    // vocabulary and checked against the law's declared subplans.
+    #[test]
+    fn a_residual_states_the_remainder_in_checkable_terms() -> Result<()> {
+        // The shape itself refuses a remainder that cannot be true: an empty
+        // one (a partial application always leaves something), or one that
+        // names the applied subplan as also unapplied.
+        assert!(ResidualBoundary::new("unreachable-blocks", &[], "nothing left").is_err());
+        assert!(
+            ResidualBoundary::new(
+                "unreachable-blocks",
+                &["unreachable-blocks"],
+                "itself left untouched"
+            )
+            .is_err()
+        );
+        assert!(ResidualBoundary::new("subplan", &["  "], "boundary").is_err());
+
+        let law = shape_fixtures::effect_free_control_law()?;
+        let plan = shape_fixtures::effect_free_control_plan()?;
+        let mut partial = shape_fixtures::conforming_observation(&plan, &law)?;
+        partial.applied_operations = [operation_id("eir:block:0002")].into_iter().collect();
+        partial.work = WorkReceipt { useful_operations: 1, elapsed_micros: 300 };
+        partial.output = Some(subplan_output(&plan, "unreachable-blocks"));
+        partial.residual = Some(ResidualBoundary::new(
+            "unreachable-blocks",
+            &["unreachable-edges"],
+            "edges left untouched",
+        )?);
+        assert_eq!(
+            plan.evaluate_under_law(&law, &partial)?.tag(),
+            "applied_with_declared_residual_boundary"
+        );
+
+        // A remainder naming a subplan the law never declared is not the
+        // plan's remainder, however plausible the prose reads.
+        let mut invented = partial.clone();
+        invented.residual = Some(ResidualBoundary::new(
+            "unreachable-blocks",
+            &["unreachable-traps"],
+            "edges left untouched",
+        )?);
+        match plan.evaluate_under_law(&law, &invented)? {
+            TransformationResult::InvalidOutput { reason } => {
+                assert!(reason.contains("remaining subplans"), "got {reason}");
+            }
+            other => unreachable!("an invented remainder must not apply, got {}", other.tag()),
+        }
+
+        // Understating the remainder is the failure the finding named: the
+        // attempt applied one of two subplans and claimed the other was
+        // reached too. The remainder is now a set the evaluator can check, and
+        // the only way to name no remaining subplan is to name none at all,
+        // which the constructor already refuses.
+        let mut understated = partial.clone();
+        understated.residual = Some(ResidualBoundary::new(
+            "unreachable-blocks",
+            &["unreachable-edges", "unreachable-traps"],
+            "edges left untouched",
+        )?);
+        assert_eq!(plan.evaluate_under_law(&law, &understated)?.tag(), "invalid_output");
+        Ok(())
+    }
+
+    // Review question: with three or more declared subplans, an attempt that
+    // completes two of them is rejected unless it completes the whole plan.
+    // That is the contract, not a defect: each subplan owns an exact output
+    // subject, and a union of subplans owns none, so the vocabulary cannot say
+    // where such an attempt landed. This test pins the boundary so it stays a
+    // decision rather than an accident.
+    #[test]
+    fn one_attempt_completes_one_subplan_or_the_whole_plan() -> Result<()> {
+        let mut law = shape_fixtures::effect_free_control_law()?;
+        law.partial_application = PartialApplicationPolicy::independent_subplans(&[
+            "unreachable-blocks",
+            "unreachable-edges",
+            "unreachable-traps",
+        ])?;
+        let mut plan = shape_fixtures::effect_free_control_plan()?;
+        plan.partial_application = law.partial_application.clone();
+        plan.locations.push(LocationSelector::CanonicalOperation {
+            stage: CompilerStage::Eir,
+            operation_id: operation_id("eir:block:0003"),
+            source_provenance: None,
+        });
+        plan.subplans.insert(
+            "unreachable-traps".to_owned(),
+            SubplanBinding {
+                operations: BTreeSet::from([operation_id("eir:block:0003")]),
+                expected_output: super::StageSubject {
+                    ir_identity: subject_ref("eir graph lib/Shape.pm#area (traps removed)"),
+                    digest: seeded_digest(0x63),
+                    ..plan.expected_output.clone()
+                },
+            },
+        );
+        plan.law = law.binding()?;
+        plan.validate()?;
+
+        // One subplan of three still applies, so the fixture is sound.
+        let mut one = shape_fixtures::conforming_observation(&plan, &law)?;
+        one.applied_operations = [operation_id("eir:block:0002")].into_iter().collect();
+        one.work = WorkReceipt { useful_operations: 1, elapsed_micros: 300 };
+        one.output = Some(subplan_output(&plan, "unreachable-blocks"));
+        one.residual = Some(ResidualBoundary::new(
+            "unreachable-blocks",
+            &["unreachable-edges", "unreachable-traps"],
+            "edges and traps left untouched",
+        )?);
+        assert_eq!(
+            plan.evaluate_under_law(&law, &one)?.tag(),
+            "applied_with_declared_residual_boundary"
+        );
+
+        // Two of three is invalid output whichever subplan's name it borrows,
+        // because neither name describes what was applied. Naming the
+        // remainder the checker demands does not rescue it: the operations
+        // still do not match the named subplan.
+        for (applied_name, remainder) in [
+            ("unreachable-blocks", ["unreachable-edges", "unreachable-traps"]),
+            ("unreachable-edges", ["unreachable-blocks", "unreachable-traps"]),
+        ] {
+            let mut two = one.clone();
+            two.applied_operations =
+                [operation_id("eir:block:0002"), operation_id("eir:edge:0005")]
+                    .into_iter()
+                    .collect();
+            two.work = WorkReceipt { useful_operations: 2, elapsed_micros: 300 };
+            two.output = Some(subplan_output(&plan, applied_name));
+            two.residual =
+                Some(ResidualBoundary::new(applied_name, &remainder, "traps left untouched")?);
+            match plan.evaluate_under_law(&law, &two)? {
+                TransformationResult::InvalidOutput { reason } => {
+                    assert!(
+                        reason.contains("did not apply exactly the operations"),
+                        "got {reason}"
+                    );
+                }
+                other => unreachable!(
+                    "two subplans in one attempt has no declared output, got {}",
+                    other.tag()
+                ),
+            }
+
+            // Nor does naming the truthful remainder, which the remainder rule
+            // refuses because it is not the named subplan's complement.
+            let mut truthful = two.clone();
+            truthful.residual = Some(ResidualBoundary::new(
+                applied_name,
+                &["unreachable-traps"],
+                "traps left untouched",
+            )?);
+            match plan.evaluate_under_law(&law, &truthful)? {
+                TransformationResult::InvalidOutput { reason } => {
+                    assert!(reason.contains("remaining subplans"), "got {reason}");
+                }
+                other => {
+                    unreachable!("a union of subplans has no residual shape, got {}", other.tag())
+                }
+            }
+        }
+
+        // The whole plan remains reachable in one attempt: the restriction is
+        // on unions of subplans, not on completing the plan.
+        assert_eq!(
+            plan.evaluate_under_law(&law, &shape_fixtures::conforming_observation(&plan, &law)?)?
+                .tag(),
+            "applied_exact"
+        );
         Ok(())
     }
 
@@ -4802,8 +5059,11 @@ mod tests {
         let mut exact_subplan = shape_fixtures::conforming_observation(&plan, &law)?;
         exact_subplan.applied_operations = [operation_id("eir:block:0002")].into_iter().collect();
         exact_subplan.work = WorkReceipt { useful_operations: 1, elapsed_micros: 300 };
-        exact_subplan.residual =
-            Some(ResidualBoundary::new("unreachable-blocks", "edges left untouched")?);
+        exact_subplan.residual = Some(ResidualBoundary::new(
+            "unreachable-blocks",
+            &["unreachable-edges"],
+            "edges left untouched",
+        )?);
         let blocks_output = match plan.subplans.get("unreachable-blocks") {
             Some(binding) => binding.expected_output.clone(),
             None => unreachable!("the effect-free fixture binds unreachable-blocks"),
@@ -5045,7 +5305,8 @@ mod tests {
         let mut partial = shape_fixtures::conforming_observation(&subplan_plan, &subplan_law)?;
         partial.applied_operations = [operation_id("eir:block:0002")].into_iter().collect();
         partial.work = WorkReceipt { useful_operations: 1, elapsed_micros: 10 };
-        partial.residual = Some(ResidualBoundary::new(&long_name, "boundary")?);
+        partial.residual =
+            Some(ResidualBoundary::new(&long_name, &["unreachable-edges"], "boundary")?);
         let result = subplan_plan.evaluate(&partial)?;
         assert_eq!(result.tag(), "invalid_output");
         assert!(
