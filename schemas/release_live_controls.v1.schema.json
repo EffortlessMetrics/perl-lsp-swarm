@@ -1,0 +1,443 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/release_live_controls.v1.schema.json",
+  "title": "release_live_controls.v1 observation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "observed_at",
+    "currency",
+    "instrument",
+    "repositories",
+    "verdict",
+    "limitations"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "release_live_controls.v1"
+    },
+    "observed_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "currency": {
+      "enum": ["LIVE", "SNAPSHOT"]
+    },
+    "instrument": {
+      "$ref": "#/$defs/instrument"
+    },
+    "repositories": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/repositoryControls"
+      }
+    },
+    "verdict": {
+      "enum": ["OBSERVED", "NOT_PROVEN"]
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "observationState": {
+      "enum": ["OBSERVED", "ABSENT", "NOT_PROVEN"]
+    },
+    "instrument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": { "$ref": "#/$defs/observationState" },
+        "gh_version": { "type": "string" },
+        "detail": { "type": "string" }
+      }
+    },
+    "repositorySubject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner", "name", "branch"],
+      "properties": {
+        "owner": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "branch": { "type": "string", "minLength": 1 }
+      }
+    },
+    "repositoryIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["full_name", "node_id", "database_id", "default_branch"],
+      "properties": {
+        "full_name": { "type": "string", "minLength": 1 },
+        "node_id": { "type": "string", "minLength": 1 },
+        "database_id": { "type": "integer", "minimum": 0 },
+        "default_branch": { "type": "string", "minLength": 1 }
+      }
+    },
+    "observedRepositoryIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": { "$ref": "#/$defs/observationState" },
+        "detail": { "type": "string" },
+        "value": { "$ref": "#/$defs/repositoryIdentity" }
+      }
+    },
+    "identityMatch": {
+      "oneOf": [
+        { "const": "MATCHED" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["MISMATCHED"],
+          "properties": {
+            "MISMATCHED": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["detail"],
+              "properties": { "detail": { "type": "string" } }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["NOT_PROVEN"],
+          "properties": {
+            "NOT_PROVEN": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["detail"],
+              "properties": { "detail": { "type": "string" } }
+            }
+          }
+        }
+      ]
+    },
+    "observedBool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": { "$ref": "#/$defs/observationState" },
+        "detail": { "type": "string" },
+        "value": { "type": "boolean" }
+      }
+    },
+    "observedUsize": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": { "$ref": "#/$defs/observationState" },
+        "detail": { "type": "string" },
+        "value": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "requiredContextRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["context", "app_id"],
+      "properties": {
+        "context": { "type": "string", "minLength": 1 },
+        "app_id": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "requiredStatusChecks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strict", "contexts"],
+      "properties": {
+        "strict": { "type": "boolean" },
+        "contexts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/requiredContextRow" }
+        }
+      }
+    },
+    "observedRequiredStatusChecks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": { "$ref": "#/$defs/observationState" },
+        "detail": { "type": "string" },
+        "value": { "$ref": "#/$defs/requiredStatusChecks" }
+      }
+    },
+    "pullRequestReviewRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required_approving_review_count",
+        "dismiss_stale_reviews",
+        "require_code_owner_reviews",
+        "require_last_push_approval"
+      ],
+      "properties": {
+        "required_approving_review_count": { "type": ["integer", "null"], "minimum": 0 },
+        "dismiss_stale_reviews": { "type": ["boolean", "null"] },
+        "require_code_owner_reviews": { "type": ["boolean", "null"] },
+        "require_last_push_approval": { "type": ["boolean", "null"] }
+      }
+    },
+    "observedPullRequestReviewRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": { "$ref": "#/$defs/observationState" },
+        "detail": { "type": "string" },
+        "value": { "$ref": "#/$defs/pullRequestReviewRule" }
+      }
+    },
+    "classicProtection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required_status_checks",
+        "enforce_admins",
+        "required_pull_request_reviews",
+        "required_conversation_resolution",
+        "restrictions_present"
+      ],
+      "properties": {
+        "required_status_checks": { "$ref": "#/$defs/observedRequiredStatusChecks" },
+        "enforce_admins": { "$ref": "#/$defs/observedBool" },
+        "required_pull_request_reviews": { "$ref": "#/$defs/observedPullRequestReviewRule" },
+        "required_conversation_resolution": { "$ref": "#/$defs/observedBool" },
+        "restrictions_present": { "$ref": "#/$defs/observedBool" }
+      }
+    },
+    "observedClassicProtection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": { "$ref": "#/$defs/observationState" },
+        "detail": { "type": "string" },
+        "value": { "$ref": "#/$defs/classicProtection" }
+      }
+    },
+    "bypassActor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actor_id", "actor_type", "bypass_mode"],
+      "properties": {
+        "actor_id": { "type": ["integer", "null"], "minimum": 0 },
+        "actor_type": { "type": "string" },
+        "bypass_mode": { "type": "string" }
+      }
+    },
+    "observedBypassActorList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": { "$ref": "#/$defs/observationState" },
+        "detail": { "type": "string" },
+        "value": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/bypassActor" }
+        }
+      }
+    },
+    "rulesetRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rule_type",
+        "required_contexts",
+        "required_approving_review_count",
+        "required_review_thread_resolution",
+        "dismiss_stale_reviews_on_push"
+      ],
+      "properties": {
+        "rule_type": { "type": "string", "minLength": 1 },
+        "required_contexts": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "required_approving_review_count": { "type": ["integer", "null"], "minimum": 0 },
+        "required_review_thread_resolution": { "type": ["boolean", "null"] },
+        "dismiss_stale_reviews_on_push": { "type": ["boolean", "null"] }
+      }
+    },
+    "observedRulesetRuleList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": { "$ref": "#/$defs/observationState" },
+        "detail": { "type": "string" },
+        "value": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/rulesetRule" }
+        }
+      }
+    },
+    "ruleset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "target", "enforcement", "bypass_actors", "rules"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 0 },
+        "name": { "type": "string", "minLength": 1 },
+        "target": { "type": "string", "minLength": 1 },
+        "enforcement": { "type": "string", "minLength": 1 },
+        "bypass_actors": { "$ref": "#/$defs/observedBypassActorList" },
+        "rules": { "$ref": "#/$defs/observedRulesetRuleList" }
+      }
+    },
+    "observedRulesetList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": { "$ref": "#/$defs/observationState" },
+        "detail": { "type": "string" },
+        "value": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ruleset" }
+        }
+      }
+    },
+    "environmentProtectionRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule_type", "wait_timer", "reviewer_count", "prevent_self_review"],
+      "properties": {
+        "rule_type": { "type": "string", "minLength": 1 },
+        "wait_timer": { "type": ["integer", "null"], "minimum": 0 },
+        "reviewer_count": { "type": ["integer", "null"], "minimum": 0 },
+        "prevent_self_review": { "type": ["boolean", "null"] }
+      }
+    },
+    "observedEnvironmentProtectionRuleList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": { "$ref": "#/$defs/observationState" },
+        "detail": { "type": "string" },
+        "value": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/environmentProtectionRule" }
+        }
+      }
+    },
+    "deploymentBranchPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protected_branches", "custom_branch_policies"],
+      "properties": {
+        "protected_branches": { "type": "boolean" },
+        "custom_branch_policies": { "type": "boolean" }
+      }
+    },
+    "observedOptionalDeploymentBranchPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": { "$ref": "#/$defs/observationState" },
+        "detail": { "type": "string" },
+        "value": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/deploymentBranchPolicy" }
+          ]
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "protection_rules", "deployment_branch_policy", "secret_count"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "protection_rules": { "$ref": "#/$defs/observedEnvironmentProtectionRuleList" },
+        "deployment_branch_policy": { "$ref": "#/$defs/observedOptionalDeploymentBranchPolicy" },
+        "secret_count": { "$ref": "#/$defs/observedUsize" }
+      }
+    },
+    "observedEnvironmentList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": { "$ref": "#/$defs/observationState" },
+        "detail": { "type": "string" },
+        "value": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/environment" }
+        }
+      }
+    },
+    "releasePosture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["immutable_releases", "tag_rulesets_present"],
+      "properties": {
+        "immutable_releases": { "$ref": "#/$defs/observedBool" },
+        "tag_rulesets_present": { "$ref": "#/$defs/observedBool" }
+      }
+    },
+    "unionContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "sources"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "sources": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "requiredContextsUnion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "contexts"],
+      "properties": {
+        "state": { "$ref": "#/$defs/observationState" },
+        "detail": { "type": "string" },
+        "contexts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/unionContext" }
+        }
+      }
+    },
+    "repositoryControls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requested",
+        "identity",
+        "identity_match",
+        "classic_branch_protection",
+        "branch_rulesets",
+        "tag_rulesets",
+        "environments",
+        "release_posture",
+        "required_contexts_union"
+      ],
+      "properties": {
+        "requested": { "$ref": "#/$defs/repositorySubject" },
+        "identity": { "$ref": "#/$defs/observedRepositoryIdentity" },
+        "identity_match": { "$ref": "#/$defs/identityMatch" },
+        "classic_branch_protection": { "$ref": "#/$defs/observedClassicProtection" },
+        "branch_rulesets": { "$ref": "#/$defs/observedRulesetList" },
+        "tag_rulesets": { "$ref": "#/$defs/observedRulesetList" },
+        "environments": { "$ref": "#/$defs/observedEnvironmentList" },
+        "release_posture": { "$ref": "#/$defs/releasePosture" },
+        "required_contexts_union": { "$ref": "#/$defs/requiredContextsUnion" }
+      }
+    }
+  }
+}

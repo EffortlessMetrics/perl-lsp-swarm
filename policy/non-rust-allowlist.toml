@@ -1307,6 +1307,22 @@ covered_by = [
 created = "2026-08-30"
 review_after = "2026-11-30"
 
+[[allow]]
+id = "non-rust-release-live-controls-schema"
+path = "schemas/release_live_controls.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Versioned read-only receipt schema for the release_live_controls.v1 observer, distinguishing source policy from LIVE GitHub branch-protection, ruleset, environment, and release-posture enforcement (#9403)."
+covered_by = [
+  "cargo test -p xtask --test release_live_controls",
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-03"
+review_after = "2026-12-03"
+
 # =============================================================================
 # Receipts / status / metrics
 # =============================================================================
