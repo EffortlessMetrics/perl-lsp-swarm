@@ -1,7 +1,7 @@
 //! OpenAI-compatible completion provider.
 
 use super::destination::{ApprovedDestination, credential_may_attach, validate_endpoint};
-use super::inflight::InflightGate;
+use super::inflight::{InflightCounters, InflightGate};
 use super::prompt::build_fim_prompt;
 use super::rate_limiter::RateLimiter;
 use super::sanitize::{sanitize_completion_text, sanitize_streaming_text};
@@ -141,11 +141,25 @@ impl OpenAiProvider {
         Self { config, limiter, inflight, approved: OnceLock::new() }
     }
 
-    /// This generation's live concurrency gate.
+    /// A snapshot of this generation's live-concurrency counters.
     ///
-    /// Exposed so operators and tests can read bounded occupancy counters; the
-    /// counters carry no prompt, source, completion, endpoint, or credential
-    /// material.
+    /// This is the supported way to observe the gate. It returns a copied
+    /// snapshot rather than the gate itself, so reading occupancy cannot
+    /// consume it. The counters are bounded and numeric: no prompt, source,
+    /// completion, endpoint, or credential material is derivable from them.
+    pub fn inflight_counters(&self) -> InflightCounters {
+        self.inflight.counters()
+    }
+
+    /// The live gate itself — a test seam, not supported API.
+    ///
+    /// Prefer [`Self::inflight_counters`] to observe occupancy. This accessor
+    /// hands out the gate, and [`InflightGate::try_acquire`] on it takes a real
+    /// permit: a caller holding permits here starves the provider's own
+    /// requests into `Saturated`. That is what makes it useful for constructing
+    /// saturation in tests, and why it is not something to reach for in
+    /// application code.
+    #[doc(hidden)]
     pub fn inflight(&self) -> &InflightGate {
         &self.inflight
     }

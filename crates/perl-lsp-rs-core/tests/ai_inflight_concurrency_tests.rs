@@ -71,7 +71,7 @@ fn saturated_gate_refuses_before_any_network_dispatch() -> Result<(), Box<dyn st
     );
 
     drop(held);
-    assert_eq!(provider.inflight().counters().active, 0);
+    assert_eq!(provider.inflight_counters().active, 0);
     Ok(())
 }
 
@@ -118,11 +118,11 @@ fn a_free_gate_lets_the_request_reach_the_network() -> Result<(), Box<dyn std::e
         "an admitted request must reach dispatch and fail on the closed port, got: {outcome:?}"
     );
     assert_eq!(
-        provider.inflight().counters().active,
+        provider.inflight_counters().active,
         0,
         "a transport failure must still release the permit"
     );
-    assert_eq!(provider.inflight().counters().released, 1);
+    assert_eq!(provider.inflight_counters().released, 1);
     Ok(())
 }
 
@@ -205,8 +205,8 @@ fn max_inflight_one_admits_only_one_concurrent_backend_call()
         1,
         "the refused request must never open a connection"
     );
-    assert_eq!(provider.inflight().counters().active, 0, "every permit must be released");
-    assert_eq!(provider.inflight().counters().peak_active, 1);
+    assert_eq!(provider.inflight_counters().active, 0, "every permit must be released");
+    assert_eq!(provider.inflight_counters().peak_active, 1);
     Ok(())
 }
 
@@ -245,7 +245,7 @@ fn a_reconfigured_provider_does_not_share_or_strand_permits()
     let old = provider("http://127.0.0.1:9/v1/chat/completions", 1);
     let held =
         old.inflight().try_acquire().ok_or("the old generation must admit its first request")?;
-    assert_eq!(old.inflight().counters().active, 1);
+    assert_eq!(old.inflight_counters().active, 1);
 
     // Profile replacement. Bind the permit: a temporary would drop inside the
     // assertion and the occupancy check below would read zero.
@@ -257,10 +257,10 @@ fn a_reconfigured_provider_does_not_share_or_strand_permits()
 
     drop(held);
     assert_eq!(
-        old.inflight().counters().active,
+        old.inflight_counters().active,
         0,
         "the old permit must drain into the gate it came from"
     );
-    assert_eq!(new.inflight().counters().active, 1, "the new generation keeps its own occupancy");
+    assert_eq!(new.inflight_counters().active, 1, "the new generation keeps its own occupancy");
     Ok(())
 }
