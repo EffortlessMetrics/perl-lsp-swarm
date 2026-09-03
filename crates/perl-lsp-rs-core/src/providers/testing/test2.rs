@@ -529,8 +529,16 @@ fn quote_like_option_key(span: &str) -> Option<&'static str> {
 /// The bare-word case deliberately does *not* consult a list of known
 /// operators. Perl has no fixed set here — any sub name can appear — and an
 /// allowlist silently misreads every name it omits, dropping that statement's
-/// imports. Dividing a bare word is the rare shape (`PI / 2` with a constant);
-/// calling one is the ordinary shape, so calling is the right default.
+/// imports.
+///
+/// Two bare-word shapes are decidable and treated as values: a numeric literal,
+/// and a `__FILE__`-style compile-time token. A *named* constant (`PI / 2`) is
+/// not decidable here — it is spelled exactly like a sub call — so it falls to
+/// the call default and its statement fails closed. That costs completions,
+/// never correctness: `scan_import_transforms` refuses when the recognizer
+/// still claims a span this masked, so an ambiguous constant cannot turn into
+/// a fabricated import. Resolving it properly needs the symbol table that the
+/// canonical adapter migration brings.
 fn bare_match_can_start(before: &str) -> bool {
     let trimmed = before.trim_end();
     let Some(last) = trimmed.chars().next_back() else {
@@ -558,9 +566,21 @@ fn bare_match_can_start(before: &str) -> bool {
             .take_while(|(_, c)| c.is_alphanumeric() || *c == '_')
             .last()
             .map_or(trimmed.len(), |(offset, _)| offset);
-        // A sigil makes it a variable (`$grep /`); anything else is a call.
+        // A sigil makes it a variable (`$grep /`).
         let sigil = trimmed[..word_start].chars().next_back();
-        return !matches!(sigil, Some('$' | '@' | '%' | '&'));
+        if matches!(sigil, Some('$' | '@' | '%' | '&')) {
+            return false;
+        }
+        let word = &trimmed[word_start..];
+        // A numeric literal is a value, never a call.
+        if word.starts_with(|c: char| c.is_ascii_digit()) {
+            return false;
+        }
+        // `__FILE__`-style tokens are compile-time values, never calls.
+        if word.len() > 4 && word.starts_with("__") && word.ends_with("__") {
+            return false;
+        }
+        return true;
     }
 
     // Closers and quotes end a term, so a following `/` divides it.

@@ -1026,3 +1026,57 @@ fn test2_input_record_separator_is_a_variable_not_a_match() {
     assert!(!bare_match_can_start("local $"), "same inside a statement");
     assert!(bare_match_can_start("grep "), "an ordinary call still admits a match");
 }
+
+#[test]
+fn test2_value_tokens_before_division_do_not_open_a_match() {
+    // Review finding (@devin-ai-integration on #14651). Treating every bare
+    // word as a call meant a division slash opened a mask that ran to the next
+    // slash, hiding a valid rename in between:
+    //
+    //   -target => 2 / 2, ok => {-as => 'my_ok'}, -x => 3 / 4
+    //
+    // Numeric literals and `__FILE__`-style tokens are decidable values, so
+    // they divide.
+    for args in [
+        "-target => 2 / 2, ok => {-as => 'my_ok'}, -x => 3 / 4",
+        "-target => __FILE__ / 2, ok => {-as => 'my_ok'}, -x => __LINE__ / 4",
+    ] {
+        assert!(
+            contains_transform_syntax(args),
+            "{args}: the rename between two division slashes must stay visible"
+        );
+        let resolved = resolve_with_analysis("Test2::V0", args);
+        assert!(
+            resolved.resolved.symbols.contains("my_ok"),
+            "{args}: the alias must resolve, got {:?}",
+            resolved.resolved.symbols
+        );
+        assert!(!resolved.analysis_limited, "{args}: a recognized transform is not limited");
+    }
+
+    // Token-level boundary.
+    assert!(!bare_match_can_start("2 "), "a numeric literal divides");
+    assert!(!bare_match_can_start("3.14 "), "a decimal literal divides");
+    assert!(!bare_match_can_start("__FILE__ "), "a compile-time token divides");
+    assert!(bare_match_can_start("grep "), "a call still opens a match");
+    assert!(bare_match_can_start("__ "), "a bare `__` is not a compile-time token");
+}
+
+#[test]
+fn test2_named_constant_before_division_fails_closed_without_fabricating() {
+    // The residual ambiguity, pinned rather than papered over. `PI` is spelled
+    // exactly like a sub call, so it is read as one and the statement fails
+    // closed. That costs completions, never correctness — the recognizer still
+    // claims the masked span, so the disagreement guard refuses instead of
+    // letting the bareword scan invent imports.
+    let resolved = resolve_with_analysis(
+        "Test2::V0",
+        "-target => PI / 2, ok => {-as => 'my_ok'}, -x => Z / 4",
+    );
+
+    assert!(resolved.analysis_limited, "an ambiguous constant fails closed");
+    assert!(resolved.resolved.symbols.is_empty(), "and fabricates nothing");
+    for never in ["ok", "my_ok", "PI", "Z"] {
+        assert!(!resolved.resolved.symbols.contains(never), "{never} must not be imported");
+    }
+}
