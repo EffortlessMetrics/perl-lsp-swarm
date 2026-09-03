@@ -12,7 +12,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from parser_facade_authority import check, load_ledger, render_markdown
-from parser_facade_inventory import CargoTarget, cargo_targets
+from parser_facade_inventory import CargoTarget, cargo_targets, strip_cfg_test_modules
 
 FIXTURE_LEDGER = Path(__file__).resolve().parents[2] / ".ci/parser-facade"
 
@@ -571,6 +571,39 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
     def test_auto_target_switches_must_be_booleans(self) -> None:
         with self.assertRaisesRegex(ValueError, "package autobins must be a boolean"):
             self.synthetic_targets({"autobins": "false"})
+
+    def test_duplicate_conventional_target_names_are_rejected(self) -> None:
+        self.write("synthetic/examples/duplicate.rs", "fn main() {}\n")
+        self.write("synthetic/examples/duplicate/main.rs", "fn main() {}\n")
+        with self.assertRaisesRegex(ValueError, "duplicate Cargo target name: example:duplicate"):
+            self.synthetic_targets()
+
+    def test_duplicate_explicit_target_names_are_rejected(self) -> None:
+        manifest = {
+            "package": {"name": "synthetic"},
+            "example": [{"name": "duplicate"}, {"name": "duplicate", "path": "other.rs"}],
+        }
+        with self.assertRaisesRegex(ValueError, "duplicate Cargo target name: example:duplicate"):
+            cargo_targets(manifest)
+
+    def test_cfg_test_stripping_ignores_rust_strings_and_comments(self) -> None:
+        source = (
+            '#[cfg(test)]\n#[allow(dead_code)]\nmod tests {\n'
+            '    let text = "a } {";\n'
+            "    let raw = r##\"raw } {\"##;\n"
+            "    /* nested { /* comment } */ still */\n"
+            "    // } this is only a comment\n"
+            "}\n"
+            '#[cfg(feature = "kept")]\nfn production() {}\n'
+        )
+        stripped = strip_cfg_test_modules(source)
+        self.assertNotIn("let text", stripped)
+        self.assertNotIn("let raw", stripped)
+        self.assertIn('#[cfg(feature = "kept")]', stripped)
+
+    def test_cfg_test_stripping_handles_char_literals(self) -> None:
+        source = "#[cfg(test)]\nmod tests { let brace = '}'; }\nfn production() {}\n"
+        self.assertEqual(strip_cfg_test_modules(source).lstrip("\n"), "fn production() {}\n")
 
     def test_review_row_target_owner_must_be_actionable(self) -> None:
         row = next(r for r in self.ledger["features"] if r["disposition"] == "review")

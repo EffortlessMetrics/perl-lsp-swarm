@@ -25,7 +25,9 @@ FEATURE_TEST_DIRECTORIES = ("tests", "benches", "examples")
 FEATURE_GATE_PATTERN = re.compile(r"feature\s*=\s*\"([A-Za-z0-9_.+-]+)\"")
 
 CFG_TEST_MODULE_PATTERN = re.compile(
-    r"#\[cfg\(test\)\]\s*(?:pub\s+(?:\([^)]*\)\s*)?)?mod\s+[A-Za-z_][A-Za-z0-9_]*\s*\{"
+    r"#\[cfg\s*\(\s*test\s*\)\]\s*"
+    r"(?:(?:#\[[^\]]*\]\s*)*)"
+    r"(?:pub\s+(?:\([^)]*\)\s*)?)?mod\s+[A-Za-z_][A-Za-z0-9_]*\s*\{"
 )
 
 
@@ -211,6 +213,73 @@ def strip_cfg_test_modules(source: str) -> str:
     A feature gated only inside a test module gates test code, not production
     code, so `src/` alone is not a sound production proxy without this.
     """
+    def matching_brace(start: int) -> int:
+        depth = 1
+        cursor = start
+        while cursor < len(source):
+            character = source[cursor]
+            if source.startswith("//", cursor):
+                newline = source.find("\n", cursor + 2)
+                cursor = len(source) if newline < 0 else newline + 1
+                continue
+            if source.startswith("/*", cursor):
+                cursor += 2
+                comment_depth = 1
+                while cursor < len(source) and comment_depth:
+                    if source.startswith("/*", cursor):
+                        comment_depth += 1
+                        cursor += 2
+                    elif source.startswith("*/", cursor):
+                        comment_depth -= 1
+                        cursor += 2
+                    else:
+                        cursor += 1
+                continue
+            if character == "r":
+                marker = cursor + 1
+                while marker < len(source) and source[marker] == "#":
+                    marker += 1
+                if marker < len(source) and source[marker] == '"':
+                    hashes = marker - cursor - 1
+                    terminator = '"' + ("#" * hashes)
+                    end = source.find(terminator, marker + 1)
+                    cursor = len(source) if end < 0 else end + len(terminator)
+                    continue
+            if character == '"':
+                cursor += 1
+                while cursor < len(source):
+                    if source[cursor] == "\\":
+                        cursor += 2
+                    elif source[cursor] == '"':
+                        cursor += 1
+                        break
+                    else:
+                        cursor += 1
+                continue
+            if character == "'":
+                # Lifetimes also use an apostrophe, so recognize the compact
+                # one-codepoint forms we need to protect rather than scanning to
+                # an arbitrary later apostrophe. This covers braces and escaped
+                # braces without hiding syntax after a lifetime such as `'a`.
+                if cursor + 2 < len(source) and source[cursor + 2] == "'":
+                    cursor += 3
+                    continue
+                if (
+                    cursor + 3 < len(source)
+                    and source[cursor + 1] == "\\"
+                    and source[cursor + 3] == "'"
+                ):
+                    cursor += 4
+                    continue
+            if character == "{":
+                depth += 1
+            elif character == "}":
+                depth -= 1
+                if depth == 0:
+                    return cursor + 1
+            cursor += 1
+        return len(source)
+
     parts: list[str] = []
     index = 0
     while True:
@@ -219,16 +288,7 @@ def strip_cfg_test_modules(source: str) -> str:
             parts.append(source[index:])
             return "".join(parts)
         parts.append(source[index : match.start()])
-        depth = 1
-        cursor = match.end()
-        while cursor < len(source) and depth:
-            character = source[cursor]
-            if character == "{":
-                depth += 1
-            elif character == "}":
-                depth -= 1
-            cursor += 1
-        index = cursor
+        index = matching_brace(match.end())
 
 
 def feature_source_gates(
@@ -375,6 +435,8 @@ def cargo_targets(manifest: dict[str, Any], package_root: Path | None = None) ->
     """
     result: set[CargoTarget] = set()
     explicit_paths: set[Path] = set()
+    explicit_names: set[tuple[str, str]] = set()
+    discovered_paths: dict[tuple[str, str], Path] = {}
     package = manifest.get("package", {})
     if not isinstance(package, dict):
         raise ValueError("perl-parser [package] table is invalid")
@@ -401,6 +463,10 @@ def cargo_targets(manifest: dict[str, Any], package_root: Path | None = None) ->
             required = value.get("required-features", [])
             if not isinstance(required, list) or any(not isinstance(item, str) for item in required):
                 raise ValueError(f"perl-parser [[{key}]] required-features are invalid")
+            identity = (key, value["name"])
+            if identity in explicit_names:
+                raise ValueError(f"duplicate Cargo target name: {key}:{value['name']}")
+            explicit_names.add(identity)
             result.add(CargoTarget(key, value["name"], tuple(required)))
             if package_root is not None:
                 explicit = value.get("path")
@@ -437,8 +503,20 @@ def cargo_targets(manifest: dict[str, Any], package_root: Path | None = None) ->
     else:
         candidates = []
     for path, name in candidates:
-        if path not in explicit_paths and isinstance(name, str):
-            result.add(CargoTarget("bin", name, ()))
+        if not isinstance(name, str):
+            continue
+        identity = ("bin", name)
+        if path in explicit_paths:
+            continue
+        if identity in explicit_names:
+            raise ValueError(f"duplicate Cargo target name: bin:{name}")
+        previous = discovered_paths.get(identity)
+        if previous is not None:
+            raise ValueError(
+                f"duplicate Cargo target name: bin:{name} ({previous} and {path})"
+            )
+        discovered_paths[identity] = path
+        result.add(CargoTarget("bin", name, ()))
     for kind, directory in roots.items():
         if not auto_enabled[kind]:
             continue
@@ -452,14 +530,34 @@ def cargo_targets(manifest: dict[str, Any], package_root: Path | None = None) ->
             if path.is_file():
                 relative = path.relative_to(package_root)
                 name = path.stem
-                if relative not in explicit_paths:
-                    result.add(CargoTarget(kind, name, ()))
+                identity = (kind, name)
+                if relative in explicit_paths:
+                    continue
+                if identity in explicit_names:
+                    raise ValueError(f"duplicate Cargo target name: {kind}:{name}")
+                previous = discovered_paths.get(identity)
+                if previous is not None:
+                    raise ValueError(
+                        f"duplicate Cargo target name: {kind}:{name} ({previous} and {relative})"
+                    )
+                discovered_paths[identity] = relative
+                result.add(CargoTarget(kind, name, ()))
         for path in root.glob("*/main.rs"):
             if path.is_file():
                 relative = path.relative_to(package_root)
                 name = path.parent.name
-                if relative not in explicit_paths:
-                    result.add(CargoTarget(kind, name, ()))
+                identity = (kind, name)
+                if relative in explicit_paths:
+                    continue
+                if identity in explicit_names:
+                    raise ValueError(f"duplicate Cargo target name: {kind}:{name}")
+                previous = discovered_paths.get(identity)
+                if previous is not None:
+                    raise ValueError(
+                        f"duplicate Cargo target name: {kind}:{name} ({previous} and {relative})"
+                    )
+                discovered_paths[identity] = relative
+                result.add(CargoTarget(kind, name, ()))
     return result
 
 
