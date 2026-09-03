@@ -6,7 +6,7 @@ The native parser contract remains directly available while compatibility and pr
 
 ## Current boundary
 
-- Authority digest: `de44647bcb609b90dce2c631d6e3b86075e6d148a07136155e1a41a764f7f4e0`
+- Authority digest: `3c33fe1e87f17eea551170aa6414e3c0a08e585cf582f2eeb766082027096279`
 - Digest input: `full_normalized_ledger`
 - Public modules: 14
 - Public re-exports: 139
@@ -15,7 +15,7 @@ The native parser contract remains directly available while compatibility and pr
 - Production-context dependencies: 19
 - Development-only dependencies: 10
 - Workspace consumers: 9
-- Unresolved review rows: 31
+- Unresolved review rows: 40
 
 ## Feature isolation
 
@@ -52,11 +52,12 @@ workspace / semantic / refactor / LSP product adapters
 
 ## Incremental authority
 
-The only production API marker is `Edit` + `IncrementalState` + `apply_edits`, with `ReparseResult` as its result contract.
-Historical named generations remain non-production until #6701/#6971/#6975 implement their disposition.
+The production incremental surface is the reviewed export set below; `apply_edits` is its sole public function.
+Production exports: `diagnostics::LexRestartReport`, `diagnostics::LexRestartStrategy`, `diagnostics::ReparseResult`, `edit::Edit`, `snapshot::ParseGeneration`, `snapshot::ParseSnapshot`, `snapshot::ParseSnapshotStrategy`, `snapshot::ParseSnapshotValidationError`, `snapshot::ParseTerminalDisposition`, `state::IncrementalState`.
+Historical named generations remain non-production until their executable migration leaves implement their disposition.
 
 ## Next implementation PRs
 
-1. #7063 implements the staged boundary and compatibility gates.
+1. #7063 is the convergence controller; implementation proceeds through its executable leaves (including #6975), not through #7063 itself.
 2. #7065 makes supported feature/API/dependency/downstream matrices load-bearing.
 3. #6701/#6971/#6975 converge the incremental implementation and public surface.

@@ -308,6 +308,14 @@ sha = '3d0d9888cb7fd7b750713d6e236d1fcb99157228'
 kind = 'release_tag'
 value = 'v3.0.2'
 
+# Verified against upstream on 2026-09-03:
+# softprops/action-gh-release v3.0.3 -> efb35369e0ad2afab669f228072c1b0d510eae64
+[[pin]]
+action = 'softprops/action-gh-release'
+sha = 'efb35369e0ad2afab669f228072c1b0d510eae64'
+kind = 'release_tag'
+value = 'v3.0.3'
+
 [[pin]]
 action = 'taiki-e/install-action'
 sha = '6c6fd71fe4fb72c3697d269963d0e15df8adedad'
@@ -336,6 +344,22 @@ sha = 'b6ff580856c41316412a0b9b60540fbc6f8c82cc'
 kind = 'release_tag'
 value = 'v2.86.7'
 
+# Verified against upstream on 2026-08-30:
+# taiki-e/install-action v2.87.2 -> 1ed6d7be6168f6c9046541087ff549b6bc581fdf
+[[pin]]
+action = 'taiki-e/install-action'
+sha = '1ed6d7be6168f6c9046541087ff549b6bc581fdf'
+kind = 'release_tag'
+value = 'v2.87.2'
+
+# Verified against upstream on 2026-08-30:
+# taiki-e/install-action v2.87.0 -> 37f7c5781271959fb65b6b35224e28652ff2b63d
+[[pin]]
+action = 'taiki-e/install-action'
+sha = '37f7c5781271959fb65b6b35224e28652ff2b63d'
+kind = 'release_tag'
+value = 'v2.87.0'
+
 # Verified against upstream on 2026-08-29:
 # github/codeql-action v4.37.8 -> db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28
 [[pin]]
@@ -343,6 +367,14 @@ action = 'github/codeql-action/upload-sarif'
 sha = 'db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28'
 kind = 'release_tag'
 value = 'v4.37.8'
+
+# Verified against upstream on 2026-08-30:
+# github/codeql-action v4.37.9 -> cdf488f595d80d6e07e03d4674febd5ab45fa938
+[[pin]]
+action = 'github/codeql-action/upload-sarif'
+sha = 'cdf488f595d80d6e07e03d4674febd5ab45fa938'
+kind = 'release_tag'
+value = 'v4.37.9'
 
 # Verified against upstream on 2026-08-29:
 # docker/setup-buildx-action v4.3.0 -> 37fe631027851001ddb9b187196cc803df7f5f0e

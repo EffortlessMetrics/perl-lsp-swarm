@@ -11,7 +11,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from parser_facade_authority import check, load_ledger
+from parser_facade_authority import check, load_ledger, render_markdown
 
 FIXTURE_LEDGER = Path(__file__).resolve().parents[2] / ".ci/parser-facade"
 
@@ -596,6 +596,50 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         self.write_ledger(self.ledger)
         with self.assertRaisesRegex(ValueError, "historical incremental modules"):
             check(self.root, self.ledger_path)
+
+    def test_unledgered_incremental_export_fails(self) -> None:
+        # The source keeps every export written by setUp; only the ledger loses a
+        # row. This is the drift shape that reddened main in #14212: an export
+        # reaches the facade with no classification behind it.
+        self.ledger["incremental_public_exports"] = [
+            row
+            for row in self.ledger["incremental_public_exports"]
+            if row["name"] != "geometry_attachment::SourceGeometryAttachment"
+        ]
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(
+            ValueError, "unclassified=geometry_attachment::SourceGeometryAttachment"
+        ):
+            check(self.root, self.ledger_path)
+
+    def test_incremental_export_cannot_be_promoted_to_production(self) -> None:
+        # The canonical production set is a reviewed list, so a staged export
+        # cannot become production-eligible by editing its own row alone.
+        for row in self.ledger["incremental_public_exports"]:
+            if row["name"] == "geometry_attachment::SourceGeometryAttachment":
+                row["production_eligible"] = True
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(ValueError, "canonical incremental export marker"):
+            check(self.root, self.ledger_path)
+
+    def test_rendered_production_surface_matches_reviewed_ledger(self) -> None:
+        ledger, summary = check(self.root, self.ledger_path)
+        rendered = render_markdown(ledger, summary)
+        production = [
+            row["name"]
+            for row in ledger["incremental_public_exports"]
+            if row["production_eligible"] is True
+        ]
+        for name in production:
+            self.assertIn(f"`{name}`", rendered)
+        self.assertNotIn("`geometry_attachment::SourceGeometryAttachment`", rendered)
+
+    def test_controller_is_not_rendered_as_implementation_owner(self) -> None:
+        ledger, summary = check(self.root, self.ledger_path)
+        rendered = render_markdown(ledger, summary)
+        self.assertIn("#7063 is the convergence controller", rendered)
+        self.assertIn("not through #7063 itself", rendered)
+        self.assertNotIn("#7063 implements the staged boundary", rendered)
 
 
 if __name__ == "__main__":

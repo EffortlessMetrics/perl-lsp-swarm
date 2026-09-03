@@ -8,6 +8,7 @@ on:
       - 'scripts/install.sh'
       - 'scripts/tests/test-install-ps1-checksum-required.ps1'
       - 'scripts/tests/test-install-ps1-archive-safety.ps1'
+      - 'scripts/tests/test-install-ps1-product-unit-promotion.ps1'
       - 'policy/standalone-archive-safety.v1.toml'
       - 'docs/how-to/INSTALLATION.md'
       - '.github/workflows/installer-powershell-checksum-contract.yml'
@@ -18,6 +19,7 @@ on:
       - 'scripts/install.sh'
       - 'scripts/tests/test-install-ps1-checksum-required.ps1'
       - 'scripts/tests/test-install-ps1-archive-safety.ps1'
+      - 'scripts/tests/test-install-ps1-product-unit-promotion.ps1'
       - 'policy/standalone-archive-safety.v1.toml'
       - 'docs/how-to/INSTALLATION.md'
       - '.github/workflows/installer-powershell-checksum-contract.yml'
@@ -28,12 +30,12 @@ permissions:
 
 jobs:
   validate:
-    name: PowerShell checksum and archive safety
+    name: PowerShell checksum, archive safety, and product-unit promotion
     runs-on: windows-latest
     timeout-minutes: 12
     steps:
       - name: Checkout exact candidate
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
@@ -53,7 +55,8 @@ jobs:
           foreach ($Path in @(
               'install.ps1',
               'scripts/tests/test-install-ps1-checksum-required.ps1',
-              'scripts/tests/test-install-ps1-archive-safety.ps1'
+              'scripts/tests/test-install-ps1-archive-safety.ps1',
+              'scripts/tests/test-install-ps1-product-unit-promotion.ps1'
           )) {
               $Tokens = $null
               $Errors = $null
@@ -75,3 +78,7 @@ jobs:
       - name: Run archive-safety controls
         shell: pwsh
         run: ./scripts/tests/test-install-ps1-archive-safety.ps1
+
+      - name: Run product-unit promotion controls
+        shell: pwsh
+        run: ./scripts/tests/test-install-ps1-product-unit-promotion.ps1

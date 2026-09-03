@@ -4,7 +4,7 @@
     "model": "staged_migration",
     "controller": "#2477",
     "implementation_issue": "#7058",
-    "next_implementation": "#7063",
+    "next_implementation": "#6975",
     "proof_issue": "#7065"
   },
   "sources": {
