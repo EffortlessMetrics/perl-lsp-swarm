@@ -47,6 +47,7 @@ use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -101,6 +102,21 @@ pub const LIMITATION_DISPOSABLE_MANIFEST: &str =
     "prepared_tree_manifests_bind_the_disposable_copy_only";
 
 static INSTRUMENT_NONCE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Read at most one byte beyond the retained trace limit.  The extra byte is
+/// enough to distinguish an exact-limit stream from an oversized stream while
+/// keeping the capture allocation itself bounded.
+fn read_bounded_trace(path: &Path) -> std::io::Result<(Vec<u8>, bool)> {
+    let file = fs::File::open(path)?;
+    let limit = MAX_TRACE_STREAM_BYTES.saturating_add(1);
+    let mut bytes = Vec::with_capacity(limit);
+    file.take(limit as u64).read_to_end(&mut bytes)?;
+    let oversized = bytes.len() > MAX_TRACE_STREAM_BYTES;
+    if oversized {
+        bytes.truncate(MAX_TRACE_STREAM_BYTES);
+    }
+    Ok((bytes, oversized))
+}
 
 /// One reviewed exact-anchor patch operation. The anchor must occur exactly
 /// once in the ordinary artifact bytes; anything else is drift or ambiguity,
@@ -746,12 +762,8 @@ pub fn observe_invocations(config: &ObserveInvocationsConfig) -> Result<Instrume
 
     // Trace channel: private file inside the disposable copy.
     let trace_path = instrumented_t_dir.join(TRACE_CHANNEL_BASENAME);
-    let mut trace_bytes = fs::read(&trace_path).unwrap_or_default();
-    let mut trace_truncated = false;
-    if trace_bytes.len() > MAX_TRACE_STREAM_BYTES {
-        trace_bytes.truncate(MAX_TRACE_STREAM_BYTES);
-        trace_truncated = true;
-    }
+    let (trace_bytes, mut trace_truncated) =
+        read_bounded_trace(&trace_path).unwrap_or_else(|_| (Vec::new(), false));
 
     let mut parent_opt = None;
     let mut trace_opt = None;
@@ -788,7 +800,11 @@ pub fn observe_invocations(config: &ObserveInvocationsConfig) -> Result<Instrume
         let mut stream =
             serde_json::to_vec(&header).context("serializing the trace channel header frame")?;
         stream.push(b'\n');
-        stream.extend_from_slice(&trace_bytes);
+        let available = MAX_TRACE_STREAM_BYTES.saturating_sub(stream.len());
+        if trace_bytes.len() > available {
+            trace_truncated = true;
+        }
+        stream.extend_from_slice(&trace_bytes[..trace_bytes.len().min(available)]);
         let subject = TraceSubjectIdentity {
             repository_commit: config.repository_commit.clone(),
             perl_ref: config.perl_ref.clone(),
@@ -1353,7 +1369,8 @@ mod contract_tests {
     use super::{
         CleanupRecord, ExactPatchOp, ExactPatchSpec, InstrumentationState, InstrumentationWork,
         PatchApplicationError, apply_exact_patch, derive_instrumentation_state, manifest_changes,
-        prescan_instrument_stream, remeasure_instrumented_artifact, required_limitations,
+        prescan_instrument_stream, read_bounded_trace, remeasure_instrumented_artifact,
+        required_limitations,
     };
     use crate::invocation_trace::model::{
         TraceStreamOutcome, UPSTREAM_INVOCATION_TRACE_SCHEMA_VERSION,
@@ -1477,6 +1494,19 @@ mod contract_tests {
         let expected = super::sha256_bytes(b"written");
         assert_eq!(remeasure_instrumented_artifact(&path, &expected)?, expected);
         assert!(remeasure_instrumented_artifact(&path, &super::sha256_bytes(b"other")).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn trace_file_read_is_bounded_and_reports_oversize() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("trace.jsonl");
+        let oversized = vec![b'x'; super::MAX_TRACE_STREAM_BYTES + 1];
+        std::fs::write(&path, oversized)?;
+
+        let (retained, was_oversized) = read_bounded_trace(&path)?;
+        assert!(was_oversized);
+        assert_eq!(retained.len(), super::MAX_TRACE_STREAM_BYTES);
         Ok(())
     }
 
