@@ -739,6 +739,23 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         )
         self.assertNotIn("nested-test-only-gate", gates)
 
+    def test_feature_gate_inventory_resolves_nested_test_from_non_mod_parent(self) -> None:
+        """A child of detectors.rs lives below the detectors/ module directory."""
+        self.write(
+            "crates/perl-parser/src/lib.rs", "mod detectors;\n"
+        )
+        self.write(
+            "crates/perl-parser/src/detectors.rs", "#[cfg(test)]\nmod tests;\n"
+        )
+        self.write(
+            "crates/perl-parser/src/detectors/tests.rs",
+            '#[cfg(feature = "nested-detectors-test-gate")]\nfn gated() {}\n',
+        )
+        gates = feature_source_gates(
+            self.root / "crates/perl-parser", ("src",), skip_test_modules=True
+        )
+        self.assertNotIn("nested-detectors-test-gate", gates)
+
     def test_review_row_target_owner_must_be_actionable(self) -> None:
         row = next(r for r in self.ledger["features"] if r["disposition"] == "review")
         row["target_owner"] = "the parser team"
