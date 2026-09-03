@@ -416,9 +416,6 @@ fn decode_cluster<S: AsRef<str>>(
                 });
                 break;
             }
-            // `-V` and `-d` take a value only in their `:` form. `perl -Vfoo`
-            // reports `Unrecognized switch: -oo`, so swallowing the tail would
-            // hide switches perl still decodes.
             // `-V[:configvar]`: a value only in the colon form. `perl -Vfoo`
             // reports `Unrecognized switch: -oo`, so swallowing the tail would
             // hide switches perl still decodes.
@@ -728,7 +725,7 @@ fn is_plain_module_name(text: &str) -> bool {
         return false;
     };
     let mut characters = first.chars();
-    let leads = matches!(characters.next(), Some(c) if c.is_alphabetic() || c == '_');
+    let leads = matches!(characters.next(), Some(c) if c.is_ascii_alphabetic() || c == '_');
     if !leads || !characters.all(is_name_character) {
         return false;
     }
@@ -775,6 +772,11 @@ fn split_leading_component(text: &str) -> Option<(&str, &str)> {
 }
 
 /// A character Perl accepts inside a package-name component.
+///
+/// ASCII only, matching [`scan_module_option_name`]. Perl's own option scan is
+/// byte-wise, and a bareword built from what it leaves behind is not a name:
+/// `perl -MFooα` and `perl -MFoo٢` both die with `Unrecognized character`
+/// before anything is loaded, while `perl -MFoo2` looks for `Foo2.pm`.
 fn is_name_character(character: char) -> bool {
-    character.is_alphanumeric() || character == '_'
+    character.is_ascii_alphanumeric() || character == '_'
 }

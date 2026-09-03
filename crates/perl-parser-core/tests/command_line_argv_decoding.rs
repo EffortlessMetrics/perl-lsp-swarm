@@ -703,7 +703,18 @@ fn a_module_expression_that_is_not_a_module_name_is_reported_as_ambiguous() {
 
     // `perl -M::Foo` is refused outright, `1Foo` is a syntax error, and
     // `Foo-Bar` compiles as an expression (`use Foo` minus `Bar`).
-    for opaque in ["::Foo", "1Foo", "Foo-Bar", "Foo::٢"] {
+    //
+    // The non-ASCII rows matter because perl's option scan is byte-wise: it
+    // stops at the first non-ASCII byte and `-M` splices the rest in verbatim,
+    // so what reaches the lexer is not a bareword. Verified against 5.38.2,
+    // with no `use utf8` in play:
+    //
+    //   perl -MFooα     -e1 → Unrecognized character \xCE ... after use Foo
+    //   perl -MFoo٢     -e1 → Unrecognized character \xD9 ... after use Foo
+    //   perl -MFoo::Barα -e1 → Unrecognized character \xCE ... after Foo::Bar
+    //   perl -MFoo::٢   -e1 → Unrecognized character \xD9 ... after use Foo::
+    //   perl -MFoo2     -e1 → Can't locate Foo2.pm   (the ASCII control)
+    for opaque in ["::Foo", "1Foo", "Foo-Bar", "Foo::٢", "Fooα", "Foo٢", "Foo::Barα"] {
         let argv = format!("-M{opaque}");
         let invocation = perl(&[argv.as_str(), "-e", "print"]);
         let ContextFactKind::ModuleImport { spec, .. } = &facts(&invocation)[0] else {

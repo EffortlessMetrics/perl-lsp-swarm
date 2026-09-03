@@ -460,7 +460,7 @@ const ROWS: &[CapabilityRow] = &[
         boundary_controls: &[],
         missing_layer: "",
         invocable: "",
-        notes: "No adapter decodes POSIX shell quoting. Layer 2 remaining unsupported means there is nothing for an adapter to feed.",
+        notes: "No adapter decodes POSIX shell quoting. An adapter now has somewhere to send its output — `perl_parser_core::command_line::decode` accepts a tokenized argv (#13726) — so this row is unsupported because the adapter itself is missing, not because layer 2 has nothing to feed.",
     },
     CapabilityRow {
         layer: Layer::ShellAdapters,

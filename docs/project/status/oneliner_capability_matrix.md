@@ -100,7 +100,7 @@ A host shell's quoting and tokenization rules are decoded before argv decoding. 
 
 | Subject | Status | Missing layer | Evidence | Boundary control | Invocable | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| POSIX shell | `unsupported` | — | — | — | — | No adapter decodes POSIX shell quoting. Layer 2 remaining unsupported means there is nothing for an adapter to feed. |
+| POSIX shell | `unsupported` | — | — | — | — | No adapter decodes POSIX shell quoting. An adapter now has somewhere to send its output — `perl_parser_core::command_line::decode` accepts a tokenized argv (#13726) — so this row is unsupported because the adapter itself is missing, not because layer 2 has nothing to feed. |
 | PowerShell | `unsupported` | — | — | — | — | PowerShell quoting differs from POSIX and needs its own adapter and evidence. It is never implied by POSIX or by structured-argv support. |
 | cmd.exe | `unsupported` | — | — | — | — | cmd.exe quoting differs from both POSIX and PowerShell and needs its own adapter and evidence. |
 
