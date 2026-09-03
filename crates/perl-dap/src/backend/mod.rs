@@ -33,6 +33,7 @@ use crate::model::{
     DebugBreakpoint, DebugEvent, DebugFunctionBreakpoint, DebugScope, DebugSource, DebugStackFrame,
     DebugVariable, FrameId, ResolvedBreakpoint, ThreadId, VariablesRef,
 };
+use crate::peer_protocol::message::PeerFailureCause;
 
 /// Errors a backend can surface.
 #[derive(Debug, Clone, thiserror::Error)]
@@ -63,30 +64,47 @@ pub enum BackendError {
     /// `variables`. Calling that an adapter bug is what this variant exists to
     /// stop.
     ///
-    /// **What this variant deliberately does not claim.** The bucket is
-    /// heterogeneous: it also holds peer-side refusals such as `no active
-    /// suspension` or `unknown frame id`, which are closer to a client or
-    /// session-state error than to a debuggee outcome. [`PeerResponse`] carries
-    /// only `success`, `command`, `message`, and `request_seq` — no cause or
-    /// code field — so the responder's cause is genuinely absent at this
-    /// boundary and is *not* recovered by reading `message`, which would make
-    /// classification depend on peer-authored free text. Separating those
-    /// populations needs a cause on the peer wire (#14582); until then this
-    /// boundary asserts only the distinction the evidence supports, which is
-    /// adapter fault versus reported outcome.
+    /// **How the heterogeneous bucket is separated.** The bucket holds ordinary
+    /// debuggee outcomes *and* peer-side refusals such as `no active suspension`
+    /// or `unknown frame id`, which are closer to a client or session-state
+    /// error. [`PeerResponse`] now carries an optional machine-readable
+    /// [`cause`], negotiated through `peer/hello`, and `cause` is what separates
+    /// them (#14582). The reason text is still never read: classification comes
+    /// from a vocabulary the peer committed to, not from free text the debuggee
+    /// can author.
+    ///
+    /// `cause` is `None` for every peer that predates the field or did not
+    /// advertise [`can_report_failure_cause`], and for that population the
+    /// classification is exactly what it was before — the honest fallback, since
+    /// the responder's cause is then genuinely absent.
+    ///
+    /// **What this variant still does not claim.** No cause, recognised or not,
+    /// makes a peer-reported failure an adapter [`Bug`]. A peer reports what
+    /// happened on its side; it is never evidence that *this* adapter violated
+    /// an internal invariant, and letting a peer-supplied value reach `Bug`
+    /// would hand a debuggee the power to route this adapter for repair — the
+    /// exact coupling #8758 removed.
     ///
     /// `Display` is unchanged from [`BackendError::Engine`]:
     /// [`peer_bridge::DapPeerBridge`] renders it straight onto the DAP wire, so
-    /// the editor-visible text must not drift. `command` is a structured field
-    /// for receipts and logs only.
+    /// the editor-visible text must not drift. Neither `command` nor `cause`
+    /// appears in it; both are structured fields for classification, receipts,
+    /// and logs only.
     ///
     /// [`PeerResponse`]: crate::peer_protocol::PeerResponse
+    /// [`cause`]: crate::peer_protocol::message::PeerResponse::cause
+    /// [`can_report_failure_cause`]:
+    ///     crate::peer_protocol::PeerReportedCapabilities::can_report_failure_cause
+    /// [`Bug`]: perl_parser_core::ErrorCategory::Bug
     #[error("debug backend reported an error: {message}")]
     PeerReported {
         /// The command the peer answered.
         command: String,
         /// The reason the peer reported.
         message: String,
+        /// The machine-readable cause the peer reported, when it advertised
+        /// that it can report one and did.
+        cause: Option<PeerFailureCause>,
     },
     /// The operation is not supported by this backend/negotiated capabilities.
     #[error("operation not supported by this backend: {0}")]
@@ -119,10 +137,30 @@ impl perl_parser_core::ErrorClass for BackendError {
             // operational outcome, not a debuggee-termination signal (#4979).
             Self::Engine(_) => perl_parser_core::ErrorCategory::Bug,
             // A peer answered `success: false`. This is what the peer reported,
-            // not a failed invariant of ours, so it is never `Bug`. The peer
-            // wire carries no cause, so no finer category is claimed and the
-            // reason text is never inspected to invent one (#8758, #14582).
-            Self::PeerReported { .. } => perl_parser_core::ErrorCategory::Advisory,
+            // not a failed invariant of ours, so no arm below is `Bug` (#8758).
+            // The finer category comes from the negotiated `cause` vocabulary
+            // and never from the reason text (#14582).
+            Self::PeerReported { cause, .. } => match cause {
+                // The debuggee failed. The request was served correctly and
+                // this is its outcome — informational, not a defect here.
+                Some(PeerFailureCause::Debuggee) => perl_parser_core::ErrorCategory::Advisory,
+                // The session could not serve the request, or the request was
+                // not answerable as asked. Both need a correction above this
+                // adapter — a different request, or the same one at a point
+                // where the session can serve it.
+                Some(PeerFailureCause::SessionState | PeerFailureCause::InvalidRequest) => {
+                    perl_parser_core::ErrorCategory::UserError
+                }
+                // The peer's own link to the debuggee failed: an external
+                // dependency became unavailable, matching `Transport`.
+                Some(PeerFailureCause::Transport) => perl_parser_core::ErrorCategory::Infra,
+                // No cause, or one this build does not recognise. The
+                // responder's cause is genuinely unknown, so this is the
+                // pre-#14582 fallback rather than a guess.
+                Some(PeerFailureCause::Unrecognized) | None => {
+                    perl_parser_core::ErrorCategory::Advisory
+                }
+            },
             // The requested operation isn't supported — usage/configuration.
             Self::Unsupported(_) => perl_parser_core::ErrorCategory::UserError,
             // Serialization/deserialization — the other side violated format.
