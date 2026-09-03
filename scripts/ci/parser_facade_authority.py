@@ -366,6 +366,7 @@ def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]
         "public_reexports": len(public_exports),
         "incremental_public_modules": len(module_rows),
         "incremental_public_exports": len(export_rows),
+        "production_incremental_exports": production_exports,
         "consumers": len(consumers),
         "production_dependencies": sum(
             1 for fact in observed_dependencies.values()
@@ -437,10 +438,11 @@ def render_markdown(ledger: dict[str, Any], summary: dict[str, Any]) -> str:
         lines.append(f"- `{feature}` — {row['classification']}; {row['exit_condition']}")
     lines += [
         "", "## Incremental authority", "",
-        "The only production API marker is `Edit` + `IncrementalState` + `apply_edits`, with `ReparseResult` as its result contract.",
-        "Historical named generations remain non-production until #6701/#6971/#6975 implement their disposition.", "",
+        "The production incremental surface is the reviewed export set below; `apply_edits` is its sole public function.",
+        "Production exports: " + ", ".join(f"`{name}`" for name in summary["production_incremental_exports"]) + ".",
+        "Historical named generations remain non-production until their executable migration leaves implement their disposition.", "",
         "## Next implementation PRs", "",
-        "1. #7063 implements the staged boundary and compatibility gates.",
+        "1. #7063 is the convergence controller; implementation proceeds through its executable leaves (including #6975), not through #7063 itself.",
         "2. #7065 makes supported feature/API/dependency/downstream matrices load-bearing.",
         "3. #6701/#6971/#6975 converge the incremental implementation and public surface.", "",
     ]
