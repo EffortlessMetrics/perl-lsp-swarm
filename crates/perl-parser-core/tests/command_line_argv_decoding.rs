@@ -16,8 +16,9 @@
 
 use perl_parser_core::command_line::{
     Ambiguity, AmbiguityKind, ArgvLead, ArgvSpan, ContextFact, ContextFactKind,
-    InvocationDecodeError, ModuleForm, NeutralSwitch, PerlInvocation, ProgramSource,
-    RecordSeparatorDigits, SourceSwitch, TerminatingActionKind, UnsupportedSwitchKind, decode,
+    InvocationDecodeError, ModuleForm, ModuleImportAction, NeutralSwitch, PerlInvocation,
+    ProgramSource, RecordSeparatorDigits, SourceSwitch, TerminatingActionKind,
+    UnsupportedSwitchKind, decode,
 };
 
 /// Decode `argv` with a leading interpreter argument, expecting success.
@@ -723,32 +724,42 @@ fn an_empty_module_name_is_refused() {
 
 #[test]
 fn lowercase_module_switch_still_imports_with_explicit_arguments() {
-    // `-m` suppresses the *default* import only. Verified against the
-    // interpreter: `perl -mPOSIX=floor -e 'print floor(1.5)'` prints 1, while
-    // `perl -mPOSIX -e ...` reports `Undefined subroutine &main::floor`.
-    // Reading the effective behavior off the switch letter alone contradicts
-    // the import arguments decoded right beside it.
-    let bare = perl(&["-mPOSIX", "-e", "print"]);
-    let ContextFactKind::ModuleImport { form, spec } = &facts(&bare)[0] else {
-        panic!("expected a module import");
-    };
-    assert_eq!(*form, ModuleForm::UseSuppressingDefaultImport);
-    assert!(!spec.calls_import(*form), "bare -m imports nothing");
+    // `-m` suppresses the *default* import only, and negation swaps the call
+    // for `unimport`. All six rows verified against the interpreter using
+    // `strict`, whose import and unimport are both observable through whether
+    // `$x = 1` is refused:
+    //
+    //   -Mstrict       refused   Import
+    //   -M-strict      allowed   Unimport
+    //   -M-strict=vars allowed   Unimport
+    //   -mstrict       allowed   None      (use strict ())
+    //   -m-strict      refused   None      (no strict () calls nothing)
+    //   -m-strict=vars allowed   Unimport
+    for (argv, expected) in [
+        ("-Mstrict", ModuleImportAction::Import),
+        ("-MPOSIX=floor", ModuleImportAction::Import),
+        ("-M-strict", ModuleImportAction::Unimport),
+        ("-M-strict=vars", ModuleImportAction::Unimport),
+        ("-mstrict", ModuleImportAction::None),
+        ("-m-strict", ModuleImportAction::None),
+        ("-mPOSIX=floor", ModuleImportAction::Import),
+        ("-m-strict=vars", ModuleImportAction::Unimport),
+    ] {
+        let invocation = perl(&[argv, "-e", "print"]);
+        let ContextFactKind::ModuleImport { form, spec } = &facts(&invocation)[0] else {
+            panic!("expected a module import for {argv}");
+        };
+        assert_eq!(spec.import_action(*form), expected, "{argv}");
+    }
 
+    // The spelling is still recorded separately from the effect: `-mFoo=a,b`
+    // is written with the suppressing form yet calls `import`.
     let with_arguments = perl(&["-mPOSIX=floor", "-e", "print"]);
     let ContextFactKind::ModuleImport { form, spec } = &facts(&with_arguments)[0] else {
         panic!("expected a module import");
     };
-    assert_eq!(*form, ModuleForm::UseSuppressingDefaultImport, "the spelling is still -m");
+    assert_eq!(*form, ModuleForm::UseSuppressingDefaultImport);
     assert_eq!(spec.import_arguments.as_deref(), Some("floor"));
-    assert!(spec.calls_import(*form), "-mFoo=a calls Foo->import(\"a\")");
-
-    // `-M` always imports, with or without arguments.
-    let uppercase = perl(&["-MPOSIX", "-e", "print"]);
-    let ContextFactKind::ModuleImport { form, spec } = &facts(&uppercase)[0] else {
-        panic!("expected a module import");
-    };
-    assert!(spec.calls_import(*form));
 }
 
 #[test]

@@ -85,7 +85,7 @@ pub struct SourceFragment {
 }
 
 /// `-M` versus `-m`. This is the spelling, not the effective import behavior:
-/// see [`ModuleSpec::calls_import`].
+/// see [`ModuleSpec::import_action`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ModuleForm {
     /// `-M`: `use Module;` — the module's default import list runs.
@@ -124,18 +124,51 @@ pub struct ModuleSpec {
     pub module_is_plain_name: bool,
 }
 
+/// What perl calls on the module for one `-M`/`-m` spec.
+///
+/// A boolean cannot answer this: `-M-Foo` compiles `no Foo;`, which calls
+/// `unimport` rather than nothing, and a consumer modelling compile-time effects
+/// needs to know which of the two runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModuleImportAction {
+    /// `Module->import(...)` runs.
+    Import,
+    /// `Module->unimport(...)` runs — the negated `-M-Foo` form.
+    Unimport,
+    /// Neither runs: perl appends `()`, as in `-mFoo` (`use Foo ()`) and
+    /// `-m-Foo` (`no Foo ()`).
+    None,
+}
+
 impl ModuleSpec {
-    /// Whether perl calls the module's `import` for this spec under `form`.
+    /// What perl calls on the module for this spec under `form`.
     ///
-    /// `-m` suppresses only the default import, so an explicit argument list
-    /// brings it back. Reading that off [`ModuleForm`] alone reports
-    /// `-mFoo=a,b` as importing nothing, which contradicts the decoded
-    /// arguments sitting next to it.
+    /// Checked against the interpreter with `strict`, whose import and unimport
+    /// are both observable:
+    ///
+    /// | invocation | `$x = 1` under `use strict` | action |
+    /// | --- | --- | --- |
+    /// | `-Mstrict` | refused | `Import` |
+    /// | `-M-strict` | allowed | `Unimport` |
+    /// | `-M-strict=vars` | allowed | `Unimport` |
+    /// | `-mstrict` | allowed | `None` |
+    /// | `-m-strict` | refused | `None` |
+    /// | `-m-strict=vars` | allowed | `Unimport` |
+    ///
+    /// So a call happens unless the `-m` spelling carries no arguments, and the
+    /// call is `unimport` exactly when the spec is negated.
     #[must_use]
-    pub fn calls_import(&self, form: ModuleForm) -> bool {
-        match form {
+    pub fn import_action(&self, form: ModuleForm) -> ModuleImportAction {
+        let calls = match form {
             ModuleForm::Use => true,
             ModuleForm::UseSuppressingDefaultImport => self.import_arguments.is_some(),
+        };
+        if !calls {
+            ModuleImportAction::None
+        } else if self.negated {
+            ModuleImportAction::Unimport
+        } else {
+            ModuleImportAction::Import
         }
     }
 }

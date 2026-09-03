@@ -65,7 +65,8 @@ mod model;
 pub use decode::decode;
 pub use model::{
     Ambiguity, AmbiguityKind, ArgvLead, ArgvSpan, ContextFact, ContextFactKind,
-    InvocationDecodeError, ModuleForm, ModuleSpec, NeutralSwitch, NeutralSwitchUse, PerlInvocation,
-    ProgramArgument, ProgramSource, RecordSeparatorDigits, SourceFragment, SourceSwitch,
-    TerminatingAction, TerminatingActionKind, UnsupportedSwitch, UnsupportedSwitchKind,
+    InvocationDecodeError, ModuleForm, ModuleImportAction, ModuleSpec, NeutralSwitch,
+    NeutralSwitchUse, PerlInvocation, ProgramArgument, ProgramSource, RecordSeparatorDigits,
+    SourceFragment, SourceSwitch, TerminatingAction, TerminatingActionKind, UnsupportedSwitch,
+    UnsupportedSwitchKind,
 };
