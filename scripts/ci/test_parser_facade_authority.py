@@ -13,6 +13,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from parser_facade_authority import check, load_ledger, render_markdown
 from parser_facade_inventory import CargoTarget, cargo_targets, strip_cfg_test_modules
+from parser_facade_inventory import discover_consumer_contexts, feature_names
 
 FIXTURE_LEDGER = Path(__file__).resolve().parents[2] / ".ci/parser-facade"
 
@@ -167,6 +168,29 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         _, summary = check(self.root, self.ledger_path)
         self.assertEqual(summary["ruling"], "staged_migration")
         self.assertEqual(summary["public_modules"], len(self.ledger["public_modules"]))
+
+    def test_optional_dependencies_have_implicit_cargo_features(self) -> None:
+        manifest = {
+            "features": {"explicit": []},
+            "dependencies": {"parser-alias": {"package": "perl-parser", "optional": True}},
+        }
+        self.assertEqual(feature_names(manifest), {"explicit", "parser-alias"})
+
+    def test_workspace_dependency_alias_resolves_to_package_consumer(self) -> None:
+        self.write(
+            "Cargo.toml",
+            '[workspace]\nmembers = ["crates/consumer"]\n'
+            '[workspace.dependencies]\nparser-alias = { package = "perl-parser", version = "1" }\n',
+        )
+        self.write(
+            "crates/consumer/Cargo.toml",
+            '[package]\nname = "consumer"\nversion = "0.1.0"\n'
+            '[dependencies]\nparser-alias = { workspace = true }\n',
+        )
+        contexts = discover_consumer_contexts(
+            self.root, self.root / "crates/perl-parser/Cargo.toml"
+        )
+        self.assertEqual(contexts["crates/consumer/Cargo.toml"], ("normal",))
 
     def test_new_public_module_fails(self) -> None:
         path = self.root / "crates/perl-parser/src/lib.rs"

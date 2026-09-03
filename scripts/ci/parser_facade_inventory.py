@@ -124,7 +124,15 @@ def feature_names(manifest: dict[str, Any]) -> set[str]:
     features = manifest.get("features")
     if not isinstance(features, dict):
         raise ValueError("perl-parser manifest has no [features] table")
-    return set(features)
+    names = set(features)
+    # Cargo exposes an implicit feature for every optional dependency unless an
+    # explicit feature already occupies that name.  Keep the observer aligned
+    # with Cargo's feature namespace rather than only the [features] table.
+    for _, table in contextual_dependency_tables(manifest):
+        for alias, value in table.items():
+            if isinstance(value, dict) and value.get("optional") is True:
+                names.add(alias)
+    return names
 
 
 def default_features(manifest: dict[str, Any]) -> tuple[str, ...]:
@@ -134,7 +142,9 @@ def default_features(manifest: dict[str, Any]) -> tuple[str, ...]:
     return tuple(value)
 
 
-def normalized_dependency_rows(table: dict[str, Any], context: str) -> dict[str, bool]:
+def normalized_dependency_rows(
+    table: dict[str, Any], context: str, workspace_packages: dict[str, str] | None = None
+) -> dict[str, bool]:
     result: dict[str, bool] = {}
     for alias, value in table.items():
         if isinstance(value, str):
@@ -142,6 +152,8 @@ def normalized_dependency_rows(table: dict[str, Any], context: str) -> dict[str,
             optional = False
         elif isinstance(value, dict):
             package = value.get("package", alias)
+            if value.get("workspace") is True and workspace_packages is not None:
+                package = workspace_packages.get(alias, package)
             optional = value.get("optional") is True
         else:
             raise ValueError(f"{context}.{alias} dependency entry is invalid")
@@ -354,6 +366,13 @@ def feature_isolation(manifest: dict[str, Any], crate_root: Path) -> dict[str, s
     features = manifest.get("features")
     if not isinstance(features, dict):
         raise ValueError("perl-parser manifest has no [features] table")
+    implicit = {
+        alias
+        for _, table in contextual_dependency_tables(manifest)
+        for alias, value in table.items()
+        if isinstance(value, dict) and value.get("optional") is True and alias not in features
+    }
+    features = {**features, **{name: [name] for name in implicit}}
     declared = set(features)
     # Feature entries name the manifest key, which differs from package identity
     # when a dependency is renamed, so both forms must resolve.
@@ -568,6 +587,16 @@ def discover_consumer_contexts(root: Path, facade_manifest: Path) -> dict[str, t
     production surface, so the reaching context is retained rather than collapsed.
     """
     result: dict[str, tuple[str, ...]] = {}
+    workspace_path = root / "Cargo.toml"
+    workspace = load_toml(workspace_path) if workspace_path.is_file() else {}
+    workspace_dependencies = workspace.get("workspace", {}).get("dependencies", {})
+    if not isinstance(workspace_dependencies, dict):
+        workspace_dependencies = {}
+    workspace_packages = {
+        alias: value.get("package", alias)
+        for alias, value in workspace_dependencies.items()
+        if isinstance(value, dict) and isinstance(value.get("package", alias), str)
+    }
     for manifest_path in sorted(root.rglob("Cargo.toml")):
         if manifest_path == facade_manifest:
             continue
@@ -582,7 +611,9 @@ def discover_consumer_contexts(root: Path, facade_manifest: Path) -> dict[str, t
         contexts = {
             context
             for context, table in contextual_dependency_tables(manifest)
-            if "perl-parser" in normalized_dependency_rows(table, str(manifest_path))
+            if "perl-parser" in normalized_dependency_rows(
+                table, str(manifest_path), workspace_packages
+            )
         }
         if contexts:
             result[manifest_path.relative_to(root).as_posix()] = tuple(sorted(contexts))

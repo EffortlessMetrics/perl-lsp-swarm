@@ -6,11 +6,11 @@ The native parser contract remains directly available while compatibility and pr
 
 ## Current boundary
 
-- Authority digest: `54e46381a55b91d9d45de37a16e2f9f78cfadf65a07b32ebcc756f2471553355`
+- Authority digest: `c202856a6b46677ae563cf4249acd305c07f3a3d209c8b62f89e40b00652b3f3`
 - Digest input: `full_normalized_ledger`
 - Public modules: 14
 - Public re-exports: 139
-- Cargo features: 23
+- Cargo features: 27
 - Declared dependencies: 29
 - Production-context dependencies: 19
 - Development-only dependencies: 10
@@ -24,7 +24,7 @@ gates `src/`. A feature that gates only test, bench, or example source is a test
 profile, and a feature that gates nothing is taxonomy. Neither may be presented as
 an architectural boundary.
 
-Production boundaries (7): `cli`, `default`, `incremental`, `lsp-compat`, `modernize`, `workspace`, `workspace_refactor`.
+Production boundaries (11): `anyhow`, `cli`, `default`, `incremental`, `lsp-compat`, `lsp-types`, `modernize`, `perl-line-index`, `tracing`, `workspace`, `workspace_refactor`.
 
 Test profiles (9): `constant-advanced`, `crash-repros`, `doc-coverage`, `error-classifier-v2`, `package-qualified`, `parser-extras`, `qw-variants`, `semantic-phase2`, `slow_tests`.
 
