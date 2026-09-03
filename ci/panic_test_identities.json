@@ -3672,6 +3672,78 @@
       "selector_identity": "invocation:4c2ec5d811ae65ac:occurrence:2",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "crates/perl-core-harness/src/invocation_trace/adapter.rs",
+      "enclosing_test_or_function": "observed_values_validate_independently",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected invalid-observed-value rejection for {field:?}: {other:?}\")",
+      "selector_identity": "invocation:d48040f776b8466c:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/tests/backend_error_class.rs",
+      "enclosing_test_or_function": "peer_command_survives_construction",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected PeerReported, got {other:?}\"),",
+      "selector_identity": "invocation:b15b64657f975ced:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/protocol/error_inventory.rs",
+      "enclosing_test_or_function": "origin_ambiguous_parse_enums_stay_unclassified_beside_classified_projections",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"{name} must remain inventoried\"))",
+      "selector_identity": "invocation:5f85dc9c186e5877:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/quarantine_registry_contract.rs",
+      "enclosing_test_or_function": "scenario_14_quarantine_rows_have_terminal_executable_dispositions",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"{test} has unknown verification_state `{other}`\"),",
+      "selector_identity": "invocation:7568fcb9385b4eba:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser/src/incremental/incremental_v2.rs",
+      "enclosing_test_or_function": "assert_chain_spans",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"unexpected fixture node {}\", other.kind_name()),",
+      "selector_identity": "invocation:d14b538c0dbd9c02:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/parser_accuracy_legacy_population.rs",
+      "enclosing_test_or_function": "validate_source_path_rejects_every_documented_reason",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"case {fixture_id}: unexpected error {other:?}\");",
+      "selector_identity": "invocation:237b100a58d3620a:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/devex_doctor.rs",
+      "enclosing_test_or_function": "perl5db_probe_contract_capable_and_failed",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"a nonzero exit must be Failed, got {other:?}\"),",
+      "selector_identity": "invocation:65821b53909e5103:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/lsp_318_changelog_totality.rs",
+      "enclosing_test_or_function": "parse_pinned_changelog_bullets",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!( \"the vendored specification must contain the pinned {PINNED_SPEC_SECTION_HEADING} change-log heading\" )",
+      "selector_identity": "invocation:baba6dcc97d7f0e3:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
