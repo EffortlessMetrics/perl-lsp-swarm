@@ -1678,7 +1678,7 @@ fn validate_checkout_identity(
         }
     };
 
-    validate_worktree_integrity(manifest, &facts, state);
+    validate_worktree_integrity(manifest, repo_root, &facts, state);
 }
 
 /// `HEAD` matching is necessary but not sufficient. The planner reads bytes from
@@ -1694,26 +1694,30 @@ fn validate_checkout_identity(
 /// are the documents under judgment and the output, not repository facts the
 /// plan reads as evidence, and requiring a candidate manifest to be committed
 /// before it can be judged would make the command useless.
-fn validate_worktree_integrity(manifest: &Manifest, facts: &CheckoutFacts, state: &mut PlanState) {
+fn validate_worktree_integrity(
+    manifest: &Manifest,
+    repo_root: &Path,
+    facts: &CheckoutFacts,
+    state: &mut PlanState,
+) {
     if facts.dirty.is_empty() {
         return;
     }
 
     let mut stale: Vec<String> = Vec::new();
     for path in consumed_repository_paths(manifest) {
-        let subtree = format!("{path}/");
-        let disagrees = facts.dirty.iter().any(|entry| {
-            // The path itself.
-            entry == &path
-                // A descendant: a row takes its whole subtree with it.
-                || entry.starts_with(&subtree)
-                // An ancestor. `--ignored=traditional` collapses a wholly
-                // ignored directory into one entry, so `target/` stands for
-                // every consumed path beneath it. Git spells such an entry with
-                // a trailing slash, so normalise before building the prefix —
-                // `target//` would match nothing.
-                || path.starts_with(&format!("{}/", entry.trim_end_matches('/')))
-        });
+        // `load_input` follows symlinks and reads the bytes at the *target*, so
+        // the declared path alone is the wrong thing to test. A tracked symlink
+        // stays clean in `git status` while the file it points at is modified,
+        // and the planner would then read dirty bytes and attribute them to
+        // `prepared_swarm_sha`. Test what is actually read as well as what is
+        // named. A path that resolves outside the checkout yields `None` here
+        // and is refused by the loader's confinement check instead.
+        let read = resolve_repo_relative(repo_root, &path);
+        let disagrees = [Some(path.clone()), read]
+            .into_iter()
+            .flatten()
+            .any(|candidate| worktree_disagrees(&candidate, facts));
         if disagrees {
             stale.push(path);
         }
@@ -1732,6 +1736,34 @@ fn validate_worktree_integrity(manifest: &Manifest, facts: &CheckoutFacts, state
         ),
         "release/ci",
     );
+}
+
+/// Whether the worktree disagrees with the commit at `candidate`.
+fn worktree_disagrees(candidate: &str, facts: &CheckoutFacts) -> bool {
+    let subtree = format!("{candidate}/");
+    facts.dirty.iter().any(|entry| {
+        // The path itself.
+        entry == candidate
+            // A descendant: a row takes its whole subtree with it.
+            || entry.starts_with(&subtree)
+            // An ancestor. `--ignored=traditional` collapses a wholly ignored
+            // directory into one entry, so `target/` stands for every consumed
+            // path beneath it. Git spells such an entry with a trailing slash,
+            // so normalise before building the prefix — `target//` would match
+            // nothing.
+            || candidate.starts_with(&format!("{}/", entry.trim_end_matches('/')))
+    })
+}
+
+/// The repository-relative path a declared path actually reads, following
+/// symlinks. `None` when it does not exist or resolves outside the checkout —
+/// both of which the loader reports separately, so this is only about naming
+/// the second path the integrity check has to consider.
+fn resolve_repo_relative(repo_root: &Path, path: &str) -> Option<String> {
+    let root = repo_root.canonicalize().ok()?;
+    let resolved = root.join(path).canonicalize().ok()?;
+    let relative = resolved.strip_prefix(&root).ok()?;
+    Some(relative.to_string_lossy().replace('\\', "/"))
 }
 
 /// Report one unreadable repository artifact, keeping "absent", "escapes the

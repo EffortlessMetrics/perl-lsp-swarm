@@ -3044,3 +3044,114 @@ fn a_resolved_but_different_reconciliation_commit_is_still_blocked() -> Result<(
     }
     Ok(())
 }
+
+/// A tracked symlink stays clean in `git status` while the file it points at is
+/// modified. `load_input` follows the link and reads the target's bytes, so
+/// testing only the declared path would let dirty content support a receipt
+/// attributed to `prepared_swarm_sha`.
+///
+/// Real Git, because the whole mechanism is what Git reports about a link
+/// versus its target — a synthetic dirty set could not show that the link is
+/// reported clean.
+#[cfg(unix)]
+#[test]
+fn a_modified_symlink_target_is_not_at_the_checkout() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let run = |args: &[&str]| -> Result<()> {
+        let out =
+            std::process::Command::new("git").arg("-C").arg(root.path()).args(args).output()?;
+        if !out.status.success() {
+            bail!("git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        }
+        Ok(())
+    };
+    run(&["init", "-q", "."])?;
+    run(&["config", "user.email", "proof@example.invalid"])?;
+    run(&["config", "user.name", "proof"])?;
+
+    fs::create_dir_all(root.path().join("docs"))?;
+    fs::write(root.path().join("docs/real.md"), "committed\n")?;
+    std::os::unix::fs::symlink("real.md", root.path().join("docs/link.md"))?;
+    run(&["add", "-A"])?;
+    run(&["commit", "-qm", "base"])?;
+
+    // Modify the target, leaving the link itself untouched.
+    fs::write(root.path().join("docs/real.md"), "tampered\n")?;
+
+    let facts = resolve_checkout(root.path()).ok_or_else(|| eyre!("checkout unresolvable"))?;
+
+    // The premise: Git reports the target dirty and says nothing about the link.
+    // Without this the test could pass for the wrong reason.
+    if !facts.dirty.contains("docs/real.md") {
+        bail!("git did not report the modified target: {:?}", facts.dirty);
+    }
+    if facts.dirty.contains("docs/link.md") {
+        bail!("git reported the symlink itself dirty, so this is not the case under test");
+    }
+
+    // A manifest that consumes the *link*, at the commit the checkout is on.
+    let mut document = clean_value()?;
+    document["prepared_swarm_sha"] = json!(facts.head);
+    inputs_mut(&mut document)?[0]["path"] = json!("docs/link.md");
+    let manifest: Manifest = serde_json::from_value(document)?;
+
+    let mut state = PlanState::default();
+    validate_worktree_integrity(&manifest, root.path(), &facts, &mut state);
+    let (verdict, findings) = state.finish();
+
+    if verdict != Verdict::NotProven
+        || !findings.iter().any(|f| f.code == "consumed_path_not_at_checkout")
+    {
+        bail!("a modified symlink target did not invalidate the plan: {verdict:?} {findings:?}");
+    }
+    Ok(())
+}
+
+/// Opposite direction: a symlink whose target is unchanged must not be flagged,
+/// or the rule would refuse every manifest that consumes a link.
+#[cfg(unix)]
+#[test]
+fn a_symlink_to_an_unmodified_target_still_plans_clean() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let run = |args: &[&str]| -> Result<()> {
+        let out =
+            std::process::Command::new("git").arg("-C").arg(root.path()).args(args).output()?;
+        if !out.status.success() {
+            bail!("git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        }
+        Ok(())
+    };
+    run(&["init", "-q", "."])?;
+    run(&["config", "user.email", "proof@example.invalid"])?;
+    run(&["config", "user.name", "proof"])?;
+
+    fs::create_dir_all(root.path().join("docs"))?;
+    fs::write(root.path().join("docs/real.md"), "committed\n")?;
+    std::os::unix::fs::symlink("real.md", root.path().join("docs/link.md"))?;
+    fs::write(root.path().join("unrelated.txt"), "x\n")?;
+    run(&["add", "-A"])?;
+    run(&["commit", "-qm", "base"])?;
+
+    // Dirty something the plan never reads, so the dirty set is non-empty and
+    // the check actually runs rather than short-circuiting on an empty set.
+    fs::write(root.path().join("unrelated.txt"), "changed\n")?;
+
+    let facts = resolve_checkout(root.path()).ok_or_else(|| eyre!("checkout unresolvable"))?;
+    if facts.dirty.is_empty() {
+        bail!("the dirty set is empty, so the integrity check short-circuits and proves nothing");
+    }
+
+    let mut document = clean_value()?;
+    document["prepared_swarm_sha"] = json!(facts.head);
+    inputs_mut(&mut document)?[0]["path"] = json!("docs/link.md");
+    let manifest: Manifest = serde_json::from_value(document)?;
+
+    let mut state = PlanState::default();
+    validate_worktree_integrity(&manifest, root.path(), &facts, &mut state);
+    let (_, findings) = state.finish();
+
+    if findings.iter().any(|f| f.code == "consumed_path_not_at_checkout") {
+        bail!("a symlink to an unmodified target was refused: {findings:?}");
+    }
+    Ok(())
+}
