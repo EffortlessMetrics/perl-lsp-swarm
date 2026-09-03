@@ -2887,3 +2887,81 @@ fn an_invented_first_hop_mismatch_cannot_survive_transport() -> Result<(), Box<d
     );
     Ok(())
 }
+
+// ── A permissive predecessor still fixes the observed shape (Devin) ───────
+
+/// A two-hop chain: a head selecting `shape`, then an arrow-indexed mismatch
+/// observing `observed`.
+fn mismatch_after(
+    shape: ValueShape,
+    observed: ValueShape,
+) -> Result<StructuralAccessChain, StructuralAccessContractError> {
+    StructuralAccessChain::new(
+        subject()?,
+        vec![
+            selecting_hop(
+                0,
+                base_variable(),
+                StructuralAccessOperator::HashRefSlot,
+                StructuralAccessSelector::StaticKey("b".to_string()),
+                "->{b}",
+                shape,
+            )?,
+            StructuralAccessHop::new(
+                1,
+                StructuralAccessAggregate::PrecedingHop { ordinal: 0 },
+                StructuralAccessOperator::ArrayRefIndex,
+                StructuralAccessSelector::StaticIndex(0),
+                spelling("->[0]", 10, 15)?,
+                StructuralHopOutcome::ShapeMismatch { observed },
+                StructuralHopCertainty::Definite,
+                StructuralAggregateCompleteness::Closed,
+                StructuralAggregateDisposition::Stable,
+                SemanticProducer::SemanticAnalyzer,
+                SemanticProvenance::Known(crate::Provenance::ExactAst),
+                SemanticConfidence::Known(Confidence::High),
+                SemanticReasonCode::ExactSource,
+                StructuralAccessBudget::new(99, 98)?,
+                Vec::new(),
+            )?,
+        ],
+    )
+}
+
+#[test]
+fn a_scalar_predecessor_cannot_be_observed_as_a_reference() -> Result<(), Box<dyn Error>> {
+    // `Scalar` decides no operator — `undef` is a scalar and Perl autovivifies
+    // it — but it still says the value is a plain scalar rather than a hash
+    // reference. Two records describing one aggregate cannot say both. Gating
+    // the equality clause on decisiveness let exactly this through.
+    let error = contract_error(mismatch_after(ValueShape::Scalar, ValueShape::HashRef))?;
+    assert!(
+        matches!(error, StructuralAccessContractError::ContradictoryStatus(_)),
+        "a scalar predecessor cannot be observed as a hash reference, got {error:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_scalar_predecessor_observed_as_itself_still_validates() -> Result<(), Box<dyn Error>> {
+    // The control that keeps the equality clause from becoming a ban on
+    // permissive predecessors: agreeing with the predecessor is still honest,
+    // and the operator clause must stay skipped because `Scalar` decides
+    // nothing about what it carries.
+    mismatch_after(ValueShape::Scalar, ValueShape::Scalar)?;
+    Ok(())
+}
+
+#[test]
+fn a_shape_that_asserts_nothing_does_not_fix_the_observed_shape() -> Result<(), Box<dyn Error>> {
+    // `Unknown` asserts nothing, so nothing can disagree with it. `Object` is
+    // a blessed reference and a blessed hash is honestly describable either
+    // way, so the two can co-describe one value. Both must stay exempt, or the
+    // law would reject honest refinement.
+    mismatch_after(ValueShape::Unknown, ValueShape::HashRef)?;
+    mismatch_after(
+        ValueShape::Object { package: "Staff".to_string(), confidence: Confidence::High },
+        ValueShape::HashRef,
+    )?;
+    Ok(())
+}

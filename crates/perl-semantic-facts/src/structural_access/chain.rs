@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     STRUCTURAL_ACCESS_CHAIN_SCHEMA_VERSION, STRUCTURAL_ACCESS_SCHEMA_TAG,
     StructuralAccessContractError, StructuralAccessHop, StructuralAccessSubject,
-    StructuralHopOutcome, shape_carries, shape_is_decisive,
+    StructuralHopOutcome, shape_carries, shape_is_concrete, shape_is_decisive,
 };
 use crate::semantic_identity::SemanticIdentityFingerprint;
 
@@ -203,21 +203,28 @@ impl StructuralAccessChain {
                 }
 
                 // Law 8: a recorded mismatch must be a real one, about the
-                // shape actually in hand. A `ShapeMismatch` whose operator the
-                // predecessor's shape does carry claims a conflict that did not
-                // happen, and one whose `observed` disagrees with what the
-                // predecessor selected describes a different aggregate. Both
-                // are only checkable when the predecessor's shape is known,
-                // which is exactly when `shape_carries` is decisive.
-                if let StructuralHopOutcome::ShapeMismatch { observed } = next.outcome()
-                    && shape_is_decisive(shape)
-                {
-                    if carries {
+                // shape actually in hand. It asks two separate questions, and
+                // they are gated separately because they are not the same
+                // question.
+                //
+                // Whether the operator conflicts at all is only answerable
+                // when the predecessor's shape decides what it carries, so
+                // that half is gated on `shape_is_decisive`.
+                //
+                // Whether the mismatch describes the same value is answerable
+                // whenever the predecessor's shape commits to a
+                // representation, which is a wider set. `Scalar` decides no
+                // operator, yet still says the value is a plain scalar rather
+                // than a hash reference — so a later record observing a
+                // `HashRef` for that same aggregate contradicts it. Sharing
+                // one guard let exactly that record through.
+                if let StructuralHopOutcome::ShapeMismatch { observed } = next.outcome() {
+                    if shape_is_decisive(shape) && carries {
                         return Err(StructuralAccessContractError::ContradictoryStatus(
                             "a shape mismatch cannot be recorded for an operator the shape carries",
                         ));
                     }
-                    if observed != shape {
+                    if shape_is_concrete(shape) && observed != shape {
                         return Err(StructuralAccessContractError::ContradictoryStatus(
                             "a shape mismatch must observe the shape the predecessor selected",
                         ));

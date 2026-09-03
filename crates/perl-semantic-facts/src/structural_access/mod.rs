@@ -1019,3 +1019,29 @@ pub(super) fn shape_is_decisive(shape: &ValueShape) -> bool {
             | ValueShape::PackageName { .. }
     )
 }
+
+/// Whether a shape commits to a representation another record must agree with.
+///
+/// This is a different question from [`shape_is_decisive`], which asks what a
+/// shape can carry. A shape may be useless for deciding operators and still be
+/// a definite claim about what the value *is*: `ValueShape::Scalar` decides no
+/// operator, because `undef` is a scalar and Perl autovivifies it, yet it
+/// still says the value is a plain scalar and not a hash reference. Two
+/// records describing one value cannot say both.
+///
+/// Only two shapes are exempt, and each for its own reason:
+///
+/// - `Unknown` asserts nothing, so nothing can disagree with it.
+/// - `Object` is a blessed reference, and a blessed hash is honestly
+///   describable as either `Object` or `HashRef`. The two can co-describe one
+///   value, so requiring agreement would reject an honest record.
+pub(super) fn shape_is_concrete(shape: &ValueShape) -> bool {
+    match shape {
+        ValueShape::Scalar
+        | ValueShape::HashRef
+        | ValueShape::ArrayRef
+        | ValueShape::CodeRef
+        | ValueShape::PackageName { .. } => true,
+        ValueShape::Unknown | ValueShape::Object { .. } => false,
+    }
+}
