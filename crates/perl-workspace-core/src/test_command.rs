@@ -616,10 +616,37 @@ pub fn plan_test_commands(
     // root is a legitimate include entry describing a different tree, and
     // offering `-b` on its strength would run against build output the
     // workspace may not even have.
-    let blib_available = snapshot.active_include_entries().any(|entry| {
-        matches!(entry.role, IncludeEntryRole::BlibLib | IncludeEntryRole::BlibArch)
-            && is_workspace_blib(&working_dir, &entry.path.normalized)
-    });
+    let mut declared_blib_role = false;
+    let mut blib_available = false;
+    for entry in snapshot.active_include_entries() {
+        if !matches!(entry.role, IncludeEntryRole::BlibLib | IncludeEntryRole::BlibArch) {
+            continue;
+        }
+        declared_blib_role = true;
+        if is_workspace_blib(&working_dir, &entry.path.normalized) {
+            blib_available = true;
+        }
+    }
+
+    // Withholding the form is correct, but it must not be silent. The project
+    // declared a blib role and receives no `-b` candidate, and a caller needs
+    // to know that an entry point was considered and rejected rather than never
+    // existing. The reason is deliberately cause-agnostic: a dependency's tree,
+    // a detached path, and a casing the producer did not normalize are all
+    // "this is not the tree `prove -b` would resolve", and distinguishing them
+    // would need filesystem facts this module does not have.
+    //
+    // A project that declared no blib role at all lost nothing, so it gets no
+    // limitation — `a_project_with_no_blib_role_reports_no_blib_limitation`.
+    if declared_blib_role && !blib_available {
+        limitations.push(EnvironmentLimitation {
+            code: "test_command.no_workspace_blib_root".to_string(),
+            detail: "an active include entry carries a blib role, but none of them is this \
+                     working directory's own `blib` tree, so the `prove -b` form is not offered"
+                .to_string(),
+            input_id: None,
+        });
+    }
 
     for tool in snapshot.active_tool_candidates() {
         let Some(authority) = input_authority(snapshot, &tool.input_id) else {

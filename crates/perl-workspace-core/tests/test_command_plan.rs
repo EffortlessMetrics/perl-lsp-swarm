@@ -589,7 +589,40 @@ fn a_dependency_blib_root_does_not_justify_the_blib_form() -> Result<(), Fixture
             .any(|candidate| candidate.include_mode == TestIncludeMode::BlibRoots);
 
         assert_eq!(has_blib_form, expected, "blib include root at {location}");
+
+        // Withholding the form is correct, but it must not be silent: the
+        // project declared a blib role and got no `-b` candidate, and a caller
+        // needs to know why. Whatever the cause — a dependency's tree, a
+        // detached path, or a casing the producer did not normalize — the
+        // omission is reported.
+        let reported =
+            plan.limitations.iter().any(|item| item.code == "test_command.no_workspace_blib_root");
+        assert_eq!(
+            reported, !expected,
+            "an unusable blib role at {location} must be reported, not silently dropped"
+        );
     }
+    Ok(())
+}
+
+/// The control that keeps the previous limitation from over-firing: a project
+/// that declared no blib role at all lost nothing, so there is nothing to
+/// report. Rules out: a limitation on every source-only project.
+#[test]
+fn a_project_with_no_blib_role_reports_no_blib_limitation() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.prove");
+    let snapshot = builder
+        .with_input(tool_input.clone())
+        .with_tool_candidate(prove_tool(tool_input.id.clone()))
+        .build()?;
+
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+
+    assert!(
+        !plan.limitations.iter().any(|item| item.code == "test_command.no_workspace_blib_root"),
+        "a source-only project declared no blib role, so nothing was lost"
+    );
     Ok(())
 }
 
