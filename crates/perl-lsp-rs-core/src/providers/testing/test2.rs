@@ -839,7 +839,33 @@ fn capture_covers_whole_value(raw_args: &str, start: usize, end: usize) -> bool 
         _ => &raw_args[end..],
     };
 
-    matches!(after_value.trim_start().chars().next(), Some(',' | '}'))
+    matches!(skip_blanks_and_comments(after_value).chars().next(), Some(',' | '}'))
+}
+
+/// Skip whitespace and Perl comments at the front of `text`.
+///
+/// A `use` statement may span lines and carry comments, so a complete value can
+/// be separated from its entry terminator by one. Requiring the terminator to
+/// follow immediately would read `{-as => 'my_ok' # alias` as a continuation.
+///
+/// The internal path never needs this — [`use_statements`] drops comment
+/// characters while extracting each statement, so `raw_args` reaching
+/// [`Test2Facts::from_source`] contains none. It is [`resolve_import`] that
+/// needs it: that function is public and takes raw argument text, so a caller
+/// may pass a comment the extractor would have removed, and this module
+/// resolved those correctly before the terminator rule existed. Narrowing a
+/// public function's accepted input is a behavior change whether or not any
+/// caller in this repository relies on it.
+///
+/// Only reached after a complete value, where a `#` can open nothing but a
+/// comment — this is not a general comment stripper and never meets a
+/// `$#array` sigil or a `#` inside a string.
+fn skip_blanks_and_comments(text: &str) -> &str {
+    let mut rest = text.trim_start();
+    while let Some(comment) = rest.strip_prefix('#') {
+        rest = comment.find('\n').map_or("", |line_end| &comment[line_end..]).trim_start();
+    }
+    rest
 }
 
 /// Resolve the imported symbols and pragma effect of a single Test2 `use`

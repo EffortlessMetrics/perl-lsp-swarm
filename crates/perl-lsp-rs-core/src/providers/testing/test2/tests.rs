@@ -1288,3 +1288,47 @@ fn test2_truncated_transform_value_fails_closed_instead_of_publishing_a_prefix()
         );
     }
 }
+
+#[test]
+fn test2_public_resolve_import_still_accepts_a_commented_transform() {
+    // Review finding (@devin-ai-integration on #14651), on its second reading —
+    // the one that holds. My first answer was that no production path can feed
+    // a comment to the resolver, which is true: `use_statements` drops comment
+    // characters while extracting each statement. But `resolve_import` is
+    // public and takes raw argument text, and on `origin/main` it resolved
+    // these correctly:
+    //
+    //   ok => {-as => 'my_ok' # alias\n}  ->  Some({"my_ok"})
+    //   ok => {-as => my_ok # alias\n}    ->  Some({"my_ok"})
+    //
+    // The entry-terminator rule read the comment as expression continuation and
+    // returned no symbols. That narrowed a public function's accepted input on
+    // legal Perl, which is a behavior change regardless of whether anything in
+    // this repository calls it that way — so it is measured through the public
+    // entry point rather than the internal seam.
+    for (args, alias) in [
+        ("ok => {-as => 'my_ok' # alias\n}", "my_ok"),
+        ("ok => {-as => my_ok # alias\n}", "my_ok"),
+        ("ok => {-prefix => 'x_' # note\n}", "x_ok"),
+        ("ok => {-as => 'my_ok' # one\n # two\n}", "my_ok"),
+    ] {
+        let resolved = resolve_import("Test2::V0", args).expect("Test2::V0 is a Test2 module");
+        assert!(
+            resolved.symbols.contains(alias),
+            "{args:?}: a comment must not hide the terminator, got {:?}",
+            resolved.symbols
+        );
+    }
+
+    // The comment skip must not become a way past the continuation guard: a
+    // value that really does continue still fails closed, commented or not.
+    for args in ["ok => {-as => 'my' . '_ok' # join\n}", "ok => {-as => lc 'MY_OK' # call\n}"] {
+        let resolved = resolve_with_analysis("Test2::V0", args);
+        assert!(resolved.analysis_limited, "{args:?}: a continuation is still unresolved");
+        assert!(
+            resolved.resolved.symbols.is_empty(),
+            "{args:?}: no symbol may be reported, got {:?}",
+            resolved.resolved.symbols
+        );
+    }
+}
