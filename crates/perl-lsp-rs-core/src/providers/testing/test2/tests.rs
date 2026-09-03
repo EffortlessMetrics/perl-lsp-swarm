@@ -706,3 +706,52 @@ fn test2_transform_resolution_is_deterministic_across_repeated_calls() {
         assert_eq!(failed_first, failed_again);
     }
 }
+
+#[test]
+fn test2_quote_like_target_payload_is_data_not_transform_syntax() {
+    // Review finding (#14651, three independent reviewers). `-target` takes
+    // Perl quote-like values, and this module already treats them as opaque.
+    // Before masking them, an option-shaped payload such as `q{-as => Foo}`
+    // tripped the detector's role predicate, marked the whole statement
+    // limited, and dropped every genuinely imported symbol — including the
+    // default bundle set. Withholding valid imports is exactly the
+    // user-visible failure the fail-closed bias is supposed to avoid.
+    for args in [
+        "-target => q{-as => Foo}, ok",
+        "-target => qq{-prefix => Foo}, ok",
+        "-target => qx{-postfix => Foo}, ok",
+    ] {
+        let resolved = resolve_with_analysis("Test2::V0", args);
+        assert!(
+            !resolved.analysis_limited,
+            "{args}: a quote-like payload is data, so analysis is not limited"
+        );
+        assert!(
+            resolved.resolved.symbols.contains("ok"),
+            "{args}: the explicit import must survive, got {:?}",
+            resolved.resolved.symbols
+        );
+    }
+
+    // Parity with the already-supported ordinary-quote spelling.
+    let quoted = resolve_with_analysis("Test2::V0", "-target => '-as => Foo', ok");
+    assert!(!quoted.analysis_limited);
+    assert!(quoted.resolved.symbols.contains("ok"));
+}
+
+#[test]
+fn test2_quote_like_masking_does_not_uncover_a_real_transform() {
+    // The masking must not become a way to smuggle transform syntax past the
+    // detector. A real rename beside a quote-like value is still recognized,
+    // and a recognizer-owned span still fails closed rather than resolving.
+    let real = resolve_with_analysis("Test2::V0", "-target => q{Foo}, ok => {-as => 'my_ok'}");
+    assert!(!real.analysis_limited, "a recognized rename is not a limited analysis");
+    assert!(real.resolved.symbols.contains("my_ok"), "the alias is installed");
+    assert!(!real.resolved.symbols.contains("ok"), "the original is replaced by the alias");
+
+    // The quoted-value disagreement case stays fail-closed (see
+    // `test2_quoted_option_shaped_value_never_imports_container_atoms`).
+    let disagreement = resolve_with_analysis("Test2::V0", "ok => {target => '-as => my_ok'}");
+    assert!(disagreement.analysis_limited);
+    assert!(disagreement.resolved.symbols.is_empty());
+}

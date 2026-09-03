@@ -342,55 +342,7 @@ const TRANSFORM_OPTIONS: [&str; 3] = ["-as", "-prefix", "-postfix"];
 /// only that the token is not a prefix of a longer word (`-aside`) and that it
 /// sits in option position. `covers_every_recognizer_match` pins that.
 fn contains_transform_syntax(text: &str) -> bool {
-    // Ignore option-shaped text inside ordinary quoted values.  The detector
-    // is intentionally independent from the regex bridge, but it must still
-    // respect the small bit of Perl structure needed for its role predicate:
-    // `target => "-as => ..."` is data, whereas `{'-as' => ...}` is a map key.
-    // Preserve only a quoted string whose complete contents are one of the
-    // option names; this keeps quoted option keys covered without turning
-    // arbitrary target values into transform syntax.
-    let mut masked = String::with_capacity(text.len());
-    let chars: Vec<char> = text.chars().collect();
-    let mut index = 0;
-    while index < chars.len() {
-        let quote = chars[index];
-        if quote != '\'' && quote != '"' {
-            masked.push(quote);
-            index += 1;
-            continue;
-        }
-
-        let start = index + 1;
-        let mut end = start;
-        let mut escaped = false;
-        while end < chars.len() {
-            let current = chars[end];
-            if escaped {
-                escaped = false;
-            } else if current == '\\' {
-                escaped = true;
-            } else if current == quote {
-                break;
-            }
-            end += 1;
-        }
-
-        if end == chars.len() {
-            // Keep malformed unterminated text visible to the conservative
-            // detector; the recognizer path will fail closed as unresolved.
-            masked.extend(chars[index..].iter());
-            break;
-        }
-
-        let inner: String = chars[start..end].iter().collect();
-        if TRANSFORM_OPTIONS.iter().any(|option| inner.trim() == *option) {
-            masked.push(quote);
-            masked.extend(chars[start..=end].iter());
-        } else {
-            masked.extend(std::iter::repeat_n(' ', end - index + 1));
-        }
-        index = end + 1;
-    }
+    let masked = mask_data_values(text);
 
     for option in TRANSFORM_OPTIONS {
         let mut rest = masked.as_str();
@@ -410,6 +362,89 @@ fn contains_transform_syntax(text: &str) -> bool {
         }
     }
     false
+}
+
+/// Blank the Perl values whose bytes are data rather than option syntax, so
+/// the detector's role predicate is not tripped by an option-shaped payload.
+///
+/// Two forms are masked, each replaced by spaces so surrounding structure and
+/// token boundaries survive:
+///
+/// * complete quote-like expressions (`q{}`, `qq{}`, `qx{}`, `qw//`, `m//`,
+///   `s///`, `tr///`, `y///`, `qr//`), which `-target` legitimately takes and
+///   which the rest of this module already treats as opaque;
+/// * ordinary single- and double-quoted strings.
+///
+/// A quoted string whose entire contents are one option name is kept, so the
+/// quoted option key in `{'-as' => ...}` stays visible. Quote-like expressions
+/// are always masked: a quote-like used *as* an option key is not a form the
+/// recognizers accept, and `scan_import_transforms` fails closed anyway if a
+/// recognizer disagrees with this masking.
+///
+/// An unterminated string is left visible, so malformed text still reaches the
+/// conservative detector rather than being silently swallowed.
+fn mask_data_values(text: &str) -> String {
+    let mut masked = String::with_capacity(text.len());
+    let mut index = 0usize;
+
+    while index < text.len() {
+        if let Some(end) = quote_like_expression_end(text, index)
+            && end > index
+        {
+            blank_into(&mut masked, &text[index..end]);
+            index = end;
+            continue;
+        }
+
+        let Some(current) = text[index..].chars().next() else {
+            break;
+        };
+        if current != '\'' && current != '"' {
+            masked.push(current);
+            index += current.len_utf8();
+            continue;
+        }
+
+        let body_start = index + current.len_utf8();
+        let mut cursor = body_start;
+        let mut escaped = false;
+        let mut close = None;
+        while let Some(next) = text[cursor..].chars().next() {
+            if escaped {
+                escaped = false;
+            } else if next == '\\' {
+                escaped = true;
+            } else if next == current {
+                close = Some(cursor);
+                break;
+            }
+            cursor += next.len_utf8();
+        }
+
+        let Some(close) = close else {
+            masked.push_str(&text[index..]);
+            break;
+        };
+
+        let end = close + current.len_utf8();
+        let inner = &text[body_start..close];
+        if TRANSFORM_OPTIONS.iter().any(|option| inner.trim() == *option) {
+            masked.push_str(&text[index..end]);
+        } else {
+            blank_into(&mut masked, &text[index..end]);
+        }
+        index = end;
+    }
+
+    masked
+}
+
+/// Append one space per character of `span`, keeping token boundaries intact
+/// while erasing the payload.
+fn blank_into(masked: &mut String, span: &str) {
+    for _ in span.chars() {
+        masked.push(' ');
+    }
 }
 
 /// Outcome of scanning one import list for transform syntax.
