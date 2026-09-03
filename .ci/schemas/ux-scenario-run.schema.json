@@ -137,6 +137,41 @@
             ]
           }
         },
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "timing_status"
+              ]
+            },
+            "then": {
+              "properties": {
+                "time_to_first_useful_result_ms": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "time_to_first_useful_result_ms": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "time_to_first_useful_result_ms"
+              ]
+            },
+            "then": {
+              "not": {
+                "required": [
+                  "timing_status"
+                ]
+              }
+            }
+          }
+        ],
         "additionalProperties": false
       }
     },
