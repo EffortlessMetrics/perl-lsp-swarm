@@ -26,6 +26,18 @@ pub mod target_contracts {
 #[path = "target_contracts/tests.rs"]
 mod target_contract_tests;
 
+// One shared minimal JSON Schema validator for every contract suite, so
+// "Rust decoding and the registered schema agree" is a claim about one
+// instrument rather than about per-suite copies that can drift apart (#7729).
+#[cfg(test)]
+pub(crate) mod schema_check;
+
+/// Closed-world proof for the target and runner evidence contracts (#7729):
+/// every exact object rejects unknown fields at every nesting level, in both
+/// serde and the registered schema, while declared extension maps stay open.
+#[cfg(test)]
+mod contract_closure_tests;
+
 mod normalization;
 pub mod public_evidence;
 mod run_authority;
@@ -50,6 +62,13 @@ pub(crate) mod normalize;
 #[allow(dead_code)]
 #[path = "runner_plan/model.rs"]
 pub(crate) mod runner_model;
+// Included so the closed-world contract proof can build its parity payload
+// through the production comparator instead of hand-assembling a receipt. Only
+// that proof needs it in this unit, so it stays out of the non-test build.
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "runner_plan/compare.rs"]
+pub(crate) mod compare;
 
 /// Strict immutable observed upstream-discovery receipts
 /// (`upstream_runner_discovery.v1`, #12281): byte-exact raw envelopes, typed

@@ -20,6 +20,10 @@
       "invocation_sha256": "89a8d90d0dc752d12e064b1702b4faabf0c0f60bc26f332c9eb86a43cca00faf"
     },
     {
+      "id": "parser.hir.postfix_modifiers",
+      "invocation_sha256": "0fee291736275420f9ae5585dc370bc6f42cc37990f5b6c27c3edf7d26ff3f9e"
+    },
+    {
       "id": "parser.incremental.accuracy",
       "invocation_sha256": "187f9c074665fa77b5902bb020f90aec379011508c78667d5d7b1a53039960d9"
     },

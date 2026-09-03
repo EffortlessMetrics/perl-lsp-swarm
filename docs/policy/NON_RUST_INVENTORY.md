@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12648 |
-| Rust-family files | 3934 |
-| Non-Rust files | 8714 |
-| Allowlisted | 6475 |
+| Total tracked files | 12660 |
+| Rust-family files | 3939 |
+| Non-Rust files | 8721 |
+| Allowlisted | 6482 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -17,10 +17,10 @@
 | Category | Count |
 |---|---|
 | config | 502 |
-| documentation | 2844 |
+| documentation | 2846 |
 | generated | 2 |
-| production | 354 |
-| test | 2090 |
+| production | 356 |
+| test | 2093 |
 | tooling | 683 |
 | unclassified | 2239 |
 
@@ -2363,6 +2363,8 @@
 | `.changes/unreleased/product-14376-Fixed-060000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14384-Added-063000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14389-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14566-Fixed-143000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14588-Changed-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -7109,6 +7111,9 @@
 | `test_corpus/gold/parse_error_recovery/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/push_arrayref/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/rename_basic/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `test_corpus/gold/rename_subroutine/expected.json` | test | `non-rust-rename-subroutine-diagnostics-gold` | parser/lsp-fixtures |
+| `test_corpus/gold/rename_subroutine/expected_rename.json` | test | `non-rust-rename-subroutine-rename-gold` | parser/lsp-fixtures |
+| `test_corpus/gold/rename_subroutine/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/symbols_subs_and_pkg/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/symbols_two_packages/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/use_if_strict/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
@@ -8491,6 +8496,7 @@
 | `vscode-extension/src/downloader.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/extension.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/extensionComposition.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/extensionOwnedResourceCensus.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/extensionWorkspaceEvents.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/extensionWorkspaceGuidance.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/featureActivationMetrics.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -8578,6 +8584,7 @@
 | `vscode-extension/src/test/documentFeatureGroup.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/downloader.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/extensionComposition.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/extensionOwnedResourceCensus.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/extensionUx.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/extensionWorkspaceEvents.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/extensionWorkspaceGuidance.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
