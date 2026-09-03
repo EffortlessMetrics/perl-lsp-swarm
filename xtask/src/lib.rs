@@ -6,6 +6,7 @@ extern crate self as xtask;
 
 pub mod actual_host_receipt;
 pub mod branch_deletion_admission;
+pub mod build_measurement;
 pub mod ci_route_plan;
 pub mod client_compat_fixture;
 pub mod clippy_repair_corpus;

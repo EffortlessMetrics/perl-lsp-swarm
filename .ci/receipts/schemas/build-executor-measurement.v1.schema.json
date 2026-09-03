@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/.ci/receipts/schemas/build-executor-measurement.v1.schema.json",
+  "title": "Build Executor Measurement Record",
+  "description": "One declared executor-model experiment cell and its observed measurement, emitted by the xtask build_measurement harness (#11639, child of controller #9547). Fail-closed: every fact the harness could not actually observe reports null / an explicit unavailable-unobserved state, never zero or a borrowed value. Raw observed facts (command, environment, timings, admissions) and the normalized interpretation carry separate sha256 digests so the #11642 decision successor can challenge the interpretation without trusting the harness's model labels.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol_version",
+    "cell",
+    "command",
+    "environment",
+    "timings",
+    "disk_admission",
+    "lock",
+    "process",
+    "cache",
+    "work",
+    "executed_subject",
+    "raw_digest",
+    "normalized_digest"
+  ],
+  "properties": {
+    "protocol_version": {
+      "const": "build_executor_measurement.v1",
+      "description": "Records under different protocol versions are never matched pairs."
+    },
+    "cell": {
+      "type": "object",
+      "description": "The declared experiment cell: workflow_class, execution_model, operation, subject identity, host profile, repetition ordinal, declared growth paths with their filesystems, lock policy, and capacity policy. Includes the canonical content digest (cell identity) is carried inside the harness's canonical_id computation and the normalized_digest."
+    },
+    "command": {
+      "type": "object",
+      "description": "The literal structured invocation: program, args, and the effective environment it ran under."
+    },
+    "environment": {
+      "type": "object",
+      "description": "Toolchain/host identity: cargo_version, rustc_version, host_triple. Unprobeable fields are null."
+    },
+    "timings": {
+      "type": "object",
+      "description": "Monotonic phase decomposition: preparation_nanos, admission_wait_nanos (queue/lock wait is work and stays inside the total), execution_nanos, reporting_nanos, total_wall_nanos, tolerance_nanos. Null phases mean the record is incomplete and NOT_PROVEN."
+    },
+    "disk_admission": {
+      "type": ["object", "null"],
+      "description": "Free-space measurements on the actual growth filesystems plus declared-vs-actual filesystem mismatches. Null means no admission was recorded."
+    },
+    "lock": {
+      "description": "Observed lock state: held (with the whole-cargo-process primitive spelled out, never renamed into a compile lock), policy_declares_none (honest unlocked run), primitive_unavailable, or unobserved. The latter two are NOT_PROVEN, never a locked success.",
+      "type": ["string", "object"]
+    },
+    "process": {
+      "description": "Observed process tree (descendant_count, terminality) or instrument_unavailable. An unavailable instrument is NOT_PROVEN, never zero descendants.",
+      "type": ["string", "object"]
+    },
+    "cache": {
+      "type": "object",
+      "description": "Cache observation under an exact server/process identity: baseline and delta counter snapshots, foreign_users_observed between snapshots, and the attribution verdict. Environment variables such as SCCACHE_BASEDIRS never constitute reuse evidence."
+    },
+    "work": {
+      "type": "object",
+      "description": "Selected/executed work: expected_selected, observed_selected, exit_code. Proof cells require observed selected work matching the expected count and exceeding zero."
+    },
+    "executed_subject": {
+      "type": ["object", "null"],
+      "description": "The subject the cell actually executed, as proven by artifact/output identity metadata. Null means the executed subject stays unproven; it is never assumed equal to the declared subject."
+    },
+    "raw_digest": {
+      "type": "string",
+      "description": "sha256-prefixed digest over the raw observed facts only (no model labels, no admission verdicts)."
+    },
+    "normalized_digest": {
+      "type": "string",
+      "description": "sha256-prefixed digest over the normalized interpretation (canonical cell identity, protocol version, admission verdict). Separate from raw_digest by construction."
+    }
+  }
+}
