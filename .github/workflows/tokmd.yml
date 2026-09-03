@@ -50,6 +50,7 @@ jobs:
         with:
           cache-on-failure: true
           shared-key: tokmd-review-1.10.0
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install immutable tokmd source
         shell: bash
