@@ -467,12 +467,13 @@ pub fn compact(doc: &Value) -> String {
             compact_json(doc.pointer("/currentness/invalidators")),
             clean("/currentness/stale_rule"),
         ));
-        out.push_str("LENSES: ");
+        out.push_str("LENSES:\n");
         for (index, lens) in objects(doc, "/lenses").iter().enumerate() {
             let applicable = lens.get("applicable").and_then(Value::as_bool).unwrap_or(false);
             if index > 0 {
-                out.push_str("; ");
+                out.push('\n');
             }
+            out.push_str(&format!("LENS[{index}] "));
             out.push_str(lens.get("name").and_then(Value::as_str).unwrap_or("?"));
             out.push_str(&format!(
                 " applicable={} reason={}",
@@ -480,20 +481,20 @@ pub fn compact(doc: &Value) -> String {
                 lens.get("reason").and_then(Value::as_str).unwrap_or("?")
             ));
             for question in strings(lens.get("questions")) {
-                out.push_str(&format!("\n  Q: {question}"));
+                out.push_str(&format!("\nLENS[{index}] QUESTION: {question}"));
             }
         }
         out.push('\n');
-        for example in objects(doc, "/stage_falsification_examples") {
+        for (index, example) in objects(doc, "/stage_falsification_examples").iter().enumerate() {
             out.push_str(&format!(
-                "FALSIFY[{}]: {}\n",
+                "FALSIFY[{index}] {}: {}\n",
                 example.get("stage").and_then(Value::as_str).unwrap_or("?"),
                 example.get("question").and_then(Value::as_str).unwrap_or("?"),
             ));
         }
-        for row in objects(doc, "/negative_control_audit") {
+        for (index, row) in objects(doc, "/negative_control_audit").iter().enumerate() {
             out.push_str(&format!(
-                "AUDIT {}: {}\n",
+                "AUDIT[{index}] {}: {}\n",
                 row.get("subject").and_then(Value::as_str).unwrap_or("?"),
                 row.get("requirement").and_then(Value::as_str).unwrap_or("?"),
             ));
@@ -504,7 +505,7 @@ pub fn compact(doc: &Value) -> String {
                 out.push_str("; ");
             }
             out.push_str(&format!(
-                "{}=>{}",
+                "[{index}]{}=>{}",
                 row.get("seam").and_then(Value::as_str).unwrap_or("?"),
                 row.get("terminal_disposition").and_then(Value::as_str).unwrap_or("?"),
             ));
@@ -713,9 +714,17 @@ pub fn validate_reviewer_compact_lossless(reviewer: &Value, compact_text: &str) 
         }
     }
     for (index, lens) in objects(reviewer, "/lenses").iter().enumerate() {
+        let row = delimited_block(compact_text, "LENS", index);
+        if row.is_none() {
+            violations.push(Violation::new(
+                "compact_loss",
+                format!("compact reviewer dropped lens {index}"),
+            ));
+        }
+        let row = row.unwrap_or_default();
         for field in ["name", "reason"] {
             let value = lens.get(field).and_then(Value::as_str).unwrap_or("");
-            if !value.is_empty() && !compact_text.contains(value) {
+            if !value.is_empty() && !row.contains(value) {
                 violations.push(Violation::new(
                     "compact_loss",
                     format!("compact reviewer dropped lens {index} {field}"),
@@ -725,7 +734,7 @@ pub fn validate_reviewer_compact_lossless(reviewer: &Value, compact_text: &str) 
         let applicable = lens.get("applicable").and_then(Value::as_bool);
         if let Some(applicable) = applicable {
             let marker = format!("applicable={applicable}");
-            if !compact_text.contains(&marker) {
+            if !row.contains(&marker) {
                 violations.push(Violation::new(
                     "compact_loss",
                     format!("compact reviewer dropped lens {index} applicability"),
@@ -733,7 +742,7 @@ pub fn validate_reviewer_compact_lossless(reviewer: &Value, compact_text: &str) 
             }
         }
         for (question_index, question) in strings_of(lens.get("questions")).iter().enumerate() {
-            if !question.is_empty() && !compact_text.contains(question) {
+            if !question.is_empty() && !row.contains(question) {
                 violations.push(Violation::new(
                     "compact_loss",
                     format!("compact reviewer dropped lens {index} question {question_index}"),
@@ -747,9 +756,20 @@ pub fn validate_reviewer_compact_lossless(reviewer: &Value, compact_text: &str) 
         ("old-path audit", "/old_path_audit", &["seam", "terminal_disposition"]),
     ] {
         for (index, row) in objects(reviewer, pointer).iter().enumerate() {
+            let row_marker = match pointer {
+                "/stage_falsification_examples" => "FALSIFY",
+                "/negative_control_audit" => "AUDIT",
+                "/old_path_audit" => "OLDPATH",
+                _ => "",
+            };
+            let rendered = if row_marker == "OLDPATH" {
+                delimited_old_path(compact_text, index).unwrap_or("")
+            } else {
+                delimited_block(compact_text, row_marker, index).unwrap_or("")
+            };
             for field in fields {
                 let value = row.get(*field).and_then(Value::as_str).unwrap_or("");
-                if !value.is_empty() && !compact_text.contains(value) {
+                if !value.is_empty() && !rendered.contains(value) {
                     violations.push(Violation::new(
                         "compact_loss",
                         format!("compact reviewer dropped {label} {index} {field}"),
@@ -778,6 +798,30 @@ fn compact_value_present(value: &Value, compact_text: &str) -> bool {
     }
     let encoded = value.as_str().map(str::to_owned).unwrap_or_else(|| compact_json(Some(value)));
     !encoded.is_empty() && compact_text.contains(&encoded)
+}
+
+fn delimited_block<'a>(compact_text: &'a str, marker: &str, index: usize) -> Option<&'a str> {
+    let prefix = format!("{marker}[{index}]");
+    let next_prefix = format!("{marker}[");
+    let mut offset = 0;
+    let mut start = None;
+    for line in compact_text.split_inclusive('\n') {
+        let content = line.trim_end_matches('\n');
+        if start.is_some() && content.starts_with(&next_prefix) && !content.starts_with(&prefix) {
+            return Some(&compact_text[start.unwrap_or(0)..offset]);
+        }
+        if start.is_none() && content.starts_with(&prefix) {
+            start = Some(offset);
+        }
+        offset += line.len();
+    }
+    start.map(|start| &compact_text[start..])
+}
+
+fn delimited_old_path(compact_text: &str, index: usize) -> Option<&str> {
+    let line = compact_text.lines().find(|line| line.starts_with("OLDPATH: "))?;
+    let rows = line.strip_prefix("OLDPATH: ")?.split("; ").collect::<Vec<_>>();
+    rows.get(index).copied()
 }
 
 fn strings_of(value: Option<&Value>) -> Vec<&str> {

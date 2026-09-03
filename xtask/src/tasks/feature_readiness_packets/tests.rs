@@ -676,6 +676,42 @@ fn equivalent_main_movement_preserves_packet_identity() {
 }
 
 #[test]
+fn parsed_snapshot_head_movement_preserves_packet_identity() -> TestResult {
+    let first = build::LiveSnapshot::parse(
+        br#"{"head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","candidate_branch":null,"writer_active":false,"required_action":"none"}"#,
+    )?;
+    let second = build::LiveSnapshot::parse(
+        br#"{
+          "required_action": "none",
+          "writer_active": false,
+          "candidate_branch": null,
+          "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }"#,
+    )?;
+    let node = node("fr_8305_import_containment_leaf");
+    let first_packet = build::builder_document(node, Some(&first));
+    let second_packet = build::builder_document(node, Some(&second));
+    assert_eq!(first.source_digest, second.source_digest);
+    assert_eq!(first_packet.0["packet_id"], second_packet.0["packet_id"]);
+    assert_eq!(first_packet.1, second_packet.1);
+    Ok(())
+}
+
+#[test]
+fn pair_rejects_unbound_or_malformed_main_heads() {
+    let (builder, _) = builder_of("fr_8305_import_containment_leaf");
+    let reviewer = reviewer_of("fr_8305_import_containment_leaf");
+    for head in ["main@stale", "main@", "other@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] {
+        let mut changed = reviewer.clone();
+        changed["currentness"]["base_head"] = Value::String(head.to_owned());
+        assert!(
+            codes(&validate::validate_pair(&builder, &changed)).contains(&"invalid_base_head"),
+            "unbound head {head:?} was accepted"
+        );
+    }
+}
+
+#[test]
 fn differing_snapshot_source_changes_packet_identity() {
     let node = node("fr_8305_import_containment_leaf");
     let snapshot = |digest: &str| build::LiveSnapshot {
@@ -737,6 +773,17 @@ fn compact_projection_keeps_duplicate_artifact_cells_local() {
         second.insert("owner".to_owned(), Value::String(first_owner));
     }
     let loss = render::validate_compact_lossless(&drifted, &compact_text);
+    assert!(codes(&loss).contains(&"compact_loss"));
+}
+
+#[test]
+fn reviewer_compact_rejects_cross_lens_satisfaction() {
+    let reviewer = reviewer_of("fr_8305_import_containment_leaf");
+    let compact_text = render::compact(&reviewer);
+    let reason = reviewer["lenses"][0]["reason"].as_str().unwrap_or_default();
+    assert!(!reason.is_empty());
+    let without_first_reason = compact_text.replacen(&format!(" reason={reason}"), "", 1);
+    let loss = render::validate_reviewer_compact_lossless(&reviewer, &without_first_reason);
     assert!(codes(&loss).contains(&"compact_loss"));
 }
 

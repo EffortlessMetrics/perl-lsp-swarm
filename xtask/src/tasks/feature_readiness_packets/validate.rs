@@ -1520,10 +1520,24 @@ pub fn validate_pair(builder: &Value, reviewer: &Value) -> Vec<Violation> {
     }
     let builder_base = builder.pointer("/delivery/base_head").cloned().unwrap_or(Value::Null);
     let reviewer_base = reviewer.pointer("/currentness/base_head").cloned().unwrap_or(Value::Null);
-    let equivalent_main =
-        |value: &Value| value.as_str().and_then(|text| text.strip_prefix("main@")).is_some();
+    let valid_main_head = |value: &Value| {
+        if value.as_str() == Some("unknown-until-read-only-writer-preflight") {
+            return true;
+        }
+        value.as_str().and_then(|text| text.strip_prefix("main@")).is_some_and(|sha| {
+            (40..=64).contains(&sha.len()) && sha.chars().all(|c| c.is_ascii_hexdigit())
+        })
+    };
+    for (label, value) in [("builder", &builder_base), ("reviewer", &reviewer_base)] {
+        if !valid_main_head(value) {
+            violations.push(Violation::new(
+                "invalid_base_head",
+                format!("{label} packet does not bind a valid main@<sha> base/head"),
+            ));
+        }
+    }
     if builder_base != reviewer_base
-        && !(equivalent_main(&builder_base) && equivalent_main(&reviewer_base))
+        && !(valid_main_head(&builder_base) && valid_main_head(&reviewer_base))
     {
         violations.push(Violation::new(
             "stale_head",

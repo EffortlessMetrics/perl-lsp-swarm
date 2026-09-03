@@ -42,7 +42,10 @@ pub struct LiveSnapshot {
 impl LiveSnapshot {
     /// Parse one caller-supplied snapshot document. Missing observations,
     /// mistyped values, and unknown keys all fail closed with a diagnostic
-    /// naming the exact cell; the file digest becomes part of packet identity.
+    /// naming the exact cell; the canonical observation digest becomes part of
+    /// packet identity. The observed main head is deliberately excluded from
+    /// that digest because conflict-free main movement is observational, while
+    /// the remaining live observations remain identity-bearing.
     pub fn parse(bytes: &[u8]) -> color_eyre::eyre::Result<Self> {
         use color_eyre::eyre::{Context, bail};
         let doc: Value =
@@ -131,12 +134,19 @@ impl LiveSnapshot {
         let Some(required_action) = required_action else {
             bail!("incomplete live snapshot: missing explicit required_action");
         };
+        let mut identity_doc = doc;
+        if let Some(object) = identity_doc.as_object_mut() {
+            object.remove("head_sha");
+        }
+        let canonical_observations = render::canonical_json(&identity_doc);
         Ok(Self {
             head_sha,
             candidate_branch,
             writer_active,
             required_action,
-            source_digest: crate::tasks::emacs_train_context::digest::sha256_hex(bytes),
+            source_digest: crate::tasks::emacs_train_context::digest::sha256_hex(
+                canonical_observations.as_bytes(),
+            ),
         })
     }
 }
