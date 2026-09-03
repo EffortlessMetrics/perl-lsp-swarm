@@ -551,7 +551,7 @@ fn test_run_command_does_not_execute_planted_cwd_binary() {
 
     let status =
         std::process::Command::new(std::env::current_exe().expect("resolve test executable"))
-            .arg("test_run_command_does_not_execute_planted_cwd_binary")
+            .arg("tests::test_run_command_does_not_execute_planted_cwd_binary")
             .arg("--exact")
             .arg("--nocapture")
             .env(CHILD, "1")
