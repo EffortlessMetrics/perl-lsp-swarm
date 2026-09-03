@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12647 |
-| Rust-family files | 3935 |
-| Non-Rust files | 8712 |
-| Allowlisted | 6473 |
+| Total tracked files | 12692 |
+| Rust-family files | 3951 |
+| Non-Rust files | 8741 |
+| Allowlisted | 6502 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 501 |
-| documentation | 2846 |
+| documentation | 2853 |
 | generated | 2 |
-| production | 354 |
-| test | 2090 |
-| tooling | 680 |
+| production | 356 |
+| test | 2109 |
+| tooling | 681 |
 | unclassified | 2239 |
 
 ## Unclassified files
@@ -2344,6 +2344,7 @@
 | `.changes/unreleased/product-12813-Changed-221500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12815-Fixed-221500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13073-Fixed-020212.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13094-Fixed-022731.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13123-Fixed-021700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13125-Fixed-021800.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13157-Fixed-023317.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2364,6 +2365,7 @@
 | `.changes/unreleased/product-14384-Added-063000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14389-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-14566-Fixed-143000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-14588-Changed-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2529,7 +2531,6 @@
 | `.changes/unreleased/vscode-11909-Performance-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-12808-Security-213000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-14447-Fixed-193000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
-| `.changes/unreleased/vscode-14547-Fixed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-3904-Changed-232653.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-4712-Fixed-002852.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-4732-Fixed-091746.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -6691,6 +6692,7 @@
 | `scripts/ci/security_reconciliation_io.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/security_reconciliation_model.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_aggregate_lane_history.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_cache_writer_authority_13924.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_check_perl_lsp_rs_core_package.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_check_pr_semantic_review_currentness.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_check_publish_package_contents.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -7107,6 +7109,9 @@
 | `test_corpus/gold/parse_error_recovery/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/push_arrayref/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/rename_basic/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `test_corpus/gold/rename_subroutine/expected.json` | test | `non-rust-rename-subroutine-diagnostics-gold` | parser/lsp-fixtures |
+| `test_corpus/gold/rename_subroutine/expected_rename.json` | test | `non-rust-rename-subroutine-rename-gold` | parser/lsp-fixtures |
+| `test_corpus/gold/rename_subroutine/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/symbols_subs_and_pkg/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/symbols_two_packages/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/use_if_strict/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
@@ -7130,6 +7135,7 @@
 | `test_corpus/package_production_enhanced.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/packages_versions.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/parser_stress_cases.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `test_corpus/postfix_dereference_matrix.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/prototypes_only.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/readline_diamond_operator_comprehensive.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/real_projects/catalyst_skeleton/lib/Catalyst.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
@@ -8315,6 +8321,27 @@
 | `test_corpus/workspaces/xlarge/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `test_corpus/xs_inline_ffi.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_print_indirect.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `testdata/ux/first_ten_minutes/conventional-modules-v1/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `testdata/ux/first_ten_minutes/conventional-modules-v1/bin/app.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/conventional-modules-v1/lib/App/Format.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/conventional-modules-v1/lib/App/Registry.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/conventional-modules-v1/t/registry.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/dynamic-boundary-v1/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `testdata/ux/first_ten_minutes/dynamic-boundary-v1/bin/drive.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/dynamic-boundary-v1/lib/Dispatch.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/environment-sensitive-v1/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `testdata/ux/first_ten_minutes/environment-sensitive-v1/cpanfile` | test | `non-rust-first-ten-minutes-fixture-set` | release/ux-study |
+| `testdata/ux/first_ten_minutes/environment-sensitive-v1/lib/Local/Probe.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/environment-sensitive-v1/local/lib/perl5/Local/SiteProbe.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/environment-sensitive-v1/script/report.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/framework-shaped-v1/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `testdata/ux/first_ten_minutes/framework-shaped-v1/app.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/manifest.json` | test | `non-rust-first-ten-minutes-fixture-set` | release/ux-study |
+| `testdata/ux/first_ten_minutes/test-heavy-v1/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `testdata/ux/first_ten_minutes/test-heavy-v1/lib/Inventory.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/test-heavy-v1/t/inventory.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
+| `testdata/ux/first_ten_minutes/test-heavy-v1/t/inventory_edges.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
 | `testdata/ux/release_smoke/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `testdata/ux/release_smoke/crlf_links/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `testdata/ux/release_smoke/crlf_links/lib/Smoke/CRLF.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
@@ -8489,6 +8516,7 @@
 | `vscode-extension/src/downloader.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/extension.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/extensionComposition.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/extensionOwnedResourceCensus.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/extensionWorkspaceEvents.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/extensionWorkspaceGuidance.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/featureActivationMetrics.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -8576,6 +8604,7 @@
 | `vscode-extension/src/test/documentFeatureGroup.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/downloader.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/extensionComposition.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/extensionOwnedResourceCensus.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/extensionUx.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/extensionWorkspaceEvents.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/extensionWorkspaceGuidance.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
