@@ -169,6 +169,36 @@ def subject_digest(root: Path, merge_base: str, head: str) -> str:
     return hashlib.sha256(diff).hexdigest()
 
 
+def outside_fences(text: str) -> str:
+    """Blank out fenced regions, keeping line structure so anchors still align.
+
+    Reviews quote the contract — this file's own review threads do — so a fenced
+    example of the result section must not be counted as a declaration. Uses the
+    same opener/closer rules as `fenced_blocks` so one fence definition governs
+    both readers. An unterminated fence blanks the remainder, which fails closed:
+    a malformed body yields no declaration rather than a guessed one.
+    """
+    lines: list[str] = []
+    opener = ""
+    inside = False
+    for line in text.splitlines():
+        match = FENCE_RE.match(line)
+        if not inside:
+            if match:
+                inside = True
+                opener = match.group(1)
+                lines.append("")
+                continue
+            lines.append(line)
+            continue
+        if match:
+            closer = match.group(1)
+            if closer[0] == opener[0] and len(closer) >= len(opener):
+                inside = False
+        lines.append("")
+    return "\n".join(lines)
+
+
 def declared_review_result(body: str) -> Optional[str]:
     """Return the one substantive result this body declares, else None.
 
@@ -182,14 +212,14 @@ def declared_review_result(body: str) -> Optional[str]:
     inside the single result section count. That keeps a review free to discuss
     the other outcomes without disqualifying itself.
     """
-    headings = RESULT_SECTION_RE.findall(body)
-    if len(headings) != 1:
+    prose = outside_fences(body)
+    if len(RESULT_SECTION_RE.findall(prose)) != 1:
         return None
-    match = RESULT_SECTION_RE.search(body)
+    match = RESULT_SECTION_RE.search(prose)
     if match is None:
         return None
-    following = ANY_SECTION_RE.search(body, match.end())
-    section = body[match.end() : following.start()] if following else body[match.end() :]
+    following = ANY_SECTION_RE.search(prose, match.end())
+    section = prose[match.end() : following.start()] if following else prose[match.end() :]
     declared = [
         item
         for item in RESULT_ITEM_RE.findall(section)

@@ -614,6 +614,50 @@ class SemanticReviewCurrentnessTests(unittest.TestCase):
                 self.assertIsNone(module.declared_review_result(ambiguous))
                 self.assertIsNone(module.parse_marker(ambiguous, 42, head))
 
+    def test_fenced_examples_do_not_count_as_declarations(self) -> None:
+        """Quoting the contract must not disqualify the review that quotes it.
+
+        Reviews on this very checker paste the result section as an example. If a
+        fenced copy counted as a real section the declaration count would exceed
+        one and reject an honest conclusion — a false reject in the direction the
+        narrowing is supposed to avoid.
+        """
+        tmp, root, base, head = setup_repo()
+        self.addCleanup(tmp.cleanup)
+        example = (
+            "```\n## Substantive review result\n- CHANGES_REQUIRED\n"
+            "- NOT_PROVEN\n```\n"
+        )
+        placements = {
+            "before the declaration": lambda b: b.replace(
+                "## Review scope", f"{example}\n## Review scope"
+            ),
+            "after the declaration": lambda b: b.replace(
+                "<!-- semantic-review", f"{example}\n<!-- semantic-review"
+            ),
+            "tilde fence": lambda b: b.replace(
+                "## Review scope",
+                "~~~\n## Substantive review result\n- NOT_PROVEN\n~~~\n\n## Review scope",
+            ),
+        }
+        for name, place in placements.items():
+            with self.subTest(placement=name):
+                quoted = place(body(42, root, base, head))
+                self.assertEqual("REVIEW_CURRENT", module.declared_review_result(quoted))
+                self.assertIsNotNone(module.parse_marker(quoted, 42, head))
+
+    def test_a_real_second_declaration_outside_a_fence_is_still_caught(self) -> None:
+        """The fence exemption must not become a smuggling route."""
+        tmp, root, base, head = setup_repo()
+        self.addCleanup(tmp.cleanup)
+        smuggled = body(42, root, base, head).replace(
+            "<!-- semantic-review",
+            "```\nfenced noise\n```\n\n## Substantive review result\n"
+            "- CHANGES_REQUIRED\n\n<!-- semantic-review",
+        )
+        self.assertIsNone(module.declared_review_result(smuggled))
+        self.assertIsNone(module.parse_marker(smuggled, 42, head))
+
     def test_discussing_other_results_in_prose_still_carries_forward(self) -> None:
         """The narrowing must not reject an honest review that names alternatives.
 
