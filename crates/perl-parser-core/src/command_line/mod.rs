@@ -45,12 +45,14 @@
 //!   name scan stops, while `-m` refuses whatever the scan did not read. So
 //!   `-M5.010` is the version declaration `use 5.010`, which calls no module
 //!   method, and `-m5.010` dies with `Can't use '.' after -mname`;
-//! - because `-M` splices into a `use` statement, whether non-ASCII text names
-//!   a module depends on Perl source rather than on argv: `perl -Mutf8 -MFooα`
-//!   loads `Fooα.pm` while `perl -MFooα -Mutf8` dies, and an arbitrary
-//!   expression such as `-M'strict;use utf8'` flips it too. Those arguments are
-//!   reported as undecidable rather than classified — see
-//!   [`AmbiguityKind::ModuleNameDependsOnSourceContext`];
+//! - because `-M` splices into a `use` statement, whether a non-ASCII *name*
+//!   names a module depends on Perl source rather than on argv:
+//!   `perl -Mutf8 -MFooα` loads `Fooα.pm` while `perl -MFooα -Mutf8` dies, and
+//!   an arbitrary expression such as `-M'strict;use utf8'` flips it too. Those
+//!   are reported as undecidable rather than classified — see
+//!   [`AmbiguityKind::ModuleNameDependsOnSourceContext`]. An argument that
+//!   already stopped being a name at an ASCII character stays arbitrary code,
+//!   so `-M'strict;print "α"'` is reported as such;
 //! - a value-taking switch consumes the rest of its cluster, so `-ine` is `-i`
 //!   with the extension `ne`, not `-i -n -e`;
 //! - `-l` and `-0` consume octal digits and then keep bundling, so `-lane` is

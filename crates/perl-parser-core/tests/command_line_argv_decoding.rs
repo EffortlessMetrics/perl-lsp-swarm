@@ -711,6 +711,17 @@ fn a_module_expression_that_is_not_a_module_name_is_reported_as_ambiguous() {
         "Foo::::",
         "Foo::'Bar",
         "Foo'_x",
+        // Mixed names: the rule belongs to the separator immediately before
+        // each component and does not carry over. An implementation that
+        // latched "this name uses apostrophes" would pass every row above and
+        // fail these.
+        //
+        //   perl -MFoo'Bar::1   -e1 → Old package separator "'" deprecated
+        //   perl -MFoo::1'Bar   -e1 → Old package separator "'" deprecated
+        //   perl -MFoo'Bar::Baz -e1 → Old package separator "'" deprecated
+        "Foo'Bar::1",
+        "Foo::1'Bar",
+        "Foo'Bar::Baz",
     ] {
         let argv = format!("-M{plain}");
         let invocation = perl(&[argv.as_str(), "-e", "print"]);
@@ -734,7 +745,10 @@ fn a_module_expression_that_is_not_a_module_name_is_reported_as_ambiguous() {
     //   perl -MFoo::1  -e1 → Can't locate Foo/1.pm in @INC     (accepted above)
     //   perl -MFoo'1   -e1 → Can't find string terminator "'"
     //   perl -MFoo::'1 -e1 → Can't find string terminator "'"
-    for opaque in ["::Foo", "1Foo", "Foo-Bar", "Foo''Bar", "Foo'", "Foo'1", "Foo::'1"] {
+    // `perl -MFoo::Bar'1` also dies with `Can't find string terminator "'"`,
+    // the mixed-name counterpart of `Foo'1`.
+    for opaque in ["::Foo", "1Foo", "Foo-Bar", "Foo''Bar", "Foo'", "Foo'1", "Foo::'1", "Foo::Bar'1"]
+    {
         let argv = format!("-M{opaque}");
         let invocation = perl(&[argv.as_str(), "-e", "print"]);
         let ContextFactKind::ModuleImport { spec, .. } = &facts(&invocation)[0] else {
@@ -789,11 +803,22 @@ fn a_non_ascii_module_name_is_reported_as_undecidable_rather_than_guessed() {
     // The two ambiguities are distinct claims and must not collapse: an ASCII
     // expression really is arbitrary code, and `perl -M\'strict;print 99\'`
     // prints `99` at compile time to prove it.
-    let injected = perl(&["-Mstrict;print 99", "-e", "print"]);
-    assert_eq!(
-        injected.ambiguities.iter().map(|a| a.kind).collect::<Vec<_>>(),
-        vec![AmbiguityKind::ModuleExpressionIsNotAModuleName]
-    );
+    //
+    // Which one applies is decided by the text that *ended* the name, not by
+    // the argument as a whole. `strict;print "α"` stops at the ASCII `;`, so it
+    // is arbitrary code whatever `utf8` says — verified both ways, it prints
+    // `α` with and without an earlier `-Mutf8`. Reading whole-argument ASCII
+    // status instead would let one stray byte inside the code downgrade a
+    // definite injection report to "cannot tell".
+    for expression in ["strict;print 99", r#"strict;print "α""#, "strict refs"] {
+        let argv = format!("-M{expression}");
+        let injected = perl(&[argv.as_str(), "-e", "print"]);
+        assert_eq!(
+            injected.ambiguities.iter().map(|a| a.kind).collect::<Vec<_>>(),
+            vec![AmbiguityKind::ModuleExpressionIsNotAModuleName],
+            "{expression:?} is arbitrary code, not undecidable",
+        );
+    }
 
     // Ordinary ASCII names stay decidable, so the boundary is not a blanket
     // refusal: `perl -MFoo2` looks for `Foo2.pm` with or without the pragma.

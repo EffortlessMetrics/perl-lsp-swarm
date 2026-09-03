@@ -120,12 +120,14 @@ pub struct ModuleSpec {
     /// Whether `module` is *decidably* a plain `Foo::Bar` module name — one
     /// this layer can classify from argv alone, which means an ASCII one.
     ///
-    /// A false answer has two causes, told apart by the recorded ambiguity.
-    /// [`AmbiguityKind::ModuleExpressionIsNotAModuleName`] means the text is
-    /// arbitrary code: Perl compiles `use <module>;` regardless, so
-    /// `-M'Foo; ...'` runs at compile time. Non-ASCII text instead records
-    /// [`AmbiguityKind::ModuleNameDependsOnSourceContext`], because whether it
-    /// is a name is a question about Perl source rather than about argv.
+    /// A false answer has two causes, told apart by the recorded ambiguity and
+    /// decided by the text that *ended* the name rather than by the argument as
+    /// a whole. [`AmbiguityKind::ModuleExpressionIsNotAModuleName`] means the
+    /// name broke at ASCII text, so it is arbitrary code whatever Perl source
+    /// context applies: `-M'strict;print 99'` runs at compile time, and so does
+    /// `-M'strict;print "α"'` — the non-ASCII byte inside the code changes
+    /// nothing. [`AmbiguityKind::ModuleNameDependsOnSourceContext`] is recorded
+    /// only when the name itself broke at non-ASCII text.
     pub module_is_plain_name: bool,
 }
 
@@ -383,8 +385,13 @@ pub enum AmbiguityKind {
     /// compiles `use <text>;` regardless, so the text is arbitrary code — a
     /// meaningful distinction, because `-M'Foo; ...'` runs at compile time.
     ModuleExpressionIsNotAModuleName,
-    /// `-M`/`-m` whose module component contains non-ASCII text, so whether it
+    /// `-M`/`-m` whose module *name* broke at non-ASCII text, so whether it
     /// names a module cannot be decided from argv.
+    ///
+    /// Non-ASCII text elsewhere in the argument does not qualify: an expression
+    /// that already stopped being a name at an ASCII character is arbitrary
+    /// code, and records
+    /// [`AmbiguityKind::ModuleExpressionIsNotAModuleName`] instead.
     ///
     /// `-M` splices what Perl's byte-wise option scan leaves behind into a
     /// `use` statement, which the lexer then reads under whatever pragmas the

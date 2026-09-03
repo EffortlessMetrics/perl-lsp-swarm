@@ -320,16 +320,23 @@ fn decode_cluster<S: AsRef<str>>(
                     ModuleForm::UseSuppressingDefaultImport
                 };
                 let spec = decode_module_spec(attached, attached_span, letter)?;
-                if !spec.module_is_plain_name {
-                    // Non-ASCII text is a different report from arbitrary code:
-                    // it is a module name exactly when an earlier argument put
-                    // `utf8` in force, which is a question about Perl source.
-                    let kind = if spec.module.is_ascii() {
-                        AmbiguityKind::ModuleExpressionIsNotAModuleName
-                    } else {
-                        AmbiguityKind::ModuleNameDependsOnSourceContext
-                    };
-                    invocation.ambiguities.push(Ambiguity { kind, span: spec.module_span });
+                // Non-ASCII text is a different report from arbitrary code: it
+                // is a module name exactly when an earlier argument put `utf8`
+                // in force, which is a question about Perl source. Which of the
+                // two applies is decided by the text that ended the name, not by
+                // the argument as a whole.
+                match classify_module_name(&spec.module) {
+                    ModuleNameClass::PlainName => {}
+                    ModuleNameClass::NotAName => invocation.ambiguities.push(Ambiguity {
+                        kind: AmbiguityKind::ModuleExpressionIsNotAModuleName,
+                        span: spec.module_span,
+                    }),
+                    ModuleNameClass::DependsOnSourceContext => {
+                        invocation.ambiguities.push(Ambiguity {
+                            kind: AmbiguityKind::ModuleNameDependsOnSourceContext,
+                            span: spec.module_span,
+                        });
+                    }
                 }
                 push_fact(
                     invocation,
@@ -670,7 +677,7 @@ fn decode_module_spec(
         module_span,
         import_arguments: import_arguments.map(str::to_owned),
         import_arguments_span,
-        module_is_plain_name: is_plain_module_name(module),
+        module_is_plain_name: matches!(classify_module_name(module), ModuleNameClass::PlainName),
     })
 }
 
@@ -723,11 +730,11 @@ fn scan_module_option_name(body: &str) -> Result<usize, ModuleNameScanError> {
 /// from `::` in one way that matters: a trailing `::` still names a module
 /// (`Foo::` loads `Foo/.pm`) while a trailing apostrophe opens a string, so
 /// `-MFoo'` dies on an unterminated string rather than loading anything.
-fn is_plain_module_name(text: &str) -> bool {
+fn classify_module_name(text: &str) -> ModuleNameClass {
     const LEGACY_SEPARATOR: char = '\'';
 
     let Some((first, mut rest)) = split_leading_component(text) else {
-        return false;
+        return broke_at(text);
     };
     // The first component always leads with ASCII, whatever `utf8` says: perl's
     // option scan is byte-wise, so a non-ASCII first byte leaves it having read
@@ -735,20 +742,23 @@ fn is_plain_module_name(text: &str) -> bool {
     // any source is compiled.
     let mut characters = first.chars();
     let leads = matches!(characters.next(), Some(c) if c.is_ascii_alphabetic() || c == '_');
-    if !leads || !characters.all(is_name_character) {
-        return false;
+    if !leads {
+        return broke_at(first);
     }
 
     loop {
         if rest.is_empty() {
-            return true;
+            return ModuleNameClass::PlainName;
         }
         let (separator_is_legacy, after) = if let Some(after) = rest.strip_prefix("::") {
             (false, after)
         } else if let Some(after) = rest.strip_prefix(LEGACY_SEPARATOR) {
             (true, after)
         } else {
-            return false;
+            // The character that ends the name decides the answer. `-Mstrict;…`
+            // breaks at an ASCII `;` and is arbitrary code whatever `utf8` says,
+            // while `-MFooα` breaks at text whose meaning depends on it.
+            return broke_at(rest);
         };
         match split_leading_component(after) {
             Some((component, remainder)) => {
@@ -768,8 +778,8 @@ fn is_plain_module_name(text: &str) -> bool {
                 } else {
                     c.is_ascii_alphanumeric()
                 });
-                if !leads || !characters.all(is_name_character) {
-                    return false;
+                if !leads {
+                    return broke_at(component);
                 }
                 rest = remainder;
             }
@@ -783,9 +793,36 @@ fn is_plain_module_name(text: &str) -> bool {
             // Continuing here rather than returning is what lets the next
             // separator be read. It terminates because each pass removes at
             // least one separator byte from `rest`.
-            None if separator_is_legacy => return false,
+            None if separator_is_legacy => return broke_at(after),
             None => rest = after,
         }
+    }
+}
+
+/// How a `-M`/`-m` module component classifies at this layer.
+enum ModuleNameClass {
+    /// A plain `Foo::Bar` name, decided from argv alone.
+    PlainName,
+    /// Not a name, and the text that proves it is ASCII — so Perl source
+    /// context cannot change the answer.
+    NotAName,
+    /// The name grammar broke at non-ASCII text, whose meaning depends on
+    /// whether `utf8` is in force.
+    DependsOnSourceContext,
+}
+
+/// Classify a failure by the text that ended the name.
+///
+/// This is the whole distinction between the two ambiguities: `-Mstrict;print
+/// "α"` stops at an ASCII `;` and really is arbitrary code — it runs and prints
+/// with or without an earlier `-Mutf8` — while `-MFooα` stops at text that is a
+/// module name under the pragma and a syntax error without it. Testing the
+/// argument as a whole would let one stray non-ASCII byte anywhere downgrade a
+/// definite injection report to "cannot tell".
+fn broke_at(remaining: &str) -> ModuleNameClass {
+    match remaining.chars().next() {
+        Some(character) if !character.is_ascii() => ModuleNameClass::DependsOnSourceContext,
+        _ => ModuleNameClass::NotAName,
     }
 }
 
