@@ -1230,12 +1230,12 @@ impl<'a> Parser<'a> {
     fn parse_named_unary_statement_tail(&mut self, mut expr: Node) -> ParseResult<Node> {
         expr = self.parse_relational_with(expr)?;
         expr = self.parse_equality_with(expr)?;
-        expr = self.parse_range_with(expr)?;
         expr = self.parse_bitwise_and_with(expr)?;
         expr = self.parse_bitwise_xor_with(expr)?;
         expr = self.parse_bitwise_or_with(expr)?;
         expr = self.parse_and_with(expr)?;
         expr = self.parse_or_with(expr)?;
+        expr = self.parse_range_with(expr)?;
         expr = self.parse_ternary_with(expr)?;
         expr = self.collect_comma_fat_arrow_continuation(expr)?;
         self.parse_word_or_expr(expr)
