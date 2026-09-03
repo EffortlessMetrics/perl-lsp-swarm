@@ -169,6 +169,24 @@ def subject_digest(root: Path, merge_base: str, head: str) -> str:
     return hashlib.sha256(diff).hexdigest()
 
 
+def closes_fence(line: str, match: "re.Match[str]", opener: str) -> bool:
+    """Whether `line` closes a fence opened by `opener`.
+
+    CommonMark allows an info string only on the *opening* fence: a closing fence
+    is the fence characters and nothing else. So ```` ```text ```` inside a block is
+    content, not a closer. Accepting it ends the block early, and everything after
+    it — which GitHub still renders as code — reads as prose. For the result
+    declaration that means a *quoted* conclusion could validate a marker.
+
+    Shared by `outside_fences` and `fenced_blocks` so one rule governs both
+    readers; two nearly-identical fence parsers is how they drift apart.
+    """
+    closer = match.group(1)
+    if closer[0] != opener[0] or len(closer) < len(opener):
+        return False
+    return line[match.end() :].strip(" \t") == ""
+
+
 def outside_fences(text: str) -> str:
     """Blank out fenced regions, keeping line structure so anchors still align.
 
@@ -191,10 +209,8 @@ def outside_fences(text: str) -> str:
                 continue
             lines.append(line)
             continue
-        if match:
-            closer = match.group(1)
-            if closer[0] == opener[0] and len(closer) >= len(opener):
-                inside = False
+        if match and closes_fence(line, match, opener):
+            inside = False
         lines.append("")
     return "\n".join(lines)
 
@@ -303,13 +319,10 @@ def fenced_blocks(text: str) -> list[str]:
                 body = []
                 opener = match.group(1)
             continue
-        if match:
-            closer = match.group(1)
-            # A closing fence uses the opener's character and is at least as long.
-            if closer[0] == opener[0] and len(closer) >= len(opener):
-                blocks.append("\n".join(body))
-                body = None
-                continue
+        if match and closes_fence(line, match, opener):
+            blocks.append("\n".join(body))
+            body = None
+            continue
         body.append(line)
     if body is not None:
         blocks.append("\n".join(body))

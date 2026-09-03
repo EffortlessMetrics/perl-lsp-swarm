@@ -646,6 +646,31 @@ class SemanticReviewCurrentnessTests(unittest.TestCase):
                 self.assertEqual("REVIEW_CURRENT", module.declared_review_result(quoted))
                 self.assertIsNotNone(module.parse_marker(quoted, 42, head))
 
+    def test_an_info_string_line_does_not_close_a_fence(self) -> None:
+        """A conclusion GitHub renders as code must not read as a declaration.
+
+        CommonMark permits an info string only on the opening fence, so a line
+        like ```` ```text ```` inside a block is content. Treating it as a closer
+        ends the block early and everything after it — still rendered as code —
+        is read as prose, letting a *quoted* conclusion validate a marker.
+        """
+        tmp, root, base, head = setup_repo()
+        self.addCleanup(tmp.cleanup)
+        quoted_conclusion = (
+            "```\n```text\n## Substantive review result\n- REVIEW_CURRENT\n```\n"
+        )
+        body_text = REVIEW_SECTIONS.split("## Substantive review result")[0]
+        smuggled = f"{quoted_conclusion}\n{body_text}"
+        # The only result section is inside the fence, so nothing is declared.
+        self.assertIsNone(module.declared_review_result(smuggled))
+        self.assertIsNone(module.parse_marker(smuggled, 42, head))
+
+        # The same rule governs the other reader, which is why it is shared.
+        self.assertEqual(
+            ["```text\n## Substantive review result\n- REVIEW_CURRENT"],
+            module.fenced_blocks(quoted_conclusion),
+        )
+
     def test_a_real_second_declaration_outside_a_fence_is_still_caught(self) -> None:
         """The fence exemption must not become a smuggling route."""
         tmp, root, base, head = setup_repo()
