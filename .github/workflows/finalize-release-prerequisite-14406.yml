@@ -1,0 +1,101 @@
+name: Finalize release prerequisite graph 14406
+
+on:
+  push:
+    branches:
+      - agent/release-exact-prerequisite-graph
+    paths:
+      - '.github/workflows/finalize-release-prerequisite-14406.yml'
+      - '.ci/finalize-release-prerequisite-14406.trigger'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: finalize-release-prerequisite-14406
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    name: Commit generated non-workflow candidate state
+    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout exact branch candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/release-exact-prerequisite-graph
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Materialize final workflow in the worktree
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/release-orchestration.yml')
+          text = path.read_text(encoding='utf-8')
+          replacements = {
+              '--timeout-seconds 13_800': '--timeout-seconds 13800',
+              '--timeout-seconds 22_800': '--timeout-seconds 22800',
+              '--timeout-seconds 5_400': '--timeout-seconds 5400',
+              '    permissions:\n      actions: read\n      contents: none\n    outputs:\n':
+                  '    permissions:\n      actions: read\n    outputs:\n',
+              '    permissions:\n      contents: none\n\n    steps:\n      - name: Record ordered transaction\n':
+                  '    permissions: {}\n\n    steps:\n      - name: Record ordered transaction\n',
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(f'expected workflow fragment not found: {old!r}')
+              text = text.replace(old, new)
+          if 'contents: none' in text:
+              raise SystemExit('invalid contents: none permission remains')
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Add release-security change fragment
+        run: |
+          set -euo pipefail
+          cat > .changes/unreleased/product-14479-Security-release-prerequisite-graph.yaml <<'EOF'
+          project: product
+          component: Packaging and distribution
+          kind: Security
+          body: Release publishers now remain unreachable until the exact release build, archive checks, checksums, curated notes, and non-empty SPDX SBOM complete successfully for the same source and tag. The release orchestrator binds each downstream publisher to that exact predecessor run and artifact manifest instead of dispatching irreversible channels beside the build.
+          time: 2026-08-31T22:00:00Z
+          custom:
+            PR: 14479
+            Slug: release-prerequisite-graph
+            Breaking: "no"
+          EOF
+
+      - name: Regenerate and validate exact security state
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/test_release_workflow_gate.py
+          python3 scripts/ci/check_release_prerequisite_graph.py
+          python3 -m unittest scripts/ci/test_workflow_security_ratchet.py
+          python3 scripts/ci/workflow_security_ratchet.py baseline \
+            --root . \
+            --output .ci/workflow-security-baseline.json
+          python3 scripts/ci/workflow_security_ratchet.py validate-baseline \
+            --root . \
+            --baseline .ci/workflow-security-baseline.json \
+            --baseline-root .
+          git diff --check
+
+      - name: Commit only generated non-workflow state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git add .ci/workflow-security-baseline.json \
+            .changes/unreleased/product-14479-Security-release-prerequisite-graph.yaml
+          git diff --cached --check
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git commit -m 'chore(release): refresh prerequisite security receipts (#14406)'
+          gh auth setup-git
+          git push origin HEAD:agent/release-exact-prerequisite-graph
