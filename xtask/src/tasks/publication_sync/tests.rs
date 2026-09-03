@@ -1214,6 +1214,61 @@ fn a_destination_context_translation_of_product_code_is_allowed() -> Result<()> 
 }
 
 #[test]
+fn a_release_lineage_translation_is_reported_as_displacing() -> Result<()> {
+    // `translate` is excluded from the action's own displacement set, but
+    // `release_lineage` says the content's lineage is release-owned, so the row
+    // substitutes release content whatever the action is. Validation already
+    // read the combination that way; the receipt recorded only the action half,
+    // so a consumer reading the receipt saw `false` for a row the planner was
+    // protecting as displacing.
+    let mut document = clean_value()?;
+    rows_mut(&mut document)?[0]["class"] = json!("release_lineage");
+
+    // The contract really does admit the combination — otherwise the honest
+    // repair would be to reject the row rather than to report it accurately.
+    let schema: Value = serde_json::from_str(SCHEMA)?;
+    let validator = jsonschema::validator_for(&schema)?;
+    if !validator.is_valid(&document) {
+        bail!("the published schema rejects a release_lineage translation");
+    }
+
+    // `README.md` is not product-bearing, so nothing else has an opinion here
+    // and the receipt field is on trial alone.
+    let receipt = plan_value(&document)?;
+    assert_verdict(&receipt, Verdict::Pass)?;
+
+    // The serialized form, because that is what a consumer reads.
+    let written = serde_json::to_value(&receipt)?;
+    let row = written["rows"]
+        .as_array()
+        .and_then(|rows| {
+            rows.iter().find(|row| row.get("path").and_then(Value::as_str) == Some("README.md"))
+        })
+        .ok_or_else(|| eyre!("the receipt carried no row for README.md: {written}"))?;
+    if row.get("displaces_swarm_content").and_then(Value::as_bool) != Some(true) {
+        bail!("a release_lineage translation was reported as not displacing: {row}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_release_lineage_translation_of_product_code_is_excluded() -> Result<()> {
+    // The validation half of the same rule, on a path where being displacing
+    // has a consequence. `row_product_bearing_exclusion` is reachable only
+    // through the displacement predicate, so asserting that exact code isolates
+    // it from `row_product_translation_class_invalid`, which this row also
+    // trips for an unrelated reason.
+    let mut document = clean_value()?;
+    let row = &mut rows_mut(&mut document)?[0];
+    row["path"] = json!("clients/lite-xl/compose.lua");
+    row["class"] = json!("release_lineage");
+
+    let receipt = plan_value(&document)?;
+    assert_verdict(&receipt, Verdict::Blocked)?;
+    assert_finding(&receipt, "row_product_bearing_exclusion")
+}
+
+#[test]
 fn an_unavailable_product_surface_is_not_proven() -> Result<()> {
     // Without the ledger the planner cannot tell product work from publication
     // context, so a withholding row must not pass on the source heuristic alone.

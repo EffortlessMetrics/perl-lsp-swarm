@@ -203,6 +203,22 @@ impl Action {
     }
 }
 
+/// Whether this row's published bytes stop deriving from `S` at that path.
+///
+/// The action alone does not decide it. `translate` is excluded by action —
+/// a translation still derives from `S` — but `release_lineage` class means the
+/// content's lineage is release-owned, so the row substitutes release content
+/// whatever the action says. That is the "constrained by class instead of
+/// forbidden outright" case the action's own doc comment describes.
+///
+/// One definition, because validation and the receipt must agree. They did not:
+/// validation used this rule while the receipt recorded only the action half,
+/// so a `translate` / `release_lineage` row was protected as displacing and then
+/// reported to consumers as not displacing.
+fn row_displaces_swarm_content(row: &PathRow) -> bool {
+    row.action.displaces_swarm_content() || row.class == Class::ReleaseLineage
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum Class {
@@ -1373,7 +1389,7 @@ fn evaluate_with_surface(
             path: row.path.clone(),
             action: row.action.as_str().to_string(),
             class: row.class.as_str().to_string(),
-            displaces_swarm_content: row.action.displaces_swarm_content(),
+            displaces_swarm_content: row_displaces_swarm_content(row),
         })
         .collect();
     rows.sort_by(|left, right| left.path.cmp(&right.path));
@@ -1927,7 +1943,7 @@ fn validate_rows(
         validate_row_digests(row, state);
         validate_row_authority(row, &declared_inputs, repo_root, loader, state);
 
-        let displaces = row.action.displaces_swarm_content() || row.class == Class::ReleaseLineage;
+        let displaces = row_displaces_swarm_content(row);
         let mut surface = product_surface.classify(&row.path, parse_date(&manifest.planned_at));
 
         // Every row names content in `S`, whatever it then does with it: a
