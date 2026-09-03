@@ -1175,11 +1175,7 @@ build_requires:
         assert_non_success(&outcome, MetaYmlFindingKind::BlockScalar, "block scalar");
 
         let outcome = parse_meta_yml(fid(), "name: X\nitems:\n  - |\n    long text\nversion: 1\n");
-        assert_non_success(
-            &outcome,
-            MetaYmlFindingKind::BlockScalar,
-            "sequence block scalar",
-        );
+        assert_non_success(&outcome, MetaYmlFindingKind::BlockScalar, "sequence block scalar");
     }
 
     #[test]
