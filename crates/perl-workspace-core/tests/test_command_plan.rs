@@ -653,30 +653,45 @@ fn an_assumed_test_directory_is_recorded_as_a_limitation() -> Result<(), Fixture
 /// argument for a detached root.
 #[test]
 fn a_test_root_outside_the_workspace_is_reported_not_guessed() -> Result<(), FixtureError> {
-    let (builder, _) = base_builder();
-    let tool_input = accepted_input("tool.prove");
-    let test_input = accepted_input("root.test");
-    let snapshot = builder
-        .with_input(tool_input.clone())
-        .with_input(test_input.clone())
-        .with_tool_candidate(prove_tool(tool_input.id.clone()))
-        .with_project_root(ProjectRoot::new(
-            ProjectRootRole::Test,
-            path("/elsewhere/t"),
-            test_input.id.clone(),
-        ))
-        .build()?;
+    // `/ws-other/t` shares a textual prefix with the `/ws` working directory but
+    // is a sibling, not a child. Reducing it by text alone yields `-other/t`,
+    // which `prove` would read as a bundled option rather than a path — so the
+    // sibling case is the one that turns a wrong directory into a wrong command.
+    for detached in ["/elsewhere/t", "/ws-other/t", "/ws2/t"] {
+        let (builder, _) = base_builder();
+        let tool_input = accepted_input("tool.prove");
+        let test_input = accepted_input("root.test");
+        let snapshot = builder
+            .with_input(tool_input.clone())
+            .with_input(test_input.clone())
+            .with_tool_candidate(prove_tool(tool_input.id.clone()))
+            .with_project_root(ProjectRoot::new(
+                ProjectRootRole::Test,
+                path(detached),
+                test_input.id.clone(),
+            ))
+            .build()?;
 
-    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::new())?;
+        let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::new())?;
 
-    assert!(
-        plan.limitations
-            .iter()
-            .any(|item| item.code == "test_command.test_root_outside_working_directory")
-    );
-    for candidate in &plan.candidates {
-        for argument in &candidate.argv {
-            assert!(!argument.starts_with('/'), "no argument may be an absolute path: {argument}");
+        assert!(
+            plan.limitations
+                .iter()
+                .any(|item| item.code == "test_command.test_root_outside_working_directory"),
+            "`{detached}` must be reported, not silently dropped"
+        );
+        for candidate in &plan.candidates {
+            assert_eq!(
+                candidate.argv,
+                vec!["-l".to_string(), "t".to_string()],
+                "`{detached}` must fall back to the assumed default, not a derived argument"
+            );
+            for argument in candidate.argv.iter().skip(1) {
+                assert!(
+                    !argument.starts_with('/') && !argument.starts_with('-'),
+                    "a derived path argument may be neither absolute nor option-shaped: {argument}"
+                );
+            }
         }
     }
     Ok(())

@@ -802,11 +802,22 @@ fn relative_test_directories(
 /// Returns `None` when `child` is not under `parent`. Both inputs are already
 /// normalized by the environment producer, so this is a segment-boundary prefix
 /// test rather than a path canonicalizer.
+///
+/// Containment is a *segment* relationship, not a textual one: `/ws-other` is a
+/// sibling of `/ws`, so the remainder must begin at a separator. Without that
+/// check `/ws-other/t` would reduce to `-other/t`, which is not merely the wrong
+/// directory — a leading `-` makes the runner read it as an option rather than a
+/// path. For the same reason a legitimately contained directory whose name
+/// starts with `-` is refused: it cannot be passed as a bare argument without
+/// changing how the command parses.
 fn relative_child(parent: &str, child: &str) -> Option<String> {
     let trimmed_parent = parent.trim_end_matches(['/', '\\']);
     let remainder = child.strip_prefix(trimmed_parent)?;
+    if !trimmed_parent.is_empty() && !remainder.starts_with(['/', '\\']) {
+        return None;
+    }
     let relative = remainder.trim_start_matches(['/', '\\']);
-    if relative.is_empty() || is_absolute_path(relative) {
+    if relative.is_empty() || is_absolute_path(relative) || relative.starts_with('-') {
         return None;
     }
     Some(relative.replace('\\', "/"))
@@ -1025,6 +1036,30 @@ mod tests {
 
         assert_eq!(relative_child("/ws", "/elsewhere/t"), None, "unrelated root");
         assert_eq!(relative_child("/ws", "/ws"), None, "the parent itself is not a child");
+    }
+
+    /// A textual prefix is not containment. `/ws-other` is a sibling of `/ws`,
+    /// not a child, and the remainder it would yield (`-other/t`) is not even a
+    /// path — `prove` would read a leading `-` as a bundled option.
+    #[test]
+    fn a_sibling_sharing_a_textual_prefix_is_not_a_child() {
+        for sibling in ["/ws-other/t", "/ws2/t", "/wsX", "/ws.bak/t"] {
+            assert_eq!(
+                relative_child("/ws", sibling),
+                None,
+                "`{sibling}` is a sibling of `/ws`, not a child"
+            );
+        }
+        assert_eq!(relative_child("C:\\ws", "C:\\ws-other\\t"), None);
+    }
+
+    /// Even inside the workspace, a directory whose name starts with `-` cannot
+    /// be passed as a bare argument without changing how the runner parses it.
+    #[test]
+    fn a_leading_dash_directory_is_not_a_usable_argument() {
+        assert_eq!(relative_child("/ws", "/ws/-weird"), None);
+        assert_eq!(relative_child("/ws", "/ws/-l"), None);
+        assert_eq!(relative_child("/ws", "/ws/t"), Some("t".to_string()), "control");
     }
 
     /// The argv guard is defence in depth for future argument sources; the
