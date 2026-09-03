@@ -52,7 +52,7 @@ use std::fmt;
 pub use file_path::{ModuleFilePath, ModuleFilePathError};
 pub use name::{LegacySeparatorProfile, ModuleName, ModuleNameError, PackageSeparatorForm};
 pub use outcome::{
-    ExactResolutionEvidence, ModuleResolutionOutcome, outcome_from_uri_resolution,
+    AbsenceEvidence, ModuleResolutionOutcome, ResolvedEvidence, outcome_from_uri_resolution,
     uri_resolution_from_outcome,
 };
 

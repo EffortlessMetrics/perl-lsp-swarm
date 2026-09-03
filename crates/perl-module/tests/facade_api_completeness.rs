@@ -10,6 +10,7 @@
 
 use perl_module::{
     // request module (#8497) — every export added to api.rs must appear here
+    AbsenceEvidence,
     DynamicModuleRequest,
     // resolution module
     IncRoot,
@@ -30,6 +31,7 @@ use perl_module::{
     PackageSeparatorForm,
     PartialModuleRequest,
     RequestBoundary,
+    ResolvedEvidence,
     // rename module
     apply_module_rename_edits,
     // token module
@@ -125,6 +127,19 @@ fn test_request_module_types_are_accessible() -> Result<(), Box<dyn std::error::
     assert_eq!(dynamic.boundary(), Some(RequestBoundary::RuntimeString));
 
     assert!(!ModuleResolutionOutcome::NotProvenAbsent.has_complete_denominator());
+    // The evidence types must be nameable *and* usable through the facade: a
+    // consumer has to be able to read an exact outcome it did not construct.
+    // Counting the export is not enough — that is what let the previous count
+    // bump pass while the type was unreachable from this list.
+    fn reads_resolution(evidence: &ResolvedEvidence) -> (&str, ModuleRequestKind) {
+        (evidence.selected_uri(), evidence.request().kind())
+    }
+    fn reads_absence(evidence: &AbsenceEvidence) -> ModuleRequestKind {
+        evidence.request().kind()
+    }
+    let _: fn(&ResolvedEvidence) -> (&str, ModuleRequestKind) = reads_resolution;
+    let _: fn(&AbsenceEvidence) -> ModuleRequestKind = reads_absence;
+
     assert!(!ModuleResolutionOutcome::TimedOut.has_complete_denominator());
 
     // Error and evidence types reachable from the facade.
@@ -394,7 +409,7 @@ fn test_api_rs_re_export_count() -> Result<(), Box<dyn std::error::Error>> {
 /// Number of `pub use` statements in `src/api.rs`.
 ///
 /// Update this together with the import list above whenever the facade changes.
-const EXPECTED_API_RE_EXPORTS: usize = 86;
+const EXPECTED_API_RE_EXPORTS: usize = 87;
 
 /// Regression: verify legacy package separator handling.
 #[test]

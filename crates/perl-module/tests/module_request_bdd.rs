@@ -128,10 +128,18 @@ fn given_a_legacy_miss_when_widened_then_it_does_not_claim_a_proven_absence() {
 }
 
 #[test]
-fn given_a_proven_complete_miss_when_reported_then_it_claims_an_exact_denominator() {
-    // The exact state still exists and still means what it says — it just has to
-    // be established by a search that can prove its denominator, not minted by
-    // widening a weaker result.
+fn given_a_consumer_outside_the_resolver_when_a_miss_is_reported_then_it_is_never_exact() {
+    // Renamed to match what this scenario can actually observe. The exact miss
+    // still exists and still means what it says, but it is now established by
+    // the crate that performs the search: `NotFound` carries private
+    // `AbsenceEvidence`, so no consumer out here can construct one. That makes
+    // every miss reachable from this file the unproven kind, and asserting on
+    // the exact form from here is not possible — it is covered by the in-crate
+    // constructor tests and by the `compile_fail` doctests on the evidence
+    // types.
+    let miss = outcome_from_uri_resolution(&ModuleUriResolution::NotFound);
+    assert_eq!(miss, ModuleResolutionOutcome::NotProvenAbsent);
+    assert!(!miss.has_complete_denominator());
     assert!(!ModuleResolutionOutcome::NotProvenAbsent.has_complete_denominator());
 }
 

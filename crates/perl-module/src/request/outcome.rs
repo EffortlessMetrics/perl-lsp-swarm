@@ -14,33 +14,69 @@ use std::fmt;
 
 use crate::resolution::ModuleUriResolution;
 
-use super::{ModuleRequest, ModuleRequestError, RequestBoundary};
+use super::{ModuleRequest, ModuleRequestError, ModuleRequestKind, RequestBoundary};
 
-/// Evidence carried by an exact resolution outcome.
+/// Whether a request is an exact lookup subject.
 ///
-/// The fields and constructors are intentionally private. An exact outcome is
-/// a resolver result, not a value that an API consumer may mint from a URI or
-/// from the absence of a URI alone. M02 (#8521) will provide the resolver-side
-/// construction path when resolution consumes [`ModuleRequest`] directly.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExactResolutionEvidence {
-    request: ModuleRequest,
-    selected_uri: Option<String>,
+/// Only a bareword module or a literal relative file names something a search
+/// can be complete *about*. A partially static or dynamic operand has no exact
+/// subject, so no search over it can have a complete denominator — which is why
+/// the exact-outcome constructors refuse one.
+fn is_exact_lookup_subject(request: &ModuleRequest) -> bool {
+    matches!(
+        request.kind(),
+        ModuleRequestKind::BarewordModule | ModuleRequestKind::LiteralRelativeFile
+    )
 }
 
-impl ExactResolutionEvidence {
-    fn resolved(request: ModuleRequest, selected_uri: String) -> Self {
-        Self { request, selected_uri: Some(selected_uri) }
+/// Evidence that a complete search selected a module.
+///
+/// The fields and constructors are private. An exact outcome is a resolver
+/// result, not a value an API consumer may mint from a URI. M02 (#8521) will
+/// provide the resolver-side construction path.
+///
+/// This is a *separate type* from [`AbsenceEvidence`] on purpose. When both
+/// exact variants carried one interchangeable payload, safe downstream code
+/// could match `Resolved(e)` and rewrap it as `NotFound(e)` — relabelling a
+/// module that was found as a proven absence, which
+/// [`ModuleResolutionOutcome::has_complete_denominator`], `Display`, and
+/// [`uri_resolution_from_outcome`] would all then believe, because they trust
+/// the outer variant. Distinct types make that rewrap a compile error rather
+/// than a convention.
+///
+/// It also holds `selected_uri` as a plain `String` rather than an `Option`:
+/// a resolution that selected nothing is not a resolution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedEvidence {
+    request: ModuleRequest,
+    selected_uri: String,
+}
+
+impl ResolvedEvidence {
+    /// The validated request whose complete search produced this evidence.
+    #[must_use]
+    pub fn request(&self) -> &ModuleRequest {
+        &self.request
     }
 
-    fn not_found(request: ModuleRequest) -> Self {
-        Self { request, selected_uri: None }
+    /// The URI the complete search selected.
+    #[must_use]
+    pub fn selected_uri(&self) -> &str {
+        &self.selected_uri
     }
+}
 
-    fn selected_uri(&self) -> Option<&str> {
-        self.selected_uri.as_deref()
-    }
+/// Evidence that a complete search found nothing.
+///
+/// Carries no URI at all, so it cannot be rewrapped into a resolution: there is
+/// no winner to invent. See [`ResolvedEvidence`] for why the two are distinct
+/// types.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AbsenceEvidence {
+    request: ModuleRequest,
+}
 
+impl AbsenceEvidence {
     /// The validated request whose complete search produced this evidence.
     #[must_use]
     pub fn request(&self) -> &ModuleRequest {
@@ -65,26 +101,36 @@ impl ExactResolutionEvidence {
 /// ```
 ///
 /// That case pins the *shape*: it fails because the variants no longer take a
-/// `String` or a unit. It would keep passing even if
-/// [`ExactResolutionEvidence`] were fully public, so on its own it does not
-/// prove the guarantee. This one does — it assembles the evidence the current
-/// shape actually asks for, and fails only because the fields are private:
+/// `String` or a unit. It would keep passing even if the evidence types were
+/// fully public, so on its own it does not prove the guarantee. This one does —
+/// it assembles the evidence the current shape actually asks for, and fails
+/// only because the fields are private:
 ///
 /// ```compile_fail
-/// use perl_module::{ExactResolutionEvidence, ModuleRequest, ModuleResolutionOutcome};
+/// use perl_module::{ModuleRequest, ModuleResolutionOutcome, ResolvedEvidence};
 ///
 /// let Ok(request) = ModuleRequest::bareword("Foo::Bar") else { return };
-/// let forged = ExactResolutionEvidence { request, selected_uri: None };
-/// let _ = ModuleResolutionOutcome::NotFound(forged);
+/// let forged = ResolvedEvidence { request, selected_uri: "file:///nope.pm".to_string() };
+/// let _ = ModuleResolutionOutcome::Resolved(forged);
 /// ```
 ///
-/// Nor can a consumer reach the crate-private constructors:
+/// Evidence cannot be *relabelled* either. `Resolved` and `NotFound` take
+/// different types, so a consumer holding a real resolution cannot rewrap it as
+/// a proven absence — which would otherwise turn a module that was found into
+/// one proven missing, and `has_complete_denominator`, `Display` and
+/// [`uri_resolution_from_outcome`] would all believe it:
 ///
 /// ```compile_fail
-/// use perl_module::{ExactResolutionEvidence, ModuleRequest};
+/// use perl_module::ModuleResolutionOutcome;
 ///
-/// let Ok(request) = ModuleRequest::bareword("Foo::Bar") else { return };
-/// let _ = ExactResolutionEvidence::not_found(request);
+/// fn relabel(outcome: ModuleResolutionOutcome) -> ModuleResolutionOutcome {
+///     match outcome {
+///         ModuleResolutionOutcome::Resolved(evidence) => {
+///             ModuleResolutionOutcome::NotFound(evidence)
+///         }
+///         other => other,
+///     }
+/// }
 /// ```
 ///
 /// Reading one is unaffected — a consumer still matches and navigates:
@@ -108,7 +154,7 @@ pub enum ModuleResolutionOutcome {
     /// This is an *exact* selection: only a search that can prove it inspected
     /// every root of higher precedence may report it, because the winner is
     /// defined by precedence order rather than by mere existence.
-    Resolved(ExactResolutionEvidence),
+    Resolved(ResolvedEvidence),
     /// A module was found, but the search was never proven to have inspected
     /// every higher-precedence root, so this may not be the precedence winner.
     ///
@@ -127,7 +173,7 @@ pub enum ModuleResolutionOutcome {
     ///
     /// This is an *exact* absence. Only a search that can prove it inspected every
     /// authorized root may report it.
-    NotFound(ExactResolutionEvidence),
+    NotFound(AbsenceEvidence),
     /// Nothing matched, but the search denominator was never proven complete.
     ///
     /// This is the strongest claim a three-state legacy result supports. The
@@ -168,8 +214,9 @@ impl ModuleResolutionOutcome {
                       do exercise it."
         )
     )]
-    pub(crate) fn resolved(request: ModuleRequest, uri: String) -> Self {
-        Self::Resolved(ExactResolutionEvidence::resolved(request, uri))
+    pub(crate) fn resolved(request: ModuleRequest, uri: String) -> Option<Self> {
+        is_exact_lookup_subject(&request)
+            .then_some(Self::Resolved(ResolvedEvidence { request, selected_uri: uri }))
     }
 
     /// Create an exact absence outcome from resolver-owned evidence.
@@ -187,8 +234,8 @@ impl ModuleResolutionOutcome {
                       do exercise it."
         )
     )]
-    pub(crate) fn not_found(request: ModuleRequest) -> Self {
-        Self::NotFound(ExactResolutionEvidence::not_found(request))
+    pub(crate) fn not_found(request: ModuleRequest) -> Option<Self> {
+        is_exact_lookup_subject(&request).then_some(Self::NotFound(AbsenceEvidence { request }))
     }
 
     /// `true` when a module was found, whether or not the winner is proven exact.
@@ -206,7 +253,7 @@ impl ModuleResolutionOutcome {
     #[must_use]
     pub fn resolved_uri(&self) -> Option<&str> {
         match self {
-            Self::Resolved(evidence) => evidence.selected_uri(),
+            Self::Resolved(evidence) => Some(evidence.selected_uri()),
             Self::NotProvenPrecedence(uri) => Some(uri.as_str()),
             _ => None,
         }
@@ -265,10 +312,7 @@ impl ModuleResolutionOutcome {
 impl fmt::Display for ModuleResolutionOutcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Resolved(evidence) => match evidence.selected_uri() {
-                Some(uri) => write!(f, "resolved to {uri}"),
-                None => f.write_str("resolved without a selected URI"),
-            },
+            Self::Resolved(evidence) => write!(f, "resolved to {}", evidence.selected_uri()),
             Self::NotProvenPrecedence(uri) => {
                 write!(f, "found {uri}, but higher-precedence roots were not proven inspected")
             }
@@ -376,7 +420,7 @@ pub fn uri_resolution_from_outcome(
 ) -> Option<ModuleUriResolution> {
     match outcome {
         ModuleResolutionOutcome::Resolved(evidence) => {
-            evidence.selected_uri().map(str::to_owned).map(ModuleUriResolution::Resolved)
+            Some(ModuleUriResolution::Resolved(evidence.selected_uri().to_owned()))
         }
         ModuleResolutionOutcome::NotProvenPrecedence(uri) => {
             Some(ModuleUriResolution::Resolved(uri.clone()))
@@ -413,13 +457,72 @@ mod tests {
     }
 
     fn exact_resolution(uri: &str) -> ModuleResolutionOutcome {
-        ModuleResolutionOutcome::resolved(probe_request(), uri.to_string())
+        match ModuleResolutionOutcome::resolved(probe_request(), uri.to_string()) {
+            Some(outcome) => outcome,
+            None => unreachable!("a bareword request is an exact lookup subject"),
+        }
     }
 
     fn exact_absence() -> ModuleResolutionOutcome {
-        ModuleResolutionOutcome::not_found(probe_request())
+        match ModuleResolutionOutcome::not_found(probe_request()) {
+            Some(outcome) => outcome,
+            None => unreachable!("a bareword request is an exact lookup subject"),
+        }
     }
+
     use crate::request::{ModuleName, ModuleRequestError, RequestBoundary};
+
+    /// An operand with no exact lookup subject can never have a complete
+    /// denominator, so it must not be able to reach an exact outcome at all.
+    #[test]
+    fn an_inexact_request_cannot_produce_an_exact_outcome() {
+        let dynamic = ModuleRequest::dynamic("$class", None, RequestBoundary::RuntimeString);
+        let partial = ModuleRequest::partially_static(
+            "Foo::$leaf",
+            vec!["Foo::".to_string()],
+            None,
+            RequestBoundary::VariableInterpolation,
+        );
+
+        for inexact in [dynamic, partial] {
+            let kind = inexact.kind();
+            assert_eq!(
+                ModuleResolutionOutcome::resolved(inexact.clone(), "file:///w/Foo.pm".to_string()),
+                None,
+                "{kind:?} has no exact lookup subject, so it cannot be an exact resolution"
+            );
+            assert_eq!(
+                ModuleResolutionOutcome::not_found(inexact),
+                None,
+                "{kind:?} has no exact lookup subject, so it cannot be a proven absence"
+            );
+        }
+    }
+
+    /// Both exact lookup subjects must still be able to reach an exact outcome,
+    /// or the guard above would be refusing everything.
+    #[test]
+    fn both_exact_subjects_can_still_reach_an_exact_outcome() {
+        let bareword = probe_request();
+        let file = match ModuleRequest::quoted_require("Foo/Bar.pm") {
+            Ok(request) => request,
+            Err(error) => unreachable!("`Foo/Bar.pm` is a valid literal file: {error}"),
+        };
+
+        for exact in [bareword, file] {
+            let kind = exact.kind();
+            assert!(
+                ModuleResolutionOutcome::resolved(exact.clone(), "file:///w/Foo.pm".to_string())
+                    .is_some_and(|outcome| outcome.has_complete_denominator()),
+                "{kind:?} is an exact lookup subject"
+            );
+            assert!(
+                ModuleResolutionOutcome::not_found(exact)
+                    .is_some_and(|outcome| outcome.has_complete_denominator()),
+                "{kind:?} is an exact lookup subject"
+            );
+        }
+    }
 
     #[test]
     fn legacy_round_trip_preserves_the_three_witnessable_states() {
@@ -477,13 +580,8 @@ mod tests {
 
     #[test]
     fn only_verified_answers_claim_a_complete_denominator() -> Result<(), ModuleRequestError> {
-        let request = ModuleRequest::bareword("Foo")?;
-        let exact_resolved =
-            ModuleResolutionOutcome::resolved(request.clone(), "file:///w/Foo.pm".to_string());
-        let exact_not_found = ModuleResolutionOutcome::not_found(request);
-
-        assert!(exact_not_found.has_complete_denominator());
-        assert!(exact_resolved.has_complete_denominator());
+        assert!(exact_absence().has_complete_denominator());
+        assert!(exact_resolution("file:///w/Foo.pm").has_complete_denominator());
 
         for truncated in [
             ModuleResolutionOutcome::NotProvenAbsent,
@@ -504,10 +602,9 @@ mod tests {
 
     #[test]
     fn boundary_ids_are_namespaced_and_distinct() -> Result<(), ModuleRequestError> {
-        let request = ModuleRequest::bareword("Foo")?;
         let outcomes = [
-            ModuleResolutionOutcome::resolved(request.clone(), "file:///w/Foo.pm".to_string()),
-            ModuleResolutionOutcome::not_found(request),
+            exact_resolution("file:///w/Foo.pm"),
+            exact_absence(),
             ModuleResolutionOutcome::NotProvenAbsent,
             ModuleResolutionOutcome::Dynamic(RequestBoundary::ComputedExpression),
             ModuleResolutionOutcome::Ambiguous,
