@@ -297,8 +297,15 @@ def member_dirs(root: Path) -> list[Path]:
     # manifest (no [package]) must name members to have any.
     root_is_package = isinstance(data.get("package"), dict)
     members = workspace.get("members")
-    if not isinstance(members, list):
+    if members is None:
         members = []
+    elif not isinstance(members, list):
+        # Coercing a malformed value to "no members" would silently scan only
+        # the root and let every intended member escape classification. A
+        # manifest this validator cannot interpret is an instrument failure.
+        raise ValidationError(
+            f"root Cargo.toml has a non-list workspace members value: {members!r}"
+        )
     if not members and not root_is_package:
         raise ValidationError("root Cargo.toml declares no workspace members")
     # `[workspace].exclude` removes a directory from GLOB expansion. It does not
