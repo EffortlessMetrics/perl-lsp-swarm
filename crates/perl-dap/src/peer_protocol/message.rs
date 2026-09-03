@@ -21,6 +21,54 @@ pub struct PeerRequest {
     pub arguments: Option<serde_json::Value>,
 }
 
+/// Why a peer answered `success: false` (#14582).
+///
+/// This is a *machine-readable* cause, deliberately separate from
+/// [`PeerResponse::message`]. The host classifies a reported failure from this
+/// vocabulary and never from the reason text, because the reason text is
+/// authored by the peer (and frequently by the debuggee itself), so deriving
+/// triage from it would let a program under debug steer how this adapter is
+/// diagnosed. See `crates/perl-dap/tests/backend_error_class.rs`.
+///
+/// The arms describe the *peer's* world, not the host's category. The mapping
+/// onto [`perl_parser_core::ErrorCategory`] lives in
+/// [`BackendError::error_class`] and is deliberately coarser than this
+/// vocabulary, so the host can refine its own triage without a wire change.
+///
+/// A peer may only have its cause honoured when it advertised
+/// [`PeerReportedCapabilities::can_report_failure_cause`] in `peer/hello`.
+///
+/// [`BackendError::error_class`]: crate::backend::BackendError
+/// [`PeerReportedCapabilities::can_report_failure_cause`]:
+///     crate::peer_protocol::PeerReportedCapabilities::can_report_failure_cause
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PeerFailureCause {
+    /// The debuggee itself failed: a `die`, an undefined subroutine, a runtime
+    /// error. The request was served correctly and this is its outcome.
+    Debuggee,
+    /// The session is not in a state that can serve the request — for example
+    /// `stackTrace` while nothing is suspended.
+    SessionState,
+    /// The request itself was not answerable as asked — for example an unknown
+    /// frame id or an out-of-range variables reference.
+    InvalidRequest,
+    /// The peer's own link to the debuggee failed while serving the request.
+    Transport,
+    /// A cause this host does not recognise.
+    ///
+    /// Reached only by deserialization, when a newer peer reports a cause added
+    /// after this build. It exists so an unknown vocabulary word degrades to the
+    /// no-cause classification instead of failing the whole response to parse —
+    /// a reported failure must never become a protocol error just because its
+    /// cause is newer than the host.
+    ///
+    /// It is never a value the host should *send*, and it classifies exactly as
+    /// an absent cause does.
+    #[serde(other)]
+    Unrecognized,
+}
+
 /// A response to a [`PeerRequest`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,6 +84,19 @@ pub struct PeerResponse {
     /// Error message when `success` is false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// Machine-readable cause when `success` is false (#14582).
+    ///
+    /// Absent for every peer built before this field existed, and for a peer
+    /// that did not advertise
+    /// [`PeerReportedCapabilities::can_report_failure_cause`]. Absence is not an
+    /// error: it is the honest statement that the responder's cause is unknown,
+    /// and the host classifies such a failure exactly as it did before this
+    /// field existed.
+    ///
+    /// [`PeerReportedCapabilities::can_report_failure_cause`]:
+    ///     crate::peer_protocol::PeerReportedCapabilities::can_report_failure_cause
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cause: Option<PeerFailureCause>,
     /// Response body, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<serde_json::Value>,
@@ -155,12 +216,77 @@ mod tests {
             success: true,
             command: command::HELLO.to_string(),
             message: None,
+            cause: None,
             body: None,
         });
         let json = must(serde_json::to_value(&msg));
         assert_eq!(json["type"], "response");
         assert_eq!(json["requestSeq"], 1);
         assert!(json.get("request_seq").is_none());
+        // An absent cause must not appear on the wire at all, so a response
+        // from this host stays byte-identical to one a pre-#14582 build sent.
+        assert!(json.get("cause").is_none(), "absent cause must not be serialized");
+    }
+
+    #[test]
+    fn failure_cause_uses_snake_case_on_the_wire() {
+        let msg = PeerMessage::Response(PeerResponse {
+            seq: 2,
+            request_seq: 1,
+            success: false,
+            command: command::STACK_TRACE.to_string(),
+            message: Some("no active suspension".to_string()),
+            cause: Some(PeerFailureCause::SessionState),
+            body: None,
+        });
+        let json = must(serde_json::to_value(&msg));
+        assert_eq!(json["cause"], "session_state");
+        let back: PeerMessage = must(serde_json::from_value(json));
+        assert_eq!(back, msg, "cause must round-trip");
+    }
+
+    /// A peer built before #14582 sends no `cause` key at all. That must
+    /// deserialize, not fail, and must mean "unknown" rather than any cause.
+    #[test]
+    fn a_response_without_a_cause_still_deserializes() {
+        let resp: PeerResponse = must(serde_json::from_str(
+            r#"{"seq":2,"requestSeq":1,"success":false,"command":"stackTrace",
+                "message":"no active suspension"}"#,
+        ));
+        assert_eq!(resp.cause, None);
+    }
+
+    /// Forward compatibility, at the layer where it is decided.
+    ///
+    /// A newer peer reporting a cause this build has never heard of must not
+    /// take the whole response down with it: a reported failure would then
+    /// surface as a protocol error, which is a worse answer than the causeless
+    /// one this degrades to. `#[serde(other)]` is what buys that, so this test
+    /// fails the moment the catch-all arm is removed.
+    #[test]
+    fn an_unknown_cause_degrades_instead_of_failing_the_response() {
+        let resp: PeerResponse = must(serde_json::from_str(
+            r#"{"seq":2,"requestSeq":1,"success":false,"command":"stackTrace",
+                "message":"no active suspension","cause":"quantum_decoherence"}"#,
+        ));
+        assert_eq!(resp.cause, Some(PeerFailureCause::Unrecognized));
+        assert_eq!(resp.message.as_deref(), Some("no active suspension"));
+    }
+
+    /// Each known word maps to its own arm — a negative control against a
+    /// catch-all that silently swallowed the whole vocabulary.
+    #[test]
+    fn every_known_cause_word_parses_to_its_own_arm() {
+        let rows = [
+            ("debuggee", PeerFailureCause::Debuggee),
+            ("session_state", PeerFailureCause::SessionState),
+            ("invalid_request", PeerFailureCause::InvalidRequest),
+            ("transport", PeerFailureCause::Transport),
+        ];
+        for (word, expected) in rows {
+            let parsed: PeerFailureCause = must(serde_json::from_str(&format!("\"{word}\"")));
+            assert_eq!(parsed, expected, "{word} must not fall through to the catch-all");
+        }
     }
 
     #[test]
