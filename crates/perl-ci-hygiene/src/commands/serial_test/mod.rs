@@ -478,7 +478,7 @@ impl SignalVisitor {
                     if item_impl
                         .trait_
                         .as_ref()
-                        .and_then(|(_, path, _)| path.segments.last())
+                        .and_then(|(path, _)| path.segments.last())
                         .is_some_and(|segment| segment.ident == "Drop")
                         && matches!(
                             item_impl.self_ty.as_ref(),
@@ -579,8 +579,8 @@ impl<'ast> Visit<'ast> for SignalVisitor {
             for name in pattern_names(&arm.pat) {
                 child.bindings.shadow_value(&name);
             }
-            if let Some((_, guard)) = &arm.guard {
-                child.visit_expr(guard);
+            if let Pat::Guard(guard) = &arm.pat {
+                child.visit_expr(&guard.guard);
             }
             child.visit_expr(&arm.body);
             self.signals.extend(child.signals);

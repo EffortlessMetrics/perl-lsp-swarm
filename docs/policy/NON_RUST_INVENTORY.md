@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12661 |
-| Rust-family files | 3944 |
-| Non-Rust files | 8717 |
-| Allowlisted | 6478 |
+| Total tracked files | 12665 |
+| Rust-family files | 3946 |
+| Non-Rust files | 8719 |
+| Allowlisted | 6480 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -17,10 +17,10 @@
 | Category | Count |
 |---|---|
 | config | 501 |
-| documentation | 2846 |
+| documentation | 2847 |
 | generated | 2 |
 | production | 356 |
-| test | 2093 |
+| test | 2094 |
 | tooling | 680 |
 | unclassified | 2239 |
 
@@ -2344,6 +2344,7 @@
 | `.changes/unreleased/product-12813-Changed-221500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-12815-Fixed-221500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13073-Fixed-020212.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13094-Fixed-022731.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13123-Fixed-021700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13125-Fixed-021800.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13157-Fixed-023317.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -7133,6 +7134,7 @@
 | `test_corpus/package_production_enhanced.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/packages_versions.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/parser_stress_cases.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `test_corpus/postfix_dereference_matrix.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/prototypes_only.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/readline_diamond_operator_comprehensive.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/real_projects/catalyst_skeleton/lib/Catalyst.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
