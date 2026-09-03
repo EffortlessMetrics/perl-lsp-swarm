@@ -314,8 +314,11 @@ fn decode_cluster<S: AsRef<str>>(
                         span: letter_span,
                     });
                 }
-                let form =
-                    if letter == 'M' { ModuleForm::Use } else { ModuleForm::UseWithoutImport };
+                let form = if letter == 'M' {
+                    ModuleForm::Use
+                } else {
+                    ModuleForm::UseSuppressingDefaultImport
+                };
                 let spec = decode_module_spec(attached, attached_span, letter)?;
                 if !spec.module_is_plain_name {
                     invocation.ambiguities.push(Ambiguity {
@@ -617,18 +620,45 @@ fn decode_module_spec(
         None => (false, text, span.start),
     };
 
-    let (module, import_arguments) = match body.split_once('=') {
-        Some((module, arguments)) => (module, Some(arguments)),
-        None => (body, None),
+    // perl scans word characters and `::` here and refuses what it cannot read,
+    // so a decode that accepted `-M+Foo` would publish a fact for a command line
+    // that never runs.
+    let name_length = match scan_module_option_name(body) {
+        Ok(length) => length,
+        Err(ModuleNameScanError::SingleColon) => {
+            return Err(InvocationDecodeError::SingleColonInModuleName { switch, span });
+        }
     };
-
-    if module.is_empty() {
+    if name_length == 0 {
         return Err(InvocationDecodeError::EmptyModuleName { switch, span });
     }
 
+    let scanned = body.get(..name_length).unwrap_or_default();
+    let trailing = body.get(name_length..).unwrap_or_default();
+
+    // Only a `=` immediately after the scanned name introduces import arguments.
+    // Anything else is spliced into the `use` statement by `-M` and refused
+    // outright by `-m`: perl reports `Can't use ... after -mname` for the
+    // lowercase form while the uppercase one loads the module.
+    let (module, import_arguments) = match trailing.strip_prefix('=') {
+        Some(arguments) => (scanned, Some(arguments)),
+        None => {
+            if switch == 'm'
+                && let Some(character) = trailing.chars().next()
+            {
+                let start = body_start + name_length;
+                return Err(InvocationDecodeError::UnexpectedModuleSuffix {
+                    character,
+                    span: ArgvSpan::new(span.argument_index, start, start + character.len_utf8()),
+                });
+            }
+            (body, None)
+        }
+    };
+
     let module_span = ArgvSpan::new(span.argument_index, body_start, body_start + module.len());
     let import_arguments_span = import_arguments.map(|arguments| {
-        let start = module_span.end + 1;
+        let start = body_start + module.len() + 1;
         ArgvSpan::new(span.argument_index, start, start + arguments.len())
     });
 
@@ -642,6 +672,38 @@ fn decode_module_spec(
     })
 }
 
+/// Why perl refused to read a module name at the option level.
+enum ModuleNameScanError {
+    /// A `:` that is not part of `::`.
+    SingleColon,
+}
+
+/// Measure the module name perl reads at the option level: ASCII word
+/// characters and `::`.
+///
+/// Byte-wise on purpose — perl scans bytes here, so a non-ASCII character ends
+/// the name rather than extending it. Only ASCII bytes are stepped over, so the
+/// returned length is always a character boundary.
+fn scan_module_option_name(body: &str) -> Result<usize, ModuleNameScanError> {
+    let bytes = body.as_bytes();
+    let mut at = 0usize;
+    while let Some(byte) = bytes.get(at) {
+        if *byte == b':' {
+            if bytes.get(at + 1) == Some(&b':') {
+                at += 2;
+                continue;
+            }
+            return Err(ModuleNameScanError::SingleColon);
+        }
+        if byte.is_ascii_alphanumeric() || *byte == b'_' {
+            at += 1;
+            continue;
+        }
+        break;
+    }
+    Ok(at)
+}
+
 /// Whether `text` is a plain `Foo::Bar` module name.
 ///
 /// Perl compiles `use <text>;` whatever `text` is, so this classifies rather
@@ -652,11 +714,17 @@ fn decode_module_spec(
 /// `1Foo` is a syntax error and `::Foo` is refused outright. Applying the
 /// identifier rule to every component would report ordinary module names as
 /// arbitrary code, which is the false positive this classification cannot
-/// afford: the flag exists to mark real code injection such as
-/// `-M'strict;print 99'`.
+/// afford: the flag exists to mark real code injection.
+///
+/// The apostrophe is Perl's legacy package separator, so `-MFoo'Bar` loads
+/// `Foo::Bar` with a deprecation warning and is a module name too. It differs
+/// from `::` in one way that matters: a trailing `::` still names a module
+/// (`Foo::` loads `Foo/.pm`) while a trailing apostrophe opens a string, so
+/// `-MFoo'` dies on an unterminated string rather than loading anything.
 fn is_plain_module_name(text: &str) -> bool {
-    let mut components = text.split("::");
-    let Some(first) = components.next() else {
+    const LEGACY_SEPARATOR: char = '\'';
+
+    let Some((first, mut rest)) = split_leading_component(text) else {
         return false;
     };
     let mut characters = first.chars();
@@ -664,14 +732,46 @@ fn is_plain_module_name(text: &str) -> bool {
     if !leads || !characters.all(is_name_character) {
         return false;
     }
-    components.all(|component| {
-        if component.is_empty() {
+
+    loop {
+        if rest.is_empty() {
             return true;
         }
-        let mut chars = component.chars();
-        matches!(chars.next(), Some(c) if c.is_ascii_alphanumeric() || c == '_')
-            && chars.all(is_name_character)
-    })
+        let (separator_is_legacy, after) = if let Some(after) = rest.strip_prefix("::") {
+            (false, after)
+        } else if let Some(after) = rest.strip_prefix(LEGACY_SEPARATOR) {
+            (true, after)
+        } else {
+            return false;
+        };
+        match split_leading_component(after) {
+            Some((component, remainder)) => {
+                let mut characters = component.chars();
+                let leads =
+                    matches!(characters.next(), Some(c) if c.is_ascii_alphanumeric() || c == '_');
+                if !leads || !characters.all(is_name_character) {
+                    return false;
+                }
+                rest = remainder;
+            }
+            // An empty component ends a `::` name but never a legacy one.
+            None if separator_is_legacy => return false,
+            None => return after.is_empty(),
+        }
+    }
+}
+
+/// Split off the leading run of name characters, if any.
+fn split_leading_component(text: &str) -> Option<(&str, &str)> {
+    let length: usize = text
+        .chars()
+        .take_while(|character| is_name_character(*character))
+        .map(char::len_utf8)
+        .sum();
+    if length == 0 {
+        return None;
+    }
+    Some((text.get(..length)?, text.get(length..)?))
 }
 
 /// A character Perl accepts inside a package-name component.

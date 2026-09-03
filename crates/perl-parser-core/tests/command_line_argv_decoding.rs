@@ -642,7 +642,7 @@ fn module_imports_decode_form_negation_and_import_arguments() {
     let ContextFactKind::ModuleImport { form, .. } = &facts(&without_import)[0] else {
         panic!("expected a module import");
     };
-    assert_eq!(*form, ModuleForm::UseWithoutImport);
+    assert_eq!(*form, ModuleForm::UseSuppressingDefaultImport);
 }
 
 #[test]
@@ -719,6 +719,122 @@ fn an_empty_module_name_is_refused() {
         perl_error(&["-M=Foo", "-e", "print"]),
         InvocationDecodeError::EmptyModuleName { switch: 'M', .. }
     ));
+}
+
+#[test]
+fn lowercase_module_switch_still_imports_with_explicit_arguments() {
+    // `-m` suppresses the *default* import only. Verified against the
+    // interpreter: `perl -mPOSIX=floor -e 'print floor(1.5)'` prints 1, while
+    // `perl -mPOSIX -e ...` reports `Undefined subroutine &main::floor`.
+    // Reading the effective behavior off the switch letter alone contradicts
+    // the import arguments decoded right beside it.
+    let bare = perl(&["-mPOSIX", "-e", "print"]);
+    let ContextFactKind::ModuleImport { form, spec } = &facts(&bare)[0] else {
+        panic!("expected a module import");
+    };
+    assert_eq!(*form, ModuleForm::UseSuppressingDefaultImport);
+    assert!(!spec.calls_import(*form), "bare -m imports nothing");
+
+    let with_arguments = perl(&["-mPOSIX=floor", "-e", "print"]);
+    let ContextFactKind::ModuleImport { form, spec } = &facts(&with_arguments)[0] else {
+        panic!("expected a module import");
+    };
+    assert_eq!(*form, ModuleForm::UseSuppressingDefaultImport, "the spelling is still -m");
+    assert_eq!(spec.import_arguments.as_deref(), Some("floor"));
+    assert!(spec.calls_import(*form), "-mFoo=a calls Foo->import(\"a\")");
+
+    // `-M` always imports, with or without arguments.
+    let uppercase = perl(&["-MPOSIX", "-e", "print"]);
+    let ContextFactKind::ModuleImport { form, spec } = &facts(&uppercase)[0] else {
+        panic!("expected a module import");
+    };
+    assert!(spec.calls_import(*form));
+}
+
+#[test]
+fn module_names_perl_refuses_at_option_parsing_are_refused() {
+    // perl reads word characters and `::` here, then croaks
+    // `Module name required with -M option.` if it read nothing.
+    for malformed in ["-M+Foo", "-M--Foo", "-M.Foo", "-M Foo", "-M=Foo", "-M'Foo"] {
+        assert!(
+            matches!(
+                perl_error(&[malformed, "-e", "print"]),
+                InvocationDecodeError::EmptyModuleName { switch: 'M', .. }
+            ),
+            "{malformed} should be refused as a missing module name"
+        );
+    }
+    assert!(matches!(
+        perl_error(&["-m+Foo", "-e", "print"]),
+        InvocationDecodeError::EmptyModuleName { switch: 'm', .. }
+    ));
+
+    // A lone `:` is its own refusal: perl reports
+    // `Invalid module name :Foo with -M option: contains single ':'`.
+    assert!(matches!(
+        perl_error(&["-M:Foo", "-e", "print"]),
+        InvocationDecodeError::SingleColonInModuleName { switch: 'M', .. }
+    ));
+
+    // `-M-Foo` is still the negated form, not a malformed one.
+    let negated = perl(&["-M-strict", "-e", "print"]);
+    let ContextFactKind::ModuleImport { spec, .. } = &facts(&negated)[0] else {
+        panic!("expected a module import");
+    };
+    assert!(spec.negated);
+}
+
+#[test]
+fn lowercase_module_switch_refuses_a_suffix_that_is_not_import_arguments() {
+    // perl: `Can't use ';' after -mname.` — only `=` may follow the name under
+    // `-m`, while `-M` splices the same text into the use statement.
+    for (argv, character) in [("-mFoo;print 1", ';'), ("-mFoo Bar", ' '), ("-mFoo'Bar", '\'')] {
+        assert!(
+            matches!(
+                perl_error(&[argv, "-e", "print"]),
+                InvocationDecodeError::UnexpectedModuleSuffix { character: found, .. }
+                    if found == character
+            ),
+            "{argv} should be refused on {character:?}"
+        );
+    }
+
+    // The same tails are legal under `-M`.
+    for accepted in ["-MFoo;print 1", "-MFoo Bar"] {
+        let invocation = perl(&[accepted, "-e", "print"]);
+        assert!(
+            matches!(&facts(&invocation)[0], ContextFactKind::ModuleImport { .. }),
+            "{accepted} decodes under -M"
+        );
+    }
+}
+
+#[test]
+fn the_legacy_apostrophe_is_a_package_separator_not_arbitrary_code() {
+    // `perl -MFoo'Bar` loads Foo::Bar with `Old package separator "'" deprecated`,
+    // so flagging it as arbitrary code is a false positive on a real import.
+    let invocation = perl(&["-MFoo'Bar", "-e", "print"]);
+    let ContextFactKind::ModuleImport { spec, .. } = &facts(&invocation)[0] else {
+        panic!("expected a module import");
+    };
+    assert_eq!(spec.module, "Foo'Bar");
+    assert!(spec.module_is_plain_name, "the apostrophe is a package separator");
+    assert!(invocation.ambiguities.is_empty());
+
+    // A trailing apostrophe is not a name: `perl -MFoo'` dies with
+    // `Can't find string terminator "'"`, because it opens a string.
+    let unterminated = perl(&["-MFoo'", "-e", "print"]);
+    let ContextFactKind::ModuleImport { spec, .. } = &facts(&unterminated)[0] else {
+        panic!("expected a module import");
+    };
+    assert!(!spec.module_is_plain_name, "a trailing apostrophe opens a string");
+
+    // Whereas a trailing `::` still names a module (`Foo::` loads `Foo/.pm`).
+    let trailing_colons = perl(&["-MFoo::", "-e", "print"]);
+    let ContextFactKind::ModuleImport { spec, .. } = &facts(&trailing_colons)[0] else {
+        panic!("expected a module import");
+    };
+    assert!(spec.module_is_plain_name);
 }
 
 // ---- terminator, operands and program arguments ------------------------

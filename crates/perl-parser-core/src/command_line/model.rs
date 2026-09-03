@@ -84,13 +84,19 @@ pub struct SourceFragment {
     pub switch_span: ArgvSpan,
 }
 
-/// `-M` versus `-m`.
+/// `-M` versus `-m`. This is the spelling, not the effective import behavior:
+/// see [`ModuleSpec::calls_import`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ModuleForm {
     /// `-M`: `use Module;` — the module's default import list runs.
     Use,
-    /// `-m`: `use Module ();` — nothing is imported.
-    UseWithoutImport,
+    /// `-m`: perl appends `()`, so `-mFoo` is `use Foo ()` and imports nothing.
+    ///
+    /// That suppression applies to the *default* import only. `-mFoo=a,b` still
+    /// compiles `use Foo split(/,/,q{a,b})`, and perl really does call
+    /// `Foo->import("a","b")` — `perl -mPOSIX=floor -e 'print floor(1.5)'`
+    /// prints `1` while `perl -mPOSIX -e ...` cannot find `floor`.
+    UseSuppressingDefaultImport,
 }
 
 /// The decoded `-M`/`-m` argument.
@@ -116,6 +122,22 @@ pub struct ModuleSpec {
     /// than an import, and an [`AmbiguityKind::ModuleExpressionIsNotAModuleName`]
     /// is recorded.
     pub module_is_plain_name: bool,
+}
+
+impl ModuleSpec {
+    /// Whether perl calls the module's `import` for this spec under `form`.
+    ///
+    /// `-m` suppresses only the default import, so an explicit argument list
+    /// brings it back. Reading that off [`ModuleForm`] alone reports
+    /// `-mFoo=a,b` as importing nothing, which contradicts the decoded
+    /// arguments sitting next to it.
+    #[must_use]
+    pub fn calls_import(&self, form: ModuleForm) -> bool {
+        match form {
+            ModuleForm::Use => true,
+            ModuleForm::UseSuppressingDefaultImport => self.import_arguments.is_some(),
+        }
+    }
 }
 
 /// The digits written after `-0`, exactly as given.
@@ -431,6 +453,25 @@ pub enum InvocationDecodeError {
         /// The switch letter, `M` or `m`.
         switch: char,
         /// Where the argument is.
+        span: ArgvSpan,
+    },
+    /// `-M`/`-m` was given a module name containing a lone `:`. Perl reports
+    /// `Invalid module name <name> with -M option: contains single ':'`.
+    #[error("switch `-{switch}` module name has a single `:` in argument {}", span.argument_index)]
+    SingleColonInModuleName {
+        /// The switch letter, `M` or `m`.
+        switch: char,
+        /// Where the argument is.
+        span: ArgvSpan,
+    },
+    /// `-m` was followed by something other than `=` after the module name.
+    /// Perl reports `Can't use '<c>' after -mname.` — `-M` splices the same
+    /// text into the `use` statement instead.
+    #[error("`-m` cannot be followed by `{character}` in argument {}", span.argument_index)]
+    UnexpectedModuleSuffix {
+        /// The first character perl would reject.
+        character: char,
+        /// Where that character is.
         span: ArgvSpan,
     },
     /// `-C` was given a value that is neither a decimal count nor a string of
