@@ -1529,6 +1529,29 @@ gates:
       - docs
       - advisory
 
+  # Train position 01 (issue #8418): the perl-tdd-support public surface and
+  # its workspace consumer edges are represented in a checked ledger before
+  # any later slot deprecates, migrates, or deletes part of that surface.
+  # Advisory (required: false) on introduction: the gate is new and the rows it
+  # governs are the input to issues #8605 and #14721 rather than a settled
+  # contract. It already fails on real drift — a public item with no row, a row
+  # whose symbol is gone, a changed cfg gate, or a stale projection — so the
+  # inventory cannot silently rot while it is advisory.
+  - name: tdd_support_surface_ledger
+    tier: merge_gate
+    description: "perl-tdd-support public surface and consumer edges match policy/tdd-support-surface.toml (advisory on introduction)"
+    required: false
+    command: cargo run --locked -p xtask -- tdd-support-surface
+    timeout_seconds: 120
+    retry_count: 0
+    budgets:
+      max_duration_ms: 90000
+    quarantine: false
+    tags:
+      - policy
+      - tests
+      - advisory
+
   - name: adr_link_check
     tier: merge_gate
     description: "Inline relative Markdown links under docs/adr resolve to files inside the repository"

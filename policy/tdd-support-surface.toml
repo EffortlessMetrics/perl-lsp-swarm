@@ -1,0 +1,1670 @@
+# Checked public-surface and consumer disposition ledger for `perl-tdd-support`.
+#
+# Authority: this file. `docs/policy/TDD_SUPPORT_SURFACE.md` is a generated
+# projection of it and must not be edited by hand.
+#
+# Checked by `cargo xtask tdd-support-surface`, which fails when a public item
+# has no row, when a row no longer names a real symbol, when a row's `cfg` gate
+# drifts from source, or when a named consumer no longer declares a dependency
+# on this crate.
+#
+# This ledger classifies; it does not rule. A row whose fate a later train slot
+# owns carries that slot's issue in `owner_issue` and says so in
+# `exit_condition` rather than inventing a disposition here.
+#
+# Adding a public item to `perl-tdd-support` requires adding its row:
+#   cargo xtask tdd-support-surface --propose
+
+schema_version = 1
+policy = "tdd-support-surface"
+subject_crate = "perl-tdd-support"
+
+[[entry]]
+id = "const:perl_tdd_support::symlink_privilege::SYMLINK_PRIVILEGE_NOT_HELD"
+api_kind = "const"
+path = "perl_tdd_support::symlink_privilege::SYMLINK_PRIVILEGE_NOT_HELD"
+cfg = ""
+behavior = "Constant `SYMLINK_PRIVILEGE_NOT_HELD` in the symlink capability surface."
+consumers = ["perl-corpus", "xtask", "perl-lsp-rs"]
+consumer_class = "test_dev_workspace_consumer"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; this is the intended owner of Windows symlink capability detection for tests"
+owner_issue = 8144
+exit_condition = "Reviewed with the retained `perl-tdd-support` boundary at train close; retained unless that review moves Windows test-capability helpers elsewhere."
+proof_command = "cargo test -p perl-corpus --locked"
+
+[[entry]]
+id = "const:perl_tdd_support::windows_fs::REQUIRE_SYMLINK_PRIVILEGE_ENV"
+api_kind = "const"
+path = "perl_tdd_support::windows_fs::REQUIRE_SYMLINK_PRIVILEGE_ENV"
+cfg = ""
+behavior = "Constant `REQUIRE_SYMLINK_PRIVILEGE_ENV` in the symlink capability surface."
+consumers = ["perl-corpus", "xtask", "perl-lsp-rs"]
+consumer_class = "test_dev_workspace_consumer"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; this is the intended owner of Windows symlink capability detection for tests"
+owner_issue = 8144
+exit_condition = "Reviewed with the retained `perl-tdd-support` boundary at train close; retained unless that review moves Windows test-capability helpers elsewhere."
+proof_command = "cargo test -p perl-corpus --locked"
+
+[[entry]]
+id = "enum:perl_tdd_support::governance::ComplexityLevel"
+api_kind = "enum"
+path = "perl_tdd_support::governance::ComplexityLevel"
+cfg = ""
+behavior = "Enum `ComplexityLevel` in the governance data model, consumed by this crate's own tests only."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided; no consumer outside this crate's own tests has been found"
+owner_issue = 8144
+exit_condition = "The retained-boundary slot under #8144 decides whether the governance data model stays in this package, moves to a CI-facing owner, or is removed as unconsumed."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "enum:perl_tdd_support::governance::LspWorkflowStage"
+api_kind = "enum"
+path = "perl_tdd_support::governance::LspWorkflowStage"
+cfg = ""
+behavior = "Enum `LspWorkflowStage` in the governance data model, consumed by this crate's own tests only."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided; no consumer outside this crate's own tests has been found"
+owner_issue = 8144
+exit_condition = "The retained-boundary slot under #8144 decides whether the governance data model stays in this package, moves to a CI-facing owner, or is removed as unconsumed."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "enum:perl_tdd_support::governance::ReportFormat"
+api_kind = "enum"
+path = "perl_tdd_support::governance::ReportFormat"
+cfg = ""
+behavior = "Enum `ReportFormat` in the governance data model, consumed by this crate's own tests only."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided; no consumer outside this crate's own tests has been found"
+owner_issue = 8144
+exit_condition = "The retained-boundary slot under #8144 decides whether the governance data model stays in this package, moves to a CI-facing owner, or is removed as unconsumed."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "enum:perl_tdd_support::governance::TestCategory"
+api_kind = "enum"
+path = "perl_tdd_support::governance::TestCategory"
+cfg = ""
+behavior = "Enum `TestCategory` in the governance data model, consumed by this crate's own tests only."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided; no consumer outside this crate's own tests has been found"
+owner_issue = 8144
+exit_condition = "The retained-boundary slot under #8144 decides whether the governance data model stays in this package, moves to a CI-facing owner, or is removed as unconsumed."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "enum:perl_tdd_support::governance::TrendDirection"
+api_kind = "enum"
+path = "perl_tdd_support::governance::TrendDirection"
+cfg = ""
+behavior = "Enum `TrendDirection` in the governance data model, consumed by this crate's own tests only."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided; no consumer outside this crate's own tests has been found"
+owner_issue = 8144
+exit_condition = "The retained-boundary slot under #8144 decides whether the governance data model stays in this package, moves to a CI-facing owner, or is removed as unconsumed."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "enum:perl_tdd_support::symlink_privilege::SymlinkTestDecision"
+api_kind = "enum"
+path = "perl_tdd_support::symlink_privilege::SymlinkTestDecision"
+cfg = ""
+behavior = "Enum `SymlinkTestDecision` carrying the typed symlink skip decision."
+consumers = ["perl-corpus", "xtask", "perl-lsp-rs"]
+consumer_class = "test_dev_workspace_consumer"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; this is the intended owner of Windows symlink capability detection for tests"
+owner_issue = 8144
+exit_condition = "Reviewed with the retained `perl-tdd-support` boundary at train close; retained unless that review moves Windows test-capability helpers elsewhere."
+proof_command = "cargo test -p perl-corpus --locked"
+
+[[entry]]
+id = "enum:perl_tdd_support::tdd::tdd_basic::DiagnosticSeverity"
+api_kind = "enum"
+path = "perl_tdd_support::tdd::tdd_basic::DiagnosticSeverity"
+cfg = ""
+behavior = "Enum `DiagnosticSeverity` in `tdd_basic`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "enum:perl_tdd_support::tdd::tdd_basic::RefactoringCategory"
+api_kind = "enum"
+path = "perl_tdd_support::tdd::tdd_basic::RefactoringCategory"
+cfg = ""
+behavior = "Enum `RefactoringCategory` in `tdd_basic`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "enum:perl_tdd_support::tdd::tdd_basic::TddState"
+api_kind = "enum"
+path = "perl_tdd_support::tdd::tdd_basic::TddState"
+cfg = ""
+behavior = "Enum `TddState` in `tdd_basic`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "enum:perl_tdd_support::tdd::tdd_workflow::AnnotationSeverity"
+api_kind = "enum"
+path = "perl_tdd_support::tdd::tdd_workflow::AnnotationSeverity"
+cfg = ""
+behavior = "Enum `AnnotationSeverity` in `tdd_workflow`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "enum:perl_tdd_support::tdd::tdd_workflow::TddAction"
+api_kind = "enum"
+path = "perl_tdd_support::tdd::tdd_workflow::TddAction"
+cfg = ""
+behavior = "Enum `TddAction` in `tdd_workflow`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "enum:perl_tdd_support::tdd::tdd_workflow::TestType"
+api_kind = "enum"
+path = "perl_tdd_support::tdd::tdd_workflow::TestType"
+cfg = ""
+behavior = "Enum `TestType` in `tdd_workflow`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "enum:perl_tdd_support::tdd::tdd_workflow::WorkflowState"
+api_kind = "enum"
+path = "perl_tdd_support::tdd::tdd_workflow::WorkflowState"
+cfg = ""
+behavior = "Enum `WorkflowState` in `tdd_workflow`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "enum:perl_tdd_support::tdd::test_generator::Priority"
+api_kind = "enum"
+path = "perl_tdd_support::tdd::test_generator::Priority"
+cfg = ""
+behavior = "Enum `Priority` in `test_generator`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "enum:perl_tdd_support::tdd::test_generator::RefactoringCategory"
+api_kind = "enum"
+path = "perl_tdd_support::tdd::test_generator::RefactoringCategory"
+cfg = ""
+behavior = "Enum `RefactoringCategory` in `test_generator`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "enum:perl_tdd_support::tdd::test_generator::TestExecutionError"
+api_kind = "enum"
+path = "perl_tdd_support::tdd::test_generator::TestExecutionError"
+cfg = ""
+behavior = "Enum `TestExecutionError` in `test_generator`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "enum:perl_tdd_support::tdd::test_generator::TestFramework"
+api_kind = "enum"
+path = "perl_tdd_support::tdd::test_generator::TestFramework"
+cfg = ""
+behavior = "Enum `TestFramework` in `test_generator`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "enum:perl_tdd_support::tdd::test_runner::TestKind"
+api_kind = "enum"
+path = "perl_tdd_support::tdd::test_runner::TestKind"
+cfg = ""
+behavior = "Enum `TestKind` in `test_runner`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "enum:perl_tdd_support::tdd::test_runner::TestStatus"
+api_kind = "enum"
+path = "perl_tdd_support::tdd::test_runner::TestStatus"
+cfg = ""
+behavior = "Enum `TestStatus` in `test_runner`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "feature:default"
+api_kind = "feature"
+path = "default"
+cfg = ""
+behavior = "Default feature set; enables the core TDD helper surface with no optional dependencies."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; the default feature set is empty and adds no optional dependency"
+owner_issue = 8144
+exit_condition = "Reviewed if the crate gains an optional dependency that should be on by default."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "feature:lsp-compat"
+api_kind = "feature"
+path = "lsp-compat"
+cfg = ""
+behavior = "Enables `lsp-types` and `url` for the `tdd_workflow::lsp_integration` submodule."
+consumers = ["perl-parser"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; the feature is the supported way to opt into LSP conversion helpers"
+owner_issue = 14721
+exit_condition = "Reviewed with #14721: `perl-parser` enables `perl-tdd-support/lsp-compat` from `[dependencies]`, so the feature's production reach is decided there."
+proof_command = "cargo check -p perl-tdd-support --features lsp-compat --locked"
+
+[[entry]]
+id = "fn:perl_tdd_support::symlink_privilege::classify_symlink_error"
+api_kind = "fn"
+path = "perl_tdd_support::symlink_privilege::classify_symlink_error"
+cfg = ""
+behavior = "Function `classify_symlink_error` wrapping a `std::os::windows::fs` symlink API and reporting capability rather than panicking."
+consumers = ["perl-corpus", "xtask", "perl-lsp-rs"]
+consumer_class = "test_dev_workspace_consumer"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; this is the intended owner of Windows symlink capability detection for tests"
+owner_issue = 8144
+exit_condition = "Reviewed with the retained `perl-tdd-support` boundary at train close; retained unless that review moves Windows test-capability helpers elsewhere."
+proof_command = "cargo test -p perl-corpus --locked"
+
+[[entry]]
+id = "fn:perl_tdd_support::symlink_privilege::symlink_test_decision"
+api_kind = "fn"
+path = "perl_tdd_support::symlink_privilege::symlink_test_decision"
+cfg = ""
+behavior = "Function `symlink_test_decision` wrapping a `std::os::windows::fs` symlink API and reporting capability rather than panicking."
+consumers = ["perl-corpus", "xtask", "perl-lsp-rs"]
+consumer_class = "test_dev_workspace_consumer"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; this is the intended owner of Windows symlink capability detection for tests"
+owner_issue = 8144
+exit_condition = "Reviewed with the retained `perl-tdd-support` boundary at train close; retained unless that review moves Windows test-capability helpers elsewhere."
+proof_command = "cargo test -p perl-corpus --locked"
+
+[[entry]]
+id = "fn:perl_tdd_support::tdd::tdd_workflow::lsp_integration::coverage_to_diagnostics"
+api_kind = "fn"
+path = "perl_tdd_support::tdd::tdd_workflow::lsp_integration::coverage_to_diagnostics"
+cfg = ""
+behavior = "Fn `coverage_to_diagnostics` in `lsp_integration`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "fn:perl_tdd_support::tdd::tdd_workflow::lsp_integration::create_status_message"
+api_kind = "fn"
+path = "perl_tdd_support::tdd::tdd_workflow::lsp_integration::create_status_message"
+cfg = ""
+behavior = "Fn `create_status_message` in `lsp_integration`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "fn:perl_tdd_support::tdd::tdd_workflow::lsp_integration::tdd_actions_to_code_actions"
+api_kind = "fn"
+path = "perl_tdd_support::tdd::tdd_workflow::lsp_integration::tdd_actions_to_code_actions"
+cfg = ""
+behavior = "Fn `tdd_actions_to_code_actions` in `lsp_integration`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "fn:perl_tdd_support::windows_fs::try_create_dir_symlink"
+api_kind = "fn"
+path = "perl_tdd_support::windows_fs::try_create_dir_symlink"
+cfg = "windows"
+behavior = "Function `try_create_dir_symlink` wrapping a `std::os::windows::fs` symlink API and reporting capability rather than panicking."
+consumers = ["perl-corpus", "xtask", "perl-lsp-rs"]
+consumer_class = "test_dev_workspace_consumer"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; this is the intended owner of Windows symlink capability detection for tests"
+owner_issue = 8144
+exit_condition = "Reviewed with the retained `perl-tdd-support` boundary at train close; retained unless that review moves Windows test-capability helpers elsewhere."
+proof_command = "cargo test -p perl-corpus --locked"
+
+[[entry]]
+id = "fn:perl_tdd_support::windows_fs::try_create_file_symlink"
+api_kind = "fn"
+path = "perl_tdd_support::windows_fs::try_create_file_symlink"
+cfg = "windows"
+behavior = "Function `try_create_file_symlink` wrapping a `std::os::windows::fs` symlink API and reporting capability rather than panicking."
+consumers = ["perl-corpus", "xtask", "perl-lsp-rs"]
+consumer_class = "test_dev_workspace_consumer"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; this is the intended owner of Windows symlink capability detection for tests"
+owner_issue = 8144
+exit_condition = "Reviewed with the retained `perl-tdd-support` boundary at train close; retained unless that review moves Windows test-capability helpers elsewhere."
+proof_command = "cargo test -p perl-corpus --locked"
+
+[[entry]]
+id = "module:perl_tdd_support::bdd"
+api_kind = "module"
+path = "perl_tdd_support::bdd"
+cfg = ""
+behavior = "Module `bdd`: narrative BDD-style scenario logging for tests."
+consumers = ["perl-lsp-rs", "perl-lexer"]
+consumer_class = "test_dev_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided by design: #8605 selects retain-in-bounded-authoring, move-to-existing-owner, or delete"
+owner_issue = 8605
+exit_condition = "Row is rewritten or removed when #8605 records the BddScenario ownership ruling. #9130 forbids moving it into `perl-test-must`, so that destination is not available to this row."
+proof_command = "cargo test -p perl-lsp-rs --test lsp_bdd_workflows --locked"
+
+[[entry]]
+id = "module:perl_tdd_support::governance"
+api_kind = "module"
+path = "perl_tdd_support::governance"
+cfg = ""
+behavior = "Module `governance`: serializable data model for ignored-test monitoring, baselines, quality gates, and trend reporting."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided; no consumer outside this crate's own tests has been found"
+owner_issue = 8144
+exit_condition = "The retained-boundary slot under #8144 decides whether the governance data model stays in this package, moves to a CI-facing owner, or is removed as unconsumed."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "module:perl_tdd_support::symlink_privilege"
+api_kind = "module"
+path = "perl_tdd_support::symlink_privilege"
+cfg = ""
+behavior = "Module `symlink_privilege`: typed detection and skip for symlink-creating tests on Windows sessions without SeCreateSymbolicLinkPrivilege (os error 1314)."
+consumers = ["perl-corpus", "xtask", "perl-lsp-rs"]
+consumer_class = "test_dev_workspace_consumer"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; this is the intended owner of Windows symlink capability detection for tests"
+owner_issue = 8144
+exit_condition = "Reviewed with the retained `perl-tdd-support` boundary at train close; retained unless that review moves Windows test-capability helpers elsewhere."
+proof_command = "cargo test -p perl-corpus --locked"
+
+[[entry]]
+id = "module:perl_tdd_support::tdd"
+api_kind = "module"
+path = "perl_tdd_support::tdd"
+cfg = ""
+behavior = "Module `tdd` in the TDD helper tree; republished wholesale by `perl-parser` via `pub use perl_tdd_support::tdd::*`, so its items are `perl-parser` public API too."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "module:perl_tdd_support::tdd::tdd_basic"
+api_kind = "module"
+path = "perl_tdd_support::tdd::tdd_basic"
+cfg = ""
+behavior = "Module `tdd_basic` in the TDD helper tree; republished wholesale by `perl-parser` via `pub use perl_tdd_support::tdd::*`, so its items are `perl-parser` public API too."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "module:perl_tdd_support::tdd::tdd_workflow"
+api_kind = "module"
+path = "perl_tdd_support::tdd::tdd_workflow"
+cfg = ""
+behavior = "Module `tdd_workflow` in the TDD helper tree; republished wholesale by `perl-parser` via `pub use perl_tdd_support::tdd::*`, so its items are `perl-parser` public API too."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "module:perl_tdd_support::tdd::tdd_workflow::lsp_integration"
+api_kind = "module"
+path = "perl_tdd_support::tdd::tdd_workflow::lsp_integration"
+cfg = "feature=\"lsp-compat\""
+behavior = "Module `lsp_integration` in the TDD helper tree; republished wholesale by `perl-parser` via `pub use perl_tdd_support::tdd::*`, so its items are `perl-parser` public API too."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "module:perl_tdd_support::tdd::test_generator"
+api_kind = "module"
+path = "perl_tdd_support::tdd::test_generator"
+cfg = ""
+behavior = "Module `test_generator` in the TDD helper tree; republished wholesale by `perl-parser` via `pub use perl_tdd_support::tdd::*`, so its items are `perl-parser` public API too."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "module:perl_tdd_support::tdd::test_runner"
+api_kind = "module"
+path = "perl_tdd_support::tdd::test_runner"
+cfg = ""
+behavior = "Module `test_runner` in the TDD helper tree; republished wholesale by `perl-parser` via `pub use perl_tdd_support::tdd::*`, so its items are `perl-parser` public API too."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "module:perl_tdd_support::windows_fs"
+api_kind = "module"
+path = "perl_tdd_support::windows_fs"
+cfg = "windows"
+behavior = "Module `windows_fs`: typed detection and skip for symlink-creating tests on Windows sessions without SeCreateSymbolicLinkPrivilege (os error 1314)."
+consumers = ["perl-corpus", "xtask", "perl-lsp-rs"]
+consumer_class = "test_dev_workspace_consumer"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; this is the intended owner of Windows symlink capability detection for tests"
+owner_issue = 8144
+exit_condition = "Reviewed with the retained `perl-tdd-support` boundary at train close; retained unless that review moves Windows test-capability helpers elsewhere."
+proof_command = "cargo test -p perl-corpus --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::BddScenario"
+api_kind = "reexport"
+path = "perl_tdd_support::BddScenario"
+cfg = ""
+behavior = "Crate-root re-export of `bdd::BddScenario`."
+consumers = ["perl-lsp-rs", "perl-lexer"]
+consumer_class = "test_dev_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided by design: #8605 selects retain-in-bounded-authoring, move-to-existing-owner, or delete"
+owner_issue = 8605
+exit_condition = "Row is rewritten or removed when #8605 records the BddScenario ownership ruling. #9130 forbids moving it into `perl-test-must`, so that destination is not available to this row."
+proof_command = "cargo test -p perl-lsp-rs --test lsp_bdd_workflows --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::Node"
+api_kind = "reexport"
+path = "perl_tdd_support::Node"
+cfg = ""
+behavior = "Convenience re-export of `perl_parser_core::Node` at the crate root so test files can import parser types from one place."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "`perl_parser_core::Node` imported directly"
+owner_issue = 8144
+exit_condition = "No source outside this crate names this re-export; the retained-boundary slot under #8144 confirms that and removes it, or records a downstream consumer that justifies keeping it."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::NodeKind"
+api_kind = "reexport"
+path = "perl_tdd_support::NodeKind"
+cfg = ""
+behavior = "Convenience re-export of `perl_parser_core::NodeKind` at the crate root so test files can import parser types from one place."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "`perl_parser_core::NodeKind` imported directly"
+owner_issue = 8144
+exit_condition = "No source outside this crate names this re-export; the retained-boundary slot under #8144 confirms that and removes it, or records a downstream consumer that justifies keeping it."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::ParseError"
+api_kind = "reexport"
+path = "perl_tdd_support::ParseError"
+cfg = ""
+behavior = "Convenience re-export of `perl_parser_core::ParseError` at the crate root so test files can import parser types from one place."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "`perl_parser_core::ParseError` imported directly"
+owner_issue = 8144
+exit_condition = "No source outside this crate names this re-export; the retained-boundary slot under #8144 confirms that and removes it, or records a downstream consumer that justifies keeping it."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::ParseResult"
+api_kind = "reexport"
+path = "perl_tdd_support::ParseResult"
+cfg = ""
+behavior = "Convenience re-export of `perl_parser_core::ParseResult` at the crate root so test files can import parser types from one place."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "`perl_parser_core::ParseResult` imported directly"
+owner_issue = 8144
+exit_condition = "No source outside this crate names this re-export; the retained-boundary slot under #8144 confirms that and removes it, or records a downstream consumer that justifies keeping it."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::Parser"
+api_kind = "reexport"
+path = "perl_tdd_support::Parser"
+cfg = ""
+behavior = "Convenience re-export of `perl_parser_core::Parser` at the crate root so test files can import parser types from one place."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "`perl_parser_core::Parser` imported directly"
+owner_issue = 8144
+exit_condition = "No source outside this crate names this re-export; the retained-boundary slot under #8144 confirms that and removes it, or records a downstream consumer that justifies keeping it."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::SourceLocation"
+api_kind = "reexport"
+path = "perl_tdd_support::SourceLocation"
+cfg = ""
+behavior = "Convenience re-export of `perl_parser_core::SourceLocation` at the crate root so test files can import parser types from one place."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "`perl_parser_core::SourceLocation` imported directly"
+owner_issue = 8144
+exit_condition = "No source outside this crate names this re-export; the retained-boundary slot under #8144 confirms that and removes it, or records a downstream consumer that justifies keeping it."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::SymlinkTestDecision"
+api_kind = "reexport"
+path = "perl_tdd_support::SymlinkTestDecision"
+cfg = ""
+behavior = "Crate-root re-export of `SymlinkTestDecision` from the symlink capability modules."
+consumers = ["perl-corpus", "xtask", "perl-lsp-rs"]
+consumer_class = "test_dev_workspace_consumer"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; this is the intended owner of Windows symlink capability detection for tests"
+owner_issue = 8144
+exit_condition = "Reviewed with the retained `perl-tdd-support` boundary at train close; retained unless that review moves Windows test-capability helpers elsewhere."
+proof_command = "cargo test -p perl-corpus --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::ast"
+api_kind = "reexport"
+path = "perl_tdd_support::ast"
+cfg = ""
+behavior = "Convenience re-export of `perl_parser_core::ast` at the crate root so test files can import parser types from one place."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "`perl_parser_core::ast` imported directly"
+owner_issue = 8144
+exit_condition = "No source outside this crate names this re-export; the retained-boundary slot under #8144 confirms that and removes it, or records a downstream consumer that justifies keeping it."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::classify_symlink_error"
+api_kind = "reexport"
+path = "perl_tdd_support::classify_symlink_error"
+cfg = ""
+behavior = "Crate-root re-export of `classify_symlink_error` from the symlink capability modules."
+consumers = ["perl-corpus", "xtask", "perl-lsp-rs"]
+consumer_class = "test_dev_workspace_consumer"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; this is the intended owner of Windows symlink capability detection for tests"
+owner_issue = 8144
+exit_condition = "Reviewed with the retained `perl-tdd-support` boundary at train close; retained unless that review moves Windows test-capability helpers elsewhere."
+proof_command = "cargo test -p perl-corpus --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::error"
+api_kind = "reexport"
+path = "perl_tdd_support::error"
+cfg = ""
+behavior = "Convenience re-export of `perl_parser_core::error` at the crate root so test files can import parser types from one place."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "`perl_parser_core::error` imported directly"
+owner_issue = 8144
+exit_condition = "No source outside this crate names this re-export; the retained-boundary slot under #8144 confirms that and removes it, or records a downstream consumer that justifies keeping it."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::must"
+api_kind = "reexport"
+path = "perl_tdd_support::must"
+cfg = ""
+behavior = "Re-export of `perl_test_must::must`. Panic-on-failure assertion helper; referenced by 212 source file(s) outside this crate."
+consumers = ["perl-parser", "perl-lsp-rs", "perl-dap", "perl-lexer"]
+consumer_class = "published_compatibility_surface"
+compatibility = "published"
+disposition = "compatibility_with_expiry"
+replacement_owner = "`perl_test_must::must` imported directly"
+owner_issue = 8605
+exit_condition = "Row is removed when #8605 has migrated workspace consumers to direct `perl-test-must` imports and either deleted this re-export or bounded it with an evidenced downstream expiry."
+proof_command = "cargo test -p perl-test-must --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::must_err"
+api_kind = "reexport"
+path = "perl_tdd_support::must_err"
+cfg = ""
+behavior = "Re-export of `perl_test_must::must_err`. Panic-on-failure assertion helper; referenced by 13 source file(s) outside this crate."
+consumers = ["perl-parser", "perl-lsp-rs", "perl-dap", "perl-lexer"]
+consumer_class = "published_compatibility_surface"
+compatibility = "published"
+disposition = "compatibility_with_expiry"
+replacement_owner = "`perl_test_must::must_err` imported directly"
+owner_issue = 8605
+exit_condition = "Row is removed when #8605 has migrated workspace consumers to direct `perl-test-must` imports and either deleted this re-export or bounded it with an evidenced downstream expiry."
+proof_command = "cargo test -p perl-test-must --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::must_err_with"
+api_kind = "reexport"
+path = "perl_tdd_support::must_err_with"
+cfg = ""
+behavior = "Re-export of `perl_test_must::must_err_with`. Context-preserving assertion helper; no in-repository consumer names it through this path today."
+consumers = []
+consumer_class = "published_compatibility_surface"
+compatibility = "published"
+disposition = "compatibility_with_expiry"
+replacement_owner = "`perl_test_must::must_err_with` imported directly"
+owner_issue = 8605
+exit_condition = "Row is removed when #8605 has migrated workspace consumers to direct `perl-test-must` imports and either deleted this re-export or bounded it with an evidenced downstream expiry."
+proof_command = "cargo test -p perl-test-must --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::must_some"
+api_kind = "reexport"
+path = "perl_tdd_support::must_some"
+cfg = ""
+behavior = "Re-export of `perl_test_must::must_some`. Panic-on-failure assertion helper; referenced by 101 source file(s) outside this crate."
+consumers = ["perl-parser", "perl-lsp-rs", "perl-dap", "perl-lexer"]
+consumer_class = "published_compatibility_surface"
+compatibility = "published"
+disposition = "compatibility_with_expiry"
+replacement_owner = "`perl_test_must::must_some` imported directly"
+owner_issue = 8605
+exit_condition = "Row is removed when #8605 has migrated workspace consumers to direct `perl-test-must` imports and either deleted this re-export or bounded it with an evidenced downstream expiry."
+proof_command = "cargo test -p perl-test-must --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::must_some_with"
+api_kind = "reexport"
+path = "perl_tdd_support::must_some_with"
+cfg = ""
+behavior = "Re-export of `perl_test_must::must_some_with`. Panic-on-failure assertion helper; referenced by 1 source file(s) outside this crate."
+consumers = ["perl-parser", "perl-lsp-rs", "perl-dap", "perl-lexer"]
+consumer_class = "published_compatibility_surface"
+compatibility = "published"
+disposition = "compatibility_with_expiry"
+replacement_owner = "`perl_test_must::must_some_with` imported directly"
+owner_issue = 8605
+exit_condition = "Row is removed when #8605 has migrated workspace consumers to direct `perl-test-must` imports and either deleted this re-export or bounded it with an evidenced downstream expiry."
+proof_command = "cargo test -p perl-test-must --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::must_with"
+api_kind = "reexport"
+path = "perl_tdd_support::must_with"
+cfg = ""
+behavior = "Re-export of `perl_test_must::must_with`. Context-preserving assertion helper; no in-repository consumer names it through this path today."
+consumers = []
+consumer_class = "published_compatibility_surface"
+compatibility = "published"
+disposition = "compatibility_with_expiry"
+replacement_owner = "`perl_test_must::must_with` imported directly"
+owner_issue = 8605
+exit_condition = "Row is removed when #8605 has migrated workspace consumers to direct `perl-test-must` imports and either deleted this re-export or bounded it with an evidenced downstream expiry."
+proof_command = "cargo test -p perl-test-must --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::parser"
+api_kind = "reexport"
+path = "perl_tdd_support::parser"
+cfg = ""
+behavior = "Convenience re-export of `perl_parser_core::parser` at the crate root so test files can import parser types from one place."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "`perl_parser_core::parser` imported directly"
+owner_issue = 8144
+exit_condition = "No source outside this crate names this re-export; the retained-boundary slot under #8144 confirms that and removes it, or records a downstream consumer that justifies keeping it."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::position"
+api_kind = "reexport"
+path = "perl_tdd_support::position"
+cfg = ""
+behavior = "Convenience re-export of `perl_parser_core::position` at the crate root so test files can import parser types from one place."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "`perl_parser_core::position` imported directly"
+owner_issue = 8144
+exit_condition = "No source outside this crate names this re-export; the retained-boundary slot under #8144 confirms that and removes it, or records a downstream consumer that justifies keeping it."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::symlink_test_decision"
+api_kind = "reexport"
+path = "perl_tdd_support::symlink_test_decision"
+cfg = ""
+behavior = "Crate-root re-export of `symlink_test_decision` from the symlink capability modules."
+consumers = ["perl-corpus", "xtask", "perl-lsp-rs"]
+consumer_class = "test_dev_workspace_consumer"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; this is the intended owner of Windows symlink capability detection for tests"
+owner_issue = 8144
+exit_condition = "Reviewed with the retained `perl-tdd-support` boundary at train close; retained unless that review moves Windows test-capability helpers elsewhere."
+proof_command = "cargo test -p perl-corpus --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::tdd_basic"
+api_kind = "reexport"
+path = "perl_tdd_support::tdd_basic"
+cfg = ""
+behavior = "Crate-root re-export of `tdd::tdd_basic`; the same module is also republished by `perl-parser` and reached directly by `perl-lsp-rs`."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::tdd_workflow"
+api_kind = "reexport"
+path = "perl_tdd_support::tdd_workflow"
+cfg = ""
+behavior = "Crate-root re-export of `tdd::tdd_workflow`; the same module is also republished by `perl-parser` and reached directly by `perl-lsp-rs`."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::test_generator"
+api_kind = "reexport"
+path = "perl_tdd_support::test_generator"
+cfg = ""
+behavior = "Crate-root re-export of `tdd::test_generator`; the same module is also republished by `perl-parser` and reached directly by `perl-lsp-rs`."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::test_runner"
+api_kind = "reexport"
+path = "perl_tdd_support::test_runner"
+cfg = ""
+behavior = "Crate-root re-export of `tdd::test_runner`; the same module is also republished by `perl-parser` and reached directly by `perl-lsp-rs`."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::try_create_dir_symlink"
+api_kind = "reexport"
+path = "perl_tdd_support::try_create_dir_symlink"
+cfg = "windows"
+behavior = "Crate-root re-export of `try_create_dir_symlink` from the symlink capability modules."
+consumers = ["perl-corpus", "xtask", "perl-lsp-rs"]
+consumer_class = "test_dev_workspace_consumer"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; this is the intended owner of Windows symlink capability detection for tests"
+owner_issue = 8144
+exit_condition = "Reviewed with the retained `perl-tdd-support` boundary at train close; retained unless that review moves Windows test-capability helpers elsewhere."
+proof_command = "cargo test -p perl-corpus --locked"
+
+[[entry]]
+id = "reexport:perl_tdd_support::try_create_file_symlink"
+api_kind = "reexport"
+path = "perl_tdd_support::try_create_file_symlink"
+cfg = "windows"
+behavior = "Crate-root re-export of `try_create_file_symlink` from the symlink capability modules."
+consumers = ["perl-corpus", "xtask", "perl-lsp-rs"]
+consumer_class = "test_dev_workspace_consumer"
+compatibility = "published"
+disposition = "retain_pure"
+replacement_owner = "none; this is the intended owner of Windows symlink capability detection for tests"
+owner_issue = 8144
+exit_condition = "Reviewed with the retained `perl-tdd-support` boundary at train close; retained unless that review moves Windows test-capability helpers elsewhere."
+proof_command = "cargo test -p perl-corpus --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::bdd::BddScenario"
+api_kind = "struct"
+path = "perl_tdd_support::bdd::BddScenario"
+cfg = ""
+behavior = "Scenario helper whose `new`/`given`/`when`/`then` methods write narrative lines to stderr via `eprintln!`."
+consumers = ["perl-lsp-rs", "perl-lexer"]
+consumer_class = "test_dev_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided by design: #8605 selects retain-in-bounded-authoring, move-to-existing-owner, or delete"
+owner_issue = 8605
+exit_condition = "Row is rewritten or removed when #8605 records the BddScenario ownership ruling. #9130 forbids moving it into `perl-test-must`, so that destination is not available to this row."
+proof_command = "cargo test -p perl-lsp-rs --test lsp_bdd_workflows --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::governance::BaselineManagement"
+api_kind = "struct"
+path = "perl_tdd_support::governance::BaselineManagement"
+cfg = ""
+behavior = "Struct `BaselineManagement` in the governance data model, consumed by this crate's own tests only."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided; no consumer outside this crate's own tests has been found"
+owner_issue = 8144
+exit_condition = "The retained-boundary slot under #8144 decides whether the governance data model stays in this package, moves to a CI-facing owner, or is removed as unconsumed."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::governance::BaselineTracker"
+api_kind = "struct"
+path = "perl_tdd_support::governance::BaselineTracker"
+cfg = ""
+behavior = "Struct `BaselineTracker` in the governance data model, consumed by this crate's own tests only."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided; no consumer outside this crate's own tests has been found"
+owner_issue = 8144
+exit_condition = "The retained-boundary slot under #8144 decides whether the governance data model stays in this package, moves to a CI-facing owner, or is removed as unconsumed."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::governance::CiValidation"
+api_kind = "struct"
+path = "perl_tdd_support::governance::CiValidation"
+cfg = ""
+behavior = "Struct `CiValidation` in the governance data model, consumed by this crate's own tests only."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided; no consumer outside this crate's own tests has been found"
+owner_issue = 8144
+exit_condition = "The retained-boundary slot under #8144 decides whether the governance data model stays in this package, moves to a CI-facing owner, or is removed as unconsumed."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::governance::DocumentationRequirements"
+api_kind = "struct"
+path = "perl_tdd_support::governance::DocumentationRequirements"
+cfg = ""
+behavior = "Struct `DocumentationRequirements` in the governance data model, consumed by this crate's own tests only."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided; no consumer outside this crate's own tests has been found"
+owner_issue = 8144
+exit_condition = "The retained-boundary slot under #8144 decides whether the governance data model stays in this package, moves to a CI-facing owner, or is removed as unconsumed."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::governance::IgnoredTestGovernance"
+api_kind = "struct"
+path = "perl_tdd_support::governance::IgnoredTestGovernance"
+cfg = ""
+behavior = "Struct `IgnoredTestGovernance` in the governance data model, consumed by this crate's own tests only."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided; no consumer outside this crate's own tests has been found"
+owner_issue = 8144
+exit_condition = "The retained-boundary slot under #8144 decides whether the governance data model stays in this package, moves to a CI-facing owner, or is removed as unconsumed."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::governance::IgnoredTestGuardian"
+api_kind = "struct"
+path = "perl_tdd_support::governance::IgnoredTestGuardian"
+cfg = ""
+behavior = "Struct `IgnoredTestGuardian` in the governance data model, consumed by this crate's own tests only."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided; no consumer outside this crate's own tests has been found"
+owner_issue = 8144
+exit_condition = "The retained-boundary slot under #8144 decides whether the governance data model stays in this package, moves to a CI-facing owner, or is removed as unconsumed."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::governance::IgnoredTestInventory"
+api_kind = "struct"
+path = "perl_tdd_support::governance::IgnoredTestInventory"
+cfg = ""
+behavior = "Struct `IgnoredTestInventory` in the governance data model, consumed by this crate's own tests only."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided; no consumer outside this crate's own tests has been found"
+owner_issue = 8144
+exit_condition = "The retained-boundary slot under #8144 decides whether the governance data model stays in this package, moves to a CI-facing owner, or is removed as unconsumed."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::governance::IgnoredTestMetadata"
+api_kind = "struct"
+path = "perl_tdd_support::governance::IgnoredTestMetadata"
+cfg = ""
+behavior = "Struct `IgnoredTestMetadata` in the governance data model, consumed by this crate's own tests only."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided; no consumer outside this crate's own tests has been found"
+owner_issue = 8144
+exit_condition = "The retained-boundary slot under #8144 decides whether the governance data model stays in this package, moves to a CI-facing owner, or is removed as unconsumed."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::governance::MetricsTracking"
+api_kind = "struct"
+path = "perl_tdd_support::governance::MetricsTracking"
+cfg = ""
+behavior = "Struct `MetricsTracking` in the governance data model, consumed by this crate's own tests only."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided; no consumer outside this crate's own tests has been found"
+owner_issue = 8144
+exit_condition = "The retained-boundary slot under #8144 decides whether the governance data model stays in this package, moves to a CI-facing owner, or is removed as unconsumed."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::governance::PerformanceRequirements"
+api_kind = "struct"
+path = "perl_tdd_support::governance::PerformanceRequirements"
+cfg = ""
+behavior = "Struct `PerformanceRequirements` in the governance data model, consumed by this crate's own tests only."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided; no consumer outside this crate's own tests has been found"
+owner_issue = 8144
+exit_condition = "The retained-boundary slot under #8144 decides whether the governance data model stays in this package, moves to a CI-facing owner, or is removed as unconsumed."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::governance::PreCommitValidation"
+api_kind = "struct"
+path = "perl_tdd_support::governance::PreCommitValidation"
+cfg = ""
+behavior = "Struct `PreCommitValidation` in the governance data model, consumed by this crate's own tests only."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided; no consumer outside this crate's own tests has been found"
+owner_issue = 8144
+exit_condition = "The retained-boundary slot under #8144 decides whether the governance data model stays in this package, moves to a CI-facing owner, or is removed as unconsumed."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::governance::QualityGates"
+api_kind = "struct"
+path = "perl_tdd_support::governance::QualityGates"
+cfg = ""
+behavior = "Struct `QualityGates` in the governance data model, consumed by this crate's own tests only."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided; no consumer outside this crate's own tests has been found"
+owner_issue = 8144
+exit_condition = "The retained-boundary slot under #8144 decides whether the governance data model stays in this package, moves to a CI-facing owner, or is removed as unconsumed."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::governance::RegressionResult"
+api_kind = "struct"
+path = "perl_tdd_support::governance::RegressionResult"
+cfg = ""
+behavior = "Struct `RegressionResult` in the governance data model, consumed by this crate's own tests only."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided; no consumer outside this crate's own tests has been found"
+owner_issue = 8144
+exit_condition = "The retained-boundary slot under #8144 decides whether the governance data model stays in this package, moves to a CI-facing owner, or is removed as unconsumed."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::governance::ReportingConfiguration"
+api_kind = "struct"
+path = "perl_tdd_support::governance::ReportingConfiguration"
+cfg = ""
+behavior = "Struct `ReportingConfiguration` in the governance data model, consumed by this crate's own tests only."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided; no consumer outside this crate's own tests has been found"
+owner_issue = 8144
+exit_condition = "The retained-boundary slot under #8144 decides whether the governance data model stays in this package, moves to a CI-facing owner, or is removed as unconsumed."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::governance::TrendReport"
+api_kind = "struct"
+path = "perl_tdd_support::governance::TrendReport"
+cfg = ""
+behavior = "Struct `TrendReport` in the governance data model, consumed by this crate's own tests only."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided; no consumer outside this crate's own tests has been found"
+owner_issue = 8144
+exit_condition = "The retained-boundary slot under #8144 decides whether the governance data model stays in this package, moves to a CI-facing owner, or is removed as unconsumed."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::governance::ValidationResult"
+api_kind = "struct"
+path = "perl_tdd_support::governance::ValidationResult"
+cfg = ""
+behavior = "Struct `ValidationResult` in the governance data model, consumed by this crate's own tests only."
+consumers = []
+consumer_class = "self_only"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "undecided; no consumer outside this crate's own tests has been found"
+owner_issue = 8144
+exit_condition = "The retained-boundary slot under #8144 decides whether the governance data model stays in this package, moves to a CI-facing owner, or is removed as unconsumed."
+proof_command = "cargo test -p perl-tdd-support --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::tdd_basic::Diagnostic"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::tdd_basic::Diagnostic"
+cfg = ""
+behavior = "Struct `Diagnostic` in `tdd_basic`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::tdd_basic::RefactoringAnalyzer"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::tdd_basic::RefactoringAnalyzer"
+cfg = ""
+behavior = "Struct `RefactoringAnalyzer` in `tdd_basic`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::tdd_basic::RefactoringSuggestion"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::tdd_basic::RefactoringSuggestion"
+cfg = ""
+behavior = "Struct `RefactoringSuggestion` in `tdd_basic`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::tdd_basic::SubroutineInfo"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::tdd_basic::SubroutineInfo"
+cfg = ""
+behavior = "Struct `SubroutineInfo` in `tdd_basic`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::tdd_basic::TddResult"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::tdd_basic::TddResult"
+cfg = ""
+behavior = "Struct `TddResult` in `tdd_basic`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::tdd_basic::TddWorkflow"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::tdd_basic::TddWorkflow"
+cfg = ""
+behavior = "Struct `TddWorkflow` in `tdd_basic`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::tdd_basic::TestGenerator"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::tdd_basic::TestGenerator"
+cfg = ""
+behavior = "Simplified framework-parameterised test generator; used in `perl-lsp-rs` production code to back a test-generation code action."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::tdd_workflow::BranchCoverage"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::tdd_workflow::BranchCoverage"
+cfg = ""
+behavior = "Struct `BranchCoverage` in `tdd_workflow`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::tdd_workflow::CoverageAnnotation"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::tdd_workflow::CoverageAnnotation"
+cfg = ""
+behavior = "Struct `CoverageAnnotation` in `tdd_workflow`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::tdd_workflow::CoverageTracker"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::tdd_workflow::CoverageTracker"
+cfg = ""
+behavior = "Struct `CoverageTracker` in `tdd_workflow`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::tdd_workflow::LineCoverage"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::tdd_workflow::LineCoverage"
+cfg = ""
+behavior = "Struct `LineCoverage` in `tdd_workflow`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::tdd_workflow::TddConfig"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::tdd_workflow::TddConfig"
+cfg = ""
+behavior = "Struct `TddConfig` in `tdd_workflow`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::tdd_workflow::TddCycleResult"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::tdd_workflow::TddCycleResult"
+cfg = ""
+behavior = "Struct `TddCycleResult` in `tdd_workflow`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::tdd_workflow::TddWorkflow"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::tdd_workflow::TddWorkflow"
+cfg = ""
+behavior = "Struct `TddWorkflow` in `tdd_workflow`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::tdd_workflow::WorkflowStatus"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::tdd_workflow::WorkflowStatus"
+cfg = ""
+behavior = "Struct `WorkflowStatus` in `tdd_workflow`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::test_generator::CoverageReport"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::test_generator::CoverageReport"
+cfg = ""
+behavior = "Struct `CoverageReport` in `test_generator`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::test_generator::RefactoringSuggester"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::test_generator::RefactoringSuggester"
+cfg = ""
+behavior = "Struct `RefactoringSuggester` in `test_generator`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::test_generator::RefactoringSuggestion"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::test_generator::RefactoringSuggestion"
+cfg = ""
+behavior = "Struct `RefactoringSuggestion` in `test_generator`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::test_generator::TestCase"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::test_generator::TestCase"
+cfg = ""
+behavior = "Struct `TestCase` in `test_generator`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::test_generator::TestGenerator"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::test_generator::TestGenerator"
+cfg = ""
+behavior = "Struct `TestGenerator` in `test_generator`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::test_generator::TestGeneratorOptions"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::test_generator::TestGeneratorOptions"
+cfg = ""
+behavior = "Struct `TestGeneratorOptions` in `test_generator`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::test_generator::TestResults"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::test_generator::TestResults"
+cfg = ""
+behavior = "Struct `TestResults` in `test_generator`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::test_generator::TestRunner"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::test_generator::TestRunner"
+cfg = ""
+behavior = "Deprecated generation-only runner: `run_tests`, `watch`, and `get_coverage` fail closed with `TestExecutionError::Unsupported` rather than fabricating results, pending #4972 convergence."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::test_runner::TestItem"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::test_runner::TestItem"
+cfg = ""
+behavior = "Struct `TestItem` in `test_runner`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::test_runner::TestRange"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::test_runner::TestRange"
+cfg = ""
+behavior = "Struct `TestRange` in `test_runner`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::test_runner::TestResult"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::test_runner::TestResult"
+cfg = ""
+behavior = "Struct `TestResult` in `test_runner`; reachable downstream both here and through `perl-parser`'s re-export."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
+
+[[entry]]
+id = "struct:perl_tdd_support::tdd::test_runner::TestRunner"
+api_kind = "struct"
+path = "perl_tdd_support::tdd::test_runner::TestRunner"
+cfg = ""
+behavior = "Subprocess-backed test discovery and TAP execution runner; used in `perl-lsp-rs` production code to answer LSP test-running requests."
+consumers = ["perl-parser", "perl-lsp-rs"]
+consumer_class = "production_workspace_consumer"
+compatibility = "published"
+disposition = "legacy_internal_until_issue"
+replacement_owner = "none available today; this tree has live production consumers and no replacement owner has been named"
+owner_issue = 14721
+exit_condition = "#14721 settles the production reach of this tree: `perl-parser` republishes it wholesale via `pub use perl_tdd_support::tdd::*`, and `perl-lsp-rs` builds LSP features on it directly. Until that is resolved, no train slot may treat this item as test-only surface."
+proof_command = "cargo build -p perl-lsp-rs --locked"
