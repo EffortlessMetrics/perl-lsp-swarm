@@ -2045,7 +2045,11 @@ impl LspServer {
         Ok(Some(json!([])))
     }
 
-    /// Non-blocking references handler with fallback
+    /// Test-only references fallback provider. With the outer dispatch
+    /// fallback removed (#5108), no production caller remains: dispatch is an
+    /// adapter, not a fallback planner. Compiled out of production builds,
+    /// mirroring `on_definition` (#5108) and `on_folding_range` (#13981).
+    #[cfg(any(test, feature = "test-fallbacks"))]
     pub(crate) fn on_references(
         &self,
         params: serde_json::Value,
