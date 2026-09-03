@@ -3402,6 +3402,33 @@
       "selector_identity": "invocation:d3c1f0b3252c2b36:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/check_tautology/detect.rs",
+      "enclosing_test_or_function": "rule_of",
+      "macro_family": "panic!",
+      "normalized_snippet": "let expr = parse_str(src).unwrap_or_else(|error| panic!(\"parse `{src}`: {error}\"));",
+      "selector_identity": "invocation:9bdecf60b127be41:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/check_tautology/detect.rs",
+      "enclosing_test_or_function": "eq_rule",
+      "macro_family": "panic!",
+      "normalized_snippet": "let left = parse_str(left).unwrap_or_else(|error| panic!(\"parse left `{left}`: {error}\"));",
+      "selector_identity": "invocation:212f91f2b75b3da2:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/check_tautology/detect.rs",
+      "enclosing_test_or_function": "eq_rule",
+      "macro_family": "panic!",
+      "normalized_snippet": "parse_str(right).unwrap_or_else(|error| panic!(\"parse right `{right}`: {error}\"));",
+      "selector_identity": "invocation:1bba59215b990c28:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
