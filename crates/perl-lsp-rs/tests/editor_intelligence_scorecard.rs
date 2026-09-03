@@ -534,9 +534,7 @@ fn test_document_symbols_gold_corpus() -> TestResult {
 // ---------------------------------------------------------------------------
 
 fn rename_total_edit_count(resp: &Value) -> usize {
-    resp["result"]["changes"]
-        .as_object()
-        .map_or(0, |changes| changes.values().map(|v| v.as_array().map_or(0, |e| e.len())).sum())
+    observed_rename_edits(resp).map_or(0, |edits| edits.len())
 }
 
 fn rename_has_structured_error(resp: &Value) -> bool {
@@ -581,33 +579,50 @@ fn observed_rename_edits(resp: &Value) -> Option<Vec<ObservedRenameEdit>> {
     if resp.get("error").is_some() {
         return None;
     }
-    let changes =
-        resp.get("result").and_then(|result| result.get("changes")).and_then(Value::as_object)?;
-
     let mut edits = Vec::new();
-    for (uri, value) in changes {
-        let entries = value.as_array()?;
-        for entry in entries {
-            let range = entry.get("range")?.as_object()?;
-            let start = range.get("start")?.as_object()?;
-            let end = range.get("end")?.as_object()?;
-            let new_text = entry.get("newText")?.as_str()?;
-            let line = start.get("line").and_then(json_u32)?;
-            let character = start.get("character").and_then(json_u32)?;
-            let end_line = end.get("line").and_then(json_u32)?;
-            let end_character = end.get("character").and_then(json_u32)?;
-            edits.push(ObservedRenameEdit {
-                uri: uri.clone(),
-                line,
-                character,
-                end_line,
-                end_character,
-                new_text: new_text.to_owned(),
-            });
+    let result = resp.get("result")?;
+
+    if let Some(changes) = result.get("changes") {
+        for (uri, entries) in changes.as_object()? {
+            append_text_edits(&mut edits, uri, entries.as_array()?)?;
+        }
+    }
+
+    if let Some(document_changes) = result.get("documentChanges") {
+        for document_change in document_changes.as_array()? {
+            let document_change = document_change.as_object()?;
+            let uri = document_change.get("textDocument")?.get("uri")?.as_str()?;
+            append_text_edits(&mut edits, uri, document_change.get("edits")?.as_array()?)?;
         }
     }
     edits.sort();
     Some(edits)
+}
+
+fn append_text_edits(
+    edits: &mut Vec<ObservedRenameEdit>,
+    uri: &str,
+    entries: &[Value],
+) -> Option<()> {
+    for entry in entries {
+        let range = entry.get("range")?.as_object()?;
+        let start = range.get("start")?.as_object()?;
+        let end = range.get("end")?.as_object()?;
+        let new_text = entry.get("newText")?.as_str()?;
+        let line = start.get("line").and_then(json_u32)?;
+        let character = start.get("character").and_then(json_u32)?;
+        let end_line = end.get("line").and_then(json_u32)?;
+        let end_character = end.get("character").and_then(json_u32)?;
+        edits.push(ObservedRenameEdit {
+            uri: uri.to_owned(),
+            line,
+            character,
+            end_line,
+            end_character,
+            new_text: new_text.to_owned(),
+        });
+    }
+    Some(())
 }
 
 fn rename_expected_edits_match(
@@ -987,6 +1002,36 @@ mod rename_oracle_tests {
         }
         if rename_expected_edits_match(&resp, "file:///gold/rename_subroutine.pl", Some(&[])) {
             return Err("non-empty rename edit passed explicit empty exact mode".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rename_oracle_normalizes_document_changes_text_document_edits() -> TestResult {
+        let response = json!({
+            "result": {
+                "documentChanges": [{
+                    "textDocument": {"uri": "file:///gold/rename_subroutine.pl", "version": null},
+                    "edits": expected().iter().map(|edit| json!({
+                        "range": {
+                            "start": {"line": edit.line, "character": edit.character},
+                            "end": {"line": edit.end_line, "character": edit.end_character}
+                        },
+                        "newText": edit.new_text
+                    })).collect::<Vec<_>>()
+                }]
+            }
+        });
+
+        if !rename_expected_edits_match(
+            &response,
+            "file:///gold/rename_subroutine.pl",
+            Some(expected().as_slice()),
+        ) {
+            return Err("TextDocumentEdit workspace edit did not match expected edits".into());
+        }
+        if rename_total_edit_count(&response) != expected().len() {
+            return Err("TextDocumentEdit workspace edit count was not normalized".into());
         }
         Ok(())
     }

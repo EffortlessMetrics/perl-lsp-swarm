@@ -78,16 +78,31 @@ fn fixture_directories(root: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
             .into());
         }
         if file_type.is_dir() {
+            if name == "README.md" {
+                return Err(contract_error(format!(
+                    "top-level README.md must be a regular file: {}",
+                    path.display()
+                ))
+                .into());
+            }
             directories.push(path);
             continue;
         }
-        if name != "README.md" {
-            return Err(contract_error(format!(
-                "unexpected top-level gold corpus asset: {}",
-                path.display()
-            ))
-            .into());
+        if name == "README.md" {
+            if !file_type.is_file() {
+                return Err(contract_error(format!(
+                    "top-level README.md must be a regular file: {}",
+                    path.display()
+                ))
+                .into());
+            }
+            continue;
         }
+        return Err(contract_error(format!(
+            "unexpected top-level gold corpus asset: {}",
+            path.display()
+        ))
+        .into());
     }
 
     directories.sort();
@@ -660,7 +675,7 @@ mod tests {
                 r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values","expected_edits":[]}"#,
             ),
             envelope(
-                r#"{"kind":"rename_null","line":4,"character":4,"new_name":"sum_values","expected_edits":[]}"#,
+                r#"{"kind":"rename_null","line":4,"character":4,"new_name":"sum_values","expected_edits":[{"line":4,"character":4,"end_line":4,"end_character":19,"new_text":"sum_values"}]}"#,
             ),
             envelope(
                 r#"{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values","min":1}"#,
@@ -707,6 +722,18 @@ mod tests {
 
         let error = validation_error(validate_fixture_members(&fixture))?;
         if !error.contains("unexpected fixture asset") {
+            return Err(contract_error(format!("unexpected validation error: {error}")).into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_top_level_readme_directory() -> Result<(), Box<dyn Error>> {
+        let root = tempdir()?;
+        fs::create_dir(root.path().join("README.md"))?;
+
+        let error = validation_error(fixture_directories(root.path()))?;
+        if !error.contains("README.md must be a regular file") {
             return Err(contract_error(format!("unexpected validation error: {error}")).into());
         }
         Ok(())

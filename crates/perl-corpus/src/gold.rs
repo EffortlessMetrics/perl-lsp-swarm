@@ -788,7 +788,7 @@ mod tests {
             return Err("explicit empty expected_edits must fail closed".into());
         }
 
-        let rename_null_with_edits = r#"{"kind":"rename_null","line":4,"character":4,"new_name":"sum_values","expected_edits":[]}"#;
+        let rename_null_with_edits = r#"{"kind":"rename_null","line":4,"character":4,"new_name":"sum_values","expected_edits":[{"line":4,"character":4,"end_line":4,"end_character":19,"new_text":"sum_values"}]}"#;
         if serde_json::from_str::<RenameAssertion>(rename_null_with_edits).is_ok() {
             return Err("expected_edits for rename_null must fail closed".into());
         }
