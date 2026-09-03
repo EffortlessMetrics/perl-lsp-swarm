@@ -93,8 +93,14 @@ if [[ "$mode" == "fail-build" ]]; then
     exit 102
 fi
 
-: "${root:?shim expected --root}"
-: "${FAKE_CARGO_RESOLVED:?shim requires the resolved version to stage}"
+if [[ -z ${root:-} ]]; then
+    echo "shim expected --root" >&2
+    exit 1
+fi
+if [[ -z ${FAKE_CARGO_RESOLVED:-} ]]; then
+    echo "shim requires the resolved version to stage" >&2
+    exit 1
+fi
 mkdir -p "$root/bin"
 cat > "$root/bin/perllsp" <<BIN
 #!/usr/bin/env bash
