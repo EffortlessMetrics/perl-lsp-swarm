@@ -382,8 +382,19 @@ def count_cfg_uses_in_source(text: str) -> dict[str, int]:
     quotes are a string literal by definition, so the `feature` keyword — not
     the quoted name — is what must lie outside a string.
     """
-    counts: dict[str, int] = {}
     blanked, strings = scan_lexical(text)
+    return count_cfg_uses_in_scanned(blanked, strings)
+
+
+def count_cfg_uses_in_scanned(
+    blanked: str, strings: list[tuple[int, int]]
+) -> dict[str, int]:
+    """Count cfg-gated feature predicates in already-scanned source.
+
+    Split from `count_cfg_uses_in_source` so a crate walk can reuse one lexical
+    scan per file for both consumer counting and include-edge resolution.
+    """
+    counts: dict[str, int] = {}
     spans = cfg_spans(blanked, strings)
     if not spans:
         return counts
@@ -423,8 +434,43 @@ SKIPPED_DIRS = frozenset(
 )
 
 
-def crate_sources(crate_dir: Path) -> list[Path]:
-    """Rust sources belonging to a crate, excluding build output."""
+# A file named by a literal `include!("...")` or `#[path = "..."]` is compiled
+# into the crate even when it lives under a directory the walk above skips, so
+# the scan set has to be closed over those edges or the exclusion becomes a
+# silent false negative. `crates/perl-lexer/src/lexer/helpers/cursor.rs`
+# includes `tests/fixtures/ripr_seam_proof_peek_char_unit.inc` into production
+# `src/`, which is exactly that case.
+#
+# Only literal string targets are followed. `include!(concat!(env!("OUT_DIR"),
+# ...))` is deliberately not resolved: that names generated build output, which
+# is the very thing skipping `target/` exists to keep out of the evidence.
+INCLUDE_TARGET_RE = re.compile(r"include!\s*\(\s*\"([^\"\n]+)\"\s*\)")
+PATH_ATTR_TARGET_RE = re.compile(r"#\s*\[\s*path\s*=\s*\"([^\"\n]+)\"\s*\]")
+
+
+def included_targets(
+    source: Path, blanked: str, strings: list[tuple[int, int]]
+) -> list[Path]:
+    """Files compiled into `source` by a literal include! or #[path]."""
+    targets: list[Path] = []
+    for pattern in (INCLUDE_TARGET_RE, PATH_ATTR_TARGET_RE):
+        for match in pattern.finditer(blanked):
+            # An `include!` sitting inside a string literal is inert text, the
+            # same reason a quoted cfg predicate is not a consumer.
+            if in_ranges(match.start(), strings):
+                continue
+            targets.append(source.parent / match.group(1))
+    return targets
+
+
+def crate_source_texts(
+    crate_dir: Path,
+) -> list[tuple[Path, str, list[tuple[int, int]]]]:
+    """Compiled sources of a crate, lexically scanned, each file read once.
+
+    Returns `(path, blanked, string_ranges)` per file so the single scan serves
+    both consumer counting and include-edge resolution.
+    """
     sources: list[Path] = []
     stack = [crate_dir]
     while stack:
@@ -445,18 +491,45 @@ def crate_sources(crate_dir: Path) -> list[Path]:
                 stack.append(entry)
             elif entry.suffix == ".rs":
                 sources.append(entry)
-    return sorted(sources)
+
+    # Close over compiled include edges. Paths are resolved so a file reached
+    # both by the walk and by an include! is scanned once, not counted twice.
+    scanned: dict[Path, tuple[str, list[tuple[int, int]]]] = {}
+    queue = sorted({source.resolve() for source in sources})
+    while queue:
+        current = queue.pop()
+        if current in scanned:
+            continue
+        try:
+            text = current.read_text(encoding="utf-8", errors="replace")
+        except OSError as error:
+            raise ValidationError(f"cannot read {current}: {error}") from error
+        blanked, strings = scan_lexical(text)
+        scanned[current] = (blanked, strings)
+        for target in included_targets(current, blanked, strings):
+            try:
+                resolved = target.resolve()
+            except OSError as error:
+                raise ValidationError(f"cannot resolve {target}: {error}") from error
+            if resolved in scanned or not resolved.is_file():
+                continue
+            queue.append(resolved)
+    return sorted(
+        (path, blanked, strings)
+        for path, (blanked, strings) in scanned.items()
+    )
+
+
+def crate_sources(crate_dir: Path) -> list[Path]:
+    """Rust sources belonging to a crate, excluding build output."""
+    return [source for source, _blanked, _strings in crate_source_texts(crate_dir)]
 
 
 def count_cfg_uses(crate_dir: Path) -> dict[str, int]:
     """Count cfg-gated feature predicates across one crate's Rust sources."""
     totals: dict[str, int] = {}
-    for source in crate_sources(crate_dir):
-        try:
-            text = source.read_text(encoding="utf-8", errors="replace")
-        except OSError as error:
-            raise ValidationError(f"cannot read {source}: {error}") from error
-        for name, count in count_cfg_uses_in_source(text).items():
+    for _source, blanked, strings in crate_source_texts(crate_dir):
+        for name, count in count_cfg_uses_in_scanned(blanked, strings).items():
             totals[name] = totals.get(name, 0) + count
     return totals
 
