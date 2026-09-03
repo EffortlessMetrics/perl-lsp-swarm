@@ -203,6 +203,92 @@ const HOVER_EVALUATE_CONTEXT: &str = "hover";
 pub(crate) const HOVER_UNSUPPORTED_MESSAGE: &str = "evaluate with context 'hover' is not supported: supportsEvaluateForHovers is advertised \
      false because perl-dap has no pure selected-frame inspection path yet (#9573)";
 
+/// The optional breakpoint capabilities fail closed (#9578).
+///
+/// `supportsFunctionBreakpoints`, `supportsConditionalBreakpoints`,
+/// `supportsHitConditionalBreakpoints`, and `supportsLogPoints` name runtime
+/// contracts — engine-installed function resolution, condition enforcement,
+/// attributed hit counting with serialized auto-continue, and correlated
+/// logpoint output — that the native `perl5db` seam has not proven. The
+/// repository has parsers, stores, and handler registration for parts of these
+/// features, but a syntactically valid name is not runtime resolution, a
+/// locally accepted condition is not proof the engine installed and enforced
+/// it, and a hit counter is not trustworthy before exact hit attribution.
+///
+/// This gate deliberately consumes no catalog flag (`dap.core`,
+/// `dap.breakpoints.*`), no backend capability, no maturity row, and no
+/// handler-presence signal. Flipping it to `true` requires the per-capability
+/// re-enable gates recorded on #9578, each from its own exact public behavior
+/// receipt: function #8645, conditional #8988, hit-condition #8994, logpoint
+/// #9000 (with the #7366 same-session false-path receipts). No capability
+/// inherits another's receipt and no combined cell widens a single component.
+pub(crate) const OPTIONAL_BREAKPOINT_CAPABILITIES_PROVEN: bool = false;
+
+/// The single authority for the advertised `supportsFunctionBreakpoints` value.
+///
+/// Derived from [`OPTIONAL_BREAKPOINT_CAPABILITIES_PROVEN`] alone (#9578); no
+/// catalog or backend signal may widen it.
+#[must_use]
+pub(crate) const fn advertises_function_breakpoints() -> bool {
+    OPTIONAL_BREAKPOINT_CAPABILITIES_PROVEN
+}
+
+/// The single authority for the advertised `supportsConditionalBreakpoints`
+/// value.
+///
+/// Derived from [`OPTIONAL_BREAKPOINT_CAPABILITIES_PROVEN`] alone (#9578); no
+/// catalog or backend signal may widen it.
+#[must_use]
+pub(crate) const fn advertises_conditional_breakpoints() -> bool {
+    OPTIONAL_BREAKPOINT_CAPABILITIES_PROVEN
+}
+
+/// The single authority for the advertised `supportsHitConditionalBreakpoints`
+/// value.
+///
+/// Derived from [`OPTIONAL_BREAKPOINT_CAPABILITIES_PROVEN`] alone (#9578); no
+/// catalog or backend signal may widen it.
+#[must_use]
+pub(crate) const fn advertises_hit_conditional_breakpoints() -> bool {
+    OPTIONAL_BREAKPOINT_CAPABILITIES_PROVEN
+}
+
+/// The single authority for the advertised `supportsLogPoints` value.
+///
+/// Derived from [`OPTIONAL_BREAKPOINT_CAPABILITIES_PROVEN`] alone (#9578); no
+/// catalog or backend signal may widen it.
+#[must_use]
+pub(crate) const fn advertises_log_points() -> bool {
+    OPTIONAL_BREAKPOINT_CAPABILITIES_PROVEN
+}
+
+/// Deterministic refusal for `setFunctionBreakpoints` while the capability is
+/// floored (#9578). Every request shape receives this exact message, and no
+/// rejected request resolves a name, writes a debugger command, or mutates the
+/// function-breakpoint registry.
+pub(crate) const FUNCTION_BREAKPOINTS_UNSUPPORTED_MESSAGE: &str = "setFunctionBreakpoints is not supported: supportsFunctionBreakpoints is advertised \
+     false until exact runtime resolution and engine install/hit proof exists (#9578; re-enable gate #8645)";
+
+/// Deterministic per-item refusal for a `setBreakpoints` entry carrying a
+/// `condition` while conditional support is floored (#9578). The condition is
+/// never silently stripped and an unconditional breakpoint is never installed
+/// in its place.
+pub(crate) const CONDITION_UNSUPPORTED_MESSAGE: &str = "condition is not supported: supportsConditionalBreakpoints is advertised \
+     false until exact condition installation and enforcement proof exists (#9578; re-enable gate #8988)";
+
+/// Deterministic per-item refusal for a `setBreakpoints` entry carrying a
+/// `hitCondition` while hit-condition support is floored (#9578). The entry is
+/// never installed as an unconditional breakpoint and the expression is never
+/// counted locally.
+pub(crate) const HIT_CONDITION_UNSUPPORTED_MESSAGE: &str = "hitCondition is not supported: supportsHitConditionalBreakpoints is advertised \
+     false until exact attributed-hit counting and serialized auto-continue proof exists (#9578; re-enable gate #8994)";
+
+/// Deterministic per-item refusal for a `setBreakpoints` entry carrying a
+/// `logMessage` while logpoint support is floored (#9578). The entry is never
+/// converted into an ordinary stopping breakpoint and no output is simulated.
+pub(crate) const LOG_MESSAGE_UNSUPPORTED_MESSAGE: &str = "logMessage is not supported: supportsLogPoints is advertised \
+     false until exact install/hit/output/continue proof exists (#9578; re-enable gate #9000)";
+
 /// Whether an `evaluate` request's `context` selects hover.
 ///
 /// Matched ASCII-case-insensitively. The DAP-standard spelling is lowercase

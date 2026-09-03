@@ -4,7 +4,7 @@
 //! output parsing to ensure robustness.
 
 use perl_dap::{DapMessage, DebugAdapter};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::fs::write;
 use std::sync::mpsc::sync_channel;
 use tempfile::tempdir;
@@ -89,11 +89,24 @@ say "Done";
                 .ok_or("Expected breakpoints array")?;
             assert_eq!(breakpoints.len(), 3);
 
-            // All breakpoints should be present (verified depends on session)
-            for bp in breakpoints {
-                assert!(bp.get("line").is_some());
-                assert!(bp.get("id").is_some());
-            }
+            // #9578: conditional support is floored, so the two entries
+            // carrying `condition` — no matter how complex the expression —
+            // are refused per item with the conditional floor refusal instead
+            // of being stored, while the plain entry keeps its store identity.
+            assert_eq!(breakpoints[0].get("verified").and_then(Value::as_bool), Some(false));
+            let rejected_message = breakpoints[0]
+                .get("message")
+                .and_then(Value::as_str)
+                .ok_or("rejected entry must carry a message")?;
+            assert!(
+                rejected_message.contains("supportsConditionalBreakpoints"),
+                "expected the #9578 conditional floor refusal, got {rejected_message:?}"
+            );
+            // The plain entry keeps its store identity (its `verified` status
+            // still depends on AST validation of the line, as before).
+            assert!(breakpoints[1].get("id").is_some(), "stored plain entry keeps its id");
+            assert!(breakpoints[1].get("line").is_some());
+            assert_eq!(breakpoints[2].get("verified").and_then(Value::as_bool), Some(false));
         }
         _ => return Err("Expected successful setBreakpoints response".into()),
     }

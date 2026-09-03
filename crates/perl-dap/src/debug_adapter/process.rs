@@ -58,8 +58,6 @@ impl DebugAdapter {
 
         let supports_core = catalog_has_feature("dap.core");
         let supports_basic_breakpoints = catalog_has_feature("dap.breakpoints.basic");
-        let supports_hit_conditions = catalog_has_feature("dap.breakpoints.hit_condition");
-        let supports_log_points = catalog_has_feature("dap.breakpoints.logpoints");
         let supports_exceptions = catalog_has_feature("dap.exceptions.die");
         let supports_inline_values = catalog_has_feature("dap.inline_values");
         let supports_completions = catalog_has_feature("dap.completions");
@@ -102,9 +100,22 @@ impl DebugAdapter {
 
         let capabilities = json!({
             "supportsConfigurationDoneRequest": supports_core,
-            "supportsFunctionBreakpoints": supports_core,
-            "supportsConditionalBreakpoints": supports_basic_breakpoints,
-            "supportsHitConditionalBreakpoints": supports_hit_conditions,
+            // #9578: the four optional breakpoint capability rows fail closed
+            // from the single `backend::capabilities` authority. They are not
+            // derived from `supports_core`, `dap.breakpoints.*` catalog rows,
+            // maturity, handler presence, or backend method existence: the
+            // runtime contracts (engine resolution/install, condition
+            // enforcement, attributed hit counting, correlated logpoint
+            // output) are unproven on this seam. Per-capability re-enable
+            // gates: #8645 (function), #8988 (conditional), #8994 (hit),
+            // #9000 (logpoint).
+            "supportsFunctionBreakpoints":
+                crate::backend::capabilities::advertises_function_breakpoints(),
+            "supportsConditionalBreakpoints":
+                crate::backend::capabilities::advertises_conditional_breakpoints(),
+            "supportsHitConditionalBreakpoints":
+                crate::backend::capabilities::advertises_hit_conditional_breakpoints(),
+            "supportsLogPoints": crate::backend::capabilities::advertises_log_points(),
             // #9573: not `supports_core`. Hover is gated on a pure
             // selected-frame inspection proof that does not exist yet, so the
             // wire value comes from the single hover authority and no catalog
@@ -124,7 +135,6 @@ impl DebugAdapter {
             "supportTerminateDebuggee": supports_core,
             "supportsDelayedStackTraceLoading": false,
             "supportsLoadedSourcesRequest": supports_loaded_sources,
-            "supportsLogPoints": supports_log_points,
             "supportsTerminateThreadsRequest": supports_terminate_threads,
             // #8294: exactly one synthetic main execution context is exposed;
             // single-thread execution requests are not a distinct capability

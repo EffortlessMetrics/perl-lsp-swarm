@@ -2,6 +2,17 @@ use super::{DapMessage, DebugAdapter, HashMap, Value, Write, json};
 
 impl DebugAdapter {
     /// Handle setBreakpoints request
+    ///
+    /// #9578: entries carrying floored optional fields (`condition`,
+    /// `hitCondition`, `logMessage`) are rejected per item with a deterministic
+    /// field-specific message naming the floored capability and its re-enable
+    /// gate. A rejected entry is never silently stripped into an unconditional
+    /// breakpoint, never converted into an ordinary stopping breakpoint, and
+    /// never counted or simulated locally. Plain entries keep their
+    /// independent replace-semantics contract; the response preserves one
+    /// breakpoint per input in request order. A request whose entries are all
+    /// rejected performs no store replacement, no session synchronization, and
+    /// no other state mutation.
     pub(in crate::debug_adapter) fn handle_set_breakpoints(
         &mut self,
         seq: i64,
@@ -19,7 +30,7 @@ impl DebugAdapter {
             };
         };
 
-        let args: crate::protocol::SetBreakpointsArguments =
+        let parsed: crate::protocol::SetBreakpointsArguments =
             match serde_json::from_value(args_value) {
                 Ok(a) => a,
                 Err(e) => {
@@ -34,17 +45,61 @@ impl DebugAdapter {
                 }
             };
 
+        // #9578: partition floored optional-field entries out of the request
+        // before any store or session work. Unsupported combinations reject on
+        // every offending field; they never widen another feature.
+        let input_len = parsed.breakpoints.as_ref().map_or(0, Vec::len);
+        let mut rejected: Vec<(usize, i64, Option<i64>, String)> = Vec::new();
+        let mut plain_entries: Vec<crate::protocol::SourceBreakpoint> = Vec::new();
+        for (index, entry) in parsed.breakpoints.iter().flatten().enumerate() {
+            let mut reasons: Vec<&'static str> = Vec::new();
+            if entry.condition.is_some() {
+                reasons.push(crate::backend::capabilities::CONDITION_UNSUPPORTED_MESSAGE);
+            }
+            if entry.hit_condition.is_some() {
+                reasons.push(crate::backend::capabilities::HIT_CONDITION_UNSUPPORTED_MESSAGE);
+            }
+            if entry.log_message.is_some() {
+                reasons.push(crate::backend::capabilities::LOG_MESSAGE_UNSUPPORTED_MESSAGE);
+            }
+            if reasons.is_empty() {
+                plain_entries.push(entry.clone());
+            } else {
+                rejected.push((index, entry.line, entry.column, reasons.join(" ")));
+            }
+        }
+
+        // A request whose entries are all rejected must not replace desired
+        // state, synchronize the session, or clear unrelated current
+        // breakpoints; the store and engine stay untouched.
+        let all_entries_rejected = input_len > 0 && plain_entries.is_empty();
+
+        let args = if input_len > 0 {
+            crate::protocol::SetBreakpointsArguments {
+                source: parsed.source,
+                breakpoints: Some(plain_entries),
+                source_modified: parsed.source_modified,
+            }
+        } else {
+            parsed
+        };
+
         // Snapshot old breakpoints for this file before replacing them,
         // so we can clear only per-file breakpoints instead of global `B *`.
-        let old_breakpoints = if let Some(ref source_path) = args.source.path {
+        let old_breakpoints = if all_entries_rejected {
+            Vec::new()
+        } else if let Some(ref source_path) = args.source.path {
             self.breakpoints.get_breakpoints(source_path)
         } else {
             Vec::new()
         };
 
         // AC7: AST-based breakpoint validation via BreakpointStore
-        let verified_breakpoints = self.breakpoints.set_breakpoints(&args);
-        let new_breakpoint_records = if let Some(ref source_path) = args.source.path {
+        let verified_breakpoints =
+            if all_entries_rejected { Vec::new() } else { self.breakpoints.set_breakpoints(&args) };
+        let new_breakpoint_records = if all_entries_rejected {
+            Vec::new()
+        } else if let Some(ref source_path) = args.source.path {
             self.breakpoints.get_breakpoints(source_path)
         } else {
             Vec::new()
@@ -55,7 +110,8 @@ impl DebugAdapter {
             .collect();
 
         // If a session is active, also sync the breakpoints to the Perl debugger
-        if let Ok(mut guard) = self.session.lock()
+        if !all_entries_rejected
+            && let Ok(mut guard) = self.session.lock()
             && let Some(ref mut session) = *guard
             && let Some(stdin) = session.process.stdin.as_mut()
         {
@@ -88,7 +144,35 @@ impl DebugAdapter {
         }
 
         // Keep function breakpoints active after line-breakpoint synchronization.
-        self.apply_stored_function_breakpoints();
+        if !all_entries_rejected {
+            self.apply_stored_function_breakpoints();
+        }
+
+        // One response breakpoint per input, in request order (#9578): a
+        // rejected optional-field entry occupies its own slot as unverified
+        // with the exact per-field reason instead of shifting every later
+        // entry onto the wrong requested line.
+        let mut plain_results = verified_breakpoints.into_iter();
+        let mut body_breakpoints: Vec<Value> = Vec::with_capacity(input_len);
+        for index in 0..input_len {
+            let rejected_here = rejected.first().is_some_and(|(i, ..)| *i == index);
+            if rejected_here {
+                let (_, line, column, message) = rejected.remove(0);
+                let mut entry = json!({
+                    "verified": false,
+                    "line": line,
+                    "message": message,
+                });
+                if let Some(column) = column {
+                    entry["column"] = json!(column);
+                }
+                body_breakpoints.push(entry);
+            } else if let Some(bp) = plain_results.next() {
+                body_breakpoints.push(
+                    serde_json::to_value(bp).unwrap_or_else(|_| json!({ "verified": false })),
+                );
+            }
+        }
 
         DapMessage::Response {
             seq,
@@ -96,7 +180,7 @@ impl DebugAdapter {
             success: true,
             command: "setBreakpoints".to_string(),
             body: Some(json!({
-                "breakpoints": verified_breakpoints
+                "breakpoints": body_breakpoints
             })),
             message: None,
         }
