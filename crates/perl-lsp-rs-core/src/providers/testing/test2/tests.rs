@@ -604,14 +604,26 @@ fn test2_no_recognizer_owned_span_reaches_the_bareword_scan() {
     let rename_as = RENAME_AS.as_ref().expect("static -as pattern compiles");
     let rename_fix = RENAME_FIX.as_ref().expect("static -prefix/-postfix pattern compiles");
 
-    let leaked: Vec<(&str, TransformScan)> = corpus
+    let owned: Vec<&str> = corpus
         .into_iter()
         .filter(|case| rename_as.is_match(case) || rename_fix.is_match(case))
-        .map(|case| (case, scan_import_transforms(case, Some(rename_as), Some(rename_fix))))
-        .filter(|(_, scan)| matches!(scan, TransformScan::None))
         .collect();
 
-    let uncovered: Vec<&str> = leaked.into_iter().map(|(case, _)| case).collect();
+    // Without this the property can pass vacuously: if a later edit narrowed
+    // the recognizers so they matched nothing, the filter would select zero
+    // cases and the assertion below would hold while proving nothing.
+    assert!(
+        owned.len() >= corpus.len() - 2,
+        "the recognizers stopped owning most of the corpus, so this property is \
+         not being exercised: {owned:?}"
+    );
+
+    let uncovered: Vec<&str> = owned
+        .into_iter()
+        .map(|case| (case, scan_import_transforms(case, Some(rename_as), Some(rename_fix))))
+        .filter(|(_, scan)| matches!(scan, TransformScan::None))
+        .map(|(case, _)| case)
+        .collect();
 
     assert!(
         uncovered.is_empty(),
@@ -1079,4 +1091,55 @@ fn test2_named_constant_before_division_fails_closed_without_fabricating() {
     for never in ["ok", "my_ok", "PI", "Z"] {
         assert!(!resolved.resolved.symbols.contains(never), "{never} must not be imported");
     }
+}
+
+#[test]
+fn test2_combined_transform_options_fail_closed_instead_of_installing_both() {
+    // Review finding (@coderabbitai on #14651), and a defect that predates this
+    // branch. Each recognizer reads one option and claims the whole entry, so a
+    // map carrying two options was resolved from partial information:
+    //
+    //   ok => {-as => 'my_ok', -prefix => 'x_'}   ->  {"my_ok", "x_ok"}
+    //   ok => {-prefix => 'x_', -postfix => '_z'} ->  {"x_ok"}
+    //
+    // Importer installs one name per entry, so the first publishes a symbol
+    // that does not exist and the second publishes a name missing half its
+    // composition — both reported as clean results. Nothing downstream could
+    // catch it: the entry span is stripped, so the residual detector sees
+    // nothing left.
+    //
+    // Which single name Importer composes for a combined map is not decided
+    // here; the guard only refuses to guess.
+    for args in [
+        "ok => {-as => 'my_ok', -prefix => 'x_'}",
+        "ok => {-prefix => 'x_', -as => 'my_ok'}",
+        "ok => {-as => 'my_ok', -postfix => '_z'}",
+        "ok => {-prefix => 'x_', -postfix => '_z'}",
+    ] {
+        let resolved = resolve_with_analysis("Test2::V0", args);
+        assert!(resolved.analysis_limited, "{args}: an ambiguous combined map fails closed");
+        for fabricated in ["x_ok", "ok_z", "x_ok_z", "my_ok", "ok"] {
+            assert!(
+                !resolved.resolved.symbols.contains(fabricated),
+                "{args}: {fabricated} must not be imported, got {:?}",
+                resolved.resolved.symbols
+            );
+        }
+    }
+
+    // Two different originals in one list are not a combined map.
+    let distinct =
+        resolve_with_analysis("Test2::V0", "ok => {-as => 'my_ok'}, is => {-prefix => 'x_'}");
+    assert!(!distinct.analysis_limited, "distinct entries are unambiguous");
+    assert!(distinct.resolved.symbols.contains("my_ok"));
+    assert!(distinct.resolved.symbols.contains("x_is"));
+
+    // Neither is the same symbol imported twice under two names: those are two
+    // entries, each carrying one option, and Importer installs both. The guard
+    // is scoped to a single entry precisely so this keeps resolving.
+    let twice =
+        resolve_with_analysis("Test2::V0", "ok => {-as => 'my_ok'}, ok => {-prefix => 'x_'}");
+    assert!(!twice.analysis_limited, "one option per entry stays decidable");
+    assert!(twice.resolved.symbols.contains("my_ok"));
+    assert!(twice.resolved.symbols.contains("x_ok"));
 }

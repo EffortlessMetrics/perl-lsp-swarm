@@ -324,6 +324,51 @@ mod tests {
     }
 
     #[test]
+    fn a_limited_test2_analysis_withholds_the_projected_import_table() {
+        // Review finding (@coderabbitai on #14651). This module's contribution
+        // is the `analysis_limited` early return, and every other Test2 test
+        // here imports well-formed source — those resolve unlimited and pass
+        // whether or not the branch exists.
+        //
+        // A single unresolvable statement is not enough to see it: that
+        // statement already fails closed to an empty symbol set in the
+        // resolver, so the projection loop emits nothing either way. The branch
+        // is only observable when some *other* statement in the same file did
+        // resolve, leaving a non-empty floor that is nevertheless not the
+        // file's complete import set. The projection replaces the generic
+        // Test::More table, so emitting that floor would present a partial
+        // table as the authoritative in-scope test vocabulary while silently
+        // omitting the aliases the second statement installs.
+        let limited = complete(
+            "use Test2::V0 'ok';\nuse Test2::V0 is => {-as => 'my_is', -prefix => 'x_'};\no|",
+            Some("t/example.t"),
+        );
+        assert!(
+            !labels(&limited).contains(&"ok"),
+            "an incomplete import set must not be projected: {:?}",
+            labels(&limited)
+        );
+
+        // The alias side of the unresolvable statement is withheld too — under
+        // Importer only one transform applies per entry, so neither spelling is
+        // known to exist.
+        let aliases = complete(
+            "use Test2::V0 'ok';\nuse Test2::V0 is => {-as => 'my_is', -prefix => 'x_'};\nx|",
+            Some("t/example.t"),
+        );
+        assert!(!labels(&aliases).contains(&"x_is"), "an unproven alias must not be completed");
+
+        // Control: the same two-statement file whose second statement *is*
+        // resolvable still projects `ok`, so the assertions above are not
+        // passing because this shape never completes anything.
+        let resolved = complete(
+            "use Test2::V0 'ok';\nuse Test2::V0 is => {-as => 'my_is'};\no|",
+            Some("t/example.t"),
+        );
+        assert!(labels(&resolved).contains(&"ok"), "a complete import set still projects");
+    }
+
+    #[test]
     fn plain_test2_v1_completes_t2_in_a_non_test_file() {
         let items = complete("use Test2::V1;\nT|", Some("lib/Example.pm"));
         assert_eq!(labels(&items), vec!["T2"]);
