@@ -1,0 +1,271 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/standalone_diagnostics.v1.schema.json",
+  "title": "standalone_diagnostics.v1",
+  "description": "Closed reason/action registry and stage-to-user projection contract for the standalone installer (#11493). Reasons are selected from typed standalone_install_transition.v1 fields only; free text, tool output, and per-attempt identifiers may never select a reason or reach a rendered parameter. Reason order is evaluation order: the first matching primary reason wins, and every additional reason whose selector matches is also reported. Reason domains whose stage results are not yet typed on main are declared deferred with an owning issue rather than silently covered.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "registry",
+    "issue",
+    "owner",
+    "status",
+    "updated",
+    "claim_boundary",
+    "input_contract",
+    "vocabulary",
+    "render",
+    "claim_consequences_requiring_limitations",
+    "deferred_reason_domains",
+    "deferred_action_ids",
+    "actions",
+    "summary_templates",
+    "primary_reasons",
+    "additional_reasons"
+  ],
+  "properties": {
+    "schema_version": { "const": "standalone_diagnostics.v1" },
+    "registry": { "const": "standalone-diagnostics" },
+    "issue": { "$ref": "#/$defs/issue_ref" },
+    "owner": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "status": { "enum": ["active", "draft"] },
+    "updated": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+    "claim_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claims", "does_not_claim"],
+      "properties": {
+        "claims": { "$ref": "#/$defs/sentence_list" },
+        "does_not_claim": { "$ref": "#/$defs/sentence_list" }
+      }
+    },
+    "input_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "schema_path",
+        "selector_fields",
+        "forbidden_selector_fields",
+        "forbidden_selector_reason"
+      ],
+      "properties": {
+        "schema_version": { "const": "standalone_install_transition.v1" },
+        "schema_path": { "const": "schemas/standalone_install_transition.v1.schema.json" },
+        "selector_fields": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/selector_field" }
+        },
+        "forbidden_selector_fields": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "forbidden_selector_reason": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    },
+    "vocabulary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "classification",
+        "terminality",
+        "retryability",
+        "side_effect_disposition",
+        "claim_consequence",
+        "action_kind",
+        "public_rendering_ceiling",
+        "platform_scope"
+      ],
+      "properties": {
+        "classification": { "$ref": "#/$defs/token_list" },
+        "terminality": { "$ref": "#/$defs/token_list" },
+        "retryability": { "$ref": "#/$defs/token_list" },
+        "side_effect_disposition": { "$ref": "#/$defs/token_list" },
+        "claim_consequence": { "$ref": "#/$defs/token_list" },
+        "action_kind": { "$ref": "#/$defs/token_list" },
+        "public_rendering_ceiling": { "$ref": "#/$defs/token_list" },
+        "platform_scope": { "$ref": "#/$defs/token_list" }
+      }
+    },
+    "render": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowed_parameters", "forbidden_parameters", "forbidden_reason"],
+      "properties": {
+        "allowed_parameters": { "$ref": "#/$defs/token_list" },
+        "forbidden_parameters": { "$ref": "#/$defs/token_list" },
+        "forbidden_reason": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    },
+    "claim_consequences_requiring_limitations": { "$ref": "#/$defs/token_list" },
+    "deferred_reason_domains": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["domain_id", "owner_issue", "why_deferred"],
+        "properties": {
+          "domain_id": { "$ref": "#/$defs/token" },
+          "owner_issue": { "$ref": "#/$defs/issue_ref" },
+          "why_deferred": { "type": "string", "minLength": 1, "maxLength": 512 }
+        }
+      }
+    },
+    "deferred_action_ids": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["action_id", "owner_issue"],
+        "properties": {
+          "action_id": { "$ref": "#/$defs/token" },
+          "owner_issue": { "$ref": "#/$defs/issue_ref" }
+        }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/action" }
+    },
+    "summary_templates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["template_id", "text"],
+        "properties": {
+          "template_id": { "$ref": "#/$defs/token" },
+          "text": { "type": "string", "minLength": 1, "maxLength": 512 }
+        }
+      }
+    },
+    "primary_reasons": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/reason" }
+    },
+    "additional_reasons": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/reason" }
+    }
+  },
+  "$defs": {
+    "token": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$", "maxLength": 96 },
+    "token_list": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/token" }
+    },
+    "issue_ref": { "type": "string", "pattern": "^#[0-9]+$" },
+    "sentence_list": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+    },
+    "selector_field": {
+      "enum": [
+        "operation",
+        "disposition",
+        "product_units",
+        "cleanup",
+        "process_startup",
+        "path_persistence"
+      ]
+    },
+    "selector": {
+      "description": "Predicate over typed standalone_install_transition.v1 fields. An omitted field is a wildcard. An empty selector is rejected for every reason: totality must come from explicit typed selectors, not from an unconditional catch-all.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "operation": { "$ref": "#/$defs/token_list" },
+        "disposition": { "$ref": "#/$defs/token_list" },
+        "product_units": { "$ref": "#/$defs/token_list" },
+        "cleanup": { "$ref": "#/$defs/token_list" },
+        "process_startup": { "$ref": "#/$defs/token_list" },
+        "path_persistence": { "$ref": "#/$defs/token_list" }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action_id",
+        "action_kind",
+        "applicability",
+        "destructive",
+        "external",
+        "elevated",
+        "manual",
+        "platform_scope",
+        "forbidden_substitutions",
+        "public_rendering_ceiling"
+      ],
+      "properties": {
+        "action_id": { "$ref": "#/$defs/token" },
+        "action_kind": { "$ref": "#/$defs/token" },
+        "applicability": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "destructive": { "type": "boolean" },
+        "external": { "type": "boolean" },
+        "elevated": { "type": "boolean" },
+        "manual": { "type": "boolean" },
+        "platform_scope": { "$ref": "#/$defs/token" },
+        "forbidden_substitutions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/token" }
+        },
+        "public_rendering_ceiling": { "$ref": "#/$defs/token" }
+      }
+    },
+    "reason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason_id",
+        "selector",
+        "classification",
+        "terminality",
+        "retryability",
+        "side_effect_disposition",
+        "claim_consequence",
+        "summary_template_id",
+        "required_limitations",
+        "action_ids",
+        "owner",
+        "redaction_policy"
+      ],
+      "properties": {
+        "reason_id": { "$ref": "#/$defs/token" },
+        "selector": { "$ref": "#/$defs/selector" },
+        "classification": { "$ref": "#/$defs/token" },
+        "terminality": { "$ref": "#/$defs/token" },
+        "retryability": { "$ref": "#/$defs/token" },
+        "side_effect_disposition": { "$ref": "#/$defs/token" },
+        "claim_consequence": { "$ref": "#/$defs/token" },
+        "summary_template_id": { "$ref": "#/$defs/token" },
+        "required_limitations": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/token" }
+        },
+        "action_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/token" }
+        },
+        "owner": { "$ref": "#/$defs/issue_ref" },
+        "redaction_policy": { "const": "bounded_typed_fields_only" }
+      }
+    }
+  }
+}

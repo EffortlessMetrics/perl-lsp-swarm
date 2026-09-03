@@ -1903,6 +1903,19 @@ created = "2026-08-26"
 review_after = "2026-11-26"
 
 [[allow]]
+id = "non-rust-standalone-diagnostics-schema"
+path = "schemas/standalone_diagnostics.v1.schema.json"
+kind = "agent_workflow"
+language = "json"
+surface = "tooling"
+classification = "tooling"
+owner = "distribution/install"
+reason = "Contract for the standalone diagnostic reason/action registry (#11493). The registry data lives at .spec/11493-standalone-diagnostics/manifest.json and is validated, including totality over the typed standalone_install_transition.v1 cross-product, by `cargo xtask standalone-diagnostics check`."
+covered_by = ["cargo test -p xtask --test standalone_diagnostics --locked"]
+created = "2026-08-29"
+review_after = "2026-11-29"
+
+[[allow]]
 id = "non-rust-install-identity-verification-schema"
 path = "schemas/install_identity_verification.v1.schema.json"
 kind = "release_metadata"

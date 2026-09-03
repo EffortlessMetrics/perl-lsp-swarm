@@ -32,6 +32,7 @@ pub mod native_neovim_actions;
 pub mod parser_accuracy_legacy_population;
 pub mod publication_drift;
 pub mod rust_hygiene;
+pub mod standalone_diagnostics;
 pub mod vim_host_diagnostics_run;
 pub mod vim_host_freshness_run;
 pub mod vim_host_run;

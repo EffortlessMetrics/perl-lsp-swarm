@@ -59,10 +59,10 @@ use tasks::{
     release_notes, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
     rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
     semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
-    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
-    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
-    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
-    validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
+    shadow_parity, srp_microcrates, standalone_diagnostics, supported_editor_inline_smoke,
+    swarm_agent_roster, swarm_summary, sync_release_docs, targeted_checks, test, test_lsp,
+    train_edge_contract, unwired_scan, update_homebrew, update_status, ux_regression_receipt,
+    ux_scorecard, validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
     workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
@@ -147,6 +147,14 @@ enum Commands {
         /// Operation to run against the manifest.
         #[command(subcommand)]
         command: tasks::compiler_lexical_cutline::CompilerLexicalCutlineSubcommand,
+    },
+
+    /// Check, explain, and project the standalone diagnostic reason/action
+    /// registry (`standalone_diagnostics.v1`, #11493).
+    StandaloneDiagnostics {
+        /// Operation to run against the registry.
+        #[command(subcommand)]
+        command: tasks::standalone_diagnostics::StandaloneDiagnosticsSubcommand,
     },
 
     /// Validate the versioned critic rule-proof manifest, live fixture
@@ -4876,6 +4884,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
+        Commands::StandaloneDiagnostics { command } => standalone_diagnostics::run(command),
         Commands::CriticRuleProof { command } => critic_rule_proof::run(command),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
