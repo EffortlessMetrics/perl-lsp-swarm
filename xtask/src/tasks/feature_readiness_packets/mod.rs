@@ -10,6 +10,7 @@
 //! Exit codes: `0` success, `1` validation/instrument failure (fail closed).
 
 pub mod build;
+pub mod denominator;
 pub mod model;
 pub mod nodes;
 pub mod render;
@@ -254,20 +255,21 @@ fn run_all(snapshot_path: Option<&Path>) -> Result<()> {
         );
         checked += 1;
     }
-    let actionable = nodes::denominator()
+    let actionable = denominator::ENTRIES
         .iter()
         .filter(|entry| entry.disposition == model::DenominatorDisposition::Actionable)
         .count();
-    let deferred = nodes::denominator()
+    let deferred = denominator::ENTRIES
         .iter()
         .filter(|entry| entry.disposition == model::DenominatorDisposition::Deferred)
         .count();
-    let excluded = nodes::denominator()
+    let excluded = denominator::ENTRIES
         .iter()
         .filter(|entry| entry.disposition == model::DenominatorDisposition::Excluded)
         .count();
     println!(
-        "FR_PACKET_DENOMINATOR actionable={actionable} deferred={deferred} excluded={excluded} duplicate=0 checked={checked} status=ok"
+        "FR_PACKET_DENOMINATOR authority={} actionable={actionable} deferred={deferred} excluded={excluded} duplicate=0 checked={checked} status=ok",
+        denominator::VERSION
     );
     Ok(())
 }

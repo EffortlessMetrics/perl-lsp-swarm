@@ -2,7 +2,7 @@
 //! generator (#11286). Every mutation asserts its exact violation code so a
 //! weakened validator cannot pass by becoming permissive.
 
-use super::{build, nodes, render, validate};
+use super::{build, denominator, nodes, render, validate};
 use serde_json::Value;
 use std::sync::OnceLock;
 
@@ -74,20 +74,20 @@ fn registry_is_complete_against_the_mandated_fixture_list() {
 fn registry_matches_independent_actionable_denominator_and_dispositions() -> TestResult {
     let violations = validate::validate_registry_denominator(registry());
     assert!(violations.is_empty(), "denominator drift: {:?}", codes(&violations));
-    let actionable = nodes::denominator()
+    let actionable = denominator::ENTRIES
         .iter()
         .filter(|entry| entry.disposition == super::model::DenominatorDisposition::Actionable)
         .count();
     assert_eq!(actionable, 18);
     assert_eq!(
-        nodes::denominator()
+        denominator::ENTRIES
             .iter()
             .filter(|entry| entry.disposition == super::model::DenominatorDisposition::Deferred)
             .count(),
         1
     );
     assert_eq!(
-        nodes::denominator()
+        denominator::ENTRIES
             .iter()
             .filter(|entry| entry.disposition == super::model::DenominatorDisposition::Excluded)
             .count(),
@@ -103,6 +103,14 @@ fn denominator_rejects_duplicate_registry_identity() {
     let violations = validate::validate_registry_denominator(&duplicate);
     assert!(codes(&violations).contains(&"duplicate_node_identity"));
     assert!(codes(&violations).contains(&"duplicate_issue_identity"));
+}
+
+#[test]
+fn denominator_rejects_membership_drift() {
+    let mut missing = nodes::all_nodes();
+    missing.remove(0);
+    let violations = validate::validate_registry_denominator(&missing);
+    assert!(codes(&violations).contains(&"denominator_missing"));
 }
 
 /// #11286's representative list pins exact issues; every one must appear.
@@ -493,6 +501,23 @@ fn compact_projection_detects_dropped_artifact_cells() {
         !loss.is_empty(),
         "an artifact reduced to cells absent from the compact projection must be detected"
     );
+}
+
+#[test]
+fn compact_projection_keeps_duplicate_artifact_cells_local() {
+    let (builder, _) = builder_of("fr_8305_import_containment_leaf");
+    let compact_text = render::compact(&builder);
+    let mut drifted = builder.clone();
+    let first_owner = drifted
+        .pointer("/artifacts/0/owner")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    if let Some(second) = drifted.pointer_mut("/artifacts/1").and_then(Value::as_object_mut) {
+        second.insert("owner".to_owned(), Value::String(first_owner));
+    }
+    let loss = render::validate_compact_lossless(&drifted, &compact_text);
+    assert!(codes(&loss).contains(&"compact_loss"));
 }
 
 // Dropped stop conditions are a rendering regression, not a style choice.

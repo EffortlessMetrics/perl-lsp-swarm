@@ -7,6 +7,7 @@
 use serde_json::Value;
 
 use super::build;
+use super::denominator;
 use super::model::{DenominatorDisposition, NodeSpec};
 use super::nodes;
 
@@ -16,13 +17,13 @@ pub struct Violation {
     pub detail: String,
 }
 
-/// Check the packet registry against the independently derived denominator
+/// Check the packet registry against the versioned denominator authority
 /// from #11279/#11286. This catches silent fixture growth, omission, role or
 /// disposition drift, duplicate identities, and accidental inclusion of the
 /// controller/observational planes.
 pub fn validate_registry_denominator(registry: &[NodeSpec]) -> Vec<Violation> {
     let mut violations = Vec::new();
-    let expected = nodes::denominator();
+    let expected = denominator::ENTRIES;
     let expected_nodes: std::collections::BTreeSet<&str> =
         expected.iter().filter_map(|entry| entry.packet_node).collect();
     let actual_nodes: std::collections::BTreeSet<&str> =

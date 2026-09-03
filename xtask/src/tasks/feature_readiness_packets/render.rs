@@ -507,9 +507,28 @@ pub fn validate_compact_lossless(builder: &Value, compact_text: &str) -> Vec<Vio
             ));
         }
     }
+    let artifact_section = compact_text
+        .split_once("ARTIFACTS: ")
+        .and_then(|(_, rest)| rest.split_once('\n').map(|(section, _)| section))
+        .unwrap_or("");
+    let artifact_ids: Vec<&str> = objects(builder, "/artifacts")
+        .iter()
+        .filter_map(|artifact| artifact.get("id").and_then(Value::as_str))
+        .collect();
     for artifact in objects(builder, "/artifacts") {
         let id = artifact.get("id").and_then(Value::as_str).unwrap_or("");
-        if !id.is_empty() && !compact_text.contains(id) {
+        let row_start = artifact_section.find(&format!("{id}["));
+        let row = row_start.map(|start| {
+            let end = artifact_ids
+                .iter()
+                .filter(|other| **other != id)
+                .filter_map(|other| artifact_section[start..].find(&format!("{other}[")))
+                .map(|offset| start + offset)
+                .min()
+                .unwrap_or(artifact_section.len());
+            &artifact_section[start..end]
+        });
+        if id.is_empty() || row.is_none() {
             violations.push(Violation::new(
                 "compact_loss",
                 format!("compact projection dropped artifact {id:?}"),
@@ -526,7 +545,7 @@ pub fn validate_compact_lossless(builder: &Value, compact_text: &str) -> Vec<Vio
             "claim_impact",
         ] {
             let value = artifact.get(field).and_then(Value::as_str).unwrap_or("");
-            if !value.is_empty() && !compact_text.contains(value) {
+            if !value.is_empty() && !row.is_some_and(|text| text.contains(value)) {
                 violations.push(Violation::new(
                     "compact_loss",
                     format!(
