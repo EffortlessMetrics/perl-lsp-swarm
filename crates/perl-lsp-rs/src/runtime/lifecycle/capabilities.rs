@@ -97,9 +97,16 @@ fn workspace_capabilities(
     workspace_folders_support: bool,
     file_operations: FileOperationSupport,
 ) -> Value {
-    let perl_globs = ["**/*.pl", "**/*.pm", "**/*.t", "**/*.psgi"];
-    let filters: Vec<Value> =
-        perl_globs.iter().map(|glob| json!({ "pattern": { "glob": glob } })).collect();
+    // Advertised file-operation filters share the watcher pattern authority
+    // so both registrations stay honest about what the handlers classify
+    // (#13308). The catch-all delivers non-Perl events by design; the
+    // willRename preflight classifies each renamed subject through the same
+    // discovery admission authority as the startup and watcher seams and
+    // plans no module edits for non-Perl subjects (#14186).
+    let filters: Vec<Value> = super::watchers::PERL_WATCH_PATTERNS
+        .iter()
+        .map(|glob| json!({ "pattern": { "glob": glob } }))
+        .collect();
     let mut file_operation_capabilities = serde_json::Map::new();
     file_operations.insert_capabilities(&mut file_operation_capabilities, &filters);
 
