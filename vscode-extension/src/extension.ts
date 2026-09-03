@@ -2186,60 +2186,20 @@ export function createLanguageClient(serverPath: string): LanguageClient {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return null;
         }
-        try {
-          const edits = await next(document, options, token);
-          const presentation = presentFormattingProviderOutcome(edits?.length ?? 0);
-          healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
-          return edits;
-        } catch (err: unknown) {
-          if (isRequestCancellation(err)) {
-            return null;
-          }
-          const msg = err instanceof Error ? err.message : String(err);
-          if (msg.includes('Client got disposed')) {
-            return null;
-          }
-          const code =
-            err && typeof err === 'object' && 'code' in err
-              ? (err as { code: unknown }).code
-              : undefined;
-          // Do not notify for request cancellations (code -32800)
-          if (code !== -32800) {
-            handleFormattingError(msg, outputChannel);
-            const presentation = presentFormattingProviderError(msg);
-            healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
-          }
-          return null;
-        }
+        return settleFormattingProviderCall(
+          async () => next(document, options, token),
+          null,
+        );
       },
       provideDocumentRangeFormattingEdits: async (document, range, options, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return null;
         }
-        try {
-          const edits = await next(document, range, options, token);
-          const presentation = presentFormattingProviderOutcome(edits?.length ?? 0, true);
-          healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
-          return edits;
-        } catch (err: unknown) {
-          if (isRequestCancellation(err)) {
-            return null;
-          }
-          const msg = err instanceof Error ? err.message : String(err);
-          if (msg.includes('Client got disposed')) {
-            return null;
-          }
-          const code =
-            err && typeof err === 'object' && 'code' in err
-              ? (err as { code: unknown }).code
-              : undefined;
-          if (code !== -32800) {
-            handleFormattingError(msg, outputChannel);
-            const presentation = presentFormattingProviderError(msg, true);
-            healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
-          }
-          return null;
-        }
+        return settleFormattingProviderCall(
+          async () => next(document, range, options, token),
+          null,
+          true,
+        );
       },
       provideFoldingRanges: async (document, context, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
@@ -2452,13 +2412,17 @@ function recordLspProviderOutcome(
   result: unknown,
   emptyOutcome: 'legitimate_empty' | 'safe_refusal' = 'legitimate_empty',
 ): void {
-  const presentation = presentLspProviderOutcome(
-    label,
-    result,
-    activeDocumentReadiness.isReady(document.uri.toString()),
-    emptyOutcome,
-  );
-  healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
+  try {
+    const presentation = presentLspProviderOutcome(
+      label,
+      result,
+      activeDocumentReadiness.isReady(document.uri.toString()),
+      emptyOutcome,
+    );
+    healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
+  } catch {
+    // Provider status projection must never replace the settled wire result.
+  }
 }
 
 async function settleMiddlewareProviderCall<T>(
@@ -2470,11 +2434,46 @@ async function settleMiddlewareProviderCall<T>(
 ): Promise<T> {
   const settlement = await settleLspProviderCallWithDisposition(call, fallback);
   if (settlement.kind === 'returned') {
-    recordLspProviderOutcome(label, document, settlement.value, emptyOutcome);
+    safelyObserveProviderOutcome(() =>
+      recordLspProviderOutcome(label, document, settlement.value, emptyOutcome),
+    );
   } else if (settlement.kind === 'failed') {
-    handleLspProviderError(label, settlement.error);
+    safelyObserveProviderOutcome(() => handleLspProviderError(label, settlement.error));
   }
   return settlement.wireValue;
+}
+
+export async function settleFormattingProviderCall<T>(
+  call: () => Promise<T>,
+  fallback: T,
+  range: boolean = false,
+): Promise<T> {
+  const settlement = await settleLspProviderCallWithDisposition(call, fallback);
+  if (settlement.kind === 'returned') {
+    safelyObserveProviderOutcome(() => {
+      const presentation = presentFormattingProviderOutcome(
+        Array.isArray(settlement.value) ? settlement.value.length : 0,
+        range,
+      );
+      healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
+    });
+  } else if (settlement.kind === 'failed') {
+    const message = describeLspProviderError(settlement.error);
+    safelyObserveProviderOutcome(() => handleFormattingError(message, outputChannel));
+    safelyObserveProviderOutcome(() => {
+      const presentation = presentFormattingProviderError(message, range);
+      healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
+    });
+  }
+  return settlement.wireValue;
+}
+
+function safelyObserveProviderOutcome(observer: () => void): void {
+  try {
+    observer();
+  } catch {
+    // Provider status and diagnostics must never replace the wire fallback.
+  }
 }
 
 function describeLspProviderError(error: unknown): string {
@@ -2487,9 +2486,17 @@ function describeLspProviderError(error: unknown): string {
 
 function handleLspProviderError(label: string, error: unknown): void {
   const message = describeLspProviderError(error);
-  const presentation = presentLspProviderError(label, message);
-  healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
-  outputChannel?.warn(`[provider] ${label} failed: ${message}`);
+  try {
+    const presentation = presentLspProviderError(label, message);
+    healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
+  } catch {
+    // A failing status projection must not suppress the diagnostic warning.
+  }
+  try {
+    outputChannel?.warn(`[provider] ${label} failed: ${message}`);
+  } catch {
+    // Logging is best effort after the wire fallback has been selected.
+  }
 }
 
 function isRequestCancellation(error: unknown): boolean {

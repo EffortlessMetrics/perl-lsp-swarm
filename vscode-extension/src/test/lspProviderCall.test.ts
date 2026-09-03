@@ -81,6 +81,26 @@ describe('typed LSP provider call settlement', () => {
     ).resolves.toEqual({ kind: 'failed', error, wireValue: null });
   });
 
+  test('compatibility adapter preserves fallback for an unstringifiable failure', async () => {
+    const error = {
+      toString: () => {
+        throw new Error('cannot stringify');
+      },
+    };
+    const onFailure = jest.fn();
+
+    await expect(
+      settleLspProviderCall(
+        async () => {
+          throw error;
+        },
+        'wire fallback',
+        onFailure,
+      ),
+    ).resolves.toBe('wire fallback');
+    expect(onFailure).toHaveBeenCalledWith(error);
+  });
+
   test('returns the wire fallback when failure classification hits a hostile proxy', async () => {
     const error = new Proxy(
       {},
@@ -102,7 +122,7 @@ describe('typed LSP provider call settlement', () => {
     const error = new Error('definition failed');
     const onFailure = jest.fn();
 
-    const result = await settleLspProviderCall(
+    const settled = settleLspProviderCall(
       async () => {
         throw error;
       },
@@ -110,13 +130,14 @@ describe('typed LSP provider call settlement', () => {
       onFailure,
     );
 
+    const result = await settled;
     expect(result).toBeNull();
     expect(onFailure).toHaveBeenCalledWith(error);
   });
 
   test('compatibility adapter contains a synchronous observer failure', async () => {
     const error = new Error('definition failed');
-    const result = await settleLspProviderCall(
+    const settled = settleLspProviderCall(
       async () => {
         throw error;
       },
@@ -126,12 +147,13 @@ describe('typed LSP provider call settlement', () => {
       },
     );
 
+    const result = await settled;
     expect(result).toBeNull();
   });
 
   test('compatibility adapter consumes an asynchronous observer rejection', async () => {
     const error = new Error('definition failed');
-    const result = await settleLspProviderCall(
+    const settled = settleLspProviderCall(
       async () => {
         throw error;
       },
@@ -141,6 +163,7 @@ describe('typed LSP provider call settlement', () => {
       },
     );
 
+    const result = await settled;
     expect(result).toBeNull();
     await Promise.resolve();
   });
@@ -150,7 +173,7 @@ describe('typed LSP provider call settlement', () => {
     const observer = new Deferred<void>();
     let observed = false;
 
-    const result = await settleLspProviderCall(
+    const settled = settleLspProviderCall(
       async () => {
         throw error;
       },
@@ -161,6 +184,13 @@ describe('typed LSP provider call settlement', () => {
       },
     );
 
+    await expect(
+      Promise.race([
+        settled.then(() => 'settled' as const),
+        observer.promise.then(() => 'observer' as const),
+      ]),
+    ).resolves.toBe('settled');
+    const result = await settled;
     expect(result).toBeNull();
     expect(observed).toBe(true);
     observer.resolve(undefined);
