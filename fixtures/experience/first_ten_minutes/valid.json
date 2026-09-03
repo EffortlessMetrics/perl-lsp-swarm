@@ -65,10 +65,10 @@
   },
   "findings": [
     {
-      "id": "beta-dynamic-method-control",
+      "id": "beta-conventional-navigation",
       "class": "expected_beta_boundary",
-      "summary": "Dynamic method dispatch produced a bounded explanation rather than manufactured exactness.",
-      "evidence_ref": "receipt://provider-decision/dynamic-method-control",
+      "summary": "Import navigation from the bin entry into the multi-file lib packages resolved with bounded, current results.",
+      "evidence_ref": "receipt://provider-decision/conventional-imports",
       "linked_issue": null
     }
   ],

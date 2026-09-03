@@ -1583,6 +1583,38 @@ mod tests {
         Ok(())
     }
 
+    /// Checked-in sample receipts must not claim evidence their bound
+    /// fixture cannot produce: conventional-modules-v1 has no dynamic
+    /// dispatch boundary, so a receipt bound to it must not claim
+    /// dynamic-method observations.
+    #[test]
+    fn checked_in_passing_receipt_evidence_matches_its_fixture() -> Result<()> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../fixtures/experience/first_ten_minutes/valid.json");
+        let (receipt, _) = load(&path)?;
+        if receipt.project.fixture_id != "conventional-modules-v1" {
+            return Ok(());
+        }
+        for finding in &receipt.findings {
+            let text = format!("{} {}", finding.id, finding.summary).to_lowercase();
+            if text.contains("dynamic") {
+                return Err(color_eyre::eyre::eyre!(
+                    "receipt bound to conventional-modules-v1 claims dynamic-dispatch evidence: {}",
+                    finding.id
+                ));
+            }
+        }
+        for step in &receipt.steps {
+            if step.evidence_ref.to_lowercase().contains("dynamic-method-control") {
+                return Err(color_eyre::eyre::eyre!(
+                    "receipt bound to conventional-modules-v1 claims dynamic-method evidence: {}",
+                    step.evidence_ref
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Negative control: a manifest that keeps every canonical id and digest
     /// but swaps two family labels must fail artifact eligibility, so family
     /// assignments cannot be rearranged behind a trusted artifact.
