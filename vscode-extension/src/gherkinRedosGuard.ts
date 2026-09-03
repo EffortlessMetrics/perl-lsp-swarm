@@ -177,16 +177,47 @@ function hasOverlappingQuantifiedAlternation(source: string): boolean {
 const MAX_VERDICT_CACHE_ENTRIES = 512;
 const verdictCache = new Map<string, boolean>();
 
+// An entry cap alone does not bound memory, because every key carries the
+// pattern text itself. `isSafeGherkinStepMatch` already refuses anything longer
+// than `MAX_MATCH_REGEX_LENGTH`, so no production call can present a larger
+// one — but that ceiling belonged to the caller, not to the cache, and a future
+// caller reaching the guard directly would retain unbounded keys. Admitting
+// only keys the ceiling already covers makes the bound a property of the cache
+// itself: at most `MAX_VERDICT_CACHE_ENTRIES` and
+// `MAX_ATOM_DOMAIN_CACHE_ENTRIES` keys of at most `MAX_MATCH_REGEX_LENGTH`
+// characters each.
+//
+// An oversized pattern is still answered exactly as before. It is simply never
+// retained, so a verdict can never depend on cache state.
+function isRetainableCacheKey(text: string): boolean {
+  return text.length <= MAX_MATCH_REGEX_LENGTH;
+}
+
+/**
+ * Entry counts for the guard's two memos. Diagnostic only: nothing reads these
+ * to make a policy decision, and both memos are pure, so the counts cannot
+ * affect a verdict.
+ */
+export function gherkinRedosGuardCacheStats(): {
+  verdictEntries: number;
+  atomDomainEntries: number;
+} {
+  return { verdictEntries: verdictCache.size, atomDomainEntries: atomDomainCache.size };
+}
+
 export function isPotentiallyExpensiveRegex(source: string, flags = ''): boolean {
   const normalizedFlags = normalizeGherkinRegexFlags(flags);
   if (normalizedFlags === null) {
     return true;
   }
 
+  const retainable = isRetainableCacheKey(source);
   const key = `${normalizedFlags}\u0000${source}`;
-  const cached = verdictCache.get(key);
-  if (cached !== undefined) {
-    return cached;
+  if (retainable) {
+    const cached = verdictCache.get(key);
+    if (cached !== undefined) {
+      return cached;
+    }
   }
 
   const verdict =
@@ -196,10 +227,12 @@ export function isPotentiallyExpensiveRegex(source: string, flags = ''): boolean
     hasAdjacentVariableRepetition(source, normalizedFlags) ||
     hasVariableWidthAtomChain(source, normalizedFlags);
 
-  if (verdictCache.size >= MAX_VERDICT_CACHE_ENTRIES) {
-    verdictCache.clear();
+  if (retainable) {
+    if (verdictCache.size >= MAX_VERDICT_CACHE_ENTRIES) {
+      verdictCache.clear();
+    }
+    verdictCache.set(key, verdict);
   }
-  verdictCache.set(key, verdict);
   return verdict;
 }
 
@@ -292,17 +325,22 @@ const atomDomainCache = new Map<string, Set<string> | null>();
 // complemented, Unicode, or otherwise unsupported atom stays fail-closed.
 function simpleAtomDomain(atom: string, flags: string): Set<string> | null {
   const caseInsensitive = flags.includes('i');
+  const retainable = isRetainableCacheKey(atom);
   const key = `${caseInsensitive ? 'i' : ''}\u0000${atom}`;
-  const cached = atomDomainCache.get(key);
-  if (cached !== undefined) {
-    return cached;
+  if (retainable) {
+    const cached = atomDomainCache.get(key);
+    if (cached !== undefined) {
+      return cached;
+    }
   }
 
   const domain = computeSimpleAtomDomain(atom, caseInsensitive);
-  if (atomDomainCache.size >= MAX_ATOM_DOMAIN_CACHE_ENTRIES) {
-    atomDomainCache.clear();
+  if (retainable) {
+    if (atomDomainCache.size >= MAX_ATOM_DOMAIN_CACHE_ENTRIES) {
+      atomDomainCache.clear();
+    }
+    atomDomainCache.set(key, domain);
   }
-  atomDomainCache.set(key, domain);
   return domain;
 }
 

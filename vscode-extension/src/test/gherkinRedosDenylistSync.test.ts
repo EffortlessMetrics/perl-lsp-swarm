@@ -1,6 +1,8 @@
 import {
+  gherkinRedosGuardCacheStats,
   isPotentiallyExpensiveRegex,
   isSafeGherkinStepMatch,
+  MAX_MATCH_REGEX_LENGTH,
   normalizeGherkinRegexFlags,
 } from '../gherkinRedosGuard';
 
@@ -185,5 +187,88 @@ describe('gherkin ReDoS guard: variable-width atom chains (#9806)', () => {
     ['optional trailing clauses', '^I have (\\d+)(?: or (\\d+))?(?: and (\\d+))?$'],
   ])('keeps the flexible-step idiom available: %s', (_name, source) => {
     expect(isPotentiallyExpensiveRegex(source)).toBe(false);
+  });
+});
+
+// The memos cap entry counts, but each key carries the pattern text, so a count
+// alone does not bound memory. The guard's own input ceiling is enforced at
+// admission rather than being inherited from `isSafeGherkinStepMatch`, so the
+// bound holds for any caller.
+describe('gherkin ReDoS guard: bounded memo keys (#9806)', () => {
+  const oversized = (seed: number) => `^${'a'.repeat(MAX_MATCH_REGEX_LENGTH)}${seed}b+c+d+$`;
+
+  test('does not retain an oversized pattern, however many arrive', () => {
+    // Warm the caches so a wholesale clear mid-test cannot mask growth.
+    isPotentiallyExpensiveRegex('^warm (\\w+) up$');
+    const before = gherkinRedosGuardCacheStats();
+
+    for (let seed = 0; seed < 200; seed += 1) {
+      isPotentiallyExpensiveRegex(oversized(seed));
+    }
+
+    const after = gherkinRedosGuardCacheStats();
+    expect(after.verdictEntries).toBe(before.verdictEntries);
+    // The short atoms *inside* an oversized pattern are themselves within the
+    // ceiling, so they remain cacheable; what must hold is the declared cap.
+    expect(after.atomDomainEntries).toBeLessThanOrEqual(1024);
+  });
+
+  test('does not retain an oversized atom', () => {
+    // One character class longer than the ceiling is a single oversized atom,
+    // which is the key the atom memo must refuse. Each iteration presents a
+    // distinct one, so retention would show up one-for-one in the count.
+    isPotentiallyExpensiveRegex('^warm (\\d+) up$');
+    const before = gherkinRedosGuardCacheStats().atomDomainEntries;
+
+    // A–Z only. `\` and `]` are char codes 92 and 93, and either one changes how
+    // the class parses — the escape stops it terminating, the bracket ends it
+    // early and leaves a short atom behind — which would grow the memo for a
+    // reason that has nothing to do with retention.
+    for (let seed = 0; seed < 26; seed += 1) {
+      const hugeClass = `[${'a'.repeat(MAX_MATCH_REGEX_LENGTH)}${String.fromCharCode(65 + seed)}]`;
+      expect(hugeClass.length).toBeGreaterThan(MAX_MATCH_REGEX_LENGTH);
+      isPotentiallyExpensiveRegex(`^${hugeClass}+$`);
+    }
+
+    expect(gherkinRedosGuardCacheStats().atomDomainEntries).toBe(before);
+  });
+
+  test('still answers an oversized pattern, and answers it identically each time', () => {
+    // Refusing to retain must not change the verdict, and an uncached path must
+    // not drift from a cached one.
+    const chained = `^${'x'.repeat(MAX_MATCH_REGEX_LENGTH)}(a+)(a+)(a+)b$`;
+    expect(chained.length).toBeGreaterThan(MAX_MATCH_REGEX_LENGTH);
+    expect(isPotentiallyExpensiveRegex(chained)).toBe(true);
+    expect(isPotentiallyExpensiveRegex(chained)).toBe(true);
+
+    const benign = `^${'x'.repeat(MAX_MATCH_REGEX_LENGTH)} plain$`;
+    expect(isPotentiallyExpensiveRegex(benign)).toBe(false);
+    expect(isPotentiallyExpensiveRegex(benign)).toBe(false);
+  });
+
+  test('retains a pattern of exactly the ceiling length', () => {
+    // `isSafeGherkinStepMatch` admits a source of exactly MAX_MATCH_REGEX_LENGTH,
+    // so the memo must too; a strict `<` here would refuse to cache the longest
+    // pattern the guard actually serves.
+    const atCeiling = `^${'b'.repeat(MAX_MATCH_REGEX_LENGTH - 2)}$`;
+    expect(atCeiling.length).toBe(MAX_MATCH_REGEX_LENGTH);
+
+    const before = gherkinRedosGuardCacheStats().verdictEntries;
+    // Well clear of the cap, so no wholesale clear can hide the admission and
+    // make this assertion vacuous.
+    expect(before).toBeLessThan(400);
+
+    isPotentiallyExpensiveRegex(atCeiling);
+    expect(gherkinRedosGuardCacheStats().verdictEntries).toBe(before + 1);
+    expect(isPotentiallyExpensiveRegex(atCeiling)).toBe(false);
+  });
+
+  test('never exceeds its declared entry bounds under sustained distinct load', () => {
+    for (let seed = 0; seed < 3000; seed += 1) {
+      isPotentiallyExpensiveRegex(`^step ${seed} has (\\w+) and (\\d+)$`);
+    }
+    const stats = gherkinRedosGuardCacheStats();
+    expect(stats.verdictEntries).toBeLessThanOrEqual(512);
+    expect(stats.atomDomainEntries).toBeLessThanOrEqual(1024);
   });
 });
