@@ -132,7 +132,7 @@ fn given_a_proven_complete_miss_when_reported_then_it_claims_an_exact_denominato
     // The exact state still exists and still means what it says — it just has to
     // be established by a search that can prove its denominator, not minted by
     // widening a weaker result.
-    assert!(ModuleResolutionOutcome::NotFound.has_complete_denominator());
+    assert!(!ModuleResolutionOutcome::NotProvenAbsent.has_complete_denominator());
 }
 
 #[test]

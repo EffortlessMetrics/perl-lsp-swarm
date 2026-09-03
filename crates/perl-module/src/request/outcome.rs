@@ -14,13 +14,55 @@ use std::fmt;
 
 use crate::resolution::ModuleUriResolution;
 
-use super::{ModuleRequestError, RequestBoundary};
+use super::{ModuleRequest, ModuleRequestError, RequestBoundary};
+
+/// Evidence carried by an exact resolution outcome.
+///
+/// The fields and constructors are intentionally private. An exact outcome is
+/// a resolver result, not a value that an API consumer may mint from a URI or
+/// from the absence of a URI alone. M02 (#8521) will provide the resolver-side
+/// construction path when resolution consumes [`ModuleRequest`] directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExactResolutionEvidence {
+    request: ModuleRequest,
+    selected_uri: Option<String>,
+}
+
+impl ExactResolutionEvidence {
+    fn resolved(request: ModuleRequest, selected_uri: String) -> Self {
+        Self { request, selected_uri: Some(selected_uri) }
+    }
+
+    fn not_found(request: ModuleRequest) -> Self {
+        Self { request, selected_uri: None }
+    }
+
+    fn selected_uri(&self) -> Option<&str> {
+        self.selected_uri.as_deref()
+    }
+
+    /// The validated request whose complete search produced this evidence.
+    #[must_use]
+    pub fn request(&self) -> &ModuleRequest {
+        &self.request
+    }
+}
 
 /// Outcome of a module-resolution attempt.
 ///
 /// `NotFound` is an *exact* answer and is only correct when every authorized
 /// root was inspected. Searches cut short by a budget, an I/O limit, or a
 /// missing include environment report their own state instead.
+///
+/// Exact variants carry opaque resolver evidence and cannot be minted from an
+/// arbitrary URI or unit value:
+///
+/// ```compile_fail
+/// use perl_module::ModuleResolutionOutcome;
+///
+/// let _ = ModuleResolutionOutcome::Resolved("file:///does-not-exist.pm".to_owned());
+/// let _ = ModuleResolutionOutcome::NotFound;
+/// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModuleResolutionOutcome {
@@ -29,7 +71,7 @@ pub enum ModuleResolutionOutcome {
     /// This is an *exact* selection: only a search that can prove it inspected
     /// every root of higher precedence may report it, because the winner is
     /// defined by precedence order rather than by mere existence.
-    Resolved(String),
+    Resolved(ExactResolutionEvidence),
     /// A module was found, but the search was never proven to have inspected
     /// every higher-precedence root, so this may not be the precedence winner.
     ///
@@ -48,7 +90,7 @@ pub enum ModuleResolutionOutcome {
     ///
     /// This is an *exact* absence. Only a search that can prove it inspected every
     /// authorized root may report it.
-    NotFound,
+    NotFound(ExactResolutionEvidence),
     /// Nothing matched, but the search denominator was never proven complete.
     ///
     /// This is the strongest claim a three-state legacy result supports. The
@@ -74,6 +116,20 @@ pub enum ModuleResolutionOutcome {
 }
 
 impl ModuleResolutionOutcome {
+    /// Create an exact resolved outcome from resolver-owned evidence.
+    ///
+    /// This remains crate-private until the M02 resolver owns this boundary.
+    pub(crate) fn resolved(request: ModuleRequest, uri: String) -> Self {
+        Self::Resolved(ExactResolutionEvidence::resolved(request, uri))
+    }
+
+    /// Create an exact absence outcome from resolver-owned evidence.
+    ///
+    /// This remains crate-private until the M02 resolver owns this boundary.
+    pub(crate) fn not_found(request: ModuleRequest) -> Self {
+        Self::NotFound(ExactResolutionEvidence::not_found(request))
+    }
+
     /// `true` when a module was found, whether or not the winner is proven exact.
     ///
     /// Both [`Self::Resolved`] and [`Self::NotProvenPrecedence`] carry a URI a
@@ -89,7 +145,8 @@ impl ModuleResolutionOutcome {
     #[must_use]
     pub fn resolved_uri(&self) -> Option<&str> {
         match self {
-            Self::Resolved(uri) | Self::NotProvenPrecedence(uri) => Some(uri.as_str()),
+            Self::Resolved(evidence) => evidence.selected_uri(),
+            Self::NotProvenPrecedence(uri) => Some(uri.as_str()),
             _ => None,
         }
     }
@@ -101,7 +158,7 @@ impl ModuleResolutionOutcome {
     /// unattempted, or refused state is not.
     #[must_use]
     pub const fn has_complete_denominator(&self) -> bool {
-        matches!(self, Self::Resolved(_) | Self::NotFound)
+        matches!(self, Self::Resolved(_) | Self::NotFound(_))
     }
 
     /// Stable identifier for the *outcome class*, for evidence rows and diagnostics.
@@ -114,7 +171,7 @@ impl ModuleResolutionOutcome {
         match self {
             Self::Resolved(_) => "module_resolution.resolved",
             Self::NotProvenPrecedence(_) => "module_resolution.not_proven_precedence",
-            Self::NotFound => "module_resolution.not_found",
+            Self::NotFound(_) => "module_resolution.not_found",
             Self::NotProvenAbsent => "module_resolution.not_proven_absent",
             Self::InvalidRequest(_) => "module_resolution.invalid_request",
             Self::Dynamic(_) => "module_resolution.dynamic",
@@ -147,11 +204,14 @@ impl ModuleResolutionOutcome {
 impl fmt::Display for ModuleResolutionOutcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Resolved(uri) => write!(f, "resolved to {uri}"),
+            Self::Resolved(evidence) => match evidence.selected_uri() {
+                Some(uri) => write!(f, "resolved to {uri}"),
+                None => f.write_str("resolved without a selected URI"),
+            },
             Self::NotProvenPrecedence(uri) => {
                 write!(f, "found {uri}, but higher-precedence roots were not proven inspected")
             }
-            Self::NotFound => f.write_str("not found"),
+            Self::NotFound(_) => f.write_str("not found"),
             Self::NotProvenAbsent => {
                 f.write_str("no candidate matched, but the denominator was not proven complete")
             }
@@ -254,11 +314,13 @@ pub fn uri_resolution_from_outcome(
     outcome: &ModuleResolutionOutcome,
 ) -> Option<ModuleUriResolution> {
     match outcome {
-        ModuleResolutionOutcome::Resolved(uri)
-        | ModuleResolutionOutcome::NotProvenPrecedence(uri) => {
+        ModuleResolutionOutcome::Resolved(evidence) => {
+            evidence.selected_uri().map(str::to_owned).map(ModuleUriResolution::Resolved)
+        }
+        ModuleResolutionOutcome::NotProvenPrecedence(uri) => {
             Some(ModuleUriResolution::Resolved(uri.clone()))
         }
-        ModuleResolutionOutcome::NotFound | ModuleResolutionOutcome::NotProvenAbsent => {
+        ModuleResolutionOutcome::NotFound(_) | ModuleResolutionOutcome::NotProvenAbsent => {
             Some(ModuleUriResolution::NotFound)
         }
         ModuleResolutionOutcome::TimedOut => Some(ModuleUriResolution::TimedOut),
@@ -277,6 +339,7 @@ mod tests {
         ModuleResolutionOutcome, ModuleUriResolution, outcome_from_uri_resolution,
         uri_resolution_from_outcome,
     };
+    use crate::request::ModuleRequest;
     use crate::request::{ModuleName, ModuleRequestError, RequestBoundary};
 
     #[test]
@@ -334,12 +397,14 @@ mod tests {
     }
 
     #[test]
-    fn only_exact_answers_claim_a_complete_denominator() {
-        assert!(ModuleResolutionOutcome::NotFound.has_complete_denominator());
-        assert!(
-            ModuleResolutionOutcome::Resolved("file:///w/Foo.pm".to_string())
-                .has_complete_denominator()
-        );
+    fn only_verified_answers_claim_a_complete_denominator() -> Result<(), ModuleRequestError> {
+        let request = ModuleRequest::bareword("Foo")?;
+        let exact_resolved =
+            ModuleResolutionOutcome::resolved(request.clone(), "file:///w/Foo.pm".to_string());
+        let exact_not_found = ModuleResolutionOutcome::not_found(request);
+
+        assert!(exact_not_found.has_complete_denominator());
+        assert!(exact_resolved.has_complete_denominator());
 
         for truncated in [
             ModuleResolutionOutcome::NotProvenAbsent,
@@ -355,13 +420,15 @@ mod tests {
                 "{truncated:?} must not claim an exact denominator"
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn boundary_ids_are_namespaced_and_distinct() {
+    fn boundary_ids_are_namespaced_and_distinct() -> Result<(), ModuleRequestError> {
+        let request = ModuleRequest::bareword("Foo")?;
         let outcomes = [
-            ModuleResolutionOutcome::Resolved(String::new()),
-            ModuleResolutionOutcome::NotFound,
+            ModuleResolutionOutcome::resolved(request.clone(), "file:///w/Foo.pm".to_string()),
+            ModuleResolutionOutcome::not_found(request),
             ModuleResolutionOutcome::NotProvenAbsent,
             ModuleResolutionOutcome::Dynamic(RequestBoundary::ComputedExpression),
             ModuleResolutionOutcome::Ambiguous,
@@ -378,6 +445,7 @@ mod tests {
 
         assert_eq!(unique.len(), ids.len(), "each outcome needs its own boundary id");
         assert!(ids.iter().all(|id| id.starts_with("module_resolution.")));
+        Ok(())
     }
 
     #[test]
@@ -402,11 +470,16 @@ mod tests {
         assert_eq!(dynamic.cause_boundary_id(), Some("request_boundary.computed_expression"));
 
         for causeless in [
-            ModuleResolutionOutcome::NotFound,
+            ModuleResolutionOutcome::not_found(
+                ModuleRequest::bareword("Foo").expect("test request is valid"),
+            ),
             ModuleResolutionOutcome::NotProvenAbsent,
             ModuleResolutionOutcome::TimedOut,
             ModuleResolutionOutcome::Ambiguous,
-            ModuleResolutionOutcome::Resolved(String::new()),
+            ModuleResolutionOutcome::resolved(
+                ModuleRequest::bareword("Foo").expect("test request is valid"),
+                "file:///w/Foo.pm".to_string(),
+            ),
         ] {
             assert_eq!(
                 causeless.cause_boundary_id(),

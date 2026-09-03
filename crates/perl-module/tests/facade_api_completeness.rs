@@ -124,7 +124,7 @@ fn test_request_module_types_are_accessible() -> Result<(), Box<dyn std::error::
     let dynamic = ModuleRequest::dynamic("$class", None, RequestBoundary::RuntimeString);
     assert_eq!(dynamic.boundary(), Some(RequestBoundary::RuntimeString));
 
-    assert!(ModuleResolutionOutcome::NotFound.has_complete_denominator());
+    assert!(!ModuleResolutionOutcome::NotProvenAbsent.has_complete_denominator());
     assert!(!ModuleResolutionOutcome::TimedOut.has_complete_denominator());
 
     // Error and evidence types reachable from the facade.
@@ -394,7 +394,7 @@ fn test_api_rs_re_export_count() -> Result<(), Box<dyn std::error::Error>> {
 /// Number of `pub use` statements in `src/api.rs`.
 ///
 /// Update this together with the import list above whenever the facade changes.
-const EXPECTED_API_RE_EXPORTS: usize = 85;
+const EXPECTED_API_RE_EXPORTS: usize = 86;
 
 /// Regression: verify legacy package separator handling.
 #[test]

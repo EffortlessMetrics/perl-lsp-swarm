@@ -32,6 +32,7 @@ pub use crate::provenance::module_provenance_root;
 
 // request module — validated requests and typed resolution outcomes (#8497)
 pub use crate::request::DynamicModuleRequest;
+pub use crate::request::ExactResolutionEvidence;
 pub use crate::request::LegacySeparatorProfile;
 pub use crate::request::ModuleFilePath;
 pub use crate::request::ModuleFilePathError;
