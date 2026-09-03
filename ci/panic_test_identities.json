@@ -3294,6 +3294,51 @@
       "selector_identity": "invocation:28961938fa328de3:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "crates/perl-kwalitee/src/distribution_kwalitee/score.rs",
+      "enclosing_test_or_function": "unverified_required_core_stays_in_the_denominator",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected incomplete, got {other:?}\"),",
+      "selector_identity": "invocation:ee2ab3111d4227b2:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-kwalitee/src/distribution_kwalitee/score.rs",
+      "enclosing_test_or_function": "missing_core_observation_is_unverified_not_a_silent_shrink",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected incomplete, got {other:?}\"),",
+      "selector_identity": "invocation:ee2ab3111d4227b2:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-kwalitee/src/distribution_kwalitee/score.rs",
+      "enclosing_test_or_function": "one_core_fail_lowers_passed_but_keeps_denominator",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected complete, got {other:?}\"),",
+      "selector_identity": "invocation:a95cbe8c0858b83d:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-kwalitee/src/distribution_kwalitee/score.rs",
+      "enclosing_test_or_function": "limitation_on_core_is_unverified_not_a_pass",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected incomplete, got {other:?}\"),",
+      "selector_identity": "invocation:ee2ab3111d4227b2:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-kwalitee/src/distribution_kwalitee/score.rs",
+      "enclosing_test_or_function": "not_applicable_on_applicable_core_stays_in_the_denominator",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected incomplete, got {other:?}\"),",
+      "selector_identity": "invocation:ee2ab3111d4227b2:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
