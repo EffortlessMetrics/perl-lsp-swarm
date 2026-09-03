@@ -955,6 +955,31 @@ impl BodyLowerer {
         };
         match stmt {
             HirStmt::Let { name, sigil, storage, init, binding_range } => {
+                if *storage == DeclStorageClass::Unknown {
+                    // Parser-shaped legacy calls (for example `field $x = 1`)
+                    // do not bind a lexical declaration. Their argument still
+                    // has ordinary assignment/read effects, so retain the full
+                    // assignment or model a bare package-variable read.
+                    if let Some(init_id) = init {
+                        self.lower_expr(body, *init_id, file);
+                    } else {
+                        let anchor = self.make_body_anchor(*binding_range);
+                        self.push_body_node(
+                            anchor,
+                            PirOperation::StashRead {
+                                symbol: SymbolName {
+                                    sigil: sigil_str(sigil),
+                                    name: name.clone(),
+                                    package: package_from_name(name),
+                                },
+                            },
+                            PirContext::Unknown,
+                            None,
+                            file,
+                        );
+                    }
+                    return;
+                }
                 // Emit exactly ONE Write op for the declaration target.
                 // `storage` determines whether this is a lexical (my/state) or
                 // package (our) slot. Ignoring `storage` was the root cause of

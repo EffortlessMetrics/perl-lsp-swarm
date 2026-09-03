@@ -52,3 +52,47 @@ fn real_my_declaration_still_publishes_a_lexical_binding() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn initialized_field_argument_preserves_package_write_and_assignment() -> TestResult {
+    let source = "field $x = 1;\n";
+    let mut parser = Parser::new(source);
+    let parsed = parser.parse_with_recovery();
+    let file = lower_ast(&parsed.ast);
+    let body = file.bodies.first().ok_or("program body is required")?;
+    let nodes = lower_single_body(body, HirBodyId(0), &file);
+
+    assert!(
+        nodes.iter().any(|node| matches!(node.operation, PirOperation::StashWrite { .. })),
+        "initialized legacy field argument must retain its package write: {nodes:?}"
+    );
+    assert!(
+        nodes.iter().any(|node| matches!(node.operation, PirOperation::Assign)),
+        "initialized legacy field argument must retain its assignment: {nodes:?}"
+    );
+    assert!(
+        nodes.iter().all(|node| !matches!(node.operation, PirOperation::LexicalWrite { .. })),
+        "legacy field argument must not publish a lexical write: {nodes:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn bare_field_argument_preserves_package_read() -> TestResult {
+    let source = "field $x;\n";
+    let mut parser = Parser::new(source);
+    let parsed = parser.parse_with_recovery();
+    let file = lower_ast(&parsed.ast);
+    let body = file.bodies.first().ok_or("program body is required")?;
+    let nodes = lower_single_body(body, HirBodyId(0), &file);
+
+    assert!(
+        nodes.iter().any(|node| matches!(node.operation, PirOperation::StashRead { .. })),
+        "bare legacy field argument must retain its package read: {nodes:?}"
+    );
+    assert!(
+        nodes.iter().all(|node| !matches!(node.operation, PirOperation::LexicalWrite { .. })),
+        "bare legacy field argument must not publish a lexical write: {nodes:?}"
+    );
+    Ok(())
+}
