@@ -110,12 +110,29 @@ describe('gherkin ReDoS guard: variable-width atom chains (#9806)', () => {
   });
 
   test.each([
-    ['three unquantified ambiguous branches', `^${'(a|aa)'.repeat(3)}b$`],
     ['twenty-five, 1.8 s on main', `^${'(a|aa)'.repeat(25)}b$`],
     ['forty, 89.7 s on main', `^${'(a|aa)'.repeat(40)}b$`],
-    ['overlapping branches of differing width', '^(ab|aba)(ab|aba)(ab|aba)c$'],
   ])('rejects unquantified ambiguous alternation chain: %s', (_name, source) => {
     expect(isPotentiallyExpensiveRegex(source)).toBe(true);
+  });
+
+  // Bounded ambiguity costs a constant factor per atom, not an unbounded run, so
+  // a short chain of it is nothing like a short chain of `+`. Three `(a|aa)`
+  // groups measure 0.1 ms — rejecting them on the strength of the forty-group
+  // measurement above would be the #859 over-rejection wearing a citation.
+  test.each([
+    ['three ambiguous branches, 0.1 ms', `^${'(a|aa)'.repeat(3)}b$`],
+    ['overlapping branches of differing width', '^(ab|aba)(ab|aba)(ab|aba)c$'],
+    ['sixteen, 3.8 ms', `^${'(a|aa)'.repeat(16)}b$`],
+  ])('keeps short bounded-ambiguity chain available: %s', (_name, source) => {
+    expect(isPotentiallyExpensiveRegex(source)).toBe(false);
+  });
+
+  // The accept/reject edge. The last accepted length measures 6.9 ms and the
+  // first rejected one is refused, so there is no cliff between them.
+  test('places the bounded-ambiguity boundary between eighteen and nineteen', () => {
+    expect(isPotentiallyExpensiveRegex(`^${'(a|aa)'.repeat(18)}b$`)).toBe(false);
+    expect(isPotentiallyExpensiveRegex(`^${'(a|aa)'.repeat(19)}b$`)).toBe(true);
   });
 
   test('rejects a chain nested inside another group', () => {
@@ -144,6 +161,29 @@ describe('gherkin ReDoS guard: variable-width atom chains (#9806)', () => {
     ['a single quantified alternation', '^(cat|dog)+$'],
     ['ordinary quoted captures', '^I have "([^"]+)" and "([^"]+)"$'],
   ])('keeps %s available', (_name, source) => {
+    expect(isPotentiallyExpensiveRegex(source)).toBe(false);
+  });
+
+  // One step definition covering several phrasings is the standard cucumber
+  // idiom, and every optional English phrase ends in a space — so stacked
+  // optional prefixes always overlap on `' '`, and one beside a `\w+` capture
+  // overlaps on letters. A rule that counts atoms instead of weighing them
+  // rejects this whole family. Each source below was measured resolving its own
+  // step text, and its worst near-miss under the 512-character bound, in under
+  // 0.2 ms.
+  test.each([
+    ['stacked optional prefixes', '^(?:the )?(?:new )?(?:admin )?user "([^"]+)" exists$'],
+    ['optional alternation prefix', '^(?:I |we )?(?:should )?(?:not )?see the dashboard$'],
+    ['optional prefixes before a keyword', '^(?:Given )?(?:the )?(?:current )?user logs in$'],
+    ['optional prefixes before a capture', '^(?:the )?(?:new )?(\\w+) is added$'],
+    ['optional prefixes around two captures', '^(?:the )?(?:last )?(\\w+) has (\\d+) rows$'],
+    ['optional prefixes before a bare verb', '^(?:I )?(?:do )?(?:not )?agree$'],
+    ['three optional prefixes and a literal', '^(?:the )?(?:user )?(?:already )?exists$'],
+    ['optional captured phrases', '^(?:(\\w+) )?(?:(\\w+) )?(?:(\\w+) )?logs in$'],
+    ['optional prefixes before a path capture', '^(?:the )?(?:perl )?(?:module )?(\\S+) compiles$'],
+    ['optional numeric parts', '^(\\+|-)?(\\d+)(\\.\\d+)?(e[+-]?\\d+)?$'],
+    ['optional trailing clauses', '^I have (\\d+)(?: or (\\d+))?(?: and (\\d+))?$'],
+  ])('keeps the flexible-step idiom available: %s', (_name, source) => {
     expect(isPotentiallyExpensiveRegex(source)).toBe(false);
   });
 });

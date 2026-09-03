@@ -360,16 +360,43 @@ function atomsMayOverlap(left: string, right: string, flags: string): boolean {
 // so a required separator — including one inside a group, as in `(\w+ )` —
 // still breaks the chain.
 //
-// Two competing atoms stay accepted: `^(a+)(a+)b$` is quadratic and measures at
-// 1.2 ms against the same input, and it is the shape ordinary step definitions
-// use. Rejecting every adjacent pair reintroduces the #859 false negatives that
-// #6158 exists to avoid, so the chain rule starts at three.
-const MAX_ADJACENT_VARIABLE_WIDTH_ATOMS = 2;
+// A chain is scored by how many ways the engine can split one run of input
+// across it, in bits, rather than by counting atoms. Counting atoms conflates
+// two families whose costs differ by orders of magnitude at the same length:
+//
+//   N adjacent    (a+)xN      (a|aa)xN    (?:ab )?xN
+//   3             13 ms       0.13 ms     0.06 ms
+//   4             636 ms      0.09 ms     0.08 ms
+//   20            timeout     53 ms       35 ms
+//   25            timeout     1.8 s       1.1 s
+//
+// An unbounded atom (`+`, `*`, `{n,}`) can absorb anywhere from nothing to the
+// whole step text, so its edges are worth log2(MAX_MATCH_STEP_TEXT_LENGTH)
+// bits. A bounded one (`?`, `{n,m}`, or a group whose branches merely differ in
+// width) is worth only log2 of its alternative count — one bit for `(?:the )?`.
+// The chain's cost is the sum over its seams, each worth the lesser of the two
+// edges that meet there, which is the exponent on the work the engine does.
+//
+// One unbounded seam is the budget. `^(a+)(a+)b$` spends exactly that, is
+// quadratic, measures 1.2 ms against 511 `a`s, and is the shape ordinary step
+// definitions use; a second unbounded seam doubles the exponent and is refused.
+// Bounded optionality only reaches the same total at around nineteen atoms,
+// which the measurements above put well inside the safe region and far beyond
+// anything a real step definition carries.
+//
+// Scoring by atom count instead rejects the ordinary cucumber idiom of stacked
+// optional phrases — `^(?:the )?(?:new )?(?:admin )?user "([^"]+)" exists$`
+// resolves in 0.078 ms — which is exactly the #859 over-rejection #6158 exists
+// to avoid.
+const UNBOUNDED_ATOM_BITS = Math.log2(MAX_MATCH_STEP_TEXT_LENGTH);
+const MAX_CHAIN_AMBIGUITY_BITS = 2 * UNBOUNDED_ATOM_BITS - 1;
 const MAX_GROUP_ANALYSIS_DEPTH = 32;
 
+// `bits` is how much freedom this boundary offers a neighbouring atom: zero for
+// a fixed edge, which cannot compete and therefore separates a chain.
 interface EdgeFacts {
   domain: Set<string> | null;
-  variable: boolean;
+  bits: number;
 }
 
 interface ChainAtom {
@@ -386,7 +413,7 @@ type SequenceFacts = Omit<ChainAtom, 'end'>;
 
 interface QuantifierFacts {
   end: number;
-  variable: boolean;
+  bits: number;
   repeat: number | null;
   nullable: boolean;
 }
@@ -409,10 +436,14 @@ function readQuantifier(source: string, index: number): QuantifierFacts {
   const lazyEnd = (end: number): number => (source[end] === '?' ? end + 1 : end);
 
   if (character === '+') {
-    return { end: lazyEnd(index + 1), variable: true, repeat: null, nullable: false };
+    return { end: lazyEnd(index + 1), bits: UNBOUNDED_ATOM_BITS, repeat: null, nullable: false };
   }
-  if (character === '*' || character === '?') {
-    return { end: lazyEnd(index + 1), variable: true, repeat: null, nullable: true };
+  if (character === '*') {
+    return { end: lazyEnd(index + 1), bits: UNBOUNDED_ATOM_BITS, repeat: null, nullable: true };
+  }
+  if (character === '?') {
+    // Present or absent: one bit, not an unbounded run.
+    return { end: lazyEnd(index + 1), bits: 1, repeat: null, nullable: true };
   }
   if (character === '{') {
     const closingBrace = source.indexOf('}', index + 1);
@@ -422,17 +453,25 @@ function readQuantifier(source: string, index: number): QuantifierFacts {
       const minimum = Number(bounds[1]);
       const maximum =
         bounds[2] === undefined ? minimum : bounds[2] === '' ? null : Number(bounds[2]);
-      const variable = maximum === null || maximum !== minimum;
+      if (maximum === null) {
+        return {
+          end: lazyEnd(closingBrace + 1),
+          bits: UNBOUNDED_ATOM_BITS,
+          repeat: null,
+          nullable: minimum === 0,
+        };
+      }
+      const choices = maximum - minimum + 1;
       return {
         end: lazyEnd(closingBrace + 1),
-        variable,
-        repeat: variable ? null : minimum,
+        bits: choices > 1 ? Math.min(Math.log2(choices), UNBOUNDED_ATOM_BITS) : 0,
+        repeat: choices > 1 ? null : minimum,
         nullable: minimum === 0,
       };
     }
   }
 
-  return { end: index, variable: false, repeat: 1, nullable: false };
+  return { end: index, bits: 0, repeat: 1, nullable: false };
 }
 
 // A position the parser cannot classify. It neither varies nor overlaps, so it
@@ -440,8 +479,8 @@ function readQuantifier(source: string, index: number): QuantifierFacts {
 function opaqueAtom(end: number): ChainAtom {
   return {
     end,
-    leading: { domain: null, variable: false },
-    trailing: { domain: null, variable: false },
+    leading: { domain: null, bits: 0 },
+    trailing: { domain: null, bits: 0 },
     union: null,
     fixedWidth: null,
     nullable: false,
@@ -514,8 +553,8 @@ function readChainAtom(
       // links to whatever sits beside it.
       return {
         end: quantifier.end,
-        leading: { domain: null, variable: true },
-        trailing: { domain: null, variable: true },
+        leading: { domain: null, bits: UNBOUNDED_ATOM_BITS },
+        trailing: { domain: null, bits: UNBOUNDED_ATOM_BITS },
         union: null,
         fixedWidth: null,
         nullable: quantifier.nullable,
@@ -529,13 +568,18 @@ function readChainAtom(
     }
 
     const group = analyzeAlternatives(source, contentStart, groupEnd, flags, depth + 1);
-    // A repeating group can present any of its characters at either boundary,
-    // so the quantifier widens both edges to the group's whole domain.
-    const quantifiedEdge: EdgeFacts = { domain: group.union, variable: true };
+    // A repeating group can present any of its characters at either boundary, so
+    // the quantifier widens both edges to the group's whole domain and adds its
+    // own freedom on top of whatever the group already offers there.
+    const repeated = quantifier.bits > 0;
     return {
       end: quantifier.end,
-      leading: quantifier.variable ? quantifiedEdge : group.leading,
-      trailing: quantifier.variable ? quantifiedEdge : group.trailing,
+      leading: repeated
+        ? { domain: group.union, bits: quantifier.bits + group.leading.bits }
+        : group.leading,
+      trailing: repeated
+        ? { domain: group.union, bits: quantifier.bits + group.trailing.bits }
+        : group.trailing,
       union: group.union,
       fixedWidth:
         quantifier.repeat === null || group.fixedWidth === null
@@ -553,7 +597,7 @@ function readChainAtom(
 
   const quantifier = readQuantifier(source, atom.end);
   const domain = simpleAtomDomain(atom.source, flags);
-  const edge: EdgeFacts = { domain, variable: quantifier.variable };
+  const edge: EdgeFacts = { domain, bits: quantifier.bits };
   return {
     end: quantifier.end,
     leading: edge,
@@ -567,14 +611,14 @@ function readChainAtom(
 
 function summarizeBranch(atoms: ChainAtom[]): SequenceFacts {
   let chain = atoms.some((atom) => atom.chain);
-  let runLength = 0;
+  let runBits = 0;
   let previousTrailing: EdgeFacts | null = null;
 
   for (const atom of atoms) {
     const linked =
       previousTrailing !== null &&
-      previousTrailing.variable &&
-      atom.leading.variable &&
+      previousTrailing.bits > 0 &&
+      atom.leading.bits > 0 &&
       domainsOverlap(previousTrailing.domain, atom.leading.domain);
 
     // An atom that can match nothing cannot separate the atoms around it.
@@ -582,8 +626,15 @@ function summarizeBranch(atoms: ChainAtom[]): SequenceFacts {
       continue;
     }
 
-    runLength = linked ? runLength + 1 : atom.leading.variable || atom.trailing.variable ? 1 : 0;
-    if (runLength > MAX_ADJACENT_VARIABLE_WIDTH_ATOMS) {
+    // Ambiguity lives at the seam between two atoms, not inside either one, and
+    // a seam is only as free as its narrower side: `(?:(\w+) )?` ends in a
+    // required space, so it hands the next atom one bit of freedom however
+    // unbounded its interior is.
+    runBits =
+      linked && previousTrailing !== null
+        ? runBits + Math.min(previousTrailing.bits, atom.leading.bits)
+        : 0;
+    if (runBits > MAX_CHAIN_AMBIGUITY_BITS) {
       chain = true;
       break;
     }
@@ -613,11 +664,11 @@ function summarizeBranch(atoms: ChainAtom[]): SequenceFacts {
   return {
     leading: {
       domain: unionDomains(leadingParts.map((atom) => atom.leading.domain)),
-      variable: leadingParts.some((atom) => atom.leading.variable),
+      bits: Math.max(0, ...leadingParts.map((atom) => atom.leading.bits)),
     },
     trailing: {
       domain: unionDomains(trailingParts.map((atom) => atom.trailing.domain)),
-      variable: trailingParts.some((atom) => atom.trailing.variable),
+      bits: Math.max(0, ...trailingParts.map((atom) => atom.trailing.bits)),
     },
     union: unionDomains(atoms.map((atom) => atom.union)),
     fixedWidth: widths.includes(null)
@@ -632,20 +683,25 @@ function summarizeAlternatives(branches: SequenceFacts[]): SequenceFacts {
   const widths = branches.map((branch) => branch.fixedWidth);
   // Branches of different lengths let the group end at more than one offset, so
   // its boundaries vary even with no quantifier anywhere — the `(a|aa)` shape.
-  const alternationVariable =
-    branches.length > 1 && (widths.includes(null) || new Set(widths).size > 1);
+  // The choice between them is worth log2(branch count) bits, so an ambiguous
+  // two-branch group costs one bit, the same as `?`, which is what the
+  // measurements say it is worth.
+  const alternationBits =
+    branches.length > 1 && (widths.includes(null) || new Set(widths).size > 1)
+      ? Math.log2(branches.length)
+      : 0;
 
   return {
     leading: {
       domain: unionDomains(branches.map((branch) => branch.leading.domain)),
-      variable: alternationVariable || branches.some((branch) => branch.leading.variable),
+      bits: alternationBits + Math.max(0, ...branches.map((branch) => branch.leading.bits)),
     },
     trailing: {
       domain: unionDomains(branches.map((branch) => branch.trailing.domain)),
-      variable: alternationVariable || branches.some((branch) => branch.trailing.variable),
+      bits: alternationBits + Math.max(0, ...branches.map((branch) => branch.trailing.bits)),
     },
     union: unionDomains(branches.map((branch) => branch.union)),
-    fixedWidth: alternationVariable ? null : (widths[0] ?? null),
+    fixedWidth: alternationBits > 0 ? null : (widths[0] ?? null),
     nullable: branches.some((branch) => branch.nullable),
     chain: branches.some((branch) => branch.chain),
   };
