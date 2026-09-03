@@ -246,7 +246,8 @@ fleet volume; what is not sanctioned is a zero-content review on a substantive d
 <!-- Or: ## No material findings -->
 
 ## Prior finding dispositions
-- fixed | refuted | superseded | follow-up, with evidence
+- terminal: fixed | refuted | superseded | post-merge-follow-up, with evidence
+- non-terminal: current-blocker | blocked-by-prerequisite | not-proven, with evidence (thread stays open)
 
 ## What this establishes
 - Conclusions supported by the review
