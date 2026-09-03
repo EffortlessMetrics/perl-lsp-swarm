@@ -618,6 +618,9 @@ fn compiler_upstream_conformance_status_rendering_rejects_markdown_injection() -
         .minimizes_case_path = "t/witness`with`backtick.t".to_string();
     packet.subject_binding.semantic_obligation_graph_identity =
         Some("obligation`with`backticks".to_string());
+    packet.subject_binding.maintained_series[0].role = "role`with`backticks".to_string();
+    packet.subject_binding.maintained_series[0].snapshot_relation =
+        Some("relation`with`backticks".to_string());
     let rendered = render_markdown(&packet)?;
     assert!(rendered.contains("case_path=``t/with`backtick.t``"));
     assert!(rendered.contains("case_name=``name`with`backticks``"));
@@ -625,6 +628,8 @@ fn compiler_upstream_conformance_status_rendering_rejects_markdown_injection() -
     assert!(
         rendered.contains("- semantic_obligation_graph_identity: ``obligation`with`backticks``")
     );
+    assert!(rendered.contains("- role: ``role`with`backticks``"));
+    assert!(rendered.contains("- snapshot_relation: ``relation`with`backticks``"));
 
     let packet = project_from(dir.path())?;
     let rendered = render_markdown(&packet)?;

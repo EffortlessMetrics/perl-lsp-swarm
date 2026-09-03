@@ -1570,10 +1570,6 @@ fn opt_line(label: &str, value: &Option<String>) -> String {
     }
 }
 
-fn markdown_code(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('`', "\\`")
-}
-
 fn markdown_code_span(value: &str) -> String {
     let longest_run = value
         .chars()
@@ -1632,10 +1628,10 @@ pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
     let mut out = String::new();
     out.push_str("# Compiler upstream conformance status\n\n");
     out.push_str(&format!("- packet_schema: `{PACKET_SCHEMA_VERSION}`\n"));
-    out.push_str(&format!("- status_id: `{}`\n", markdown_code(&packet.status_id)));
+    out.push_str(&format!("- status_id: {}\n", markdown_code_span(&packet.status_id)));
     out.push_str(&format!(
-        "- generator_identity: `{}`\n",
-        markdown_code(&packet.generator_identity)
+        "- generator_identity: {}\n",
+        markdown_code_span(&packet.generator_identity)
     ));
     out.push_str(&opt_line(
         "compiler_candidate_identity",
@@ -1667,10 +1663,10 @@ pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
     out.push_str("## Maintained series and snapshots\n");
     for series in &binding.maintained_series {
         out.push_str(&format!("\n### {}\n", markdown_text(&series.series_id)));
-        out.push_str(&format!("- role: `{}`\n", markdown_code(&series.role)));
+        out.push_str(&format!("- role: {}\n", markdown_code_span(&series.role)));
         match &series.snapshot_identity {
             Some(snapshot) => {
-                out.push_str(&format!("- snapshot_identity: `{}`\n", markdown_code(snapshot)))
+                out.push_str(&format!("- snapshot_identity: {}\n", markdown_code_span(snapshot)))
             }
             None => out
                 .push_str("- snapshot_identity: absent (no accepted current upstream snapshot)\n"),
@@ -1707,20 +1703,20 @@ pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
         }
         out.push('\n');
         out.push_str(&format!(
-            "##### {} (`{}`)\n\n",
+            "##### {} ({})\n\n",
             markdown_text(&row.row_id),
-            markdown_code(&row.obligation_id)
+            markdown_code_span(&row.obligation_id)
         ));
         out.push_str(&format!(
-            "current result: `{}`\n\n",
-            markdown_code(row.terminal_state.as_str())
+            "current result: {}\n\n",
+            markdown_code_span(row.terminal_state.as_str())
         ));
         out.push_str(&format!("- selected observation boundary: {}\n", row.boundary.as_str()));
         out.push_str(&format!(
-            "- oracle subject: `{}`\n- compiler subject: `{}`\n- instrument identity: `{}`\n",
-            markdown_code(&row.oracle_subject),
-            markdown_code(&row.compiler_subject),
-            markdown_code(&row.instrument_identity)
+            "- oracle subject: {}\n- compiler subject: {}\n- instrument identity: {}\n",
+            markdown_code_span(&row.oracle_subject),
+            markdown_code_span(&row.compiler_subject),
+            markdown_code_span(&row.instrument_identity)
         ));
         out.push_str(&format!(
             "- upstream original (retained independent of witnesses): snapshot_ref={}, case_path={}, case_name={}\n",
@@ -1806,7 +1802,7 @@ pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
     for series in &packet.descriptive_counts.per_series {
         let mut states = Vec::new();
         for (state, count) in &series.by_terminal_state {
-            states.push(format!("{}={count}", markdown_code(state.as_str())));
+            states.push(format!("{}={count}", markdown_code_span(state.as_str())));
         }
         out.push_str(&format!(
             "| {} | {} | {} |\n",
@@ -1824,29 +1820,29 @@ pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
     let mut recurrence = Vec::new();
     for row in &packet.rows {
         match row.history.upstream_change {
-            UpstreamChange::Added => added.push(markdown_code(&row.row_id)),
+            UpstreamChange::Added => added.push(markdown_code_span(&row.row_id)),
             UpstreamChange::Removed => {
                 if let Some(successor) = &row.history.successor_row_id {
                     removed.push(format!(
-                        "`{}` (obligation continues via successor `{}`)",
-                        markdown_code(&row.row_id),
-                        markdown_code(successor)
+                        "{} (obligation continues via successor {})",
+                        markdown_code_span(&row.row_id),
+                        markdown_code_span(successor)
                     ));
                 } else if row.history.retained_obligation_after_removal {
                     removed.push(format!(
-                        "`{}` (semantic obligation retained locally)",
-                        markdown_code(&row.row_id)
+                        "{} (semantic obligation retained locally)",
+                        markdown_code_span(&row.row_id)
                     ));
                 }
             }
-            UpstreamChange::Changed => changed.push(markdown_code(&row.row_id)),
+            UpstreamChange::Changed => changed.push(markdown_code_span(&row.row_id)),
             UpstreamChange::None => {}
         }
         if let Some(recurrence_of) = &row.history.recurrence_of_row_id {
             recurrence.push(format!(
-                "`{}` recurs `{}`",
-                markdown_code(&row.row_id),
-                markdown_code(recurrence_of)
+                "{} recurs {}",
+                markdown_code_span(&row.row_id),
+                markdown_code_span(recurrence_of)
             ));
         }
     }
@@ -1860,7 +1856,7 @@ pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
 
 fn format_opt_id(value: &Option<String>) -> String {
     match value {
-        Some(id) => format!("`{}`", markdown_code(id)),
+        Some(id) => markdown_code_span(id),
         None => "absent".to_string(),
     }
 }
