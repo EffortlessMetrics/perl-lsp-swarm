@@ -3078,6 +3078,33 @@
       "selector_identity": "invocation:468b7e0a70031fc1:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/backend/native_perldb.rs",
+      "enclosing_test_or_function": "production_adapter_does_not_consume_the_partial_backend",
+      "macro_family": "panic!",
+      "normalized_snippet": "std::fs::read_to_string(&path).unwrap_or_else(|e| panic!(\"read {path:?}: {e}\"));",
+      "selector_identity": "invocation:506056073a32e8b7:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/backend/native_perldb.rs",
+      "enclosing_test_or_function": "rust_sources_under",
+      "macro_family": "panic!",
+      "normalized_snippet": "std::fs::read_dir(&dir).unwrap_or_else(|e| panic!(\"read_dir {dir:?}: {e}\"));",
+      "selector_identity": "invocation:866c87f12590a479:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/backend/native_perldb.rs",
+      "enclosing_test_or_function": "rust_sources_under",
+      "macro_family": "panic!",
+      "normalized_snippet": "let path = entry.unwrap_or_else(|e| panic!(\"dir entry: {e}\")).path();",
+      "selector_identity": "invocation:c51771d4dcdf6829:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
