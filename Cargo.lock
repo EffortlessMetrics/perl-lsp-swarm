@@ -2001,6 +2001,8 @@ dependencies = [
  "perl-workspace",
  "proptest",
  "regex",
+ "serde",
+ "serde_json",
  "tempfile",
  "unicode-ident",
  "url",

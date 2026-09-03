@@ -9,6 +9,9 @@
 
 use std::fmt;
 
+use serde::ser::SerializeStruct;
+use serde::{Serialize, Serializer};
+
 /// Why a candidate string is not a validated literal relative file request.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,9 +105,32 @@ impl ModuleFilePathError {
 /// - [`Self::parse`] takes the **decoded** operand — the value Perl looks up.
 /// - [`Self::from_quoted_token`] takes the **raw** source token, delimiters
 ///   included, and strips exactly one matching outer pair.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ModuleFilePath {
     literal: String,
+}
+
+impl fmt::Debug for ModuleFilePath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ModuleFilePath")
+            .field("kind", &"literal_relative_file")
+            .field("length", &self.literal.len())
+            .finish()
+    }
+}
+
+impl Serialize for ModuleFilePath {
+    /// Serialize only the validated path classification. The literal is
+    /// evidence, not a safe diagnostic or interchange payload.
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("ModuleFilePath", 2)?;
+        state.serialize_field("kind", "literal_relative_file")?;
+        state.serialize_field("length", &self.literal.len())?;
+        state.end()
+    }
 }
 
 impl ModuleFilePath {
