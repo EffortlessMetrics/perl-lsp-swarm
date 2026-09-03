@@ -271,6 +271,17 @@ fn statement_call_tail_range_reaches_each_call_site() {
     assert_indirect_call_route();
 }
 
+#[test]
+fn statement_call_tail_range_covers_representative_nullary_builtins() {
+    for (source, builtin) in [
+        ("caller || $b .. $c;", "caller"),
+        ("wantarray || $b .. $c;", "wantarray"),
+        ("localtime || $b .. $c;", "localtime"),
+    ] {
+        assert_range_with_nested_symbolic(source, (builtin, 0), NestedSide::Left, "||");
+    }
+}
+
 /// The unknown-lowercase-bareword and list-operator statement forms reach the same
 /// dispatch but do not depend on the range rung's position: each shape below parses
 /// identically when `parse_range_with` is moved back after equality, so these are
