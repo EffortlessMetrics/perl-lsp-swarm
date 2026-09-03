@@ -980,3 +980,49 @@ fn test2_unlisted_operator_prefixed_match_is_still_data() {
     assert!(!divided.analysis_limited);
     assert!(divided.resolved.symbols.contains("ok"));
 }
+
+#[test]
+fn test2_punctuation_variable_quotes_do_not_pair_as_delimiters() {
+    // Review finding (@devin-ai-integration on #14651). `$\``, `$'` and `$"`
+    // are punctuation-named variables, not delimiters. Starting a quoted span
+    // at them paired two variables together and masked everything between —
+    // including real transform syntax, which is the under-detecting direction
+    // that can fabricate rather than merely withhold.
+    for args in [
+        "-target => $`, ok => {-as => 'my_ok'}, -other => $`",
+        "-target => $', ok => {-as => 'my_ok'}, -other => $'",
+    ] {
+        assert!(
+            contains_transform_syntax(args),
+            "{args}: the transform between two special variables must stay visible"
+        );
+        let resolved = resolve_with_analysis("Test2::V0", args);
+        assert!(
+            resolved.resolved.symbols.contains("my_ok"),
+            "{args}: the alias must resolve, got {:?}",
+            resolved.resolved.symbols
+        );
+        assert!(!resolved.analysis_limited, "{args}: a recognized transform is not limited");
+    }
+
+    // The malformed counterpart is the one that could have fabricated: with the
+    // span masked, neither instrument saw it, so nothing forced fail-closed.
+    let malformed = resolve_with_analysis("Test2::V0", "-target => $`, ok => {-as => 'my_ok'");
+    assert!(malformed.analysis_limited, "an unresolved transform is never clean");
+    assert!(!malformed.resolved.symbols.contains("ok"));
+    assert!(!malformed.resolved.symbols.contains("my_ok"));
+
+    // A real backtick command is still masked.
+    let command = resolve_with_analysis("Test2::V0", "-target => `echo -as => Foo`, ok");
+    assert!(!command.analysis_limited);
+    assert!(command.resolved.symbols.contains("ok"));
+}
+
+#[test]
+fn test2_input_record_separator_is_a_variable_not_a_match() {
+    // `$/` names a variable; the `/` is the name, not a match opener. Treating
+    // it as one would mask forward to the next slash.
+    assert!(!bare_match_can_start("$"), "a bare sigil means the `/` is the variable name");
+    assert!(!bare_match_can_start("local $"), "same inside a statement");
+    assert!(bare_match_can_start("grep "), "an ordinary call still admits a match");
+}

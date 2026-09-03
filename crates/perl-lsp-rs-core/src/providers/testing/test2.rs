@@ -427,6 +427,15 @@ fn mask_data_values(text: &str) -> String {
             continue;
         }
 
+        // `$\``, `$'` and `$"` are punctuation-named variables, not delimiters.
+        // Pairing them would mask everything up to the next such variable,
+        // hiding real transform syntax in between.
+        if matches!(current, '\'' | '"' | '`') && text[..index].ends_with('$') {
+            masked.push(current);
+            index += current.len_utf8();
+            continue;
+        }
+
         if current != '\'' && current != '"' && current != '`' {
             masked.push(current);
             index += current.len_utf8();
@@ -527,6 +536,12 @@ fn bare_match_can_start(before: &str) -> bool {
     let Some(last) = trimmed.chars().next_back() else {
         return true;
     };
+
+    // A bare sigil means the `/` is itself the variable's name (`$/`), not a
+    // match opener.
+    if matches!(last, '$' | '@' | '%') {
+        return false;
+    }
 
     // A punctuation-named variable (`$?`, `$!`, `@-`) is a complete term, so a
     // following `/` divides it.
