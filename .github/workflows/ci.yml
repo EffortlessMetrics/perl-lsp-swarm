@@ -382,7 +382,16 @@ jobs:
         shell: bash
         env:
           WINDOWS_TEST_CRATES: ${{ needs.platform-overrides.outputs.windows_test_crates }}
-        run: cargo test $WINDOWS_TEST_CRATES --locked --lib
+        # Keep the existing library smoke execution, then compile the
+        # Unix-only integration target on Windows so its cfg boundary cannot
+        # silently bit-rot. Unix remains the execution authority for the
+        # Bash/chmod smoke.
+        run: |
+          cargo test $WINDOWS_TEST_CRATES --locked --lib
+          cargo test -p xtask --test release_artifact_size_smoke_script --locked --no-run
+          if [[ " $WINDOWS_TEST_CRATES " == *" -p perl-ci-hygiene "* ]]; then
+            cargo test -p perl-ci-hygiene --locked --bin perl-ci-hygiene process::tests::
+          fi
 
   # ── Conflict-marker guard: <1s, no toolchain needed ─────────────────
   # Prevents committed conflict markers reaching master (see #7183).
@@ -587,7 +596,7 @@ jobs:
 
       - name: Install just
         if: needs.draft-pr-check.outputs.api_scope == 'true'
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -737,7 +746,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -973,7 +982,7 @@ jobs:
           # `.ci/gate-shard-execution.json` row if the dedicated/required
           # formatter path is reverted. Local pr-fast `fmt` remains.
           - name: meta
-            gates: ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast release_history_check source_commit_api_check perl_token_leaf_contract compile_all_targets clippy_full
+            gates: ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast serial_test_ratchet release_history_check source_commit_api_check perl_token_leaf_contract compile_all_targets clippy_full
           - name: foundation
             gates: unit_foundation_full
           - name: parser_stack
@@ -990,7 +999,7 @@ jobs:
             # The cheapest control remains first for fast diagnosis, but the
             # shard runner now records every independent member before it
             # returns the aggregate failure verdict.
-            gates: msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof docs_build adr_link_check non_rust_inventory_check lint_policy v2_bundle_sync nested_lock_check version_sync
+            gates: msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof docs_build adr_link_check non_rust_inventory_check must_context_check lint_policy v2_bundle_sync nested_lock_check version_sync
     permissions:
       contents: read
     # Run on every PR push and on push to main/master
@@ -1026,7 +1035,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -1326,7 +1335,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -1532,7 +1541,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -1592,6 +1601,18 @@ jobs:
       # to the four contracts above on the same required merge surface.
       - name: Gate-policy budget witness contract (required merge surface)
         run: cargo test -p xtask --test issue_4657_ci_workflow_contract --locked -- --nocapture
+
+      # #14585: nothing executed `xtask/tests/file_policy.rs`. No workflow named
+      # `--test file_policy`, the merge gate runs `cargo test --workspace --lib`
+      # (which does not build `tests/`), and the policy shard runs
+      # `cargo xtask gates` rather than the test binary. The suite asserts the
+      # inventory gate's tier, required flag, description, command, timeout,
+      # budgets, single mapping, and shard membership — so the gate guarding the
+      # non-Rust inventory was itself guarded by a contract that could not go
+      # red, and did in fact sit red on main unnoticed. Same reasoning as the
+      # contracts above, so it belongs on the same required merge surface.
+      - name: Non-Rust file policy contract (required merge surface)
+        run: cargo test -p xtask --test file_policy --locked -- --nocapture
 
   lsp-memory-smoke:
     name: LSP Memory Smoke
