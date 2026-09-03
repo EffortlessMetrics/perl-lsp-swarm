@@ -28,6 +28,14 @@
 # An empty list means nothing consumes the feature, which requires an explicit
 # `migration` disposition.
 #
+# `name_exception` is a table keyed by the naming rule it excuses:
+#   name_exception = { roadmap = "why this name is allowed to say phase2" }
+# Allowed keys are `test`, `experimental` and `roadmap`. It is keyed rather
+# than a single string so that an exception granted for one rule cannot
+# silently excuse the others: a row exempted for a roadmap name must still
+# fail the test-status rule if it is later renamed to something like
+# `phase2-test-helpers`.
+#
 # Regenerate the observed evidence with:
 #   python3 scripts/ci/validate_cargo_feature_roles.py --explain
 
@@ -80,7 +88,7 @@ name = "dap-phase2"
 role = "product_profile"
 owner = "#8409"
 consumers = ["cfg_gated", "propagated"]
-name_exception = "Phase name asserts roadmap position; #8411 owns the rename. The feature itself is implemented and default-on."
+name_exception = { roadmap = "Phase name asserts roadmap position; #8411 owns the rename. The feature itself is implemented and default-on." }
 
 [[feature]]
 crate = "perl-dap"
@@ -88,7 +96,7 @@ name = "dap-phase3"
 role = "product_profile"
 owner = "#8409"
 consumers = ["cfg_gated", "propagated"]
-name_exception = "Phase name asserts roadmap position; #8411 owns the rename. The feature itself is implemented and default-on."
+name_exception = { roadmap = "Phase name asserts roadmap position; #8411 owns the rename. The feature itself is implemented and default-on." }
 
 [[feature]]
 crate = "perl-dap"
@@ -168,7 +176,7 @@ role = "aspirational_milestone"
 owner = "#8409"
 consumers = []
 migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
-name_exception = "Phase name asserts roadmap position; #8411 owns the rename."
+name_exception = { roadmap = "Phase name asserts roadmap position; #8411 owns the rename." }
 note = "Declared with no edges and no cfg consumer; perl-dap owns the implemented dap-phase3."
 
 [[feature]]
@@ -185,7 +193,7 @@ role = "aspirational_milestone"
 owner = "#8409"
 consumers = []
 migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
-name_exception = "Version suffix asserts roadmap position; #8411 owns the rename."
+name_exception = { roadmap = "Version suffix asserts roadmap position; #8411 owns the rename." }
 note = "Declared with no edges and no cfg consumer; perl-parser owns the implemented toggle."
 
 [[feature]]
@@ -389,7 +397,7 @@ name = "error-classifier-v2"
 role = "experimental_opt_in"
 owner = "#8409"
 consumers = ["cfg_gated"]
-name_exception = "Version suffix asserts roadmap position; #8411 owns the rename."
+name_exception = { roadmap = "Version suffix asserts roadmap position; #8411 owns the rename." }
 
 [[feature]]
 crate = "perl-parser"
@@ -489,7 +497,7 @@ name = "semantic-phase2"
 role = "experimental_opt_in"
 owner = "#8409"
 consumers = ["cfg_gated"]
-name_exception = "Phase name asserts roadmap position; #8411 owns the rename."
+name_exception = { roadmap = "Phase name asserts roadmap position; #8411 owns the rename." }
 
 [[feature]]
 crate = "perl-parser"
@@ -549,7 +557,7 @@ role = "legacy_alias"
 owner = "#8409"
 consumers = ["cfg_gated", "propagated"]
 migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
-name_exception = "Name asserts an in-flight refactor; #8411 owns the rename."
+name_exception = { roadmap = "Name asserts an in-flight refactor; #8411 owns the rename." }
 note = "Default-on and widely consumed; the migration it named has landed."
 
 [[feature]]
