@@ -407,6 +407,13 @@ def cfg_test_module_paths(path: Path, source: str) -> set[Path]:
     """Return out-of-line module files hidden by `#[cfg(test)]`."""
     masked = mask_rust_non_code(source)
     paths: set[Path] = set()
+    # Rust places children of `foo.rs` below the sibling `foo/` directory,
+    # while children of `foo/mod.rs` remain beside that module file.
+    module_base = (
+        path.parent
+        if path.name in {"lib.rs", "main.rs", "mod.rs"}
+        else path.with_suffix("")
+    )
     for match in CFG_TEST_OUT_OF_LINE_PATTERN.finditer(masked):
         name = match.group(1)
         # `#[path = "..."]` changes the module file location. Recover only
@@ -424,12 +431,14 @@ def cfg_test_module_paths(path: Path, source: str) -> set[Path]:
             break
         path_match = re.findall(r"#\[\s*path\s*=\s*\"([^\"]+)\"\s*\]", "\n".join(attributes))
         if path_match:
+            # An explicit path is relative to the declaring source file,
+            # including when that source is a non-mod.rs module.
             module = path.parent / path_match[-1]
             paths.add(module)
             paths.add(module.parent / module.stem / "mod.rs")
         else:
-            paths.add(path.parent / f"{name}.rs")
-            paths.add(path.parent / name / "mod.rs")
+            paths.add(module_base / f"{name}.rs")
+            paths.add(module_base / name / "mod.rs")
     return paths
 
 
