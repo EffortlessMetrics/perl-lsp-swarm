@@ -437,6 +437,18 @@ fn scan_import_transforms(
     rename_fix: Option<&Regex>,
 ) -> TransformScan {
     if !contains_transform_syntax(raw_args) {
+        // The detector masks option-shaped text inside ordinary quoted values,
+        // but the regex bridge does not: it can still match across a quoted
+        // value (`ok => {target => '-as => my_ok'}`). Taking the no-transform
+        // path there would bareword-scan a span a recognizer owns and report
+        // its structural atoms — the container key, and an original that a
+        // rename would have removed — as imported symbols. Where the two
+        // disagree, fail closed rather than let the cheaper instrument win.
+        let recognizer_claims_span = rename_as.is_some_and(|re| re.is_match(raw_args))
+            || rename_fix.is_some_and(|re| re.is_match(raw_args));
+        if recognizer_claims_span {
+            return TransformScan::Unresolved;
+        }
         return TransformScan::None;
     }
 
