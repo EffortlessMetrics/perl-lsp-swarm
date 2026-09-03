@@ -86,7 +86,7 @@ PRODUCTION_DISPATCH_FN_RE = re.compile(
 # table-owned route body is kept in the private `dispatch_unchecked` method so
 # callers cannot bypass admission while this authority still pins the exact
 # request-table shape.
-PEER_DISPATCH_FN_RE = re.compile(r"\bfn\s+dispatch_unchecked\s*\(")
+PEER_DISPATCH_FN_RE = re.compile(r"\b(?:pub\s+)?fn\s+dispatch(?:_unchecked)?\s*\(")
 PEER_ROUTE_MATCH_RE = re.compile(
     r"\bmatch\s+DapRequestRoute::from_command\s*\(\s*command\s*\)\s*"
     r"\.filter\s*\(\s*DapRequestRoute::available_in_peer_frontends\s*\)"
@@ -657,6 +657,9 @@ def parse_peer_dispatch_routes(source: str, owner: Path) -> set[str]:
     """Return the catalog variants explicitly handled by one peer frontend."""
     text, masked = scan_rust_source(source)
     functions = list(PEER_DISPATCH_FN_RE.finditer(masked))
+    route_functions = [function for function in functions if "dispatch_unchecked" in function.group(0)]
+    if route_functions:
+        functions = route_functions
     if len(functions) != 1:
         raise AuthorityError(
             f"found {len(functions)} production dispatch functions in {owner}; expected one"

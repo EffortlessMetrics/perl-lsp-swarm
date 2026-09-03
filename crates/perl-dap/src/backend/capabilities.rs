@@ -343,17 +343,20 @@ pub(crate) fn unproven_value_format_requested(command: &str, arguments: Option<&
             == Some(true)
 }
 
-fn value_format_has_unknown_fields(command: &str, arguments: Option<&Value>) -> bool {
-    matches!(command, "variables" | "setVariable" | "evaluate" | "setExpression")
-        && arguments
-            .and_then(|arguments| arguments.get("format"))
-            .and_then(Value::as_object)
-            .is_some_and(|format| format.keys().any(|key| key != "hex"))
+fn value_format_unknown_field(command: &str, arguments: Option<&Value>) -> Option<String> {
+    if !matches!(command, "variables" | "setVariable" | "evaluate" | "setExpression") {
+        return None;
+    }
+    arguments
+        .and_then(|arguments| arguments.get("format"))
+        .and_then(Value::as_object)
+        .and_then(|format| format.keys().find(|key| key.as_str() != "hex"))
+        .cloned()
 }
 
-fn value_format_invalid_message(command: &str) -> String {
+fn value_format_invalid_message(command: &str, field: &str) -> String {
     format!(
-        "`{command}` is invalid: `format` contains an unknown option; the pinned DAP ValueFormat schema only permits `hex`"
+        "`{command}`: Invalid arguments: `format` contains unknown field `{field}`; the pinned DAP ValueFormat schema only permits `hex`"
     )
 }
 
@@ -382,8 +385,8 @@ pub(crate) fn capability_floor_message(command: &str, arguments: Option<&Value>)
     if let Some(message) = secondary_capability_floor_message(command) {
         return Some(message);
     }
-    if value_format_has_unknown_fields(command, arguments) {
-        return Some(value_format_invalid_message(command));
+    if let Some(field) = value_format_unknown_field(command, arguments) {
+        return Some(value_format_invalid_message(command, &field));
     }
     if unproven_value_format_requested(command, arguments) {
         return Some(value_format_unsupported_message(command));
@@ -757,7 +760,8 @@ mod tests {
         });
         let message = capability_floor_message("evaluate", Some(&args))
             .expect("unknown ValueFormat fields must be rejected");
-        assert!(message.contains("unknown option"), "unexpected message: {message}");
+        assert!(message.contains("Invalid arguments"), "unexpected message: {message}");
+        assert!(message.contains("radix"), "unexpected message: {message}");
         assert!(!message.contains("non-default `format` option"));
     }
 
