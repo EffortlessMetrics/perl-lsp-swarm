@@ -620,7 +620,7 @@ impl SemanticAnalyzer {
         receiver_class: &str,
         method_name: &str,
     ) -> Option<HoverInfo> {
-        if !model.methods.iter().any(|m| m.name == "AUTOLOAD") {
+        if !model.methods.iter().any(|m| m.name == "AUTOLOAD" && m.declarator.is_none()) {
             return None;
         }
         let is_direct = model.name == receiver_class;
@@ -691,12 +691,19 @@ impl SemanticAnalyzer {
         method_name: &str,
     ) -> Option<HoverInfo> {
         let qualified = format!("{}::{}", package_name, method_name);
-        let found_in_table = self.symbol_table.symbols.get(method_name).is_some_and(|syms| {
-            syms.iter().any(|s| {
-                matches!(s.kind, crate::symbol::SymbolKind::Subroutine)
-                    && s.qualified_name == qualified
-            })
-        }) || self.symbol_table.symbols.contains_key(&qualified);
+        let has_package_method = |symbols: &[Symbol]| {
+            symbols.iter().any(|s| is_package_method_symbol(s) && s.qualified_name == qualified)
+        };
+        let found_in_table = self
+            .symbol_table
+            .symbols
+            .get(method_name)
+            .is_some_and(|symbols| has_package_method(symbols))
+            || self
+                .symbol_table
+                .symbols
+                .get(&qualified)
+                .is_some_and(|symbols| has_package_method(symbols));
 
         found_in_table.then(|| HoverInfo {
             signature: format!("sub {}::{}", package_name, method_name),
@@ -717,12 +724,21 @@ impl SemanticAnalyzer {
         method_name: &str,
     ) -> Option<HoverInfo> {
         let qualified_autoload = format!("{}::AUTOLOAD", package_name);
-        let autoload_in_table = self.symbol_table.symbols.get("AUTOLOAD").is_some_and(|syms| {
-            syms.iter().any(|s| {
-                matches!(s.kind, crate::symbol::SymbolKind::Subroutine)
-                    && s.qualified_name == qualified_autoload
-            })
-        }) || self.symbol_table.symbols.contains_key(&qualified_autoload);
+        let has_package_autoload = |symbols: &[Symbol]| {
+            symbols
+                .iter()
+                .any(|s| is_package_method_symbol(s) && s.qualified_name == qualified_autoload)
+        };
+        let autoload_in_table = self
+            .symbol_table
+            .symbols
+            .get("AUTOLOAD")
+            .is_some_and(|symbols| has_package_autoload(symbols))
+            || self
+                .symbol_table
+                .symbols
+                .get(&qualified_autoload)
+                .is_some_and(|symbols| has_package_autoload(symbols));
 
         autoload_in_table.then(|| HoverInfo {
             signature: format!("sub {}::AUTOLOAD", package_name),
@@ -2816,6 +2832,70 @@ my %config = (key => "value");
             sym.declaration.as_deref(),
             Some("before"),
             "with no package method to reach, definition stays on the modifier declaration"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_hover_does_not_treat_lexical_autoload_as_class_method()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = concat!(
+            "package Demo;\n",
+            "use Moo;\n",
+            "use feature 'lexical_subs';\n",
+            "my sub AUTOLOAD { return 42; }\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        assert!(
+            analyzer.resolve_inherited_method_hover("Demo", "missing").is_none(),
+            "a lexical AUTOLOAD is not a package dispatch fallback"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plain_parent_lexical_method_is_not_inherited_for_hover()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = concat!(
+            "package Base;\n",
+            "use feature 'lexical_subs';\n",
+            "my sub save { return 42; }\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "extends 'Base';\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        assert!(
+            analyzer.resolve_inherited_method_hover("Child", "save").is_none(),
+            "a lexical sub in a plain parent is not inherited package behavior"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plain_parent_lexical_autoload_is_not_inherited_for_hover()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = concat!(
+            "package Base;\n",
+            "use feature 'lexical_subs';\n",
+            "my sub AUTOLOAD { return 42; }\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "extends 'Base';\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        assert!(
+            analyzer.resolve_inherited_method_hover("Child", "missing").is_none(),
+            "a lexical AUTOLOAD in a plain parent is not inherited package behavior"
         );
         Ok(())
     }
