@@ -580,6 +580,91 @@ mod tests {
     }
 
     #[test]
+    fn pull_request_target_materialize_conflict_retains_stage_specific_failure_receipt()
+    -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let remote = temp.path().join("remote.git");
+        git(temp.path(), &["init", "--quiet"])?;
+        git(temp.path(), &["config", "user.name", "test"])?;
+        git(temp.path(), &["config", "user.email", "test@example.invalid"])?;
+        git(
+            temp.path(),
+            &["init", "--bare", remote.to_str().ok_or_else(|| eyre!("remote path is not UTF-8"))?],
+        )?;
+        git(temp.path(), &["remote", "add", "origin", "https://github.com/owner/repo.git"])?;
+        git(
+            temp.path(),
+            &[
+                "config",
+                &format!("url.{}.insteadOf", remote.to_string_lossy()),
+                "https://github.com/owner/repo.git",
+            ],
+        )?;
+
+        fs::write(temp.path().join("conflict.txt"), "root\n")?;
+        git(temp.path(), &["add", "conflict.txt"])?;
+        git(temp.path(), &["commit", "--quiet", "-m", "root"])?;
+        let root = git(temp.path(), &["rev-parse", "HEAD"])?;
+
+        git(temp.path(), &["checkout", "-q", "-b", "base"])?;
+        fs::write(temp.path().join("conflict.txt"), "base\n")?;
+        git(temp.path(), &["commit", "--quiet", "-am", "base"])?;
+        let base = git(temp.path(), &["rev-parse", "HEAD"])?;
+
+        git(temp.path(), &["checkout", "-q", "-b", "head", &root])?;
+        fs::write(temp.path().join("conflict.txt"), "head\n")?;
+        git(temp.path(), &["commit", "--quiet", "-am", "head"])?;
+        let head = git(temp.path(), &["rev-parse", "HEAD"])?;
+        let root_path =
+            temp.path().to_str().ok_or_else(|| eyre!("fixture root path is not UTF-8"))?;
+        git(
+            &remote,
+            &[
+                "fetch",
+                "--quiet",
+                root_path,
+                &format!("{base}:refs/heads/fixture-base"),
+                &format!("{head}:refs/pull/7/head"),
+            ],
+        )?;
+
+        let event_path = temp.path().join("event.json");
+        fs::write(
+            &event_path,
+            serde_json::json!({
+                "repository": {"full_name": "owner/repo"},
+                "pull_request": {
+                    "number": 7,
+                    "base": {"sha": base, "repo": {"full_name": "owner/repo"}},
+                    "head": {"sha": head, "repo": {"full_name": "fork/repo"}}
+                }
+            })
+            .to_string(),
+        )?;
+        let receipt = temp.path().join("conflict.json");
+        let error = run(Config {
+            event_name: Some("pull_request_target".to_string()),
+            event_path: Some(event_path),
+            repository: Some("owner/repo".to_string()),
+            github_sha: None,
+            base_sha: None,
+            head_sha: None,
+            receipt: receipt.clone(),
+            env_file: None,
+            root: Some(temp.path().to_path_buf()),
+        })
+        .expect_err("conflicting PR base and head must fail closed");
+        ensure!(error.to_string().contains("merge-tree"));
+        let value: Value = serde_json::from_slice(&fs::read(receipt)?)?;
+        ensure!(value["event_base_sha"] == base);
+        ensure!(value["event_head_sha"] == head);
+        ensure!(value["fetched_head_sha"] == head);
+        ensure!(value["outcome"] == "fail");
+        ensure!(value["failure_stage"] == "merge-tree");
+        Ok(())
+    }
+
+    #[test]
     fn missing_input_retains_typed_failure_receipt() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let receipt = temp.path().join("failure.json");

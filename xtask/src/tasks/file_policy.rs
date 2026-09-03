@@ -807,21 +807,6 @@ fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> 
 fn validate_v4_subject_workflow(text: &str) -> Result<()> {
     let yaml: serde_yaml_ng::Value =
         serde_yaml_ng::from_str(text).context("parsing preapproved v4 workflow YAML")?;
-    for required in [
-        "pull_request_target:",
-        "merge_group:",
-        "push:",
-        "workflow_dispatch:",
-        "permissions:\n  contents: read",
-        "ref: ${{ env.EVALUATOR_SHA }}",
-        "persist-credentials: false",
-        "actions/upload-artifact@",
-        "if: always()",
-    ] {
-        if !text.contains(required) {
-            bail!("preapproved v4 workflow is missing {required}");
-        }
-    }
     let key = |name: &str| serde_yaml_ng::Value::String(name.to_string());
     if yaml
         .as_mapping()
@@ -4373,8 +4358,8 @@ jobs:
         );
         ensure!(validate_v4_subject_workflow(&tampered).is_err());
         let tampered_identity = workflow.replacen(
-            "github.event_name == 'pull_request_target' && github.event.pull_request.head.sha",
-            "github.sha",
+            "${{ github.event_name == 'push' && github.sha || github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || inputs.base_sha }}",
+            "${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha }}",
             1,
         );
         ensure!(
