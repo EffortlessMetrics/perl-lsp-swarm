@@ -2951,6 +2951,23 @@ fn write_receipt(path: &Path, receipt: &Receipt) -> Result<()> {
         })?;
     }
 
+    // `flush` only moves the bytes from userspace into the kernel, so a power
+    // loss after the rename can leave the destination name visible over data
+    // blocks that were never committed — a consumer reading a truncated or empty
+    // receipt, which is the exact hazard the rename above exists to prevent.
+    // Force the contents out before the name starts pointing at them.
+    //
+    // This does not make the receipt fully crash-durable: the directory entry
+    // the rename creates is itself unsynced, so a crash can still lose the
+    // publication entirely. Losing it is safe — the planner is read-only and
+    // deterministic, so re-running reproduces the same receipt — whereas
+    // *keeping* the name over unwritten data is not, and that is the half
+    // closed here.
+    staged
+        .as_file()
+        .sync_all()
+        .with_context(|| format!("syncing publication-sync receipt {} to disk", path.display()))?;
+
     staged.persist(path).map_err(|error| {
         eyre!("publishing publication-sync receipt {}: {error}", path.display())
     })?;
