@@ -4,6 +4,7 @@ import {
   type ActivationAttemptState,
   type ActivationCleanupReceipt,
   type ActivationPhase,
+  type ActivationResourceCensus,
   type ActivationResourceClass,
   type CommittedActivation,
 } from './activationTransaction';
@@ -56,6 +57,17 @@ export class ExtensionActivationOwner {
 
   public resourceIds(): string[] {
     return this.transaction.resourceIds();
+  }
+
+  /**
+   * Ownership-aware count of the resources this attempt still holds (#14678).
+   *
+   * Reads the committed runtime once the attempt commits so a deactivation
+   * drains the census; both views share one resource ledger, so the value is
+   * the same fact observed through the current owner.
+   */
+  public resourceCensus(): ActivationResourceCensus {
+    return (this.committedRuntime ?? this.transaction).resourceCensus();
   }
 
   public lastCleanupReceipt(): ActivationCleanupReceipt | null {

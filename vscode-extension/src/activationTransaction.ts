@@ -34,6 +34,35 @@ export type ActivationResourceClass =
   | 'lazy_user_triggered'
   | 'support_surface_allowed_after_failure';
 
+/**
+ * Runtime authority for {@link ActivationResourceClass}, kept in lockstep with
+ * the literal union so the extension-owned resource census (#14678) can report
+ * one deterministic bucket per class instead of only the classes that happen to
+ * be populated by the current attempt.
+ */
+export const ACTIVATION_RESOURCE_CLASSES: readonly ActivationResourceClass[] = [
+  'mandatory_for_activation',
+  'optional_degradable',
+  'lazy_user_triggered',
+  'support_surface_allowed_after_failure',
+];
+
+/**
+ * Bounded count of the resources this attempt still owns.
+ *
+ * "Live" means registered and not yet cleaned. {@link
+ * ActivationTransaction.resourceIds} reports every resource ever registered,
+ * including cleaned ones, so it cannot express current ownership and cannot
+ * distinguish a deactivated attempt from a leaked one. The census is the
+ * ownership-aware source for the `extension_owned_*` counters in
+ * `vscode_client_measurement.v1`: it counts only resources this extension
+ * registered, never host-wide listeners or disposables (#7866).
+ */
+export interface ActivationResourceCensus {
+  live_total: number;
+  live_by_class: Record<ActivationResourceClass, number>;
+}
+
 export type ActivationAttemptState =
   | 'inactive'
   | 'activating'
@@ -77,6 +106,23 @@ function validateResourceSpec(spec: ActivationResourceSpec): void {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(spec.id)) {
     throw new Error(`activation resource id must be bounded and path-independent: ${spec.id}`);
   }
+}
+
+function censusOf(resources: readonly OwnedActivationResource[]): ActivationResourceCensus {
+  const liveByClass = Object.fromEntries(
+    ACTIVATION_RESOURCE_CLASSES.map((resourceClass) => [resourceClass, 0]),
+  ) as Record<ActivationResourceClass, number>;
+
+  let liveTotal = 0;
+  for (const resource of resources) {
+    if (resource.cleaned) {
+      continue;
+    }
+    liveByClass[resource.resource_class] += 1;
+    liveTotal += 1;
+  }
+
+  return { live_total: liveTotal, live_by_class: liveByClass };
 }
 
 async function cleanResources(
@@ -156,6 +202,11 @@ export class ActivationTransaction {
     return this.resources.map((resource) => resource.id);
   }
 
+  /** Ownership-aware count of the resources this attempt still holds. */
+  public resourceCensus(): ActivationResourceCensus {
+    return censusOf(this.resources);
+  }
+
   public commit(): CommittedActivation {
     if (this.state !== 'activating') {
       throw new Error(`cannot commit activation while state=${this.state}`);
@@ -204,6 +255,20 @@ export class CommittedActivation {
 
   public currentState(): ActivationAttemptState {
     return this.state;
+  }
+
+  /**
+   * Ownership-aware count of the resources the committed runtime still holds.
+   *
+   * Shares the attempt's resource ledger, so a resource cleaned during
+   * deactivation leaves the census here and in the originating transaction
+   * together. A resource whose cleanup threw is marked cleaned like any other —
+   * that failure is reported through {@link ActivationCleanupReceipt.cleanup_failures},
+   * not by inflating the census — while a resource deliberately retained by a
+   * rollback (`retain_support_surfaces`) is never cleaned and stays counted.
+   */
+  public resourceCensus(): ActivationResourceCensus {
+    return censusOf(this.resources);
   }
 
   public async deactivate(): Promise<ActivationCleanupReceipt> {
