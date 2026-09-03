@@ -243,20 +243,29 @@ fn section_names(document: &str, section: &SectionSpec) -> Result<Vec<String>> {
     let mut names = Vec::new();
     let mut in_body = false;
     let mut inert = InertScanner::new();
-    let mut ended_at_commented_boundary = false;
 
     for line in document.lines().skip(heading_line + 1) {
-        // An HTML comment can start at the end of the selected section and
-        // continue over the next section heading.  Markdown does not make
-        // that heading structural, but allowing the comment to carry on
-        // makes the following section's table look like part of this one
-        // when the comment eventually closes.  Treat a real same-or-shallower
-        // heading as the boundary of the selected scan and do not demand that
-        // the comment close inside the scan: its remaining extent belongs to
-        // the following section.
+        // An HTML comment inside the section can hold a line shaped like a
+        // same-or-shallower heading. Markdown makes that line inert, so on the
+        // specification's reading the section continues and the rows after the
+        // comment are this section's. But if the comment was commenting out the
+        // next section heading, those rows belong to the following section.
+        //
+        // Nothing in the document distinguishes an editorial `## TODO` note
+        // from a commented-out section heading, and each guess has been
+        // observed to drop a real upstream entry: reading on absorbs the
+        // following section's table, and stopping truncates the section after
+        // an ordinary note. Refuse rather than pick.
         if inert.commented_heading_depth(line).is_some_and(|heading_here| heading_here <= depth) {
-            ended_at_commented_boundary = true;
-            break;
+            bail!(
+                "the {} section ({}) has an HTML comment holding a line shaped like a \
+                 same-or-shallower heading:\n  {}\nWhether the section continues past that \
+                 comment or ends at that line cannot be decided from the document, and either \
+                 reading has been observed to drop a real upstream entry",
+                section.label,
+                section.anchor,
+                line.trim()
+            );
         }
 
         // A fenced example or a commented-out table can contain pipe-table
@@ -319,16 +328,14 @@ fn section_names(document: &str, section: &SectionSpec) -> Result<Vec<String>> {
         }
     }
 
-    if !ended_at_commented_boundary {
-        if let Some(region) = inert.unterminated() {
-            bail!(
-                "the {} section ({}) has a {} that is never closed; everything after it was skipped \
+    if let Some(region) = inert.unterminated() {
+        bail!(
+            "the {} section ({}) has {} that is never closed; everything after it was skipped \
              as illustration, so a later upstream entry could vanish into a clean report",
-                section.label,
-                section.anchor,
-                region
-            );
-        }
+            section.label,
+            section.anchor,
+            region
+        );
     }
 
     if names.is_empty() {
@@ -451,11 +458,12 @@ impl InertScanner {
         Self { inside: None }
     }
 
-    /// Return a section boundary written on a line currently inside an HTML
-    /// comment.  This is intentionally used only by an already-located
-    /// section scan; section discovery must continue to ignore commented
-    /// headings.  See [`section_names`] for why a boundary ends the scan even
-    /// when the comment closes later.
+    /// The ATX depth of a heading-shaped line currently inside an HTML
+    /// comment, if this line is one.
+    ///
+    /// Used only by an already-located section scan, which refuses rather than
+    /// deciding whether such a line ends the section; see [`section_names`].
+    /// Section discovery must keep ignoring headings inside comments.
     fn commented_heading_depth(&self, line: &str) -> Option<usize> {
         matches!(self.inside, Some(InertRegion::Comment))
             .then(|| heading_depth(line.trim_start()))
@@ -578,8 +586,8 @@ impl InertScanner {
     fn unterminated(&self) -> Option<&'static str> {
         match self.inside {
             None => None,
-            Some(InertRegion::Fence { .. }) => Some("code fence"),
-            Some(InertRegion::Comment) => Some("HTML comment"),
+            Some(InertRegion::Fence { .. }) => Some("a code fence"),
+            Some(InertRegion::Comment) => Some("an HTML comment"),
         }
     }
 }
@@ -1428,14 +1436,13 @@ let example = 1;
     }
 
     #[test]
-    fn a_comment_spanning_the_next_section_does_not_leak_rows_back() {
-        // The comment begins after the selected table, while the following
-        // section heading is still commented out.  If the scan waits for the
-        // comment closer, a later table can be mistaken for another table in
-        // the selected section.  The section boundary must win, without
-        // treating the comment's later close as an unterminated comment for
-        // this section.
-        let document = "\
+    fn a_comment_holding_a_section_heading_is_refused_rather_than_guessed() {
+        // Fixture from `11daa212`, which fixed the leak this describes by
+        // ending the scan at the commented heading. That reading drops a real
+        // addition after an ordinary `## TODO` note (below), and the opposite
+        // reading absorbs the following section's table. Neither is decidable
+        // from the document, so the scan refuses.
+        let spans_next_section = "\
 ## Core Attribute Reference {#attributes}
 
 | Attribute | Description |
@@ -1450,7 +1457,65 @@ This heading is inside the note.
 | [`hx-post`](@/attributes/hx-post.md) | belongs to the following section |
 ";
 
-        assert!(section_names(&document, &CORE_ATTRIBUTES).is_ok_and(|names| names == ["hx-get"]));
+        let error = section_names(spans_next_section, &CORE_ATTRIBUTES)
+            .expect_err("a comment holding a section heading is not decidable");
+        assert!(
+            error.to_string().contains("cannot be decided from the document"),
+            "the refusal must say why it refused: {error}"
+        );
+        // The rows it would otherwise have absorbed must not appear anywhere in
+        // the message-bearing result: refusing is not a quiet partial read.
+        assert!(!error.to_string().contains("hx-post"), "{error}");
+
+        // The other reading's cost: an editorial note that merely starts with
+        // `##` ends no section, and truncating there hides the addition after
+        // it. This is what `11daa212` did, and it is silent.
+        let ordinary_note = "\
+## Core Attribute Reference {#attributes}
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-get`](@/attributes/hx-get.md) | issues a GET |
+
+<!-- editorial note
+## TODO revisit the wording here
+-->
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-brandnew`](@/attributes/hx-brandnew.md) | added upstream |
+";
+
+        assert!(
+            section_names(ordinary_note, &CORE_ATTRIBUTES).is_err(),
+            "an ordinary note must not silently truncate the section"
+        );
+    }
+
+    #[test]
+    fn a_comment_without_a_heading_shaped_line_is_still_read_normally() {
+        // The refusal above must stay narrow. A comment carrying no
+        // same-or-shallower heading is ordinary illustration: its rows are
+        // skipped and the section continues, including a deeper heading, which
+        // is a subsection marker rather than a boundary.
+        let deeper_heading_note = "\
+## Core Attribute Reference {#attributes}
+
+<!-- editorial note
+### a deeper heading is not this section's boundary
+| `hx-retired` | removed upstream |
+-->
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-get`](@/attributes/hx-get.md) | issues a GET |
+| [`hx-post`](@/attributes/hx-post.md) | issues a POST |
+";
+
+        assert!(
+            section_names(deeper_heading_note, &CORE_ATTRIBUTES)
+                .is_ok_and(|names| names == ["hx-get", "hx-post"])
+        );
     }
 
     #[test]
