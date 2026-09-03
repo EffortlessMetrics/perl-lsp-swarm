@@ -409,11 +409,20 @@ def cfg_test_module_paths(path: Path, source: str) -> set[Path]:
     paths: set[Path] = set()
     for match in CFG_TEST_OUT_OF_LINE_PATTERN.finditer(masked):
         name = match.group(1)
-        # `#[path = "..."]` changes the module file location. Recover the
-        # literal from the original source using the masked match position;
-        # the window is limited to adjacent attributes to avoid comments.
-        window = source[max(0, match.start() - 300) : match.start()]
-        path_match = re.findall(r"#\[\s*path\s*=\s*\"([^\"]+)\"\s*\]", window)
+        # `#[path = "..."]` changes the module file location. Recover only
+        # an attribute immediately adjacent to this declaration; a broad
+        # lookback can incorrectly borrow a path from an unrelated module.
+        prefix_lines = source[: match.start()].splitlines()
+        attributes: list[str] = []
+        for line in reversed(prefix_lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("#["):
+                attributes.append(stripped)
+                continue
+            break
+        path_match = re.findall(r"#\[\s*path\s*=\s*\"([^\"]+)\"\s*\]", "\n".join(attributes))
         if path_match:
             module = path.parent / path_match[-1]
             paths.add(module)
