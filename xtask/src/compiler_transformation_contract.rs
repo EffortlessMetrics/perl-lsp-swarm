@@ -729,6 +729,12 @@ pub enum PartialApplicationPolicy {
     Prohibited,
     /// The law explicitly defines named independent complete subplans.
     ///
+    /// At least two of them: subplans partition the selection, so a single
+    /// subplan is the whole selection and could only ever be applied
+    /// completely. That state is [`Self::Prohibited`], and a law that reached
+    /// it through this variant would advertise a partial application it can
+    /// never deliver.
+    ///
     /// One attempt completes one subplan or the whole plan; there is no
     /// third landing place. Each subplan owns an exact output subject, and a
     /// union of subplans has no declared output subject to land on — naming
@@ -742,17 +748,28 @@ pub enum PartialApplicationPolicy {
 }
 
 impl PartialApplicationPolicy {
-    /// Construct a subplan policy with a non-empty named subplan set.
+    /// Construct a subplan policy naming at least two distinct subplans.
+    ///
+    /// Two is the floor, not one. Subplans partition the selection, so a lone
+    /// subplan is the entire selection: it can only ever be applied completely,
+    /// which is [`Self::Prohibited`] wearing another name. Admitting it would
+    /// let a law advertise partial application it can never deliver.
     pub fn independent_subplans(names: &[&str]) -> Result<Self> {
-        if names.is_empty() {
-            bail!("independent subplan policy must name at least one subplan");
-        }
         let mut set = BTreeSet::new();
         for name in names {
             non_empty("independent subplan name", name)?;
             set.insert((*name).to_owned());
         }
-        Ok(Self::IndependentCompleteSubplans(set))
+        Self::checked(set)
+    }
+
+    fn checked(names: BTreeSet<String>) -> Result<Self> {
+        if names.len() < 2 {
+            bail!(
+                "independent subplan policy must name at least two distinct subplans; a lone subplan is the whole plan, which the prohibited policy already states"
+            );
+        }
+        Ok(Self::IndependentCompleteSubplans(names))
     }
 
     /// True when a residual boundary may be declared instead of applying
@@ -765,12 +782,13 @@ impl PartialApplicationPolicy {
         match self {
             Self::Prohibited => Ok(()),
             Self::IndependentCompleteSubplans(names) => {
-                if names.is_empty() {
-                    bail!("independent subplan policy must name at least one subplan");
-                }
                 for name in names {
                     non_empty("independent subplan name", name)?;
                 }
+                // The variant is constructible directly, so the two-subplan
+                // floor is re-established here rather than trusted from the
+                // constructor.
+                Self::checked(names.clone())?;
                 Ok(())
             }
         }
@@ -3210,6 +3228,37 @@ mod tests {
     }
 
     /// The output subject a named subplan of `plan` declares.
+    /// Split a two-operation plan's selection into two bound subplans, each
+    /// with its own output subject at the plan's output stage.
+    fn split_selection_in_two(
+        plan: &TransformationPlan,
+        first: &str,
+        second: &str,
+    ) -> BTreeMap<String, SubplanBinding> {
+        let selected: Vec<OperationId> =
+            plan.selected_operations().into_iter().cloned().collect::<Vec<_>>();
+        let (head, tail) = match selected.split_first() {
+            Some((head, tail)) if !tail.is_empty() => (head.clone(), tail.to_vec()),
+            _ => unreachable!("the fixture selects at least two operations"),
+        };
+        let binding =
+            |operations: BTreeSet<OperationId>, identity: &str, seed: u8| SubplanBinding {
+                operations,
+                expected_output: super::StageSubject {
+                    ir_identity: subject_ref(identity),
+                    digest: seeded_digest(seed),
+                    ..plan.expected_output.clone()
+                },
+            };
+        BTreeMap::from([
+            (
+                first.to_owned(),
+                binding([head].into_iter().collect(), "the first subplan's output", 0x71),
+            ),
+            (second.to_owned(), binding(tail.into_iter().collect(), "the rest's output", 0x72)),
+        ])
+    }
+
     fn subplan_output(plan: &TransformationPlan, name: &str) -> super::StageSubject {
         match plan.subplans.get(name) {
             Some(binding) => binding.expected_output.clone(),
@@ -3829,18 +3878,12 @@ mod tests {
             |plan| plan.preconditions[0].statement = "a different statement".to_owned(),
             |plan| plan.preconditions[0].evidence = subject_ref("different evidence"),
             |plan| {
-                let selected: BTreeSet<OperationId> =
-                    plan.selected_operations().into_iter().cloned().collect();
                 plan.partial_application =
-                    match PartialApplicationPolicy::independent_subplans(&["only-one"]) {
+                    match PartialApplicationPolicy::independent_subplans(&["first", "second"]) {
                         Ok(policy) => policy,
                         Err(error) => unreachable!("subplan policy builds: {error}"),
                     };
-                let expected_output = plan.expected_output.clone();
-                plan.subplans = BTreeMap::from([(
-                    "only-one".to_owned(),
-                    SubplanBinding { operations: selected, expected_output },
-                )]);
+                plan.subplans = split_selection_in_two(plan, "first", "second");
             },
         ];
         for (index, mutate) in mutations.iter().enumerate() {
@@ -4319,9 +4362,17 @@ mod tests {
                     law.output_stage = CompilerStage::Eir;
                 },
             ),
-            ("must name at least one subplan", "an empty subplan set", |law| {
+            ("at least two distinct subplans", "an empty subplan set", |law| {
                 law.partial_application =
                     PartialApplicationPolicy::IndependentCompleteSubplans(BTreeSet::new());
+            }),
+            // The variant is constructible without the constructor, so the
+            // two-subplan floor is validated here too, not only at the door.
+            ("at least two distinct subplans", "a lone subplan built directly", |law| {
+                law.partial_application =
+                    PartialApplicationPolicy::IndependentCompleteSubplans(BTreeSet::from([
+                        "only-one".to_owned(),
+                    ]));
             }),
             ("must not permit the change", "an unsupported law that permits a change", |law| {
                 law.class = TransformationClass::UnsupportedOrNotApplicable;
@@ -4412,8 +4463,16 @@ mod tests {
             PartialApplicationPolicy::independent_subplans(&[]).is_err(),
             "a subplan policy naming nothing is not a subplan policy"
         );
-        assert!(PartialApplicationPolicy::independent_subplans(&["  "]).is_err());
-        PartialApplicationPolicy::independent_subplans(&["one"])?;
+        assert!(PartialApplicationPolicy::independent_subplans(&["  ", "two"]).is_err());
+        assert!(
+            PartialApplicationPolicy::independent_subplans(&["one"]).is_err(),
+            "a lone subplan is the whole plan, which the prohibited policy states"
+        );
+        assert!(
+            PartialApplicationPolicy::independent_subplans(&["same", "same"]).is_err(),
+            "one name spelled twice is still one subplan"
+        );
+        PartialApplicationPolicy::independent_subplans(&["one", "two"])?;
 
         for blank in ["", "   ", "\t\n"] {
             assert!(SubjectRef::new(blank).is_err(), "{blank:?} must not be a subject");
@@ -4960,15 +5019,9 @@ mod tests {
         // structurally valid, so plan-local evaluation still applies it --
         // which is exactly the discipline gap. Under the law it is invalid.
         let mut laundered = plan.clone();
-        let selected: BTreeSet<OperationId> =
-            laundered.selected_operations().into_iter().cloned().collect();
         laundered.partial_application =
-            PartialApplicationPolicy::independent_subplans(&["invented"])?;
-        let laundered_output = laundered.expected_output.clone();
-        laundered.subplans = BTreeMap::from([(
-            "invented".to_owned(),
-            SubplanBinding { operations: selected, expected_output: laundered_output },
-        )]);
+            PartialApplicationPolicy::independent_subplans(&["invented", "also-invented"])?;
+        laundered.subplans = split_selection_in_two(&laundered, "invented", "also-invented");
         laundered.validate()?;
         assert_eq!(laundered.evaluate(&observed)?.tag(), "applied_exact");
         match laundered.evaluate_under_law(&law, &observed)? {
@@ -5341,6 +5394,8 @@ mod tests {
         let law = shape_fixtures::effect_free_control_law()?;
         let plan = shape_fixtures::effect_free_control_plan()?;
         plan.validate()?;
+        // The partition below is only meaningful for a plan the law admits.
+        plan.verify_law_conformance(&law)?;
 
         // Every selected operation is bound to exactly one subplan.
         let selected: BTreeSet<OperationId> =
