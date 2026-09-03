@@ -340,8 +340,58 @@ const TRANSFORM_OPTIONS: [&str; 3] = ["-as", "-prefix", "-postfix"];
 /// only that the token is not a prefix of a longer word (`-aside`) and that it
 /// sits in option position. `covers_every_recognizer_match` pins that.
 fn contains_transform_syntax(text: &str) -> bool {
+    // Ignore option-shaped text inside ordinary quoted values.  The detector
+    // is intentionally independent from the regex bridge, but it must still
+    // respect the small bit of Perl structure needed for its role predicate:
+    // `target => "-as => ..."` is data, whereas `{'-as' => ...}` is a map key.
+    // Preserve only a quoted string whose complete contents are one of the
+    // option names; this keeps quoted option keys covered without turning
+    // arbitrary target values into transform syntax.
+    let mut masked = String::with_capacity(text.len());
+    let chars: Vec<char> = text.chars().collect();
+    let mut index = 0;
+    while index < chars.len() {
+        let quote = chars[index];
+        if quote != '\'' && quote != '"' {
+            masked.push(quote);
+            index += 1;
+            continue;
+        }
+
+        let start = index + 1;
+        let mut end = start;
+        let mut escaped = false;
+        while end < chars.len() {
+            let current = chars[end];
+            if escaped {
+                escaped = false;
+            } else if current == '\\' {
+                escaped = true;
+            } else if current == quote {
+                break;
+            }
+            end += 1;
+        }
+
+        if end == chars.len() {
+            // Keep malformed unterminated text visible to the conservative
+            // detector; the recognizer path will fail closed as unresolved.
+            masked.extend(chars[index..].iter());
+            break;
+        }
+
+        let inner: String = chars[start..end].iter().collect();
+        if TRANSFORM_OPTIONS.iter().any(|option| inner.trim() == *option) {
+            masked.push(quote);
+            masked.extend(chars[start..=end].iter());
+        } else {
+            masked.extend(std::iter::repeat_n(' ', end - index + 1));
+        }
+        index = end + 1;
+    }
+
     for option in TRANSFORM_OPTIONS {
-        let mut rest = text;
+        let mut rest = masked.as_str();
         while let Some(offset) = rest.find(option) {
             let after = &rest[offset + option.len()..];
             // The token must not merely open a longer word (`-aside`), and must

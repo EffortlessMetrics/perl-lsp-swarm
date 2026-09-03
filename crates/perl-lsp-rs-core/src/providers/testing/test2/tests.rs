@@ -552,6 +552,10 @@ fn test2_transform_detection_requires_option_position() {
     // The quoted option spelling is the same syntax.
     assert!(contains_transform_syntax("ok => {'-as' => 'my_ok'}"));
     assert!(contains_transform_syntax("ok => {\"-prefix\" => 'my_'}"));
+    // An option-shaped substring in a quoted target is data, not transform
+    // syntax.  The detector must not fail closed on an ordinary target value.
+    assert!(!contains_transform_syntax("ok => {target => '-as => my_ok'}"));
+    assert!(!contains_transform_syntax("ok => {target => \"-prefix => my_\"}"));
     // Not in option position.
     assert!(!contains_transform_syntax("qw/ok as/"));
     assert!(!contains_transform_syntax("'-as'"));
