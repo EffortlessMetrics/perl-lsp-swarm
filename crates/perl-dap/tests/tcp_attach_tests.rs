@@ -14,9 +14,13 @@ use perl_lsp_rs_core::transport::framing::frame;
 use perl_tdd_support::must;
 use std::io::Write;
 use std::net::TcpListener;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{channel, sync_channel};
 use std::thread;
 use std::time::Duration;
+
+/// Capacity for the attach session's bounded fan-in queue (#9521). The test
+/// event volumes here are tiny, so a small bounded queue suffices.
+const TEST_ATTACH_EVENT_CAPACITY: usize = 8;
 
 /// Test helper to create a valid TCP attach configuration
 fn create_valid_config() -> TcpAttachConfig {
@@ -70,9 +74,8 @@ fn test_tcp_attach_session_creation() {
 #[test]
 fn test_tcp_attach_session_event_sender() {
     let mut session = TcpAttachSession::new();
-    let (tx, rx) = channel::<DapEvent>();
+    let (tx, rx) = sync_channel::<DapEvent>(TEST_ATTACH_EVENT_CAPACITY);
     session.set_event_sender(tx.clone());
-
     // Send an event and verify it's received
     let event =
         DapEvent::Output { category: "stdout".to_string(), output: "test output".to_string() };
@@ -257,7 +260,7 @@ fn test_tcp_attach_reader_handles_concatenated_frames() {
     });
 
     let mut session = TcpAttachSession::new();
-    let (event_tx, event_rx) = channel::<DapEvent>();
+    let (event_tx, event_rx) = sync_channel::<DapEvent>(TEST_ATTACH_EVENT_CAPACITY);
     session.set_event_sender(event_tx);
 
     let mut config = TcpAttachConfig::new("127.0.0.1".to_string(), port).with_timeout(2000);
@@ -331,7 +334,7 @@ fn test_tcp_attach_reader_emits_stopped_and_terminated_events() {
     });
 
     let mut session = TcpAttachSession::new();
-    let (event_tx, event_rx) = channel::<DapEvent>();
+    let (event_tx, event_rx) = sync_channel::<DapEvent>(TEST_ATTACH_EVENT_CAPACITY);
     session.set_event_sender(event_tx);
 
     let mut config = TcpAttachConfig::new("127.0.0.1".to_string(), port).with_timeout(2000);

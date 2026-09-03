@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use perl_lsp_rs_core::transport::framing::frame;
 use std::io::Write;
 use std::net::TcpStream;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 
 /// TCP attach session
@@ -17,7 +17,11 @@ pub struct TcpAttachSession {
     /// Connection state
     connected: Arc<Mutex<bool>>,
     /// Event sender for DAP events
-    event_sender: Option<Sender<DapEvent>>,
+    ///
+    /// Must come from a `sync_channel` (#9521): the fan-in queue into the
+    /// forwarding thread is bounded, with output shed and state events applying
+    /// backpressure under the reader's admission policy.
+    event_sender: Option<SyncSender<DapEvent>>,
 }
 
 impl TcpAttachSession {
@@ -27,7 +31,7 @@ impl TcpAttachSession {
     }
 
     /// Set the event sender
-    pub fn set_event_sender(&mut self, sender: Sender<DapEvent>) {
+    pub fn set_event_sender(&mut self, sender: SyncSender<DapEvent>) {
         self.event_sender = Some(sender);
     }
 

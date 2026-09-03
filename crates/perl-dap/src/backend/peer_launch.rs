@@ -1167,6 +1167,18 @@ pub fn run_mirror_listen_session_stdio(
 /// on a dedicated thread, dispatch them, write framed responses/events to
 /// `writer`, interleave backend-event delivery, and transition the bridge to
 /// live when the peer backend arrives on `peer_rx`.
+///
+/// Frame admission is bounded (#9522): the reader enqueues through
+/// [`super::peer_frame_queue::admit_peer_frame`] against a
+/// [`super::peer_frame_queue::PEER_FRAME_QUEUE_CAPACITY`] bounded channel. If
+/// the editor loop cannot keep up and the queue saturates, the reader stops and
+/// the session ends with the typed
+/// [`super::peer_frame_queue::PEER_BACKPRESSURE_MSG`] failure instead of
+/// buffering without bound or reporting generic success.
+///
+/// # Errors
+/// Returns a transport error if writing framed messages to `writer` fails, or
+/// the typed peer backpressure failure when the bounded frame queue saturates.
 fn run_mirror_editor_loop<R, W>(
     reader_src: R,
     mut writer: W,
@@ -1178,9 +1190,14 @@ where
     R: Read + Send + 'static,
     W: Write,
 {
+    use super::peer_frame_queue::{PEER_FRAME_QUEUE_CAPACITY, admit_peer_frame, overflow_failure};
     use perl_lsp_rs_core::transport::ContentLengthFramer;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(PEER_FRAME_QUEUE_CAPACITY);
+    let overflow = Arc::new(AtomicBool::new(false));
+    let reader_overflow = Arc::clone(&overflow);
     let _reader = std::thread::spawn(move || {
         let mut src = reader_src;
         let mut framer = ContentLengthFramer::new();
@@ -1192,8 +1209,15 @@ where
                     framer.push(&buf[..n]);
                     loop {
                         match framer.try_next() {
+                            // Receiver gone, queue saturated, or session ended —
+                            // stop reading (bounded admission #9522).
                             Ok(Some(body)) => {
-                                if tx.send(body).is_err() {
+                                if !admit_peer_frame(
+                                    &tx,
+                                    body,
+                                    &reader_overflow,
+                                    "mirror listen (editor)",
+                                ) {
                                     return;
                                 }
                             }
@@ -1256,7 +1280,16 @@ where
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            // Reader thread ended (editor EOF / saturated queue): a saturated
+            // queue fails the session closed with the typed backpressure
+            // disposition instead of generic success (#9522); frames admitted
+            // before the overflow were still dispatched above.
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if let Some(failure) = overflow_failure(&overflow) {
+                    return Err(failure);
+                }
+                break;
+            }
         }
     }
     Ok(())
@@ -1782,6 +1815,85 @@ mod tests {
             saw_terminated,
             "an acceptor timeout with no peer must surface a terminated event, not hang forever"
         );
+    }
+
+    /// #9522: an editor frame burst against a stalled session loop saturates
+    /// the bounded queue, and the mirror session fails closed with the typed
+    /// backpressure disposition instead of buffering without bound or
+    /// returning generic success. Frames admitted before the overflow are
+    /// still dispatched once the stall clears.
+    #[test]
+    fn mirror_editor_loop_fails_closed_when_frame_queue_saturates() -> Result<(), String> {
+        use perl_lsp_rs_core::transport::frame;
+        use std::io::Cursor;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Condvar, Mutex as StdMutex};
+
+        // A writer sink that stalls its first write until released (or a short
+        // bounded deadline elapses), leaving the editor loop parked in `write`
+        // while the reader bursts frames into the bounded queue.
+        struct GatedSink {
+            gate: Arc<(StdMutex<bool>, Condvar)>,
+            first_write_done: AtomicBool,
+        }
+        impl GatedSink {
+            fn new(gate: Arc<(StdMutex<bool>, Condvar)>) -> Self {
+                Self { gate, first_write_done: AtomicBool::new(false) }
+            }
+        }
+        impl Write for GatedSink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if !self.first_write_done.swap(true, Ordering::SeqCst) {
+                    let (lock, cvar) = &*self.gate;
+                    let _guard = cvar
+                        .wait_timeout_while(
+                            lock.lock().unwrap_or_else(|e| e.into_inner()),
+                            Duration::from_millis(300),
+                            |open| !*open,
+                        )
+                        .unwrap_or_else(|e| e.into_inner());
+                }
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let frame_of = |seq: i64| {
+            frame(&must(serde_json::to_vec(&json!({
+                "seq": seq, "type": "request", "command": "launch", "arguments": {}
+            }))))
+        };
+        let mut input = Vec::new();
+        for seq in 1..=200 {
+            input.extend_from_slice(&frame_of(seq));
+        }
+
+        // A peer handoff channel whose sender is held but never used: the loop
+        // stays in the pending phase for the whole burst.
+        let (_peer_tx, peer_rx) = mpsc::channel::<Box<dyn DebugBackend>>();
+
+        let gate: Arc<(StdMutex<bool>, Condvar)> = Arc::new((StdMutex::new(false), Condvar::new()));
+        let result = run_mirror_editor_loop(
+            Cursor::new(input),
+            GatedSink::new(Arc::clone(&gate)),
+            MirrorPeerBridge::new_pending(ControlMode::Mirror),
+            peer_rx,
+            Duration::from_millis(1),
+        );
+
+        let Err(failure) = result else {
+            return Err(
+                "a saturated mirror frame queue must fail the session, not return Ok".to_string()
+            );
+        };
+        assert!(
+            failure.to_string().contains(crate::backend::peer_frame_queue::PEER_BACKPRESSURE_MSG),
+            "the session failure must carry the typed backpressure disposition, got: {failure}"
+        );
+        Ok(())
     }
 
     fn as_response(msg: &DapMessage) -> Result<(&str, bool, Option<&Value>), String> {

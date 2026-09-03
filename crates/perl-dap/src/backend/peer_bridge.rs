@@ -665,13 +665,22 @@ pub fn run_external_peer_session_stdio(
 /// responses/events to `writer` on the calling thread, interleaving backend
 /// event delivery on `poll_interval` ticks.
 ///
+/// Frame admission is bounded (#9522): the reader enqueues through
+/// [`super::peer_frame_queue::admit_peer_frame`] against a
+/// [`super::peer_frame_queue::PEER_FRAME_QUEUE_CAPACITY`] bounded channel. If
+/// the session loop cannot keep up and the queue saturates, the reader stops
+/// and the session ends with the typed
+/// [`super::peer_frame_queue::PEER_BACKPRESSURE_MSG`] failure instead of
+/// buffering without bound or reporting generic success.
+///
 /// Used by [`run_external_peer_session_stdio`] (stdin/stdout) and exercised in
 /// tests over in-memory pipes. The reader thread is detached rather than joined:
 /// on a DAP `disconnect` the editor may not close its write half immediately, so
 /// joining could block; the thread exits on stdin EOF or process teardown.
 ///
 /// # Errors
-/// Returns a transport error if writing framed messages to `writer` fails.
+/// Returns a transport error if writing framed messages to `writer` fails, or
+/// the typed peer backpressure failure when the bounded frame queue saturates.
 fn run_peer_session_threaded<R, W>(
     reader_src: R,
     mut writer: W,
@@ -682,10 +691,14 @@ where
     R: Read + Send + 'static,
     W: Write,
 {
+    use super::peer_frame_queue::{PEER_FRAME_QUEUE_CAPACITY, admit_peer_frame, overflow_failure};
     use perl_lsp_rs_core::transport::ContentLengthFramer;
+    use std::sync::atomic::AtomicBool;
     use std::sync::mpsc;
 
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(PEER_FRAME_QUEUE_CAPACITY);
+    let overflow = std::sync::Arc::new(AtomicBool::new(false));
+    let reader_overflow = std::sync::Arc::clone(&overflow);
     let _reader = std::thread::spawn(move || {
         let mut src = reader_src;
         let mut framer = ContentLengthFramer::new();
@@ -697,9 +710,15 @@ where
                     framer.push(&buf[..n]);
                     loop {
                         match framer.try_next() {
-                            // Receiver gone (session ended) — stop reading.
+                            // Receiver gone, queue saturated, or session ended —
+                            // stop reading (bounded admission #9522).
                             Ok(Some(body)) => {
-                                if tx.send(body).is_err() {
+                                if !admit_peer_frame(
+                                    &tx,
+                                    body,
+                                    &reader_overflow,
+                                    "peer bridge (stdio)",
+                                ) {
                                     return;
                                 }
                             }
@@ -743,8 +762,16 @@ where
             }
             // No editor input this tick; loop to poll events again.
             Err(mpsc::RecvTimeoutError::Timeout) => {}
-            // Reader thread ended (stdin closed / malformed): end the session.
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            // Reader thread ended (stdin closed / malformed / saturated queue):
+            // a saturated queue fails the session closed with the typed
+            // backpressure disposition instead of generic success (#9522);
+            // frames admitted before the overflow were still dispatched above.
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if let Some(failure) = overflow_failure(&overflow) {
+                    return Err(failure);
+                }
+                break;
+            }
         }
     }
     Ok(())
@@ -1763,5 +1790,82 @@ mod tests {
             "the valid frames after the malformed one must still be processed: {commands:?}"
         );
         assert!(commands.contains(&"disconnect".to_string()), "commands: {commands:?}");
+    }
+
+    /// #9522: a frame burst against a stalled session loop saturates the
+    /// bounded queue, and the session fails closed with the typed backpressure
+    /// disposition instead of buffering without bound or returning generic
+    /// success. Frames admitted before the overflow are still dispatched (the
+    /// control below proves the loop keeps answering under the same pipe
+    /// harness without pressure).
+    #[test]
+    fn threaded_driver_fails_closed_when_frame_queue_saturates() -> Result<(), String> {
+        use perl_lsp_rs_core::transport::frame;
+        use std::io::Cursor;
+        use std::sync::Condvar;
+        use std::sync::Mutex;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // A writer sink that stalls its first write until released (or a short
+        // bounded deadline elapses), which leaves the session loop parked in
+        // `write` while the reader bursts frames into the bounded queue.
+        struct GatedSink {
+            gate: Arc<(Mutex<bool>, Condvar)>,
+            first_write_done: AtomicBool,
+        }
+        impl GatedSink {
+            fn new(gate: Arc<(Mutex<bool>, Condvar)>) -> Self {
+                Self { gate, first_write_done: AtomicBool::new(false) }
+            }
+        }
+        impl std::io::Write for GatedSink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if !self.first_write_done.swap(true, Ordering::SeqCst) {
+                    let (lock, cvar) = &*self.gate;
+                    let _guard = cvar
+                        .wait_timeout_while(
+                            lock.lock().unwrap_or_else(|e| e.into_inner()),
+                            Duration::from_millis(300),
+                            |open| !*open,
+                        )
+                        .unwrap_or_else(|e| e.into_inner());
+                }
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        // Far more frames than PEER_FRAME_QUEUE_CAPACITY, sent while the loop
+        // is stalled in its first write: the queue must saturate.
+        let frame_of = |seq: i64| {
+            frame(&must(serde_json::to_vec(&json!({
+                "seq": seq, "type": "request", "command": "unknownCommand", "arguments": {}
+            }))))
+        };
+        let mut input = Vec::new();
+        for seq in 1..=200 {
+            input.extend_from_slice(&frame_of(seq));
+        }
+
+        let gate: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
+        let result = run_peer_session_threaded(
+            Cursor::new(input),
+            GatedSink::new(Arc::clone(&gate)),
+            bridge(),
+            Duration::from_millis(1),
+        );
+
+        let Err(failure) = result else {
+            return Err(
+                "a saturated peer frame queue must fail the session, not return Ok".to_string()
+            );
+        };
+        assert!(
+            failure.to_string().contains(crate::backend::peer_frame_queue::PEER_BACKPRESSURE_MSG),
+            "the session failure must carry the typed backpressure disposition, got: {failure}"
+        );
+        Ok(())
     }
 }
