@@ -482,8 +482,8 @@
       "path": "crates/perl-lsp-rs/src/runtime/language/completion.rs",
       "enclosing_test_or_function": "same_document_identity_survives_an_equivalent_uri_spelling",
       "macro_family": "panic!",
-      "normalized_snippet": "panic!(\"expected the same-document `$api_local` for {doc_uri}; got {items:?}\")",
-      "selector_identity": "invocation:a2d25dae768275bb:occurrence:1",
+      "normalized_snippet": "|| panic!(\"vacuity guard: expected `$api_token` for {doc_uri}; got {items:?}\"),",
+      "selector_identity": "invocation:cfbf16e75c90b326:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
       "state": "active"
     },
@@ -491,8 +491,8 @@
       "path": "crates/perl-lsp-rs/src/runtime/language/completion.rs",
       "enclosing_test_or_function": "same_document_identity_survives_an_equivalent_uri_spelling",
       "macro_family": "panic!",
-      "normalized_snippet": "|| panic!(\"vacuity guard: expected `$api_token` for {doc_uri}; got {items:?}\"),",
-      "selector_identity": "invocation:cfbf16e75c90b326:occurrence:1",
+      "normalized_snippet": "panic!(\"expected the same-document `$api_local` for {doc_uri}; got {items:?}\")",
+      "selector_identity": "invocation:a2d25dae768275bb:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
       "state": "active"
     },
@@ -716,24 +716,6 @@
       "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
       "enclosing_test_or_function": "assert_symbol_shapes",
       "macro_family": "panic!",
-      "normalized_snippet": ".unwrap_or_else(|err| panic!(\"{err}: {symbol:?}\"));",
-      "selector_identity": "invocation:8f3b678e5e57e51a:occurrence:1",
-      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
-    },
-    {
-      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
-      "enclosing_test_or_function": "assert_symbol_shapes",
-      "macro_family": "panic!",
-      "normalized_snippet": ".unwrap_or_else(|err| panic!(\"{err}: {symbol:?}\"));",
-      "selector_identity": "invocation:8f3b678e5e57e51a:occurrence:2",
-      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
-      "state": "active"
-    },
-    {
-      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
-      "enclosing_test_or_function": "assert_symbol_shapes",
-      "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"Each symbol must have a non-empty name: {symbol:?}\"));",
       "selector_identity": "invocation:a9f840cae4aef361:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
@@ -745,6 +727,24 @@
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|| panic!(\"Symbol `{name}` must include LSP SymbolKind: {symbol:?}\"));",
       "selector_identity": "invocation:c6e55719552d2693:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "assert_symbol_shapes",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|err| panic!(\"{err}: {symbol:?}\"));",
+      "selector_identity": "invocation:8f3b678e5e57e51a:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-ux-tests/tests/ux_scenario_13_document_symbols.rs",
+      "enclosing_test_or_function": "assert_symbol_shapes",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|err| panic!(\"{err}: {symbol:?}\"));",
+      "selector_identity": "invocation:8f3b678e5e57e51a:occurrence:2",
       "accepted_reason": "Intentional test failure diagnostic for an unexpected fixture, event, or equivalence result.",
       "state": "active"
     },
@@ -860,15 +860,6 @@
       "path": "crates/perl-parser-core/src/engine/parser/chained_deref_method_tests.rs",
       "enclosing_test_or_function": "chain_after_bare_hash_access",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!( \"Expected MethodCall for chain after bare hash, got {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
-      "selector_identity": "invocation:b0d683ebe85f8030:occurrence:1",
-      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
-      "state": "active"
-    },
-    {
-      "path": "crates/perl-parser-core/src/engine/parser/chained_deref_method_tests.rs",
-      "enclosing_test_or_function": "chain_after_bare_hash_access",
-      "macro_family": "panic!",
       "normalized_snippet": "_ => panic!( \"Expected inner MethodCall, got {} (sexp: {})\", object.kind.kind_name(), object.to_sexp() ),",
       "selector_identity": "invocation:379cb3458f9477f8:occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
@@ -876,10 +867,10 @@
     },
     {
       "path": "crates/perl-parser-core/src/engine/parser/chained_deref_method_tests.rs",
-      "enclosing_test_or_function": "deep_chain_hash_deref_then_methods",
+      "enclosing_test_or_function": "chain_after_bare_hash_access",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!( \"Expected MethodCall for deep chain, got {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
-      "selector_identity": "invocation:a9eb670a291c57a2:occurrence:1",
+      "normalized_snippet": "_ => panic!( \"Expected MethodCall for chain after bare hash, got {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
+      "selector_identity": "invocation:b0d683ebe85f8030:occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
     },
@@ -889,6 +880,15 @@
       "macro_family": "panic!",
       "normalized_snippet": "_ => panic!( \"Expected inner MethodCall (resultset), got {} (sexp: {})\", object.kind.kind_name(), object.to_sexp() ),",
       "selector_identity": "invocation:8bbb523fc35449aa:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/chained_deref_method_tests.rs",
+      "enclosing_test_or_function": "deep_chain_hash_deref_then_methods",
+      "macro_family": "panic!",
+      "normalized_snippet": "_ => panic!( \"Expected MethodCall for deep chain, got {} (sexp: {})\", expr.kind.kind_name(), expr.to_sexp() ),",
+      "selector_identity": "invocation:a9eb670a291c57a2:occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
     },
@@ -1634,8 +1634,8 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "scalar_ref_hash_slice_list_preserves_base_target",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!( \"Expected Unary deref node as slice target, got: {} (sexp: {})\", target.kind.kind_name(), expr.to_sexp(), ),",
-      "selector_identity": "invocation:952ac44dc9cca8fd:occurrence:1",
+      "normalized_snippet": "_ => panic!( \"Expected inner Variable in deref, got: {}\", operand.kind.kind_name() ),",
+      "selector_identity": "invocation:35cb4177415e80b7:occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
     },
@@ -1643,8 +1643,8 @@
       "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
       "enclosing_test_or_function": "scalar_ref_hash_slice_list_preserves_base_target",
       "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!( \"Expected inner Variable in deref, got: {}\", operand.kind.kind_name() ),",
-      "selector_identity": "invocation:35cb4177415e80b7:occurrence:1",
+      "normalized_snippet": "_ => panic!( \"Expected Unary deref node as slice target, got: {} (sexp: {})\", target.kind.kind_name(), expr.to_sexp(), ),",
+      "selector_identity": "invocation:952ac44dc9cca8fd:occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
     },
@@ -1654,6 +1654,15 @@
       "macro_family": "panic!",
       "normalized_snippet": "_ => panic!( \"Expected ArrayLiteral slice key list, got: {}\", keys.kind.kind_name() ),",
       "selector_identity": "invocation:e4ca25edee9be0b6:occurrence:1",
+      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
+      "enclosing_test_or_function": "scalar_ref_hash_slice_preserves_base_target",
+      "macro_family": "panic!",
+      "normalized_snippet": "_ => panic!( \"Expected inner Variable in deref, got: {}\", operand.kind.kind_name() ),",
+      "selector_identity": "invocation:35cb4177415e80b7:occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
     },
@@ -1672,15 +1681,6 @@
       "macro_family": "panic!",
       "normalized_snippet": "_ => panic!( \"Expected Unary deref node as slice target, got: {} (sexp: {})\", target.kind.kind_name(), expr.to_sexp(), ),",
       "selector_identity": "invocation:952ac44dc9cca8fd:occurrence:1",
-      "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
-      "state": "active"
-    },
-    {
-      "path": "crates/perl-parser-core/src/engine/parser/qualified_variable_subscript_tests.rs",
-      "enclosing_test_or_function": "scalar_ref_hash_slice_preserves_base_target",
-      "macro_family": "panic!",
-      "normalized_snippet": "_ => panic!( \"Expected inner Variable in deref, got: {}\", operand.kind.kind_name() ),",
-      "selector_identity": "invocation:35cb4177415e80b7:occurrence:1",
       "accepted_reason": "Intentional parser-test assertion diagnostic for an unexpected AST shape or parse result; this is test failure reporting, not production panic behavior.",
       "state": "active"
     },
@@ -2068,6 +2068,177 @@
       "macro_family": "panic!",
       "normalized_snippet": ".unwrap_or_else(|error| panic!(\"failed to read {}: {error}\", path.display()))",
       "selector_identity": "invocation:01c45dbcd690ea0c:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_external_subject_contract.rs",
+      "enclosing_test_or_function": "ambient_elpa_copy_cannot_satisfy_external_subjects",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected AmbientStateRejected, got {other:?}\"),",
+      "selector_identity": "invocation:2d890f913685debd:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_external_subject_contract.rs",
+      "enclosing_test_or_function": "ambient_elpa_copy_cannot_satisfy_external_subjects",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected AmbientStateRejected, got {other:?}\"),",
+      "selector_identity": "invocation:2d890f913685debd:occurrence:2",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_external_subject_contract.rs",
+      "enclosing_test_or_function": "cache_keys_bind_the_archive_digest_not_the_version_alone",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected StaleCacheEntry, got {other:?}\"),",
+      "selector_identity": "invocation:96b5d832298edc91:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_external_subject_contract.rs",
+      "enclosing_test_or_function": "declared_external_identity_changes_make_the_cache_entry_stale",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected StaleCacheEntry, got {other:?}\"),",
+      "selector_identity": "invocation:96b5d832298edc91:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_external_subject_contract.rs",
+      "enclosing_test_or_function": "emacs_compatibility_drift_is_rejected",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected IncompatibleSubject, got {other:?}\"),",
+      "selector_identity": "invocation:5503a663f4bcfa71:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_external_subject_contract.rs",
+      "enclosing_test_or_function": "emacs_compatibility_drift_is_rejected",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected InvalidManifest, got {other:?}\"),",
+      "selector_identity": "invocation:f2aeb149f4a14dc4:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_external_subject_contract.rs",
+      "enclosing_test_or_function": "emacs_compatibility_drift_is_rejected",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected InvalidManifest, got {other:?}\"),",
+      "selector_identity": "invocation:f2aeb149f4a14dc4:occurrence:2",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_external_subject_contract.rs",
+      "enclosing_test_or_function": "floating_source_refs_are_rejected",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected InvalidManifest, got {other:?}\"),",
+      "selector_identity": "invocation:f2aeb149f4a14dc4:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_external_subject_contract.rs",
+      "enclosing_test_or_function": "floating_source_refs_are_rejected",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected InvalidManifest, got {other:?}\"),",
+      "selector_identity": "invocation:f2aeb149f4a14dc4:occurrence:2",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_external_subject_contract.rs",
+      "enclosing_test_or_function": "manifest_identity_is_never_runtime_identity",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected an instrument failure, got a rejection: {rejection}\")",
+      "selector_identity": "invocation:c3c93ada597afdf1:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_external_subject_contract.rs",
+      "enclosing_test_or_function": "rejection_of",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a typed rejection, got an instrument failure: {message}\")",
+      "selector_identity": "invocation:0c10d8383270f93d:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_external_subject_contract.rs",
+      "enclosing_test_or_function": "released_and_source_subjects_are_not_interchangeable",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected IdentityMismatch, got {other:?}\"),",
+      "selector_identity": "invocation:4b5a34120181d004:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_external_subject_contract.rs",
+      "enclosing_test_or_function": "released_and_source_subjects_are_not_interchangeable",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected UnavailableSubject, got {other:?}\"),",
+      "selector_identity": "invocation:bd5120b083c2a514:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_external_subject_contract.rs",
+      "enclosing_test_or_function": "released_subject_without_package_identity_is_rejected",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected InvalidManifest, got {other:?}\"),",
+      "selector_identity": "invocation:f2aeb149f4a14dc4:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_external_subject_contract.rs",
+      "enclosing_test_or_function": "released_subject_without_package_identity_is_rejected",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected UnavailableSubject, got {other:?}\"),",
+      "selector_identity": "invocation:bd5120b083c2a514:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_external_subject_contract.rs",
+      "enclosing_test_or_function": "same_version_different_archive_bytes_is_rejected",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected IdentityMismatch, got {other:?}\"),",
+      "selector_identity": "invocation:4b5a34120181d004:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_external_subject_contract.rs",
+      "enclosing_test_or_function": "source_tree_with_release_version_header_is_not_the_released_subject",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected IdentityMismatch, got {other:?}\"),",
+      "selector_identity": "invocation:4b5a34120181d004:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_external_subject_contract.rs",
+      "enclosing_test_or_function": "source_tree_with_release_version_header_is_not_the_released_subject",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected IdentityMismatch, got {other:?}\"),",
+      "selector_identity": "invocation:4b5a34120181d004:occurrence:2",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_external_subject_contract.rs",
+      "enclosing_test_or_function": "source_tree_with_release_version_header_is_not_the_released_subject",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected InvalidManifest, got {other:?}\"),",
+      "selector_identity": "invocation:f2aeb149f4a14dc4:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
     },
