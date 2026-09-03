@@ -374,10 +374,70 @@ class NegativeControlTests(unittest.TestCase):
     def test_recorded_name_exception_accepts_the_name(self) -> None:
         discovered = {("demo", "dap-phase3"): facts("demo", "dap-phase3")}
         errors = validator.validate(
-            registry([row(name="dap-phase3", name_exception="renamed under #8411")]),
+            registry(
+                [
+                    row(
+                        name="dap-phase3",
+                        name_exception={"roadmap": "renamed under #8411"},
+                    )
+                ]
+            ),
             discovered,
         )
         self.assertEqual(errors, [])
+
+    def test_roadmap_exception_does_not_excuse_a_test_implying_name(self) -> None:
+        # The whole point of keying the exception: an exception granted for a
+        # roadmap name must not silence the test-status rule for the same row.
+        discovered = {
+            ("demo", "phase2-test-helpers"): facts("demo", "phase2-test-helpers")
+        }
+        errors = validator.validate(
+            registry(
+                [
+                    row(
+                        name="phase2-test-helpers",
+                        role="build_composition",
+                        name_exception={"roadmap": "renamed under #8411"},
+                    )
+                ]
+            ),
+            discovered,
+        )
+        self.assertTrue(
+            any("asserts test status" in error for error in errors),
+            f"expected the test-status rule to still fire, got {errors}",
+        )
+
+    def test_bare_string_name_exception_is_rejected(self) -> None:
+        # The old blanket form must not keep working, or the rescope is cosmetic.
+        discovered = {("demo", "dap-phase3"): facts("demo", "dap-phase3")}
+        errors = validator.validate(
+            registry([row(name="dap-phase3", name_exception="renamed under #8411")]),
+            discovered,
+        )
+        self.assertTrue(
+            any("must be a table keyed by the rule" in error for error in errors),
+            f"expected a bare-string rejection, got {errors}",
+        )
+
+    def test_unknown_name_exception_rule_is_rejected(self) -> None:
+        discovered = {("demo", "dap-phase3"): facts("demo", "dap-phase3")}
+        errors = validator.validate(
+            registry(
+                [
+                    row(
+                        name="dap-phase3",
+                        name_exception={"roadmap": "ok", "whatever": "no"},
+                    )
+                ]
+            ),
+            discovered,
+        )
+        self.assertTrue(
+            any("unknown 'name_exception' rule" in error for error in errors),
+            f"expected an unknown-rule rejection, got {errors}",
+        )
 
     def test_unsorted_rows_fail(self) -> None:
         discovered = {
@@ -829,6 +889,45 @@ class DiscoveryUnitTests(unittest.TestCase):
             facts = validator.discover(root)[("demo", "alpha")]
             self.assertEqual(facts.cfg_uses, 1)
             self.assertEqual(facts.observed_signals(), ("cfg_gated",))
+
+    def test_path_attribute_into_an_excluded_dir_is_a_compiled_consumer(self) -> None:
+        # included_targets() follows PATH_ATTR_TARGET_RE as well as include!,
+        # but only the include! half was pinned. #[path] is the form rustfmt
+        # produces for a module living outside its conventional location.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.write_workspace(
+                root,
+                {"demo": '[package]\nname = "demo"\n[features]\nalpha = []\n'},
+            )
+            crate = root / "crates" / "demo"
+            (crate / "src" / "lib.rs").write_text(
+                '#[path = "../tests/fixtures/gate.rs"]\nmod gate;\n', encoding="utf-8"
+            )
+            buried = crate / "tests" / "fixtures" / "gate.rs"
+            buried.parent.mkdir(parents=True, exist_ok=True)
+            buried.write_text('#[cfg(feature = "alpha")]\nfn g() {}\n', encoding="utf-8")
+            facts = validator.discover(root)[("demo", "alpha")]
+            self.assertEqual(facts.cfg_uses, 1)
+            self.assertEqual(facts.observed_signals(), ("cfg_gated",))
+
+    def test_data_named_dir_under_src_is_compiled_source(self) -> None:
+        # Cargo compiles the whole of src/** through the module graph, so a
+        # directory there is compiled no matter what it is named. This
+        # workspace really has src/**/snapshots/ directories.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.write_workspace(
+                root,
+                {"demo": '[package]\nname = "demo"\n[features]\nalpha = []\n'},
+            )
+            crate = root / "crates" / "demo"
+            (crate / "src" / "lib.rs").write_text("mod snapshots;\n", encoding="utf-8")
+            buried = crate / "src" / "snapshots" / "mod.rs"
+            buried.parent.mkdir(parents=True, exist_ok=True)
+            buried.write_text('#[cfg(feature = "alpha")]\nfn g() {}\n', encoding="utf-8")
+            facts = validator.discover(root)[("demo", "alpha")]
+            self.assertEqual(facts.cfg_uses, 1)
 
     def test_excluded_dir_not_reached_by_include_stays_data(self) -> None:
         # The discriminating half: reaching one file in an excluded directory

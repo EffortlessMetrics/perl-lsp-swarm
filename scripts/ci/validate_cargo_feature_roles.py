@@ -202,6 +202,8 @@ def cfg_spans(text: str, strings: list[tuple[int, int]] | None = None) -> list[t
 
 
 # Names that assert test or support status rather than build composition.
+NAME_EXCEPTION_RULES = frozenset({"test", "experimental", "roadmap"})
+
 TEST_IMPLYING_RE = re.compile(r"test|stress|repro|doc-coverage")
 EXPERIMENT_IMPLYING_RE = re.compile(r"experimental")
 # Names that assert roadmap position rather than composition.
@@ -527,6 +529,7 @@ def count_cfg_uses_in_scanned(
 # holds `#[cfg(feature = "simd")]` selectors that exist precisely to be scanned
 # as text, and counting them credited `simd` with three consumers it does not
 # have.
+# Never compiled, wherever they appear.
 SKIPPED_DIRS = frozenset(
     {
         "target",
@@ -534,6 +537,19 @@ SKIPPED_DIRS = frozenset(
         "node_modules",
         ".cargo",
         "vendor",
+    }
+)
+
+# Data directories — but only OUTSIDE `src/`. Cargo compiles the whole of
+# `src/**` through the module graph, so a directory there is compiled source no
+# matter what it is named: `crates/perl-workspace/src/workspace/snapshots/` and
+# `crates/perl-lsp-rs/src/runtime/language/snapshots/` are real directories
+# under `src/`. Excluding those by name would skip compiled code and report a
+# live feature as unconsumed, which is the false-negative direction this check
+# must not take. Outside `src/` the exclusion stands: `tests/fixtures/**` is
+# data read by a test, never compiled.
+DATA_DIRS_OUTSIDE_SRC = frozenset(
+    {
         "fixtures",
         "testdata",
         "test_data",
@@ -552,6 +568,14 @@ SKIPPED_DIRS = frozenset(
 # Only literal string targets are followed. `include!(concat!(env!("OUT_DIR"),
 # ...))` is deliberately not resolved: that names generated build output, which
 # is the very thing skipping `target/` exists to keep out of the evidence.
+def is_under_src(path: Path, crate_dir: Path) -> bool:
+    """True when `path` lies under the crate's `src/`, which Cargo compiles."""
+    try:
+        return path.relative_to(crate_dir).parts[:1] == ("src",)
+    except ValueError:
+        return False
+
+
 INCLUDE_TARGET_RE = re.compile(r"include!\s*\(\s*\"([^\"\n]+)\"\s*\)")
 PATH_ATTR_TARGET_RE = re.compile(r"#\s*\[\s*path\s*=\s*\"([^\"\n]+)\"\s*\]")
 
@@ -595,6 +619,10 @@ def crate_source_texts(
                 continue
             if entry.is_dir():
                 if entry.name in SKIPPED_DIRS or entry.name.startswith("."):
+                    continue
+                if entry.name in DATA_DIRS_OUTSIDE_SRC and not is_under_src(
+                    entry, crate_dir
+                ):
                     continue
                 stack.append(entry)
             elif entry.suffix == ".rs":
@@ -644,11 +672,20 @@ def count_cfg_uses(crate_dir: Path) -> dict[str, int]:
 
 def discover(root: Path) -> dict[tuple[str, str], FeatureFacts]:
     """Discover every governed (crate, feature) pair and its consumers."""
+    # Resolve up front: `member_dirs` returns path-dependency members in
+    # resolved form, so a symlinked root left in lexical form would make
+    # `member.relative_to(root)` raise for exactly those members.
+    root = root.resolve()
     manifests: dict[str, tuple[Path, dict]] = {}
     for member in member_dirs(root):
         manifest_path = member / "Cargo.toml"
         try:
             data = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+        except OSError as error:
+            # An unreadable manifest is an instrument failure, not an absence
+            # of features; without this it escapes main() as a traceback
+            # instead of a FAIL with exit code 2.
+            raise ValidationError(f"cannot read {manifest_path}: {error}") from error
         except tomllib.TOMLDecodeError as error:
             raise ValidationError(f"cannot parse {manifest_path}: {error}") from error
         package = data.get("package")
@@ -903,26 +940,54 @@ def validate(
                 "feature; a default build must not enable it"
             )
 
+        # `name_exception` is keyed by the rule it excuses. A single blanket
+        # string would let a roadmap exception silence the test and experimental
+        # rules too, so a later rename like `phase2-test-helpers` would pass
+        # unclassified on an exception granted for something else — a broad
+        # allowlist quietly weakening the naming claim.
         exception = row.get("name_exception")
-        has_exception = isinstance(exception, str) and exception.strip()
-        if TEST_IMPLYING_RE.search(name) and role != "test_only" and not has_exception:
+        if exception is not None and not isinstance(exception, dict):
+            errors.append(
+                f"{label}: 'name_exception' must be a table keyed by the rule it "
+                f"excuses ({', '.join(sorted(NAME_EXCEPTION_RULES))}), not a bare "
+                "string; one exception must not silence the other rules"
+            )
+            exception = {}
+        exception = exception or {}
+        unknown = sorted(set(exception) - NAME_EXCEPTION_RULES)
+        if unknown:
+            errors.append(
+                f"{label}: unknown 'name_exception' rule(s) {unknown}; allowed: "
+                f"{sorted(NAME_EXCEPTION_RULES)}"
+            )
+
+        def excused(rule: str) -> bool:
+            value = exception.get(rule)
+            return isinstance(value, str) and bool(value.strip())
+
+        if (
+            TEST_IMPLYING_RE.search(name)
+            and role != "test_only"
+            and not excused("test")
+        ):
             errors.append(
                 f"{label}: the name asserts test status but role={role!r}; either "
-                "classify it test_only or record a 'name_exception'"
+                "classify it test_only or record name_exception.test"
             )
         if (
             EXPERIMENT_IMPLYING_RE.search(name)
             and role != "experimental_opt_in"
-            and not has_exception
+            and not excused("experimental")
         ):
             errors.append(
                 f"{label}: the name asserts experimental status but role={role!r}; "
-                "either classify it experimental_opt_in or record a 'name_exception'"
+                "either classify it experimental_opt_in or record "
+                "name_exception.experimental"
             )
-        if ROADMAP_IMPLYING_RE.search(name) and not has_exception:
+        if ROADMAP_IMPLYING_RE.search(name) and not excused("roadmap"):
             errors.append(
                 f"{label}: the name asserts roadmap position rather than build "
-                "composition; record a 'name_exception' naming the migration owner"
+                "composition; record name_exception.roadmap naming the migration owner"
             )
 
     if order != sorted(order):
