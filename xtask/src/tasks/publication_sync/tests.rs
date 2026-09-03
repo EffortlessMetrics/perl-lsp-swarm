@@ -2581,8 +2581,10 @@ fn resolve_checkout_reports_ignored_and_unquoted_paths() -> Result<()> {
     // An ignored file that `load_input` would happily read and hash.
     fs::create_dir_all(root.path().join("target/receipts"))?;
     fs::write(root.path().join("target/receipts/live.json"), "{}\n")?;
-    // A path Git quotes and C-escapes unless `-z` is passed.
-    fs::write(root.path().join("docs/we ird\tname.md"), "x")?;
+    // A path Git quotes and C-escapes unless `-z` is passed.  Use a valid
+    // cross-platform Unicode name rather than a control character rejected by
+    // Windows filesystems.
+    fs::write(root.path().join("docs/we ird-é.md"), "x")?;
 
     let facts = resolve_checkout(root.path()).ok_or_else(|| eyre!("checkout unresolvable"))?;
     if !is_object_name(&facts.head) {
@@ -2603,7 +2605,7 @@ fn resolve_checkout_reports_ignored_and_unquoted_paths() -> Result<()> {
     }
 
     // The awkward path must arrive raw rather than quoted and escaped.
-    if !facts.dirty.contains("docs/we ird\tname.md") {
+    if !facts.dirty.contains("docs/we ird-é.md") {
         bail!("a path needing quoting was not reported verbatim: {:?}", facts.dirty);
     }
 
