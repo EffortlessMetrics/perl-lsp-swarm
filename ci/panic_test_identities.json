@@ -3089,6 +3089,42 @@
       "state": "active"
     },
     {
+      "path": "xtask/tests/branch_deletion_admission.rs",
+      "enclosing_test_or_function": "a_child_opened_between_the_reads_retains",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"a child opened between the reads must retain the branch\");",
+      "selector_identity": "invocation:fece9744f9c75332:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/branch_deletion_admission.rs",
+      "enclosing_test_or_function": "a_tip_that_moved_between_the_reads_retains",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"a moved tip must retain\");",
+      "selector_identity": "invocation:ba2b8c974ad7a962:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/branch_deletion_admission.rs",
+      "enclosing_test_or_function": "a_remote_repointed_between_the_reads_retains",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"a repointed remote must retain\");",
+      "selector_identity": "invocation:753577fe8726dd26:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/branch_deletion_admission.rs",
+      "enclosing_test_or_function": "a_re_read_of_a_different_subject_is_not_authorization",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"a re-read describing another subject must retain\");",
+      "selector_identity": "invocation:cb947243c5d5638b:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
       "path": "crates/perl-lsp-rs-core/src/providers/diagnostics/lints/security.rs",
       "enclosing_test_or_function": "ampersand_match_variable_sql_is_flagged_with_exact_range",
       "macro_family": "panic!",
