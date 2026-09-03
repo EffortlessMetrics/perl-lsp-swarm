@@ -71,12 +71,10 @@
 //! let config = LexerConfig {
 //!     // Recognize interpolation islands in ordinary double-quoted strings.
 //!     parse_interpolation: true,
-//!     // Compatibility field: token byte spans are produced in every configuration.
-//!     track_positions: true,
 //!     // Shared cursor bound for character, byte, and fixed-pattern probes.
 //!     max_lookahead: LexerConfig::DEFAULT_MAX_LOOKAHEAD,
 //!     // No pre-scanned sub declarations for bareword/regex disambiguation.
-//!     symbol_table: None,
+//!     ..LexerConfig::default()
 //! };
 //!
 //! let mut lexer = PerlLexer::with_config("my $x = 1;", config);
@@ -98,11 +96,51 @@
 //!
 //! - **MAX_REGEX_BYTES**: 64KB maximum for regex patterns
 //! - **MAX_HEREDOC_BYTES**: 256KB maximum for heredoc bodies
-//! - **MAX_DELIM_NEST**: 128 levels maximum nesting depth for delimiters
+//! - **MAX_DELIM_NEST**: 128 levels maximum nesting depth for local delimiter recovery
 //! - **MAX_REGEX_PARSE_STEPS**: 32K maximum scan iterations for regex literals
 //!
-//! When limits are exceeded, the lexer emits an `UnknownRest` token preserving
-//! all previously parsed symbols, allowing continued analysis.
+//! # Budget-Stop Recovery Contract (#6717, #14158)
+//!
+//! When a reachable per-token budget is exhausted — regex scan steps
+//! (`MAX_REGEX_PARSE_STEPS`), regex bytes (`MAX_REGEX_BYTES`), or heredoc
+//! body bytes (`MAX_HEREDOC_BYTES`) — every over-budget token is emitted in
+//! one uniform shape, regardless of which construct hit the limit:
+//!
+//! - **Kind**: [`TokenType::UnknownRest`], classified as a recovery token.
+//! - **Text**: empty. Over-budget recovery must never copy the unbounded
+//!   source remainder (which can span the rest of the file). No current
+//!   consumer reconstructs the payload: the parser's `TokenStream` conversion
+//!   preserves the empty text and collapsed span, so payload reconstruction
+//!   remains deferred work at the consumer seam.
+//! - **Span**: `[token_start, input.len())`, the full degraded region, so
+//!   downstream trees can honestly mark the remainder as unparsed.
+//! - **Termination**: the next token is `EOF`, and nothing follows it.
+//! - **Determinism**: identical source and configuration produce identical
+//!   tokens (#6717).
+//!
+//! Two bounded-payload shapes are documented exceptions to the uniform
+//! budget-stop shape — boundedness, not token kind, is the dividing line
+//! between payload-free budget stops and payload-carrying recovery:
+//!
+//! - A heredoc that reaches EOF *inside* its budget is bounded unterminated
+//!   recovery, not a budget stop: it retains its body payload
+//!   (`text == &input[body_start..]`) because the body is budget-bounded
+//!   (`<= MAX_HEREDOC_BYTES`).
+//! - `try_heredoc` at `MAX_HEREDOC_DEPTH` pending heredocs emits
+//!   [`TokenType::Error`]`("Heredoc nesting too deep")` carrying the
+//!   line-bounded heredoc header text over `[start, position)` — no
+//!   remainder copy, no EOF jump. Pinned by
+//!   `tests/heredoc_security_tests.rs`.
+//!
+//! `MAX_DELIM_NEST` is a local quote-like recovery limit, not a reachable
+//! uniform budget-stop path: `budget_guard` is byte-budget only, and
+//! `consume_nested_opener` rejects the opener at the depth limit so the
+//! balanced-segment helpers recover locally and the enclosing token
+//! terminates cleanly without an `UnknownRest` EOF jump (#14389, #14469).
+//!
+//! The reachable budget stops above are pinned end to end by
+//! `tests/budget_recovery_contract.rs`, alongside #6717's heredoc threshold
+//! contract in `tests/heredoc_byte_budget_contract.rs`.
 //!
 //! # Integration with perl-parser
 //!
@@ -178,7 +216,7 @@ use crate::lexer::helpers::{
     empty_arc, is_builtin_function, is_compound_operator, is_keyword_fast,
     is_perl_punctuation_variable, is_quote_op_word_prefix,
 };
-use crate::limits::{MAX_DELIM_NEST, MAX_HEREDOC_BYTES, MAX_HEREDOC_DEPTH, MAX_REGEX_BYTES};
+use crate::limits::{MAX_HEREDOC_BYTES, MAX_HEREDOC_DEPTH, MAX_REGEX_BYTES};
 
 impl<'a> PerlLexer<'a> {
     /// Create a new lexer that emits `HeredocBody` tokens (for LSP folding)
@@ -193,6 +231,14 @@ impl<'a> PerlLexer<'a> {
         self.mode = mode;
     }
 
+    /// Over-budget heredoc recovery (#6717): geometry-only `UnknownRest` with
+    /// empty text over `[body_start, input.len())`. The unbounded remainder is
+    /// deliberately not copied; the EOF-inside-budget arm in [`Self::next_token`]
+    /// is the only payload-carrying `UnknownRest`, and it is bounded
+    /// unterminated recovery rather than a budget stop — its body stays within
+    /// `MAX_HEREDOC_BYTES`. `try_heredoc`'s `MAX_HEREDOC_DEPTH` stop is the
+    /// other bounded-payload shape (a payload-carrying `Error` over the header
+    /// text). Pinned by `tests/budget_recovery_contract.rs`.
     fn heredoc_budget_recovery(&mut self, body_start: usize) -> Token {
         self.pending_heredocs.remove(0);
         self.position = self.input.len();
@@ -402,6 +448,9 @@ impl<'a> PerlLexer<'a> {
 
                     // EOF inside the budget retains its bounded source payload.
                     // Over-budget recovery is geometry-only in the helper above.
+                    // Boundedness (body <= MAX_HEREDOC_BYTES) is what makes this
+                    // payload copy safe; see the budget-stop recovery contract
+                    // in the crate docs.
                     if !found_terminator {
                         self.pending_heredocs.remove(0);
                         self.position = self.input.len();
@@ -535,13 +584,22 @@ impl<'a> PerlLexer<'a> {
     ///
     /// **Limits**:
     /// - `MAX_REGEX_BYTES` (64KB): Maximum bytes in a single regex literal
-    /// - `MAX_DELIM_NEST` (128): Maximum delimiter nesting depth
+    ///
+    /// This guard is byte-budget only (#14389). Delimiter nesting has its own
+    /// stop: `consume_nested_opener` rejects at `MAX_DELIM_NEST` and the
+    /// balanced-segment helpers recover locally instead of jumping to EOF.
     ///
     /// **Graceful Degradation**:
-    /// - Budget exceeded → emit `UnknownRest` token
-    /// - Jump to EOF to prevent further parsing of problematic region
-    /// - LSP client can emit soft diagnostic about truncation
-    /// - All previously parsed symbols remain valid
+    /// - A regex byte-budget stop emits `UnknownRest` and jumps to EOF.
+    /// - That recovery is geometry-only: empty text over
+    ///   `[start, input.len())`, followed by terminal `EOF`. The unbounded
+    ///   source remainder is never copied; see the crate-level budget-stop
+    ///   recovery contract and `tests/budget_recovery_contract.rs`
+    ///   (#6717, #14158).
+    /// - `MAX_DELIM_NEST` is a separate local-recovery path: the balanced
+    ///   segment helpers return `None` at the rejected opener, and their
+    ///   owning quote/interpolation parser emits a bounded error or continues
+    ///   locally. It does not produce this guard's `UnknownRest` token.
     ///
     /// **Performance**:
     /// - Fast path: inlined subtraction + comparison (~1-2 CPU cycles)
@@ -549,22 +607,17 @@ impl<'a> PerlLexer<'a> {
     /// - Amortized cost: O(1) per token
     #[allow(clippy::inline_always)] // Performance critical in lexer hot path
     #[inline(always)]
-    fn budget_guard(&mut self, start: usize, depth: usize) -> Option<Token> {
+    fn budget_guard(&mut self, start: usize) -> Option<Token> {
         // Fast path: most calls won't hit limits
         let bytes_consumed = self.position - start;
-        if bytes_consumed <= MAX_REGEX_BYTES && depth <= MAX_DELIM_NEST {
+        if bytes_consumed <= MAX_REGEX_BYTES {
             return None;
         }
 
         // Slow path: budget exceeded - graceful degradation
         #[cfg(debug_assertions)]
         {
-            tracing::debug!(
-                bytes_consumed,
-                depth,
-                position = self.position,
-                "Lexer budget exceeded"
-            );
+            tracing::debug!(bytes_consumed, position = self.position, "Lexer budget exceeded");
         }
 
         self.position = self.input.len();
