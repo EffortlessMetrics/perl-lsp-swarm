@@ -797,19 +797,26 @@ impl ClassifiedInput {
 
     /// Whether this input is evaluated even when an intent does not name it.
     ///
-    /// Ambient process state is not opt-in. An ambient `PERL5LIB`, `PERL5OPT`,
-    /// `PATH`, or working directory reaches the interpreter regardless of what
-    /// the operation declared it would consume, so an intent cannot narrow its
-    /// declaration to escape the classification of ambient state that is
-    /// already present in the evidence.
+    /// Some inputs are scope-level facts rather than per-operation choices, so
+    /// an intent cannot narrow its declaration to escape their classification:
     ///
-    /// Slot-specific inputs are not inescapable: a denied formatter is not a
-    /// reason to refuse an unrelated test run.
+    /// - ambient process state is not opt-in. An ambient `PERL5LIB`,
+    ///   `PERL5OPT`, `PATH`, or working directory reaches the interpreter
+    ///   regardless of what the operation declared it would consume.
+    /// - a path that escapes the workspace root is a hazard for the whole
+    ///   scope. [`ExecutionCapability::OutsideRootPath`] is blanket authority
+    ///   to leave the root, so granting it while a known traversal path sits in
+    ///   the evidence would hand a consumer exactly the path that was denied.
+    ///
+    /// Slot-specific inputs are deliberately *not* inescapable: a denied
+    /// formatter is not a reason to refuse an unrelated test run.
     #[must_use]
     pub const fn applies_regardless_of_intent(&self) -> bool {
         matches!(
             self.risk_class,
-            InputRiskClass::AmbientPathOrCwd | InputRiskClass::AmbientPerlEnvironment
+            InputRiskClass::AmbientPathOrCwd
+                | InputRiskClass::AmbientPerlEnvironment
+                | InputRiskClass::SymlinkOrTraversalPath
         )
     }
 

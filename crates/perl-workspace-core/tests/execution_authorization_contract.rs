@@ -1608,3 +1608,74 @@ fn undeclared_slot_specific_input_does_not_block_another_operation() -> Result<(
     )?;
     Ok(())
 }
+
+/// A traversal path in scope cannot be escaped by leaving it undeclared.
+///
+/// Second regression control of the same class as
+/// `omitting_ambient_input_from_intent_does_not_widen_authority`, found by an
+/// independent review lens. `OutsideRootPath` is blanket authority to leave the
+/// workspace root, so granting it while a denied traversal path sits in the
+/// evidence would hand a consumer exactly the path that was refused.
+#[test]
+fn omitting_traversal_path_does_not_grant_outside_root_authority() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let tool = verified_tool();
+    let escaping = ClassifiedInput::new(
+        "include.root",
+        InputRiskClass::SymlinkOrTraversalPath,
+        EnvironmentInputAuthority::UserConfiguration,
+        InputDisposition::Denied,
+        None,
+        "symlink_escapes_root",
+    );
+    let facts = evidence(
+        &scope,
+        WorkspaceTrust::Trusted,
+        AuthorizationActor::ExplicitUserAction { action_id: "resolve".to_string() },
+        &bound,
+        vec![tool.clone(), escaping.clone()],
+    );
+
+    let requested = CapabilitySet::new([
+        ExecutionCapability::SourceAnalysis,
+        ExecutionCapability::ExternalRead,
+        ExecutionCapability::OutsideRootPath,
+    ]);
+
+    let mut declared = intent(
+        OperationProfile::ModuleResolutionExternalRead,
+        ExecutionReasonClass::Probe,
+        &scope,
+        &bound,
+        vec![tool.id.clone(), escaping.id.clone()],
+    );
+    declared.requested = requested.clone();
+
+    // The same evidence, but the intent leaves the traversal path out.
+    let mut undeclared = intent(
+        OperationProfile::ModuleResolutionExternalRead,
+        ExecutionReasonClass::Probe,
+        &scope,
+        &bound,
+        vec![tool.id.clone()],
+    );
+    undeclared.requested = requested;
+
+    let declared_decision = authorize(&declared, &facts);
+    let undeclared_decision = authorize(&undeclared, &facts);
+
+    require(
+        !declared_decision.permits(ExecutionCapability::OutsideRootPath),
+        "a declared traversal path must not grant outside-root authority",
+    )?;
+    require(
+        !undeclared_decision.permits(ExecutionCapability::OutsideRootPath),
+        "omitting the traversal path must not grant outside-root authority either",
+    )?;
+    require(
+        has_reason(&undeclared_decision, "path_escapes_root"),
+        "the undeclared case must still name the escaping path",
+    )?;
+    Ok(())
+}
