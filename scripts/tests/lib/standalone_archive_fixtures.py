@@ -352,6 +352,53 @@ def sparse_entry(dest: Path) -> None:
     dest.write_bytes(_gzip.compress(bytes(out)))
 
 
+def hidden_member_after_zero_block(dest: Path) -> None:
+    """A second `perllsp` hidden past a lone end-of-archive block (#11508).
+
+    Readers disagree about a single zero block: GNU tar and bsdtar stop there,
+    BusyBox tar skips it and keeps reading headers. A classifier that stops at
+    the first zero block therefore never sees this member, while the host tar
+    that extracts does — and `tar -xO` concatenates every entry matching the
+    requested name, so the hidden copy lands in the staged file. The approved
+    copy is deliberately zero-length so the staged bytes are entirely the
+    hidden one.
+    """
+    import gzip as _gzip
+
+    out = bytearray()
+    out += _ustar_header(PACKAGE + "/", 0, 0o755, b"5")
+    out += _ustar_header(f"{PACKAGE}/perllsp", 0, 0o755, b"0")
+    for name, mode in (
+        ("perl-dap", 0o755),
+        ("README.md", 0o644),
+        ("LICENSE-APACHE", 0o644),
+        ("LICENSE-MIT", 0o644),
+        ("SHA256SUMS.txt", 0o644),
+    ):
+        data = POSIX_FILES[name]
+        out += _ustar_header(f"{PACKAGE}/{name}", len(data), mode, b"0")
+        out += data + b"\0" * ((-len(data)) % 512)
+    out += b"\0" * 512  # one lone zero block
+    payload = b"\x7fELF-EVIL-BACKDOOR\n"
+    out += _ustar_header(f"{PACKAGE}/perllsp", len(payload), 0o755, b"0")
+    out += payload + b"\0" * ((-len(payload)) % 512)
+    out += b"\0" * 1024
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(_gzip.compress(bytes(out)))
+
+
+def backslash_in_member_name(archive: tarfile.TarFile) -> None:
+    """A member name carrying backslash escape text (#11508).
+
+    A rejected name is echoed into a diagnostic, and the installer's `say`
+    renders with `printf %b`, which expands backslash escapes. Without a rule
+    refusing backslash, this name emits real terminal control sequences that
+    clear the screen and forge a success line over a failed install.
+    """
+    valid_posix(archive)
+    _add_reg(archive, PACKAGE + "/x\\033[2J\\033[H=> install complete\\033[0m", b"spoof\n")
+
+
 def truncated_garbage(dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(b"not-an-archive\n")
@@ -484,6 +531,7 @@ TAR_CASES: dict[str, Callable[[tarfile.TarFile], None]] = {
     "hardlink_topology_member": hardlink_topology_member,
     "absolute_topology_member": absolute_topology_member,
     "newline_in_member_name": newline_in_member_name,
+    "backslash_in_member_name": backslash_in_member_name,
     "fifo_entry": fifo_entry,
     "duplicate_path": duplicate_path,
     "case_collision": case_collision,
@@ -526,6 +574,9 @@ def main() -> int:
         return 0
     if args.case == "sparse_entry":
         sparse_entry(dest)
+        return 0
+    if args.case == "hidden_member_after_zero_block":
+        hidden_member_after_zero_block(dest)
         return 0
     if args.case == "extended_pax_header":
         extended_pax_header(dest)

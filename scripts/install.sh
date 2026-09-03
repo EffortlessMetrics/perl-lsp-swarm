@@ -676,6 +676,14 @@ function printable(s,   i, c) {
     for (i = 1; i <= length(s); i++) {
         c = substr(s, i, 1)
         if (c < " " || c > "~") return 0
+        # Backslash is refused with the nonprintable bytes because a rejected
+        # name is echoed into a diagnostic, and `say` renders with `printf
+        # %b`, which expands backslash escapes. A name carrying \033[ would
+        # otherwise emit real terminal control sequences and could clear the
+        # screen and forge a success line over a failed install. No accepted
+        # member may contain a backslash anyway: the path rules below allow
+        # only [A-Za-z0-9._-] per component.
+        if (c == "\\") return 0
     }
     return 1
 }
@@ -704,6 +712,18 @@ END {
     typ = (t == 0) ? "0" : ((t >= 33 && t <= 126) ? sprintf("%c", t) : "?")
     printf "%s\t%o\t%d\t%s\n", typ, mode, size, name
 }'
+}
+
+# True when every byte of $1 from byte offset $2 onward is NUL. Used to prove
+# nothing follows the end-of-archive marker, so this walk and the host tar
+# agree on where the archive stops (#11508).
+archive_tail_is_zero_padding() {
+    local file="$1" offset="$2" remainder
+    remainder="$(tail -c "+$((offset + 1))" "$file" 2>/dev/null | tr -d '\0' | wc -c | tr -d '[:space:]')"
+    case "$remainder" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$remainder" -eq 0 ]
 }
 
 inspect_standalone_tar_gz() {
@@ -767,6 +787,23 @@ inspect_standalone_tar_gz() {
         header="$(read_tar_header "$bound_file" "$offset")" || header=""
         case "$header" in
             END)
+                # A zero block ends the archive for this walk, but readers
+                # disagree about a *lone* one: GNU tar and bsdtar stop, while
+                # BusyBox tar skips it and keeps reading headers. Stopping here
+                # without checking what follows would let a member hidden after
+                # a single zero block be invisible to this classifier yet fully
+                # visible to the host `tar` that extracts, and `tar -xO`
+                # concatenates every entry matching the requested name — so a
+                # second `perllsp` past the marker would land in the staged
+                # file. That is the exact classifier/extractor disagreement
+                # this rewrite exists to remove, reintroduced at the end of the
+                # archive instead of at an entry (#11508).
+                #
+                # Every real producer zero-pads to EOF, so requiring the
+                # remainder to be zero costs nothing and restores agreement.
+                if ! archive_tail_is_zero_padding "$bound_file" "$offset"; then
+                    fail_archive_staging "archive continues past its end-of-archive marker at offset $offset"
+                fi
                 break
                 ;;
             '')

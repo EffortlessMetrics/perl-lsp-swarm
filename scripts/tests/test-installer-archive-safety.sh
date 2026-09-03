@@ -296,6 +296,26 @@ run_reject trailing_dot "unsafe archive member"
 run_reject hardlink_topology_member "archive links are not accepted"
 run_reject absolute_topology_member "unsafe archive member"
 run_reject newline_in_member_name "unsafe archive member"
+# Rejection alone does not discriminate here: the component charset rule
+# refuses this name with or without the backslash guard. The property under
+# test is that the diagnostic must not echo escape-capable bytes, because
+# `say` renders with `printf %b` and would turn them into real terminal
+# control sequences over a failed install (#11508).
+sentinel_setup
+make_case backslash_in_member_name
+ARCHIVE_PATH="$TMP/backslash_in_member_name.tar.gz"
+run_extract
+if [ "$LAST_STATUS" -ne 0 ] \
+    && [[ "$LAST_OUTPUT" != *"install complete"* ]] \
+    && [[ "$LAST_OUTPUT" != *'\033['* ]] \
+    && [[ "$LAST_OUTPUT" == *"unsafe archive member"* ]] \
+    && assert_sentinel_untouched \
+    && assert_install_untouched; then
+    pass "backslash in a member name never reaches a rendered diagnostic"
+else
+    fail_case "backslash in a member name never reaches a rendered diagnostic" \
+        "status=$LAST_STATUS output=$LAST_OUTPUT"
+fi
 run_reject extended_pax_header "extended archive headers are not accepted"
 
 sentinel_setup
@@ -394,6 +414,24 @@ if [ "$LAST_STATUS" -ne 0 ] \
     pass "dataless entry type declaring a size fails closed"
 else
     fail_case "dataless entry type declaring a size fails closed" "status=$LAST_STATUS output=$LAST_OUTPUT"
+fi
+
+# The walk and the host tar must agree on where the archive ends. A member
+# hidden past a lone zero block is invisible to a classifier that stops there
+# but visible to BusyBox tar, which skips it — and `tar -xO` concatenates every
+# entry matching the name, so the hidden copy reaches the staged file (#11508).
+sentinel_setup
+python3 "$FIXTURE_PY" --case hidden_member_after_zero_block --out "$TMP/hidden_member_after_zero_block.tar.gz"
+ARCHIVE_PATH="$TMP/hidden_member_after_zero_block.tar.gz"
+run_extract
+if [ "$LAST_STATUS" -ne 0 ] \
+    && [[ "$LAST_OUTPUT" == *"continues past its end-of-archive marker"* ]] \
+    && assert_sentinel_untouched \
+    && assert_install_untouched; then
+    pass "member hidden past the end-of-archive marker fails closed"
+else
+    fail_case "member hidden past the end-of-archive marker fails closed" \
+        "status=$LAST_STATUS output=$LAST_OUTPUT"
 fi
 
 # A GNU sparse member carries real stored data and a sparse map that may run
