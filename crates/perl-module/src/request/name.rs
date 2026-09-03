@@ -13,6 +13,8 @@
 use std::borrow::Cow;
 use std::fmt;
 
+use serde::{Serialize, Serializer};
+
 use crate::token_core::is_module_identifier_segment;
 
 /// How a validated module name was spelled in source.
@@ -166,6 +168,18 @@ impl PartialEq for ModuleName {
 }
 
 impl Eq for ModuleName {}
+
+impl Serialize for ModuleName {
+    /// Module names are logical identities, so their canonical spelling is
+    /// safe to serialize. Source forms remain represented by the separate
+    /// separator-form accessor.
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.canonical)
+    }
+}
 
 impl std::hash::Hash for ModuleName {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
