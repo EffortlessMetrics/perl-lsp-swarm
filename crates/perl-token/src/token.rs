@@ -290,9 +290,7 @@ impl Token {
         debug_assert!(end > start || allows_empty_span(kind));
         debug_assert!(
             text.as_ref().len() == end.saturating_sub(start)
-                || (kind == TokenKind::UnknownRest
-                    && text.as_ref().is_empty()
-                    && start < end)
+                || (kind == TokenKind::UnknownRest && text.as_ref().is_empty() && start < end)
         );
         Self { kind, text, start, end }
     }

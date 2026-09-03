@@ -279,10 +279,7 @@ mod tests {
         // a real span to identify the unparsed remainder.
         assert_eq!(
             Token::unknown_rest_at(7, 7),
-            Err(TokenSpanError::EmptySpanNotAllowed {
-                kind: TokenKind::UnknownRest,
-                at: 7
-            })
+            Err(TokenSpanError::EmptySpanNotAllowed { kind: TokenKind::UnknownRest, at: 7 })
         );
         assert_eq!(
             Token::unknown_rest_at(9, 7),
