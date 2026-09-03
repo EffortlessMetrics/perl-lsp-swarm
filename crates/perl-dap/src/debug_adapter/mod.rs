@@ -310,7 +310,11 @@ impl DebugAdapter {
     /// `SessionGone` (#8564): operations belong to the session they were
     /// submitted against and never leak into the next one.
     pub(super) fn begin_session_generation(&self) -> u64 {
-        self.operation_broker.settle_all("session_generation_advanced");
+        self.begin_session_generation_with_reason("session_generation_advanced")
+    }
+
+    pub(super) fn begin_session_generation_with_reason(&self, reason: &'static str) -> u64 {
+        self.operation_broker.settle_all(reason);
         let mut state = lock_or_recover(&self.termination_state, "debug_adapter.termination_state");
         state.generation = state.generation.saturating_add(1);
         state.emitted = false;
@@ -337,8 +341,8 @@ impl DebugAdapter {
     /// Without this close, a second successful `terminate` could never emit:
     /// the first request left `emitted` latched with no live session left to
     /// reset it (`clear_active_session_state` does not touch the gate).
-    pub(super) fn close_terminal_session_generation(&self) {
-        self.begin_session_generation();
+    pub(super) fn close_terminal_session_generation(&self, reason: &'static str) {
+        self.begin_session_generation_with_reason(reason);
     }
 
     /// Return the current session generation for event-handler threads.
