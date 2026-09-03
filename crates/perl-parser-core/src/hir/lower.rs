@@ -916,13 +916,19 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                self.record_declaration_bindings(declarator, &variables, item_id);
-                self.record_variable_stash_effects(
-                    declarator,
-                    &variables,
-                    initializer.as_deref(),
-                    item_id,
-                );
+                // `field` is declaration-shaped syntax that can also be a
+                // legacy subroutine call. It must not manufacture a package
+                // binding or stash declaration; body lowering records the
+                // argument's actual read/write effects instead.
+                if declarator != "field" {
+                    self.record_declaration_bindings(declarator, &variables, item_id);
+                    self.record_variable_stash_effects(
+                        declarator,
+                        &variables,
+                        initializer.as_deref(),
+                        item_id,
+                    );
+                }
                 if let Some(initializer) = initializer {
                     self.visit(initializer, confidence);
                 } else if has_embedded_initializer {

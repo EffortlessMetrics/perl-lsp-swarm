@@ -960,6 +960,9 @@ impl BodyLowerer {
                     // do not bind a lexical declaration. Their argument still
                     // has ordinary assignment/read effects, so retain the full
                     // assignment or model a bare package-variable read.
+                    // Keep the call boundary visible to completeness consumers:
+                    // the callee's runtime behavior remains unmodeled.
+                    *self.unsupported.entry("LegacyFieldCall").or_insert(0) += 1;
                     if let Some(init_id) = init {
                         self.lower_expr(body, *init_id, file);
                     } else {

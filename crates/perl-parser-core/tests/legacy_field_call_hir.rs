@@ -14,12 +14,8 @@ fn field_call_does_not_publish_a_lexical_binding() -> TestResult {
     let mut parser = Parser::new(source);
     let parsed = parser.parse_with_recovery();
     let file = lower_ast(&parsed.ast);
-    assert!(
-        file.scope_graph.bindings.iter().any(|binding| {
-            binding.name == "x" && matches!(binding.storage, StorageClass::PackageGlobal)
-        }),
-        "the legacy field target must remain a package-global observation"
-    );
+    // The legacy call itself must not add a synthetic binding. The preceding
+    // `our` declaration remains the only source of any package binding.
     assert!(
         file.scope_graph.bindings.iter().all(|binding| {
             binding.name != "x"
