@@ -792,11 +792,8 @@ fn validate_row_against_series(
             );
         }
         TerminalState::AgreementWithDeclaredLimitation => {
-            match &row.limitation {
-                Some(limitation) => validate_limitation(&mut v, limitation),
-                None => v.add(
-                    "agreement_with_declared_limitation requires a limitation record".to_string(),
-                ),
+            if row.limitation.is_none() {
+                v.add("agreement_with_declared_limitation requires a limitation record".to_string())
             }
             match &row.witness {
                 Some(witness) => v.reject_unless(
@@ -824,11 +821,11 @@ fn validate_row_against_series(
                 "platform_or_configuration_bound stays inside supported claims bound to one platform".to_string(),
             );
             match &row.limitation {
-                Some(limitation) => validate_limitation(&mut v, limitation),
                 None => v.add(
                     "platform_or_configuration_bound requires a platform-binding limitation"
                         .to_string(),
                 ),
+                Some(_) => {}
             }
         }
         TerminalState::Stale => v.reject_unless(
@@ -850,6 +847,13 @@ fn validate_row_against_series(
             ),
         },
         _ => {}
+    }
+
+    // Every limitation is rendered into the line-oriented Markdown projection,
+    // regardless of terminal state. Validate it at packet ingress rather than
+    // allowing an unhandled state to smuggle newline/control text into output.
+    if let Some(limitation) = &row.limitation {
+        validate_limitation(&mut v, limitation);
     }
 
     let witness_absence_state = matches!(
@@ -1561,7 +1565,7 @@ fn diff_binding_field<T: PartialEq>(lines: &mut Vec<String>, name: &str, before:
 
 fn opt_line(label: &str, value: &Option<String>) -> String {
     match value {
-        Some(text) => format!("- {label}: `{}`\n", markdown_code(text)),
+        Some(text) => format!("- {label}: {}\n", markdown_code_span(text)),
         None => format!("- {label}: absent\n"),
     }
 }
@@ -1577,7 +1581,10 @@ fn markdown_code_span(value: &str) -> String {
             if character == '`' { (longest.max(current + 1), current + 1) } else { (longest, 0) }
         })
         .0;
-    let delimiter = "`".repeat(longest_run.max(1) + 1);
+    if longest_run == 0 {
+        return format!("`{value}`");
+    }
+    let delimiter = "`".repeat(longest_run + 1);
     format!("{delimiter}{value}{delimiter}")
 }
 
@@ -1723,11 +1730,11 @@ pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
         ));
         match &row.witness {
             Some(witness) => out.push_str(&format!(
-                "- minimized witness (does not replace the original): kind=`{}`, identity=`{}`, installation={}, minimizes_case_path=`{}`\n",
+                "- minimized witness (does not replace the original): kind=`{}`, identity={}, installation={}, minimizes_case_path={}\n",
                 witness_kind_str(witness.kind),
-                markdown_code(&witness.identity),
+                markdown_code_span(&witness.identity),
                 witness.installation.as_str(),
-                markdown_code(&witness.minimizes_case_path)
+                markdown_code_span(&witness.minimizes_case_path)
             )),
             None => out.push_str(
                 "- witness: none (the current result records why nothing is witnessed here)\n",

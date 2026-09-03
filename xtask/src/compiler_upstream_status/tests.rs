@@ -611,13 +611,43 @@ fn compiler_upstream_conformance_status_rendering_rejects_markdown_injection() -
     let mut packet = project_from(dir.path())?;
     packet.rows[0].upstream_case.case_path = "t/with`backtick.t".to_string();
     packet.rows[0].upstream_case.case_name = "name`with`backticks".to_string();
+    packet.rows[0]
+        .witness
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("fixture witness must be present"))?
+        .minimizes_case_path = "t/witness`with`backtick.t".to_string();
+    packet.subject_binding.semantic_obligation_graph_identity =
+        Some("obligation`with`backticks".to_string());
     let rendered = render_markdown(&packet)?;
     assert!(rendered.contains("case_path=``t/with`backtick.t``"));
     assert!(rendered.contains("case_name=``name`with`backticks``"));
+    assert!(rendered.contains("minimizes_case_path=``t/witness`with`backtick.t``"));
+    assert!(
+        rendered.contains("- semantic_obligation_graph_identity: ``obligation`with`backticks``")
+    );
 
     let packet = project_from(dir.path())?;
     let rendered = render_markdown(&packet)?;
     assert!(rendered.contains(r"- owner: \#12532"));
+    Ok(())
+}
+
+#[test]
+fn compiler_upstream_conformance_status_rejects_multiline_limitation_in_any_state() -> TestResult {
+    let dir = TempDir::new()?;
+    let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+    let mut row = failing_row("op-unhandled-limitation", "perl-5.38");
+    row.limitation = Some(LimitationRecord {
+        statement: "first line\n- forged Markdown line".to_string(),
+        nonclaims: Vec::new(),
+        claim_ceiling: "bounded claim".to_string(),
+    });
+    write_inputs(dir.path(), &manifest, &[row])?;
+    let message = error_message(project_from(dir.path()));
+    assert!(
+        message.contains("limitation.statement") && message.contains("control characters"),
+        "{message}"
+    );
     Ok(())
 }
 
