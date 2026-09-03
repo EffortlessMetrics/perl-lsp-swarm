@@ -453,6 +453,38 @@ fn mixed_request_preserves_input_order_and_per_item_truth() -> Result<()> {
     Ok(())
 }
 
+/// A request with no source path keeps exactly one response entry per input:
+/// the plain slot stays present as unverified instead of disappearing, so the
+/// DAP one-result-per-request shape holds for mixed pathless requests too.
+#[test]
+fn pathless_mixed_request_keeps_one_response_entry_per_input() -> Result<()> {
+    let mut adapter = initialized_adapter();
+
+    let response = adapter.handle_request(
+        2,
+        "setBreakpoints",
+        Some(json!({
+            "source": {},
+            "breakpoints": [{ "line": 3 }, { "line": 4, "condition": "$x" }],
+        })),
+    );
+    match response {
+        DapMessage::Response { success: true, body: Some(body), .. } => {
+            let breakpoints = response_breakpoints(&body)?;
+            assert_eq!(breakpoints.len(), 2, "one response per input, in order");
+            assert_eq!(breakpoints[0].get("line").and_then(Value::as_i64), Some(3));
+            assert_eq!(breakpoints[1].get("line").and_then(Value::as_i64), Some(4));
+            let condition_message = breakpoints[1]
+                .get("message")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing message"))?;
+            assert!(condition_message.contains(CONDITION_FLOOR_MARKER));
+        }
+        other => anyhow::bail!("expected a mixed-response, got {other:?}"),
+    }
+    Ok(())
+}
+
 /// Unsupported combinations reject on every offending field and cannot widen
 /// another feature (#9578 test 8).
 #[test]

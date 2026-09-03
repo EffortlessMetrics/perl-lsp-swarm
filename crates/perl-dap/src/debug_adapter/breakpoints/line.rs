@@ -51,6 +51,7 @@ impl DebugAdapter {
         let input_len = parsed.breakpoints.as_ref().map_or(0, Vec::len);
         let mut rejected: Vec<(usize, i64, Option<i64>, String)> = Vec::new();
         let mut plain_entries: Vec<crate::protocol::SourceBreakpoint> = Vec::new();
+        let mut plain_slots: Vec<(usize, i64)> = Vec::new();
         for (index, entry) in parsed.breakpoints.iter().flatten().enumerate() {
             let mut reasons: Vec<&'static str> = Vec::new();
             if entry.condition.is_some() {
@@ -63,6 +64,7 @@ impl DebugAdapter {
                 reasons.push(crate::backend::capabilities::LOG_MESSAGE_UNSUPPORTED_MESSAGE);
             }
             if reasons.is_empty() {
+                plain_slots.push((index, entry.line));
                 plain_entries.push(entry.clone());
             } else {
                 rejected.push((index, entry.line, entry.column, reasons.join(" ")));
@@ -151,13 +153,18 @@ impl DebugAdapter {
         // One response breakpoint per input, in request order (#9578): a
         // rejected optional-field entry occupies its own slot as unverified
         // with the exact per-field reason instead of shifting every later
-        // entry onto the wrong requested line.
+        // entry onto the wrong requested line. A plain slot whose store result
+        // never materializes (no source path to validate against) still
+        // occupies its position as unverified, so the response keeps exactly
+        // one entry per input.
         let mut plain_results = verified_breakpoints.into_iter();
+        let mut plain_slots = plain_slots.into_iter().peekable();
+        let mut rejected_results = rejected.into_iter().peekable();
         let mut body_breakpoints: Vec<Value> = Vec::with_capacity(input_len);
         for index in 0..input_len {
-            let rejected_here = rejected.first().is_some_and(|(i, ..)| *i == index);
-            if rejected_here {
-                let (_, line, column, message) = rejected.remove(0);
+            if let Some((_, line, column, message)) =
+                rejected_results.next_if(|(i, ..)| *i == index)
+            {
                 let mut entry = json!({
                     "verified": false,
                     "line": line,
@@ -171,6 +178,8 @@ impl DebugAdapter {
                 body_breakpoints.push(
                     serde_json::to_value(bp).unwrap_or_else(|_| json!({ "verified": false })),
                 );
+            } else if let Some((_, line)) = plain_slots.next_if(|(i, _)| *i == index) {
+                body_breakpoints.push(json!({ "verified": false, "line": line }));
             }
         }
 
