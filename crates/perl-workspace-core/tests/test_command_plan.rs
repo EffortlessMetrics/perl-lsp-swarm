@@ -554,6 +554,90 @@ fn a_pure_perl_blib_without_arch_still_offers_the_blib_form() -> Result<(), Fixt
     Ok(())
 }
 
+/// `prove -b` resolves blib relative to its working directory, so only this
+/// workspace's own build output can justify the form. Rules out: offering `-b`
+/// on the strength of a dependency's blib root, against build output the
+/// workspace may not have at all.
+#[test]
+fn a_dependency_blib_root_does_not_justify_the_blib_form() -> Result<(), FixtureError> {
+    for (location, expected) in [
+        ("/ws/blib/lib", true),
+        ("/ws/blib/arch", true),
+        ("/home/dep/.cpanm/work/Foo-1.0/blib/lib", false),
+        ("/elsewhere/blib/lib", false),
+        ("/ws-other/blib/lib", false),
+        ("/ws/blibx/lib", false),
+    ] {
+        let (builder, _) = base_builder();
+        let tool_input = accepted_input("tool.prove");
+        let blib_input = accepted_input("include.blib");
+        let snapshot = builder
+            .with_input(tool_input.clone())
+            .with_input(blib_input.clone())
+            .with_tool_candidate(prove_tool(tool_input.id.clone()))
+            .with_include_entry(IncludeEntry::new(
+                IncludeEntryRole::BlibLib,
+                path(location),
+                blib_input.id.clone(),
+                0,
+            ))
+            .build()?;
+
+        let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+        let has_blib_form = candidates_of(&plan.candidates, TestRunnerKind::Prove)
+            .iter()
+            .any(|candidate| candidate.include_mode == TestIncludeMode::BlibRoots);
+
+        assert_eq!(has_blib_form, expected, "blib include root at {location}");
+    }
+    Ok(())
+}
+
+/// Where an artifact must sit depends on how the command reaches it. A uniform
+/// direct-child rule would reject the conventional `blib/lib`, making located
+/// evidence less usable than unlocated evidence. Rules out: more information
+/// producing a worse verdict.
+#[test]
+fn located_blib_evidence_is_usable_at_its_conventional_path() -> Result<(), FixtureError> {
+    for (location, expected) in [
+        (Some("/ws/blib"), TestCommandAdmission::Ready),
+        (Some("/ws/blib/lib"), TestCommandAdmission::Ready),
+        (Some("/ws/blib/arch"), TestCommandAdmission::Ready),
+        (None, TestCommandAdmission::Ready),
+        (Some("/elsewhere/blib/lib"), TestCommandAdmission::NotProvenGeneratedState),
+        (Some("/ws/blibx/lib"), TestCommandAdmission::NotProvenGeneratedState),
+        (Some("/ws"), TestCommandAdmission::NotProvenGeneratedState),
+    ] {
+        let (builder, _) = base_builder();
+        let tool_input = accepted_input("tool.prove");
+        let blib_input = accepted_input("include.blib");
+        let snapshot = builder
+            .with_input(tool_input.clone())
+            .with_input(blib_input.clone())
+            .with_tool_candidate(prove_tool(tool_input.id.clone()))
+            .with_include_entry(IncludeEntry::new(
+                IncludeEntryRole::BlibLib,
+                path("/ws/blib/lib"),
+                blib_input.id.clone(),
+                0,
+            ))
+            .build()?;
+
+        let evidence = GeneratedStateEvidence::for_snapshot(&snapshot).with_observation(
+            GeneratedArtifact::BlibRoots,
+            observed(GeneratedStateFreshness::Current, location),
+        );
+        let plan = plan_test_commands(&snapshot, &evidence)?;
+        let blib = candidates_of(&plan.candidates, TestRunnerKind::Prove)
+            .into_iter()
+            .find(|candidate| candidate.include_mode == TestIncludeMode::BlibRoots)
+            .ok_or(FixtureError::Missing("blib form"))?;
+
+        assert_eq!(blib.admission, expected, "blib evidence located at {location:?}");
+    }
+    Ok(())
+}
+
 /// A `make` binary on `PATH` is not evidence that this project uses MakeMaker.
 /// Rules out: deriving the runner from the tool alone.
 #[test]

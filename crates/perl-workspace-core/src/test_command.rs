@@ -46,6 +46,9 @@ const DEFAULT_TEST_DIRECTORY: &str = "t";
 /// Relative expression of a test root that is the working directory itself.
 const CURRENT_DIRECTORY: &str = ".";
 
+/// Build-output directory `prove -b` resolves relative to its working directory.
+const BLIB_DIRECTORY: &str = "blib";
+
 /// Runner family invoked by a candidate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -582,9 +585,16 @@ pub fn plan_test_commands(
 
     let mut candidates = Vec::new();
 
-    let blib_available = snapshot
-        .active_include_entries()
-        .any(|entry| matches!(entry.role, IncludeEntryRole::BlibLib | IncludeEntryRole::BlibArch));
+    // A blib *role* is not enough. `prove -b` resolves `blib/lib` and
+    // `blib/arch` relative to the directory it runs in, so only this working
+    // directory's own build output can justify the form. A dependency's blib
+    // root is a legitimate include entry describing a different tree, and
+    // offering `-b` on its strength would run against build output the
+    // workspace may not even have.
+    let blib_available = snapshot.active_include_entries().any(|entry| {
+        matches!(entry.role, IncludeEntryRole::BlibLib | IncludeEntryRole::BlibArch)
+            && is_workspace_blib(&working_dir, &entry.path.normalized)
+    });
 
     for tool in snapshot.active_tool_candidates() {
         let Some(authority) = input_authority(snapshot, &tool.input_id) else {
@@ -852,6 +862,19 @@ fn relative_test_directories(
     directories
 }
 
+/// Whether a path is this working directory's own `blib` tree.
+///
+/// `prove -b` puts `blib/lib` and `blib/arch` on `@INC` relative to the
+/// directory it runs in, so only a `blib` beneath that directory can justify or
+/// satisfy the blib form. Accepts the tree root and anything inside it —
+/// `blib`, `blib/lib`, `blib/arch` — and rejects a sibling that merely starts
+/// with the same letters, such as `blibx`.
+fn is_workspace_blib(working_dir: &EnvironmentPathRef, candidate: &str) -> bool {
+    relative_child(&working_dir.normalized, candidate).is_some_and(|relative| {
+        relative == BLIB_DIRECTORY || relative.starts_with(&format!("{BLIB_DIRECTORY}/"))
+    })
+}
+
 /// Strip a normalized parent prefix, returning the child portion.
 ///
 /// Returns `None` when `child` is not under `parent`. Both inputs are already
@@ -1004,8 +1027,24 @@ fn bind_requirement_to_working_dir(
         Some(path) => {
             // The artifact must sit directly in the working directory: the
             // emitted argv passes neither `make -C/-f` nor a script path.
-            let contained = relative_child(&working_dir.normalized, &path.normalized)
-                .is_some_and(|relative| !relative.contains('/'));
+            // Where the artifact must sit depends on how the command reaches
+            // it, so this is per-artifact rather than one blanket rule. A
+            // uniform direct-child test would reject the conventional
+            // `blib/lib`, making *located* blib evidence less usable than
+            // unlocated evidence — more information producing a worse verdict.
+            let contained = match requirement.artifact {
+                // `make test` reads the makefile in its working directory and
+                // `./Build test` runs the script there; neither is given a
+                // path, so the artifact must be directly in that directory.
+                GeneratedArtifact::Makefile | GeneratedArtifact::BuildScript => {
+                    relative_child(&working_dir.normalized, &path.normalized)
+                        .is_some_and(|relative| !relative.contains('/'))
+                }
+                // `prove -b` resolves `blib/lib` and `blib/arch` relative to
+                // the working directory, so an observed root is usable exactly
+                // when it lies within that `blib` tree.
+                GeneratedArtifact::BlibRoots => is_workspace_blib(working_dir, &path.normalized),
+            };
             if !contained {
                 downgrade(&mut requirement, "outside_working_directory");
             }
