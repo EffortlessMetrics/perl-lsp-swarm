@@ -24,6 +24,13 @@ FEATURE_TEST_DIRECTORIES = ("tests", "benches", "examples")
 
 FEATURE_GATE_PATTERN = re.compile(r"feature\s*=\s*\"([A-Za-z0-9_.+-]+)\"")
 
+CFG_TEST_OUT_OF_LINE_PATTERN = re.compile(
+    r"#\[cfg\s*\(\s*test\s*\)\]\s*"
+    r"(?:(?:#\[[^\]]*\]\s*)*)"
+    r"(?:pub\s+(?:\([^)]*\)\s*)?)?mod\s+"
+    r"([A-Za-z_][A-Za-z0-9_]*)\s*;"
+)
+
 CFG_TEST_MODULE_PATTERN = re.compile(
     r"#\[cfg\s*\(\s*test\s*\)\]\s*"
     r"(?:(?:#\[[^\]]*\]\s*)*)"
@@ -316,6 +323,96 @@ def strip_cfg_test_modules(source: str) -> str:
         index = matching_brace(match.end())
 
 
+def mask_rust_non_code(source: str) -> str:
+    """Blank comments and literals while preserving code layout.
+
+    Inventory regexes must not treat text in comments or string literals as
+    source predicates. Newlines are retained so diagnostics and module paths
+    remain stable.
+    """
+    chars = list(source)
+
+    def blank(start: int, end: int) -> None:
+        for position in range(start, min(end, len(chars))):
+            if chars[position] != "\n":
+                chars[position] = " "
+
+    cursor = 0
+    while cursor < len(source):
+        if source.startswith("//", cursor):
+            end = source.find("\n", cursor + 2)
+            end = len(source) if end < 0 else end
+            blank(cursor, end)
+            cursor = end
+            continue
+        if source.startswith("/*", cursor):
+            end = cursor + 2
+            depth = 1
+            while end < len(source) and depth:
+                if source.startswith("/*", end):
+                    depth += 1
+                    end += 2
+                elif source.startswith("*/", end):
+                    depth -= 1
+                    end += 2
+                else:
+                    end += 1
+            blank(cursor, end)
+            cursor = end
+            continue
+        if source[cursor] == "r":
+            marker = cursor + 1
+            while marker < len(source) and source[marker] == "#":
+                marker += 1
+            if marker < len(source) and source[marker] == '"':
+                hashes = marker - cursor - 1
+                terminator = '"' + ("#" * hashes)
+                close = source.find(terminator, marker + 1)
+                end = len(source) if close < 0 else close + len(terminator)
+                preserve = re.search(r"feature\s*=\s*$", source[max(0, cursor - 40) : cursor])
+                if not preserve:
+                    blank(cursor, end)
+                cursor = end
+                continue
+        if source[cursor] == '"':
+            end = cursor + 1
+            while end < len(source):
+                if source[end] == "\\":
+                    end += 2
+                elif source[end] == '"':
+                    end += 1
+                    break
+                else:
+                    end += 1
+            preserve = re.search(r"feature\s*=\s*$", source[max(0, cursor - 40) : cursor])
+            if not preserve:
+                blank(cursor, end)
+            cursor = end
+            continue
+        if source[cursor] == "'" and cursor + 2 < len(source):
+            if source[cursor + 2] == "'":
+                blank(cursor, cursor + 3)
+                cursor += 3
+                continue
+            if cursor + 3 < len(source) and source[cursor + 1] == "\\" and source[cursor + 3] == "'":
+                blank(cursor, cursor + 4)
+                cursor += 4
+                continue
+        cursor += 1
+    return "".join(chars)
+
+
+def cfg_test_module_paths(path: Path, source: str) -> set[Path]:
+    """Return out-of-line module files hidden by `#[cfg(test)]`."""
+    masked = mask_rust_non_code(source)
+    paths: set[Path] = set()
+    for match in CFG_TEST_OUT_OF_LINE_PATTERN.finditer(masked):
+        name = match.group(1)
+        paths.add(path.parent / f"{name}.rs")
+        paths.add(path.parent / name / "mod.rs")
+    return paths
+
+
 def feature_source_gates(
     crate_root: Path, directories: Iterable[str], skip_test_modules: bool = False
 ) -> set[str]:
@@ -326,15 +423,25 @@ def feature_source_gates(
     over-states isolation rather than hiding a gate.
     """
     gates: set[str] = set()
+    excluded: set[Path] = set()
+    if skip_test_modules:
+        for directory in directories:
+            base = crate_root / directory
+            if base.is_dir():
+                for path in base.rglob("*.rs"):
+                    source = path.read_text(encoding="utf-8", errors="replace")
+                    excluded.update(cfg_test_module_paths(path, source))
     for directory in directories:
         base = crate_root / directory
         if not base.is_dir():
             continue
         for path in sorted(base.rglob("*.rs")):
+            if path in excluded:
+                continue
             source = path.read_text(encoding="utf-8", errors="replace")
             if skip_test_modules:
                 source = strip_cfg_test_modules(source)
-            gates.update(FEATURE_GATE_PATTERN.findall(source))
+            gates.update(FEATURE_GATE_PATTERN.findall(mask_rust_non_code(source)))
     return gates
 
 

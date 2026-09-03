@@ -12,7 +12,12 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from parser_facade_authority import check, load_ledger, render_markdown
-from parser_facade_inventory import CargoTarget, cargo_targets, strip_cfg_test_modules
+from parser_facade_inventory import (
+    CargoTarget,
+    cargo_targets,
+    feature_source_gates,
+    strip_cfg_test_modules,
+)
 from parser_facade_inventory import discover_consumer_contexts, feature_names
 
 FIXTURE_LEDGER = Path(__file__).resolve().parents[2] / ".ci/parser-facade"
@@ -647,6 +652,33 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
     def test_cfg_test_stripping_handles_char_literals(self) -> None:
         source = "#[cfg(test)]\nmod tests { let brace = '}'; }\nfn production() {}\n"
         self.assertEqual(strip_cfg_test_modules(source).lstrip("\n"), "fn production() {}\n")
+
+    def test_feature_gate_inventory_ignores_comments_and_literals(self) -> None:
+        self.write(
+            "crates/perl-parser/src/lib.rs",
+            '// #[cfg(feature = "comment-only")]\n'
+            'const TEXT: &str = r#"#[cfg(feature = "literal-only")]"#;\n'
+            "const CHAR: char = '}';\n"
+            '#[cfg(feature = "real-gate")]\nfn production() {}\n',
+        )
+        gates = feature_source_gates(self.root / "crates/perl-parser", ("src",))
+        self.assertIn("real-gate", gates)
+        self.assertNotIn("comment-only", gates)
+        self.assertNotIn("literal-only", gates)
+
+    def test_feature_gate_inventory_excludes_out_of_line_cfg_test_module(self) -> None:
+        self.write(
+            "crates/perl-parser/src/lib.rs",
+            '#[cfg(test)]\nmod test_support;\n',
+        )
+        self.write(
+            "crates/perl-parser/src/test_support.rs",
+            '#[cfg(feature = "test-only-gate")]\nfn gated() {}\n',
+        )
+        gates = feature_source_gates(
+            self.root / "crates/perl-parser", ("src",), skip_test_modules=True
+        )
+        self.assertNotIn("test-only-gate", gates)
 
     def test_review_row_target_owner_must_be_actionable(self) -> None:
         row = next(r for r in self.ledger["features"] if r["disposition"] == "review")
