@@ -633,6 +633,82 @@ class DiscoveryUnitTests(unittest.TestCase):
             self.assertEqual(facts.cfg_uses, 0)
             self.assertEqual(facts.observed_signals(), ())
 
+    def test_unlisted_in_tree_path_dependency_is_a_member(self) -> None:
+        # Cargo enrols a path dependency living inside the workspace directory
+        # even when `members` never names it. If discovery missed it, its
+        # features would escape classification entirely — a denominator hole.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.write_workspace(
+                root,
+                {
+                    "listed": (
+                        '[package]\nname = "listed"\n'
+                        '[features]\nalpha = []\n'
+                        '[dependencies]\nhidden = { path = "../hidden" }\n'
+                    ),
+                    "hidden": '[package]\nname = "hidden"\n[features]\nbeta = []\n',
+                },
+            )
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["crates/listed"]\n', encoding="utf-8"
+            )
+            discovered = validator.discover(root)
+            self.assertIn(("listed", "alpha"), discovered)
+            self.assertIn(("hidden", "beta"), discovered)
+
+    def test_path_dependency_outside_the_workspace_is_not_a_member(self) -> None:
+        # The mirror risk: enrolling an out-of-tree path dependency would demand
+        # registry rows for a crate Cargo does not govern, blocking policy CI.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "ws"
+            root.mkdir()
+            outside = Path(temp) / "outside"
+            (outside / "src").mkdir(parents=True)
+            (outside / "Cargo.toml").write_text(
+                '[package]\nname = "outside"\n[features]\ngamma = []\n', encoding="utf-8"
+            )
+            (outside / "src" / "lib.rs").write_text("", encoding="utf-8")
+            self.write_workspace(
+                root,
+                {
+                    "listed": (
+                        '[package]\nname = "listed"\n'
+                        '[features]\nalpha = []\n'
+                        '[dependencies]\noutside = { path = "../../../outside" }\n'
+                    )
+                },
+            )
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["crates/listed"]\n', encoding="utf-8"
+            )
+            discovered = validator.discover(root)
+            self.assertIn(("listed", "alpha"), discovered)
+            self.assertNotIn(("outside", "gamma"), discovered)
+
+    def test_excluded_in_tree_path_dependency_is_not_enrolled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.write_workspace(
+                root,
+                {
+                    "listed": (
+                        '[package]\nname = "listed"\n'
+                        '[features]\nalpha = []\n'
+                        '[dependencies]\nskipped = { path = "../skipped" }\n'
+                    ),
+                    "skipped": '[package]\nname = "skipped"\n[features]\ndelta = []\n',
+                },
+            )
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["crates/listed"]\n'
+                'exclude = ["crates/skipped"]\n',
+                encoding="utf-8",
+            )
+            discovered = validator.discover(root)
+            self.assertIn(("listed", "alpha"), discovered)
+            self.assertNotIn(("skipped", "delta"), discovered)
+
     def test_workspace_exclude_removes_a_glob_matched_member(self) -> None:
         # Cargo's [workspace].exclude removes a directory from glob expansion.
         # Without this the excluded crate's features would be demanded in the
