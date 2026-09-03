@@ -545,10 +545,22 @@ fn rename_has_structured_error(resp: &Value) -> bool {
         && error.get("message").and_then(Value::as_str).is_some()
 }
 
+fn rename_protocol_rejection(resp: &Value) -> bool {
+    // RenameNull represents a protocol-level refusal for an otherwise valid
+    // request.  Invalid parameters is the only standard JSON-RPC error this
+    // oracle treats as that outcome; server lifecycle, cancellation, and
+    // implementation errors must remain visible as test failures.
+    resp.get("error")
+        .and_then(Value::as_object)
+        .and_then(|error| error.get("code"))
+        .and_then(Value::as_i64)
+        == Some(-32602)
+}
+
 fn rename_is_null(resp: &Value) -> bool {
     match (resp.get("result"), resp.get("error")) {
         (Some(Value::Null), None) => true,
-        (None, Some(_)) => rename_has_structured_error(resp),
+        (None, Some(_)) => rename_has_structured_error(resp) && rename_protocol_rejection(resp),
         _ => false,
     }
 }
@@ -637,7 +649,7 @@ fn rename_expected_edits_match(
     let mut expected_edits: Vec<ObservedRenameEdit> = expected
         .iter()
         .map(|edit| ObservedRenameEdit {
-            uri: expected_uri.to_owned(),
+            uri: edit.uri.clone().unwrap_or_else(|| expected_uri.to_owned()),
             line: edit.line,
             character: edit.character,
             end_line: edit.end_line,
@@ -765,6 +777,7 @@ mod rename_oracle_tests {
 
     fn expected() -> Vec<RenameExpectedEdit> {
         vec![RenameExpectedEdit {
+            uri: None,
             line: 4,
             character: 4,
             end_line: 4,
@@ -776,6 +789,7 @@ mod rename_oracle_tests {
     fn expected_basic() -> Vec<RenameExpectedEdit> {
         vec![
             RenameExpectedEdit {
+                uri: None,
                 line: 5,
                 character: 7,
                 end_line: 5,
@@ -783,6 +797,7 @@ mod rename_oracle_tests {
                 new_text: "$total".to_string(),
             },
             RenameExpectedEdit {
+                uri: None,
                 line: 6,
                 character: 4,
                 end_line: 6,
@@ -790,6 +805,7 @@ mod rename_oracle_tests {
                 new_text: "$total".to_string(),
             },
             RenameExpectedEdit {
+                uri: None,
                 line: 7,
                 character: 18,
                 end_line: 7,
@@ -797,6 +813,7 @@ mod rename_oracle_tests {
                 new_text: "$total".to_string(),
             },
             RenameExpectedEdit {
+                uri: None,
                 line: 8,
                 character: 11,
                 end_line: 8,
@@ -1037,6 +1054,60 @@ mod rename_oracle_tests {
     }
 
     #[test]
+    fn rename_oracle_matches_expected_edits_by_target_uri() -> TestResult {
+        let other_uri = "file:///gold/rename_other.pl";
+        let response = json!({
+            "result": {
+                "changes": {
+                    "file:///gold/rename_subroutine.pl": [{
+                        "range": {"start": {"line": 4, "character": 4}, "end": {"line": 4, "character": 19}},
+                        "newText": "sum_values"
+                    }],
+                    (other_uri): [{
+                        "range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 3}},
+                        "newText": "sum"
+                    }]
+                }
+            }
+        });
+        let expected = vec![
+            RenameExpectedEdit {
+                uri: None,
+                line: 4,
+                character: 4,
+                end_line: 4,
+                end_character: 19,
+                new_text: "sum_values".to_string(),
+            },
+            RenameExpectedEdit {
+                uri: Some(other_uri.to_string()),
+                line: 1,
+                character: 0,
+                end_line: 1,
+                end_character: 3,
+                new_text: "sum".to_string(),
+            },
+        ];
+        if !rename_expected_edits_match(
+            &response,
+            "file:///gold/rename_subroutine.pl",
+            Some(expected.as_slice()),
+        ) {
+            return Err("multi-file rename edits did not match target URIs".into());
+        }
+        let mut wrong_target = expected.clone();
+        wrong_target[1].uri = Some("file:///gold/wrong.pl".to_string());
+        if rename_expected_edits_match(
+            &response,
+            "file:///gold/rename_subroutine.pl",
+            Some(wrong_target.as_slice()),
+        ) {
+            return Err("rename edit with wrong target URI passed exact oracle".into());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn rename_count_assertion_rejects_null_and_error_at_zero_minimum() -> TestResult {
         let null_response = json!({"result": null});
         if rename_edit_count_at_least_passes(
@@ -1105,6 +1176,12 @@ mod rename_oracle_tests {
                 "result": null,
                 "error": {"code": -32602, "message": "not renamable"}
             }),
+            json!({"error": {"code": -32000, "message": "test harness timeout"}}),
+            json!({"error": {"code": -32050, "message": "Connection closed"}}),
+            json!({"error": {"code": -32051, "message": "transport failure"}}),
+            json!({"error": {"code": -32601, "message": "method not found"}}),
+            json!({"error": {"code": -32603, "message": "internal error"}}),
+            json!({"error": {"code": -32800, "message": "request cancelled"}}),
         ] {
             if rename_assertion_passes(&assertion, &malformed, uri) {
                 return Err(

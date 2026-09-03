@@ -1,5 +1,6 @@
-use serde::de::{self, Deserializer};
+use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -509,69 +510,145 @@ pub struct RenameAssertion {
     pub rationale: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct RenameAssertionUnchecked {
-    #[serde(flatten)]
-    kind: RenameAssertionKind,
-    line: u32,
-    character: u32,
-    new_name: String,
-    #[serde(default, deserialize_with = "deserialize_expected_edits")]
-    expected_edits: Option<Vec<RenameExpectedEdit>>,
-    #[serde(default)]
-    rationale: String,
-}
-
 impl<'de> Deserialize<'de> for RenameAssertion {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        let object = value
-            .as_object()
-            .ok_or_else(|| de::Error::custom("rename assertion must be a JSON object"))?;
+        deserializer.deserialize_map(RenameAssertionVisitor)
+    }
+}
+
+struct RenameAssertionVisitor;
+
+impl<'de> Visitor<'de> for RenameAssertionVisitor {
+    type Value = RenameAssertion;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a rename assertion object")
+    }
+
+    fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+    where
+        M: MapAccess<'de>,
+    {
         const FIELDS: &[&str] =
             &["kind", "line", "character", "new_name", "min", "expected_edits", "rationale"];
-        for field in object.keys() {
-            if !FIELDS.contains(&field.as_str()) {
-                return Err(de::Error::unknown_field(field, FIELDS));
+        let mut kind: Option<String> = None;
+        let mut line: Option<u32> = None;
+        let mut character: Option<u32> = None;
+        let mut new_name: Option<String> = None;
+        let mut min: Option<usize> = None;
+        let mut expected_edits: Option<Vec<RenameExpectedEdit>> = None;
+        let mut expected_edits_seen = false;
+        let mut rationale: Option<String> = None;
+
+        while let Some(field) = map.next_key::<String>()? {
+            match field.as_str() {
+                "kind" => {
+                    if kind.is_some() {
+                        return Err(de::Error::duplicate_field("kind"));
+                    }
+                    kind = Some(map.next_value()?);
+                }
+                "line" => {
+                    if line.is_some() {
+                        return Err(de::Error::duplicate_field("line"));
+                    }
+                    line = Some(map.next_value()?);
+                }
+                "character" => {
+                    if character.is_some() {
+                        return Err(de::Error::duplicate_field("character"));
+                    }
+                    character = Some(map.next_value()?);
+                }
+                "new_name" => {
+                    if new_name.is_some() {
+                        return Err(de::Error::duplicate_field("new_name"));
+                    }
+                    new_name = Some(map.next_value()?);
+                }
+                "min" => {
+                    if min.is_some() {
+                        return Err(de::Error::duplicate_field("min"));
+                    }
+                    min = Some(map.next_value()?);
+                }
+                "expected_edits" => {
+                    if expected_edits_seen {
+                        return Err(de::Error::duplicate_field("expected_edits"));
+                    }
+                    expected_edits_seen = true;
+                    expected_edits = map.next_value()?;
+                    if expected_edits.is_none() {
+                        return Err(de::Error::custom(
+                            "expected_edits must be omitted or an array; null is not supported",
+                        ));
+                    }
+                }
+                "rationale" => {
+                    if rationale.is_some() {
+                        return Err(de::Error::duplicate_field("rationale"));
+                    }
+                    rationale = Some(map.next_value()?);
+                }
+                _ => return Err(de::Error::unknown_field(&field, FIELDS)),
             }
         }
-        let has_min = object.contains_key("min");
 
-        let unchecked: RenameAssertionUnchecked =
-            serde_json::from_value(value).map_err(de::Error::custom)?;
-        if has_min && !matches!(&unchecked.kind, RenameAssertionKind::RenameEditCountAtLeast { .. })
-        {
-            return Err(de::Error::custom(
-                "min is only supported for rename_edit_count_at_least assertions",
-            ));
-        }
-        if matches!(&unchecked.kind, RenameAssertionKind::RenameEditCountAtLeast { min: 0 }) {
-            return Err(de::Error::custom(
-                "rename_edit_count_at_least requires min to be at least 1",
-            ));
-        }
-        if unchecked.expected_edits.as_ref().is_some_and(Vec::is_empty) {
+        let kind_name = kind.ok_or_else(|| de::Error::missing_field("kind"))?;
+        let kind = match kind_name.as_str() {
+            "rename_succeeds" => {
+                if min.is_some() {
+                    return Err(de::Error::custom(
+                        "min is only supported for rename_edit_count_at_least assertions",
+                    ));
+                }
+                RenameAssertionKind::RenameSucceeds
+            }
+            "rename_null" => {
+                if min.is_some() {
+                    return Err(de::Error::custom(
+                        "min is only supported for rename_edit_count_at_least assertions",
+                    ));
+                }
+                RenameAssertionKind::RenameNull
+            }
+            "rename_edit_count_at_least" => {
+                let min = min.ok_or_else(|| de::Error::missing_field("min"))?;
+                if min == 0 {
+                    return Err(de::Error::custom(
+                        "rename_edit_count_at_least requires min to be at least 1",
+                    ));
+                }
+                RenameAssertionKind::RenameEditCountAtLeast { min }
+            }
+            _ => {
+                return Err(de::Error::unknown_variant(
+                    &kind_name,
+                    &["rename_succeeds", "rename_null", "rename_edit_count_at_least"],
+                ));
+            }
+        };
+        if expected_edits.as_ref().is_some_and(Vec::is_empty) {
             return Err(de::Error::custom(
                 "expected_edits must be omitted or contain at least one edit",
             ));
         }
-        if matches!(&unchecked.kind, RenameAssertionKind::RenameNull)
-            && unchecked.expected_edits.is_some()
-        {
+        if matches!(&kind, RenameAssertionKind::RenameNull) && expected_edits.is_some() {
             return Err(de::Error::custom(
                 "expected_edits is only supported for rename assertions that inspect edits",
             ));
         }
-        Ok(Self {
-            kind: unchecked.kind,
-            line: unchecked.line,
-            character: unchecked.character,
-            new_name: unchecked.new_name,
-            expected_edits: unchecked.expected_edits,
-            rationale: unchecked.rationale,
+
+        Ok(RenameAssertion {
+            kind,
+            line: line.ok_or_else(|| de::Error::missing_field("line"))?,
+            character: character.ok_or_else(|| de::Error::missing_field("character"))?,
+            new_name: new_name.ok_or_else(|| de::Error::missing_field("new_name"))?,
+            expected_edits,
+            rationale: rationale.unwrap_or_default(),
         })
     }
 }
@@ -580,25 +657,15 @@ impl<'de> Deserialize<'de> for RenameAssertion {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RenameExpectedEdit {
+    /// URI of the edited document.  Omitted values retain the legacy
+    /// same-document shorthand and are resolved by the scorecard harness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
     pub line: u32,
     pub character: u32,
     pub end_line: u32,
     pub end_character: u32,
     pub new_text: String,
-}
-
-fn deserialize_expected_edits<'de, D>(
-    deserializer: D,
-) -> Result<Option<Vec<RenameExpectedEdit>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    match Option::<Vec<RenameExpectedEdit>>::deserialize(deserializer)? {
-        Some(edits) => Ok(Some(edits)),
-        None => Err(de::Error::custom(
-            "expected_edits must be omitted or an array; null is not supported",
-        )),
-    }
 }
 
 /// On-disk representation of `expected_rename.json`
@@ -845,5 +912,30 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn rename_schema_rejects_duplicate_fields_before_validation() {
+        let cases = [
+            ("kind", r#""kind":"rename_null""#),
+            ("line", r#""line":4,"line":5"#),
+            ("character", r#""character":4,"character":5"#),
+            ("new_name", r#""new_name":"one","new_name":"two""#),
+            ("min", r#""min":1,"min":2"#),
+            (
+                "expected_edits",
+                r#""expected_edits":[{"line":1,"character":1,"end_line":1,"end_character":2,"new_text":"x"}],"expected_edits":[{"line":1,"character":1,"end_line":1,"end_character":2,"new_text":"y"}]"#,
+            ),
+            ("rationale", r#""rationale":"one","rationale":"two""#),
+        ];
+        for (field, duplicate) in cases {
+            let json = format!(
+                r#"{{"kind":"rename_succeeds","line":4,"character":4,"new_name":"sum_values",{duplicate}}}"#
+            );
+            assert!(
+                serde_json::from_str::<RenameAssertion>(&json).is_err(),
+                "duplicate {field} field was accepted: {json}"
+            );
+        }
     }
 }
