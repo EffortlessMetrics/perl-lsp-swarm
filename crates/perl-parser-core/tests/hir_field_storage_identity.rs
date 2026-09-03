@@ -179,6 +179,38 @@ fn a_field_read_produces_no_lexical_binding_fact() -> TestResult {
 }
 
 #[test]
+fn a_field_compound_assignment_is_counted_as_a_skipped_modification() -> TestResult {
+    // `skipped_node_count` exists so the receipt surface is honest about which
+    // operations were filtered out of the lexical-fact model. A compound
+    // read-modify-write is filtered; all three storage classes must therefore
+    // count, or the receipt claims nothing was dropped when something was.
+    //
+    // The two existing families are the reference point rather than a fixed
+    // number, so this cannot pass vacuously: if the counter stopped working
+    // entirely, the lexical and stash rows would go to zero and the assertion
+    // below would still hold — which is why each is asserted to be 1 as well.
+    let counted = |source: &str| -> usize {
+        let mut parser = Parser::new(source);
+        let output = parser.parse_with_recovery();
+        extract_lexical_facts(&lower_ast(&output.ast)).skipped_node_count
+    };
+
+    let lexical = counted("sub f { my $n = 1; $n += 2; }");
+    let stash = counted("sub f { $n += 2; }");
+    let field =
+        counted("use feature 'class';\nclass C {\n    field $n;\n    method m { $n += 2; }\n}\n");
+
+    assert_eq!(lexical, 1, "a lexical compound assignment must count as skipped");
+    assert_eq!(stash, 1, "a stash compound assignment must count as skipped");
+    assert_eq!(
+        field, 1,
+        "a field compound assignment must count as skipped like the other two, \
+         got lexical={lexical}, stash={stash}, field={field}"
+    );
+    Ok(())
+}
+
+#[test]
 fn an_aggregate_field_resolves_when_referenced_whole() -> TestResult {
     // `field @items` and `field %data` are ordinary field declarations, and a
     // whole-aggregate reference to either resolves as a field. Nothing else
