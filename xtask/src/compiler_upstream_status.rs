@@ -594,8 +594,8 @@ fn validate_witness(
     );
     v.scan_text_value("witness.minimizes_case_path", &witness.minimizes_case_path);
     v.reject_unless(
-        !witness.minimizes_case_path.starts_with('/'),
-        format!("row `{row_id}` witness.minimizes_case_path must not be an absolute POSIX path"),
+        is_relative_normalized_path(&witness.minimizes_case_path),
+        format!("row `{row_id}` witness.minimizes_case_path must be a normalized relative path"),
     );
     // Falsifier 2: a minimized witness never replaces the original case.
     if witness.minimizes_case_path == upstream.case_path {
@@ -1570,6 +1570,17 @@ fn markdown_code(value: &str) -> String {
     value.replace('\\', "\\\\").replace('`', "\\`")
 }
 
+fn markdown_code_span(value: &str) -> String {
+    let longest_run = value
+        .chars()
+        .fold((0usize, 0usize), |(longest, current), character| {
+            if character == '`' { (longest.max(current + 1), current + 1) } else { (longest, 0) }
+        })
+        .0;
+    let delimiter = "`".repeat(longest_run.max(1) + 1);
+    format!("{delimiter}{value}{delimiter}")
+}
+
 fn markdown_text(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
@@ -1705,10 +1716,10 @@ pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
             markdown_code(&row.instrument_identity)
         ));
         out.push_str(&format!(
-            "- upstream original (retained independent of witnesses): snapshot_ref=`{}`, case_path=`{}`, case_name=`{}`\n",
-            markdown_code(&row.upstream_case.snapshot_ref),
-            markdown_code(&row.upstream_case.case_path),
-            markdown_code(&row.upstream_case.case_name)
+            "- upstream original (retained independent of witnesses): snapshot_ref={}, case_path={}, case_name={}\n",
+            markdown_code_span(&row.upstream_case.snapshot_ref),
+            markdown_code_span(&row.upstream_case.case_path),
+            markdown_code_span(&row.upstream_case.case_name)
         ));
         match &row.witness {
             Some(witness) => out.push_str(&format!(

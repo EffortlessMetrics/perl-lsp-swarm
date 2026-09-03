@@ -608,6 +608,13 @@ fn compiler_upstream_conformance_status_rendering_rejects_markdown_injection() -
     packet.rows[0].upstream_case.case_name = "safe\n- forged status: pass".to_string();
     assert!(render_markdown(&packet).is_err(), "Markdown line injection was rendered");
 
+    let mut packet = project_from(dir.path())?;
+    packet.rows[0].upstream_case.case_path = "t/with`backtick.t".to_string();
+    packet.rows[0].upstream_case.case_name = "name`with`backticks".to_string();
+    let rendered = render_markdown(&packet)?;
+    assert!(rendered.contains("case_path=``t/with`backtick.t``"));
+    assert!(rendered.contains("case_name=``name`with`backticks``"));
+
     let packet = project_from(dir.path())?;
     let rendered = render_markdown(&packet)?;
     assert!(rendered.contains(r"- owner: \#12532"));
@@ -626,15 +633,41 @@ fn compiler_upstream_conformance_status_rejects_absolute_witness_and_absence_wit
         .minimizes_case_path = "/tmp/private/minimized.t".to_string();
     write_inputs(dir.path(), &manifest, &[row])?;
     let message = error_message(project_from(dir.path()));
-    assert!(message.contains("absolute POSIX path"), "{message}");
+    assert!(message.contains("normalized relative path"), "{message}");
 
-    let dir = TempDir::new()?;
-    let manifest = base_manifest(vec![selector("perl-5.38", None)]);
-    let mut row = agreement_row("op-absence-witness", "perl-5.38");
-    row.terminal_state = TerminalState::NoCurrentSnapshot;
-    write_inputs(dir.path(), &manifest, &[row])?;
-    let message = error_message(project_from(dir.path()));
-    assert!(message.contains("no_current_snapshot conflicts with a present witness"), "{message}");
+    for invalid_path in ["../private/minimized.t", "~/private/minimized.t"] {
+        let dir = TempDir::new()?;
+        let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+        let mut row = agreement_row("op-invalid-witness-path", "perl-5.38");
+        row.witness
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("fixture witness must be present"))?
+            .minimizes_case_path = invalid_path.to_string();
+        write_inputs(dir.path(), &manifest, &[row])?;
+        let message = error_message(project_from(dir.path()));
+        assert!(message.contains("normalized relative path"), "{message}");
+    }
+
+    for (index, (state, snapshot)) in [
+        (TerminalState::NoCurrentSnapshot, None),
+        (TerminalState::NoCurrentCompilerObservation, Some("upstream:v5.38.0")),
+        (TerminalState::ClassificationPending, Some("upstream:v5.38.0")),
+        (TerminalState::WitnessPending, Some("upstream:v5.38.0")),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let dir = TempDir::new()?;
+        let manifest = base_manifest(vec![selector("perl-5.38", snapshot)]);
+        let mut row = agreement_row(&format!("op-absence-witness-{index}"), "perl-5.38");
+        row.terminal_state = state;
+        write_inputs(dir.path(), &manifest, &[row])?;
+        let message = error_message(project_from(dir.path()));
+        assert!(
+            message.contains(&format!("{} conflicts with a present witness", state.as_str())),
+            "{message}"
+        );
+    }
     Ok(())
 }
 
