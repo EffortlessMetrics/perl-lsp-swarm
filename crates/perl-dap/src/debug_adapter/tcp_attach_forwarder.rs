@@ -13,8 +13,10 @@
 //! - every admitted event is bound to the session generation captured at
 //!   attach time; a replacement attach, termination, or disconnect advances
 //!   the generation, and events of the dead generation are discarded **before
-//!   DAP publication**, so a prior session's event can never reach the
-//!   current client;
+//!   DAP publication** — including an event that is still waiting for outbound
+//!   queue room, which re-validates the generation before every commit
+//!   attempt — so a prior session's event cannot reach the current client
+//!   through a blocked send;
 //! - publication goes through the same single-authority primitives as every
 //!   other adapter event ([`dispatch_event`] for output/state events,
 //!   [`emit_terminated_event`] for the once-per-generation terminal event);
@@ -23,7 +25,9 @@
 //!   generation is replaced.
 
 use super::process::emit_terminated_event;
-use super::sync_utils::{dispatch_event, lock_or_recover};
+use super::sync_utils::{
+    GuardedDispatchResult, dispatch_event_generation_guarded, lock_or_recover,
+};
 use super::{DapMessage, DebugAdapter, TerminationState};
 use crate::tcp_attach::DapEvent;
 use serde_json::json;
@@ -86,7 +90,30 @@ pub(super) fn spawn_tcp_attach_event_forwarder(
                     if let Some((name, body)) = DebugAdapter::tcp_event_message(identity_event)
                         && let Some(ref sender) = event_sender
                     {
-                        dispatch_event(sender, &seq_counter, name, body);
+                        // Generation-aware publication across the ENTIRE
+                        // enqueue: a pre-dispatch check alone cannot cover a
+                        // non-output event that waits for queue room — a
+                        // replacement could advance the generation while the
+                        // old forwarder is blocked, and the stale event would
+                        // enter the shared outbound queue. The guarded dispatch
+                        // re-validates the generation before every commit
+                        // attempt, so the replacement retires the stale event
+                        // instead (#9521 review).
+                        let stale = || {
+                            lock_or_recover(&termination_state, "debug_adapter.termination_state")
+                                .generation
+                                != session_generation
+                        };
+                        if dispatch_event_generation_guarded(
+                            sender,
+                            &seq_counter,
+                            name,
+                            body,
+                            &stale,
+                        ) == GuardedDispatchResult::Stale
+                        {
+                            break;
+                        }
                     }
                 }
             }
@@ -239,5 +266,64 @@ mod tests {
             !reserve_terminated_event(&state, Some(1)),
             "a dead generation must not reserve a terminal emission"
         );
+    }
+
+    /// Race falsifier (#9521 review): a state event blocked on a FULL outbound
+    /// queue must not commit into a replacement session's stream. The old
+    /// forwarder checked the generation only before a potentially blocking
+    /// dispatch, so a replacement could advance the generation while the stale
+    /// event was parked, and draining the queue would then publish it. The
+    /// guarded dispatch re-validates the generation before every commit
+    /// attempt, so the stale event is retired instead.
+    #[test]
+    fn blocked_state_event_is_retired_when_generation_advances() -> Result<(), String> {
+        let (tx, rx) = sync_channel::<DapEvent>(8);
+        // Outbound capacity 1: the first stopped event fills the queue, so the
+        // second one must wait for room inside the guarded dispatch.
+        let (out_tx, out_rx) = sync_channel::<DapMessage>(1);
+        let state = termination_state_at_generation_one();
+
+        let handle = spawn_tcp_attach_event_forwarder(
+            rx,
+            Some(out_tx),
+            Arc::new(Mutex::new(0)),
+            Arc::clone(&state),
+            1,
+        );
+
+        // Fill the outbound queue with a first stopped event (the forwarder
+        // parks on the second), then advance the generation while it waits.
+        tx.send(DapEvent::Stopped { reason: "first".into(), thread_id: 1 })
+            .map_err(|e| format!("send first stopped: {e}"))?;
+        tx.send(DapEvent::Stopped { reason: "stale".into(), thread_id: 2 })
+            .map_err(|e| format!("send stale stopped: {e}"))?;
+        // Deterministic park window: let the forwarder commit the first event and
+        // start waiting on the second before the generation moves.
+        thread::sleep(Duration::from_millis(100));
+        lock_or_recover(&state, "test.termination_state").generation = 2;
+
+        // The parked stale event must be retired without a drain: the
+        // forwarder exits on its own, and the queued first event is the only
+        // publication ever observed.
+        handle.join().map_err(|_| "forwarder panicked".to_string())?;
+        let published = out_rx
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|e| format!("the live-generation event must publish: {e}"))?;
+        let stopped_reason = match published {
+            DapMessage::Event { event, body, .. } if event == "stopped" => {
+                body.and_then(|b| b.get("reason").and_then(|r| r.as_str()).map(String::from))
+            }
+            other => return Err(format!("expected the live stopped event, got {other:?}")),
+        };
+        assert_eq!(
+            stopped_reason.as_deref(),
+            Some("first"),
+            "the live-generation stopped event must be the only publication"
+        );
+        assert!(
+            out_rx.try_recv().is_err(),
+            "a stale-generation event blocked on a full queue must never publish"
+        );
+        Ok(())
     }
 }

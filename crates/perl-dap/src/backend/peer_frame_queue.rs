@@ -35,11 +35,15 @@ use std::sync::mpsc::{SyncSender, TrySendError};
 
 /// Maximum queued frame bodies per external-peer session (#9522).
 ///
-/// Real editors pipeline a handful of requests at most; 64 leaves ample room
+/// Real editors pipeline a handful of requests at most; 16 leaves ample room
 /// for bursty clients while capping retained frames. Combined with the
-/// transport's per-frame `MAX_FRAME_SIZE` cap, this bounds the queue's worst
-///-case retained bytes without a second accounting implementation.
-pub(crate) const PEER_FRAME_QUEUE_CAPACITY: usize = 64;
+/// transport's per-frame [`MAX_FRAME_SIZE`](perl_lsp_rs_core::transport::framing::ContentLengthFramer::MAX_FRAME_SIZE)
+/// cap (16 MiB), the queue's worst-case retained-bytes envelope is
+/// 16 × 16 MiB = 256 MiB — an order of magnitude below the earlier 64-frame
+/// capacity (1 GiB), which a stalled session could accumulate before the
+/// fail-closed rejection without buying anything: the reader stops at the
+/// first saturated frame either way.
+pub(crate) const PEER_FRAME_QUEUE_CAPACITY: usize = 16;
 
 /// Typed backpressure failure returned when a reader saturated the queue.
 ///

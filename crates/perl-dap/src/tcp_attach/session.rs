@@ -1,10 +1,11 @@
 use super::config::TcpAttachConfig;
 use super::event::DapEvent;
-use super::reader::spawn_reader;
+use super::reader::{TcpOutputDropAccounting, spawn_reader};
 use anyhow::{Context, Result};
 use perl_lsp_rs_core::transport::framing::frame;
 use std::io::Write;
 use std::net::TcpStream;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 
@@ -22,12 +23,26 @@ pub struct TcpAttachSession {
     /// forwarding thread is bounded, with output shed and state events applying
     /// backpressure under the reader's admission policy.
     event_sender: Option<SyncSender<DapEvent>>,
+    /// Per-session accounting for output events shed under backpressure, so
+    /// one session's losses never inflate another session's notices (#9521).
+    drop_accounting: Arc<TcpOutputDropAccounting>,
+    /// Monotonic reader epoch: bumped on every disconnect so a reader parked
+    /// in cancellation-aware admission for a stale connection retires instead
+    /// of delivering stale events or clobbering a replacement connection's
+    /// state (#9521).
+    reader_epoch: Arc<AtomicU64>,
 }
 
 impl TcpAttachSession {
     /// Create a new TCP attach session
     pub fn new() -> Self {
-        Self { stream: None, connected: Arc::new(Mutex::new(false)), event_sender: None }
+        Self {
+            stream: None,
+            connected: Arc::new(Mutex::new(false)),
+            event_sender: None,
+            drop_accounting: Arc::new(TcpOutputDropAccounting::new()),
+            reader_epoch: Arc::new(AtomicU64::new(0)),
+        }
     }
 
     /// Set the event sender
@@ -82,7 +97,13 @@ impl TcpAttachSession {
     }
 
     /// Disconnect from the debugger
+    ///
+    /// The reader epoch is bumped before the socket shuts down, so a reader
+    /// parked in cancellation-aware admission for this connection retires
+    /// instead of later delivering stale events or overwriting the shared
+    /// connection state of a replacement connection (#9521).
     pub fn disconnect(&mut self) -> Result<()> {
+        self.reader_epoch.fetch_add(1, Ordering::SeqCst);
         if let Some(stream) = self.stream.take() {
             stream.shutdown(std::net::Shutdown::Both)?;
             tracing::info!("Disconnected from Perl debugger");
@@ -110,7 +131,15 @@ impl TcpAttachSession {
             .try_clone()
             .context("Failed to clone TCP stream for reader thread")?;
 
-        spawn_reader(stream, Arc::clone(&self.connected), self.event_sender.clone());
+        let reader_id = self.reader_epoch.load(Ordering::SeqCst);
+        spawn_reader(
+            stream,
+            Arc::clone(&self.connected),
+            self.event_sender.clone(),
+            Arc::clone(&self.drop_accounting),
+            Arc::clone(&self.reader_epoch),
+            reader_id,
+        );
         Ok(())
     }
 

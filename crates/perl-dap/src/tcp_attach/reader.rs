@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 /// Result of admitting one event into the bounded TCP-attach fan-in queue (#9521).
 #[derive(Debug, PartialEq, Eq)]
@@ -18,14 +19,40 @@ pub(crate) enum EventAdmission {
     DroppedOutput,
     /// The forwarding side is gone: the session is dead.
     Disconnected,
+    /// The session retired this producer (disconnect/replacement): the event
+    /// was not admitted, and the producer must stop without delivering the
+    /// stale event or touching shared connection state (#9521).
+    Retired,
 }
 
-/// Counts dropped `output` events due to a full TCP-attach fan-in queue (#9521).
-static DROPPED_TCP_OUTPUT_EVENTS: AtomicU64 = AtomicU64::new(0);
+/// Park interval between full-queue retries in cancellation-aware state-event
+/// admission: bounded-latency retirement without a busy spin (#9521).
+pub(crate) const ADMISSION_RETIRE_CHECK: Duration = Duration::from_millis(1);
 
-/// [`DROPPED_TCP_OUTPUT_EVENTS`] value at the last successfully queued drop
-/// notice; a new notice is only attempted once more drops have accumulated.
-static LAST_NOTIFIED_TCP_DROP_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Per-session accounting for `output` events dropped under TCP-attach
+/// backpressure (#9521).
+///
+/// Session-owned instead of process-global: a replacement or concurrent
+/// session must never inherit, mask, or inflate another session's unreported
+/// losses, so each [`crate::tcp_attach::TcpAttachSession`] owns one instance.
+#[derive(Default)]
+pub(crate) struct TcpOutputDropAccounting {
+    dropped: AtomicU64,
+    last_notified: AtomicU64,
+}
+
+impl TcpOutputDropAccounting {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Cumulative count of this session's dropped `output` events
+    /// (test instrumentation).
+    #[cfg(test)]
+    pub(crate) fn dropped_output_events(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
+}
 
 /// Warn on the first drop and every [`TCP_OUTPUT_DROP_WARN_INTERVAL`] drops
 /// after, so an output flood cannot become unbounded log I/O.
@@ -35,12 +62,6 @@ const TCP_OUTPUT_DROP_WARN_INTERVAL: u64 = 64;
 /// #5149 outbound-queue notice policy; never loops unboundedly or sleeps).
 const TCP_DROP_NOTICE_ATTEMPTS: u8 = 8;
 
-/// Cumulative count of TCP-attach fan-in `output` drops (test instrumentation).
-#[cfg(test)]
-pub(crate) fn dropped_tcp_output_event_count() -> u64 {
-    DROPPED_TCP_OUTPUT_EVENTS.load(Ordering::Relaxed)
-}
-
 /// Admit one event under the reviewed TCP-attach fan-in policy (#9521).
 ///
 /// **`output` events** are the only high-frequency, loss-eligible events: they
@@ -48,17 +69,38 @@ pub(crate) fn dropped_tcp_output_event_count() -> u64 {
 /// warned at a bounded rate, and one bounded user-visible notice is attempted.
 ///
 /// **State and lifecycle events** (`stopped`, `continued`, `terminated`,
-/// `error`) are non-lossy: they use the same blocking-send backpressure policy
-/// as the #5149 outbound queue, so they are always admitted while the
-/// forwarding side lives and can never be silently discarded behind output
-/// pressure. Blocking happens without any lock held, and receiver loss wakes
-/// the producer immediately as `Disconnected`.
-pub(crate) fn admit_event(sender: &SyncSender<DapEvent>, event: DapEvent) -> EventAdmission {
+/// `error`) are non-lossy: they apply the same backpressure policy as the
+/// #5149 outbound queue, so they are always admitted while the forwarding side
+/// lives and can never be silently discarded behind output pressure. Waiting
+/// happens without any lock held, as a bounded-rate retry that re-checks the
+/// retirement hook each attempt, so a disconnect or replacement retires the
+/// producer instead of parking it on a stale session; receiver loss is
+/// observed within [`ADMISSION_RETIRE_CHECK`] as `Disconnected`.
+/// [`admit_event_until`] without retirement: the plain admission entry point.
+#[cfg(test)]
+pub(crate) fn admit_event(
+    sender: &SyncSender<DapEvent>,
+    event: DapEvent,
+    accounting: &TcpOutputDropAccounting,
+) -> EventAdmission {
+    admit_event_until(sender, event, accounting, &|| false)
+}
+
+/// Admission with a retirement hook: the hook is re-checked while the
+/// admission waits for queue room, so a caller that owns the session lifecycle
+/// (reader/forwarder pairing) can retire a stale producer instead of letting a
+/// parked state event commit into a replacement session's stream (#9521).
+pub(crate) fn admit_event_until(
+    sender: &SyncSender<DapEvent>,
+    mut event: DapEvent,
+    accounting: &TcpOutputDropAccounting,
+    retired: &dyn Fn() -> bool,
+) -> EventAdmission {
     if matches!(event, DapEvent::Output { .. }) {
         match sender.try_send(event) {
             Ok(()) => EventAdmission::Accepted,
             Err(TrySendError::Full(_)) => {
-                let dropped_total = DROPPED_TCP_OUTPUT_EVENTS.fetch_add(1, Ordering::Relaxed) + 1;
+                let dropped_total = accounting.dropped.fetch_add(1, Ordering::Relaxed) + 1;
                 if dropped_total == 1 || dropped_total.is_multiple_of(TCP_OUTPUT_DROP_WARN_INTERVAL)
                 {
                     tracing::warn!(
@@ -66,15 +108,24 @@ pub(crate) fn admit_event(sender: &SyncSender<DapEvent>, event: DapEvent) -> Eve
                         "TCP-attach fan-in queue full; dropping debugger output events (#9521)"
                     );
                 }
-                try_emit_drop_notice(sender, dropped_total);
+                try_emit_drop_notice(sender, accounting, dropped_total);
                 EventAdmission::DroppedOutput
             }
             Err(TrySendError::Disconnected(_)) => EventAdmission::Disconnected,
         }
     } else {
-        match sender.send(event) {
-            Ok(()) => EventAdmission::Accepted,
-            Err(_) => EventAdmission::Disconnected,
+        loop {
+            if retired() {
+                return EventAdmission::Retired;
+            }
+            match sender.try_send(event) {
+                Ok(()) => return EventAdmission::Accepted,
+                Err(TrySendError::Full(returned)) => {
+                    event = returned;
+                    thread::sleep(ADMISSION_RETIRE_CHECK);
+                }
+                Err(TrySendError::Disconnected(_)) => return EventAdmission::Disconnected,
+            }
         }
     }
 }
@@ -84,15 +135,20 @@ pub(crate) fn admit_event(sender: &SyncSender<DapEvent>, event: DapEvent) -> Eve
 ///
 /// Anti-flood properties (mirroring the #5149 outbound notice): `try_send`
 /// only, a fixed attempt bound with cooperative yields, no recursion into the
-/// drop-counting path, and rate-limited by [`LAST_NOTIFIED_TCP_DROP_COUNT`] so
-/// a sustained flood with no queue room produces no notice per dropped line.
-fn try_emit_drop_notice(sender: &SyncSender<DapEvent>, dropped_total: u64) {
-    let last_notified = LAST_NOTIFIED_TCP_DROP_COUNT.load(Ordering::Relaxed);
+/// drop-counting path, and rate-limited by the session's
+/// [`TcpOutputDropAccounting::last_notified`] so a sustained flood with no
+/// queue room produces no notice per dropped line.
+fn try_emit_drop_notice(
+    sender: &SyncSender<DapEvent>,
+    accounting: &TcpOutputDropAccounting,
+    dropped_total: u64,
+) {
+    let last_notified = accounting.last_notified.load(Ordering::Relaxed);
     if dropped_total <= last_notified {
         return;
     }
     let newly_dropped = dropped_total - last_notified;
-    let event = DapEvent::Output {
+    let mut event = DapEvent::Output {
         category: "console".to_string(),
         output: format!(
             "[perl-lsp] {newly_dropped} debugger output event(s) dropped under TCP-attach \
@@ -100,13 +156,16 @@ fn try_emit_drop_notice(sender: &SyncSender<DapEvent>, dropped_total: u64) {
         ),
     };
     for attempt in 0..TCP_DROP_NOTICE_ATTEMPTS {
-        match sender.try_send(event.clone()) {
+        // Move the event into `try_send` and reclaim it from `Full`, so a
+        // saturated queue costs no per-attempt clone.
+        match sender.try_send(event) {
             Ok(()) => {
-                LAST_NOTIFIED_TCP_DROP_COUNT.store(dropped_total, Ordering::Relaxed);
+                accounting.last_notified.store(dropped_total, Ordering::Relaxed);
                 return;
             }
             Err(TrySendError::Disconnected(_)) => return,
-            Err(TrySendError::Full(_)) => {
+            Err(TrySendError::Full(returned)) => {
+                event = returned;
                 if attempt + 1 < TCP_DROP_NOTICE_ATTEMPTS {
                     std::thread::yield_now();
                 }
@@ -121,15 +180,28 @@ pub(crate) fn spawn_reader(
     stream: TcpStream,
     connected: Arc<Mutex<bool>>,
     event_sender: Option<SyncSender<DapEvent>>,
+    accounting: Arc<TcpOutputDropAccounting>,
+    reader_epoch: Arc<AtomicU64>,
+    reader_id: u64,
 ) {
-    thread::spawn(move || run_reader(stream, connected, event_sender));
+    thread::spawn(move || {
+        run_reader(stream, connected, event_sender, accounting, reader_epoch, reader_id)
+    });
 }
 
 fn run_reader(
     stream: TcpStream,
     connected: Arc<Mutex<bool>>,
     event_sender: Option<SyncSender<DapEvent>>,
+    accounting: Arc<TcpOutputDropAccounting>,
+    reader_epoch: Arc<AtomicU64>,
+    reader_id: u64,
 ) {
+    // Retirement hook: the session bumps the epoch on every disconnect, so a
+    // reader parked in cancellation-aware admission for a stale connection
+    // retires instead of delivering stale events or clobbering the shared
+    // connection state of a replacement connection (#9521).
+    let retired = || reader_epoch.load(Ordering::Relaxed) != reader_id;
     let mut reader = BufReader::new(stream);
     let mut framer = ContentLengthFramer::new();
     let mut read_buf = [0u8; 8 * 1024];
@@ -137,9 +209,14 @@ fn run_reader(
     loop {
         let bytes_read = match reader.read(&mut read_buf) {
             Ok(0) => {
+                if retired() {
+                    return;
+                }
                 mark_disconnected(&connected);
                 send_event(
                     &event_sender,
+                    &accounting,
+                    &retired,
                     DapEvent::Terminated { reason: "connection_closed".to_string() },
                 );
                 tracing::debug!("TCP connection closed by debugger");
@@ -147,9 +224,14 @@ fn run_reader(
             }
             Ok(n) => n,
             Err(error) => {
+                if retired() {
+                    return;
+                }
                 mark_disconnected(&connected);
                 send_event(
                     &event_sender,
+                    &accounting,
+                    &retired,
                     DapEvent::Error { message: format!("TCP read error: {}", error) },
                 );
                 tracing::error!(%error, "Error reading from TCP");
@@ -158,10 +240,13 @@ fn run_reader(
         };
 
         framer.push(&read_buf[..bytes_read]);
-        if !drain_frames(&mut framer, &event_sender) {
-            // Forwarding side gone: stop reading. Session teardown observes the
-            // disconnect through `connected`/channel loss (#9521).
-            mark_disconnected(&connected);
+        if !drain_frames(&mut framer, &event_sender, &accounting, &retired) {
+            // Forwarding side gone, or the session retired this reader: stop
+            // reading. Session teardown observes the disconnect through
+            // `connected`/channel loss (#9521).
+            if !retired() {
+                mark_disconnected(&connected);
+            }
             return;
         }
     }
@@ -169,10 +254,13 @@ fn run_reader(
 
 /// Drain all complete frames into the bounded fan-in queue.
 ///
-/// Returns `false` when the forwarding side is gone and the reader must stop.
+/// Returns `false` when the forwarding side is gone or the session retired
+/// this reader, and the reader must stop.
 fn drain_frames(
     framer: &mut ContentLengthFramer,
     event_sender: &Option<SyncSender<DapEvent>>,
+    accounting: &TcpOutputDropAccounting,
+    retired: &dyn Fn() -> bool,
 ) -> bool {
     loop {
         let buffer = match framer.try_next() {
@@ -185,7 +273,7 @@ fn drain_frames(
         };
 
         trace_frame(&buffer);
-        if !emit_frame_event(&buffer, event_sender) {
+        if !emit_frame_event(&buffer, event_sender, accounting, retired) {
             return false;
         }
     }
@@ -201,8 +289,13 @@ fn trace_frame(buffer: &[u8]) {
 
 /// Parse one framed debugger message into a [`DapEvent`] and admit it.
 ///
-/// Returns `false` when the forwarding side is gone.
-fn emit_frame_event(buffer: &[u8], event_sender: &Option<SyncSender<DapEvent>>) -> bool {
+/// Returns `false` when the forwarding side is gone or the reader was retired.
+fn emit_frame_event(
+    buffer: &[u8],
+    event_sender: &Option<SyncSender<DapEvent>>,
+    accounting: &TcpOutputDropAccounting,
+    retired: &dyn Fn() -> bool,
+) -> bool {
     let Some(sender) = event_sender else {
         return true;
     };
@@ -213,14 +306,26 @@ fn emit_frame_event(buffer: &[u8], event_sender: &Option<SyncSender<DapEvent>>) 
         return true;
     };
 
-    admit_event(sender, event) != EventAdmission::Disconnected
+    match admit_event_until(sender, event, accounting, retired) {
+        EventAdmission::Retired => false,
+        other => other != EventAdmission::Disconnected,
+    }
 }
 
 /// Admit a reader-generated lifecycle event (`terminated` on EOF, `error` on a
-/// read failure). Non-lossy: blocking send per the #9521 policy.
-fn send_event(event_sender: &Option<SyncSender<DapEvent>>, event: DapEvent) {
+/// read failure). Non-lossy with cancellation-aware backpressure per the
+/// #9521 policy; a retired reader delivers nothing.
+fn send_event(
+    event_sender: &Option<SyncSender<DapEvent>>,
+    accounting: &TcpOutputDropAccounting,
+    retired: &dyn Fn() -> bool,
+    event: DapEvent,
+) {
     if let Some(sender) = event_sender {
-        let _ = sender.send(event);
+        // The caller already checked `retired`; the hook closes the residual
+        // window during the admission wait itself. Lifecycle events are never
+        // `output`, so the accounting is untouched on this path.
+        let _ = admit_event_until(sender, event, accounting, retired);
     }
 }
 
@@ -240,25 +345,57 @@ mod tests {
     #[test]
     fn tcp_output_flood_drops_and_counts_without_blocking() -> Result<(), String> {
         let (tx, _rx) = sync_channel::<DapEvent>(2);
+        let accounting = TcpOutputDropAccounting::new();
         let output = |i: usize| DapEvent::Output {
             category: "stdout".to_string(),
             output: format!("line {i}\n"),
         };
 
-        let before = dropped_tcp_output_event_count();
-        assert_eq!(admit_event(&tx, output(0)), EventAdmission::Accepted);
-        assert_eq!(admit_event(&tx, output(1)), EventAdmission::Accepted);
+        assert_eq!(admit_event(&tx, output(0), &accounting), EventAdmission::Accepted);
+        assert_eq!(admit_event(&tx, output(1), &accounting), EventAdmission::Accepted);
         // Queue is now full: further output must be shed immediately.
         for i in 2..40 {
             assert_eq!(
-                admit_event(&tx, output(i)),
+                admit_event(&tx, output(i), &accounting),
                 EventAdmission::DroppedOutput,
                 "output on a full queue must be shed, not block or disconnect"
             );
         }
         assert!(
-            dropped_tcp_output_event_count() > before,
+            accounting.dropped_output_events() >= 38,
             "dropped-output counter must advance when the fan-in queue saturates"
+        );
+        Ok(())
+    }
+
+    /// Drop accounting is per session: one session's unreported losses never
+    /// inflate or alias another session's accounting (#9521 review).
+    #[test]
+    fn tcp_drop_accounting_is_isolated_per_session() -> Result<(), String> {
+        let output = |i: usize| DapEvent::Output {
+            category: "stdout".to_string(),
+            output: format!("line {i}\n"),
+        };
+
+        // Session A accumulates 70 drops on a never-drained queue.
+        let (tx_a, _rx_a) = sync_channel::<DapEvent>(1);
+        let accounting_a = TcpOutputDropAccounting::new();
+        assert_eq!(admit_event(&tx_a, output(0), &accounting_a), EventAdmission::Accepted);
+        for i in 1..=70 {
+            assert_eq!(admit_event(&tx_a, output(i), &accounting_a), EventAdmission::DroppedOutput);
+        }
+        assert_eq!(accounting_a.dropped_output_events(), 70);
+
+        let (tx_b, _rx_b) = sync_channel::<DapEvent>(1);
+        // Session B starts from zero: its first drop is its own first drop,
+        // not session A's accumulated loss.
+        let accounting_b = TcpOutputDropAccounting::new();
+        assert_eq!(admit_event(&tx_b, output(0), &accounting_b), EventAdmission::Accepted);
+        assert_eq!(admit_event(&tx_b, output(1), &accounting_b), EventAdmission::DroppedOutput);
+        assert_eq!(
+            accounting_b.dropped_output_events(),
+            1,
+            "a fresh session must count only its own drops"
         );
         Ok(())
     }
@@ -268,12 +405,18 @@ mod tests {
     #[test]
     fn tcp_state_event_blocks_until_drain_then_is_delivered() -> Result<(), String> {
         let (tx, rx) = sync_channel::<DapEvent>(1);
+        let accounting = TcpOutputDropAccounting::new();
         let output = DapEvent::Output { category: "stdout".to_string(), output: "fill\n".into() };
-        assert_eq!(admit_event(&tx, output), EventAdmission::Accepted);
+        assert_eq!(admit_event(&tx, output, &accounting), EventAdmission::Accepted);
 
         let tx2 = tx.clone();
+        let accounting2 = TcpOutputDropAccounting::new();
         let handle = thread::spawn(move || {
-            admit_event(&tx2, DapEvent::Stopped { reason: "breakpoint".into(), thread_id: 3 })
+            admit_event(
+                &tx2,
+                DapEvent::Stopped { reason: "breakpoint".into(), thread_id: 3 },
+                &accounting2,
+            )
         });
 
         thread::sleep(Duration::from_millis(20));
@@ -307,16 +450,17 @@ mod tests {
     #[test]
     fn tcp_drop_notice_flood_does_not_produce_one_per_line() -> Result<(), String> {
         let (tx, rx) = sync_channel::<DapEvent>(1);
+        let accounting = TcpOutputDropAccounting::new();
         let output = |i: usize| DapEvent::Output {
             category: "stdout".to_string(),
             output: format!("flood {i}\n"),
         };
 
-        assert_eq!(admit_event(&tx, output(0)), EventAdmission::Accepted);
+        assert_eq!(admit_event(&tx, output(0), &accounting), EventAdmission::Accepted);
         let total = 200;
         let mut dropped = 0usize;
         for i in 1..total {
-            if admit_event(&tx, output(i)) == EventAdmission::DroppedOutput {
+            if admit_event(&tx, output(i), &accounting) == EventAdmission::DroppedOutput {
                 dropped += 1;
             }
         }
@@ -353,7 +497,47 @@ mod tests {
     fn tcp_receiver_loss_wakes_state_event_producer() {
         let (tx, rx) = sync_channel::<DapEvent>(1);
         drop(rx);
-        let result = admit_event(&tx, DapEvent::Terminated { reason: "gone".into() });
+        let accounting = TcpOutputDropAccounting::new();
+        let result = admit_event(&tx, DapEvent::Terminated { reason: "gone".into() }, &accounting);
         assert_eq!(result, EventAdmission::Disconnected);
+    }
+
+    /// A retired producer stops without delivering its stale state event:
+    /// cancellation-aware admission returns `Retired` while the queue stays
+    /// full, instead of waiting for a drain that belongs to a replacement
+    /// session (#9521 review).
+    #[test]
+    fn tcp_retired_producer_stops_without_delivering() -> Result<(), String> {
+        let (tx, rx) = sync_channel::<DapEvent>(1);
+        let accounting = TcpOutputDropAccounting::new();
+        let output = DapEvent::Output { category: "stdout".to_string(), output: "fill\n".into() };
+        assert_eq!(admit_event(&tx, output, &accounting), EventAdmission::Accepted);
+
+        let tx2 = tx.clone();
+        let handle = thread::spawn(move || {
+            let accounting2 = TcpOutputDropAccounting::new();
+            let retired = || true;
+            admit_event_until(
+                &tx2,
+                DapEvent::Stopped { reason: "stale".into(), thread_id: 7 },
+                &accounting2,
+                &retired,
+            )
+        });
+
+        let admission = handle.join().map_err(|_| "producer thread panicked".to_string())?;
+        assert_eq!(admission, EventAdmission::Retired);
+
+        // The stale state event must not be in the queue: the only event is
+        // the output that filled it.
+        let drained = rx
+            .recv_timeout(Duration::from_millis(200))
+            .map_err(|e| format!("queued output must remain drainable: {e}"))?;
+        match drained {
+            DapEvent::Output { output, .. } => assert_eq!(output, "fill\n"),
+            other => return Err(format!("expected only the queued output, got {other:?}")),
+        }
+        assert!(rx.try_recv().is_err(), "a retired producer must not deliver its stale event");
+        Ok(())
     }
 }

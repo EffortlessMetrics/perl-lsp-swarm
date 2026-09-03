@@ -774,6 +774,13 @@ where
             }
         }
     }
+
+    // A latched overflow wins over every successful exit — including a DAP
+    // `disconnect` admitted before the reader stopped: reporting generic
+    // success after rejecting frames is the explicit #9522 falsifier.
+    if let Some(failure) = overflow_failure(&overflow) {
+        return Err(failure);
+    }
     Ok(())
 }
 
@@ -1861,6 +1868,79 @@ mod tests {
             return Err(
                 "a saturated peer frame queue must fail the session, not return Ok".to_string()
             );
+        };
+        assert!(
+            failure.to_string().contains(crate::backend::peer_frame_queue::PEER_BACKPRESSURE_MSG),
+            "the session failure must carry the typed backpressure disposition, got: {failure}"
+        );
+        Ok(())
+    }
+
+    /// #9522 review: a DAP `disconnect` admitted before the reader stopped
+    /// must not mask a latched overflow. The queue holds [request, disconnect,
+    /// filler...] when the reader saturates on the fillers; the session loop
+    /// dispatches the first request (stalling its first write so the reader
+    /// finishes the burst), then the disconnect breaks the loop — the typed
+    /// backpressure failure must win over generic success.
+    #[test]
+    fn threaded_driver_disconnect_does_not_mask_overflow() -> Result<(), String> {
+        use perl_lsp_rs_core::transport::frame;
+        use std::io::Cursor;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Condvar, Mutex};
+
+        struct GatedSink {
+            gate: Arc<(Mutex<bool>, Condvar)>,
+            first_write_done: AtomicBool,
+        }
+        impl GatedSink {
+            fn new(gate: Arc<(Mutex<bool>, Condvar)>) -> Self {
+                Self { gate, first_write_done: AtomicBool::new(false) }
+            }
+        }
+        impl std::io::Write for GatedSink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if !self.first_write_done.swap(true, Ordering::SeqCst) {
+                    let (lock, cvar) = &*self.gate;
+                    let _guard = cvar
+                        .wait_timeout_while(
+                            lock.lock().unwrap_or_else(|e| e.into_inner()),
+                            Duration::from_millis(300),
+                            |open| !*open,
+                        )
+                        .unwrap_or_else(|e| e.into_inner());
+                }
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let frame_of = |seq: i64, command: &str| {
+            frame(&must(serde_json::to_vec(
+                &json!({ "seq": seq, "type": "request", "command": command, "arguments": {} }),
+            )))
+        };
+        let mut input = Vec::new();
+        input.extend_from_slice(&frame_of(1, "unknownCommand"));
+        input.extend_from_slice(&frame_of(2, "disconnect"));
+        for seq in 3..=220 {
+            input.extend_from_slice(&frame_of(seq, "unknownCommand"));
+        }
+
+        let gate: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
+        let result = run_peer_session_threaded(
+            Cursor::new(input),
+            GatedSink::new(Arc::clone(&gate)),
+            bridge(),
+            Duration::from_millis(1),
+        );
+
+        let Err(failure) = result else {
+            return Err("an admitted disconnect after a latched overflow must not report success"
+                .to_string());
         };
         assert!(
             failure.to_string().contains(crate::backend::peer_frame_queue::PEER_BACKPRESSURE_MSG),
