@@ -745,7 +745,16 @@ function connectedRunBits(
   let total = 0;
   for (const atom of ordered) {
     if (!domainsOverlap(boundaryDomain, atom.union)) {
-      break;
+      // Only a *required* atom seals the run. A nullable one can vanish and
+      // leave its neighbours meeting directly, so it cannot be a wall — and a
+      // zero-width group has an empty domain, which is disjoint from
+      // everything. Breaking on those made `(?:)` a fake separator:
+      // `^((a+))+b$` is rejected, yet `^((a+(?:)))+b$` — sixteen characters,
+      // exponential, 118 ms at n=24 — was accepted.
+      if (!atom.nullable) {
+        break;
+      }
+      continue;
     }
     total += side === 'leading' ? atom.leadingRunBits : atom.trailingRunBits;
   }

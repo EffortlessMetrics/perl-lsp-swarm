@@ -342,6 +342,39 @@ describe('gherkin ReDoS guard: zero-width assertions (#9806)', () => {
   });
 });
 
+// A group matching the empty string consumes nothing, so it cannot hold two
+// neighbouring atoms apart. Its character domain is empty, though, and an empty
+// domain is disjoint from every other one — so the run-connection walk treated
+// it as an impassable wall. `^((a+))+b$` was rejected while `^((a+(?:)))+b$` —
+// sixteen characters, exponential (3.1 ms at n=16, 8.7 ms at n=20, 118 ms at
+// n=24, and unfinished after 90 s against a 512-character input) — was accepted.
+// Only a *required* atom can seal a run.
+describe('gherkin ReDoS guard: zero-width groups cannot separate (#9806)', () => {
+  test.each([
+    ['an empty non-capturing group inside a repeated group', '^((a+(?:)))+b$'],
+    ['an empty non-capturing group under one wrapper', '^(a+(?:))+b$'],
+    ['two empty groups in a row', '^((a+(?:)(?:)))+b$'],
+    ['an empty capturing group', '^((a+()))+b$'],
+    ['an empty group under a bounded repeat', '^((a+(?:))){5}$'],
+    ['empty groups between chained atoms', '^(a+)(?:)(a+)(?:)(a+)(?:)(a+)b$'],
+  ])('does not let %s separate a chain', (_name, source) => {
+    expect(isPotentiallyExpensiveRegex(source)).toBe(true);
+  });
+
+  // A required atom over a disjoint domain must still seal the run, or the fix
+  // would swallow every repeated group with a separator in it.
+  test.each([
+    ['a required separator between the edges', '^((a+b+)){5}$'],
+    ['a fixed tail pinned by a disjoint literal', '^((a+ba)){5}$'],
+    ['an empty group beside a required separator', '^((a+b+(?:))){5}$'],
+    ['an empty group on its own', '^(?:)$'],
+    ['an empty group between literals', '^a(?:)b$'],
+    ['an empty group between disjoint captures', '^(\\d+)(?:)-(\\d+)$'],
+  ])('keeps %s accepted', (_name, source) => {
+    expect(isPotentiallyExpensiveRegex(source)).toBe(false);
+  });
+});
+
 // The memos cap entry counts, but each key carries the pattern text, so a count
 // alone does not bound memory. The guard's own input ceiling is enforced at
 // admission rather than being inherited from `isSafeGherkinStepMatch`, so the
