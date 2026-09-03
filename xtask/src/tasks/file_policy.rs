@@ -975,6 +975,11 @@ fn validate_v4_subject_workflow(text: &str) -> Result<()> {
             .as_mapping()
             .and_then(|map| map.get(key("if")))
             .is_some_and(|condition| condition.as_str() != Some("always()"))
+        || materializer
+            .as_mapping()
+            .and_then(|map| map.get(key("continue-on-error")))
+            .and_then(serde_yaml_ng::Value::as_bool)
+            != Some(true)
     {
         bail!("v4 materializer must be the exact trusted invocation");
     }
@@ -989,6 +994,11 @@ fn validate_v4_subject_workflow(text: &str) -> Result<()> {
             .and_then(|map| map.get(key("if")))
             .and_then(serde_yaml_ng::Value::as_str)
             .is_none_or(|condition| condition.trim() != "steps.materialize.outcome == 'success'")
+        || evaluator
+            .as_mapping()
+            .and_then(|map| map.get(key("continue-on-error")))
+            .and_then(serde_yaml_ng::Value::as_bool)
+            != Some(true)
     {
         bail!("v4 evaluator must be the exact trusted invocation");
     }
@@ -4343,6 +4353,7 @@ jobs:
       - name: Run trusted exact-tree evaluator
         id: evaluate
         if: steps.materialize.outcome == 'success'
+        continue-on-error: true
         run: 'cargo run --locked -p xtask -- non-rust exact-tree --base-sha "$BASE_SHA" --subject-sha "$SUBJECT_SHA" ${PR_HEAD_SHA:+--pr-head-sha "$PR_HEAD_SHA"} --event-name "$GITHUB_EVENT_NAME" --repository "$GITHUB_REPOSITORY" --receipt target/policy/non-rust-policy-exact-tree.json'
       - name: Upload exact-tree receipt
         if: always()
@@ -4396,6 +4407,18 @@ jobs:
                 workflow.replace(
                     "        continue-on-error: true\n",
                     "        if: false\n        continue-on-error: true\n",
+                ),
+            ),
+            (
+                "missing materializer continue-on-error",
+                workflow.replace("        continue-on-error: true\n        run: 'cargo run --locked -p xtask -- ci-subject-materialize", "        run: 'cargo run --locked -p xtask -- ci-subject-materialize"),
+            ),
+            (
+                "false evaluator continue-on-error",
+                workflow.replacen(
+                    "        continue-on-error: true\n        run: 'cargo run --locked -p xtask -- non-rust exact-tree",
+                    "        continue-on-error: false\n        run: 'cargo run --locked -p xtask -- non-rust exact-tree",
+                    1,
                 ),
             ),
             (

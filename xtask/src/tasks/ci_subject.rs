@@ -282,6 +282,10 @@ fn input_from_event(
             let base_repository =
                 json_string(event, &["pull_request", "base", "repo", "full_name"])?;
             ensure_repository(expected_repository, &base_repository)?;
+            // `pull_request_target` executes trusted base code and may safely
+            // fetch the untrusted fork head as inert data. Ordinary
+            // `pull_request` is not that boundary: retain same-repository head
+            // binding so a fork payload cannot be treated as trusted input.
             if event_name == "pull_request" {
                 let head_repository =
                     json_string(event, &["pull_request", "head", "repo", "full_name"])?;

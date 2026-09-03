@@ -15,7 +15,9 @@ use color_eyre::eyre::{Context, Result, eyre};
 use serde::Serialize;
 use serde_json::Value;
 
-use super::ci_subject::{self, CiEventKind, CiSubjectConfig, SubjectInput};
+use super::ci_subject::{
+    self, CiEventKind, CiSubjectConfig, SubjectDiffMode, SubjectInput, SubjectResolutionSource,
+};
 
 const SCHEMA_VERSION: &str = "ci-subject-materialization.v1";
 const PRODUCER: &str = "cargo-xtask-ci-subject-materializer";
@@ -202,10 +204,16 @@ fn materialize(root: &Path, config: &Config, receipt: &mut Receipt) -> Result<()
 }
 
 fn merge_tree(root: &Path, input: &SubjectInput) -> Result<String> {
+    // The merge tree is a security-sensitive derived identity. Ignore global and
+    // system configuration and pin the attributes that affect checkout/merge
+    // normalization so identical object inputs produce the same tree.
     let output = run_git_bounded(
-        Command::new("git")
-            .args(["merge-tree", "--write-tree", &input.base_sha, &input.head_sha])
-            .current_dir(root),
+        deterministic_git_command(root).args([
+            "merge-tree",
+            "--write-tree",
+            &input.base_sha,
+            &input.head_sha,
+        ]),
         None,
     )
     .context("running git merge-tree --write-tree")?;
@@ -224,6 +232,16 @@ fn merge_tree(root: &Path, input: &SubjectInput) -> Result<String> {
         .ok_or_else(|| eyre!("git merge-tree returned no tree"))?;
     ci_subject::validate_sha(tree, "derived tree").map_err(|error| eyre!(error))?;
     Ok(tree.to_string())
+}
+
+fn deterministic_git_command(root: &Path) -> Command {
+    let mut command = Command::new("git");
+    command
+        .current_dir(root)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", if cfg!(windows) { "NUL" } else { "/dev/null" })
+        .args(["-c", "core.autocrlf=false", "-c", "core.eol=lf", "-c", "merge.renormalize=false"]);
+    command
 }
 
 fn synthetic_commit(root: &Path, input: &SubjectInput, tree: &str) -> Result<String> {
@@ -370,34 +388,23 @@ where
     match rename(temporary, destination) {
         Ok(()) => Ok(()),
         Err(first_error) if destination.is_file() => {
-            let file_name =
-                destination.file_name().ok_or_else(|| eyre!("receipt path has no file name"))?;
-            let backup = destination
-                .parent()
-                .filter(|parent| !parent.as_os_str().is_empty())
-                .unwrap_or(Path::new("."))
-                .join(format!(".{}.bak-{}", file_name.to_string_lossy(), std::process::id()));
-
-            rename(destination, &backup).with_context(|| {
-                format!("preserving existing receipt after replacement failed: {}", first_error)
+            // Windows cannot atomically rename over an open destination. Copying
+            // into the existing file keeps the canonical directory entry in
+            // place even if the fallback is interrupted; importantly, do not
+            // move the prior receipt out of the way first.
+            let bytes = fs::read(temporary).with_context(|| {
+                format!("reading replacement receipt after rename failed: {first_error}")
             })?;
-
-            match rename(temporary, destination) {
-                Ok(()) => {
-                    fs::remove_file(&backup)
-                        .with_context(|| format!("removing receipt backup {}", backup.display()))?;
-                    Ok(())
-                }
-                Err(replacement_error) => {
-                    if let Err(restore_error) = rename(&backup, destination) {
-                        return Err(eyre!(
-                            "receipt replacement failed ({replacement_error}); restoring prior receipt failed ({restore_error}); prior receipt preserved at {}",
-                            backup.display()
-                        ));
-                    }
-                    Err(eyre!("receipt replacement failed: {replacement_error}"))
-                }
-            }
+            let mut file =
+                fs::OpenOptions::new().write(true).truncate(true).open(destination).with_context(
+                    || format!("opening existing receipt for replacement: {first_error}"),
+                )?;
+            file.write_all(&bytes)
+                .context("writing replacement receipt while preserving destination")?;
+            file.sync_all().context("flushing replacement receipt")?;
+            drop(file);
+            fs::remove_file(temporary).context("removing replaced temporary receipt")?;
+            Ok(())
         }
         Err(error) => Err(error.into()),
     }
@@ -485,6 +492,38 @@ mod tests {
         ensure!(second_value["derived_subject_tree_sha"] == tree);
         ensure!(second_value["event_base_sha"] == base);
         ensure!(second_value["event_head_sha"] == head);
+        Ok(())
+    }
+
+    #[test]
+    fn merge_tree_is_stable_when_repository_merge_configuration_changes() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        git(temp.path(), &["init", "--quiet"])?;
+        git(temp.path(), &["config", "user.name", "test"])?;
+        git(temp.path(), &["config", "user.email", "test@example.invalid"])?;
+        fs::write(temp.path().join("tracked.txt"), "base\n")?;
+        git(temp.path(), &["add", "tracked.txt"])?;
+        git(temp.path(), &["commit", "--quiet", "-m", "base"])?;
+        let base = git(temp.path(), &["rev-parse", "HEAD"])?;
+        fs::write(temp.path().join("tracked.txt"), "head\n")?;
+        git(temp.path(), &["add", "tracked.txt"])?;
+        git(temp.path(), &["commit", "--quiet", "-m", "head"])?;
+        let head = git(temp.path(), &["rev-parse", "HEAD"])?;
+        let input = SubjectInput {
+            repository: "owner/repo".to_string(),
+            event_kind: CiEventKind::Push,
+            resolution_source: SubjectResolutionSource::ExplicitInput,
+            diff_mode: SubjectDiffMode::Direct,
+            base_sha: base.clone(),
+            head_sha: head.clone(),
+        };
+        git(temp.path(), &["config", "core.autocrlf", "true"])?;
+        git(temp.path(), &["config", "merge.renormalize", "true"])?;
+        let first = merge_tree(temp.path(), &input)?;
+        git(temp.path(), &["config", "core.autocrlf", "false"])?;
+        git(temp.path(), &["config", "merge.renormalize", "false"])?;
+        let second = merge_tree(temp.path(), &input)?;
+        ensure!(first == second, "merge tree changed with repository configuration");
         Ok(())
     }
 
@@ -766,56 +805,37 @@ mod tests {
     }
 
     #[test]
-    fn failed_receipt_replacement_restores_prior_receipt() -> Result<()> {
+    fn receipt_replacement_failure_injection_preserves_canonical_destination() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let destination = temp.path().join("receipt.json");
         let temporary = temp.path().join(".receipt.json.tmp");
-        let backup = temp.path().join(format!(".receipt.json.bak-{}", std::process::id()));
         fs::write(&destination, b"prior receipt")?;
         fs::write(&temporary, b"new receipt")?;
 
-        let mut calls = 0;
         let result = replace_receipt_file_with(&temporary, &destination, |from, to| {
-            calls += 1;
-            if calls == 1 {
-                return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "occupied"));
-            }
-            if calls == 3 {
-                return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "locked"));
-            }
-            fs::rename(from, to)
+            Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "occupied"))
         });
 
-        ensure!(result.is_err());
-        ensure!(fs::read(&destination)? == b"prior receipt");
-        ensure!(!backup.exists());
-        ensure!(temporary.exists());
+        result?;
+        ensure!(fs::read(&destination)? == b"new receipt");
+        ensure!(!temporary.exists());
         Ok(())
     }
 
     #[test]
-    fn failed_receipt_restore_failure_retains_backup_path() -> Result<()> {
+    fn receipt_replacement_non_file_destination_is_preserved() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let destination = temp.path().join("receipt.json");
         let temporary = temp.path().join(".receipt.json.tmp");
-        let backup = temp.path().join(format!(".receipt.json.bak-{}", std::process::id()));
-        fs::write(&destination, b"prior receipt")?;
+        fs::create_dir(&destination)?;
         fs::write(&temporary, b"new receipt")?;
 
-        let mut calls = 0;
         let result = replace_receipt_file_with(&temporary, &destination, |from, to| {
-            calls += 1;
-            if calls == 1 || calls == 3 || calls == 4 {
-                return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "locked"));
-            }
-            fs::rename(from, to)
+            Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "locked"))
         });
 
-        let error =
-            result.expect_err("replacement must fail when restoration is blocked").to_string();
-        ensure!(error.contains("prior receipt preserved at"));
-        ensure!(fs::read(&backup)? == b"prior receipt");
-        ensure!(!destination.exists());
+        ensure!(result.is_err());
+        ensure!(destination.is_dir());
         ensure!(temporary.exists());
         Ok(())
     }
