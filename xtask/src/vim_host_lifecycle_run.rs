@@ -445,7 +445,7 @@ impl HostSessionRecord {
     }
 
     pub fn ledger_survivors(&self) -> Option<usize> {
-        Some(self.ledger.as_ref()?.get("surviving_processes")?.as_array().map_or(0, Vec::len))
+        ledger_survivor_count(self.ledger.as_ref()?)
     }
 
     pub fn ledger_probe_available(&self) -> bool {
@@ -455,6 +455,10 @@ impl HostSessionRecord {
             .and_then(serde_json::Value::as_str)
             .is_some_and(|probe| probe == "available")
     }
+}
+
+fn ledger_survivor_count(ledger: &serde_json::Value) -> Option<usize> {
+    ledger.get("surviving_processes")?.as_array().map(Vec::len)
 }
 
 /// Execute one #11401 host-reopen lifecycle journey against the exact pinned
@@ -1571,6 +1575,24 @@ fn catalog_evidence(cell_id: &str, sessions: &[HostSessionRecord]) -> Vec<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_survivor_ledger_is_not_coerced_to_zero() {
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"surviving_processes": null}),
+            serde_json::json!({"surviving_processes": true}),
+            serde_json::json!({"surviving_processes": 0}),
+            serde_json::json!({"surviving_processes": {}}),
+        ] {
+            assert_eq!(ledger_survivor_count(&value), None);
+        }
+        assert_eq!(ledger_survivor_count(&serde_json::json!({"surviving_processes": []})), Some(0));
+        assert_eq!(
+            ledger_survivor_count(&serde_json::json!({"surviving_processes": [1, 2]})),
+            Some(2)
+        );
+    }
 
     #[test]
     fn fixture_variants_parse_and_carry_typed_negative_reasons() {

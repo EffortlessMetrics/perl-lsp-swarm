@@ -37,6 +37,6 @@ Broad globs should also include `broad_glob_reason`.
 
 ## Rollout boundary
 
-This documentation PR does not add enforcement. Enforcement belongs in the later
-file-policy checker PR described in
-[`docs/ci/perl-lsp-rust-1.95-rollout.md`](ci/perl-lsp-rust-1.95-rollout.md).
+This documentation PR does not add enforcement. Enforcement belongs to the
+file-policy checker and its current inventory in
+[`docs/policy/NON_RUST_INVENTORY.md`](policy/NON_RUST_INVENTORY.md).

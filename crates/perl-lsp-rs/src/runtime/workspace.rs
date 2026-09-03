@@ -1420,6 +1420,7 @@ impl LspServer {
     /// Updates both ServerConfig and WorkspaceConfig when the client
     /// notifies of configuration changes.
     pub(super) fn handle_did_change_configuration(&self, params: Option<Value>) {
+        self.invalidate_workspace_identity();
         if let Some(params) = params
             && let Some(settings) = params.get("settings")
         {
@@ -1590,6 +1591,16 @@ impl LspServer {
                 // Trigger client refresh for configuration-dependent features
                 if let Err(e) = self.refresh_controller.refresh_all(self) {
                     tracing::warn!(error = %e, "Failed to refresh client after config change");
+                }
+
+                self.invalidate_workspace_identity();
+
+                let open_uris: Vec<String> = {
+                    let documents = self.documents.lock();
+                    documents.keys().cloned().collect()
+                };
+                for open_uri in open_uris {
+                    self.publish_diagnostics_debounced(&open_uri);
                 }
             }
         }
@@ -2192,6 +2203,22 @@ impl LspServer {
             // Trigger client refresh after workspace folder changes
             if let Err(e) = self.refresh_controller.refresh_all(self) {
                 tracing::warn!(error = %e, "Failed to refresh client after workspace folder changes");
+            }
+
+            self.invalidate_workspace_identity();
+
+            // Legacy push clients never observe `workspace/diagnostic/refresh`
+            // (the action above is pull-only), so their already-open documents
+            // would keep stale PL900 rows after a folder reload installs a new
+            // `[perl].version` until the next edit or reopen. Schedule push
+            // republish for every open document; the sink boundary re-validates
+            // currency and the debouncer coalesces the burst (#13195 review).
+            let open_uris: Vec<String> = {
+                let documents = self.documents.lock();
+                documents.keys().cloned().collect()
+            };
+            for open_uri in open_uris {
+                self.publish_diagnostics_debounced(&open_uri);
             }
 
             // Rebuild workspace index after folder changes
@@ -2952,6 +2979,7 @@ mod tests {
     use serde_json::{Value, json};
     use std::io::{self, Write};
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn workspace_symbol_resolve_missing_params_name_method_and_field() {
@@ -3181,7 +3209,7 @@ mod tests {
             "changes": [{ "uri": change_uri.to_string(), "type": 2 }]
         })))?;
 
-        index.index_file(
+        index.index_initial_file(
             url::Url::parse(old_uri.as_str())?,
             "#!/usr/bin/env perl\nsub disk_rename { 1 }\n1;\n".to_string(),
         )?;
@@ -3241,7 +3269,7 @@ mod tests {
             )));
         let index = server.coordinator().ok_or("missing index coordinator")?.index();
 
-        index.index_file(
+        index.index_initial_file(
             url::Url::parse(create_uri.as_str())?,
             "sub stale_create { 1 }\n1;\n".to_string(),
         )?;
@@ -3254,11 +3282,11 @@ mod tests {
             "failed create classification must clear stale closed-file facts"
         );
 
-        index.index_file(
+        index.index_initial_file(
             url::Url::parse(old_uri.as_str())?,
             "sub stale_old { 1 }\n1;\n".to_string(),
         )?;
-        index.index_file(
+        index.index_initial_file(
             url::Url::parse(new_uri.as_str())?,
             "sub stale_new { 1 }\n1;\n".to_string(),
         )?;
@@ -3535,6 +3563,29 @@ mod tests {
         );
         assert_eq!(current_engine, perl_lsp_rs_core::config::CriticEngine::Native);
         Ok(())
+    }
+
+    #[test]
+    fn configuration_change_invalidates_identity_before_and_after_application() {
+        let server = LspServer::new();
+        let before = server.workspace_identity_generation.load(Ordering::SeqCst);
+
+        server.test_handle_did_change_configuration(Some(json!({
+            "settings": {
+                "perl": {
+                    "workspace": {
+                        "resolutionTimeout": 123
+                    }
+                }
+            }
+        })));
+
+        let after = server.workspace_identity_generation.load(Ordering::SeqCst);
+        assert!(
+            after >= before + 2,
+            "configuration changes must invalidate both before and after application: \
+             before={before}, after={after}"
+        );
     }
 
     #[test]

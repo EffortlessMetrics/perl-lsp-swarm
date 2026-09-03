@@ -54,6 +54,7 @@ pub mod server;
 pub mod state;
 pub mod textdoc;
 pub mod transport;
+#[path = "util_root.rs"]
 pub mod util;
 
 // Re-exports for key types
