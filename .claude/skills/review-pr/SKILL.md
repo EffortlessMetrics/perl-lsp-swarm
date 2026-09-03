@@ -173,7 +173,7 @@ from different ones.
    append one subject-bound marker generated from the current PR diff:
 
    ```bash
-   python3 scripts/ci/check-pr-semantic-review-currentness.py      <pr> <owner/repo> --emit-marker
+   python3 scripts/ci/check-pr-semantic-review-currentness.py      <pr> <owner/repo> --emit-marker --result REVIEW_CURRENT
    ```
 
    Put the emitted `<!-- semantic-review:v1 ... -->` marker in the same review body
