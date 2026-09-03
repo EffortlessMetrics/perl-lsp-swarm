@@ -1,7 +1,10 @@
 //! Editor UX scenario counting and receipt generation for quality.md.
-
-// Known-good shape assertions in tests use expect-style diagnostics.
-#![allow(clippy::expect_used)]
+//!
+//! This module owns the scenario and scorecard loaders and the top-level
+//! `generate_editor_ux_receipt`. Receipt rendering is split across two
+//! children: `flakes` holds the flake-ledger types, `load_flake_ledger`,
+//! `load_active_known_blockers` and `route_for_failure_class`; `rows` holds
+//! `top_line_metric_rows`, `workflow_rows` and their row builders.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -10,9 +13,13 @@ use std::path::Path;
 use color_eyre::eyre::{Context, Result};
 use serde::Deserialize;
 
-use crate::tasks::metrics::lsp_stats::{
-    LatencyMetric, MeasuredEditorUxScorecard, RateMetric, WorkflowResult,
-};
+use crate::tasks::metrics::lsp_stats::MeasuredEditorUxScorecard;
+
+mod flakes;
+mod rows;
+
+use flakes::load_active_known_blockers;
+use rows::{top_line_metric_rows, workflow_rows};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -30,29 +37,6 @@ struct EditorUxWorkflow {
     #[allow(dead_code)]
     ci_tier: String,
     confidence_signals: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct UxFlakeLedger {
-    entries: Vec<UxFlakeEntry>,
-}
-
-#[derive(Debug, Deserialize)]
-struct UxFlakeEntry {
-    test: String,
-    state: String,
-    #[serde(default)]
-    disposition: Option<String>,
-    #[serde(default)]
-    failure_class: Option<String>,
-    #[serde(default)]
-    component: Option<String>,
-    #[serde(default)]
-    route: Option<String>,
-    #[serde(default)]
-    issue: Option<u64>,
-    #[serde(default)]
-    owner: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -169,123 +153,77 @@ fn load_measured_scorecard(root: &Path) -> Result<Option<MeasuredEditorUxScoreca
     Ok(Some(scorecard))
 }
 
-fn load_flake_ledger(root: &Path) -> Result<UxFlakeLedger> {
-    let path = root.join(".ci/ux-flakes.json");
-    if !path.exists() {
-        return Ok(UxFlakeLedger { entries: Vec::new() });
-    }
-    let raw = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
-}
-
-fn load_active_known_blockers(root: &Path) -> Result<Vec<serde_json::Value>> {
-    let ledger = load_flake_ledger(root)?;
-    let blockers = ledger
-        .entries
-        .into_iter()
-        .filter(|entry| entry.state == "active")
-        .map(|entry| {
-            let route =
-                entry.route.or_else(|| route_for_failure_class(entry.failure_class.as_deref()));
-            serde_json::json!({
-                "test_name": entry.test,
-                "state": entry.state,
-                "disposition": entry.disposition,
-                "failure_class": entry.failure_class,
-                "component": entry.component,
-                "route": route,
-                "issue": entry.issue,
-                "owner": entry.owner,
-            })
-        })
-        .collect();
-    Ok(blockers)
-}
-
-fn top_line_metric_rows(scorecard: Option<&MeasuredEditorUxScorecard>) -> Vec<serde_json::Value> {
-    let Some(scorecard) = scorecard else {
-        return vec![
-            planned_metric_row("workflow_pass_rate"),
-            planned_metric_row("workflow_stability_rate"),
-            planned_metric_row("p95_time_to_first_useful_result_ms"),
-        ];
-    };
-
-    vec![
-        rate_metric_row("workflow_pass_rate", &scorecard.top_line.workflow_pass_rate),
-        rate_metric_row("workflow_stability_rate", &scorecard.top_line.workflow_stability_rate),
-        latency_metric_row(
-            "p95_time_to_first_useful_result_ms",
-            &scorecard.top_line.p95_time_to_first_useful_result_ms,
-        ),
-    ]
-}
-
-fn workflow_rows(scorecard: Option<&MeasuredEditorUxScorecard>) -> Vec<serde_json::Value> {
-    scorecard
-        .map(|scorecard| scorecard.workflows.iter().map(workflow_row).collect())
-        .unwrap_or_default()
-}
-
-fn planned_metric_row(name: &str) -> serde_json::Value {
-    serde_json::json!({
-        "name": name,
-        "state": "planned",
-        "owner": "perl-lsp-ux-tests",
-    })
-}
-
-fn rate_metric_row(name: &str, metric: &RateMetric) -> serde_json::Value {
-    serde_json::json!({
-        "name": name,
-        "state": metric.state,
-        "value": metric.value,
-        "basis": metric.basis,
-        "coverage": metric.coverage,
-        "confidence": metric.confidence,
-        "assumptions": metric.assumptions,
-    })
-}
-
-fn latency_metric_row(name: &str, metric: &LatencyMetric) -> serde_json::Value {
-    serde_json::json!({
-        "name": name,
-        "state": metric.state,
-        "value_ms": metric.value,
-        "basis": metric.basis,
-        "coverage": metric.coverage,
-        "confidence": metric.confidence,
-        "method": metric.method,
-        "assumptions": metric.assumptions,
-    })
-}
-
-fn workflow_row(workflow: &WorkflowResult) -> serde_json::Value {
-    serde_json::json!({
-        "id": workflow.id,
-        "scenario": workflow.scenario,
-        "subsystem_owner": workflow.subsystem_owner,
-        "pass_rate_state": workflow.pass_rate.state,
-        "stability_rate_state": workflow.stability_rate.state,
-        "p95_time_to_first_useful_result_state": workflow.p95_time_to_first_useful_result_ms.state,
-        "quarantine_age_days": workflow.quarantine_age_days,
-    })
-}
-
-fn route_for_failure_class(failure_class: Option<&str>) -> Option<String> {
-    let route = match failure_class? {
-        "provider_regression" => "provider_fix",
-        "server_crash" => "crash_fix",
-        "timeout" => "timeout_triage",
-        "infra" => "ci_investigation",
-        "matrix_drift" => "fixture_update",
-        "baseline_drift" => "baseline_update",
-        "test_race" | "new_test_bug" => "test_fix",
-        "unknown" => "triage",
-        _ => return None,
-    };
-    Some(route.to_owned())
-}
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use super::*;
+    use color_eyre::eyre::eyre;
+
+    #[test]
+    fn test_editor_ux_receipt_shape() -> Result<()> {
+        let root = crate::utils::project_root()?;
+        let receipt_raw = generate_editor_ux_receipt(&root)?;
+        let receipt: serde_json::Value = serde_json::from_str(&receipt_raw)?;
+        assert_eq!(receipt["schema_version"], 1);
+        assert!(
+            receipt["receipt_kind"] == "planning_scaffold"
+                || receipt["receipt_kind"] == "measured_status"
+        );
+        assert_eq!(receipt["scorecard"], "editor_ux");
+        assert_eq!(receipt["harness"]["crate"], "crates/perl-lsp-ux-tests");
+        assert_eq!(
+            receipt["harness"]["scenario_count"].as_u64(),
+            Some(count_ux_scenarios(&root) as u64)
+        );
+        let top_line_names = receipt["top_line_metrics"]
+            .as_array()
+            .ok_or_else(|| eyre!("top_line_metrics must be an array"))?
+            .iter()
+            .map(|row| row["name"].as_str().ok_or_else(|| eyre!("top_line metric name missing")))
+            .collect::<Result<std::collections::BTreeSet<_>>>()?;
+        assert_eq!(
+            top_line_names,
+            std::collections::BTreeSet::from([
+                "workflow_pass_rate",
+                "workflow_stability_rate",
+                "p95_time_to_first_useful_result_ms",
+            ])
+        );
+        assert_eq!(receipt["integration_points"]["ci_lane"], "just ux-tests");
+        assert!(receipt["workflow_results"].is_array());
+        assert!(receipt["known_blockers"].is_array());
+        let confidence_signals = receipt["confidence_signals"]
+            .as_array()
+            .ok_or_else(|| eyre!("confidence_signals must be an array"))?;
+        let confidence_names: std::collections::BTreeSet<&str> = confidence_signals
+            .iter()
+            .map(|row| row["name"].as_str().ok_or_else(|| eyre!("confidence signal name missing")))
+            .collect::<Result<_>>()?;
+        assert_eq!(
+            confidence_names,
+            std::collections::BTreeSet::from([
+                "manual_editor_smoke",
+                "first_five_minutes_harness",
+                "issue_burndown_regression_guard",
+            ])
+        );
+        let live_counts = collect_editor_ux_confidence_counts(&root)?;
+        for row in confidence_signals {
+            let name = row["name"].as_str().ok_or_else(|| eyre!("name missing"))?;
+            let receipt_count = row["workflow_count"]
+                .as_u64()
+                .ok_or_else(|| eyre!("workflow_count missing for {name}"))?;
+            let live_count = *live_counts.get(name).unwrap_or(&0) as u64;
+            assert_eq!(
+                receipt_count, live_count,
+                "receipt workflow_count for `{name}` ({receipt_count}) diverges from \
+                 live fixture count ({live_count}) — re-run `cargo xtask update-status` to sync"
+            );
+            assert!(receipt_count > 0, "signal `{name}` has zero workflow coverage");
+        }
+        Ok(())
+    }
+}

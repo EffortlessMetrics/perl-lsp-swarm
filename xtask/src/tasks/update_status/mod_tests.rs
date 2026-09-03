@@ -104,6 +104,8 @@ fn test_update_status_is_split_into_subsystem_modules() -> Result<()> {
         "cmd.rs",
         "dap.rs",
         "editor_ux.rs",
+        "editor_ux/flakes.rs",
+        "editor_ux/rows.rs",
         "flaky.rs",
         "lsp.rs",
         "mod.rs",
