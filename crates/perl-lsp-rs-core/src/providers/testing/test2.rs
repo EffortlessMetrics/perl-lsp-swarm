@@ -293,14 +293,16 @@ pub struct ResolvedImport {
     pub symbols: BTreeSet<String>,
     /// Pragma effect, present only for bundle imports.
     pub pragmas: Option<Test2Pragmas>,
-    /// Whether import analysis was cut short by unrecognized transform syntax.
-    ///
-    /// When this is `true`, `symbols` is a fail-closed *floor*, not a proven
-    /// set: the statement declared `-as`/`-prefix`/`-postfix` syntax that the
-    /// transform recognizer could not interpret, so no symbol could be proven
-    /// and none were guessed. Completeness-sensitive consumers must not treat
-    /// the resulting empty set as a proven "imports nothing".
-    pub analysis_limited: bool,
+}
+
+/// Internal result carrying analysis completeness alongside the stable public
+/// import shape. The completeness bit is deliberately not part of
+/// [`ResolvedImport`]'s public API: this crate is currently 0.17.x, and adding
+/// a public field would break downstream struct-literal construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedImportAnalysis {
+    resolved: ResolvedImport,
+    analysis_limited: bool,
 }
 
 /// Match `name => { ... -as => 'alias' ... }` renames in an import list.
@@ -485,6 +487,7 @@ fn scan_import_transforms(
 /// Returns `None` if `module` is not a recognized Test2 module.
 pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
     resolve_import_with(module, raw_args, RENAME_AS.as_ref(), RENAME_FIX.as_ref())
+        .map(|analysis| analysis.resolved)
 }
 
 /// [`resolve_import`] with the transform recognizers injected.
@@ -496,7 +499,7 @@ fn resolve_import_with(
     raw_args: &str,
     rename_as: Option<&Regex>,
     rename_fix: Option<&Regex>,
-) -> Option<ResolvedImport> {
+) -> Option<ResolvedImportAnalysis> {
     if !is_test2_module(module) {
         return None;
     }
@@ -510,9 +513,8 @@ fn resolve_import_with(
         && trimmed_args.ends_with(')')
         && trimmed_args[1..trimmed_args.len() - 1].trim().is_empty()
     {
-        return Some(ResolvedImport {
-            symbols: BTreeSet::new(),
-            pragmas: None,
+        return Some(ResolvedImportAnalysis {
+            resolved: ResolvedImport { symbols: BTreeSet::new(), pragmas: None },
             analysis_limited: false,
         });
     }
@@ -564,9 +566,8 @@ fn resolve_import_with(
             // keys/values as imported symbols. Fail closed instead: prove no
             // symbol rather than invent one. Pragma resolution is independent
             // of the import list, so it stays exact.
-            return Some(ResolvedImport {
-                symbols: BTreeSet::new(),
-                pragmas,
+            return Some(ResolvedImportAnalysis {
+                resolved: ResolvedImport { symbols: BTreeSet::new(), pragmas },
                 analysis_limited: true,
             });
         }
@@ -793,7 +794,10 @@ fn resolve_import_with(
         symbols.insert(helper);
     }
 
-    Some(ResolvedImport { symbols, pragmas, analysis_limited: false })
+    Some(ResolvedImportAnalysis {
+        resolved: ResolvedImport { symbols, pragmas },
+        analysis_limited: false,
+    })
 }
 
 /// Aggregate Test2 facts for an entire source file.
@@ -807,12 +811,13 @@ pub struct Test2Facts {
     pub strict: bool,
     /// Whether some Test2 bundle turned on `warnings`.
     pub warnings: bool,
-    /// Whether any Test2 statement in this file failed closed on unrecognized
-    /// transform syntax.
-    ///
-    /// When `true`, `imported_symbols` is an incomplete floor. Consumers that
-    /// would report a symbol as *not* imported (rather than merely offering
-    /// fewer completions) must treat this file's import set as unproven.
+}
+
+/// Crate-private facts plus the completeness signal needed by
+/// completeness-sensitive production consumers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Test2FactsAnalysis {
+    pub facts: Test2Facts,
     pub analysis_limited: bool,
 }
 
@@ -845,25 +850,34 @@ impl Test2Facts {
 
     /// Scan `source` for Test2 `use` statements and aggregate their effects.
     pub fn from_source(source: &str) -> Self {
+        Self::from_source_with_analysis(source).facts
+    }
+
+    /// Scan source while retaining the internal completeness result. Public
+    /// callers continue to receive the stable [`Test2Facts`] shape.
+    pub(crate) fn from_source_with_analysis(source: &str) -> Test2FactsAnalysis {
         let mut facts = Test2Facts::default();
+        let mut analysis_limited = false;
         for stmt in use_statements(source) {
             let Some((module, args)) = parse_use_statement(&stmt) else {
                 continue;
             };
-            let Some(resolved) = resolve_import(&module, &args) else {
+            let Some(resolved) =
+                resolve_import_with(&module, &args, RENAME_AS.as_ref(), RENAME_FIX.as_ref())
+            else {
                 continue;
             };
             facts.modules.push(module);
-            facts.analysis_limited |= resolved.analysis_limited;
-            for sym in resolved.symbols {
+            analysis_limited |= resolved.analysis_limited;
+            for sym in resolved.resolved.symbols {
                 facts.imported_symbols.insert(sym);
             }
-            if let Some(pragmas) = resolved.pragmas {
+            if let Some(pragmas) = resolved.resolved.pragmas {
                 facts.strict |= pragmas.strict;
                 facts.warnings |= pragmas.warnings;
             }
         }
-        facts
+        Test2FactsAnalysis { facts, analysis_limited }
     }
 }
 

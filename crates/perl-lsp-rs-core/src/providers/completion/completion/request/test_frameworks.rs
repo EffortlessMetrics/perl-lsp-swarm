@@ -57,7 +57,8 @@ pub(super) fn reconcile(
         .filter(|import| is_test2_module(import.module.as_str()))
         .map(|import| format!("{};\n", import.statement))
         .collect::<String>();
-    let test2_facts = Test2Facts::from_source(scoped_test2_source.as_str());
+    let test2_analysis = Test2Facts::from_source_with_analysis(scoped_test2_source.as_str());
+    let test2_facts = &test2_analysis.facts;
     let uses_test2 = test2_facts.uses_test2();
     let generic_test_table_present =
         completions.iter().any(|item| item.detail.as_deref() == Some(TEST_MORE_DETAIL));
@@ -88,6 +89,12 @@ pub(super) fn reconcile(
     }
 
     if !uses_test2 {
+        return;
+    }
+
+    // A failed transform parse yields a symbol floor, not a complete import
+    // set. Do not project guessed or incomplete facts into completions.
+    if test2_analysis.analysis_limited {
         return;
     }
 
