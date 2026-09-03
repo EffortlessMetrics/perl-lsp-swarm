@@ -555,9 +555,53 @@ fn test2_transform_detection_requires_option_position() {
     // Not in option position.
     assert!(!contains_transform_syntax("qw/ok as/"));
     assert!(!contains_transform_syntax("'-as'"));
-    // Longer words ending in an option spelling are not the option.
-    assert!(!contains_transform_syntax("-no_as => 1"));
+    // A longer word merely opening with an option spelling is not the option.
     assert!(!contains_transform_syntax("-aside => 1"));
+    // `-no_as` has no literal `-as` token at all.
+    assert!(!contains_transform_syntax("-no_as => 1"));
+}
+
+#[test]
+fn test2_transform_detection_covers_every_recognizer_match() {
+    // Load-bearing safety property. `resolve_import` only consults the
+    // recognizers when this detector fires, so anything the recognizers match
+    // MUST be detected — otherwise the no-transform path bareword-scans text
+    // the patterns own and fabricates imports, which is the exact leak this
+    // change exists to close.
+    //
+    // The interesting cases are the ones where a word character precedes the
+    // option token: both patterns place it after `[^}]*?`, which admits that,
+    // so a word-boundary requirement here would silently uncover them.
+    let corpus = [
+        "ok => {-as => 'my_ok'}",
+        "ok => { -as => 'my_ok' }",
+        "ok => {x-as => 'y'}",
+        "ok => {1-as => 'y'}",
+        "ok => {a-prefix => 'p'}",
+        "ok => {z-postfix => 's'}",
+        "ok => {-prefix => 'my_'}",
+        "ok => {-postfix => '_x'}",
+        "':DEFAULT', ok => {-as => 'my_ok'}",
+        "ok => {-as=>'my_ok'}",
+        "ok => {other => 1, -as => 'my_ok'}",
+    ];
+
+    let rename_as = RENAME_AS.as_ref().expect("static -as pattern compiles");
+    let rename_fix = RENAME_FIX.as_ref().expect("static -prefix/-postfix pattern compiles");
+
+    let uncovered: Vec<&str> = corpus
+        .into_iter()
+        .filter(|case| {
+            (rename_as.is_match(case) || rename_fix.is_match(case))
+                && !contains_transform_syntax(case)
+        })
+        .collect();
+
+    assert!(
+        uncovered.is_empty(),
+        "recognizer matches these but the detector reports no transform syntax, \
+         so they would reach the bareword scan: {uncovered:?}"
+    );
 }
 
 #[test]

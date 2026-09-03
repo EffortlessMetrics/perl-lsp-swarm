@@ -331,23 +331,25 @@ const TRANSFORM_OPTIONS: [&str; 3] = ["-as", "-prefix", "-postfix"];
 /// symbols; under-detection would let transform bytes reach the bareword
 /// scanner and fabricate imports from syntax atoms. The safe bias is therefore
 /// to over-detect.
+///
+/// It must cover the recognizers: anything [`RENAME_AS`] or [`RENAME_FIX`]
+/// matches has to be detected here, or `resolve_import` would take the
+/// no-transform path and bareword-scan text those patterns own. Both patterns
+/// place the option after `[^}]*?`, which admits a preceding word character,
+/// so this deliberately does *not* require a word boundary before the token —
+/// only that the token is not a prefix of a longer word (`-aside`) and that it
+/// sits in option position. `covers_every_recognizer_match` pins that.
 fn contains_transform_syntax(text: &str) -> bool {
     for option in TRANSFORM_OPTIONS {
         let mut rest = text;
         while let Some(offset) = rest.find(option) {
-            let before = &rest[..offset];
             let after = &rest[offset + option.len()..];
-            // The token must not be the tail of a longer word (`-no_as`, an
-            // exported `-aside`) and must sit in option position — followed by
-            // a fat comma, optionally through a closing quote so the quoted
-            // spelling (`{'-as' => ...}`) is recognized too.
-            let boundary_ok = before
-                .chars()
-                .next_back()
-                .is_none_or(|previous| !previous.is_alphanumeric() && previous != '_');
+            // The token must not merely open a longer word (`-aside`), and must
+            // sit in option position — followed by a fat comma, optionally
+            // through a closing quote so the quoted spelling (`{'-as' => ...}`)
+            // is recognized too.
             let tail = after.strip_prefix(['\'', '"']).unwrap_or(after);
-            if boundary_ok
-                && !after.starts_with(|next: char| next.is_alphanumeric() || next == '_')
+            if !after.starts_with(|next: char| next.is_alphanumeric() || next == '_')
                 && tail.trim_start().starts_with("=>")
             {
                 return true;
