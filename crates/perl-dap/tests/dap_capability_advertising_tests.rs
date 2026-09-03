@@ -133,13 +133,13 @@ mod capability_tests {
             !capability(&caps, "supportsStepInTargetsRequest")?,
             "supportsStepInTargetsRequest must be false while targetId has no runtime effect (#9069)"
         );
-        assert!(
-            perl_dap::feature_catalog::has_feature("dap.watchpoints"),
-            "regenerating the catalog must preserve the independently advertised watchpoints row"
-        );
-        assert!(
+        // Fail-closing stepInTargets must not disturb any other catalog row:
+        // the data-breakpoint capability keeps mirroring its own (independently
+        // fail-closed, #9091) watchpoints row in both directions.
+        assert_eq!(
             capability(&caps, "supportsDataBreakpoints")?,
-            "fail-closed targeted stepping must not downgrade watchpoint capability"
+            perl_dap::feature_catalog::has_feature("dap.watchpoints"),
+            "fail-closed targeted stepping must not alter the independent watchpoints row"
         );
 
         let dir = tempfile::tempdir()?;
@@ -156,7 +156,7 @@ mod capability_tests {
             "main",
             Source::new(source_path),
             3,
-        )])?;
+        )]);
 
         match adapter.handle_request(2, "stepInTargets", Some(serde_json::json!({"frameId": 1}))) {
             DapMessage::Response { success, command, body, message, .. } => {

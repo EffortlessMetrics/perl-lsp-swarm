@@ -736,7 +736,8 @@ impl DebugAdapter {
             command: "stepInTargets".to_string(),
             body: None,
             message: Some(
-                "stepInTargets is not supported: targeted stepping is unavailable,                  so no target IDs are published"
+                "stepInTargets is unsupported: targeted stepping is unavailable \
+                 (#9069), so no target IDs are published"
                     .to_string(),
             ),
         }
