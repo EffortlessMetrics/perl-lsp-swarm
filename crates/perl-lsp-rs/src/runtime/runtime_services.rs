@@ -539,7 +539,13 @@ impl RuntimeServices {
                 },
             );
         }
-        *self.diagnostic_debouncer.lock() = Some(debouncer);
+        // Retire the previous occupant AFTER the guard is released. This
+        // debouncer's `Drop` only posts a message today, but every slot in
+        // this component follows one rule -- never drop a worker under its
+        // own slot lock -- so adding a join to that `Drop` later cannot
+        // silently turn this line into a stall.
+        let retired = self.diagnostic_debouncer.lock().replace(debouncer);
+        drop(retired);
     }
 
     /// Schedule `uri` on the installed diagnostic debouncer. Returns `false`
@@ -650,8 +656,12 @@ impl RuntimeServices {
     pub(crate) fn install_parse_worker(&self, worker: ParseWorker) -> bool {
         let operational = worker.is_operational();
         self.begin_task_lifetime(ApplicationTaskClass::ParseWorker);
-        if operational {
-            *self.parse_worker_handle.lock() = Some(Arc::new(worker));
+        // Both branches retire the previous occupant AFTER the guard is
+        // released. `ParseWorker::Drop` drains the ready queue and joins the
+        // pool, so dropping it under the guard would hold the slot across an
+        // unbounded join and stall every concurrent `parse_worker()` reader.
+        let retired = if operational {
+            self.parse_worker_handle.lock().replace(Arc::new(worker))
         } else {
             // Retire whatever occupied the slot. Leaving a previous worker
             // installed while this lifetime retains `InstrumentFailed` would
@@ -659,14 +669,16 @@ impl RuntimeServices {
             // live worker for a class recorded as never instrumented. Clearing
             // it puts the synchronous fallback back in charge, which is what
             // the retained terminal claims.
-            self.parse_worker_handle.lock().take();
+            let retired = self.parse_worker_handle.lock().take();
             let _ = self.record_terminal(
                 ApplicationTaskClass::ParseWorker,
                 TaskTerminal::InstrumentFailed {
                     reason: "parse worker pool failed to spawn any threads".to_string(),
                 },
             );
-        }
+            retired
+        };
+        drop(retired);
         operational
     }
 
@@ -690,7 +702,12 @@ impl RuntimeServices {
                 },
             );
         }
-        *self.file_watcher_debouncer.lock() = Some(Arc::new(debouncer));
+        // Retire the previous occupant AFTER the guard is released.
+        // `FileWatcherDebouncer::Drop` calls `shutdown_now`, which joins the
+        // intake and dispatcher threads; dropping it under the guard would
+        // hold the slot across that join and stall every concurrent reader.
+        let retired = self.file_watcher_debouncer.lock().replace(Arc::new(debouncer));
+        drop(retired);
     }
 
     /// Schedule `uri` on the installed file watcher debouncer. Returns

@@ -652,6 +652,89 @@ mod tests {
     }
 
     #[test]
+    fn replacing_a_blocked_worker_never_holds_its_slot_lock_across_the_join() {
+        // `FileWatcherDebouncer::Drop` calls `shutdown_now`, which JOINS the
+        // dispatcher. If an install drops the previous occupant while still
+        // holding the slot guard, a dispatcher stuck in a callback wedges the
+        // slot and every concurrent reader with it. Only a blocked-callback
+        // replacement can catch that: the cooperative path returns promptly
+        // either way.
+        let gate: std::sync::Arc<parking_lot::Mutex<bool>> =
+            std::sync::Arc::new(parking_lot::Mutex::new(false));
+        let gate_open = std::sync::Arc::clone(&gate);
+
+        let services = std::sync::Arc::new(RuntimeServices::new());
+        services.install_file_watcher_debouncer(FileWatcherDebouncer::with_interval(
+            Duration::from_millis(1),
+            move |_uris: Vec<String>| {
+                // Bounded block so a failing assertion can never wedge teardown.
+                let start = Instant::now();
+                while !*gate_open.lock() && start.elapsed() < Duration::from_secs(30) {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            },
+        ));
+        assert!(services.schedule_file_watcher_uri("file:///blocked-replace.pl"));
+
+        let armed = (0..500).any(|_| {
+            if services.file_watcher_pressure().is_some_and(|p| p.active_subjects == 1) {
+                true
+            } else {
+                std::thread::sleep(Duration::from_millis(10));
+                false
+            }
+        });
+        assert!(armed, "dispatcher should be held inside the blocked callback");
+
+        // Replace it. The installing thread legitimately blocks in the
+        // retired worker's join; what must NOT block is the slot itself.
+        let installer_services = std::sync::Arc::clone(&services);
+        let installer = std::thread::spawn(move || {
+            installer_services.install_file_watcher_debouncer(FileWatcherDebouncer::with_interval(
+                Duration::from_millis(1),
+                |_uris: Vec<String>| {},
+            ));
+        });
+
+        // The read must happen on its own thread. A drop-under-guard install
+        // makes `file_watcher_pressure()` BLOCK on the slot mutex rather than
+        // return a stale value, so polling it inline would simply wait the
+        // block out and then pass -- measuring elapsed time instead of
+        // falsifying. Bounding the read with `recv_timeout` is what turns the
+        // stall into a failure.
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let reader_services = std::sync::Arc::clone(&services);
+        let reader = std::thread::spawn(move || {
+            // The fresh watcher has no active subjects, so observing 0 proves
+            // the swap is visible while the old worker is still joining.
+            loop {
+                if reader_services.file_watcher_pressure().is_some_and(|p| p.active_subjects == 0) {
+                    let _ = tx.send(());
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+
+        // Far below the callback's 30s bound, so a timeout here means the
+        // slot was genuinely wedged rather than merely slow.
+        let swapped = rx.recv_timeout(Duration::from_secs(3)).is_ok();
+
+        // Release before asserting: a failed assertion must not leave the
+        // callback blocked, or the joins below would wedge the test run.
+        *gate.lock() = true;
+        let _ = installer.join();
+        let _ = reader.join();
+
+        assert!(
+            swapped,
+            "a replacement must be visible to concurrent readers while the \
+             retired worker is still joining; the slot lock was held across \
+             the join"
+        );
+    }
+
+    #[test]
     fn shutdown_honors_its_deadline_while_a_watcher_callback_is_blocked() {
         // The falsifier for the bounded-settlement claim. Cancelling through
         // `FileWatcherDebouncer::shutdown_now` JOINS the dispatcher, and a
