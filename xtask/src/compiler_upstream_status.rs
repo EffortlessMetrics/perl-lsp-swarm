@@ -476,6 +476,16 @@ fn leak_violation(field: &str, value: &str) -> Option<String> {
     None
 }
 
+fn markdown_violation(field: &str, value: &str) -> Option<String> {
+    if value.chars().any(char::is_control)
+        || value.chars().any(|character| matches!(character, '`' | '|' | '[' | ']' | '(' | ')'))
+    {
+        Some(format!("field `{field}` contains Markdown control syntax"))
+    } else {
+        None
+    }
+}
+
 fn is_identifier_charset(value: &str) -> bool {
     !value.is_empty()
         && value
@@ -521,6 +531,9 @@ impl<'a> Violations<'a> {
         if let Some(violation) = leak_violation(field, value) {
             self.add(violation);
         }
+        if let Some(violation) = markdown_violation(field, value) {
+            self.add(violation);
+        }
     }
 
     fn scan_identity(&mut self, field: &str, value: &str) {
@@ -528,12 +541,20 @@ impl<'a> Violations<'a> {
             is_identifier_charset(value),
             format!("field `{field}` has invalid identity charset"),
         );
+        self.reject_unless(
+            !value.starts_with('/'),
+            format!("field `{field}` must not be an absolute POSIX path"),
+        );
         self.scan_text_value(field, value);
     }
 
     fn scan_optional_identity(&mut self, field: &str, value: &Option<String>) {
         if let Some(value) = value {
             self.scan_text_value(field, value);
+            self.reject_unless(
+                !value.starts_with('/'),
+                format!("field `{field}` must not be an absolute POSIX path"),
+            );
             self.reject_unless(
                 !value.chars().any(char::is_control),
                 format!("field `{field}` contains control characters"),
@@ -1538,6 +1559,7 @@ fn quote_text(value: &str) -> String {
 /// machine packet; front matter, badges, checks, prior prose cannot set state
 /// (falsifier 13). Output is byte-stable for identical packets.
 pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
+    validate_packet(packet).context("validate packet before Markdown rendering")?;
     let binding = &packet.subject_binding;
     let mut out = String::new();
     out.push_str("# Compiler upstream conformance status\n\n");

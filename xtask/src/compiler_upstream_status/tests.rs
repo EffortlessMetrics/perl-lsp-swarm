@@ -579,6 +579,37 @@ fn compiler_upstream_conformance_status_rejects_ineligible_evidence_and_private_
         message.contains("host/private/path") || message.contains("absolute host path"),
         "{message}"
     );
+
+    packet = project_from(dir.path())?;
+    packet.subject_binding.compiler_candidate_identity = "/opt/run/secrets/x".to_string();
+    let message = error_message(validate_packet(&packet));
+    assert!(message.contains("absolute POSIX path"), "{message}");
+
+    packet = project_from(dir.path())?;
+    packet.subject_binding.semantic_obligation_graph_identity =
+        Some("/opt/run/secrets/x".to_string());
+    let message = error_message(validate_packet(&packet));
+    assert!(message.contains("absolute POSIX path"), "{message}");
+    Ok(())
+}
+
+#[test]
+fn compiler_upstream_conformance_status_rendering_rejects_markdown_injection() -> TestResult {
+    let dir = TempDir::new()?;
+    let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+    write_inputs(dir.path(), &manifest, &[agreement_row("op-render-safe", "perl-5.38")])?;
+
+    let mut packet = project_from(dir.path())?;
+    packet.rows[0].owner.canonical_owner = "[forged](https://evil.example)".to_string();
+    assert!(render_markdown(&packet).is_err(), "Markdown link injection was rendered");
+
+    let mut packet = project_from(dir.path())?;
+    packet.rows[0].upstream_case.case_name = "safe\n- forged status: pass".to_string();
+    assert!(render_markdown(&packet).is_err(), "Markdown line injection was rendered");
+
+    let packet = project_from(dir.path())?;
+    let rendered = render_markdown(&packet)?;
+    assert!(rendered.contains("- owner: #12532"));
     Ok(())
 }
 
