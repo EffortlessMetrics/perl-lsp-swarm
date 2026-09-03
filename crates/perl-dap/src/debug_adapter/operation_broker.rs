@@ -324,6 +324,14 @@ impl OperationBroker {
         table.fifo.len() != before
     }
 
+    fn retire_or_settled(&self, id: OperationId, own_terminal: BrokerTerminal) -> BrokerTerminal {
+        if self.retire_for_completion(id) {
+            own_terminal
+        } else {
+            self.take_settled(id).unwrap_or(BrokerTerminal::SessionGone("settled"))
+        }
+    }
+
     fn take_settled(&self, id: OperationId) -> Option<BrokerTerminal> {
         lock_or_recover(&self.pending, "operation_broker.pending").settled.remove(&id)
     }
@@ -419,13 +427,11 @@ impl OperationBroker {
             if let Some(token) = &operation.cancellation
                 && token.is_cancelled()
             {
-                self.retire(operation.id);
-                return BrokerTerminal::Cancelled;
+                return self.retire_or_settled(operation.id, BrokerTerminal::Cancelled);
             }
             if shared_cancel.load(Ordering::Acquire) {
                 shared_cancel.store(false, Ordering::Release);
-                self.retire(operation.id);
-                return BrokerTerminal::Cancelled;
+                return self.retire_or_settled(operation.id, BrokerTerminal::Cancelled);
             }
             // A session-end settle removed this operation from the table.
             if !self.is_pending(operation.id) {
@@ -465,8 +471,7 @@ impl OperationBroker {
             }
 
             if Instant::now() >= deadline {
-                self.retire(operation.id);
-                return BrokerTerminal::TimedOut;
+                return self.retire_or_settled(operation.id, BrokerTerminal::TimedOut);
             }
 
             std::thread::sleep(Duration::from_millis(DEBUGGER_FRAME_POLL_MS));
@@ -694,6 +699,32 @@ mod tests {
             BrokerTerminal::Completed(payload(&["ok".to_string()])),
             "cancellation of one operation must not touch the other pending operation"
         );
+    }
+
+    #[test]
+    fn settlement_wins_cancellation_and_consumes_saved_terminal() {
+        let broker = OperationBroker::new();
+        let operation = broker.submit(query_spec(&broker, NEGATIVE_WAIT)).expect("submit");
+        broker.settle_all("debugger_eof");
+
+        assert_eq!(
+            broker.retire_or_settled(operation.id, BrokerTerminal::Cancelled),
+            BrokerTerminal::SessionGone("debugger_eof")
+        );
+        assert!(broker.take_settled(operation.id).is_none());
+    }
+
+    #[test]
+    fn settlement_wins_timeout_and_consumes_saved_terminal() {
+        let broker = OperationBroker::new();
+        let operation = broker.submit(query_spec(&broker, NEGATIVE_WAIT)).expect("submit");
+        broker.settle_all("restart");
+
+        assert_eq!(
+            broker.retire_or_settled(operation.id, BrokerTerminal::TimedOut),
+            BrokerTerminal::SessionGone("restart")
+        );
+        assert!(broker.take_settled(operation.id).is_none());
     }
 
     #[test]
