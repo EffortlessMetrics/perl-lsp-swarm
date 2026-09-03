@@ -338,13 +338,27 @@ pub fn validate(
         // boundary are. `retirement_owner = "   "` satisfies `is_some` and
         // would carry a blank owner all the way into the inventory, so the
         // check is on the trimmed content.
-        if class == ActivationClass::CompatibilityShim
-            && (is_blank(record.retirement_owner.as_deref())
-                || is_blank(record.retirement_boundary.as_deref()))
-        {
+        if class == ActivationClass::CompatibilityShim {
+            if is_blank(record.retirement_owner.as_deref())
+                || is_blank(record.retirement_boundary.as_deref())
+            {
+                violations.push(format!(
+                    "override `{}`: compatibility shim requires a retirement owner and boundary",
+                    record.surface_id
+                ));
+            }
+        } else if record.retirement_owner.is_some() || record.retirement_boundary.is_some() {
+            // The rule is `iff`, and the other half was silent: only a
+            // compatibility shim emits a retirement plan, so these fields on
+            // any other class were accepted by validation and then dropped by
+            // `build_rows`. Hand-maintained lifecycle data disappearing
+            // without a word is worse than either keeping or refusing it —
+            // the author has no way to learn their edit had no effect.
             violations.push(format!(
-                "override `{}`: compatibility shim requires a retirement owner and boundary",
-                record.surface_id
+                "override `{}`: only a compatibility_shim carries a retirement plan, but this \
+                 `{}` row sets one; it would be silently dropped from the generated inventory",
+                record.surface_id,
+                class.as_str()
             ));
         }
         match derived.get(&record.surface_id) {

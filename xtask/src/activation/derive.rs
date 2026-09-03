@@ -65,6 +65,14 @@ fn not_evaluated() -> Promotion {
 // features.toml -> product, preview
 // ---------------------------------------------------------------------------
 
+/// `features.toml` -> product and preview rows.
+///
+/// One authority yields two classes, so both rule outputs are returned
+/// together: a feature is `product` when it is `proven` AND advertised, and
+/// `preview` when its maturity says so. Everything else is deliberately not
+/// seeded — earned-claim maturity stays owned by `features.toml`, and the
+/// rule records that rather than implying the remainder are ordinary build
+/// features.
 fn derive_features(root: &Path) -> Result<(RuleOutput, RuleOutput), ActivationError> {
     let text = read_text(root, FEATURES_TOML)?;
     let value: toml::Value = toml::from_str(&text)
@@ -143,6 +151,13 @@ fn derive_features(root: &Path) -> Result<(RuleOutput, RuleOutput), ActivationEr
     Ok((product, preview))
 }
 
+/// Build one row from a `[[feature]]` entry.
+///
+/// The classification inputs are required rather than defaulted, and an
+/// absent optional value is distinguished from a present unreadable one:
+/// `features.toml` writes the literal `missing` for a recorded absence, so
+/// collapsing a wrong-typed value into that sentinel would fabricate
+/// provenance the authority never stated.
 fn feature_row(
     id: &str,
     feature: &toml::Value,
@@ -274,6 +289,14 @@ fn crate_dir_of(path: &str) -> Option<String> {
 // .ci/gate-policy.yaml -> gate
 // ---------------------------------------------------------------------------
 
+/// `.ci/gate-policy.yaml` -> gate rows.
+///
+/// Mirrors `GateDefinition` (`xtask/src/tasks/gates.rs`) rather than being
+/// more permissive than it: `tier` and `description` are required there, so
+/// a gate missing either is malformed authority data, not a row to record
+/// with empty strings. `required` is optional and absent means `true`,
+/// matching the runner's own default — recording `false` would understate
+/// enforcement.
 fn derive_gates(root: &Path) -> Result<RuleOutput, ActivationError> {
     let text = read_text(root, GATE_POLICY_YAML)?;
     let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text).map_err(|error| {
@@ -385,6 +408,11 @@ fn derive_gates(root: &Path) -> Result<RuleOutput, ActivationError> {
 // crates/*/Cargo.toml [features] test-*/expose_*/stress-tests/experimental-* -> test_api
 // ---------------------------------------------------------------------------
 
+/// Every workspace crate manifest, parsed, in sorted directory order.
+///
+/// Sorted so derivation does not depend on filesystem iteration order, and
+/// entry errors are propagated rather than dropped: a directory that cannot
+/// be read is a missing input, not an empty one.
 fn sorted_crate_manifests(root: &Path) -> Result<Vec<(String, toml::Value)>, ActivationError> {
     let crates_dir = root.join("crates");
     // A discarded directory-entry error would silently shrink the input set:
@@ -436,6 +464,7 @@ fn package_name(manifest_path: &str, manifest: &toml::Value) -> Result<String, A
         })
 }
 
+/// `crates/*/Cargo.toml` `[[bench]]` targets -> benchmark rows.
 fn derive_benches(root: &Path) -> Result<RuleOutput, ActivationError> {
     let manifests = sorted_crate_manifests(root)?;
     let mut rows = Vec::new();
@@ -762,6 +791,63 @@ fn feature_usage_closure(
     Ok(sites)
 }
 
+/// The package a dependency key refers to, following a `package = "…"` rename.
+///
+/// `alias = { package = "real-name" }` means `alias/feat` forwards into
+/// `real-name`. Taking the key at face value would look up a package that
+/// does not exist.
+fn dependency_package_name(manifest: &toml::Value, dependency: &str) -> String {
+    for table in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        if let Some(renamed) = manifest
+            .get(table)
+            .and_then(toml::Value::as_table)
+            .and_then(|entries| entries.get(dependency))
+            .and_then(|entry| entry.get("package"))
+            .and_then(toml::Value::as_str)
+        {
+            return renamed.to_string();
+        }
+    }
+    dependency.to_string()
+}
+
+/// The `crates/` directory declaring this package, or `None` if no workspace
+/// crate does.
+///
+/// A package name need not equal its directory name, so the manifests are
+/// consulted rather than the path guessed. The common case — they match — is
+/// checked first so the scan is only paid when it does not.
+fn package_directory(root: &Path, package: &str) -> Option<String> {
+    let direct = root.join("crates").join(package).join("Cargo.toml");
+    if direct.is_file()
+        && fs::read_to_string(&direct)
+            .ok()
+            .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
+            .and_then(|manifest| manifest.get("package")?.get("name")?.as_str().map(str::to_string))
+            .is_some_and(|name| name == package)
+    {
+        return Some(package.to_string());
+    }
+    let entries = fs::read_dir(root.join("crates")).ok()?;
+    let mut directories: Vec<String> = entries
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+        .collect();
+    directories.sort();
+    directories.into_iter().find(|directory| {
+        fs::read_to_string(root.join("crates").join(directory).join("Cargo.toml"))
+            .ok()
+            .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
+            .and_then(|manifest| manifest.get("package")?.get("name")?.as_str().map(str::to_string))
+            .is_some_and(|name| name == package)
+    })
+}
+
+/// Accumulate cfg sites for one feature and everything it forwards into.
+///
+/// See [`feature_usage_closure`] for why the closure rather than the
+/// declaring package is the sound unit of evidence.
 fn collect_feature_usage(
     root: &Path,
     index: &GateIndex,
@@ -810,15 +896,35 @@ fn collect_feature_usage(
         })?;
         // `dep:name` enables an optional dependency and gates nothing by
         // itself; `pkg/feat` and `pkg?/feat` forward into that package.
-        let Some((package, forwarded)) = entry.split_once('/') else {
+        let Some((dependency, forwarded)) = entry.split_once('/') else {
             continue;
         };
-        let package = package.trim_end_matches('?').trim_start_matches("dep:");
-        collect_feature_usage(root, index, package, forwarded, visited, sites)?;
+        let dependency = dependency.trim_end_matches('?').trim_start_matches("dep:");
+        // The name before the slash is a DEPENDENCY key, which is neither a
+        // directory name nor necessarily the package name: a renamed
+        // dependency (`alias = { package = "real-name" }`) forwards under its
+        // alias. Resolving it as a directory would find nothing, silently
+        // truncate the evidence, and leave an all-tests population behind —
+        // the same over-classification this closure exists to prevent. It is
+        // also the assumption `package_name` refuses to make elsewhere in
+        // this file.
+        let package = dependency_package_name(&manifest, dependency);
+        let Some(target_dir) = package_directory(root, &package) else {
+            // Not a workspace crate (a registry dependency): no in-repository
+            // source to read, so it contributes no evidence either way.
+            continue;
+        };
+        collect_feature_usage(root, index, &target_dir, forwarded, visited, sites)?;
     }
     Ok(())
 }
 
+/// `crates/*/Cargo.toml` -> test_api rows, by declared name or proven usage.
+///
+/// The gate index is built once up front: gathering sites per feature meant
+/// rescanning every crate's sources once per feature and again per forwarded
+/// crate, which took generation from under a second to three and a half
+/// minutes.
 fn derive_test_features(root: &Path) -> Result<RuleOutput, ActivationError> {
     let manifests = sorted_crate_manifests(root)?;
     let gate_index = build_gate_index(root)?;
@@ -926,6 +1032,12 @@ fn derive_test_features(root: &Path) -> Result<RuleOutput, ActivationError> {
 // fuzz/fuzz_targets/*.rs -> lab
 // ---------------------------------------------------------------------------
 
+/// `fuzz/fuzz_targets/*.rs` -> lab rows, identified by registered bin name.
+///
+/// A target's surface id follows what `cargo fuzz` actually runs, not the
+/// source file stem: `fuzz_target_1.rs` is registered as `parser_integration`,
+/// and naming the row after the file would invent an identity no consumer
+/// uses.
 fn derive_fuzz(root: &Path) -> Result<RuleOutput, ActivationError> {
     let targets_dir = root.join(FUZZ_TARGETS_DIR);
     // Same reasoning as `sorted_crate_manifests`: a dropped entry error would
@@ -1372,6 +1484,43 @@ mod tests {
         assert!(write(
             &root,
             "crates/core-dep/src/lib.rs",
+            "#[cfg(feature = \"ga-lock\")]\npub fn production() {}\n"
+        ));
+        let ids = derive_test_features(&root)
+            .map(|output| output.rows.iter().map(|row| row.surface_id.clone()).collect::<Vec<_>>());
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(ids, Ok(Vec::new()));
+    }
+
+    #[test]
+    fn forwarding_resolves_a_renamed_dependency_to_its_real_package() {
+        // The name before the slash is a dependency KEY. Under
+        // `alias = { package = "real-name" }` it is neither the package name
+        // nor the directory, so resolving it as a directory finds nothing and
+        // silently truncates the evidence — leaving an all-tests population
+        // and a production feature claimed as a test API.
+        let root = scratch_root("feature-renamed-dep");
+        assert!(write(
+            &root,
+            "crates/wrapper/Cargo.toml",
+            "[package]\nname = \"wrapper\"\n\
+             [dependencies]\ncore-alias = { package = \"real-core\", path = \"../real-core-dir\" }\n\
+             [features]\nga-lock = [\"core-alias/ga-lock\"]\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/wrapper/tests/only.rs",
+            "#[cfg(feature = \"ga-lock\")]\nfn t() {}\n"
+        ));
+        // Package name differs from BOTH the alias and its directory.
+        assert!(write(
+            &root,
+            "crates/real-core-dir/Cargo.toml",
+            "[package]\nname = \"real-core\"\n[features]\nga-lock = []\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/real-core-dir/src/lib.rs",
             "#[cfg(feature = \"ga-lock\")]\npub fn production() {}\n"
         ));
         let ids = derive_test_features(&root)

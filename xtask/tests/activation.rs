@@ -753,3 +753,33 @@ fn a_feature_forwarding_into_production_code_is_not_a_test_api() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn a_non_shim_override_may_not_carry_a_retirement_plan() -> TestResult {
+    // The shim rule is `iff`, and the other half was silent: only a
+    // compatibility_shim emits a retirement plan, so these fields on any
+    // other class were accepted by validation and then dropped by
+    // `build_rows`. Hand-maintained lifecycle data must not disappear
+    // without a word.
+    let (mut file, index) = overrides_and_index()?;
+    let oracle = file
+        .overrides
+        .iter_mut()
+        .find(|record| record.surface_id == "crate:tree-sitter-perl-c")
+        .ok_or("oracle override row not found")?;
+    oracle.retirement_owner = Some("#9999".to_string());
+    expect_override_violation(&file, &index, "it would be silently dropped")
+}
+
+#[test]
+fn a_non_shim_override_without_a_retirement_plan_is_accepted() -> TestResult {
+    // The control that keeps the new rule from rejecting the committed
+    // ledger, whose oracle row correctly sets no retirement fields.
+    let (file, index) = overrides_and_index()?;
+    let violations = validate_overrides(&repo_root(), &file, &index);
+    assert!(
+        !violations.iter().any(|violation| violation.contains("silently dropped")),
+        "the committed ledger must satisfy the iff rule: {violations:?}"
+    );
+    Ok(())
+}

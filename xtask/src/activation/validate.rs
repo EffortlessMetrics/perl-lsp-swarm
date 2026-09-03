@@ -68,6 +68,7 @@ pub fn validate_inventory_value(
     Ok(inventory)
 }
 
+/// Validate a document against the committed JSON Schema.
 fn schema_violations(schema: &Value, value: &Value) -> Result<Vec<String>, ActivationError> {
     let validator = jsonschema::validator_for(schema)
         .map_err(|error| ActivationError::new(format!("{SCHEMA_PATH}: invalid schema: {error}")))?;
@@ -104,6 +105,11 @@ fn check_raw_rows(value: &Value, violations: &mut Vec<String>) {
     }
 }
 
+/// Check every row's authority, consumer, and proof-reference paths, then
+/// its class rules.
+///
+/// Violations accumulate rather than short-circuiting: a reader fixing a
+/// ledger wants every problem at once, not one per run.
 fn validate_rows(root: &Path, inventory: &ActivationInventory, violations: &mut Vec<String>) {
     for row in &inventory.rows {
         check_authority_path(
@@ -170,6 +176,12 @@ fn validate_rows(root: &Path, inventory: &ActivationInventory, violations: &mut 
     }
 }
 
+/// The rules a row must satisfy for the class it claims.
+///
+/// These restate in Rust what the JSON Schema enforces for external
+/// consumers, so a failure reads as a named rule instead of a raw schema
+/// error path. Neither surface is redundant: proving only one would let the
+/// other rot silently.
 fn validate_class_rules(row: &ActivationRow, violations: &mut Vec<String>) {
     if row.owner.trim().is_empty() {
         violations.push(format!("row `{}`: requires a non-blank owner", row.surface_id));
@@ -240,6 +252,12 @@ fn validate_class_rules(row: &ActivationRow, violations: &mut Vec<String>) {
     }
 }
 
+/// Check that an authority reference resolves inside the repository.
+///
+/// The path is constrained before it is probed, because `Path::join`
+/// discards its root for an absolute path and a `..` component climbs out of
+/// the tree — either would let the host filesystem answer a question about
+/// this repository.
 fn check_authority_path(
     root: &Path,
     surface_id: &str,
@@ -294,6 +312,10 @@ pub(super) fn is_repository_relative(path: &str) -> bool {
             .all(|component| matches!(component, std::path::Component::Normal(_)))
 }
 
+/// Whether an `authority#fragment` reference resolves to a real key.
+///
+/// A path that exists proves the file is there; only the fragment proves the
+/// authority actually says the thing the row cites it for.
 fn authority_fragment_exists(root: &Path, path: &str, fragment: &str) -> bool {
     let Ok(text) = fs::read_to_string(root.join(path)) else {
         return false;
