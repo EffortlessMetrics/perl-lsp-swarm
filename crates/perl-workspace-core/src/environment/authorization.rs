@@ -61,6 +61,25 @@ const EVIDENCE_ID_DOMAIN: &str = "execution_authorization.evidence.v1";
 const REQUIREMENT_ID_DOMAIN: &str = "execution_authorization.requirement.v1";
 const CLASSIFIED_INPUT_ID_DOMAIN: &str = "execution_authorization.input.v1";
 
+/// Maximum length of a caller-supplied identifier carried by this contract.
+///
+/// #11095 requires public identities and explanations to be *bounded*. Every
+/// caller-authored string that can reach an identity, a receipt, or the public
+/// explanation is length-checked so an unbounded value cannot be injected into
+/// an authorization record.
+pub const MAX_IDENTIFIER_LEN: usize = 256;
+
+/// Maximum length of an intent's claim boundary, which is prose rather than an
+/// identifier and is allowed more room.
+pub const MAX_CLAIM_BOUNDARY_LEN: usize = 1024;
+
+fn check_bounded(value: &str, field: &'static str, limit: usize) -> Result<(), AuthorizationError> {
+    if value.len() > limit {
+        return Err(AuthorizationError::UnboundedField { field, limit, actual: value.len() });
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Capabilities
 // ---------------------------------------------------------------------------
@@ -298,6 +317,13 @@ impl TrustScope {
         if self.workspace_id.is_empty() {
             return Err(AuthorizationError::EmptyScopeWorkspaceId);
         }
+        check_bounded(&self.workspace_id, "scope.workspace_id", MAX_IDENTIFIER_LEN)?;
+        if let Some(root) = self.root_id.as_deref() {
+            check_bounded(root, "scope.root_id", MAX_IDENTIFIER_LEN)?;
+        }
+        if let Some(session) = self.session_id.as_deref() {
+            check_bounded(session, "scope.session_id", MAX_IDENTIFIER_LEN)?;
+        }
         if self.root_id.as_deref().is_some_and(str::is_empty) {
             return Err(AuthorizationError::EmptyScopeComponent { field: "root_id" });
         }
@@ -524,9 +550,12 @@ impl OperationTrustRequirement {
             OperationProfile::SourceAnalysisOnly => {
                 (&[Cap::SourceAnalysis], RequiredScope::EitherScope)
             }
-            OperationProfile::ModuleResolutionExternalRead => {
-                (&[Cap::SourceAnalysis, Cap::ExternalRead], RequiredScope::EitherScope)
-            }
+            // Reading roots outside the workspace is, by definition, using a
+            // path outside the root: the two travel together.
+            OperationProfile::ModuleResolutionExternalRead => (
+                &[Cap::SourceAnalysis, Cap::ExternalRead, Cap::OutsideRootPath],
+                RequiredScope::EitherScope,
+            ),
             // Running a file is at least as much execution as compile-checking
             // one, so it carries the same environment authority.
             OperationProfile::RunCurrentSavedFile => (
@@ -604,6 +633,7 @@ impl OperationTrustRequirement {
             OperationProfile::OracleOrCorpusHarness => (
                 &[
                     Cap::ExternalRead,
+                    Cap::OutsideRootPath,
                     Cap::ExecutableTool,
                     Cap::EnvironmentCodeLoading,
                     Cap::ProjectCodeExecution,
@@ -1235,6 +1265,8 @@ impl AuthorizationEvidence {
             // after construction and keep its already-approved identity.
             // Recomputing here catches that before any capability is evaluated,
             // not only on the deserialization path.
+            check_bounded(&input.semantic_key, "input.semantic_key", MAX_IDENTIFIER_LEN)?;
+            check_bounded(&input.explanation_code, "input.explanation_code", MAX_IDENTIFIER_LEN)?;
             if !input.identity_matches_fields() {
                 return Err(AuthorizationError::ForgedInputIdentity { input_id: input.id.clone() });
             }
@@ -1246,6 +1278,11 @@ impl AuthorizationEvidence {
             if session_override.override_id.is_empty() {
                 return Err(AuthorizationError::EmptyOverrideId);
             }
+            check_bounded(
+                &session_override.override_id,
+                "override.override_id",
+                MAX_IDENTIFIER_LEN,
+            )?;
             if session_override.expires_after_policy_generation
                 < session_override.granted_policy_generation
             {
@@ -1256,7 +1293,13 @@ impl AuthorizationEvidence {
             if denial.policy_id.is_empty() || denial.reason_code.is_empty() {
                 return Err(AuthorizationError::EmptyPolicyField);
             }
+            check_bounded(&denial.policy_id, "policy.policy_id", MAX_IDENTIFIER_LEN)?;
+            check_bounded(&denial.reason_code, "policy.reason_code", MAX_IDENTIFIER_LEN)?;
         }
+        for limitation in &self.limitations {
+            check_bounded(&limitation.code, "limitation.code", MAX_IDENTIFIER_LEN)?;
+        }
+        check_bounded(self.actor.actor_id(), "actor.id", MAX_IDENTIFIER_LEN)?;
         Ok(())
     }
 }
@@ -1388,6 +1431,7 @@ impl ExecutionIntent {
         if self.claim_boundary.is_empty() {
             return Err(AuthorizationError::EmptyClaimBoundary);
         }
+        check_bounded(&self.claim_boundary, "intent.claim_boundary", MAX_CLAIM_BOUNDARY_LEN)?;
         let requirement = OperationTrustRequirement::for_profile(self.profile);
         if !self.requested.contains_all(&requirement.required) {
             return Err(AuthorizationError::UnderDeclaredCapabilities {
@@ -1832,6 +1876,15 @@ pub struct PublicAuthorizationExplanation {
 /// Error raised while validating authorization inputs or a decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthorizationError {
+    /// A caller-supplied string exceeds the bound this contract publishes.
+    UnboundedField {
+        /// Offending field name.
+        field: &'static str,
+        /// Maximum accepted length.
+        limit: usize,
+        /// Observed length.
+        actual: usize,
+    },
     /// A scope carries an empty workspace identity.
     EmptyScopeWorkspaceId,
     /// An optional scope component is present but empty, which would alias the
@@ -1901,6 +1954,9 @@ pub enum AuthorizationError {
 impl std::fmt::Display for AuthorizationError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::UnboundedField { field, limit, actual } => {
+                write!(formatter, "{field} is {actual} bytes, exceeding the {limit}-byte bound")
+            }
             Self::EmptyScopeWorkspaceId => formatter.write_str("trust scope workspace ID is empty"),
             Self::EmptyScopeComponent { field } => {
                 write!(formatter, "trust scope {field} is present but empty")

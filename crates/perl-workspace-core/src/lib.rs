@@ -94,10 +94,10 @@ pub use environment::authorization::{
     BoundGenerations, CapabilitySet, ClassifiedInput, ClassifiedInputId,
     EXECUTION_AUTHORIZATION_SCHEMA_VERSION, EvidenceLimitation, ExecutionAuthorizationDecision,
     ExecutionCapability, ExecutionIntent, ExecutionIntentId, ExecutionReasonClass,
-    InputDisposition, InputRiskClass, OPERATION_REGISTRY_VERSION, OperationProfile,
-    OperationTrustRequirement, PolicyDenial, PublicAuthorizationExplanation, RequiredScope,
-    RevalidationRequirement, SessionOverride, TrustScope, TrustScopeKind, authorize,
-    operation_registry,
+    InputDisposition, InputRiskClass, MAX_CLAIM_BOUNDARY_LEN, MAX_IDENTIFIER_LEN,
+    OPERATION_REGISTRY_VERSION, OperationProfile, OperationTrustRequirement, PolicyDenial,
+    PublicAuthorizationExplanation, RequiredScope, RevalidationRequirement, SessionOverride,
+    TrustScope, TrustScopeKind, authorize, operation_registry,
 };
 pub use environment::{
     BuildSystemFactRef, BuildSystemKind, EnvironmentBuildError, EnvironmentFingerprint,

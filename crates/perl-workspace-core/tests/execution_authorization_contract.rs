@@ -14,9 +14,9 @@ use perl_workspace_core::{
     BoundGenerations, CapabilitySet, ClassifiedInput, ClassifiedInputId,
     EXECUTION_AUTHORIZATION_SCHEMA_VERSION, EnvironmentFingerprint, EnvironmentInputAuthority,
     EvidenceLimitation, ExecutionCapability, ExecutionIntent, ExecutionReasonClass,
-    InputDisposition, InputRiskClass, OperationProfile, OperationTrustRequirement, PolicyDenial,
-    ProjectEnvironmentSnapshotBuilder, RequiredScope, SessionOverride, TrustScope, TrustScopeKind,
-    WorkspaceTrust, authorize, operation_registry,
+    InputDisposition, InputRiskClass, MAX_CLAIM_BOUNDARY_LEN, MAX_IDENTIFIER_LEN, OperationProfile,
+    OperationTrustRequirement, PolicyDenial, ProjectEnvironmentSnapshotBuilder, RequiredScope,
+    SessionOverride, TrustScope, TrustScopeKind, WorkspaceTrust, authorize, operation_registry,
 };
 
 fn require(condition: bool, message: &str) -> Result<(), Box<dyn Error>> {
@@ -424,13 +424,18 @@ fn path_only_tool_is_weaker_than_explicit_selection() -> Result<(), Box<dyn Erro
     Ok(())
 }
 
-/// An external absolute include root is withheld; a workspace-relative one is not.
+/// A requested capability beyond the profile's requirement is withheld, not granted.
+///
+/// `SourceAnalysisOnly` requires only source analysis, so `OutsideRootPath`
+/// here is a genuine extra: the operation still proceeds, with the extra named
+/// as omitted. (`ModuleResolutionExternalRead` can no longer serve this fixture
+/// — it now *requires* outside-root authority, so an unconfirmed path blocks it
+/// outright rather than limiting it.)
 #[test]
-fn external_include_root_is_withheld_as_limited() -> Result<(), Box<dyn Error>> {
+fn requested_extra_capability_is_withheld_as_limited() -> Result<(), Box<dyn Error>> {
     let scope = TrustScope::editor_workspace("ws");
     let bound = generations("ws", 1)?;
-
-    let external = ClassifiedInput::new(
+    let unconfirmed = ClassifiedInput::new(
         "include.root",
         InputRiskClass::ExternalAbsolutePath,
         EnvironmentInputAuthority::WorkspaceConvention,
@@ -438,75 +443,83 @@ fn external_include_root_is_withheld_as_limited() -> Result<(), Box<dyn Error>> 
         None,
         "external_include_root",
     );
-    let contained = ClassifiedInput::new(
-        "include.root",
-        InputRiskClass::WorkspaceContainedPath,
-        EnvironmentInputAuthority::WorkspaceConvention,
-        InputDisposition::Accepted,
-        None,
-        "workspace_include_root",
-    );
 
-    let requested = CapabilitySet::new([
+    let mut request = intent(
+        OperationProfile::SourceAnalysisOnly,
+        ExecutionReasonClass::Probe,
+        &scope,
+        &bound,
+        vec![unconfirmed.id.clone()],
+    );
+    request.requested = CapabilitySet::new([
         ExecutionCapability::SourceAnalysis,
-        ExecutionCapability::ExternalRead,
         ExecutionCapability::OutsideRootPath,
     ]);
 
-    let mut external_intent = intent(
-        OperationProfile::ModuleResolutionExternalRead,
-        ExecutionReasonClass::Probe,
-        &scope,
-        &bound,
-        vec![external.id.clone()],
-    );
-    external_intent.requested = requested.clone();
-    let external_decision = authorize(
-        &external_intent,
+    let decision = authorize(
+        &request,
         &evidence(
             &scope,
             WorkspaceTrust::Trusted,
             AuthorizationActor::None,
             &bound,
-            vec![external],
-        ),
-    );
-
-    let mut contained_intent = intent(
-        OperationProfile::ModuleResolutionExternalRead,
-        ExecutionReasonClass::Probe,
-        &scope,
-        &bound,
-        vec![contained.id.clone()],
-    );
-    contained_intent.requested = requested;
-    let contained_decision = authorize(
-        &contained_intent,
-        &evidence(
-            &scope,
-            WorkspaceTrust::Trusted,
-            AuthorizationActor::None,
-            &bound,
-            vec![contained],
+            vec![unconfirmed],
         ),
     );
 
     require(
-        external_decision.outcome() == AuthorizationOutcome::AllowedLimited,
-        "an unconfirmed external root yields a limited allow",
+        decision.outcome() == AuthorizationOutcome::AllowedLimited,
+        "an unconfirmed extra yields a limited allow",
     )?;
     require(
-        external_decision.omitted().contains(ExecutionCapability::OutsideRootPath),
-        "the limited allow must name the withheld outside-root capability",
+        decision.omitted().contains(ExecutionCapability::OutsideRootPath),
+        "the limited allow must name the withheld capability",
     )?;
     require(
-        !external_decision.permits(ExecutionCapability::OutsideRootPath),
+        !decision.permits(ExecutionCapability::OutsideRootPath),
         "a withheld capability must not be permitted",
     )?;
     require(
-        contained_decision.outcome() == AuthorizationOutcome::Allowed,
-        "a workspace-contained root needs no outside-root authority",
+        decision.permits(ExecutionCapability::SourceAnalysis),
+        "the required capability is still granted",
     )?;
+    Ok(())
+}
+
+/// An unconfirmed external root now blocks the profile that requires it.
+#[test]
+fn unconfirmed_external_root_blocks_module_resolution() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let unconfirmed = ClassifiedInput::new(
+        "include.root",
+        InputRiskClass::ExternalAbsolutePath,
+        EnvironmentInputAuthority::WorkspaceConvention,
+        InputDisposition::ConfirmationRequired,
+        None,
+        "external_include_root",
+    );
+    let decision = authorize(
+        &intent(
+            OperationProfile::ModuleResolutionExternalRead,
+            ExecutionReasonClass::Probe,
+            &scope,
+            &bound,
+            vec![unconfirmed.id.clone()],
+        ),
+        &evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::None,
+            &bound,
+            vec![unconfirmed],
+        ),
+    );
+    require(
+        decision.outcome() == AuthorizationOutcome::ConfirmationRequired,
+        "outside-root authority is required here, so an unconfirmed path blocks it",
+    )?;
+    require(decision.granted().is_empty(), "a non-permitting outcome grants nothing")?;
     Ok(())
 }
 
@@ -1985,7 +1998,7 @@ fn tampering_bound_generations_fails_revalidation() -> Result<(), Box<dyn Error>
 fn tampering_allowed_limited_split_fails_revalidation() -> Result<(), Box<dyn Error>> {
     let scope = TrustScope::editor_workspace("ws");
     let bound = generations("ws", 1)?;
-    let external = ClassifiedInput::new(
+    let unconfirmed = ClassifiedInput::new(
         "include.root",
         InputRiskClass::ExternalAbsolutePath,
         EnvironmentInputAuthority::WorkspaceConvention,
@@ -1994,15 +2007,14 @@ fn tampering_allowed_limited_split_fails_revalidation() -> Result<(), Box<dyn Er
         "external_include_root",
     );
     let mut request = intent(
-        OperationProfile::ModuleResolutionExternalRead,
+        OperationProfile::SourceAnalysisOnly,
         ExecutionReasonClass::Probe,
         &scope,
         &bound,
-        vec![external.id.clone()],
+        vec![unconfirmed.id.clone()],
     );
     request.requested = CapabilitySet::new([
         ExecutionCapability::SourceAnalysis,
-        ExecutionCapability::ExternalRead,
         ExecutionCapability::OutsideRootPath,
     ]);
     let decision = authorize(
@@ -2012,7 +2024,7 @@ fn tampering_allowed_limited_split_fails_revalidation() -> Result<(), Box<dyn Er
             WorkspaceTrust::Trusted,
             AuthorizationActor::None,
             &bound,
-            vec![external],
+            vec![unconfirmed],
         ),
     );
     require(
@@ -2024,7 +2036,7 @@ fn tampering_allowed_limited_split_fails_revalidation() -> Result<(), Box<dyn Er
     // Move the withheld capability out of `omitted` and into `granted`.
     let tampered = encoded
         .replace("\"omitted\":[\"outside_root_path\"]", "\"omitted\":[]")
-        .replace("\"external_read\"]", "\"external_read\",\"outside_root_path\"]");
+        .replace("\"granted\":[", "\"granted\":[\"outside_root_path\",");
     require(tampered != encoded, "the widening rewrite must actually apply")?;
     let forged: Result<perl_workspace_core::ExecutionAuthorizationDecision, _> =
         serde_json::from_str(&tampered);
@@ -2695,5 +2707,112 @@ fn empty_scope_component_cannot_alias_the_absent_case() -> Result<(), Box<dyn Er
         facts(&real_root).identity() != facts(&absent).identity(),
         "a named root must not share the absent root's identity",
     )?;
+    Ok(())
+}
+
+/// Reading outside the workspace implies using a path outside the root.
+#[test]
+fn external_read_profiles_require_outside_root_authority() -> Result<(), Box<dyn Error>> {
+    for profile in OperationProfile::ALL {
+        let required = OperationTrustRequirement::for_profile(profile).required;
+        if required.contains(ExecutionCapability::ExternalRead) {
+            require(
+                required.contains(ExecutionCapability::OutsideRootPath),
+                "a profile that reads outside the workspace must require outside-root authority",
+            )?;
+        }
+    }
+
+    // Behavioral control: a denied external path now blocks module resolution
+    // even when the caller does not separately ask for outside-root authority.
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let denied = ClassifiedInput::new(
+        "include.root",
+        InputRiskClass::ExternalAbsolutePath,
+        EnvironmentInputAuthority::UserConfiguration,
+        InputDisposition::Denied,
+        None,
+        "external_include_root_denied",
+    );
+    let decision = authorize(
+        &intent(
+            OperationProfile::ModuleResolutionExternalRead,
+            ExecutionReasonClass::Probe,
+            &scope,
+            &bound,
+            vec![denied.id.clone()],
+        ),
+        &evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "resolve".to_string() },
+            &bound,
+            vec![denied],
+        ),
+    );
+    require(
+        decision.outcome() == AuthorizationOutcome::Denied,
+        "a denied external path must block the profile that reads external roots",
+    )?;
+    Ok(())
+}
+
+/// Caller-supplied identity material is bounded, as the contract advertises.
+#[test]
+fn caller_supplied_identity_material_is_bounded() -> Result<(), Box<dyn Error>> {
+    let bound = generations("ws", 1)?;
+    let tool = verified_tool();
+    let oversized = "x".repeat(MAX_IDENTIFIER_LEN + 1);
+
+    // A scope identity beyond the published bound is refused.
+    let wide_scope = TrustScope::editor_workspace(oversized.clone());
+    let facts = evidence(
+        &wide_scope,
+        WorkspaceTrust::Trusted,
+        AuthorizationActor::ExplicitUserAction { action_id: "run".to_string() },
+        &bound,
+        vec![tool.clone()],
+    );
+    require(facts.validate().is_err(), "an oversized workspace id must be rejected")?;
+
+    // And it never reaches an allow.
+    let decision = authorize(
+        &intent(
+            OperationProfile::RunCurrentSavedFile,
+            ExecutionReasonClass::ExplicitUserAction,
+            &wide_scope,
+            &bound,
+            vec![tool.id.clone()],
+        ),
+        &facts,
+    );
+    require(
+        decision.outcome() == AuthorizationOutcome::NotProven,
+        "unbounded identity material must never reach an allow",
+    )?;
+
+    // An oversized claim boundary is refused by the intent validator.
+    let scope = TrustScope::editor_workspace("ws");
+    let mut wide_claim = intent(
+        OperationProfile::RunCurrentSavedFile,
+        ExecutionReasonClass::ExplicitUserAction,
+        &scope,
+        &bound,
+        vec![tool.id.clone()],
+    );
+    wide_claim.claim_boundary = "y".repeat(MAX_CLAIM_BOUNDARY_LEN + 1);
+    require(wide_claim.validate().is_err(), "an oversized claim boundary must be rejected")?;
+
+    // Control: values at the bound are accepted.
+    let exact_scope = TrustScope::editor_workspace("z".repeat(MAX_IDENTIFIER_LEN));
+    let exact = evidence(
+        &exact_scope,
+        WorkspaceTrust::Trusted,
+        AuthorizationActor::ExplicitUserAction { action_id: "run".to_string() },
+        &bound,
+        vec![tool],
+    );
+    require(exact.validate().is_ok(), "a value exactly at the bound is accepted")?;
     Ok(())
 }
