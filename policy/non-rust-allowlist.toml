@@ -879,6 +879,22 @@ review_after = "2026-11-16"
 # =============================================================================
 
 [[allow]]
+id = "non-rust-candidate-meta-self-tests"
+path = "scripts/ci/test_candidate_meta_self_tests.py"
+kind = "ci_tooling"
+language = "python"
+surface = "ci"
+classification = "test"
+owner = "release/ci"
+reason = "Python contract tests exercise the candidate meta self-test workflow's stale-head and fail-closed behavior."
+covered_by = [
+  "python3 -m unittest scripts/ci/test_candidate_meta_self_tests.py",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-27"
+review_after = "2026-09-27"
+
+[[allow]]
 id = "non-rust-ci-scripts-tree"
 glob = "scripts/**"
 kind = "ci_tooling"
