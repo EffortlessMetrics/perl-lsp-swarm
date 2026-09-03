@@ -748,3 +748,74 @@ fn the_file_readers_decode_as_strictly_as_the_library_types() -> Result<()> {
     assert!(read_drift(&drift).is_err(), "read_drift must refuse an unknown field");
     Ok(())
 }
+
+/// A schema the validator cannot evaluate must not be absorbed by a combinator.
+///
+/// `anyOf`, `oneOf`, and `if` all treat a failing branch as an ordinary
+/// non-match. Before this control, an unsupported keyword inside a branch was
+/// reported the same way, so it vanished whenever a sibling branch matched (or,
+/// under `if`, silently selected the other arm). The fail-closed guarantee was
+/// therefore only true at the top level. Raised by exact-head review as
+/// `{"anyOf": [{"futureKeyword": true}, true]}` validating successfully.
+#[test]
+fn an_unimplemented_keyword_is_not_swallowed_by_a_combinator() -> Result<()> {
+    let unsupported = json!({"futureKeyword": true});
+
+    // Review's own falsifier, plus the reversed order so the result cannot
+    // depend on the unevaluable branch being visited first.
+    let cases: [(&str, Value); 6] = [
+        ("anyOf, unsupported first", json!({"anyOf": [unsupported, true]})),
+        ("anyOf, unsupported second", json!({"anyOf": [true, unsupported]})),
+        ("oneOf, unsupported first", json!({"oneOf": [unsupported, true]})),
+        ("oneOf, unsupported second", json!({"oneOf": [true, unsupported]})),
+        ("if condition", json!({"if": unsupported, "then": true, "else": true})),
+        ("allOf", json!({"allOf": [true, unsupported]})),
+    ];
+    for (label, schema) in cases {
+        let error = schema_check::validate(&schema, &json!("anything")).err().ok_or_else(|| {
+            eyre!("{label}: an unimplemented keyword inside a combinator must not be swallowed")
+        })?;
+        assert!(
+            error.contains("futureKeyword"),
+            "{label}: the failure must name the unimplemented keyword, got: {error}"
+        );
+    }
+
+    // Negative control in the other direction: an ordinary instance mismatch is
+    // still branch-local, or the repair would have turned every union into a
+    // conjunction.
+    let union = json!({"anyOf": [{"type": "string"}, {"type": "null"}]});
+    schema_check::validate(&union, &json!("value"))
+        .map_err(|error| eyre!("a non-matching sibling branch must stay local: {error}"))?;
+    schema_check::validate(&union, &json!(null))
+        .map_err(|error| eyre!("a non-matching sibling branch must stay local: {error}"))?;
+    assert!(
+        schema_check::validate(&union, &json!(7)).is_err(),
+        "a union matching no branch must still be rejected"
+    );
+
+    // The same distinction for `if`: a condition that merely does not match is
+    // a legitimate `else` selection, not an error.
+    let conditional =
+        json!({"if": {"type": "string"}, "then": {"minLength": 3}, "else": {"type": "integer"}});
+    schema_check::validate(&conditional, &json!("abc"))
+        .map_err(|error| eyre!("matching condition must take then: {error}"))?;
+    schema_check::validate(&conditional, &json!(1))
+        .map_err(|error| eyre!("non-matching condition must take else: {error}"))?;
+    assert!(
+        schema_check::validate(&conditional, &json!("ab")).is_err(),
+        "the then arm must still reject a too-short string"
+    );
+    Ok(())
+}
+
+/// An unresolvable `$ref` is likewise a schema fault, not a non-match.
+#[test]
+fn an_unresolvable_ref_is_not_swallowed_by_a_combinator() -> Result<()> {
+    let schema = json!({"anyOf": [{"$ref": "#/$defs/absent"}, true]});
+    let error = schema_check::validate(&schema, &json!("anything"))
+        .err()
+        .ok_or_else(|| eyre!("an unresolved $ref inside anyOf must not be swallowed"))?;
+    assert!(error.contains("unresolved"), "the failure must name the unresolved ref, got: {error}");
+    Ok(())
+}

@@ -20,8 +20,43 @@
 
 use serde_json::Value;
 
+/// Why a check failed.
+///
+/// The distinction is load-bearing inside combinators. `anyOf`, `oneOf`, and
+/// `if` each treat a failing branch as an ordinary non-match, so reporting a
+/// schema this validator *cannot evaluate* as "did not match" would let an
+/// unsupported keyword pass whenever a sibling branch happened to match —
+/// reopening the very fail-open hole [`KNOWN_KEYWORDS`] exists to close.
+/// `{"anyOf": [{"futureKeyword": true}, true]}` is the falsifier.
+#[derive(Debug)]
+enum CheckError {
+    /// The schema itself cannot be evaluated: an unimplemented keyword, an
+    /// unresolved `$ref`, or a pattern grammar outside the supported set.
+    /// Propagates out of every combinator rather than counting as a non-match.
+    Schema(String),
+    /// The instance does not satisfy an evaluable schema. Branch-local, and the
+    /// only class a combinator may absorb.
+    Instance(String),
+}
+
+impl CheckError {
+    fn schema(message: impl Into<String>) -> Self {
+        Self::Schema(message.into())
+    }
+
+    fn instance(message: impl Into<String>) -> Self {
+        Self::Instance(message.into())
+    }
+
+    fn into_message(self) -> String {
+        match self {
+            Self::Schema(message) | Self::Instance(message) => message,
+        }
+    }
+}
+
 pub fn validate(root: &Value, instance: &Value) -> Result<(), String> {
-    check(root, root, instance)
+    check(root, root, instance).map_err(CheckError::into_message)
 }
 
 /// Validates `instance` against one subschema `node`, resolving any `$ref` it
@@ -29,7 +64,7 @@ pub fn validate(root: &Value, instance: &Value) -> Result<(), String> {
 /// an instance actually satisfies use this rather than re-implementing the
 /// keyword walk.
 pub fn validate_node(root: &Value, node: &Value, instance: &Value) -> Result<(), String> {
-    check(node, root, instance)
+    check(node, root, instance).map_err(CheckError::into_message)
 }
 
 /// Every schema keyword this validator implements, plus the annotation
@@ -78,25 +113,26 @@ const KNOWN_KEYWORDS: &[&str] = &[
     "maxProperties",
 ];
 
-fn check(schema: &Value, root: &Value, instance: &Value) -> Result<(), String> {
+fn check(schema: &Value, root: &Value, instance: &Value) -> Result<(), CheckError> {
     // A boolean schema accepts or rejects everything.
     if let Some(accepted) = schema.as_bool() {
         return match accepted {
             true => Ok(()),
-            false => Err("boolean schema false rejects every instance".to_string()),
+            false => Err(CheckError::instance("boolean schema false rejects every instance")),
         };
     }
     if let Some(fields) = schema.as_object() {
         for key in fields.keys() {
             if !KNOWN_KEYWORDS.contains(&key.as_str()) {
-                return Err(format!("unsupported schema keyword {key}"));
+                return Err(CheckError::schema(format!("unsupported schema keyword {key}")));
             }
         }
     }
     if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
         let pointer = reference.strip_prefix('#').unwrap_or(reference);
-        let target =
-            root.pointer(pointer).ok_or_else(|| format!("schema $ref {reference} unresolved"))?;
+        let target = root
+            .pointer(pointer)
+            .ok_or_else(|| CheckError::schema(format!("schema $ref {reference} unresolved")))?;
         return check(target, root, instance);
     }
     if let Some(expected) = schema.get("type") {
@@ -109,21 +145,25 @@ fn check(schema: &Value, root: &Value, instance: &Value) -> Result<(), String> {
                 }
                 matched
             }
-            other => return Err(format!("unsupported schema type shape {other}")),
+            other => {
+                return Err(CheckError::schema(format!("unsupported schema type shape {other}")));
+            }
         };
         if !satisfied {
-            return Err(format!("instance violates type constraint {expected}"));
+            return Err(CheckError::instance(format!(
+                "instance violates type constraint {expected}"
+            )));
         }
     }
     if let Some(expected) = schema.get("const")
         && instance != expected
     {
-        return Err(format!("instance violates const {expected}"));
+        return Err(CheckError::instance(format!("instance violates const {expected}")));
     }
     if let Some(expected) = schema.get("enum").and_then(Value::as_array)
         && !expected.contains(instance)
     {
-        return Err(format!("instance is outside enum {expected:?}"));
+        return Err(CheckError::instance(format!("instance is outside enum {expected:?}")));
     }
     // Pattern/numeric keywords constrain their matching instance types;
     // other types are governed solely by the checked `type` keyword.
@@ -136,37 +176,37 @@ fn check(schema: &Value, root: &Value, instance: &Value) -> Result<(), String> {
         && let Some(number) = instance.as_i64()
         && number < minimum
     {
-        return Err(format!("instance {number} is below minimum {minimum}"));
+        return Err(CheckError::instance(format!("instance {number} is below minimum {minimum}")));
     }
     if let Some(maximum) = schema.get("maximum").and_then(Value::as_i64)
         && let Some(number) = instance.as_i64()
         && number > maximum
     {
-        return Err(format!("instance {number} is above maximum {maximum}"));
+        return Err(CheckError::instance(format!("instance {number} is above maximum {maximum}")));
     }
     match instance {
         Value::String(text) => {
             if let Some(min) = schema.get("minLength").and_then(Value::as_u64)
                 && (text.chars().count() as u64) < min
             {
-                return Err(format!("string shorter than minLength {min}"));
+                return Err(CheckError::instance(format!("string shorter than minLength {min}")));
             }
             if let Some(max) = schema.get("maxLength").and_then(Value::as_u64)
                 && (text.chars().count() as u64) > max
             {
-                return Err(format!("string longer than maxLength {max}"));
+                return Err(CheckError::instance(format!("string longer than maxLength {max}")));
             }
         }
         Value::Array(items) => {
             if let Some(min) = schema.get("minItems").and_then(Value::as_u64)
                 && (items.len() as u64) < min
             {
-                return Err(format!("array shorter than minItems {min}"));
+                return Err(CheckError::instance(format!("array shorter than minItems {min}")));
             }
             if let Some(max) = schema.get("maxItems").and_then(Value::as_u64)
                 && (items.len() as u64) > max
             {
-                return Err(format!("array longer than maxItems {max}"));
+                return Err(CheckError::instance(format!("array longer than maxItems {max}")));
             }
             if schema.get("uniqueItems") == Some(&Value::Bool(true)) {
                 let duplicated = items
@@ -174,7 +214,7 @@ fn check(schema: &Value, root: &Value, instance: &Value) -> Result<(), String> {
                     .enumerate()
                     .any(|(index, item)| items[index + 1..].iter().any(|later| later == item));
                 if duplicated {
-                    return Err("array items are not unique".to_string());
+                    return Err(CheckError::instance("array items are not unique"));
                 }
             }
             if let Some(item_schema) = schema.get("items") {
@@ -187,17 +227,25 @@ fn check(schema: &Value, root: &Value, instance: &Value) -> Result<(), String> {
             if let Some(min) = schema.get("minProperties").and_then(Value::as_u64)
                 && (object.len() as u64) < min
             {
-                return Err(format!("object has fewer than minProperties {min}"));
+                return Err(CheckError::instance(format!(
+                    "object has fewer than minProperties {min}"
+                )));
             }
             if let Some(max) = schema.get("maxProperties").and_then(Value::as_u64)
                 && (object.len() as u64) > max
             {
-                return Err(format!("object has more than maxProperties {max}"));
+                return Err(CheckError::instance(format!(
+                    "object has more than maxProperties {max}"
+                )));
             }
             for key in schema.get("required").and_then(Value::as_array).into_iter().flatten() {
-                let key = key.as_str().ok_or("required entries must be strings")?;
+                let key = key
+                    .as_str()
+                    .ok_or_else(|| CheckError::schema("required entries must be strings"))?;
                 if !object.contains_key(key) {
-                    return Err(format!("object is missing required key {key}"));
+                    return Err(CheckError::instance(format!(
+                        "object is missing required key {key}"
+                    )));
                 }
             }
             let properties = schema.get("properties").and_then(Value::as_object);
@@ -207,7 +255,9 @@ fn check(schema: &Value, root: &Value, instance: &Value) -> Result<(), String> {
                     Some(key_schema) => check(key_schema, root, value)?,
                     None => match additional {
                         Some(&Value::Bool(false)) => {
-                            return Err(format!("object carries unknown property {key}"));
+                            return Err(CheckError::instance(format!(
+                                "object carries unknown property {key}"
+                            )));
                         }
                         Some(additional_schema) => {
                             check(additional_schema, root, value)?;
@@ -224,53 +274,76 @@ fn check(schema: &Value, root: &Value, instance: &Value) -> Result<(), String> {
             check(branch, root, instance)?;
         }
     }
-    if let Some(branches) = schema.get("anyOf").and_then(Value::as_array)
-        && !branches.iter().any(|branch| check(branch, root, instance).is_ok())
-    {
-        let details = branches
-            .iter()
-            .filter_map(|branch| check(branch, root, instance).err())
-            .collect::<Vec<_>>()
-            .join(" | ");
-        return Err(format!("instance satisfies no anyOf branch; branch errors: {details}"));
+    if let Some(branches) = schema.get("anyOf").and_then(Value::as_array) {
+        // Every branch is evaluated even once one matches: a branch this
+        // validator cannot evaluate is not a branch that merely failed, and
+        // absorbing it would let an unsupported keyword ride along beside a
+        // matching sibling.
+        let mut satisfied = false;
+        let mut mismatches = Vec::new();
+        for branch in branches {
+            match check(branch, root, instance) {
+                Ok(()) => satisfied = true,
+                Err(error @ CheckError::Schema(_)) => return Err(error),
+                Err(error) => mismatches.push(error.into_message()),
+            }
+        }
+        if !satisfied {
+            return Err(CheckError::instance(format!(
+                "instance satisfies no anyOf branch; branch errors: {}",
+                mismatches.join(" | ")
+            )));
+        }
     }
     // `if`/`then`/`else`: the drift contract states its status-conditional
     // invariants this way, so ignoring them would let a `not_proven` receipt
     // carry a fingerprint and populated drift arrays unchallenged.
     if let Some(condition) = schema.get("if") {
-        let matched = check(condition, root, instance).is_ok();
+        // A condition this validator cannot evaluate must not collapse to
+        // "false" and silently select the other arm.
+        let matched = match check(condition, root, instance) {
+            Ok(()) => true,
+            Err(error @ CheckError::Schema(_)) => return Err(error),
+            Err(_) => false,
+        };
+        let arm = match matched {
+            true => "then",
+            false => "else",
+        };
         let branch = match matched {
             true => schema.get("then"),
             false => schema.get("else"),
         };
         if let Some(branch) = branch {
-            check(branch, root, instance).map_err(|error| {
-                let arm = match matched {
-                    true => "then",
-                    false => "else",
-                };
-                format!("instance violates conditional {arm}: {error}")
+            check(branch, root, instance).map_err(|error| match error {
+                schema_error @ CheckError::Schema(_) => schema_error,
+                CheckError::Instance(message) => {
+                    CheckError::instance(format!("instance violates conditional {arm}: {message}"))
+                }
             })?;
         }
     }
     if let Some(branches) = schema.get("oneOf").and_then(Value::as_array) {
-        let passing =
-            branches.iter().filter(|branch| check(branch, root, instance).is_ok()).count();
+        let mut passing = 0_usize;
+        let mut mismatches = Vec::new();
+        for branch in branches {
+            match check(branch, root, instance) {
+                Ok(()) => passing += 1,
+                Err(error @ CheckError::Schema(_)) => return Err(error),
+                Err(error) => mismatches.push(error.into_message()),
+            }
+        }
         if passing != 1 {
-            let details = branches
-                .iter()
-                .filter_map(|branch| check(branch, root, instance).err())
-                .collect::<Vec<_>>()
-                .join(" | ");
-            return Err(format!(
-                "instance satisfies {passing} oneOf branches, expected 1; branch errors: {details}"
-            ));
+            return Err(CheckError::instance(format!(
+                "instance satisfies {passing} oneOf branches, expected 1; branch errors: {}",
+                mismatches.join(" | ")
+            )));
         }
     }
     Ok(())
 }
 
-fn type_matches(name: &str, instance: &Value) -> Result<bool, String> {
+fn type_matches(name: &str, instance: &Value) -> Result<bool, CheckError> {
     Ok(match name {
         "object" => instance.is_object(),
         "array" => instance.is_array(),
@@ -279,15 +352,15 @@ fn type_matches(name: &str, instance: &Value) -> Result<bool, String> {
         "null" => instance.is_null(),
         "integer" => instance.is_i64() || instance.is_u64(),
         "number" => instance.is_number(),
-        other => return Err(format!("unsupported schema type name {other}")),
+        other => return Err(CheckError::schema(format!("unsupported schema type name {other}"))),
     })
 }
 
 /// Anchored pattern matcher for the single-piece character-class shapes
 /// this schema uses (`^[class]{n,m}$`, `^[class]+$`, `^([class]{w})*$`).
 /// Any other grammar fails closed instead of passing.
-fn anchored_pattern_matches(pattern: &str, text: &str) -> Result<(), String> {
-    let unsupported = || format!("unsupported pattern grammar {pattern}");
+fn anchored_pattern_matches(pattern: &str, text: &str) -> Result<(), CheckError> {
+    let unsupported = || CheckError::schema(format!("unsupported pattern grammar {pattern}"));
     let after_caret = pattern.strip_prefix('^').ok_or_else(unsupported)?;
     let Some(body) = after_caret.strip_suffix('$') else {
         // Start-anchored with no end anchor: the only grammar the registered
@@ -297,40 +370,52 @@ fn anchored_pattern_matches(pattern: &str, text: &str) -> Result<(), String> {
         let literal = literal_prefix(after_caret).ok_or_else(unsupported)?;
         return match text.starts_with(&literal) {
             true => Ok(()),
-            false => Err(format!("text {text:?} does not start with {literal:?}")),
+            false => {
+                Err(CheckError::instance(format!("text {text:?} does not start with {literal:?}")))
+            }
         };
     };
     // A trailing literal (`^[^/\\]+\.json$`) is split off before the class is
     // matched; the class governs only the part of the text it actually covers.
-    let (body, tail) = split_class_and_literal_tail(body)?;
+    let (body, tail) = split_class_and_literal_tail(body).map_err(CheckError::schema)?;
     let text = match text.strip_suffix(tail.as_str()) {
         Some(head) => head,
-        None => return Err(format!("text {text:?} does not end with {tail:?}")),
+        None => {
+            return Err(CheckError::instance(format!("text {text:?} does not end with {tail:?}")));
+        }
     };
     let body = body.as_str();
     let (unit_width, min_units, max_units, class_body) =
         if let Some(inner) = body.strip_prefix('(').and_then(|rest| rest.strip_suffix(")*")) {
-            let (class_body, width) = split_bracket_and_exact_repeat(inner)?;
+            let (class_body, width) =
+                split_bracket_and_exact_repeat(inner).map_err(CheckError::schema)?;
             (width, 0, None, class_body)
         } else {
-            let (class_body, quantifier) = split_bracket_and_quantifier(body)?;
+            let (class_body, quantifier) =
+                split_bracket_and_quantifier(body).map_err(CheckError::schema)?;
             match quantifier {
                 Quantifier::OneOrMore | Quantifier::Plain => (1, 1, None, class_body),
                 Quantifier::Exact(units) => (1, units, Some(units), class_body),
                 Quantifier::Bounded(low, high) => (1, low, Some(high), class_body),
             }
         };
-    let class = parse_char_class(class_body)?;
+    let class = parse_char_class(class_body).map_err(CheckError::schema)?;
     let bytes = text.as_bytes();
     if !bytes.iter().all(|byte| class.contains(*byte)) {
-        return Err(format!("text {text:?} contains characters outside {pattern}"));
+        return Err(CheckError::instance(format!(
+            "text {text:?} contains characters outside {pattern}"
+        )));
     }
     if bytes.len() % unit_width != 0 {
-        return Err(format!("text {text:?} length does not fit pattern {pattern}"));
+        return Err(CheckError::instance(format!(
+            "text {text:?} length does not fit pattern {pattern}"
+        )));
     }
     let units = (bytes.len() / unit_width) as u64;
     if units < min_units || max_units.is_some_and(|max| units > max) {
-        return Err(format!("text {text:?} length does not satisfy pattern {pattern}"));
+        return Err(CheckError::instance(format!(
+            "text {text:?} length does not satisfy pattern {pattern}"
+        )));
     }
     Ok(())
 }
