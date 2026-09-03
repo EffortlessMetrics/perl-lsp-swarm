@@ -12,11 +12,19 @@ reviews, inline threads, and relevant CI findings.
 For each substantive finding choose one supported lowercase class:
 
 ```text
-fixed
-refuted
-superseded
-follow-up
+fixed                    (terminal: resolves the thread)
+refuted                  (terminal)
+superseded               (terminal)
+post-merge-follow-up     (terminal: requires --issue plus an argument that the
+                          current claim is already satisfied)
+current-blocker          (non-terminal: thread stays open)
+blocked-by-prerequisite  (non-terminal: requires --issue)
+not-proven               (non-terminal)
 ```
+
+The legacy class `follow-up` is rejected by the helper because it does not say
+whether the current claim is already satisfied or still blocked; choose
+`post-merge-follow-up` or a keep-open class explicitly.
 
 ## Orchestration affordances
 
@@ -128,8 +136,8 @@ activity.
 3. Batch accepted repairs through one writer on the selected candidate.
 4. Run affected focused proof.
 5. Write the canonical human reply under the **Reply quality** contract: keep the `Disposition: <class>` and `Evidence: <claim-bounded evidence summary>` lines and put the concise reasoned judgment between them. Pass that complete text through `--reply` to `scripts/reviews/disposition` with the PR, thread ID, lowercase class, and required class-specific evidence (`--commit`, `--argument`, `--superseded-by`, or `--issue`).
-6. Let the helper append the `<!-- disposition:v1 ... -->` marker to that supplied reply, post it, and only then resolve the thread.
-7. Re-run the enumerator to confirm no substantive thread remains unresolved.
+6. Let the helper append the `<!-- disposition:v1 ... -->` marker to that supplied reply and post it. Terminal classes then resolve the thread; non-terminal classes keep it open, and reopen a falsely-resolved thread before posting evidence.
+7. Re-run the enumerator to confirm no substantive thread remains unresolved without a non-terminal disposition.
 8. If a reviewer applied a repair, treat the resulting head as a new authored candidate and invalidate affected review dimensions.
 
 Do not use raw thread-resolution APIs, resolve performatively, or use pr-responded or
