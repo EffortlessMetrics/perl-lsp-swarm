@@ -938,4 +938,30 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn rename_assertion_deserializes_through_a_non_json_map_format()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // RenameAssertion implements the map visitor directly.  Keep this
+        // regression on a second serde format so the corpus contract does
+        // not accidentally depend on serde_json::Value conversion.
+        let assertion: RenameAssertion = toml::from_str(
+            r#"
+kind = "rename_succeeds"
+line = 4
+character = 4
+new_name = "sum_values"
+rationale = "format compatibility"
+"#,
+        )?;
+
+        if !matches!(assertion.kind, RenameAssertionKind::RenameSucceeds)
+            || assertion.line != 4
+            || assertion.character != 4
+            || assertion.new_name != "sum_values"
+        {
+            return Err("TOML map deserialization did not preserve the rename assertion".into());
+        }
+        Ok(())
+    }
 }
