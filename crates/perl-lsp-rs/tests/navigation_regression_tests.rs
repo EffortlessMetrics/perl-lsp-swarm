@@ -1542,6 +1542,22 @@ fn test_refs_use_statement_module_prefix_is_not_suppressed() -> TestResult {
 ///
 /// The guard now also requires the classified final component to be the very token
 /// that names the resolved sub.
+///
+/// # Limitation this test does **not** cover
+///
+/// The guard recognises a receiver only through the `::`-qualified match plus that
+/// name-agreement check, so two receiver shapes still report the method (#14620).
+/// Both are unchanged from `main` — this PR does not regress them, and does not fix
+/// them either:
+///
+/// - `Foo->bar()` — an unqualified receiver. `fqn_component_at_cursor` returns `None`
+///   with no `::` present, so nothing is classified and no suppression happens.
+/// - `Foo::Bar->Bar()` — receiver's final component and method share a name. The
+///   name-agreement check cannot separate them, so the receiver reads as the method's
+///   own token.
+///
+/// Closing these needs the method-call structure from source or AST, not a wider
+/// qualified-name grammar, which is why it is a separate claim.
 #[test]
 fn test_refs_method_receiver_package_component_does_not_report_method() -> TestResult {
     let doc = concat!(
@@ -1661,5 +1677,43 @@ fn test_refs_qualified_prefix_in_comment_or_string_is_not_reported() -> TestResu
         );
     }
 
+    Ok(())
+}
+
+#[test]
+fn probe_receiver_variants() -> TestResult {
+    // Case A: unqualified receiver `Foo->bar()`; sub bar on line 1.
+    let a = concat!(
+        "package Foo;\n",          // 0
+        "sub bar { return 2; }\n", // 1  <-- discriminator
+        "package main;\n",         // 2
+        "Foo->bar();\n",           // 3  F=0, b=5
+    );
+    // Case B: receiver final component and method share a name: Foo::Bar->Bar()
+    let b = concat!(
+        "package Foo::Bar;\n",     // 0
+        "sub Bar { return 2; }\n", // 1  <-- discriminator
+        "package main;\n",         // 2
+        "Foo::Bar->Bar();\n",      // 3  F=0, B(recv)=5, B(method)=10
+    );
+    let mut h = LspHarness::new();
+    h.initialize(None)?;
+    h.open_document("file:///pa.pl", a)?;
+    h.open_document("file:///pb.pl", b)?;
+
+    for (uri, label, line, ch) in [
+        ("file:///pa.pl", "A recv Foo (unqualified)", 3u32, 0u64),
+        ("file:///pa.pl", "A method bar (control)", 3, 5),
+        ("file:///pb.pl", "B recv Foo (prefix)", 3, 0),
+        ("file:///pb.pl", "B recv Bar (final, same name)", 3, 5),
+        ("file:///pb.pl", "B method Bar (control)", 3, 10),
+    ] {
+        let r = h.request(
+            "textDocument/references",
+            json!({"textDocument":{"uri":uri},"position":{"line":line,"character":ch},
+                   "context":{"includeDeclaration":true}}),
+        )?;
+        println!("PROBE {label}: {:?}", reported_lines(&r));
+    }
     Ok(())
 }
