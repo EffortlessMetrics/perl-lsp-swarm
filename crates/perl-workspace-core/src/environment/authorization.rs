@@ -795,6 +795,24 @@ impl ClassifiedInput {
         }
     }
 
+    /// Whether this input is evaluated even when an intent does not name it.
+    ///
+    /// Ambient process state is not opt-in. An ambient `PERL5LIB`, `PERL5OPT`,
+    /// `PATH`, or working directory reaches the interpreter regardless of what
+    /// the operation declared it would consume, so an intent cannot narrow its
+    /// declaration to escape the classification of ambient state that is
+    /// already present in the evidence.
+    ///
+    /// Slot-specific inputs are not inescapable: a denied formatter is not a
+    /// reason to refuse an unrelated test run.
+    #[must_use]
+    pub const fn applies_regardless_of_intent(&self) -> bool {
+        matches!(
+            self.risk_class,
+            InputRiskClass::AmbientPathOrCwd | InputRiskClass::AmbientPerlEnvironment
+        )
+    }
+
     fn push_identity(&self, material: &mut String) {
         push_field(material, "input.id", self.id.as_str());
         push_field(material, "input.key", self.semantic_key.as_str());
@@ -2040,7 +2058,14 @@ pub fn authorize(
     }
 }
 
-/// The classified inputs an intent actually consumes, in deterministic order.
+/// The classified inputs an operation is evaluated against, in deterministic
+/// order.
+///
+/// This is the intent's declared inputs *plus* every ambient input in the
+/// evidence. Ambient state is process-wide: an ambient `PERL5LIB` or an ambient
+/// `PATH` reaches the interpreter whether or not the intent named it, so
+/// leaving one out of the declaration must never buy more authority than
+/// declaring it would. See [`ClassifiedInput::applies_regardless_of_intent`].
 ///
 /// Sorting here makes evaluation independent of the order a producer happened
 /// to collect inputs in, so the same facts always cite the same input.
@@ -2049,8 +2074,11 @@ fn relevant_inputs<'a>(
     evidence: &'a AuthorizationEvidence,
 ) -> Vec<&'a ClassifiedInput> {
     let wanted: BTreeSet<&ClassifiedInputId> = intent.input_ids.iter().collect();
-    let mut inputs: Vec<&'a ClassifiedInput> =
-        evidence.inputs.iter().filter(|input| wanted.contains(&input.id)).collect();
+    let mut inputs: Vec<&'a ClassifiedInput> = evidence
+        .inputs
+        .iter()
+        .filter(|input| wanted.contains(&input.id) || input.applies_regardless_of_intent())
+        .collect();
     inputs.sort_by(|left, right| left.id.cmp(&right.id));
     inputs
 }

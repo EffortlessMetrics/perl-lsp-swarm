@@ -1504,3 +1504,107 @@ fn execution_bearing_capabilities_are_never_implicit() -> Result<(), Box<dyn Err
     }
     Ok(())
 }
+
+/// Ambient state is not opt-in: omitting it from the intent cannot widen authority.
+///
+/// Regression control for a real escalation found in self-review. Declaring
+/// only the verified tool, while ambient `PERL5LIB` sat in the evidence, turned
+/// a correct `Denied` into `Allowed`.
+#[test]
+fn omitting_ambient_input_from_intent_does_not_widen_authority() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let tool = verified_tool();
+    let ambient_env = ClassifiedInput::new(
+        "environment.perl5lib",
+        InputRiskClass::AmbientPerlEnvironment,
+        EnvironmentInputAuthority::Ambient,
+        InputDisposition::Denied,
+        None,
+        "ambient_perl5lib",
+    );
+    let facts = evidence(
+        &scope,
+        WorkspaceTrust::Trusted,
+        AuthorizationActor::ExplicitUserAction { action_id: "compile".to_string() },
+        &bound,
+        vec![tool.clone(), ambient_env.clone()],
+    );
+
+    let declared = authorize(
+        &intent(
+            OperationProfile::PerlCompileCurrentSavedFile,
+            ExecutionReasonClass::ExplicitUserAction,
+            &scope,
+            &bound,
+            vec![tool.id.clone(), ambient_env.id.clone()],
+        ),
+        &facts,
+    );
+    // The same evidence, but the intent names only the tool.
+    let undeclared = authorize(
+        &intent(
+            OperationProfile::PerlCompileCurrentSavedFile,
+            ExecutionReasonClass::ExplicitUserAction,
+            &scope,
+            &bound,
+            vec![tool.id.clone()],
+        ),
+        &facts,
+    );
+
+    require(
+        declared.outcome() == AuthorizationOutcome::Denied,
+        "declaring the ambient environment must deny",
+    )?;
+    require(
+        undeclared.outcome() == AuthorizationOutcome::Denied,
+        "omitting the ambient environment must not turn a denial into an allow",
+    )?;
+    require(
+        has_reason(&undeclared, "ambient_environment_denied"),
+        "the undeclared case must still name the ambient environment",
+    )?;
+    Ok(())
+}
+
+/// The inescapable-input rule stays narrow: a slot-specific denial does not
+/// leak across unrelated operations.
+#[test]
+fn undeclared_slot_specific_input_does_not_block_another_operation() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let tool = verified_tool();
+    // A denied, project-supplied formatter that this test run does not consume.
+    let denied_formatter = ClassifiedInput::new(
+        "tool.formatter",
+        InputRiskClass::ProjectExecutableOrCommand,
+        EnvironmentInputAuthority::TrustedProjectConfiguration,
+        InputDisposition::Denied,
+        None,
+        "project_supplied_formatter",
+    );
+
+    let decision = authorize(
+        &intent(
+            OperationProfile::RunTests,
+            ExecutionReasonClass::TestRun,
+            &scope,
+            &bound,
+            vec![tool.id.clone()],
+        ),
+        &evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "test".to_string() },
+            &bound,
+            vec![tool, denied_formatter],
+        ),
+    );
+
+    require(
+        decision.outcome() == AuthorizationOutcome::Allowed,
+        "an unrelated denied tool must not block a test run that does not use it",
+    )?;
+    Ok(())
+}
