@@ -109,7 +109,7 @@ mod tests {
         if !fake_cargo.status().success() {
             return Err(color_eyre::eyre::eyre!(
                 "fake cargo child failed: {}",
-                bounded_child_stderr(fake_cargo.stderr()),
+                super::bounded_child_stderr(fake_cargo.stderr()),
             ));
         }
 
