@@ -1546,7 +1546,7 @@ fn test_refs_use_statement_module_prefix_is_not_suppressed() -> TestResult {
 /// # Limitation this test does **not** cover
 ///
 /// The guard recognises a receiver only through the `::`-qualified match plus that
-/// name-agreement check, so two receiver shapes still report the method (#14620).
+/// name-agreement check, so two receiver shapes still report the method (#14673).
 /// Both are unchanged from `main` — this PR does not regress them, and does not fix
 /// them either:
 ///
