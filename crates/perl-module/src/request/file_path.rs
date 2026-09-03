@@ -325,20 +325,28 @@ fn single_quoted_needs_decoding(inner: &str) -> bool {
 ///
 /// A leading `X::` is a package separator, not a drive, so literal filenames
 /// like `C::Bar` stay valid.
+/// Whether a *filename* opens with a Windows drive prefix.
+///
+/// Any `<letter>:` prefix counts, including `C::Foo.pm`. That differs
+/// deliberately from the identically-shaped check in `request::name`, which
+/// exempts a third `:` because `C::Foo` is a legitimate *module* name. Here the
+/// operand is a filename, where `::` carries no package meaning: Windows reads
+/// `C::Foo.pm` as drive `C:` plus the remainder, so the prefix is consumed
+/// either way.
+///
+/// That distinction is load-bearing rather than cosmetic. `PathBuf::push`
+/// replaces the whole buffer when the pushed path carries a prefix, so a
+/// validated "relative" path that keeps a drive prefix can escape the root it
+/// is joined to. This validator already refuses `C:Foo.pm` for exactly that
+/// reason; `C::Foo.pm` is equally drive-shaped and had been slipping through on
+/// a rule borrowed from the module-name grammar.
 fn is_drive_qualified(text: &str) -> bool {
     let mut chars = text.chars();
     let Some(first) = chars.next() else {
         return false;
     };
 
-    if !first.is_ascii_alphabetic() {
-        return false;
-    }
-    if chars.next() != Some(':') {
-        return false;
-    }
-
-    chars.next() != Some(':')
+    first.is_ascii_alphabetic() && chars.next() == Some(':')
 }
 
 #[cfg(test)]
@@ -352,8 +360,31 @@ mod tests {
         Ok(())
     }
 
+    /// A drive-shaped prefix is refused even when a third `:` follows.
+    ///
+    /// `request::name` exempts `C::Foo` because it is a real module name. A
+    /// *filename* has no such rule, and Windows still reads `C::Foo.pm` as
+    /// drive `C:` plus a remainder. Since `PathBuf::push` replaces the whole
+    /// buffer when the pushed path carries a prefix, letting this through
+    /// would leave a "relative" path able to escape the root it is joined to —
+    /// the same hazard `C:Foo.pm` is already refused for.
+    #[test]
+    fn a_drive_prefix_is_refused_even_with_a_second_colon() {
+        for text in ["C::Foo.pm", "c::Foo.pm", "Z::a/b.pm", "C:Foo.pm", "C:/Foo.pm"] {
+            assert_eq!(
+                ModuleFilePath::parse(text),
+                Err(ModuleFilePathError::DriveQualified),
+                "`{text}` opens with a drive prefix and must not become a relative filename"
+            );
+        }
+    }
+
     #[test]
     fn literal_colon_name_stays_a_filename() -> Result<(), ModuleFilePathError> {
+        // Multi-letter stems are unaffected: only a single leading letter
+        // followed by `:` is drive-shaped, so ordinary `::` filenames survive.
+        assert!(ModuleFilePath::parse("Foo::Bar.pm").is_ok());
+        assert!(ModuleFilePath::parse("Cc::Foo.pm").is_ok());
         let path = ModuleFilePath::parse("Foo::Bar")?;
         assert_eq!(
             path.literal(),
