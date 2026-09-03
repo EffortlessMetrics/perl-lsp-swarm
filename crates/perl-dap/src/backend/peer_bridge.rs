@@ -214,6 +214,20 @@ impl DapPeerBridge {
         arguments: Option<Value>,
     ) -> Vec<DapMessage> {
         let mut out = Vec::new();
+        if DapRequestRoute::from_command(command)
+            .is_some_and(|route| !route.available_in_peer_frontends())
+        {
+            tracing::warn!(command, "peer bridge: request is unavailable in this frontend");
+            out.push(self.response(
+                request_seq,
+                command,
+                false,
+                None,
+                Some("request is unavailable in the external peer frontend".to_string()),
+            ));
+            out.extend(self.poll_events());
+            return out;
+        }
         match DapRequestRoute::from_command(command)
             .filter(DapRequestRoute::available_in_peer_frontends)
         {
@@ -1420,6 +1434,20 @@ mod tests {
         let out = b.dispatch(1, "initialize", Some(json!({ "adapterID": "perl" })));
         let caps = must_some(as_response(&out[0])?.2);
         assert_eq!(caps["supportsEvaluateForHovers"], false);
+        Ok(())
+    }
+
+    #[test]
+    fn native_only_step_in_targets_fails_closed() -> Result<(), String> {
+        let mut b = bridge();
+        let out = b.dispatch(17, "stepInTargets", Some(json!({ "frameId": 1 })));
+        let (command, success, body) = as_response(&out[0])?;
+        assert_eq!(command, "stepInTargets");
+        assert!(!success, "peer-unavailable requests must not acknowledge success");
+        assert!(body.is_none(), "a refused request must not carry a response body");
+        if let DapMessage::Response { message, .. } = &out[0] {
+            assert!(message.as_deref().is_some_and(|message| !message.is_empty()));
+        }
         Ok(())
     }
 
