@@ -280,10 +280,18 @@ fn postfix_modifiers_preserve_exact_body_hir_topology_and_sources() -> TestResul
         let root_stmt = body
             .stmt(root_stmt_id)
             .ok_or_else(|| format!("root statement is missing for {:?}", case.body_source))?;
-        // Body HIR deliberately has no label slot on `PostfixCondition`. The
-        // flat `StatementModifierShell` owns loop-target label disposition;
-        // this exhaustive shape is the body-model contract.
-        let HirStmt::PostfixCondition { statement, condition, verb } = root_stmt else {
+        // #13249: body HIR now models labelled loop-form postfix modifiers
+        // with `postfix_loop_region` + `postfix_label`. Branch-form modifiers
+        // (`if`/`unless`, exercised by this proof) keep both fields `None`.
+        // The extra fields are asserted below.
+        let HirStmt::PostfixCondition {
+            statement,
+            condition,
+            verb,
+            postfix_loop_region,
+            postfix_label,
+        } = root_stmt
+        else {
             return Err(format!(
                 "expected body-HIR postfix condition for {:?}, got {root_stmt:?}",
                 case.body_source
@@ -291,6 +299,28 @@ fn postfix_modifiers_preserve_exact_body_hir_topology_and_sources() -> TestResul
             .into());
         };
         assert_eq!(*verb, case.modifier, "wrong body-HIR verb for {:?}", case.body_source);
+        // #13249 body-model contract: loop-form postfix modifiers allocate a
+        // stable loop region; branch-form modifiers must not.
+        let loop_form = matches!(
+            case.modifier,
+            StatementModifierKind::While
+                | StatementModifierKind::Until
+                | StatementModifierKind::Foreach
+        );
+        assert_eq!(
+            postfix_loop_region.is_some(),
+            loop_form,
+            "loop-form postfix must allocate a `postfix_loop_region`, branch-form must not: {:?}",
+            case.body_source
+        );
+        // None of the body_source cases carry a `LABEL:` prefix (labels are
+        // exercised in the flat_source variants above and by the dedicated
+        // #13249 tests), so `postfix_label` is `None` in every case here.
+        assert!(
+            postfix_label.is_none(),
+            "unlabelled postfix must not synthesise a `postfix_label`: {:?}",
+            case.body_source
+        );
 
         let nested_stmt = body
             .stmt(*statement)

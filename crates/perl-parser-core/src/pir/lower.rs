@@ -1018,7 +1018,7 @@ impl BodyLowerer {
                 // this body inherit a spurious fallthrough predecessor.
                 self.last_in_scope.remove(&None);
             }
-            HirStmt::PostfixCondition { statement, condition, verb } => {
+            HirStmt::PostfixCondition { statement, condition, verb, .. } => {
                 *self.unsupported.entry("PostfixCondition").or_insert(0) += 1;
                 let statement_first_modifier =
                     matches!(verb, StatementModifierKind::While | StatementModifierKind::Until);
