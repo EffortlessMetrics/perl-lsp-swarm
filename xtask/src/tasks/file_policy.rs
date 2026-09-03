@@ -222,14 +222,111 @@ fn validate_exact_allow_entries(entries: &[AllowEntry]) -> Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Entry-level coherence (#9680/#9993)
+// ---------------------------------------------------------------------------
+
+/// Git conflict-marker line prefixes. Textual conflict resolution can leave
+/// these inside a multi-line TOML string, where the parser still accepts the
+/// file; markers left at the top level already fail TOML parsing. Git writes
+/// markers at column 0, so the raw line prefix is matched and indented or
+/// commented mentions are not flagged.
+const POLICY_CONFLICT_MARKER_PREFIXES: &[&str] = &["<<<<<<< ", ">>>>>>> ", "||||||| "];
+
+fn is_policy_conflict_marker(line: &str) -> bool {
+    line == "======="
+        || POLICY_CONFLICT_MARKER_PREFIXES.iter().any(|prefix| line.starts_with(prefix))
+}
+
+/// Return 1-based line numbers that begin a Git conflict marker.
+fn policy_conflict_marker_lines(text: &str) -> Vec<usize> {
+    text.lines()
+        .enumerate()
+        .filter(|(_, line)| is_policy_conflict_marker(line))
+        .map(|(index, _)| index + 1)
+        .collect()
+}
+
+/// Shared wording for the mispaired-provenance finding so the raw-bytes,
+/// policy-table, and typed entry surfaces report one identical message shape.
+fn mispaired_provenance_message(
+    first_id: &str,
+    first_matcher: &str,
+    id: &str,
+    matcher: &str,
+) -> String {
+    format!(
+        "entries {first_id:?} and {id:?} carry an identical `reason` under different matchers ({first_matcher:?} vs {matcher:?}); provenance is mispaired"
+    )
+}
+
+/// Detect the mispaired-provenance shape produced by textual conflict
+/// resolution (#9680): two non-retired entries with different matchers that
+/// carry a byte-identical `reason`. The file stays valid TOML with green
+/// schema, duplicate, and coverage checks while its identity join is wrong.
+///
+/// The allowlist schema carries no issue/authority field beyond `id` today,
+/// so the subject join is derived from the identity-bearing `reason` field
+/// rather than from prose structure. Retired entries are exempt: a
+/// historical row may deliberately record the disposition of an accepted
+/// entry without being live policy.
+fn mispaired_provenance_conflicts(entries: &[&toml::map::Map<String, toml::Value>]) -> Vec<String> {
+    let mut conflicts = Vec::new();
+    let mut seen: std::collections::BTreeMap<&str, (&str, &str)> =
+        std::collections::BTreeMap::new();
+    for entry in entries {
+        let retired = entry.get("retired").and_then(toml::Value::as_bool).unwrap_or(false);
+        if retired {
+            continue;
+        }
+        let Some(reason) = entry.get("reason").and_then(toml::Value::as_str) else {
+            continue;
+        };
+        if reason.trim().is_empty() {
+            continue;
+        }
+        let id = entry.get("id").and_then(toml::Value::as_str).unwrap_or("<unnamed>");
+        let matcher = entry
+            .get("glob")
+            .or_else(|| entry.get("path"))
+            .and_then(toml::Value::as_str)
+            .unwrap_or("<none>");
+        match seen.entry(reason) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert((id, matcher));
+            }
+            std::collections::btree_map::Entry::Occupied(slot) => {
+                let (first_id, first_matcher) = slot.get();
+                if *first_matcher != matcher {
+                    conflicts.push(mispaired_provenance_message(
+                        first_id,
+                        first_matcher,
+                        id,
+                        matcher,
+                    ));
+                }
+            }
+        }
+    }
+    conflicts
+}
+
 fn validate_exact_policy_bytes(policy: &[u8]) -> Result<()> {
-    let value: toml::Value =
-        toml::from_str(std::str::from_utf8(policy).context("allowlist is not UTF-8")?)
-            .context("parsing allowlist policy")?;
+    let text = std::str::from_utf8(policy).context("allowlist is not UTF-8")?;
+    let marker_lines = policy_conflict_marker_lines(text);
+    if !marker_lines.is_empty() {
+        bail!("allowlist contains Git conflict markers at lines {marker_lines:?}");
+    }
+    let value: toml::Value = toml::from_str(text).context("parsing allowlist policy")?;
     let entries = value
         .get("allow")
         .and_then(toml::Value::as_array)
         .ok_or_else(|| eyre!("allowlist must define an allow array"))?;
+    let tables: Vec<&toml::map::Map<String, toml::Value>> =
+        entries.iter().filter_map(toml::Value::as_table).collect();
+    if let Some(conflict) = mispaired_provenance_conflicts(&tables).first() {
+        bail!("mispaired provenance: {conflict}");
+    }
     let mut matchers = std::collections::BTreeSet::new();
     for (index, raw) in entries.iter().enumerate() {
         let table = raw.as_table().ok_or_else(|| eyre!("allow entry {index} is not a table"))?;
@@ -1533,6 +1630,13 @@ fn validate_policy_table(
             return 0;
         }
     };
+    // Scan the raw source before parsing and table lookup: a syntactically
+    // valid policy without the selected table must not bypass marker checks.
+    let marker_lines = policy_conflict_marker_lines(&text);
+    if !marker_lines.is_empty() {
+        errors.push(format!("{}: Git conflict markers at lines {marker_lines:?}", path.display()));
+    }
+
     let data = match toml::from_str::<toml::Value>(&text) {
         Ok(data) => data,
         Err(err) => {
@@ -1551,12 +1655,14 @@ fn validate_policy_table(
 
     let mut seen_ids: BTreeMap<String, usize> = BTreeMap::new();
     let mut seen_matchers: BTreeMap<String, String> = BTreeMap::new();
+    let mut coherence_tables: Vec<&toml::map::Map<String, toml::Value>> = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
         let Some(table) = entry.as_table() else {
             errors
                 .push(format!("{}: `{table_name}` entry #{index} must be a table", path.display()));
             continue;
         };
+        coherence_tables.push(table);
 
         if strict_allow_schema {
             validate_allow_schema_entry(table, index, errors);
@@ -1581,6 +1687,12 @@ fn validate_policy_table(
             errors.push(format!(
                 "{entry_id}: duplicate matcher `{matcher}` (also used by id `{previous_id}`)"
             ));
+        }
+    }
+
+    if table_name == "allow" {
+        for conflict in mispaired_provenance_conflicts(&coherence_tables) {
+            errors.push(format!("{}: mispaired provenance: {conflict}", path.display()));
         }
     }
 
@@ -1923,12 +2035,6 @@ fn unused_entry_count(entries: &[AllowEntry], tracked: &[String]) -> usize {
         .count()
 }
 
-/// Load the allowlist from the given path (overrides root-relative default).
-fn load_allowlist_from(path: &std::path::Path) -> Result<Allowlist> {
-    let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
-}
-
 fn render_policy_report_markdown(receipt: &FilePolicyReceipt) -> String {
     let mut out = String::new();
     out.push_str("# Non-Rust File Policy Report\n\n");
@@ -1985,6 +2091,38 @@ fn check_allowlist_entries(
                     path: None,
                     entry_id: Some(id.to_string()),
                 });
+            }
+        }
+    }
+
+    // --- Mispaired provenance (#9680/#9993), blocking in enforcement modes ---
+    if mode != CheckFilePolicyMode::Advisory {
+        let mut seen_reasons: BTreeMap<&str, (&str, &str)> = BTreeMap::new();
+        for entry in entries.iter().filter(|entry| !entry.retired) {
+            if entry.reason.trim().is_empty() {
+                continue;
+            }
+            let matcher = entry.glob.as_deref().or(entry.path.as_deref()).unwrap_or("<none>");
+            match seen_reasons.entry(entry.reason.as_str()) {
+                std::collections::btree_map::Entry::Vacant(slot) => {
+                    slot.insert((entry.id.as_str(), matcher));
+                }
+                std::collections::btree_map::Entry::Occupied(slot) => {
+                    let (first_id, first_matcher) = slot.get();
+                    if *first_matcher != matcher {
+                        violations.push(PolicyViolation {
+                            kind: "mispaired-provenance".to_string(),
+                            message: mispaired_provenance_message(
+                                first_id,
+                                first_matcher,
+                                &entry.id,
+                                matcher,
+                            ),
+                            path: None,
+                            entry_id: Some(entry.id.clone()),
+                        });
+                    }
+                }
             }
         }
     }
@@ -2174,12 +2312,19 @@ pub fn check_file_policy(root: &std::path::Path, config: CheckFilePolicyConfig) 
         if let Some(ref r) = config.root_override { r.clone() } else { root.to_path_buf() };
     let root = effective_root.as_path();
 
-    // Load allowlist.
-    let allowlist = if let Some(ref custom_path) = config.allowlist_path {
-        load_allowlist_from(custom_path)?
-    } else {
-        load_allowlist(root)?
-    };
+    // Load the raw allowlist before deserializing it so blocking enforcement
+    // cannot bypass conflict-marker detection by going through the typed
+    // loader. The structural validation path performs the same raw scan.
+    let allowlist_path = config
+        .allowlist_path
+        .clone()
+        .unwrap_or_else(|| root.join("policy/non-rust-allowlist.toml"));
+    let allowlist_text = fs::read_to_string(&allowlist_path)
+        .with_context(|| format!("reading {}", allowlist_path.display()))?;
+    let marker_lines = policy_conflict_marker_lines(&allowlist_text);
+
+    let allowlist: Allowlist = toml::from_str(&allowlist_text)
+        .with_context(|| format!("parsing {}", allowlist_path.display()))?;
 
     let entries = &allowlist.allow;
 
@@ -2188,6 +2333,15 @@ pub fn check_file_policy(root: &std::path::Path, config: CheckFilePolicyConfig) 
     let prepared = prepare_allow_entries(entries);
 
     let mut violations: Vec<PolicyViolation> = Vec::new();
+
+    if !marker_lines.is_empty() && config.mode != CheckFilePolicyMode::Advisory {
+        violations.push(PolicyViolation {
+            kind: "conflict-marker".to_string(),
+            message: format!("Git conflict markers at lines {marker_lines:?}"),
+            path: Some(allowlist_path.display().to_string()),
+            entry_id: None,
+        });
+    }
 
     // --- Per-file classification ---
     let mut non_rust_count = 0usize;
@@ -2292,7 +2446,7 @@ pub fn check_file_policy(root: &std::path::Path, config: CheckFilePolicyConfig) 
 
     // Decide exit code based on mode.
     if config.mode != CheckFilePolicyMode::Advisory && !violations.is_empty() {
-        std::process::exit(1);
+        bail!("file policy check found {} violation(s)", violations.len());
     }
 
     Ok(())
@@ -3058,6 +3212,146 @@ mod tests {
         violations.iter().map(|violation| violation.kind.as_str()).collect()
     }
 
+    /// Two-schema-valid entries whose `reason` prose was spliced from one row
+    /// into the other by textual conflict resolution (#9680).
+    fn mispaired_allowlist_fixture() -> String {
+        r#"
+schema_version = 1
+policy = "non-rust-allowlist"
+
+[[allow]]
+id = "entry-a"
+path = "docs/a.md"
+kind = "doc"
+language = "markdown"
+surface = "docs"
+classification = "documentation"
+owner = "docs"
+reason = "Documents the alpha subsystem with its full user contract."
+covered_by = ["manual review"]
+created = "2026-01-01"
+review_after = "2026-06-01"
+
+[[allow]]
+id = "entry-b"
+path = "docs/b.md"
+kind = "doc"
+language = "markdown"
+surface = "docs"
+classification = "documentation"
+owner = "docs"
+reason = "Documents the alpha subsystem with its full user contract."
+covered_by = ["manual review"]
+created = "2026-01-01"
+review_after = "2026-06-01"
+"#
+        .to_string()
+    }
+
+    #[test]
+    fn mispaired_provenance_fails_exact_policy_bytes() -> Result<()> {
+        let err =
+            validate_exact_policy_bytes(mispaired_allowlist_fixture().as_bytes()).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("provenance is mispaired"), "{message}");
+        assert!(message.contains("entry-a") && message.contains("entry-b"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn distinct_reasons_pass_exact_policy_bytes() -> Result<()> {
+        let policy = mispaired_allowlist_fixture().replacen(
+            "reason = \"Documents the alpha subsystem with its full user contract.\"",
+            "reason = \"Documents the beta subsystem with its own operator guide.\"",
+            1,
+        );
+        validate_exact_policy_bytes(policy.as_bytes())?;
+        Ok(())
+    }
+
+    #[test]
+    fn retired_duplicate_reason_passes_exact_policy_bytes() -> Result<()> {
+        let policy = mispaired_allowlist_fixture()
+            .replace("id = \"entry-b\"", "id = \"entry-b\"\nretired = true");
+        validate_exact_policy_bytes(policy.as_bytes())?;
+        Ok(())
+    }
+
+    #[test]
+    fn conflict_marker_inside_multiline_string_fails_exact_policy_bytes() -> Result<()> {
+        let policy = mispaired_allowlist_fixture().replace(
+            "reason = \"Documents the alpha subsystem with its full user contract.\"",
+            "reason = \"\"\"\nKeeps the alpha subsystem documented.\n<<<<<<< HEAD\nKeeps the gamma subsystem documented.\n=======\n>>>>>>> feature-branch\n\"\"\"",
+        );
+        let err = validate_exact_policy_bytes(policy.as_bytes()).unwrap_err();
+        assert!(err.to_string().contains("conflict markers"), "{}", err);
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_multiline_reason_separator_is_not_a_conflict_marker() -> Result<()> {
+        let policy = mispaired_allowlist_fixture().replacen(
+            "reason = \"Documents the alpha subsystem with its full user contract.\"",
+            "reason = \"\"\"\n======= Overview\nDescribes the alpha subsystem.\n\"\"\"",
+            1,
+        );
+        let policy = policy.replacen(
+            "reason = \"Documents the alpha subsystem with its full user contract.\"",
+            "reason = \"Documents the beta subsystem with its own operator guide.\"",
+            1,
+        );
+        validate_exact_policy_bytes(policy.as_bytes())?;
+        Ok(())
+    }
+
+    #[test]
+    fn mispaired_provenance_blocks_enforcement_modes_and_spares_advisory() -> Result<()> {
+        let allowlist: Allowlist = toml::from_str(&mispaired_allowlist_fixture())?;
+        let entries = allowlist.allow;
+        let blocking =
+            check_allowlist_entries(&entries, CheckFilePolicyMode::BlockingAllowlist, &[]);
+        assert!(violation_kinds(&blocking).contains(&"mispaired-provenance"));
+        let strict = check_allowlist_entries(&entries, CheckFilePolicyMode::BlockingStrict, &[]);
+        assert!(violation_kinds(&strict).contains(&"mispaired-provenance"));
+        let advisory = check_allowlist_entries(&entries, CheckFilePolicyMode::Advisory, &[]);
+        assert!(!violation_kinds(&advisory).contains(&"mispaired-provenance"));
+        Ok(())
+    }
+
+    #[test]
+    fn policy_table_path_reports_mispaired_provenance_and_conflict_markers() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let allowlist_path = temp.path().join("allowlist.toml");
+        std::fs::write(&allowlist_path, mispaired_allowlist_fixture())?;
+        let mut errors = Vec::new();
+        validate_policy_table(&allowlist_path, "allow", true, &mut errors);
+        assert!(errors.iter().any(|error| error.contains("provenance is mispaired")), "{errors:?}");
+
+        let marker_path = temp.path().join("markers.toml");
+        std::fs::write(
+            &marker_path,
+            "[[allow]]\nid = \"entry-a\"\nreason = \"\"\"\nline\n<<<<<<< HEAD\n\"\"\"\n",
+        )?;
+        let mut marker_errors = Vec::new();
+        validate_policy_table(&marker_path, "allow", false, &mut marker_errors);
+        assert!(
+            marker_errors.iter().any(|error| error.contains("conflict markers")),
+            "{marker_errors:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn policy_table_path_scans_markers_before_missing_table_return() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("missing-allow.toml");
+        std::fs::write(&path, "# no allow table\n<<<<<<< HEAD\n")?;
+        let mut errors = Vec::new();
+        assert_eq!(validate_policy_table(&path, "allow", true, &mut errors), 0);
+        assert!(errors.iter().any(|error| error.contains("conflict markers")), "{errors:?}");
+        Ok(())
+    }
+
     #[test]
     fn expiry_is_valid_on_expiration_date_and_excluded_afterward() -> Result<()> {
         let mut entry = make_entry("expiring", None, Some("docs/a.txt"), "documentation");
@@ -3502,6 +3796,33 @@ mod tests {
     }
 
     #[test]
+    fn blocking_check_file_policy_rejects_conflict_markers_in_raw_allowlist() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let _tracked = init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
+        let allowlist = temp.path().join("allow.toml");
+        std::fs::write(
+            &allowlist,
+            "[[allow]]\nid = \"readme\"\npath = \"README.md\"\nkind = \"documentation\"\nlanguage = \"markdown\"\nowner = \"team\"\nreason = \"\"\"\n<<<<<<< HEAD\n\"\"\"\nsurface = \"docs\"\nclassification = \"documentation\"\ncovered_by = [\"fixture\"]\ncreated = \"2026-01-01\"\nreview_after = \"2099-01-01\"\n",
+        )?;
+
+        let result = check_file_policy(
+            temp.path(),
+            CheckFilePolicyConfig {
+                mode: CheckFilePolicyMode::BlockingAllowlist,
+                json_output: None,
+                allowlist_path: Some(allowlist),
+                root_override: Some(temp.path().to_path_buf()),
+            },
+        );
+        let error = result.expect_err("blocking policy accepted raw conflict marker");
+        assert!(
+            error.to_string().contains("violation"),
+            "blocking policy did not report a violation: {error:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn check_file_policy_advisory_writes_receipt_and_markdown_report() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let tracked = init_tracked_fixture(
@@ -3597,6 +3918,30 @@ review_after = "2026-08-13"
         Ok(())
     }
 
+    #[test]
+    fn debt_entries_may_reuse_reason_across_matchers() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let debt = temp.path().join("debt.toml");
+        fs::write(
+            &debt,
+            r#"
+[[debt]]
+id = "debt-a"
+path = "legacy/a.py"
+reason = "classification pending"
+
+[[debt]]
+id = "debt-b"
+path = "legacy/b.py"
+reason = "classification pending"
+"#,
+        )?;
+        let mut errors = Vec::new();
+        let count = validate_policy_table(&debt, "debt", false, &mut errors);
+        assert_eq!(count, 2);
+        assert!(!errors.iter().any(|error| error.contains("mispaired provenance")), "{errors:?}");
+        Ok(())
+    }
     #[test]
     fn validate_non_rust_policy_reports_schema_errors() -> Result<()> {
         let temp = tempfile::tempdir()?;

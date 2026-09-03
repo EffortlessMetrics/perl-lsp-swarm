@@ -540,6 +540,9 @@ pub fn perl_dap::backend::peer_launch::static_mirror_capabilities() -> serde_jso
 pub enum perl_dap::backend::BackendError
 pub perl_dap::backend::BackendError::Engine(alloc::string::String)
 pub perl_dap::backend::BackendError::NotConnected
+pub perl_dap::backend::BackendError::PeerReported
+pub perl_dap::backend::BackendError::PeerReported::command: alloc::string::String
+pub perl_dap::backend::BackendError::PeerReported::message: alloc::string::String
 pub perl_dap::backend::BackendError::Protocol(alloc::string::String)
 pub perl_dap::backend::BackendError::ResourceLimit(alloc::string::String)
 pub perl_dap::backend::BackendError::Timeout(alloc::string::String)
