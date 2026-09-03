@@ -212,7 +212,15 @@ fn validate_class_rules(row: &ActivationRow, violations: &mut Vec<String>) {
             ));
         }
     }
-    if row.class == ActivationClass::CompatibilityShim && row.retirement.is_none() {
+    // Presence is not the requirement here either: a retirement plan needs a
+    // nameable owner and a stateable boundary. The schema enforces the same
+    // rule with a non-whitespace pattern; this gives the failure a message
+    // naming the rule instead of a raw pattern mismatch.
+    let retirement_stated = row
+        .retirement
+        .as_ref()
+        .is_some_and(|plan| !plan.owner.trim().is_empty() && !plan.boundary.trim().is_empty());
+    if row.class == ActivationClass::CompatibilityShim && !retirement_stated {
         violations.push(format!(
             "row `{}`: compatibility shim requires a retirement owner and boundary",
             row.surface_id

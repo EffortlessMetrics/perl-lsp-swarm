@@ -416,13 +416,24 @@ fn sorted_crate_manifests(root: &Path) -> Result<Vec<(String, toml::Value)>, Act
     Ok(manifests)
 }
 
-fn package_name(crate_dir: &str, manifest: &toml::Value) -> String {
+/// The package name a manifest declares.
+///
+/// Substituting the directory name would invent a fact: `crates/foo/` need
+/// not contain a package called `foo`, and the name becomes both the row's
+/// `owner` and half its `surface_id`. A manifest with no readable
+/// `package.name` is malformed authority data, so it fails rather than
+/// producing a plausible-looking ownership claim nothing in the repository
+/// supports.
+fn package_name(manifest_path: &str, manifest: &toml::Value) -> Result<String, ActivationError> {
     manifest
         .get("package")
         .and_then(|package| package.get("name"))
         .and_then(toml::Value::as_str)
+        .filter(|name| !name.trim().is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| crate_dir.to_string())
+        .ok_or_else(|| {
+            ActivationError::new(format!("{manifest_path}: has no non-empty string `package.name`"))
+        })
 }
 
 fn derive_benches(root: &Path) -> Result<RuleOutput, ActivationError> {
@@ -432,7 +443,7 @@ fn derive_benches(root: &Path) -> Result<RuleOutput, ActivationError> {
 
     for (crate_dir, manifest) in &manifests {
         let manifest_path = format!("crates/{crate_dir}/Cargo.toml");
-        let name = package_name(crate_dir, manifest);
+        let name = package_name(&manifest_path, manifest)?;
         let benches = match manifest.get("bench") {
             None => continue,
             Some(value) => value.as_array().ok_or_else(|| {
@@ -497,21 +508,107 @@ fn derive_benches(root: &Path) -> Result<RuleOutput, ActivationError> {
     })
 }
 
-/// Cargo features that gate a test-only surface.
+/// Why a Cargo feature was classified `test_api`.
 ///
-/// This is a name-based rule over a repository whose test features do not
-/// share one spelling, so it enumerates the real spellings in use
-/// (`test-*`, `expose_*`, `experimental-*`, `stress-tests`, `slow_tests`,
-/// `integration-test`) rather than pretending a single prefix covers them.
-/// It cannot be complete by construction: a future test feature under a new
-/// spelling would not be seeded until it is added here, which is why the
-/// rule's `not_seeded_reason` says so instead of claiming everything
-/// unmatched is an ordinary build feature.
-fn is_test_api_feature(name: &str) -> bool {
+/// Name and usage are genuinely different signals and neither subsumes the
+/// other, so the row records which one settled it rather than presenting a
+/// single opaque verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TestApiSignal {
+    /// The feature's own name declares the intent (`test-*`, `expose_*`, ...).
+    /// This is the only signal that can classify a feature gating production
+    /// code — `expose_lsp_test_api` gates `src/runtime/` precisely because a
+    /// test API is *exposed from* production, which is what the class means.
+    DeclaredByName,
+    /// Every `cfg(feature = "…")` site is under `tests/` or `benches/`. This
+    /// catches features whose names declare nothing (`crash-repros`,
+    /// `lsp-extras`, `simd`) but whose use proves they gate only tests.
+    ProvenByUsage,
+}
+
+/// Cargo features that gate a test-only surface, by name or by evidence.
+///
+/// The name rule alone under-classified: this repository's test features do
+/// not share a spelling, and two review rounds of "you missed these
+/// spellings" showed that enumerating them is the wrong mechanism, not that
+/// the list was one entry short. Usage evidence alone would be wrong in the
+/// other direction, dropping the `expose_*`/`test-*` features that gate
+/// production code to expose a test API.
+///
+/// So a feature is `test_api` when its name declares it OR its usage proves
+/// it. A feature matching neither is left to its own authority; that is
+/// still recorded in the rule's `not_seeded_reason` rather than presented as
+/// a claim that everything unmatched is an ordinary build feature.
+fn test_api_signal(
+    root: &Path,
+    crate_dir: &str,
+    feature: &str,
+) -> Result<Option<TestApiSignal>, ActivationError> {
+    if declared_test_api_name(feature) {
+        return Ok(Some(TestApiSignal::DeclaredByName));
+    }
+    let sites = feature_cfg_sites(root, crate_dir, feature)?;
+    // No usage at all proves nothing: a declared-but-unused feature is
+    // neither shown to gate tests nor shown not to. Only a non-empty,
+    // wholly test-side population is evidence.
+    if sites.is_empty() {
+        return Ok(None);
+    }
+    let test_only = sites.iter().all(|site| site.contains("/tests/") || site.contains("/benches/"));
+    Ok(test_only.then_some(TestApiSignal::ProvenByUsage))
+}
+
+fn declared_test_api_name(name: &str) -> bool {
     name.starts_with("test-")
         || name.starts_with("expose_")
         || name.starts_with("experimental-")
         || matches!(name, "stress-tests" | "slow_tests" | "integration-test")
+}
+
+/// Every tracked `.rs` file under the crate that names `cfg(feature = "…")`
+/// for this feature, sorted so the result does not depend on filesystem
+/// iteration order.
+///
+/// This is a textual scan, not a parse, and it is deliberately conservative:
+/// a match inside a comment or string would count as a usage site. That can
+/// only make a feature look *less* test-only than it is (an extra non-test
+/// site suppresses the `ProvenByUsage` signal), so the failure direction is
+/// under-classification, which the rule already reports, rather than a false
+/// test-api claim.
+fn feature_cfg_sites(
+    root: &Path,
+    crate_dir: &str,
+    feature: &str,
+) -> Result<Vec<String>, ActivationError> {
+    let needle = format!("feature = \"{feature}\"");
+    let crate_root = root.join("crates").join(crate_dir);
+    let mut sites = Vec::new();
+    let mut stack = vec![crate_root.clone()];
+    while let Some(dir) = stack.pop() {
+        let entries = fs::read_dir(&dir).map_err(|error| {
+            ActivationError::new(format!("crates/{crate_dir}: cannot read directory: {error}"))
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                ActivationError::new(format!("crates/{crate_dir}: cannot read entry: {error}"))
+            })?;
+            let path = entry.path();
+            if path.is_dir() {
+                // `target/` is build output, not source, and may not exist.
+                if path.file_name().is_some_and(|name| name == "target") {
+                    continue;
+                }
+                stack.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs")
+                && fs::read_to_string(&path).is_ok_and(|text| text.contains(&needle))
+            {
+                let relative = path.strip_prefix(root).unwrap_or(&path);
+                sites.push(relative.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    sites.sort();
+    Ok(sites)
 }
 
 fn derive_test_features(root: &Path) -> Result<RuleOutput, ActivationError> {
@@ -521,7 +618,7 @@ fn derive_test_features(root: &Path) -> Result<RuleOutput, ActivationError> {
 
     for (crate_dir, manifest) in &manifests {
         let manifest_path = format!("crates/{crate_dir}/Cargo.toml");
-        let name = package_name(crate_dir, manifest);
+        let name = package_name(&manifest_path, manifest)?;
         let features = match manifest.get("features") {
             None => continue,
             Some(value) => value.as_table().ok_or_else(|| {
@@ -534,9 +631,9 @@ fn derive_test_features(root: &Path) -> Result<RuleOutput, ActivationError> {
         feature_names.sort();
         considered += feature_names.len();
         for feature_name in feature_names {
-            if !is_test_api_feature(feature_name) {
+            let Some(signal) = test_api_signal(root, crate_dir, feature_name)? else {
                 continue;
-            }
+            };
             let entries =
                 features.get(feature_name).and_then(toml::Value::as_array).ok_or_else(|| {
                     ActivationError::new(format!(
@@ -575,7 +672,20 @@ fn derive_test_features(root: &Path) -> Result<RuleOutput, ActivationError> {
                 owner: name.clone(),
                 promotion: not_evaluated(),
                 retirement: None,
-                notes: None,
+                // Which signal settled the class, so a reader can tell a
+                // declared test feature from one proved test-only by its use.
+                notes: Some(
+                    match signal {
+                        TestApiSignal::DeclaredByName => {
+                            "test_api by name: the feature's own spelling declares test-only intent"
+                        }
+                        TestApiSignal::ProvenByUsage => {
+                            "test_api by usage: every cfg(feature = \"...\") site for this \
+                             feature is under tests/ or benches/"
+                        }
+                    }
+                    .to_string(),
+                ),
             });
         }
     }
@@ -588,10 +698,15 @@ fn derive_test_features(root: &Path) -> Result<RuleOutput, ActivationError> {
             emits: ActivationClass::TestApi.as_str().to_string(),
             considered,
             emitted: rows.len(),
-            not_seeded_reason: "a feature is seeded when its name matches a known \
-                test-only spelling (test-*, expose_*, experimental-*, stress-tests, \
-                slow_tests, integration-test); this is a name rule, not a proof, so a \
-                test feature under a new spelling stays unseeded until it is added"
+            not_seeded_reason: "a feature is seeded when its NAME declares test-only \
+                intent (test-*, expose_*, experimental-*, stress-tests, slow_tests, \
+                integration-test) or its USAGE proves it (at least one \
+                cfg(feature = \"...\") site, all under tests/ or benches/). Each row \
+                records which signal settled it. A feature with no cfg sites at all is \
+                not seeded by usage: an unused feature is neither shown to gate tests \
+                nor shown not to. A feature gating both production and test code is \
+                seeded only if its name declares the intent, since gating production \
+                code is what an exposed test API does"
                 .to_string(),
         },
         rows,
@@ -628,7 +743,7 @@ fn derive_fuzz(root: &Path) -> Result<RuleOutput, ActivationError> {
     let fuzz_manifest: toml::Value = toml::from_str(&fuzz_manifest_text).map_err(|error| {
         ActivationError::new(format!("{FUZZ_CARGO_TOML}: invalid TOML: {error}"))
     })?;
-    let fuzz_package = package_name("fuzz", &fuzz_manifest);
+    let fuzz_package = package_name(FUZZ_CARGO_TOML, &fuzz_manifest)?;
     let bins =
         fuzz_manifest.get("bin").and_then(toml::Value::as_array).cloned().unwrap_or_default();
 
@@ -951,6 +1066,107 @@ mod tests {
         };
         let _ = fs::remove_dir_all(&root);
         assert!(message.contains("has no non-empty string name"), "{message}");
+    }
+
+    #[test]
+    fn manifest_without_a_package_name_fails_instead_of_borrowing_the_directory() {
+        // The directory name is not the package name: `crates/foo/` need not
+        // contain a package called `foo`, and the value becomes both the
+        // row's owner and half its surface id. Substituting it would invent
+        // an ownership claim nothing in the repository supports.
+        let root = scratch_root("crate-no-package-name");
+        assert!(write(&root, "crates/demo/Cargo.toml", "[package]\nversion = \"0.1.0\"\n"));
+        let message = match derive_benches(&root) {
+            Ok(output) => format!("unexpectedly derived {} row(s)", output.rows.len()),
+            Err(error) => error.to_string(),
+        };
+        let _ = fs::remove_dir_all(&root);
+        assert!(message.contains("has no non-empty string `package.name`"), "{message}");
+    }
+
+    #[test]
+    fn a_feature_with_no_cfg_sites_is_not_seeded_by_usage() {
+        // Absence of usage proves nothing either way, so an unused feature
+        // whose name declares nothing must not be classified test_api on the
+        // strength of a vacuously-true "all sites are tests".
+        let root = scratch_root("feature-unused");
+        assert!(write(
+            &root,
+            "crates/demo/Cargo.toml",
+            "[package]\nname = \"demo\"\n[features]\nquiet-feature = []\n"
+        ));
+        let ids = derive_test_features(&root)
+            .map(|output| output.rows.iter().map(|row| row.surface_id.clone()).collect::<Vec<_>>());
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(ids, Ok(Vec::new()));
+    }
+
+    #[test]
+    fn a_feature_used_only_under_tests_is_seeded_by_usage() {
+        let root = scratch_root("feature-usage-tests");
+        assert!(write(
+            &root,
+            "crates/demo/Cargo.toml",
+            "[package]\nname = \"demo\"\n[features]\nquiet-feature = []\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/demo/tests/thing.rs",
+            "#[cfg(feature = \"quiet-feature\")]\nfn t() {}\n"
+        ));
+        let ids = derive_test_features(&root)
+            .map(|output| output.rows.iter().map(|row| row.surface_id.clone()).collect::<Vec<_>>());
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(ids, Ok(vec!["cargo-feature:demo/quiet-feature".to_string()]));
+    }
+
+    #[test]
+    fn a_feature_also_used_in_src_is_not_seeded_by_usage() {
+        // One non-test site is enough to withdraw the usage claim: the
+        // feature demonstrably gates production code, so only its name could
+        // classify it, and this one's name declares nothing.
+        let root = scratch_root("feature-usage-mixed");
+        assert!(write(
+            &root,
+            "crates/demo/Cargo.toml",
+            "[package]\nname = \"demo\"\n[features]\nquiet-feature = []\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/demo/tests/thing.rs",
+            "#[cfg(feature = \"quiet-feature\")]\nfn t() {}\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/demo/src/lib.rs",
+            "#[cfg(feature = \"quiet-feature\")]\npub fn p() {}\n"
+        ));
+        let ids = derive_test_features(&root)
+            .map(|output| output.rows.iter().map(|row| row.surface_id.clone()).collect::<Vec<_>>());
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(ids, Ok(Vec::new()));
+    }
+
+    #[test]
+    fn a_name_declared_feature_used_in_src_is_still_seeded() {
+        // The same shape as above, but the name declares the intent — which
+        // is the real `expose_lsp_test_api` case, where gating production
+        // code is precisely what exposing a test API means.
+        let root = scratch_root("feature-name-declared-src");
+        assert!(write(
+            &root,
+            "crates/demo/Cargo.toml",
+            "[package]\nname = \"demo\"\n[features]\nexpose_demo_test_api = []\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/demo/src/lib.rs",
+            "#[cfg(feature = \"expose_demo_test_api\")]\npub fn p() {}\n"
+        ));
+        let ids = derive_test_features(&root)
+            .map(|output| output.rows.iter().map(|row| row.surface_id.clone()).collect::<Vec<_>>());
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(ids, Ok(vec!["cargo-feature:demo/expose_demo_test_api".to_string()]));
     }
 
     #[test]

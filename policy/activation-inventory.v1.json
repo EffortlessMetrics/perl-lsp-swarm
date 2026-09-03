@@ -18,8 +18,8 @@
       "authority": "crates/*/Cargo.toml",
       "emits": "test_api",
       "considered": 78,
-      "emitted": 13,
-      "not_seeded_reason": "a feature is seeded when its name matches a known test-only spelling (test-*, expose_*, experimental-*, stress-tests, slow_tests, integration-test); this is a name rule, not a proof, so a test feature under a new spelling stays unseeded until it is added"
+      "emitted": 28,
+      "not_seeded_reason": "a feature is seeded when its NAME declares test-only intent (test-*, expose_*, experimental-*, stress-tests, slow_tests, integration-test) or its USAGE proves it (at least one cfg(feature = \"...\") site, all under tests/ or benches/). Each row records which signal settled it. A feature with no cfg sites at all is not seeded by usage: an unused feature is neither shown to gate tests nor shown not to. A feature gating both production and test code is seeded only if its name declares the intent, since gating production code is what an exposed test API does"
     },
     {
       "rule": "features-preview",
@@ -484,6 +484,68 @@
       }
     },
     {
+      "surface_id": "cargo-feature:perl-dap/dap-phase2",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-dap/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-dap/Cargo.toml#features.dap-phase2",
+      "consumers": [
+        "crates/perl-dap"
+      ],
+      "compile_profiles": [
+        "dap-phase2"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-dap/Cargo.toml",
+        "detail": "[features] dap-phase2 = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-dap/Cargo.toml"
+      },
+      "owner": "perl-dap",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
+    },
+    {
+      "surface_id": "cargo-feature:perl-dap/dap-phase3",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-dap/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-dap/Cargo.toml#features.dap-phase3",
+      "consumers": [
+        "crates/perl-dap"
+      ],
+      "compile_profiles": [
+        "dap-phase3"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-dap/Cargo.toml",
+        "detail": "[features] dap-phase3 = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-dap/Cargo.toml"
+      },
+      "owner": "perl-dap",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
+    },
+    {
       "surface_id": "cargo-feature:perl-dap/test-helpers",
       "class": "test_api",
       "class_authority": {
@@ -511,7 +573,39 @@
       "owner": "perl-dap",
       "promotion": {
         "state": "not_evaluated"
-      }
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
+    },
+    {
+      "surface_id": "cargo-feature:perl-lexer/simd",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-lexer/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-lexer/Cargo.toml#features.simd",
+      "consumers": [
+        "crates/perl-lexer"
+      ],
+      "compile_profiles": [
+        "simd"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-lexer/Cargo.toml",
+        "detail": "[features] simd = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-lexer/Cargo.toml"
+      },
+      "owner": "perl-lexer",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
     },
     {
       "surface_id": "cargo-feature:perl-lexer/slow_tests",
@@ -541,7 +635,8 @@
       "owner": "perl-lexer",
       "promotion": {
         "state": "not_evaluated"
-      }
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
     },
     {
       "surface_id": "cargo-feature:perl-lsp-rs/experimental-features",
@@ -571,7 +666,8 @@
       "owner": "perl-lsp-rs",
       "promotion": {
         "state": "not_evaluated"
-      }
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
     },
     {
       "surface_id": "cargo-feature:perl-lsp-rs/expose_lsp_test_api",
@@ -601,7 +697,70 @@
       "owner": "perl-lsp-rs",
       "promotion": {
         "state": "not_evaluated"
-      }
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
+    },
+    {
+      "surface_id": "cargo-feature:perl-lsp-rs/lsp-extras",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-lsp-rs/Cargo.toml#features.lsp-extras",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [
+        "lsp-extras"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "detail": "[features] lsp-extras = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-lsp-rs/Cargo.toml"
+      },
+      "owner": "perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
+    },
+    {
+      "surface_id": "cargo-feature:perl-lsp-rs/lsp-ga-lock",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-lsp-rs/Cargo.toml#features.lsp-ga-lock",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [
+        "lsp-ga-lock"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "detail": "[features] lsp-ga-lock = [perl-lsp-rs-core/lsp-ga-lock]"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-lsp-rs/Cargo.toml"
+      },
+      "owner": "perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
     },
     {
       "surface_id": "cargo-feature:perl-lsp-rs/stress-tests",
@@ -631,7 +790,39 @@
       "owner": "perl-lsp-rs",
       "promotion": {
         "state": "not_evaluated"
-      }
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
+    },
+    {
+      "surface_id": "cargo-feature:perl-lsp-rs/strict-jsonrpc",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-lsp-rs/Cargo.toml#features.strict-jsonrpc",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [
+        "strict-jsonrpc"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "detail": "[features] strict-jsonrpc = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-lsp-rs/Cargo.toml"
+      },
+      "owner": "perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
     },
     {
       "surface_id": "cargo-feature:perl-lsp-rs/test-fallbacks",
@@ -661,7 +852,8 @@
       "owner": "perl-lsp-rs",
       "promotion": {
         "state": "not_evaluated"
-      }
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
     },
     {
       "surface_id": "cargo-feature:perl-lsp-rs/test-performance",
@@ -691,7 +883,39 @@
       "owner": "perl-lsp-rs",
       "promotion": {
         "state": "not_evaluated"
-      }
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
+    },
+    {
+      "surface_id": "cargo-feature:perl-lsp-rs/utf16-complete",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-lsp-rs/Cargo.toml#features.utf16-complete",
+      "consumers": [
+        "crates/perl-lsp-rs"
+      ],
+      "compile_profiles": [
+        "utf16-complete"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-lsp-rs/Cargo.toml",
+        "detail": "[features] utf16-complete = [perl-parser/utf16-complete]"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-lsp-rs/Cargo.toml"
+      },
+      "owner": "perl-lsp-rs",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
     },
     {
       "surface_id": "cargo-feature:perl-lsp-ux-tests/integration-test",
@@ -721,7 +945,132 @@
       "owner": "perl-lsp-ux-tests",
       "promotion": {
         "state": "not_evaluated"
-      }
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
+    },
+    {
+      "surface_id": "cargo-feature:perl-parser/constant-advanced",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#features.constant-advanced",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "constant-advanced"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[features] constant-advanced = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
+    },
+    {
+      "surface_id": "cargo-feature:perl-parser/crash-repros",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#features.crash-repros",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "crash-repros"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[features] crash-repros = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
+    },
+    {
+      "surface_id": "cargo-feature:perl-parser/doc-coverage",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#features.doc-coverage",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "doc-coverage"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[features] doc-coverage = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
+    },
+    {
+      "surface_id": "cargo-feature:perl-parser/error-classifier-v2",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#features.error-classifier-v2",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "error-classifier-v2"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[features] error-classifier-v2 = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
     },
     {
       "surface_id": "cargo-feature:perl-parser/experimental-features",
@@ -751,7 +1100,8 @@
       "owner": "perl-parser",
       "promotion": {
         "state": "not_evaluated"
-      }
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
     },
     {
       "surface_id": "cargo-feature:perl-parser/expose_lsp_test_api",
@@ -781,7 +1131,132 @@
       "owner": "perl-parser",
       "promotion": {
         "state": "not_evaluated"
-      }
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
+    },
+    {
+      "surface_id": "cargo-feature:perl-parser/package-qualified",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#features.package-qualified",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "package-qualified"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[features] package-qualified = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
+    },
+    {
+      "surface_id": "cargo-feature:perl-parser/parser-extras",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#features.parser-extras",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "parser-extras"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[features] parser-extras = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
+    },
+    {
+      "surface_id": "cargo-feature:perl-parser/qw-variants",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#features.qw-variants",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "qw-variants"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[features] qw-variants = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
+    },
+    {
+      "surface_id": "cargo-feature:perl-parser/semantic-phase2",
+      "class": "test_api",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "rule": "cargo-test-features"
+      },
+      "semantic_authority": "crates/perl-parser/Cargo.toml#features.semantic-phase2",
+      "consumers": [
+        "crates/perl-parser"
+      ],
+      "compile_profiles": [
+        "semantic-phase2"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-parser/Cargo.toml",
+        "detail": "[features] semantic-phase2 = []"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-parser/Cargo.toml"
+      },
+      "owner": "perl-parser",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
     },
     {
       "surface_id": "cargo-feature:perl-parser/slow_tests",
@@ -811,7 +1286,8 @@
       "owner": "perl-parser",
       "promotion": {
         "state": "not_evaluated"
-      }
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
     },
     {
       "surface_id": "cargo-feature:perl-parser/test-performance",
@@ -841,7 +1317,8 @@
       "owner": "perl-parser",
       "promotion": {
         "state": "not_evaluated"
-      }
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
     },
     {
       "surface_id": "cargo-feature:tree-sitter-perl-c/test-utils",
@@ -871,7 +1348,8 @@
       "owner": "tree-sitter-perl-c",
       "promotion": {
         "state": "not_evaluated"
-      }
+      },
+      "notes": "test_api by name: the feature's own spelling declares test-only intent"
     },
     {
       "surface_id": "crate:perl-tree-sitter-compat",

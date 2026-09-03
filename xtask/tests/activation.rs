@@ -65,7 +65,7 @@ const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
     ("product", 16),
     ("preview", 2),
     ("compatibility_shim", 1),
-    ("test_api", 13),
+    ("test_api", 28),
     ("lab", 21),
     ("oracle", 1),
     ("benchmark", 14),
@@ -627,4 +627,85 @@ fn override_authority_naming_a_list_that_does_contain_the_surface_is_accepted() 
         "the committed allow-list authority must satisfy the membership rule: {violations:?}"
     );
     Ok(())
+}
+
+#[test]
+fn test_api_rule_seeds_features_whose_usage_proves_them_test_only() -> TestResult {
+    // Two review rounds reported missed test-feature spellings. Enumerating
+    // names is the wrong mechanism, so usage is now evidence in its own
+    // right. These are real features whose names declare nothing and whose
+    // every `cfg(feature = "...")` site is under `tests/` — their own
+    // Cargo.toml comments call them test features.
+    let inventory = activation::validate(&repo_root()).map_err(|error| error.to_string())?;
+    let ids: Vec<&str> = inventory.rows.iter().map(|row| row.surface_id.as_str()).collect();
+    for expected in [
+        "cargo-feature:perl-lsp-rs/lsp-extras",
+        "cargo-feature:perl-lsp-rs/strict-jsonrpc",
+        "cargo-feature:perl-parser/crash-repros",
+        "cargo-feature:perl-parser/doc-coverage",
+        "cargo-feature:perl-lexer/simd",
+    ] {
+        assert!(ids.contains(&expected), "usage-proven test_api row `{expected}` is missing");
+    }
+    Ok(())
+}
+
+#[test]
+fn test_api_rule_keeps_name_declared_features_that_gate_production_code() -> TestResult {
+    // The control that stops a usage-only rule from replacing the name rule.
+    // `expose_lsp_test_api` and `test-fallbacks` have `cfg` sites under
+    // `src/`, because exposing a test API from production code is exactly
+    // what the class means. A usage-only rule would drop them.
+    let inventory = activation::validate(&repo_root()).map_err(|error| error.to_string())?;
+    let ids: Vec<&str> = inventory.rows.iter().map(|row| row.surface_id.as_str()).collect();
+    for expected in [
+        "cargo-feature:perl-lsp-rs/expose_lsp_test_api",
+        "cargo-feature:perl-lsp-rs/test-fallbacks",
+        "cargo-feature:perl-dap/test-helpers",
+    ] {
+        assert!(ids.contains(&expected), "name-declared test_api row `{expected}` is missing");
+    }
+    Ok(())
+}
+
+#[test]
+fn every_test_api_row_records_which_signal_classified_it() -> TestResult {
+    // Name and usage are different claims about a surface. A row that does
+    // not say which one settled it presents a single opaque verdict, which
+    // is what this inventory exists to avoid.
+    let inventory = activation::validate(&repo_root()).map_err(|error| error.to_string())?;
+    let mut by_name = 0usize;
+    let mut by_usage = 0usize;
+    for row in inventory.rows.iter().filter(|row| row.class == ActivationClass::TestApi) {
+        match row.notes.as_deref() {
+            Some(note) if note.starts_with("test_api by name:") => by_name += 1,
+            Some(note) if note.starts_with("test_api by usage:") => by_usage += 1,
+            other => {
+                return Err(
+                    format!("row `{}` has no signal note: {other:?}", row.surface_id).into()
+                );
+            }
+        }
+    }
+    assert_eq!((by_name, by_usage), (13, 15), "test_api signal split drifted");
+    Ok(())
+}
+
+#[test]
+fn whitespace_only_retirement_owner_fails_artifact_validation() -> TestResult {
+    // The artifact-level half of the ledger's `is_blank` rule. `minLength: 1`
+    // admits "   ", so the schema needed a non-whitespace pattern and the
+    // Rust rule needed to stop accepting a present-but-blank plan.
+    let mut inventory = canonical_inventory()?;
+    row_mut(&mut inventory, "crate:perl-tree-sitter-compat")
+        .ok_or("compat shim row not found")?["retirement"]["owner"] = json!("   ");
+    expect_violation(&inventory, "compatibility shim requires a retirement owner and boundary")
+}
+
+#[test]
+fn whitespace_only_retirement_boundary_fails_artifact_validation() -> TestResult {
+    let mut inventory = canonical_inventory()?;
+    row_mut(&mut inventory, "crate:perl-tree-sitter-compat")
+        .ok_or("compat shim row not found")?["retirement"]["boundary"] = json!("\t ");
+    expect_violation(&inventory, "compatibility shim requires a retirement owner and boundary")
 }

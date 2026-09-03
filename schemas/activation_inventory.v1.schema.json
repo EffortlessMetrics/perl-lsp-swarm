@@ -127,12 +127,13 @@
       }
     },
     "retirement": {
+      "$comment": "`minLength: 1` admits \"   \". A retirement plan needs a nameable owner and a stateable boundary, so both must carry a non-whitespace character. The override ledger enforces the same rule on its side via `is_blank`; this is the artifact-level half.",
       "type": "object",
       "additionalProperties": false,
       "required": ["owner", "boundary"],
       "properties": {
-        "owner": { "type": "string", "minLength": 1 },
-        "boundary": { "type": "string", "minLength": 1 }
+        "owner": { "type": "string", "pattern": "\\S" },
+        "boundary": { "type": "string", "pattern": "\\S" }
       }
     },
     "activation_row": {
