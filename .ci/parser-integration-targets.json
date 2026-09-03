@@ -280,6 +280,21 @@
       "reason": "Keep representative source bodies used with Perl command-line switches executable as clean parser contracts.",
       "disposition": "execute",
       "boundedness": "focused"
+    },
+    {
+      "id": "parser.postfix.dereference_matrix",
+      "package": "perl-parser-core",
+      "target": "postfix_dereference_matrix_tests",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#13760",
+      "reason": "Keep the complete non-interpolated postfix-dereference matrix executable: exact AST identity, receiver/selector ownership, byte geometry, children() reachability, HIR disposition, and the #13891/#14174 defect pins.",
+      "disposition": "execute",
+      "boundedness": "focused"
     }
   ]
 }
