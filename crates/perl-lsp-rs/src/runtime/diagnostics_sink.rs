@@ -15,9 +15,11 @@
 //! candidate derived from a removed document instance is rejected by instance
 //! identity (`Arc::ptr_eq`), even when its numeric counter still matches.
 //!
-//! Lock order: sink lock → documents lock (brief, read-only inside
-//! validation). No path may acquire them in reverse order; publish paths take
-//! their snapshots under the documents lock and release it before committing.
+//! Lock order: workspace identity lock → sink `committed` lock → documents lock
+//! (brief, read-only inside validation). No path may acquire them in reverse
+//! order; `workspace_folders` must never be acquired while any of those locks
+//! are held. Publish paths take their snapshots under the documents lock and
+//! release it before committing.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -38,6 +40,8 @@ pub(crate) struct PushDiagnosticIdentity {
     pub(crate) normalized_uri: String,
     pub(crate) document_instance: Arc<AtomicU32>,
     pub(crate) generation: u32,
+    pub(crate) workspace_generation: u64,
+    pub(crate) folder_config_generation: Option<u64>,
 }
 
 impl PushDiagnosticIdentity {
@@ -45,12 +49,20 @@ impl PushDiagnosticIdentity {
         normalized_uri: &str,
         document_instance: &Arc<AtomicU32>,
         generation: u32,
+        workspace_generation: u64,
     ) -> Self {
         Self {
             normalized_uri: normalized_uri.to_string(),
             document_instance: Arc::clone(document_instance),
             generation,
+            workspace_generation,
+            folder_config_generation: None,
         }
+    }
+
+    pub(crate) fn with_folder_config_generation(mut self, generation: Option<u64>) -> Self {
+        self.folder_config_generation = generation;
+        self
     }
 }
 
@@ -110,6 +122,43 @@ impl PushDiagnosticsSink {
 }
 
 impl LspServer {
+    pub(crate) fn project_config_for_uri(
+        &self,
+        uri: &str,
+    ) -> Option<perl_lsp_rs_core::config::ProjectConfig> {
+        self.folder_for_doc_uri(uri)
+            .and_then(|folder| folder.project_config)
+            .or_else(|| self.single_file_project_config.lock().clone())
+    }
+
+    pub(crate) fn project_config_generation_for_uri(&self, uri: &str) -> Option<u64> {
+        self.folder_for_doc_uri(uri).map(|folder| folder.project_config_generation).or_else(|| {
+            self.single_file_project_config.lock().as_ref()?;
+            Some(
+                self.single_file_project_config_generation
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            )
+        })
+    }
+
+    pub(crate) fn set_single_file_project_config(
+        &self,
+        config: Option<perl_lsp_rs_core::config::ProjectConfig>,
+    ) {
+        let mut single_file_project_config = self.single_file_project_config.lock();
+        let changed = *single_file_project_config != config;
+        *single_file_project_config = config;
+        if changed {
+            self.single_file_project_config_generation
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    pub(crate) fn invalidate_workspace_identity(&self) {
+        let _identity_guard = self.workspace_identity_lock.lock();
+        self.workspace_identity_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// Commit one push-diagnostics replacement/clear at the sink boundary.
     ///
     /// See the module docs for the boundary contract. `payload` must be the
@@ -121,7 +170,22 @@ impl LspServer {
         payload: Value,
         disposition: PushDiagnosticsDisposition,
     ) -> PushDiagnosticsCommitOutcome {
+        // Serialize the generation check and irreversible enqueue with
+        // configuration invalidation.
+        let folder_config_generation =
+            self.project_config_generation_for_uri(&identity.normalized_uri);
+        let _identity_guard = self.workspace_identity_lock.lock();
         let mut committed = self.push_diagnostics_sink.committed.lock();
+
+        if self.workspace_identity_generation.load(std::sync::atomic::Ordering::SeqCst)
+            != identity.workspace_generation
+        {
+            return PushDiagnosticsCommitOutcome::RejectedSupersededGeneration;
+        }
+
+        if folder_config_generation != identity.folder_config_generation {
+            return PushDiagnosticsCommitOutcome::RejectedSupersededGeneration;
+        }
 
         // 1+2. Exact currency at the boundary: live document instance AND
         // accepted generation, checked under one brief documents acquisition.
@@ -300,7 +364,13 @@ mod tests {
         let key = server.normalize_uri_key(uri);
         let docs = server.documents.lock();
         let doc = crate::must_some_with(docs.get(&key), "document must be open");
-        PushDiagnosticIdentity::for_document(&key, &doc.generation, doc.current_generation())
+        PushDiagnosticIdentity::for_document(
+            &key,
+            &doc.generation,
+            doc.current_generation(),
+            server.workspace_identity_generation.load(std::sync::atomic::Ordering::SeqCst),
+        )
+        .with_folder_config_generation(server.project_config_generation_for_uri(&key))
     }
 
     fn frame_count(buf: &StdArc<parking_lot::Mutex<Vec<u8>>>) -> usize {
@@ -400,6 +470,92 @@ mod tests {
             frame_count(&buf),
             final_frames,
             "rejected stale candidate must not enqueue a frame"
+        );
+    }
+
+    #[test]
+    fn workspace_identity_invalidation_rejects_pre_reload_candidate() {
+        let (server, _buf) = make_server();
+        let identity = open_document(&server, "file:///sink_reload_test.pl", "my $x = 1;\n");
+
+        server.invalidate_workspace_identity();
+
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &identity,
+                json!({ "uri": identity.normalized_uri, "diagnostics": [] }),
+                PushDiagnosticsDisposition::Clear,
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration
+        );
+    }
+
+    #[test]
+    fn workspace_folder_change_rejects_pre_change_candidate() {
+        let (server, _buf) = make_server();
+        let identity = open_document(&server, "file:///sink_folder_change_test.pl", "my $x = 1;\n");
+
+        server
+            .handle_did_change_workspace_folders(Some(json!({
+                "event": {
+                    "added": [{ "uri": "file:///sink-folder-root/", "name": "root" }],
+                    "removed": []
+                }
+            })))
+            .expect("workspace folder change should succeed");
+
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &identity,
+                json!({ "uri": identity.normalized_uri, "diagnostics": [] }),
+                PushDiagnosticsDisposition::Clear,
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration
+        );
+    }
+
+    #[test]
+    fn folder_config_invalidation_rejects_only_owned_push_candidate() {
+        let (server, _buf) = make_server();
+        server.workspace_folders.lock().extend([
+            super::super::workspace_folder::WorkspaceFolderState::new(
+                "file:///sink-root-one/".to_string(),
+            ),
+            super::super::workspace_folder::WorkspaceFolderState::new(
+                "file:///sink-root-two/".to_string(),
+            ),
+        ]);
+
+        let first = open_document(&server, "file:///sink-root-one/first.pl", "my $x = 1;\n");
+        let second = open_document(&server, "file:///sink-root-two/second.pl", "my $y = 1;\n");
+        let first_generation = server
+            .workspace_folders
+            .lock()
+            .first()
+            .expect("first folder must exist")
+            .project_config_generation;
+
+        server.workspace_folders.lock()[0].project_config_generation += 1;
+
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &first,
+                json!({ "uri": first.normalized_uri, "diagnostics": [] }),
+                PushDiagnosticsDisposition::Clear,
+            ),
+            PushDiagnosticsCommitOutcome::RejectedSupersededGeneration
+        );
+        assert_eq!(
+            server.commit_push_diagnostics(
+                &second,
+                json!({ "uri": second.normalized_uri, "diagnostics": [] }),
+                PushDiagnosticsDisposition::Clear,
+            ),
+            PushDiagnosticsCommitOutcome::SafeClearCommitted
+        );
+        assert_eq!(
+            server.workspace_folders.lock()[0].project_config_generation,
+            first_generation + 1
         );
     }
 

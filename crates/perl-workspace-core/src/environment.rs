@@ -12,7 +12,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{Digest, fnv1a};
 
 /// Schema version for [`ProjectEnvironmentSnapshot`].
-pub const PROJECT_ENVIRONMENT_SCHEMA_VERSION: u32 = 1;
+pub const PROJECT_ENVIRONMENT_SCHEMA_VERSION: u32 = 2;
 
 const ENVIRONMENT_INPUT_ID_DOMAIN: &str = "project_environment.input.v1";
 const INCLUDE_ENTRY_ID_DOMAIN: &str = "project_environment.include.v1";
@@ -415,6 +415,11 @@ pub enum BuildSystemKind {
     DistZilla,
     /// Carton/cpanfile project management.
     Carton,
+    /// Carmel/cpanfile project management: dev-mode state under
+    /// `.carmel/MySetup.pm` or a `local/.carmel` rollout sentinel. Its lock
+    /// file (`cpanfile.snapshot`) alone cannot establish this identity — the
+    /// Carton-format snapshot header carries no producer field.
+    Carmel,
     /// Other reviewed build system.
     Other(String),
 }
@@ -426,6 +431,7 @@ impl BuildSystemKind {
             Self::ModuleBuild => "module_build".to_string(),
             Self::DistZilla => "dist_zilla".to_string(),
             Self::Carton => "carton".to_string(),
+            Self::Carmel => "carmel".to_string(),
             Self::Other(value) => format!("other:{value}"),
         }
     }
@@ -1913,6 +1919,27 @@ mod tests {
         value["schema_version"] = serde_json::Value::from(99_u32);
         let decoded = serde_json::from_value::<ProjectEnvironmentSnapshot>(value);
         assert!(decoded.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn schema_v1_snapshots_are_rejected_after_the_v2_contract_bump()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(PROJECT_ENVIRONMENT_SCHEMA_VERSION, 2);
+        let snapshot =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_input(input(
+                    "include.configured",
+                    EnvironmentInputAuthority::UserConfiguration,
+                    "lib",
+                    "client",
+                ))
+                .build()?;
+        let mut value = serde_json::to_value(&snapshot)?;
+        value["schema_version"] = serde_json::Value::from(1_u32);
+        let error = serde_json::from_value::<ProjectEnvironmentSnapshot>(value)
+            .expect_err("v1 snapshots must not gain v2 authority implicitly");
+        assert!(error.to_string().contains("unsupported project environment schema version"));
         Ok(())
     }
 
