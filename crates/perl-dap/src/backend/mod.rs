@@ -16,8 +16,9 @@ pub mod capabilities;
 pub mod external_peer;
 pub mod native_perldb;
 pub mod peer_bridge;
-pub mod peer_frame_queue;
 pub mod peer_launch;
+
+mod peer_frame_queue;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
