@@ -572,8 +572,8 @@ fn rename_replacement_name_is_well_formed(name: &str) -> bool {
         None => None,
     };
 
-    first.is_some_and(|character| character == '_' || character.is_alphabetic())
-        && chars.all(|character| character == '_' || character.is_alphanumeric())
+    first.is_some_and(|character| character == '_' || unicode_ident::is_xid_start(character))
+        && chars.all(|character| character == '_' || unicode_ident::is_xid_continue(character))
 }
 
 /// Verify that an LSP position addresses an actual non-whitespace source
@@ -588,7 +588,9 @@ fn rename_position_is_well_formed(source: &str, line: u32, character: u32) -> bo
     let mut offset = 0u32;
     for source_character in source_line.chars() {
         let width = source_character.len_utf16() as u32;
-        if character >= offset && character < offset.saturating_add(width) {
+        // An LSP UTF-16 position may not point into the middle of a surrogate
+        // pair. Accept only the scalar's starting offset.
+        if character == offset {
             return !source_character.is_whitespace();
         }
         offset = offset.saturating_add(width);
@@ -731,12 +733,9 @@ fn rename_assertion_passes(
 ) -> bool {
     let expected_edits_ok =
         rename_expected_edits_match(resp, uri, assertion.expected_edits.as_deref());
-    let response_edits_are_well_formed = rename_is_null(
-        resp,
-        source,
-        assertion.line,
-        assertion.character,
-    ) || observed_rename_edits(resp).is_some();
+    let response_edits_are_well_formed =
+        rename_is_null(resp, source, assertion.line, assertion.character)
+            || observed_rename_edits(resp).is_some();
 
     match &assertion.kind {
         RenameAssertionKind::RenameSucceeds => {
@@ -750,17 +749,15 @@ fn rename_assertion_passes(
                 && rename_is_null(resp, source, assertion.line, assertion.character)
                 && assertion.expected_edits.is_none()
         }
-        RenameAssertionKind::RenameEditCountAtLeast { min } => {
-            rename_edit_count_at_least_passes(
-                resp,
-                uri,
-                *min,
-                assertion.expected_edits.as_deref(),
-                source,
-                assertion.line,
-                assertion.character,
-            )
-        }
+        RenameAssertionKind::RenameEditCountAtLeast { min } => rename_edit_count_at_least_passes(
+            resp,
+            uri,
+            *min,
+            assertion.expected_edits.as_deref(),
+            source,
+            assertion.line,
+            assertion.character,
+        ),
     }
 }
 
@@ -1272,7 +1269,8 @@ mod rename_oracle_tests {
             let invalid_params = json!({
                 "error": {"code": -32602, "message": "invalid replacement name"}
             });
-            if rename_assertion_passes(&invalid_request, &invalid_params, uri, VALID_RENAME_SOURCE) {
+            if rename_assertion_passes(&invalid_request, &invalid_params, uri, VALID_RENAME_SOURCE)
+            {
                 return Err(format!(
                     "invalid replacement name was accepted as RenameNull: {invalid_name:?}"
                 )
@@ -1281,19 +1279,13 @@ mod rename_oracle_tests {
         }
 
         for unicode_name in ["Δelta", "$名前"] {
-            let unicode_request = RenameAssertion {
-                new_name: unicode_name.to_string(),
-                ..assertion.clone()
-            };
+            let unicode_request =
+                RenameAssertion { new_name: unicode_name.to_string(), ..assertion.clone() };
             let invalid_params = json!({
                 "error": {"code": -32602, "message": "not renamable"}
             });
-            if !rename_assertion_passes(
-                &unicode_request,
-                &invalid_params,
-                uri,
-                VALID_RENAME_SOURCE,
-            ) {
+            if !rename_assertion_passes(&unicode_request, &invalid_params, uri, VALID_RENAME_SOURCE)
+            {
                 return Err(format!(
                     "valid Unicode replacement name was rejected: {unicode_name:?}"
                 )
@@ -1301,21 +1293,20 @@ mod rename_oracle_tests {
             }
         }
 
-        let invalid_position = RenameAssertion {
-            line: 99,
-            character: 0,
-            ..assertion.clone()
-        };
+        if rename_replacement_name_is_well_formed("\u{0301}name") {
+            return Err("a leading combining mark was accepted as a rename name".into());
+        }
+
+        let invalid_position = RenameAssertion { line: 99, character: 0, ..assertion.clone() };
         let invalid_params = json!({
             "error": {"code": -32602, "message": "invalid source position"}
         });
-        if rename_assertion_passes(
-            &invalid_position,
-            &invalid_params,
-            uri,
-            VALID_RENAME_SOURCE,
-        ) {
+        if rename_assertion_passes(&invalid_position, &invalid_params, uri, VALID_RENAME_SOURCE) {
             return Err("InvalidParams at an out-of-range position passed RenameNull".into());
+        }
+
+        if rename_position_is_well_formed("😀name\n", 0, 1) {
+            return Err("a position inside a UTF-16 surrogate pair was accepted".into());
         }
 
         Ok(())
