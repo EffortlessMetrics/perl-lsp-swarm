@@ -413,6 +413,8 @@ pub enum TransformationFailureClass {
     WrongExpectedBytes,
     /// Anchor exceeded the exact source bounds.
     OutOfBounds,
+    /// Anchor split a UTF-8 scalar boundary inside the exact source.
+    InteriorUtf8Boundary,
     /// Anchored ranges overlapped.
     OverlappingEdits,
     /// Insertion shared or entered another edit boundary.
@@ -438,6 +440,7 @@ impl From<&TransformError> for TransformationFailureClass {
         match error {
             TransformError::WrongExpectedBytes { .. } => Self::WrongExpectedBytes,
             TransformError::OutOfBounds { .. } => Self::OutOfBounds,
+            TransformError::InteriorUtf8Boundary { .. } => Self::InteriorUtf8Boundary,
             TransformError::OverlappingEdits { .. } => Self::OverlappingEdits,
             TransformError::AmbiguousEditBoundary { .. } => Self::AmbiguousEditBoundary,
             TransformError::StaleSourceIdentity { .. }
@@ -454,7 +457,6 @@ impl From<&TransformError> for TransformationFailureClass {
             }
             TransformError::ArithmeticOverflow => Self::Overflow,
             TransformError::NoOpEdit { .. } => Self::NoOp,
-            TransformError::InteriorUtf8Boundary { .. } => Self::OutOfBounds,
             TransformError::Serialize(_) => Self::Other,
         }
     }
@@ -601,6 +603,21 @@ impl MetamorphicSafeRegistry {
         for case in cases {
             registry.insert_case(case)?;
         }
+        // Opposite-direction controls may reference declarations in any
+        // insertion order, so their existence is validated only once the full
+        // population is present. A dangling control reference would silently
+        // drop the fail-closed reciprocal boundary of #13659.
+        let dangling = registry.cases.values().find_map(|case| {
+            let control_id = case.opposite_control?;
+            let valid = control_id != case.case_id && registry.cases.contains_key(control_id);
+            (!valid).then(|| (case.case_id, control_id))
+        });
+        if let Some((case_id, control_id)) = dangling {
+            return Err(RegistryError::InvalidDeclaration {
+                case_id: case_id.to_owned(),
+                detail: format!("opposite control {control_id:?} is not declared"),
+            });
+        }
         Ok(registry)
     }
 
@@ -609,6 +626,12 @@ impl MetamorphicSafeRegistry {
             return Err(RegistryError::InvalidDeclaration {
                 case_id: String::new(),
                 detail: "case id is empty".to_owned(),
+            });
+        }
+        if case.owner.is_empty() {
+            return Err(RegistryError::InvalidDeclaration {
+                case_id: case.case_id.to_owned(),
+                detail: "review owner is empty".to_owned(),
             });
         }
         if !self.fixtures.contains_key(case.fixture_id) {
@@ -1015,7 +1038,10 @@ fn conversion_sites(bytes: &[u8], range: ByteRange, conversion: NewlineConversio
     while offset < end {
         let site_len = match conversion {
             NewlineConversion::LfToCrLf => {
-                if bytes[offset] == b'\n' {
+                // Only bare LF bytes are conversion sites; the LF half of an
+                // existing CRLF ending must stay untouched or the generated
+                // plan would rewrite that ending into CRCRLF.
+                if bytes[offset] == b'\n' && (offset == 0 || bytes[offset - 1] != b'\r') {
                     1
                 } else {
                     0
@@ -1412,15 +1438,18 @@ const AUTHORED_CASES: &[CaseDeclaration] = &[
         Criticality::Investigatory,
     ),
     // Unsupported: BOM-prefixed sources are not declared newline-insensitive,
-    // so the family cannot express a BOM-preserving conversion.
+    // so the family cannot express a BOM-preserving conversion. The retained
+    // anchor is the whole-source LF→CRLF region the profile names, not an
+    // unrelated point insertion.
     dispositioned(
         "registry-bom-ordinary.newline-style.lf-to-crlf.v1",
         "registry-bom-ordinary",
         PROFILE_LF_TO_CRLF,
-        AuthoredAnchor::Point {
-            anchor_id: "line-1-before-lf",
-            offset: BOM_ORD_LINE1_END_PREFIX.len(),
-            payload: TRAILING_TWO_SPACES,
+        AuthoredAnchor::Region {
+            region_id: "whole-source",
+            byte_range: ByteRange::new(0, FIXTURE_BOM_ORDINARY.len()),
+            conversion: NewlineConversion::LfToCrLf,
+            newline_insensitive: false,
         },
         Applicability::UnsupportedTransformation,
         "bom-prefixed-source-not-declared-newline-insensitive",
@@ -1819,6 +1848,62 @@ mod tests {
         };
         assert!(
             matches!(error, RegistryError::UnknownFixtureRef { .. }),
+            "unexpected error: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn lf_to_crlf_sites_skip_existing_crlf_endings() {
+        let bytes = b"a\r\nb\nc";
+        let range = ByteRange::new(0, bytes.len());
+        assert_eq!(
+            conversion_sites(bytes, range, NewlineConversion::LfToCrLf),
+            vec![4],
+            "the LF half of an existing CRLF ending must not become a site"
+        );
+        assert_eq!(conversion_sites(bytes, range, NewlineConversion::CrLfToLf), vec![1]);
+    }
+
+    #[test]
+    fn interior_utf8_boundary_failure_class_is_distinct_from_out_of_bounds() {
+        let error =
+            TransformError::InteriorUtf8Boundary { edit_id: "split-scalar".to_owned(), offset: 2 };
+        assert_eq!(
+            TransformationFailureClass::from(&error),
+            TransformationFailureClass::InteriorUtf8Boundary
+        );
+        assert_ne!(
+            TransformationFailureClass::from(&error),
+            TransformationFailureClass::OutOfBounds
+        );
+    }
+
+    #[test]
+    fn dangling_opposite_control_reference_is_rejected_at_construction() -> TestResult {
+        let mut drifted = AUTHORED_CASES[0].clone();
+        drifted.opposite_control = Some("registry-undeclared.opposite-control.v1");
+        let Err(error) = MetamorphicSafeRegistry::from_declarations(vec![drifted]) else {
+            return Err("dangling opposite control must fail construction".into());
+        };
+        assert!(
+            matches!(&error, RegistryError::InvalidDeclaration { detail, .. }
+                if detail.contains("opposite control")),
+            "unexpected error: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn empty_review_owner_is_rejected_at_construction() -> TestResult {
+        let mut drifted = AUTHORED_CASES[0].clone();
+        drifted.owner = "";
+        let Err(error) = MetamorphicSafeRegistry::from_declarations(vec![drifted]) else {
+            return Err("empty review owner must fail construction".into());
+        };
+        assert!(
+            matches!(&error, RegistryError::InvalidDeclaration { detail, .. }
+                if detail.contains("review owner")),
             "unexpected error: {error}"
         );
         Ok(())

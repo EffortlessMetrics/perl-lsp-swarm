@@ -1083,6 +1083,11 @@ fn build_status_artifact(
     // before scoring. A drifted registry (stale pinned digests, unresolvable
     // anchors, or admitted propositions that no longer validate) fails the run
     // closed instead of scoring against unresolvable propositions.
+    //
+    // Telemetry boundary: the gate intentionally precedes the measured scoring
+    // body so a drifted registry costs no scoring work. `metric_runtime`
+    // covers the whole run including this gate; the allocation metrics
+    // attribute the scoring body only (`measure_allocations` below).
     let registry_inconsistencies =
         parser_accuracy_metamorphic_registry::authored_registry_inconsistencies();
     if !registry_inconsistencies.is_empty() {

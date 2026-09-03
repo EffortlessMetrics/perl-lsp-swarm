@@ -67,7 +67,7 @@ impl ContentAddressedSource {
     /// Construct a subject and derive its identity from exact bytes.
     pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, TransformError> {
         let identity = sha256_hex(&bytes);
-        Self::from_claimed(identity, bytes)
+        Self::from_verified(identity, bytes)
     }
 
     /// Construct a subject only when the claimed identity matches exact bytes.
@@ -77,6 +77,12 @@ impl ContentAddressedSource {
             return Err(TransformError::StaleSourceIdentity { claimed: identity, observed });
         }
 
+        Self::from_verified(identity, bytes)
+    }
+
+    /// Assemble a subject whose identity is already verified against bytes,
+    /// hashing the source exactly once per construction path.
+    fn from_verified(identity: String, bytes: Vec<u8>) -> Result<Self, TransformError> {
         let source = str::from_utf8(&bytes).map_err(TransformError::InvalidSourceUtf8)?;
         let line_table: LineRecordTable =
             source.parse().map_err(TransformError::InvalidSourceGeometry)?;
@@ -253,7 +259,7 @@ pub enum RangeRelation {
 }
 
 /// Total coordinate relation for one validated transformation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CoordinateMap {
     base_len: usize,
     transformed_len: usize,
@@ -459,7 +465,7 @@ impl CoordinateMap {
 }
 
 /// Fully validated transformed subject.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ValidatedTransformation {
     /// Schema version for the validated transformation receipt.
     pub schema_version: u32,
@@ -697,6 +703,10 @@ struct TransformationIdentityMaterial<'a> {
     final_source_identity: &'a str,
     profile_id: &'a str,
     source_line_policy_id: &'a str,
+    /// Exact base logical row count under the canonical line policy.
+    base_line_count: usize,
+    /// Exact transformed logical row count under the canonical line policy.
+    transformed_line_count: usize,
     edits: &'a [AppliedEdit],
     coordinate_map_identity: &'a str,
 }
@@ -822,6 +832,8 @@ pub fn apply_exact_edits(
         final_source_identity: &final_source_identity,
         profile_id,
         source_line_policy_id: SOURCE_LINE_POLICY_ID,
+        base_line_count: source.line_count(),
+        transformed_line_count: final_lines.line_count(),
         edits: &applied,
         coordinate_map_identity: coordinate_map.identity(),
     };
@@ -1381,6 +1393,34 @@ mod tests {
         assert!(matches!(
             apply_exact_edits(&source, "test.profile.v1", Vec::new()),
             Err(TransformError::EmptyEditPlan)
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_and_duplicate_identity_gates_fail_closed() -> TestResult {
+        let source = subject("abc")?;
+
+        assert!(matches!(
+            apply_exact_edits(&source, "", vec![edit("edit", 0, 1, "a", "x")]),
+            Err(TransformError::InvalidProfileId { .. })
+        ));
+        assert!(matches!(
+            apply_exact_edits(&source, "ctrl-\u{7}profile", vec![edit("edit", 0, 1, "a", "x")]),
+            Err(TransformError::InvalidProfileId { .. })
+        ));
+        assert!(matches!(
+            apply_exact_edits(&source, "test.profile.v1", vec![edit("", 0, 1, "a", "x")]),
+            Err(TransformError::InvalidEditId { .. })
+        ));
+        assert!(matches!(
+            apply_exact_edits(
+                &source,
+                "test.profile.v1",
+                vec![edit("duplicate", 0, 1, "a", "x"), edit("duplicate", 1, 2, "b", "y")]
+            ),
+            Err(TransformError::DuplicateEditId { .. })
         ));
 
         Ok(())

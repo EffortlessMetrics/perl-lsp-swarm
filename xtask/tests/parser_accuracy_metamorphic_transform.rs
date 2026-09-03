@@ -2,12 +2,14 @@
 
 use std::error::Error;
 
+use perl_lsp_rs_core::hashing::sha256_hex;
+
 #[allow(dead_code)]
 #[path = "../src/tasks/metrics/parser_accuracy_metamorphic_transform.rs"]
 mod transform;
 
 use transform::{
-    ByteRange, ContentAddressedSource, ExactEdit, PositionRelation, RangeRelation,
+    ByteRange, ContentAddressedSource, ExactEdit, PositionRelation, RangeRelation, TransformError,
     apply_exact_edits,
 };
 
@@ -38,7 +40,11 @@ fn exact_bytes_drive_the_public_map_surface() -> TestResult {
 }
 
 #[test]
-fn stale_subject_identity_is_rejected_before_edit_validation() {
+fn stale_subject_identity_is_typed_and_rejected_at_construction() {
     let result = ContentAddressedSource::from_claimed("sha256:stale".to_owned(), b"abc".to_vec());
-    assert!(result.is_err());
+    assert!(matches!(
+        result,
+        Err(TransformError::StaleSourceIdentity { claimed, observed })
+            if claimed == "sha256:stale" && observed == sha256_hex(b"abc")
+    ));
 }
