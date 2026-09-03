@@ -76,7 +76,7 @@ impl<'a> Parser<'a> {
                     self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
                     let start = expr.location.start;
-                    let end = self.previous_position();
+                    let end = self.previous_position().max(key.location.end);
 
                     record_postfix_layer()?;
                     let kind = if is_at_slice {
@@ -158,7 +158,7 @@ impl<'a> Parser<'a> {
                                 self.expect_closing_delimiter(TokenKind::RightBracket)?;
 
                                 let start = expr.location.start;
-                                let end = self.previous_position();
+                                let end = self.previous_position().max(index.location.end);
 
                                 // Represent as a special binary operation for array slice dereference
                                 record_postfix_layer()?;
@@ -177,7 +177,7 @@ impl<'a> Parser<'a> {
                                 self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
                                 let start = expr.location.start;
-                                let end = self.previous_position();
+                                let end = self.previous_position().max(keys.location.end);
 
                                 record_postfix_layer()?;
                                 expr = Node::new(
@@ -187,6 +187,9 @@ impl<'a> Parser<'a> {
                                     },
                                     SourceLocation { start, end },
                                 );
+                            } else {
+                                expr = self.recover_truncated_arrow(expr);
+                                break;
                             }
                         }
 
@@ -215,7 +218,7 @@ impl<'a> Parser<'a> {
                                 self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
                                 let start = expr.location.start;
-                                let end = self.previous_position();
+                                let end = self.previous_position().max(key.location.end);
 
                                 // Represent as a special binary operation for hash slice dereference
                                 record_postfix_layer()?;
@@ -227,6 +230,9 @@ impl<'a> Parser<'a> {
                                     },
                                     SourceLocation { start, end },
                                 );
+                            } else {
+                                expr = self.recover_truncated_arrow(expr);
+                                break;
                             }
                         }
 
@@ -247,6 +253,9 @@ impl<'a> Parser<'a> {
                                     },
                                     SourceLocation { start, end },
                                 );
+                            } else {
+                                expr = self.recover_truncated_arrow(expr);
+                                break;
                             }
                         }
 
@@ -267,6 +276,9 @@ impl<'a> Parser<'a> {
                                     },
                                     SourceLocation { start, end },
                                 );
+                            } else {
+                                expr = self.recover_truncated_arrow(expr);
+                                break;
                             }
                         }
 
@@ -287,6 +299,9 @@ impl<'a> Parser<'a> {
                                     },
                                     SourceLocation { start, end },
                                 );
+                            } else {
+                                expr = self.recover_truncated_arrow(expr);
+                                break;
                             }
                         }
 
@@ -313,6 +328,18 @@ impl<'a> Parser<'a> {
                                     SourceLocation { start, end },
                                 );
                                 continue;
+                            }
+
+                            if self.tokens.peek().is_ok_and(|t| t.text.as_ref() == "$#") {
+                                self.tokens.next()?; // consume the incomplete `$#`
+                                expr = self.recover_truncated_arrow(expr);
+                                break;
+                            }
+
+                            if self.tokens.peek().is_ok_and(|t| t.text.as_ref() == "$") {
+                                self.tokens.next()?; // consume the incomplete `$` sigil
+                                expr = self.recover_truncated_arrow(expr);
+                                break;
                             }
 
                             // Method call
@@ -398,23 +425,7 @@ impl<'a> Parser<'a> {
                             // Emit a structured recovery annotation and wrap the
                             // partially-parsed expression in an error node so that
                             // LSP features can still use the prefix (e.g. `$obj`).
-                            let start = expr.location.start;
-                            let end = self.previous_position();
-                            let pos = end;
-                            self.errors.push(ParseError::Recovered {
-                                site: RecoverySite::PostfixChain,
-                                kind: RecoveryKind::TruncatedChain,
-                                location: pos,
-                            });
-                            expr = Node::new(
-                                NodeKind::Error {
-                                    message: "Incomplete arrow expression".to_string(),
-                                    expected: vec![],
-                                    found: self.tokens.peek().ok().cloned(),
-                                    partial: Some(Box::new(expr)),
-                                },
-                                SourceLocation { start, end },
-                            );
+                            expr = self.recover_truncated_arrow(expr);
                             // Exit the postfix loop — we cannot continue chaining
                             // after a malformed arrow.
                             break;
@@ -1610,6 +1621,25 @@ impl<'a> Parser<'a> {
             NodeKind::Identifier { name: token.text.to_string() },
             SourceLocation { start: token.start(), end: token.end() },
         ))
+    }
+
+    fn recover_truncated_arrow(&mut self, expr: Node) -> Node {
+        let start = expr.location.start;
+        let end = self.previous_position();
+        self.errors.push(ParseError::Recovered {
+            site: RecoverySite::PostfixChain,
+            kind: RecoveryKind::TruncatedChain,
+            location: end,
+        });
+        Node::new(
+            NodeKind::Error {
+                message: "Incomplete arrow expression".to_string(),
+                expected: vec![],
+                found: self.tokens.peek().ok().cloned(),
+                partial: Some(Box::new(expr)),
+            },
+            SourceLocation { start, end },
+        )
     }
 
     /// Attempt to parse a quote-operator name (`m`, `s`, `q`, `qq`, `qw`, `qr`,
