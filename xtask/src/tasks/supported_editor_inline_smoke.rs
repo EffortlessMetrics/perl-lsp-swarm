@@ -4,15 +4,32 @@ use perl_lsp_rs_core::providers::inline_completion::{
     PreparedInlineCompletionContext,
 };
 use serde::Serialize;
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+const LSP_CLIENT_SUPPORT_POLICY: &str = "policy/lsp-client-support.toml";
+const RECEIPT_SCHEMA_VERSION: &str = "supported-editor-inline-smoke.v2";
+const DECLARED_PLANE_STATUSES: &[&str] =
+    &["registered", "not_proven", "limited", "client_not_exposed"];
+const RECEIPT_FIELDS: &[&str] = &[
+    "schema_version",
+    "provider",
+    "provider_action",
+    "claim_boundary",
+    "route_count",
+    "all_supported_routes_registered",
+    "supported_editor_routes",
+    "next_edit_boundary",
+    "future_gated",
+];
 
 const ROUTES: &[SupportedEditorRouteRequirement] = &[
     SupportedEditorRouteRequirement {
         route: "stdio_cli_smoke",
         claim: "the generic stdio LSP smoke covers static, dynamic, and disabled inline-completion clients",
-        proof_surfaces: &[ProofSurfaceRequirement {
+        proof_planes: &[proof_surface_plane(&[ProofSurfaceRequirement {
             path: "xtask/src/tasks/inline_completion_smoke.rs",
             markers: &[
                 "fn run_static_client",
@@ -22,38 +39,73 @@ const ROUTES: &[SupportedEditorRouteRequirement] = &[
                 "perl-inlineCompletion",
                 "assert_inline_completion_runtime",
             ],
-        }],
+        }])],
     },
     SupportedEditorRouteRequirement {
         route: "lsp4ij_upstream_integration",
-        claim: "the JetBrains path is documented as upstream LSP4IJ integration with dynamic inline-completion registration",
-        proof_surfaces: &[
-            ProofSurfaceRequirement {
-                path: "docs/EDITORS/INTELLIJ_IDEA_SETUP.md",
-                markers: &[
-                    "Recommended: LSP4IJ Upstream Integration",
-                    "confirm the command is the intended `perllsp --stdio` binary",
-                    "client/registerCapability",
-                    "textDocument/inlineCompletion",
-                    "dynamic registration through `client/registerCapability`",
-                    "perllsp --stdio",
+        claim: "the JetBrains path documents the `perllsp --stdio` launch identity and records the repository's static/dynamic inline-completion protocol evidence markers; this receipt does not execute the protocol or prove actual IntelliJ/LSP4IJ host support",
+        proof_planes: &[
+            ProofPlaneRequirement {
+                plane: "launch_identity",
+                owner: None,
+                declared_status: None,
+                proof_surfaces: &[ProofSurfaceRequirement {
+                    path: "docs/EDITORS/INTELLIJ_IDEA_SETUP.md",
+                    markers: &["Recommended: LSP4IJ Upstream Integration", "perllsp --stdio"],
+                }],
+            },
+            ProofPlaneRequirement {
+                plane: "static_protocol",
+                owner: None,
+                declared_status: None,
+                proof_surfaces: &[ProofSurfaceRequirement {
+                    path: "crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs",
+                    markers: &[
+                        "fn initialize_static_advertises_inline_completion_when_dynamic_registration_false",
+                        "/capabilities/inlineCompletionProvider",
+                    ],
+                }],
+            },
+            ProofPlaneRequirement {
+                plane: "dynamic_protocol",
+                owner: None,
+                declared_status: None,
+                proof_surfaces: &[
+                    ProofSurfaceRequirement {
+                        path: "crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs",
+                        markers: &[
+                            "fn initialized_registers_inline_completion_when_dynamic_registration_supported",
+                            "client/registerCapability",
+                            "textDocument/inlineCompletion",
+                        ],
+                    },
+                    ProofSurfaceRequirement {
+                        path: "docs/EDITORS/INTELLIJ_IDEA_SETUP.md",
+                        markers: &["client/registerCapability", "textDocument/inlineCompletion"],
+                    },
                 ],
             },
-            ProofSurfaceRequirement {
-                path: "xtask/src/tasks/inline_completion_smoke.rs",
-                markers: &[
-                    "fn run_dynamic_client",
-                    "client/registerCapability",
-                    "textDocument/inlineCompletion",
-                    "perl-inlineCompletion",
-                ],
+            ProofPlaneRequirement {
+                plane: "host_support_boundary",
+                owner: None,
+                declared_status: None,
+                proof_surfaces: &[ProofSurfaceRequirement {
+                    path: "docs/EDITORS/INTELLIJ_IDEA_SETUP.md",
+                    markers: &["not the same thing as IntelliJ/LSP4IJ host support", "#7719"],
+                }],
+            },
+            ProofPlaneRequirement {
+                plane: "actual_host_evidence",
+                owner: Some("#7719/#7977/#8179"),
+                declared_status: Some("not_proven"),
+                proof_surfaces: &[],
             },
         ],
     },
     SupportedEditorRouteRequirement {
         route: "vscode_extension_path",
         claim: "the VS Code route uses the managed extension path with configurable perllsp binary resolution",
-        proof_surfaces: &[
+        proof_planes: &[proof_surface_plane(&[
             ProofSurfaceRequirement {
                 path: "docs/EDITORS/VS_CODE_SETUP.md",
                 markers: &[
@@ -72,12 +124,12 @@ const ROUTES: &[SupportedEditorRouteRequirement] = &[
                     "Automatically download the `perllsp` binary if it is not found locally.",
                 ],
             },
-        ],
+        ])],
     },
     SupportedEditorRouteRequirement {
         route: "release_built_binary_smoke",
         claim: "the release gate requires building perllsp and running the inline-completion stdio smoke against that binary",
-        proof_surfaces: &[
+        proof_planes: &[proof_surface_plane(&[
             ProofSurfaceRequirement {
                 path: "docs/development/INLINE_COMPLETION_RELEASE_GATE.md",
                 markers: &[
@@ -98,7 +150,7 @@ const ROUTES: &[SupportedEditorRouteRequirement] = &[
                     "run_disabled_client(&binary)?;",
                 ],
             },
-        ],
+        ])],
     },
 ];
 
@@ -106,7 +158,30 @@ const ROUTES: &[SupportedEditorRouteRequirement] = &[
 struct SupportedEditorRouteRequirement {
     route: &'static str,
     claim: &'static str,
+    proof_planes: &'static [ProofPlaneRequirement],
+}
+
+/// One named proof plane of a route. Planes with proof surfaces are executable/
+/// documented claims that must validate for the route to register. A plane with
+/// `declared_status` reports an explicit non-registered disposition (for example
+/// actual-host evidence owned elsewhere) without failing the bundle.
+#[derive(Debug, Clone, Copy)]
+struct ProofPlaneRequirement {
+    plane: &'static str,
+    owner: Option<&'static str>,
+    declared_status: Option<&'static str>,
     proof_surfaces: &'static [ProofSurfaceRequirement],
+}
+
+const fn proof_surface_plane(
+    proof_surfaces: &'static [ProofSurfaceRequirement],
+) -> ProofPlaneRequirement {
+    ProofPlaneRequirement {
+        plane: "proof_surface",
+        owner: None,
+        declared_status: None,
+        proof_surfaces,
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -134,6 +209,16 @@ struct SupportedEditorInlineSmokeReceipt {
 struct SupportedEditorRouteReceipt {
     status: &'static str,
     claim: &'static str,
+    proof_plane_count: usize,
+    proof_planes: BTreeMap<&'static str, ProofPlaneReceipt>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+struct ProofPlaneReceipt {
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner: Option<&'static str>,
     proof_surface_count: usize,
     proof_surfaces: Vec<ProofSurfaceReceipt>,
 }
@@ -176,24 +261,72 @@ fn summarize_supported_editor_routes(
     root: &Path,
     requirements: &[SupportedEditorRouteRequirement],
 ) -> Result<SupportedEditorInlineSmokeReceipt> {
+    if requirements.iter().any(|route| route.route == "lsp4ij_upstream_integration") {
+        validate_lsp4ij_policy(root)?;
+    }
     let mut supported_editor_routes = BTreeMap::new();
     for route in requirements {
-        let mut proof_surfaces = Vec::new();
-        for surface in route.proof_surfaces {
-            validate_proof_surface(root, route.route, surface)?;
-            proof_surfaces.push(ProofSurfaceReceipt {
-                path: surface.path,
-                required_marker_count: surface.markers.len(),
-                required_markers: surface.markers.to_vec(),
-            });
+        let mut proof_planes = BTreeMap::new();
+        for plane in route.proof_planes {
+            let status = match (plane.declared_status, plane.proof_surfaces.is_empty()) {
+                (Some(status), true) => {
+                    validate_declared_status(route.route, plane.plane, status)?;
+                    status
+                }
+                (Some(_), false) | (None, true) => {
+                    bail!(
+                        "supported editor inline smoke route `{}` plane `{}` must either declare a status with no proof surfaces or carry proof surfaces with no declared status",
+                        route.route,
+                        plane.plane
+                    );
+                }
+                (None, false) => "registered",
+            };
+            let mut proof_surfaces = Vec::new();
+            for surface in plane.proof_surfaces {
+                validate_proof_surface(root, route.route, plane.plane, surface)?;
+                proof_surfaces.push(ProofSurfaceReceipt {
+                    path: surface.path,
+                    required_marker_count: surface.markers.len(),
+                    required_markers: surface.markers.to_vec(),
+                });
+            }
+            if proof_planes.contains_key(plane.plane) {
+                bail!(
+                    "supported editor inline smoke route `{}` declares duplicate proof plane `{}`",
+                    route.route,
+                    plane.plane
+                );
+            }
+            proof_planes.insert(
+                plane.plane,
+                ProofPlaneReceipt {
+                    status,
+                    owner: plane.owner,
+                    proof_surface_count: proof_surfaces.len(),
+                    proof_surfaces,
+                },
+            );
+        }
+        if !proof_planes.values().any(|plane| plane.status == "registered") {
+            bail!(
+                "supported editor inline smoke route `{}` has no registered proof plane",
+                route.route
+            );
+        }
+        if supported_editor_routes.contains_key(route.route) {
+            bail!(
+                "supported editor inline smoke requirements declare duplicate route `{}`",
+                route.route
+            );
         }
         supported_editor_routes.insert(
             route.route,
             SupportedEditorRouteReceipt {
                 status: "registered",
                 claim: route.claim,
-                proof_surface_count: proof_surfaces.len(),
-                proof_surfaces,
+                proof_plane_count: proof_planes.len(),
+                proof_planes,
             },
         );
     }
@@ -209,7 +342,7 @@ fn summarize_supported_editor_routes(
     let next_edit_boundary = summarize_next_edit_supported_editor_boundary()?;
 
     Ok(SupportedEditorInlineSmokeReceipt {
-        schema_version: "supported-editor-inline-smoke.v1",
+        schema_version: RECEIPT_SCHEMA_VERSION,
         provider: "inline_completion",
         provider_action: "supported_editor_inline_smoke_bundle",
         claim_boundary: "machine-readable supported-editor inline smoke bundle only; verifies repository proof surfaces, command contracts, and default-off next-edit boundary state, not live editor UI automation, source mirror, release, AI behavior, editor-visible next-edit suggestions, or runtime multiline behavior",
@@ -219,6 +352,108 @@ fn summarize_supported_editor_routes(
         next_edit_boundary,
         future_gated,
     })
+}
+
+fn validate_lsp4ij_policy(root: &Path) -> Result<()> {
+    let path = root.join(LSP_CLIENT_SUPPORT_POLICY);
+    let source =
+        fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let policy: toml::Value =
+        toml::from_str(&source).with_context(|| format!("parsing {}", path.display()))?;
+    if policy.get("meta").and_then(|value| value.get("schema")).and_then(toml::Value::as_str)
+        != Some("lsp-client-support.v1")
+    {
+        bail!("{} must declare schema lsp-client-support.v1", path.display());
+    }
+    let clients = policy
+        .get("client")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| color_eyre::eyre::eyre!("{} must define [[client]] rows", path.display()))?;
+    let matching_clients = clients
+        .iter()
+        .filter(|client| client.get("id").and_then(toml::Value::as_str) == Some("intellij_lsp4ij"))
+        .collect::<Vec<_>>();
+    let client = match matching_clients.as_slice() {
+        [] => {
+            bail!("{} must define the intellij_lsp4ij client authority", path.display());
+        }
+        [client] => *client,
+        _ => {
+            bail!(
+                "{} must define exactly one intellij_lsp4ij client authority; found {}",
+                path.display(),
+                matching_clients.len()
+            );
+        }
+    };
+    if client.get("integration_mode").and_then(toml::Value::as_str) != Some("lsp4ij_plugin") {
+        bail!("intellij_lsp4ij policy integration_mode must be `lsp4ij_plugin`");
+    }
+    if client.get("synthetic_profile").and_then(toml::Value::as_bool) != Some(true) {
+        bail!("intellij_lsp4ij policy must identify its synthetic profile");
+    }
+    if client.get("tier").and_then(toml::Value::as_str) != Some("configuration_documented") {
+        bail!("intellij_lsp4ij policy tier must remain configuration_documented");
+    }
+    if client.get("requires_actual_client_receipt").and_then(toml::Value::as_bool) != Some(true) {
+        bail!("intellij_lsp4ij policy must require an actual-client receipt");
+    }
+    let evidence = client
+        .get("evidence")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| color_eyre::eyre::eyre!("intellij_lsp4ij policy evidence is missing"))?;
+    let documentation = evidence.iter().find(|entry| {
+        entry.get("path").and_then(toml::Value::as_str)
+            == Some("docs/EDITORS/INTELLIJ_IDEA_SETUP.md")
+            && entry.get("kind").and_then(toml::Value::as_str) == Some("documentation")
+    });
+    if documentation.is_none() {
+        bail!("intellij_lsp4ij policy is missing typed setup documentation evidence");
+    }
+    let protocol = evidence.iter().find(|entry| {
+        entry.get("path").and_then(toml::Value::as_str)
+            == Some("crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs")
+            && entry.get("kind").and_then(toml::Value::as_str) == Some("protocol_profile")
+    });
+    let Some(protocol) = protocol else {
+        bail!("intellij_lsp4ij policy is missing typed protocol-profile evidence");
+    };
+    for entry in [documentation, Some(protocol)].into_iter().flatten() {
+        let evidence_path = entry.get("path").and_then(toml::Value::as_str).ok_or_else(|| {
+            color_eyre::eyre::eyre!("intellij_lsp4ij policy evidence entry is missing a path")
+        })?;
+        let resolved = root.join(evidence_path);
+        if !resolved.is_file() {
+            bail!("intellij_lsp4ij policy evidence path `{evidence_path}` does not exist");
+        }
+    }
+    let profile = protocol.get("profile").and_then(toml::Value::as_table).ok_or_else(|| {
+        color_eyre::eyre::eyre!("intellij_lsp4ij protocol evidence profile is missing")
+    })?;
+    if profile.get("client_id").and_then(toml::Value::as_str) != Some("intellij_lsp4ij")
+        || profile.get("scenario").and_then(toml::Value::as_str) != Some("lsp4ij_inline_completion")
+    {
+        bail!(
+            "intellij_lsp4ij protocol evidence profile is not the lsp4ij inline-completion profile"
+        );
+    }
+    let boundary = client.get("claim_boundary").and_then(toml::Value::as_str).ok_or_else(|| {
+        color_eyre::eyre::eyre!("intellij_lsp4ij policy claim_boundary is missing")
+    })?;
+    if !boundary.contains("not an actual IntelliJ/LSP4IJ launch") {
+        bail!("intellij_lsp4ij policy claim_boundary must preserve the host-support boundary");
+    }
+    Ok(())
+}
+
+fn validate_declared_status(route: &str, plane: &str, status: &str) -> Result<()> {
+    if DECLARED_PLANE_STATUSES.contains(&status) && status != "registered" {
+        return Ok(());
+    }
+
+    bail!(
+        "supported editor inline smoke route `{route}` proof plane `{plane}` has unsupported declared status `{status}`"
+    );
 }
 
 fn summarize_next_edit_supported_editor_boundary() -> Result<NextEditSupportedEditorBoundaryReceipt>
@@ -272,8 +507,15 @@ fn summarize_next_edit_supported_editor_boundary() -> Result<NextEditSupportedEd
 fn validate_proof_surface(
     root: &Path,
     route: &str,
+    plane: &str,
     surface: &ProofSurfaceRequirement,
 ) -> Result<()> {
+    if surface.markers.is_empty() {
+        bail!(
+            "supported editor inline smoke route `{route}` proof plane `{plane}` surface `{}` must declare at least one marker",
+            surface.path
+        );
+    }
     let path = root.join(surface.path);
     let content =
         fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
@@ -286,7 +528,7 @@ fn validate_proof_surface(
 
     if !missing.is_empty() {
         bail!(
-            "supported editor inline smoke route `{route}` proof surface `{}` is missing markers: {}",
+            "supported editor inline smoke route `{route}` proof plane `{plane}` surface `{}` is missing markers: {}",
             surface.path,
             missing.join(", ")
         );
@@ -299,8 +541,239 @@ fn write_receipt(path: &Path, receipt: &SupportedEditorInlineSmokeReceipt) -> Re
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let json = serde_json::to_string_pretty(receipt)?;
+    let value = serde_json::to_value(receipt)?;
+    validate_receipt_schema(&value)?;
+    let json = serde_json::to_string_pretty(&value)?;
     fs::write(path, format!("{json}\n"))?;
+    Ok(())
+}
+
+fn validate_receipt_schema(value: &Value) -> Result<()> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| color_eyre::eyre::eyre!("supported editor receipt must be an object"))?;
+    for &key in RECEIPT_FIELDS {
+        if !object.contains_key(key) {
+            bail!("supported editor receipt is missing `{key}`");
+        }
+    }
+    if object.keys().any(|key| !RECEIPT_FIELDS.contains(&key.as_str())) {
+        bail!("supported editor receipt contains an unknown top-level field");
+    }
+    if object.get("schema_version").and_then(Value::as_str) != Some(RECEIPT_SCHEMA_VERSION) {
+        bail!("supported editor receipt has unsupported schema_version");
+    }
+    require_string(object, "provider")?;
+    require_string(object, "provider_action")?;
+    require_string(object, "claim_boundary")?;
+    if object.get("all_supported_routes_registered").and_then(Value::as_bool) != Some(true) {
+        bail!("supported editor receipt must mark all routes registered");
+    }
+    if object.get("future_gated").and_then(Value::as_object).is_none() {
+        bail!("supported editor receipt future_gated must be an object");
+    }
+    let next_edit = object
+        .get("next_edit_boundary")
+        .and_then(Value::as_object)
+        .ok_or_else(|| color_eyre::eyre::eyre!("next_edit_boundary must be an object"))?;
+    reject_unknown_fields(
+        next_edit,
+        &[
+            "claim_boundary",
+            "enabled_by_default",
+            "explicit_dev_gate_enabled",
+            "runtime_provider_registered",
+            "editor_visible_suggestions",
+            "ai_candidate_source_enabled",
+            "default_response",
+            "explicit_gate_response",
+        ],
+        "next_edit_boundary",
+    )?;
+    for key in [
+        "claim_boundary",
+        "enabled_by_default",
+        "explicit_dev_gate_enabled",
+        "runtime_provider_registered",
+        "editor_visible_suggestions",
+        "ai_candidate_source_enabled",
+        "default_response",
+        "explicit_gate_response",
+    ] {
+        if !next_edit.contains_key(key) {
+            bail!("next_edit_boundary is missing `{key}`");
+        }
+    }
+    require_string(next_edit, "claim_boundary")?;
+    for key in [
+        "enabled_by_default",
+        "explicit_dev_gate_enabled",
+        "runtime_provider_registered",
+        "editor_visible_suggestions",
+        "ai_candidate_source_enabled",
+    ] {
+        if next_edit.get(key).and_then(Value::as_bool).is_none() {
+            bail!("next_edit_boundary field `{key}` must be a boolean");
+        }
+    }
+    for key in ["default_response", "explicit_gate_response"] {
+        let response = next_edit.get(key).and_then(Value::as_object).ok_or_else(|| {
+            color_eyre::eyre::eyre!("next_edit_boundary `{key}` must be an object")
+        })?;
+        reject_unknown_fields(
+            response,
+            &["status", "suggestions"],
+            &format!("next_edit_boundary `{key}`"),
+        )?;
+        let status = require_string(response, "status")?;
+        if !matches!(status, "disabled" | "receipt_only" | "runtime_provider_not_registered") {
+            bail!("next_edit_boundary `{key}` has unknown status `{status}`");
+        }
+        if response.get("suggestions").and_then(Value::as_array).is_none() {
+            bail!("next_edit_boundary `{key}` suggestions must be an array");
+        }
+    }
+    let routes = object
+        .get("supported_editor_routes")
+        .and_then(Value::as_object)
+        .ok_or_else(|| color_eyre::eyre::eyre!("supported editor routes must be an object"))?;
+    let route_count = object.get("route_count").and_then(Value::as_u64).ok_or_else(|| {
+        color_eyre::eyre::eyre!("supported editor route_count must be an integer")
+    })?;
+    if route_count != routes.len() as u64 {
+        bail!("supported editor route_count does not match route population");
+    }
+    for (route_name, route) in routes {
+        let route = route.as_object().ok_or_else(|| {
+            color_eyre::eyre::eyre!("supported editor route `{route_name}` must be an object")
+        })?;
+        reject_unknown_fields(
+            route,
+            &["status", "claim", "proof_plane_count", "proof_planes"],
+            &format!("supported editor route `{route_name}`"),
+        )?;
+        require_string(route, "status")?;
+        if route.get("status").and_then(Value::as_str) != Some("registered") {
+            bail!("supported editor route `{route_name}` must be registered");
+        }
+        require_string(route, "claim")?;
+        for key in ["status", "claim", "proof_plane_count", "proof_planes"] {
+            if !route.contains_key(key) {
+                bail!("supported editor route `{route_name}` is missing `{key}`");
+            }
+        }
+        let planes = route.get("proof_planes").and_then(Value::as_object).ok_or_else(|| {
+            color_eyre::eyre::eyre!("route `{route_name}` proof_planes must be an object")
+        })?;
+        let plane_count =
+            route.get("proof_plane_count").and_then(Value::as_u64).ok_or_else(|| {
+                color_eyre::eyre::eyre!("route `{route_name}` proof_plane_count must be an integer")
+            })?;
+        if plane_count != planes.len() as u64 {
+            bail!("route `{route_name}` proof_plane_count does not match proof_planes");
+        }
+        for (plane_name, plane) in planes {
+            let plane = plane.as_object().ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "route `{route_name}` plane `{plane_name}` must be an object"
+                )
+            })?;
+            reject_unknown_fields(
+                plane,
+                &["status", "owner", "proof_surface_count", "proof_surfaces"],
+                &format!("route `{route_name}` plane `{plane_name}`"),
+            )?;
+            require_string(plane, "status")?;
+            for key in ["status", "proof_surface_count", "proof_surfaces"] {
+                if !plane.contains_key(key) {
+                    bail!("route `{route_name}` plane `{plane_name}` is missing `{key}`");
+                }
+            }
+            if let Some(status) = plane.get("status").and_then(Value::as_str) {
+                if !matches!(status, "registered" | "not_proven" | "limited" | "client_not_exposed")
+                {
+                    bail!(
+                        "route `{route_name}` plane `{plane_name}` has unknown status `{status}`"
+                    );
+                }
+            } else {
+                bail!("route `{route_name}` plane `{plane_name}` status must be a string");
+            }
+            let surfaces =
+                plane.get("proof_surfaces").and_then(Value::as_array).ok_or_else(|| {
+                    color_eyre::eyre::eyre!(
+                        "route `{route_name}` plane `{plane_name}` proof_surfaces must be an array"
+                    )
+                })?;
+            for (index, surface) in surfaces.iter().enumerate() {
+                let surface = surface.as_object().ok_or_else(|| {
+                    color_eyre::eyre::eyre!(
+                        "route `{route_name}` plane `{plane_name}` surface {index} must be an object"
+                    )
+                })?;
+                reject_unknown_fields(
+                    surface,
+                    &["path", "required_marker_count", "required_markers"],
+                    &format!("route `{route_name}` plane `{plane_name}` surface {index}"),
+                )?;
+                require_string(surface, "path")?;
+                if surface.get("required_marker_count").and_then(Value::as_u64).is_none() {
+                    bail!(
+                        "route `{route_name}` plane `{plane_name}` surface {index} marker count must be an integer"
+                    );
+                }
+                let markers = surface
+                    .get("required_markers")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| color_eyre::eyre::eyre!("route `{route_name}` plane `{plane_name}` surface {index} markers must be an array"))?;
+                if markers.iter().any(|marker| marker.as_str().is_none()) {
+                    bail!(
+                        "route `{route_name}` plane `{plane_name}` surface {index} markers must be strings"
+                    );
+                }
+                if surface.get("required_marker_count").and_then(Value::as_u64)
+                    != Some(markers.len() as u64)
+                {
+                    bail!(
+                        "route `{route_name}` plane `{plane_name}` surface {index} marker count does not match markers"
+                    );
+                }
+                if plane.get("status").and_then(Value::as_str) == Some("registered")
+                    && markers.is_empty()
+                {
+                    bail!(
+                        "route `{route_name}` plane `{plane_name}` surface {index} must declare at least one marker"
+                    );
+                }
+            }
+            let surface_count = plane
+                .get("proof_surface_count")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| color_eyre::eyre::eyre!("route `{route_name}` plane `{plane_name}` proof_surface_count must be an integer"))?;
+            if surface_count != surfaces.len() as u64 {
+                bail!(
+                    "route `{route_name}` plane `{plane_name}` proof_surface_count does not match proof_surfaces"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn require_string<'a>(object: &'a serde_json::Map<String, Value>, key: &str) -> Result<&'a str> {
+    object.get(key).and_then(Value::as_str).ok_or_else(|| {
+        color_eyre::eyre::eyre!("supported editor receipt field `{key}` must be a string")
+    })
+}
+
+fn reject_unknown_fields(
+    object: &serde_json::Map<String, Value>,
+    allowed: &[&str],
+    context: &str,
+) -> Result<()> {
+    if let Some(key) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
+        bail!("{context} contains unknown field `{key}`");
+    }
     Ok(())
 }
 
@@ -317,8 +790,21 @@ mod tests {
     const TEST_ROUTES: &[SupportedEditorRouteRequirement] = &[SupportedEditorRouteRequirement {
         route: "test_route",
         claim: "test route claim",
-        proof_surfaces: TEST_PROOFS,
+        proof_planes: &[proof_surface_plane(TEST_PROOFS)],
     }];
+
+    const DUPLICATE_ROUTES: &[SupportedEditorRouteRequirement] = &[
+        SupportedEditorRouteRequirement {
+            route: "duplicate_route",
+            claim: "first",
+            proof_planes: &[proof_surface_plane(TEST_PROOFS)],
+        },
+        SupportedEditorRouteRequirement {
+            route: "duplicate_route",
+            claim: "second",
+            proof_planes: &[proof_surface_plane(TEST_PROOFS)],
+        },
+    ];
 
     #[test]
     fn semantic_inline_receipts_record_supported_editor_routes() -> Result<()> {
@@ -336,14 +822,45 @@ mod tests {
                 .ok_or_else(|| color_eyre::eyre::eyre!("missing route {}", route.route))?;
             assert_eq!(entry.status, "registered");
             assert_eq!(entry.claim, route.claim);
-            assert_eq!(entry.proof_surface_count, route.proof_surfaces.len());
-            assert_eq!(entry.proof_surfaces.len(), route.proof_surfaces.len());
-            for (actual, expected) in entry.proof_surfaces.iter().zip(route.proof_surfaces.iter()) {
-                assert_eq!(actual.path, expected.path);
-                assert_eq!(actual.required_marker_count, expected.markers.len());
-                assert_eq!(actual.required_markers, expected.markers.to_vec());
+            assert_eq!(entry.proof_plane_count, route.proof_planes.len());
+            assert_eq!(entry.proof_planes.len(), route.proof_planes.len());
+            for (name, plane) in entry.proof_planes.iter() {
+                let expected = route
+                    .proof_planes
+                    .iter()
+                    .find(|expected| expected.plane == *name)
+                    .ok_or_else(|| color_eyre::eyre::eyre!("missing plane {name}"))?;
+                assert_eq!(plane.proof_surface_count, expected.proof_surfaces.len());
+                assert_eq!(plane.proof_surfaces.len(), expected.proof_surfaces.len());
+                for (actual, expected) in
+                    plane.proof_surfaces.iter().zip(expected.proof_surfaces.iter())
+                {
+                    assert_eq!(actual.path, expected.path);
+                    assert_eq!(actual.required_marker_count, expected.markers.len());
+                    assert_eq!(actual.required_markers, expected.markers.to_vec());
+                }
             }
         }
+
+        let lsp4ij = receipt
+            .supported_editor_routes
+            .get("lsp4ij_upstream_integration")
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing lsp4ij route"))?;
+        assert!(lsp4ij.claim.contains("records the repository's"));
+        assert!(lsp4ij.claim.contains("does not execute the protocol"));
+        let launch = lsp4ij
+            .proof_planes
+            .get("launch_identity")
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing launch_identity plane"))?;
+        assert_eq!(launch.status, "registered");
+        let actual_host = lsp4ij
+            .proof_planes
+            .get("actual_host_evidence")
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing actual_host_evidence plane"))?;
+        assert_eq!(actual_host.status, "not_proven");
+        assert_eq!(actual_host.owner, Some("#7719/#7977/#8179"));
+        assert_eq!(actual_host.proof_surface_count, 0);
+
         assert_eq!(receipt.future_gated.get("live_vscode_ui_automation"), Some(&"future_gated"));
         assert_eq!(receipt.future_gated.get("live_lsp4ij_ui_automation"), Some(&"future_gated"));
         assert_eq!(receipt.future_gated.get("runtime_next_edit_provider"), Some(&"future_gated"));
@@ -386,6 +903,150 @@ mod tests {
     }
 
     #[test]
+    fn missing_plane_marker_names_route_and_plane() -> Result<()> {
+        let temp = TempDir::new()?;
+        write_fixture_files(temp.path(), ROUTES)?;
+
+        let doc = temp.path().join("docs/EDITORS/INTELLIJ_IDEA_SETUP.md");
+        let content = fs::read_to_string(&doc)?;
+        let content = content.replace("perllsp --stdio", "perllsp --pipe");
+        fs::write(&doc, content)?;
+
+        let Err(error) = summarize_supported_editor_routes(temp.path(), ROUTES) else {
+            bail!("removing the launch identity must fail receipt generation");
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("`lsp4ij_upstream_integration` proof plane `launch_identity`"),
+            "error should name the route and plane, got {message}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn lsp4ij_host_support_boundary_removal_fails_receipt() -> Result<()> {
+        let temp = TempDir::new()?;
+        write_fixture_files(temp.path(), ROUTES)?;
+
+        let doc = temp.path().join("docs/EDITORS/INTELLIJ_IDEA_SETUP.md");
+        let content = fs::read_to_string(&doc)?;
+        let content =
+            content.replace("not the same thing as IntelliJ/LSP4IJ host support", "host support");
+        fs::write(&doc, content)?;
+
+        let Err(error) = summarize_supported_editor_routes(temp.path(), ROUTES) else {
+            bail!("removing the host-support boundary must fail receipt generation");
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("proof plane `host_support_boundary`"),
+            "error should name the boundary plane, got {message}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn declared_status_plane_requires_no_proof_surfaces() -> Result<()> {
+        let temp = TempDir::new()?;
+        write_fixture_files(temp.path(), TEST_ROUTES)?;
+
+        let malformed = &[SupportedEditorRouteRequirement {
+            route: "malformed_route",
+            claim: "malformed route claim",
+            proof_planes: &[ProofPlaneRequirement {
+                plane: "bad_plane",
+                owner: Some("owner"),
+                declared_status: Some("not_proven"),
+                proof_surfaces: TEST_PROOFS,
+            }],
+        }];
+
+        let Err(error) = summarize_supported_editor_routes(temp.path(), malformed) else {
+            bail!("a declared-status plane with proof surfaces must be rejected");
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("`bad_plane` must either declare a status with no proof surfaces"),
+            "error should name the malformed plane, got {message}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_declared_status_is_rejected() -> Result<()> {
+        let temp = TempDir::new()?;
+        write_fixture_files(temp.path(), TEST_ROUTES)?;
+
+        let malformed = &[SupportedEditorRouteRequirement {
+            route: "malformed_status",
+            claim: "malformed status claim",
+            proof_planes: &[ProofPlaneRequirement {
+                plane: "actual_host_evidence",
+                owner: Some("owner"),
+                declared_status: Some("maybe"),
+                proof_surfaces: &[],
+            }],
+        }];
+
+        let Err(error) = summarize_supported_editor_routes(temp.path(), malformed) else {
+            bail!("unknown declared status must be rejected");
+        };
+        let message = error.to_string();
+        assert!(message.contains("unsupported declared status `maybe`"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn lsp4ij_policy_authority_requires_expected_evidence() -> Result<()> {
+        let temp = TempDir::new()?;
+        let policy_dir = temp.path().join("policy");
+        fs::create_dir_all(&policy_dir)?;
+        fs::write(
+            policy_dir.join("lsp-client-support.toml"),
+            "[meta]\nschema = \"lsp-client-support.v1\"\n\n[[client]]\nid = \"intellij_lsp4ij\"\nintegration_mode = \"lsp4ij_plugin\"\ntier = \"configuration_documented\"\nrequires_actual_client_receipt = true\nsynthetic_profile = true\nevidence = [{ path = \"docs/EDITORS/INTELLIJ_IDEA_SETUP.md\", kind = \"documentation\" }]\nclaim_boundary = \"not an actual IntelliJ/LSP4IJ launch\"\n",
+        )?;
+
+        let Err(error) = validate_lsp4ij_policy(temp.path()) else {
+            bail!("missing protocol-profile evidence must be rejected");
+        };
+        assert!(error.to_string().contains("lsp_inline_completion_registration_tests.rs"));
+        Ok(())
+    }
+
+    #[test]
+    fn lsp4ij_policy_rejects_duplicate_authority_rows() -> Result<()> {
+        let temp = TempDir::new()?;
+        let policy_dir = temp.path().join("policy");
+        fs::create_dir_all(&policy_dir)?;
+        fs::write(
+            policy_dir.join("lsp-client-support.toml"),
+            "[meta]\nschema = \"lsp-client-support.v1\"\n\n[[client]]\nid = \"intellij_lsp4ij\"\nintegration_mode = \"lsp4ij_plugin\"\ntier = \"configuration_documented\"\nrequires_actual_client_receipt = true\nsynthetic_profile = true\nevidence = []\nclaim_boundary = \"not an actual IntelliJ/LSP4IJ launch\"\n\n[[client]]\nid = \"intellij_lsp4ij\"\nintegration_mode = \"lsp4ij_plugin\"\ntier = \"configuration_documented\"\nrequires_actual_client_receipt = true\nsynthetic_profile = true\nevidence = []\nclaim_boundary = \"not an actual IntelliJ/LSP4IJ launch\"\n",
+        )?;
+
+        let Err(error) = validate_lsp4ij_policy(temp.path()) else {
+            bail!("duplicate client authority must be rejected");
+        };
+        assert!(error.to_string().contains("exactly one intellij_lsp4ij"));
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_route_is_rejected() -> Result<()> {
+        let temp = TempDir::new()?;
+        write_fixture_files(temp.path(), DUPLICATE_ROUTES)?;
+
+        let Err(error) = summarize_supported_editor_routes(temp.path(), DUPLICATE_ROUTES) else {
+            bail!("duplicate route must be rejected");
+        };
+        let message = error.to_string();
+        assert!(message.contains("duplicate route `duplicate_route`"), "{message}");
+        Ok(())
+    }
+
+    #[test]
     fn semantic_inline_receipts_json_keeps_claim_boundary() -> Result<()> {
         let temp = TempDir::new()?;
         write_fixture_files(temp.path(), ROUTES)?;
@@ -394,7 +1055,7 @@ mod tests {
 
         assert_eq!(
             value.get("schema_version").and_then(Value::as_str),
-            Some("supported-editor-inline-smoke.v1")
+            Some(RECEIPT_SCHEMA_VERSION)
         );
         assert_eq!(
             value.get("provider_action").and_then(Value::as_str),
@@ -470,14 +1131,124 @@ mod tests {
         Ok(())
     }
 
+    fn sample_receipt_value() -> Result<Value> {
+        let temp = TempDir::new()?;
+        write_fixture_files(temp.path(), ROUTES)?;
+        let receipt = summarize_supported_editor_routes(temp.path(), ROUTES)?;
+        Ok(serde_json::to_value(receipt)?)
+    }
+
+    #[test]
+    fn receipt_schema_rejects_missing_version() -> Result<()> {
+        let mut value = sample_receipt_value()?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| color_eyre::eyre::eyre!("sample receipt must be an object"))?;
+        object.remove("schema_version");
+        let error = validate_receipt_schema(&value)
+            .err()
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing schema version must fail"))?;
+        assert!(error.to_string().contains("missing `schema_version`"));
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_schema_rejects_unknown_version() -> Result<()> {
+        let mut value = sample_receipt_value()?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| color_eyre::eyre::eyre!("sample receipt must be an object"))?;
+        object.insert(
+            "schema_version".to_string(),
+            Value::String("supported-editor-inline-smoke.v1".to_string()),
+        );
+        let error = validate_receipt_schema(&value)
+            .err()
+            .ok_or_else(|| color_eyre::eyre::eyre!("unknown schema version must fail"))?;
+        assert!(error.to_string().contains("unsupported schema_version"));
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_schema_rejects_unknown_field() -> Result<()> {
+        let mut value = sample_receipt_value()?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| color_eyre::eyre::eyre!("sample receipt must be an object"))?;
+        object.insert("unexpected".to_string(), Value::Bool(true));
+        let error = validate_receipt_schema(&value)
+            .err()
+            .ok_or_else(|| color_eyre::eyre::eyre!("unknown field must fail"))?;
+        assert!(error.to_string().contains("unknown top-level field"));
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_schema_rejects_inconsistent_route_count() -> Result<()> {
+        let mut value = sample_receipt_value()?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| color_eyre::eyre::eyre!("sample receipt must be an object"))?;
+        object.insert("route_count".to_string(), Value::from(999_u64));
+        let error = validate_receipt_schema(&value)
+            .err()
+            .ok_or_else(|| color_eyre::eyre::eyre!("inconsistent route count must fail"))?;
+        assert!(error.to_string().contains("route_count does not match"));
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_schema_rejects_nested_type_drift() -> Result<()> {
+        let mut value = sample_receipt_value()?;
+        let route = value
+            .pointer_mut("/supported_editor_routes/stdio_cli_smoke/proof_planes/proof_surface")
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing proof plane"))?;
+        let plane = route
+            .as_object_mut()
+            .ok_or_else(|| color_eyre::eyre::eyre!("proof plane must be object"))?;
+        let surfaces = plane
+            .get_mut("proof_surfaces")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing surfaces"))?;
+        surfaces[0]["required_markers"] = Value::String("not-an-array".to_string());
+        let error = validate_receipt_schema(&value)
+            .err()
+            .ok_or_else(|| color_eyre::eyre::eyre!("nested type drift must fail"))?;
+        assert!(error.to_string().contains("markers must be an array"));
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_schema_rejects_empty_registered_surface_markers() -> Result<()> {
+        let mut value = sample_receipt_value()?;
+        let surface = value
+            .pointer_mut(
+                "/supported_editor_routes/stdio_cli_smoke/proof_planes/proof_surface/proof_surfaces/0",
+            )
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing proof surface"))?;
+        let object = surface
+            .as_object_mut()
+            .ok_or_else(|| color_eyre::eyre::eyre!("proof surface must be object"))?;
+        object.insert("required_marker_count".to_string(), Value::from(0_u64));
+        object.insert("required_markers".to_string(), Value::Array(Vec::new()));
+
+        let Err(error) = validate_receipt_schema(&value) else {
+            bail!("empty registered proof markers must fail");
+        };
+        assert!(error.to_string().contains("at least one marker"));
+        Ok(())
+    }
+
     fn write_fixture_files(
         root: &Path,
         requirements: &[SupportedEditorRouteRequirement],
     ) -> Result<()> {
         let mut content_by_path = BTreeMap::<&str, Vec<&str>>::new();
         for route in requirements {
-            for surface in route.proof_surfaces {
-                content_by_path.entry(surface.path).or_default().extend(surface.markers);
+            for plane in route.proof_planes {
+                for surface in plane.proof_surfaces {
+                    content_by_path.entry(surface.path).or_default().extend(surface.markers);
+                }
             }
         }
 
@@ -487,6 +1258,15 @@ mod tests {
                 fs::create_dir_all(parent)?;
             }
             fs::write(full_path, markers.join("\n"))?;
+        }
+
+        if requirements.iter().any(|route| route.route == "lsp4ij_upstream_integration") {
+            let policy_dir = root.join("policy");
+            fs::create_dir_all(&policy_dir)?;
+            fs::write(
+                policy_dir.join("lsp-client-support.toml"),
+                "[meta]\nschema = \"lsp-client-support.v1\"\n\n[[client]]\nid = \"intellij_lsp4ij\"\nintegration_mode = \"lsp4ij_plugin\"\ntier = \"configuration_documented\"\nrequires_actual_client_receipt = true\nsynthetic_profile = true\nevidence = [{ path = \"docs/EDITORS/INTELLIJ_IDEA_SETUP.md\", kind = \"documentation\" }, { path = \"crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs\", kind = \"protocol_profile\", profile = { client_id = \"intellij_lsp4ij\", scenario = \"lsp4ij_inline_completion\" } }]\nclaim_boundary = \"not an actual IntelliJ/LSP4IJ launch\"\n",
+            )?;
         }
 
         Ok(())
