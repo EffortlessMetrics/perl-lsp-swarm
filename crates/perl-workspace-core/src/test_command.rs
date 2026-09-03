@@ -532,6 +532,11 @@ pub enum TestCommandPlanError {
     InvalidSnapshot(EnvironmentBuildError),
     /// No active workspace root exists, so no working directory can be named.
     MissingWorkspaceRoot,
+    /// More than one active workspace root exists, so no *single* working
+    /// directory can be named. A candidate stamps one working directory it must
+    /// run in; silently picking the first would drop every other root's tree
+    /// from the plan without saying so.
+    AmbiguousWorkspaceRoots,
     /// An argument would have leaked an absolute path into a public receipt.
     AbsolutePathInArgv {
         /// Candidate runner family.
@@ -550,6 +555,10 @@ impl std::fmt::Display for TestCommandPlanError {
             Self::MissingWorkspaceRoot => {
                 formatter.write_str("no active workspace root supplies a working directory")
             }
+            Self::AmbiguousWorkspaceRoots => formatter.write_str(
+                "more than one active workspace root exists, so no single working \
+                 directory can be named",
+            ),
             Self::AbsolutePathInArgv { kind, argument } => write!(
                 formatter,
                 "{} argument `{argument}` is an absolute path",
@@ -841,11 +850,16 @@ fn input_authority(
 fn workspace_working_dir(
     snapshot: &ProjectEnvironmentSnapshot,
 ) -> Result<EnvironmentPathRef, TestCommandPlanError> {
-    snapshot
-        .active_project_roots()
-        .find(|root| root.role == ProjectRootRole::Workspace)
-        .map(|root| root.path.clone())
-        .ok_or(TestCommandPlanError::MissingWorkspaceRoot)
+    // Fold-based; taking the first two matches is enough to reject ambiguity
+    // without collecting every root. Zero → `MissingWorkspaceRoot`, one →
+    // that root's path, two-or-more → `AmbiguousWorkspaceRoots`.
+    let mut workspace_roots =
+        snapshot.active_project_roots().filter(|root| root.role == ProjectRootRole::Workspace);
+    let first = workspace_roots.next().ok_or(TestCommandPlanError::MissingWorkspaceRoot)?;
+    if workspace_roots.next().is_some() {
+        return Err(TestCommandPlanError::AmbiguousWorkspaceRoots);
+    }
+    Ok(first.path.clone())
 }
 
 /// Whether emitted arguments cover every test root the project declared.

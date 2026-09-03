@@ -982,6 +982,39 @@ fn public_receipt_redacts_every_host_path() -> Result<(), FixtureError> {
     Ok(())
 }
 
+/// A command carries **the** working directory it must run in, so a snapshot
+/// with two active workspace roots is ambiguous and no candidate can honestly
+/// name one of them. Rules out: silently picking the first, which produces a
+/// plan that never mentions the second root's tree.
+#[test]
+fn planning_with_ambiguous_workspace_roots_fails_closed() -> Result<(), FixtureError> {
+    let first_root_input = accepted_input("root.workspace.first");
+    let second_root_input = accepted_input("root.workspace.second");
+    let tool_input = accepted_input("tool.prove");
+    let snapshot = ProjectEnvironmentSnapshotBuilder::new(WORKSPACE_ID, 1, WorkspaceTrust::Trusted)
+        .with_input(first_root_input.clone())
+        .with_input(second_root_input.clone())
+        .with_input(tool_input.clone())
+        .with_project_root(ProjectRoot::new(
+            ProjectRootRole::Workspace,
+            path("/ws"),
+            first_root_input.id.clone(),
+        ))
+        .with_project_root(ProjectRoot::new(
+            ProjectRootRole::Workspace,
+            path("/other"),
+            second_root_input.id.clone(),
+        ))
+        .with_tool_candidate(prove_tool(tool_input.id.clone()))
+        .build()?;
+
+    assert_eq!(
+        plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot)),
+        Err(TestCommandPlanError::AmbiguousWorkspaceRoots)
+    );
+    Ok(())
+}
+
 /// Without a working directory a command is not reproducible, so planning fails
 /// rather than inventing one. Rules out: defaulting to the process CWD.
 #[test]
