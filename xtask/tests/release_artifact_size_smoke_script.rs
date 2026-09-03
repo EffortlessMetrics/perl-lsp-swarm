@@ -12,8 +12,6 @@
 //! --all-targets` stays usable there.
 #![cfg(unix)]
 
-#![cfg(unix)]
-
 use std::{
     fs,
     os::unix::fs::PermissionsExt,
