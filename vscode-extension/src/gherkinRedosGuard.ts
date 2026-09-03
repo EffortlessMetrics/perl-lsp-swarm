@@ -429,6 +429,11 @@ function atomsMayOverlap(left: string, right: string, flags: string): boolean {
 const UNBOUNDED_ATOM_BITS = Math.log2(MAX_MATCH_STEP_TEXT_LENGTH);
 const MAX_CHAIN_AMBIGUITY_BITS = 2 * UNBOUNDED_ATOM_BITS - 1;
 const MAX_GROUP_ANALYSIS_DEPTH = 32;
+// A nullable atom splits the branch in two, so the path count would double per
+// nullable without a cap. Keeping the highest-scoring few is fail-open only in
+// the sense that a discarded path could have grown into a rejection; the paths
+// kept are always the closest to the budget.
+const MAX_TRACKED_BRANCH_PATHS = 8;
 
 // `bits` is how much freedom this boundary offers a neighbouring atom: zero for
 // a fixed edge, which cannot compete and therefore separates a chain.
@@ -445,11 +450,16 @@ interface ChainAtom {
   fixedWidth: number | null;
   nullable: boolean;
   chain: boolean;
-  // Total freedom anywhere inside this atom, in bits. An edge can be fixed
-  // while the interior still varies — `(aa*a)` begins and ends on a literal
-  // `a` — and it is the interior that lets consecutive copies redistribute
-  // input between them.
-  variabilityBits: number;
+  // Freedom that can actually reach each boundary, in bits. An edge can be
+  // fixed while the interior still varies — `(aa*a)` begins and ends on a
+  // literal `a` — and that interior is what lets consecutive copies
+  // redistribute input. But variability sealed off by a required separator
+  // cannot reach the boundary at all: in `(a+b+a+)` the `b+` isolates the
+  // leading `a+` from the trailing one, so only one `a+` worth of freedom
+  // meets each seam. Counting every atom instead refuses `^((a+b+a+)){2}$`,
+  // which resolves in 0.1 ms.
+  leadingRunBits: number;
+  trailingRunBits: number;
 }
 
 type SequenceFacts = Omit<ChainAtom, 'end'>;
@@ -549,7 +559,8 @@ function opaqueAtom(end: number): ChainAtom {
     // than letting an unknown reset the run, which would fail open.
     nullable: true,
     chain: false,
-    variabilityBits: 0,
+    leadingRunBits: 0,
+    trailingRunBits: 0,
   };
 }
 
@@ -628,7 +639,8 @@ function readChainAtom(
         fixedWidth: null,
         nullable: quantifier.nullable,
         chain: true,
-        variabilityBits: UNBOUNDED_ATOM_BITS,
+        leadingRunBits: UNBOUNDED_ATOM_BITS,
+        trailingRunBits: UNBOUNDED_ATOM_BITS,
       };
     }
 
@@ -662,8 +674,10 @@ function readChainAtom(
     // the interior can redistribute, not what the edge atoms alone vary by:
     // `((aa*a))+` begins and ends on a fixed `a` yet exceeds nine seconds on
     // forty characters.
+    // Both sides of a self-seam must be able to move, so the seam is worth the
+    // lesser of the freedom reaching each boundary.
     const selfSeamBits = domainsOverlap(group.trailing.domain, group.leading.domain)
-      ? group.variabilityBits
+      ? Math.min(group.trailingRunBits, group.leadingRunBits)
       : 0;
     const selfChain =
       selfSeamBits > 0 &&
@@ -695,7 +709,8 @@ function readChainAtom(
           : group.fixedWidth * quantifier.repeat,
       nullable: quantifier.nullable || group.nullable,
       chain: group.chain || selfChain,
-      variabilityBits: quantifier.bits + group.variabilityBits,
+      leadingRunBits: quantifier.bits + group.leadingRunBits,
+      trailingRunBits: quantifier.bits + group.trailingRunBits,
     };
   }
 
@@ -711,7 +726,8 @@ function readChainAtom(
     end: quantifier.end,
     leading: edge,
     trailing: edge,
-    variabilityBits: quantifier.bits,
+    leadingRunBits: quantifier.bits,
+    trailingRunBits: quantifier.bits,
     union: domain,
     fixedWidth: quantifier.repeat,
     nullable: quantifier.nullable,
@@ -719,47 +735,74 @@ function readChainAtom(
   };
 }
 
-function summarizeBranch(atoms: ChainAtom[]): SequenceFacts {
-  let chain = atoms.some((atom) => atom.chain);
-  let runBits = 0;
-  let previousTrailing: EdgeFacts | null = null;
-
-  for (const atom of atoms) {
-    const linked =
-      previousTrailing !== null &&
-      previousTrailing.bits > 0 &&
-      atom.leading.bits > 0 &&
-      domainsOverlap(previousTrailing.domain, atom.leading.domain);
-
-    // An atom that can match nothing cannot separate the atoms around it.
-    if (!linked && atom.nullable && previousTrailing !== null) {
-      continue;
-    }
-
-    // Ambiguity lives at the seam between two atoms, not inside either one, and
-    // a seam is only as free as its narrower side: `(?:(\w+) )?` ends in a
-    // required space, so it hands the next atom one bit of freedom however
-    // unbounded its interior is.
-    runBits =
-      linked && previousTrailing !== null
-        ? runBits + Math.min(previousTrailing.bits, atom.leading.bits)
-        : 0;
-    if (runBits > MAX_CHAIN_AMBIGUITY_BITS) {
-      chain = true;
+// Walk in from one end, accumulating freedom while each atom can still reach
+// the boundary. A required atom over a disjoint domain seals the rest off.
+function connectedRunBits(
+  ordered: ChainAtom[],
+  boundaryDomain: Set<string> | null,
+  side: 'leading' | 'trailing',
+): number {
+  let total = 0;
+  for (const atom of ordered) {
+    if (!domainsOverlap(boundaryDomain, atom.union)) {
       break;
     }
-    // A nullable atom that links on its left still has an absent path, in
-    // which the atoms on either side of it meet directly. Carrying the union
-    // of both edges forward keeps that path visible: `^([ab]+)(a?)(b+)(b+)c$`
-    // looks separated by `a?`, but on all-`b` input the `a?` vanishes and
-    // three unbounded repetitions compete — 213 ms at the input ceiling.
-    previousTrailing =
-      atom.nullable && previousTrailing !== null
-        ? {
-            domain: unionDomains([previousTrailing.domain, atom.trailing.domain]),
-            bits: Math.max(previousTrailing.bits, atom.trailing.bits),
-          }
-        : atom.trailing;
+    total += side === 'leading' ? atom.leadingRunBits : atom.trailingRunBits;
+  }
+  return total;
+}
+
+function summarizeBranch(atoms: ChainAtom[]): SequenceFacts {
+  let chain = atoms.some((atom) => atom.chain);
+  // A nullable atom splits the branch into two mutually exclusive paths — one
+  // where it matches and one where it vanishes — and a chain reachable on
+  // neither path is not a chain. `^([ab]+)(a?)(b+)(b+)c$` is only dangerous on
+  // the absent path, where three unbounded repetitions meet (213 ms at the
+  // ceiling); `^(a+)(?:a+b+)?(a+)c$` has one seam on each path and is dangerous
+  // on neither (2.7 ms). Merging the two into one edge would rule the first
+  // safe or the second unsafe, so each path carries its own score.
+  let paths: { runBits: number; trailing: EdgeFacts | null }[] = [{ runBits: 0, trailing: null }];
+
+  for (const atom of atoms) {
+    const next: { runBits: number; trailing: EdgeFacts | null }[] = [];
+    for (const path of paths) {
+      const previousTrailing = path.trailing;
+      const linked =
+        previousTrailing !== null &&
+        previousTrailing.bits > 0 &&
+        atom.leading.bits > 0 &&
+        domainsOverlap(previousTrailing.domain, atom.leading.domain);
+
+      // Ambiguity lives at the seam between two atoms, not inside either one,
+      // and a seam is only as free as its narrower side: `(?:(\w+) )?` ends in
+      // a required space, so it hands the next atom one bit of freedom however
+      // unbounded its interior is.
+      const runBits =
+        linked && previousTrailing !== null
+          ? path.runBits + Math.min(previousTrailing.bits, atom.leading.bits)
+          : 0;
+      if (runBits > MAX_CHAIN_AMBIGUITY_BITS) {
+        chain = true;
+      }
+      next.push({ runBits, trailing: atom.trailing });
+      // The path in which this atom is absent keeps the state that preceded it,
+      // so its neighbours are seen meeting directly.
+      if (atom.nullable && previousTrailing !== null) {
+        next.push(path);
+      }
+    }
+    if (chain) {
+      break;
+    }
+    // Nullable atoms double the path count, so keep the worst few. Dropping the
+    // cheaper paths can only lose a rejection, never invent one, and the
+    // survivors are the ones that could still exceed the budget.
+    paths =
+      next.length <= MAX_TRACKED_BRANCH_PATHS
+        ? next
+        : next
+            .sort((left, right) => right.runBits - left.runBits)
+            .slice(0, MAX_TRACKED_BRANCH_PATHS);
   }
 
   const leadingParts: ChainAtom[] = [];
@@ -782,17 +825,20 @@ function summarizeBranch(atoms: ChainAtom[]): SequenceFacts {
   }
 
   const widths = atoms.map((atom) => atom.fixedWidth);
+  const leadingDomain = unionDomains(leadingParts.map((atom) => atom.leading.domain));
+  const trailingDomain = unionDomains(trailingParts.map((atom) => atom.trailing.domain));
   return {
     leading: {
-      domain: unionDomains(leadingParts.map((atom) => atom.leading.domain)),
+      domain: leadingDomain,
       bits: Math.max(0, ...leadingParts.map((atom) => atom.leading.bits)),
     },
     trailing: {
-      domain: unionDomains(trailingParts.map((atom) => atom.trailing.domain)),
+      domain: trailingDomain,
       bits: Math.max(0, ...trailingParts.map((atom) => atom.trailing.bits)),
     },
     union: unionDomains(atoms.map((atom) => atom.union)),
-    variabilityBits: atoms.reduce((total, atom) => total + atom.variabilityBits, 0),
+    leadingRunBits: connectedRunBits(atoms, leadingDomain, 'leading'),
+    trailingRunBits: connectedRunBits([...atoms].reverse(), trailingDomain, 'trailing'),
     fixedWidth: widths.includes(null)
       ? null
       : widths.reduce((total: number, width) => total + (width ?? 0), 0),
@@ -823,8 +869,10 @@ function summarizeAlternatives(branches: SequenceFacts[]): SequenceFacts {
       bits: alternationBits + Math.max(0, ...branches.map((branch) => branch.trailing.bits)),
     },
     union: unionDomains(branches.map((branch) => branch.union)),
-    variabilityBits:
-      alternationBits + Math.max(0, ...branches.map((branch) => branch.variabilityBits)),
+    leadingRunBits:
+      alternationBits + Math.max(0, ...branches.map((branch) => branch.leadingRunBits)),
+    trailingRunBits:
+      alternationBits + Math.max(0, ...branches.map((branch) => branch.trailingRunBits)),
     fixedWidth: alternationBits > 0 ? null : (widths[0] ?? null),
     nullable: branches.some((branch) => branch.nullable),
     chain: branches.some((branch) => branch.chain),

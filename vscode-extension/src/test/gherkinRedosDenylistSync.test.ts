@@ -290,6 +290,31 @@ describe('gherkin ReDoS guard: chains that hide from the scan (#9806)', () => {
     expect(isPotentiallyExpensiveRegex('^(?:x+a+)?(?:b+a+)?(?:c+a+)?$')).toBe(false);
   });
 
+  test('scores each nullable path on its own, not merged', () => {
+    // Present path: one seam between `(a+)` and the group's leading `a+`, then a
+    // required `b+` tail. Absent path: one seam between the two outer `a+`.
+    // Neither reaches two unbounded seams, and the pattern resolves in 2.7 ms —
+    // merging the two paths into one edge invents a chain on neither.
+    expect(isPotentiallyExpensiveRegex('^(a+)(?:a+b+)?(a+)c$')).toBe(false);
+  });
+
+  test('charges a repeated seam only the variability that reaches it', () => {
+    // The required `b+` seals the leading `a+` off from the trailing one, so a
+    // copy boundary sees one `a+` worth of freedom, not three atoms' worth.
+    // 0.1 ms.
+    expect(isPotentiallyExpensiveRegex('^((a+b+a+)){2}$')).toBe(false);
+    // Enough copies of that same seam do exceed the budget.
+    expect(isPotentiallyExpensiveRegex('^((a+b+a+)){8}$')).toBe(true);
+  });
+
+  test('takes the lesser of the two connected runs, since both sides must move', () => {
+    // The runs here are lopsided: nine bits reach the leading boundary through
+    // `a+`, but the trailing `a` is a single fixed character pinned by the `b`
+    // before it, so a copy boundary cannot slide at all. 0.1 ms. Charging the
+    // larger of the two runs would refuse it.
+    expect(isPotentiallyExpensiveRegex('^((a+ba)){5}$')).toBe(false);
+  });
+
   test('still charges optional groups whose real edges do overlap', () => {
     // The counterpart: same optional shape, but each edge really is `a`, and the
     // chain measures 690 ms at the input ceiling.
