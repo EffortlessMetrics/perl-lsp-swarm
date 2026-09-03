@@ -23,11 +23,30 @@ import { notProvenResource, observedResource, sortResourceMeasurements } from '.
  * which #7866 also names as a negative control ("unavailable metric is
  * serialized as zero"). Extension-host memory is shared across every installed
  * extension and is likewise not attributable here.
+ *
+ * What the registry *can* count exactly is its own membership, so that is the
+ * one observed row: `extension_owned_activation_resources`, the resources this
+ * attempt registered and has not confirmed released. It is deliberately not
+ * reported as `extension_owned_disposables` — the ledger holds `ownCleanup()`
+ * callbacks that are not disposables, and post-commit resources go to the host
+ * subscription array instead of the ledger, so a disposable figure derived from
+ * it would be wrong in both directions.
  */
 
 /** Why the ownership registry cannot break its entries down by resource kind. */
 export const RESOURCE_KIND_NOT_CLASSIFIED_REASON =
   'activation ownership registry records resource id, phase, and class but no resource kind';
+
+/**
+ * Why the registry cannot report a disposable count specifically.
+ *
+ * Two independent gaps, either of which alone makes an exact figure impossible:
+ * the ledger mixes `own()` disposables with `ownCleanup()` callbacks that are
+ * not disposables at all, and resources created after the attempt commits go
+ * straight to the host `context.subscriptions` and never enter the ledger.
+ */
+export const DISPOSABLE_COUNT_UNAVAILABLE_REASON =
+  'ownership registry mixes disposables with cleanup callbacks and excludes post-commit host-owned resources';
 
 /** Why extension-host memory cannot be attributed to this extension. */
 export const EXTENSION_HOST_MEMORY_SHARED_REASON =
@@ -51,8 +70,9 @@ export function extensionOwnedResourceMeasurements(
 ): ClientResourceMeasurement[] {
   return sortResourceMeasurements([
     census === null
-      ? notProvenResource('extension_owned_disposables', NO_OWNED_ACTIVATION_REASON)
-      : observedResource('extension_owned_disposables', census.live_total),
+      ? notProvenResource('extension_owned_activation_resources', NO_OWNED_ACTIVATION_REASON)
+      : observedResource('extension_owned_activation_resources', census.live_total),
+    notProvenResource('extension_owned_disposables', DISPOSABLE_COUNT_UNAVAILABLE_REASON),
     notProvenResource('extension_owned_timers', RESOURCE_KIND_NOT_CLASSIFIED_REASON),
     notProvenResource('extension_owned_event_listeners', RESOURCE_KIND_NOT_CLASSIFIED_REASON),
     notProvenResource('extension_host_rss_bytes', EXTENSION_HOST_MEMORY_SHARED_REASON),

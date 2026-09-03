@@ -110,6 +110,12 @@ export interface ActivationCleanupReceipt {
 
 interface OwnedActivationResource extends ActivationResourceSpec {
   cleaned: boolean;
+  /**
+   * Set when this resource's cleanup threw. The attempt still marks such a
+   * resource `cleaned` so it is never retried, but the throw means release was
+   * never confirmed — so for census purposes it stays owned.
+   */
+  releaseFailed: boolean;
 }
 
 function boundedErrorReason(error: unknown): string {
@@ -128,7 +134,11 @@ function censusOf(resources: readonly OwnedActivationResource[]): ActivationReso
   const liveByClass = emptyClassCounts();
   let liveTotal = 0;
   for (const resource of resources) {
-    if (resource.cleaned) {
+    // A resource is owned until its release is *confirmed*. A cleanup that
+    // threw is marked cleaned so the attempt never retries it, but the throw
+    // leaves the resource possibly still held — counting it as released would
+    // let the very case most likely to be a leak report a clean baseline.
+    if (resource.cleaned && !resource.releaseFailed) {
       continue;
     }
     liveByClass[resource.resource_class] += 1;
@@ -169,6 +179,7 @@ async function cleanResources(
       cleanedResources.push(resource.id);
     } catch (error: unknown) {
       resource.cleaned = true;
+      resource.releaseFailed = true;
       cleanupFailures.push({
         resource_id: resource.id,
         phase: resource.phase,
@@ -208,7 +219,7 @@ export class ActivationTransaction {
     if (this.resources.some((resource) => resource.id === spec.id)) {
       throw new Error(`duplicate activation resource id: ${spec.id}`);
     }
-    this.resources.push({ ...spec, cleaned: false });
+    this.resources.push({ ...spec, cleaned: false, releaseFailed: false });
   }
 
   public resourceIds(): string[] {
@@ -273,12 +284,11 @@ export class CommittedActivation {
   /**
    * Ownership-aware count of the resources the committed runtime still holds.
    *
-   * Shares the attempt's resource ledger, so a resource cleaned during
+   * Shares the attempt's resource ledger, so a resource released during
    * deactivation leaves the census here and in the originating transaction
-   * together. A resource whose cleanup threw is marked cleaned like any other —
-   * that failure is reported through {@link ActivationCleanupReceipt.cleanup_failures},
-   * not by inflating the census — while a resource deliberately retained by a
-   * rollback (`retain_support_surfaces`) is never cleaned and stays counted.
+   * together. A resource whose cleanup threw was never confirmed released and
+   * stays counted, as does one deliberately retained by a rollback
+   * (`retain_support_surfaces`).
    */
   public resourceCensus(): ActivationResourceCensus {
     return censusOf(this.resources);

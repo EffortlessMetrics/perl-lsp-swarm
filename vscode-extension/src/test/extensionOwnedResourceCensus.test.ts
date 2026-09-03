@@ -11,6 +11,7 @@ import {
   resourceReturnedToBaseline,
 } from '../clientMeasurement';
 import {
+  DISPOSABLE_COUNT_UNAVAILABLE_REASON,
   EXTENSION_HOST_MEMORY_SHARED_REASON,
   NO_OWNED_ACTIVATION_REASON,
   RESOURCE_KIND_NOT_CLASSIFIED_REASON,
@@ -122,7 +123,7 @@ describe('activation resource census', () => {
     expect(census.live_by_class.mandatory_for_activation).toBe(0);
   });
 
-  test('a cleanup that throws is not inflated into a retained resource', async () => {
+  test('a cleanup that throws leaves the resource counted as still owned', async () => {
     const transaction = new ActivationTransaction('attempt-census-4');
     transaction.registerResource({
       id: 'faulty',
@@ -132,12 +133,52 @@ describe('activation resource census', () => {
         throw new Error('cleanup exploded');
       },
     });
+    transaction.registerResource({
+      id: 'healthy',
+      phase: 'commands',
+      resource_class: 'mandatory_for_activation',
+      cleanup: noop,
+    });
 
     const receipt = await transaction.rollback();
     expect(receipt.cleanup_failures).toHaveLength(1);
-    // The failure is reported through the receipt, not by leaving the resource
-    // counted as still owned.
-    expect(transaction.resourceCensus().live_total).toBe(0);
+    // A throw means release was never confirmed. Counting it as released would
+    // let the case most likely to BE a leak report a clean baseline, so the
+    // faulty resource stays owned while the healthy one drops out.
+    const census = transaction.resourceCensus();
+    expect(census.live_total).toBe(1);
+    expect(census.live_by_class.mandatory_for_activation).toBe(1);
+  });
+
+  test('a failed release keeps the count off zero after deactivation', async () => {
+    const transaction = new ActivationTransaction('attempt-census-5');
+    transaction.registerResource({
+      id: 'faulty',
+      phase: 'commands',
+      resource_class: 'mandatory_for_activation',
+      cleanup: () => {
+        throw new Error('dispose exploded');
+      },
+    });
+    const before = measurement(
+      extensionOwnedResourceMeasurements(transaction.resourceCensus()),
+      'extension_owned_activation_resources',
+    );
+
+    const runtime = transaction.commit();
+    await runtime.deactivate();
+
+    const after = measurement(
+      extensionOwnedResourceMeasurements(runtime.resourceCensus()),
+      'extension_owned_activation_resources',
+    );
+    // A confirmed release would have taken the count to 0. It stays at 1, so
+    // the unreleased resource is still visible after shutdown. The <= oracle
+    // alone cannot express this (1 <= 1 reads as "returned"), which is why the
+    // count itself, not just the oracle, is asserted.
+    expect(before.value).toBe(1);
+    expect(after.value).toBe(1);
+    expect(resourceReturnedToBaseline(before, after)).toBe(true);
   });
 });
 
@@ -152,10 +193,10 @@ describe('resource measurement builders', () => {
   });
 
   test('reject a negative or non-finite observed value', () => {
-    expect(() => observedResource('extension_owned_disposables', -1)).toThrow(
+    expect(() => observedResource('extension_owned_activation_resources', -1)).toThrow(
       /finite non-negative/,
     );
-    expect(() => observedResource('extension_owned_disposables', Number.NaN)).toThrow(
+    expect(() => observedResource('extension_owned_activation_resources', Number.NaN)).toThrow(
       /finite non-negative/,
     );
   });
@@ -166,7 +207,7 @@ describe('resource measurement builders', () => {
 });
 
 describe('extension-owned resource measurements', () => {
-  test('reports the live owned count as the observed disposables counter', () => {
+  test('reports the live owned count as the observed activation-resource counter', () => {
     const census: ActivationResourceCensus = {
       live_total: 7,
       live_by_class: {
@@ -178,12 +219,32 @@ describe('extension-owned resource measurements', () => {
     };
 
     const measurements = extensionOwnedResourceMeasurements(census);
-    expect(measurement(measurements, 'extension_owned_disposables')).toEqual({
-      id: 'extension_owned_disposables',
+    expect(measurement(measurements, 'extension_owned_activation_resources')).toEqual({
+      id: 'extension_owned_activation_resources',
       availability: 'observed',
       value: 7,
       reason: null,
     });
+  });
+
+  test('does not report a disposable count the registry cannot produce', () => {
+    const row = measurement(
+      extensionOwnedResourceMeasurements({
+        live_total: 4,
+        live_by_class: {
+          mandatory_for_activation: 4,
+          optional_degradable: 0,
+          lazy_user_triggered: 0,
+          support_surface_allowed_after_failure: 0,
+        },
+      }),
+      'extension_owned_disposables',
+    );
+    // The ledger mixes non-disposable cleanup callbacks in and omits
+    // post-commit host-owned resources, so 4 is not a disposable count.
+    expect(row.availability).toBe('not_proven');
+    expect(row.value).toBeNull();
+    expect(row.reason).toBe(DISPOSABLE_COUNT_UNAVAILABLE_REASON);
   });
 
   test('never serializes an unclassifiable counter as zero', () => {
@@ -223,7 +284,7 @@ describe('extension-owned resource measurements', () => {
   test('an unobservable census is distinct from zero owned resources', () => {
     const absent = measurement(
       extensionOwnedResourceMeasurements(null),
-      'extension_owned_disposables',
+      'extension_owned_activation_resources',
     );
     expect(absent.availability).toBe('not_proven');
     expect(absent.value).toBeNull();
@@ -239,7 +300,7 @@ describe('extension-owned resource measurements', () => {
           support_surface_allowed_after_failure: 0,
         },
       }),
-      'extension_owned_disposables',
+      'extension_owned_activation_resources',
     );
     expect(empty.availability).toBe('observed');
     expect(empty.value).toBe(0);
@@ -276,7 +337,7 @@ describe('extension-owned resource measurements', () => {
       }
       return measurement(
         extensionOwnedResourceMeasurements(next.resourceCensus()),
-        'extension_owned_disposables',
+        'extension_owned_activation_resources',
       );
     }
 
@@ -289,7 +350,7 @@ describe('extension-owned resource measurements', () => {
     });
     const before = measurement(
       extensionOwnedResourceMeasurements(firstActivation.resourceCensus()),
-      'extension_owned_disposables',
+      'extension_owned_activation_resources',
     );
 
     expect(resourceReturnedToBaseline(before, await ownedCountAfterCycle(false))).toBe(true);
@@ -324,6 +385,7 @@ describe('extension-owned resource measurements', () => {
     const ids = recorder.snapshot().resources.map((row) => row.id);
     expect(ids).toEqual([
       'extension_host_rss_bytes',
+      'extension_owned_activation_resources',
       'extension_owned_disposables',
       'extension_owned_event_listeners',
       'extension_owned_timers',

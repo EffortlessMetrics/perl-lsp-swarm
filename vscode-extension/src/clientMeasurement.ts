@@ -19,12 +19,14 @@ export type ClientResourceId =
   | 'extension_owned_timers'
   | 'extension_owned_event_listeners'
   | 'extension_owned_disposables'
+  | 'extension_owned_activation_resources'
   | 'extension_host_rss_bytes';
 
 const CLIENT_RESOURCE_IDS: ReadonlySet<ClientResourceId> = new Set([
   'extension_owned_timers',
   'extension_owned_event_listeners',
   'extension_owned_disposables',
+  'extension_owned_activation_resources',
   'extension_host_rss_bytes',
 ]);
 
