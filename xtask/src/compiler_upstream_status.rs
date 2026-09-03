@@ -467,19 +467,19 @@ fn leak_violation(field: &str, value: &str) -> Option<String> {
         return Some(format!("field `{field}` leaks host/private/path detail"));
     }
     let bytes = value.as_bytes();
-    if bytes
-        .windows(3)
-        .any(|w| w[0].is_ascii_alphabetic() && w[1] == b':' && (w[2] == b'\\' || w[2] == b'/'))
-    {
+    if bytes.windows(3).enumerate().any(|(index, w)| {
+        w[0].is_ascii_alphabetic()
+            && w[1] == b':'
+            && (w[2] == b'\\' || w[2] == b'/')
+            && (index == 0 || !bytes[index - 1].is_ascii_alphanumeric())
+    }) {
         return Some(format!("field `{field}` contains an absolute host path"));
     }
     None
 }
 
 fn markdown_violation(field: &str, value: &str) -> Option<String> {
-    if value.chars().any(char::is_control)
-        || value.chars().any(|character| matches!(character, '`' | '|' | '[' | ']' | '(' | ')'))
-    {
+    if value.chars().any(char::is_control) {
         Some(format!("field `{field}` contains Markdown control syntax"))
     } else {
         None
@@ -593,6 +593,10 @@ fn validate_witness(
         format!("row `{row_id}` witness identity has invalid charset"),
     );
     v.scan_text_value("witness.minimizes_case_path", &witness.minimizes_case_path);
+    v.reject_unless(
+        !witness.minimizes_case_path.starts_with('/'),
+        format!("row `{row_id}` witness.minimizes_case_path must not be an absolute POSIX path"),
+    );
     // Falsifier 2: a minimized witness never replaces the original case.
     if witness.minimizes_case_path == upstream.case_path {
         v.add(format!(
@@ -719,19 +723,18 @@ fn validate_row_against_series(
 ) -> Vec<String> {
     let mut v = Violations::new(&row.row_id);
 
-    v.reject_unless(
-        is_identifier_charset(&row.row_id)
-            && is_identifier_charset(&row.series_id)
-            && is_identifier_charset(&row.concept_family)
-            && is_identifier_charset(&row.concept_id)
-            && is_identifier_charset(&row.obligation_id)
-            && is_identifier_charset(&row.instrument_identity),
-        "row/series/family/concept/obligation/instrument ids have invalid charset".to_string(),
-    );
-    v.reject_unless(
-        is_identifier_charset(&row.oracle_subject) && is_identifier_charset(&row.compiler_subject),
-        "oracle/compsubject identities have invalid charset".to_string(),
-    );
+    for (field, value) in [
+        ("row_id", &row.row_id),
+        ("series_id", &row.series_id),
+        ("concept_family", &row.concept_family),
+        ("concept_id", &row.concept_id),
+        ("obligation_id", &row.obligation_id),
+        ("instrument_identity", &row.instrument_identity),
+        ("oracle_subject", &row.oracle_subject),
+        ("compiler_subject", &row.compiler_subject),
+    ] {
+        v.reject_unless(is_identifier_charset(value), format!("{field} has invalid charset"));
+    }
 
     validate_upstream_ref(&mut v, &row.upstream_case);
 
@@ -772,7 +775,6 @@ fn validate_row_against_series(
         TerminalState::AgreementCurrent => {
             match &row.witness {
                 Some(witness) => {
-                    validate_witness(&mut v, &row.row_id, &row.upstream_case, witness);
                     v.reject_unless(
                         witness.installation == WitnessInstallation::Installed,
                         "agreement_current requires an installed witness".to_string(),
@@ -809,8 +811,11 @@ fn validate_row_against_series(
         }
         TerminalState::UnsupportedOrExternalBoundary => {
             v.reject_unless(
-                matches!(row.support_boundary, SupportBoundary::ExternalBoundary),
-                "unsupported_or_external_boundary requires an external support boundary on this plane".to_string(),
+                matches!(
+                    row.support_boundary,
+                    SupportBoundary::Unsupported | SupportBoundary::ExternalBoundary
+                ),
+                "unsupported_or_external_boundary requires an unsupported or external support boundary on this plane".to_string(),
             );
         }
         TerminalState::PlatformOrConfigurationBound => {
@@ -847,16 +852,19 @@ fn validate_row_against_series(
         _ => {}
     }
 
-    let witness_plane_explains_absence = matches!(
+    let witness_absence_state = matches!(
         row.terminal_state,
         TerminalState::WitnessPending
             | TerminalState::NoCurrentSnapshot
             | TerminalState::NoCurrentCompilerObservation
             | TerminalState::ClassificationPending
     );
-    let witness_to_validate =
-        if witness_plane_explains_absence { None } else { row.witness.as_ref() };
-    if let Some(witness) = witness_to_validate {
+    if witness_absence_state {
+        v.reject_unless(
+            row.witness.is_none(),
+            format!("{} conflicts with a present witness record", row.terminal_state.as_str()),
+        );
+    } else if let Some(witness) = &row.witness {
         validate_witness(&mut v, &row.row_id, &row.upstream_case, witness);
     }
 
@@ -875,10 +883,7 @@ fn validate_manifest(v: &mut Violations, manifest: &StatusInputsManifest) {
             manifest.schema_version, INPUTS_SCHEMA_VERSION
         ),
     );
-    v.reject_unless(
-        is_identifier_charset(&manifest.status_id),
-        "manifest status_id has invalid charset".to_string(),
-    );
+    v.scan_identity("status_id", &manifest.status_id);
     v.scan_identity("compiler_candidate_identity", &manifest.compiler_candidate_identity);
     v.scan_identity("toolchain_build_identity", &manifest.toolchain_build_identity);
     v.scan_optional_identity(
@@ -925,6 +930,12 @@ pub fn validate_packet(packet: &ConformanceStatusPacket) -> Result<()> {
         global.push("[packet]: no-score statement was altered or removed".to_string());
     }
 
+    {
+        let mut v = Violations::new("packet");
+        v.scan_identity("status_id", &packet.status_id);
+        global.extend(v.out);
+    }
+
     let constants = packet.structural_constants.clone();
     if constants.support_authorized
         || constants.release_authorized
@@ -963,6 +974,7 @@ pub fn validate_packet(packet: &ConformanceStatusPacket) -> Result<()> {
     );
     let mut seen_series = BTreeSet::new();
     for series in &packet.subject_binding.maintained_series {
+        v.scan_identity("series.series_id", &series.series_id);
         if !seen_series.insert(series.series_id.as_str()) {
             v.add(format!("duplicate published series `{}`", series.series_id));
         }
@@ -1012,6 +1024,9 @@ pub fn validate_packet(packet: &ConformanceStatusPacket) -> Result<()> {
 
     let mut seen_counted_series = BTreeSet::new();
     for series in &packet.descriptive_counts.per_series {
+        let mut v = Violations::new("counts");
+        v.scan_identity("series_id", &series.series_id);
+        global.extend(v.out);
         if !seen_counted_series.insert(series.series_id.as_str()) {
             global.push(format!("[counts]: duplicate per-series count `{}`", series.series_id));
         }
@@ -1546,13 +1561,48 @@ fn diff_binding_field<T: PartialEq>(lines: &mut Vec<String>, name: &str, before:
 
 fn opt_line(label: &str, value: &Option<String>) -> String {
     match value {
-        Some(text) => format!("- {label}: `{text}`\n"),
+        Some(text) => format!("- {label}: `{}`\n", markdown_code(text)),
         None => format!("- {label}: absent\n"),
     }
 }
 
+fn markdown_code(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('`', "\\`")
+}
+
+fn markdown_text(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        if matches!(
+            character,
+            '\\' | '`'
+                | '*'
+                | '_'
+                | '{'
+                | '}'
+                | '['
+                | ']'
+                | '<'
+                | '>'
+                | '('
+                | ')'
+                | '#'
+                | '+'
+                | '-'
+                | '.'
+                | '!'
+                | '|'
+                | '~'
+        ) {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped
+}
+
 fn quote_text(value: &str) -> String {
-    format!("\"{}\"", value.replace('`', "\\`"))
+    format!("\"{}\"", markdown_text(value))
 }
 
 /// Renders the generated Markdown view. Consumes only the already-validated
@@ -1564,8 +1614,11 @@ pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
     let mut out = String::new();
     out.push_str("# Compiler upstream conformance status\n\n");
     out.push_str(&format!("- packet_schema: `{PACKET_SCHEMA_VERSION}`\n"));
-    out.push_str(&format!("- status_id: `{}`\n", packet.status_id));
-    out.push_str(&format!("- generator_identity: `{}`\n", packet.generator_identity));
+    out.push_str(&format!("- status_id: `{}`\n", markdown_code(&packet.status_id)));
+    out.push_str(&format!(
+        "- generator_identity: `{}`\n",
+        markdown_code(&packet.generator_identity)
+    ));
     out.push_str(&opt_line(
         "compiler_candidate_identity",
         &binding.compiler_candidate_identity.clone().into_option(),
@@ -1595,10 +1648,12 @@ pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
     // Progressive disclosure level 1: series and snapshots.
     out.push_str("## Maintained series and snapshots\n");
     for series in &binding.maintained_series {
-        out.push_str(&format!("\n### {}\n", series.series_id));
-        out.push_str(&format!("- role: `{}`\n", series.role));
+        out.push_str(&format!("\n### {}\n", markdown_text(&series.series_id)));
+        out.push_str(&format!("- role: `{}`\n", markdown_code(&series.role)));
         match &series.snapshot_identity {
-            Some(snapshot) => out.push_str(&format!("- snapshot_identity: `{snapshot}`\n")),
+            Some(snapshot) => {
+                out.push_str(&format!("- snapshot_identity: `{}`\n", markdown_code(snapshot)))
+            }
             None => out
                 .push_str("- snapshot_identity: absent (no accepted current upstream snapshot)\n"),
         }
@@ -1620,35 +1675,48 @@ pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
     let mut last_family_concept: Option<(&str, &str)> = None;
     for row in &packet.rows {
         if last_series != Some(row.series_id.as_str()) {
-            out.push_str(&format!("\n### {}\n", row.series_id));
+            out.push_str(&format!("\n### {}\n", markdown_text(&row.series_id)));
             last_series = Some(row.series_id.as_str());
             last_family_concept = None;
         }
         if last_family_concept != Some((row.concept_family.as_str(), row.concept_id.as_str())) {
-            out.push_str(&format!("\n#### {} / {}\n", row.concept_family, row.concept_id));
+            out.push_str(&format!(
+                "\n#### {} / {}\n",
+                markdown_text(&row.concept_family),
+                markdown_text(&row.concept_id)
+            ));
             last_family_concept = Some((row.concept_family.as_str(), row.concept_id.as_str()));
         }
         out.push('\n');
-        out.push_str(&format!("##### {} (`{}`)\n\n", row.row_id, row.obligation_id));
-        out.push_str(&format!("current result: `{}`\n\n", row.terminal_state.as_str()));
+        out.push_str(&format!(
+            "##### {} (`{}`)\n\n",
+            markdown_text(&row.row_id),
+            markdown_code(&row.obligation_id)
+        ));
+        out.push_str(&format!(
+            "current result: `{}`\n\n",
+            markdown_code(row.terminal_state.as_str())
+        ));
         out.push_str(&format!("- selected observation boundary: {}\n", row.boundary.as_str()));
         out.push_str(&format!(
             "- oracle subject: `{}`\n- compiler subject: `{}`\n- instrument identity: `{}`\n",
-            row.oracle_subject, row.compiler_subject, row.instrument_identity
+            markdown_code(&row.oracle_subject),
+            markdown_code(&row.compiler_subject),
+            markdown_code(&row.instrument_identity)
         ));
         out.push_str(&format!(
             "- upstream original (retained independent of witnesses): snapshot_ref=`{}`, case_path=`{}`, case_name=`{}`\n",
-            row.upstream_case.snapshot_ref,
-            row.upstream_case.case_path,
-            row.upstream_case.case_name
+            markdown_code(&row.upstream_case.snapshot_ref),
+            markdown_code(&row.upstream_case.case_path),
+            markdown_code(&row.upstream_case.case_name)
         ));
         match &row.witness {
             Some(witness) => out.push_str(&format!(
                 "- minimized witness (does not replace the original): kind=`{}`, identity=`{}`, installation={}, minimizes_case_path=`{}`\n",
                 witness_kind_str(witness.kind),
-                witness.identity,
+                markdown_code(&witness.identity),
                 witness.installation.as_str(),
-                witness.minimizes_case_path
+                markdown_code(&witness.minimizes_case_path)
             )),
             None => out.push_str(
                 "- witness: none (the current result records why nothing is witnessed here)\n",
@@ -1658,13 +1726,15 @@ pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
             "- support boundary: {}\n",
             support_boundary_str(row.support_boundary)
         ));
-        out.push_str(&format!("- owner: {}\n", row.owner.canonical_owner));
+        out.push_str(&format!("- owner: {}\n", markdown_text(&row.owner.canonical_owner)));
         match &row.owner.first_blocker {
-            Some(blocker) => out.push_str(&format!("- first blocker: {}\n", blocker)),
+            Some(blocker) => {
+                out.push_str(&format!("- first blocker: {}\n", markdown_text(blocker)))
+            }
             None => out.push_str("- first blocker: absent\n"),
         }
         match &row.owner.wake_event {
-            Some(wake) => out.push_str(&format!("- wake event: {}\n", wake)),
+            Some(wake) => out.push_str(&format!("- wake event: {}\n", markdown_text(wake))),
             None => out.push_str("- wake event: absent\n"),
         }
         match &row.limitation {
@@ -1718,11 +1788,11 @@ pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
     for series in &packet.descriptive_counts.per_series {
         let mut states = Vec::new();
         for (state, count) in &series.by_terminal_state {
-            states.push(format!("{}={count}", state.as_str()));
+            states.push(format!("{}={count}", markdown_code(state.as_str())));
         }
         out.push_str(&format!(
             "| {} | {} | {} |\n",
-            series.series_id,
+            markdown_text(&series.series_id),
             series.total_rows,
             states.join("; ")
         ));
@@ -1736,23 +1806,30 @@ pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
     let mut recurrence = Vec::new();
     for row in &packet.rows {
         match row.history.upstream_change {
-            UpstreamChange::Added => added.push(row.row_id.as_str()),
+            UpstreamChange::Added => added.push(markdown_code(&row.row_id)),
             UpstreamChange::Removed => {
                 if let Some(successor) = &row.history.successor_row_id {
                     removed.push(format!(
                         "`{}` (obligation continues via successor `{}`)",
-                        row.row_id, successor
+                        markdown_code(&row.row_id),
+                        markdown_code(successor)
                     ));
                 } else if row.history.retained_obligation_after_removal {
-                    removed
-                        .push(format!("`{}` (semantic obligation retained locally)", row.row_id));
+                    removed.push(format!(
+                        "`{}` (semantic obligation retained locally)",
+                        markdown_code(&row.row_id)
+                    ));
                 }
             }
-            UpstreamChange::Changed => changed.push(row.row_id.as_str()),
+            UpstreamChange::Changed => changed.push(markdown_code(&row.row_id)),
             UpstreamChange::None => {}
         }
         if let Some(recurrence_of) = &row.history.recurrence_of_row_id {
-            recurrence.push(format!("`{}` recurs `{recurrence_of}`", row.row_id));
+            recurrence.push(format!(
+                "`{}` recurs `{}`",
+                markdown_code(&row.row_id),
+                markdown_code(recurrence_of)
+            ));
         }
     }
     out.push_str(&format!("- added obligations: {}\n", join_or_none(&added)));
@@ -1765,7 +1842,7 @@ pub fn render_markdown(packet: &ConformanceStatusPacket) -> Result<String> {
 
 fn format_opt_id(value: &Option<String>) -> String {
     match value {
-        Some(id) => format!("`{id}`"),
+        Some(id) => format!("`{}`", markdown_code(id)),
         None => "absent".to_string(),
     }
 }

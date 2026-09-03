@@ -601,7 +601,8 @@ fn compiler_upstream_conformance_status_rendering_rejects_markdown_injection() -
 
     let mut packet = project_from(dir.path())?;
     packet.rows[0].owner.canonical_owner = "[forged](https://evil.example)".to_string();
-    assert!(render_markdown(&packet).is_err(), "Markdown link injection was rendered");
+    let rendered = render_markdown(&packet)?;
+    assert!(rendered.contains(r"\[forged\]\(https://evil\.example\)"));
 
     let mut packet = project_from(dir.path())?;
     packet.rows[0].upstream_case.case_name = "safe\n- forged status: pass".to_string();
@@ -609,7 +610,57 @@ fn compiler_upstream_conformance_status_rendering_rejects_markdown_injection() -
 
     let packet = project_from(dir.path())?;
     let rendered = render_markdown(&packet)?;
-    assert!(rendered.contains("- owner: #12532"));
+    assert!(rendered.contains(r"- owner: \#12532"));
+    Ok(())
+}
+
+#[test]
+fn compiler_upstream_conformance_status_rejects_absolute_witness_and_absence_witnesses()
+-> TestResult {
+    let dir = TempDir::new()?;
+    let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+    let mut row = agreement_row("op-absolute-witness", "perl-5.38");
+    row.witness
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("fixture witness must be present"))?
+        .minimizes_case_path = "/tmp/private/minimized.t".to_string();
+    write_inputs(dir.path(), &manifest, &[row])?;
+    let message = error_message(project_from(dir.path()));
+    assert!(message.contains("absolute POSIX path"), "{message}");
+
+    let dir = TempDir::new()?;
+    let manifest = base_manifest(vec![selector("perl-5.38", None)]);
+    let mut row = agreement_row("op-absence-witness", "perl-5.38");
+    row.terminal_state = TerminalState::NoCurrentSnapshot;
+    write_inputs(dir.path(), &manifest, &[row])?;
+    let message = error_message(project_from(dir.path()));
+    assert!(message.contains("no_current_snapshot conflicts with a present witness"), "{message}");
+    Ok(())
+}
+
+#[test]
+fn compiler_upstream_conformance_status_accepts_unsupported_boundary_and_validates_rendered_ids()
+-> TestResult {
+    let dir = TempDir::new()?;
+    let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+    let mut row = failing_row("op-unsupported", "perl-5.38");
+    row.terminal_state = TerminalState::UnsupportedOrExternalBoundary;
+    row.support_boundary = SupportBoundary::Unsupported;
+    write_inputs(dir.path(), &manifest, &[row])?;
+    project_from(dir.path())?;
+
+    let mut packet = project_from(dir.path())?;
+    packet.status_id = "/private/status".to_string();
+    let message = error_message(validate_packet(&packet));
+    assert!(message.contains("status_id") && message.contains("absolute POSIX path"), "{message}");
+
+    let mut packet = project_from(dir.path())?;
+    packet.subject_binding.maintained_series[0].series_id = "series[forged]".to_string();
+    let message = error_message(validate_packet(&packet));
+    assert!(
+        message.contains("series.series_id") && message.contains("invalid identity charset"),
+        "{message}"
+    );
     Ok(())
 }
 
