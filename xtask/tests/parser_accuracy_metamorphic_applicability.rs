@@ -8,14 +8,21 @@ use std::error::Error;
 
 use perl_lsp_rs_core::hashing::sha256_hex;
 
-mod metrics {
-    #[path = "../../src/tasks/metrics/parser_accuracy_metamorphic_registry.rs"]
-    pub mod parser_accuracy_metamorphic_registry;
-    #[path = "../../src/tasks/metrics/parser_accuracy_metamorphic_transform.rs"]
-    pub mod parser_accuracy_metamorphic_transform;
-}
+// #[path] modules must resolve relative to a directory that a pristine
+// checkout materializes: an inline `mod metrics { .. }` wrapper anchors
+// resolution at `tests/metrics/`, which no tracked file creates, so Linux
+// builds fail with ENOENT while Windows lexically normalizes the `..`
+// segments and hides the defect. Keep these declarations at the test-crate
+// root, matching `parser_accuracy_metamorphic_transform.rs`.
+#[allow(dead_code)]
+#[path = "../src/tasks/metrics/parser_accuracy_metamorphic_registry.rs"]
+mod parser_accuracy_metamorphic_registry;
 
-use metrics::parser_accuracy_metamorphic_registry::{
+#[allow(dead_code)]
+#[path = "../src/tasks/metrics/parser_accuracy_metamorphic_transform.rs"]
+mod parser_accuracy_metamorphic_transform;
+
+use parser_accuracy_metamorphic_registry::{
     Applicability, CaseDeclaration, CaseOutcome, MetamorphicSafeRegistry, PROFILE_TRAILING_HW,
     PointDecision, PointRequest, REGISTRY_SCHEMA_VERSION, UnregisteredReason, authored_registry,
     authored_registry_inconsistencies,
