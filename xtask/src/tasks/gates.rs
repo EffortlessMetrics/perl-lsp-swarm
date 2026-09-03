@@ -2893,8 +2893,8 @@ fn parse_test_metrics(output: &str) -> Option<GateMetrics> {
 /// footer; either marker alone proves the binary was reached.
 ///
 /// The receipt path streams the full log through [`log_reaches_test_execution`];
-/// this string variant is exercised directly only by this module's tests.
-#[cfg(test)]
+/// this string variant is also retained for the bounded in-memory callers and
+/// unit tests.
 fn parse_test_execution_reached(command: &str, output: &str) -> Option<bool> {
     if !is_cargo_test_command(command) {
         return None;
