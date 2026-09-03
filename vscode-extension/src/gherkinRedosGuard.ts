@@ -672,15 +672,22 @@ function readChainAtom(
     // A repeating group can present any of its characters at either boundary, so
     // the quantifier widens both edges to the group's whole domain and adds its
     // own freedom on top of whatever the group already offers there.
-    const repeated = quantifier.bits > 0;
+    // Widening a boundary to the group's whole domain is only justified when the
+    // group can appear more than once: the second copy's first character then
+    // really can sit against the first copy's last. An optional group appears at
+    // most once, so its real edges still apply — widening them invents overlaps
+    // that are not reachable, and `^(?:x+a+)?(?:b+a+)?(?:c+a+)?$` (0.1 ms, every
+    // real boundary disjoint) would be refused for a seam it cannot form.
+    // Optionality still contributes its own bit either way.
+    const repeats = quantifier.maxRepeat === null || quantifier.maxRepeat > 1;
     return {
       end: quantifier.end,
-      leading: repeated
+      leading: repeats
         ? { domain: group.union, bits: quantifier.bits + group.leading.bits }
-        : group.leading,
-      trailing: repeated
+        : { domain: group.leading.domain, bits: quantifier.bits + group.leading.bits },
+      trailing: repeats
         ? { domain: group.union, bits: quantifier.bits + group.trailing.bits }
-        : group.trailing,
+        : { domain: group.trailing.domain, bits: quantifier.bits + group.trailing.bits },
       union: group.union,
       fixedWidth:
         quantifier.repeat === null || group.fixedWidth === null

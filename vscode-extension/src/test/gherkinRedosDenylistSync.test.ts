@@ -279,6 +279,22 @@ describe('gherkin ReDoS guard: chains that hide from the scan (#9806)', () => {
   ])('keeps %s available', (_name, source) => {
     expect(isPotentiallyExpensiveRegex(source)).toBe(false);
   });
+
+  // A boundary is widened to the group's whole domain only where the group can
+  // appear more than once, because that is the only way a later copy's first
+  // character can sit against an earlier copy's last. An optional group appears
+  // at most once, so widening it invents an overlap that cannot be reached.
+  test('does not invent a seam between optional groups with disjoint edges', () => {
+    // Every real boundary here is disjoint — `a+` then `b+`, `a+` then `c+` —
+    // and the pattern resolves in 0.1 ms.
+    expect(isPotentiallyExpensiveRegex('^(?:x+a+)?(?:b+a+)?(?:c+a+)?$')).toBe(false);
+  });
+
+  test('still charges optional groups whose real edges do overlap', () => {
+    // The counterpart: same optional shape, but each edge really is `a`, and the
+    // chain measures 690 ms at the input ceiling.
+    expect(isPotentiallyExpensiveRegex('^(?:a+)?(?:a+)?(?:a+)?(?:a+)?b$')).toBe(true);
+  });
 });
 
 // `\b` and `\B` are zero-width, so they separate nothing. `readRegexAtom` hands

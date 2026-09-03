@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "owner_issue": 9806,
-  "reason": "Closes the Gherkin ReDoS guard gap in #9806. The candidate adds the group-aware variable-width chain scan and its two memos to src/gherkinRedosGuard.ts, growing the bundled out/extension.js from 1615152 to 1625441 bytes. The measured 29-file package remains size-only: no file additions, removals, or permission loosening.",
+  "reason": "Closes the Gherkin ReDoS guard gap in #9806. The candidate adds the group-aware variable-width chain scan and its two memos to src/gherkinRedosGuard.ts, growing the bundled out/extension.js from 1615152 to 1625625 bytes. The measured 29-file package remains size-only: no file additions, removals, or permission loosening.",
   "base_baseline_file_sha256": "c10baf7bd1d62390aeacebfb54510dddee90e4a6ddc1f538533b3b834537c56a",
-  "candidate_baseline_file_sha256": "0c63bf4dab64719eb5c4c2544282e538748dea86a705e7812da4c80ac8747c08",
+  "candidate_baseline_file_sha256": "3071f486f31ce03941ef86fe25602d641adc51723196eae9abe13d5d59616e29",
   "base_inventory_sha256": "4ff8fc287eaa5524348eb4afa96f6a8923ba1c9cd183ff5d3094f1b962cac6a3",
-  "candidate_inventory_sha256": "3a634147fbb0cc2072af56bb554d03ff262cb9defb7117edd001fe8d28a665e7"
+  "candidate_inventory_sha256": "186033c4b657e0cde394a6734d4da4b55e9999606f0ddff901d16a5bd3f618f0"
 }
