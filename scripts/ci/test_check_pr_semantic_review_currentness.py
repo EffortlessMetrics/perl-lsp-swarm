@@ -601,7 +601,12 @@ class SemanticReviewCurrentnessTests(unittest.TestCase):
 
         # Through the CLI that failure must land as NOT_PROVEN, never as a
         # carried-forward review. This is the user-visible contract.
-        fixture = Path(self.enterContext(tempfile.TemporaryDirectory())) / "f.json"
+        # TemporaryDirectory + addCleanup, matching this file's other tests:
+        # TestCase.enterContext is 3.11+, and the focused command in this repo's
+        # docs is run by hand on whatever interpreter the reviewer has.
+        fixture_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(fixture_dir.cleanup)
+        fixture = Path(fixture_dir.name) / "f.json"
         fixture.write_text(
             json.dumps({"head": current, "reviews": [review_row._asdict()]}),
             encoding="utf-8",
