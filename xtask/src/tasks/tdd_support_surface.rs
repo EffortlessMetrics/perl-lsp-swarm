@@ -22,6 +22,22 @@
 //! that invariant instead of re-implementing rustc's reachability rules, and the
 //! lint is the negative control that keeps the assumption true.
 //!
+//! Granularity: one row governs one named public export — an item, a module, a
+//! re-export, or a Cargo feature (explicit or implicit-from-an-optional-dep).
+//! Associated-item signatures — a type's method signatures, its public field
+//! types, its trait impls — are governed only through the owning type's row, not
+//! individually. That is the right granularity for the disposition train, which
+//! moves, retires, or deletes whole items rather than methods; the umbrella
+//! #8144 tracks method- and field-level governance as a later step, and this
+//! module's `api_kind` vocabulary can carry it when that lands.
+//!
+//! Consumers are attributed at crate-root entry-segment granularity: the scanner
+//! records the first path segment a consumer names after `perl_tdd_support::`,
+//! so an item inside a module is attributed to the crates that reach that
+//! module, not necessarily that exact item. This is what a lexical scan can
+//! honestly prove without a full type resolver, and it is enough for the
+//! `must*` migration #8605 acts on, where the entry segment is the symbol.
+//!
 //! This checker classifies. It deliberately does not decide: rows whose fate a
 //! later slot owns carry that slot's issue number, not a disposition invented
 //! here.
@@ -152,9 +168,47 @@ fn needs_space(out: &str, next: char) -> bool {
     joinable(prev) && joinable(next)
 }
 
-/// True when the item is compiled only under `cfg(test)`.
+/// True when the item is compiled out of every non-test build.
+///
+/// Multiple `#[cfg(..)]` attributes on one item are ANDed, so the item is
+/// test-only if any single attribute forces `test`. Within one predicate the
+/// forcing rule is: `test` forces test; `all(..)` forces test if any member
+/// does (every member must hold); `any(..)` forces test only if every member
+/// does (one non-test member would satisfy it without test); `not(..)` and
+/// everything else do not force test. This is why a naive
+/// `contains("test")` is wrong — it would wrongly treat
+/// `any(test, feature = "x")` (reachable via the feature alone) as test-only.
 fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
-    cfg_of(attrs).split(" + ").any(|part| part == "test")
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("cfg")
+            && attr
+                .parse_args::<syn::Meta>()
+                .map(|meta| cfg_meta_forces_test(&meta))
+                .unwrap_or(false)
+    })
+}
+
+/// Whether a single `cfg` predicate can only be true when `test` is true.
+fn cfg_meta_forces_test(meta: &syn::Meta) -> bool {
+    match meta {
+        syn::Meta::Path(path) => path.is_ident("test"),
+        syn::Meta::List(list) => {
+            let nested = list.parse_args_with(
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            );
+            let Ok(items) = nested else { return false };
+            if list.path.is_ident("all") {
+                items.iter().any(cfg_meta_forces_test)
+            } else if list.path.is_ident("any") {
+                !items.is_empty() && items.iter().all(cfg_meta_forces_test)
+            } else {
+                // `not(..)` requires test to be false, not true; unknown
+                // predicates are treated as not forcing test.
+                false
+            }
+        }
+        syn::Meta::NameValue(_) => false,
+    }
 }
 
 fn is_pub(vis: &Visibility) -> bool {
@@ -376,20 +430,77 @@ fn origin_of(prefix: &[String], name: &str) -> String {
     parts.join("::")
 }
 
-/// Read declared Cargo features of the governed crate.
+/// Read the Cargo features of the governed crate, explicit and implicit.
+///
+/// A downstream crate can activate `--features <dep>` for any `optional = true`
+/// dependency, so those implicit features are public surface too — Cargo
+/// synthesizes a feature named after each optional dependency unless some
+/// `[features]` value already references it through the `dep:<name>` form.
+/// Parsing only the `[features]` table would miss them and under-count the
+/// surface (this crate's `lsp-types` and `url` optional deps each create one).
 fn discover_features(root: &Path) -> Result<Vec<Discovered>> {
     let manifest_path = root.join(SUBJECT_CRATE_DIR).join("Cargo.toml");
     let text = fs::read_to_string(&manifest_path)
         .wrap_err_with(|| format!("failed to read {}", manifest_path.display()))?;
     let manifest: toml::Value = toml::from_str(&text)
         .wrap_err_with(|| format!("failed to parse {}", manifest_path.display()))?;
-    let mut out = Vec::new();
+
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    let mut suppressed: BTreeSet<String> = BTreeSet::new();
+
     if let Some(features) = manifest.get("features").and_then(toml::Value::as_table) {
-        for name in features.keys() {
-            out.push(Discovered::new("feature", name.clone(), String::new(), String::new()));
+        for (name, value) in features {
+            names.insert(name.clone());
+            if let Some(list) = value.as_array() {
+                for item in list {
+                    if let Some(reference) = item.as_str() {
+                        // `dep:foo` in a feature value suppresses the implicit
+                        // `foo` feature; a bare `foo` reference does not.
+                        if let Some(dep) = reference.strip_prefix("dep:") {
+                            suppressed.insert(dep.to_string());
+                        }
+                    }
+                }
+            }
         }
     }
-    Ok(out)
+
+    for dep in optional_dependencies(&manifest) {
+        if !suppressed.contains(&dep) {
+            names.insert(dep);
+        }
+    }
+
+    Ok(names
+        .into_iter()
+        .map(|name| Discovered::new("feature", name, String::new(), String::new()))
+        .collect())
+}
+
+/// Names of every `optional = true` dependency, across the normal and
+/// target-specific dependency tables (dev/build deps do not create features).
+fn optional_dependencies(manifest: &toml::Value) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    collect_optional(manifest.get("dependencies"), &mut out);
+    if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
+        for spec in targets.values() {
+            collect_optional(spec.get("dependencies"), &mut out);
+        }
+    }
+    out
+}
+
+fn collect_optional(table: Option<&toml::Value>, out: &mut BTreeSet<String>) {
+    let Some(table) = table.and_then(toml::Value::as_table) else { return };
+    for (name, spec) in table {
+        let optional =
+            spec.as_table().and_then(|t| t.get("optional")).and_then(toml::Value::as_bool);
+        if optional == Some(true) {
+            // A renamed optional dep still creates the feature under its table
+            // key, which is what `--features <key>` and downstream activation use.
+            out.insert(name.clone());
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -612,6 +723,131 @@ pub(crate) struct ConsumerEdge {
 /// the migration target #8605 acts on.
 const MUST_FAMILY: &[&str] =
     &["must", "must_err", "must_err_with", "must_some", "must_some_with", "must_with"];
+
+/// The `tdd` submodules that are also re-exported at the crate root, so an item
+/// under `tdd::<m>` is reachable both as `perl_tdd_support::tdd::<m>::X` and as
+/// `perl_tdd_support::<m>::X`.
+const TDD_REEXPORTED_SUBMODULES: &[&str] =
+    &["tdd_basic", "tdd_workflow", "test_generator", "test_runner"];
+
+/// Invert the consumer edges into `first-path-segment -> consuming crates`.
+///
+/// The edge scanner records the first path segment a consumer names after
+/// `perl_tdd_support::`, which is the granularity at which consumption can be
+/// attributed without a full type resolver: `must` for `perl_tdd_support::must`,
+/// `governance` for `perl_tdd_support::governance::IgnoredTestGuardian`.
+pub(crate) fn reference_index(edges: &[ConsumerEdge]) -> BTreeMap<String, BTreeSet<String>> {
+    let mut index: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for edge in edges {
+        for name in &edge.referenced {
+            index.entry(name.clone()).or_default().insert(edge.crate_name.clone());
+        }
+    }
+    index
+}
+
+/// The crate-root entry segments through which an item's row path is reachable.
+///
+/// One item can have more than one, because the crate re-exports the `tdd`
+/// submodules at the root: an item under `tdd::tdd_basic` answers to both
+/// `tdd` (full path) and `tdd_basic` (re-export path).
+fn entry_segments(path: &str) -> Vec<String> {
+    let rest = path.strip_prefix(SUBJECT_ROOT_PATH).and_then(|s| s.strip_prefix("::"));
+    let Some(rest) = rest else { return Vec::new() };
+    let segments: Vec<&str> = rest.split("::").collect();
+    let Some(&first) = segments.first() else { return Vec::new() };
+    let mut out = vec![first.to_string()];
+    if first == "tdd" {
+        if let Some(&second) = segments.get(1) {
+            if TDD_REEXPORTED_SUBMODULES.contains(&second) {
+                out.push(second.to_string());
+            }
+        }
+    } else if TDD_REEXPORTED_SUBMODULES.contains(&first) {
+        out.push("tdd".to_string());
+    }
+    out
+}
+
+/// The crates that reference an item, derived from the edge index.
+pub(crate) fn derived_consumers(
+    path: &str,
+    index: &BTreeMap<String, BTreeSet<String>>,
+) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for segment in entry_segments(path) {
+        if let Some(crates) = index.get(&segment) {
+            out.extend(crates.iter().cloned());
+        }
+    }
+    out
+}
+
+/// Validate that each row's `consumers` matches the crates that actually
+/// reference it, and that the `consumer_class` is consistent with that set.
+///
+/// This is what stops `consumers` from decaying into prose. A hand-authored
+/// list that names a crate not referencing the symbol — or omits one that does —
+/// fails here, so the classification #8605 consumes cannot silently drift.
+pub(crate) fn validate_derived_consumers(ledger: &Ledger, edges: &[ConsumerEdge]) -> Result<()> {
+    let index = reference_index(edges);
+    let mut problems: Vec<String> = Vec::new();
+
+    for entry in &ledger.entry {
+        if entry.api_kind == "feature" {
+            continue;
+        }
+        let expected = derived_consumers(&entry.path, &index);
+        let listed: BTreeSet<String> = entry
+            .consumers
+            .iter()
+            .filter_map(|value| value.split_whitespace().next())
+            .map(str::to_string)
+            .collect();
+
+        if listed != expected {
+            let missing: Vec<&String> = expected.difference(&listed).collect();
+            let extra: Vec<&String> = listed.difference(&expected).collect();
+            problems.push(format!(
+                "row `{}` consumers are stale: derived {:?}; ledger lists {:?} (missing {:?}, \
+                 unexpected {:?})",
+                entry.id,
+                expected.iter().collect::<Vec<_>>(),
+                listed.iter().collect::<Vec<_>>(),
+                missing,
+                extra
+            ));
+            continue;
+        }
+
+        let class = entry.consumer_class.as_str();
+        if expected.is_empty() {
+            if !matches!(class, "self_only" | "not_proven" | "published_compatibility_surface") {
+                problems.push(format!(
+                    "row `{}` has no in-repository consumer but claims consumer_class {:?}; use \
+                     `self_only`, `not_proven`, or `published_compatibility_surface`",
+                    entry.id, class
+                ));
+            }
+        } else if matches!(class, "self_only" | "not_proven") {
+            problems.push(format!(
+                "row `{}` has proven consumers {:?} but claims consumer_class {:?}",
+                entry.id,
+                expected.iter().collect::<Vec<_>>(),
+                class
+            ));
+        }
+    }
+
+    if problems.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "{SUBJECT_CRATE} consumer classification is out of date ({} problem(s)):\n  - {}",
+        problems.len(),
+        problems.join("\n  - ")
+    );
+}
 
 /// Locate every workspace manifest that declares a dependency on the crate.
 pub(crate) fn discover_consumers(root: &Path) -> Result<Vec<ConsumerEdge>> {
@@ -897,8 +1133,31 @@ fn propose(discovered: &[Discovered], ledger: &Ledger) -> Result<()> {
     bail!("{missing_count} unclassified public item(s) in {SUBJECT_CRATE}");
 }
 
+/// Print `<row id>\t<crate,crate,...>` for every discovered item, using the
+/// same edge-derived attribution the checker enforces.
+///
+/// This is the authoring aid for the `consumers` field: because the derivation
+/// lives here, the ledger is populated from the checker's own output rather than
+/// a second, drift-prone implementation.
+fn emit_consumers(discovered: &[Discovered], edges: &[ConsumerEdge]) {
+    let index = reference_index(edges);
+    for item in discovered {
+        if item.api_kind == "feature" {
+            continue;
+        }
+        let consumers = derived_consumers(&item.path, &index);
+        println!("{}\t{}", item.id, consumers.iter().cloned().collect::<Vec<_>>().join(","));
+    }
+}
+
 /// `cargo xtask tdd-support-surface`.
-pub fn run(root: &Path, write: bool, propose_rows: bool, json: Option<&Path>) -> Result<()> {
+pub fn run(
+    root: &Path,
+    write: bool,
+    propose_rows: bool,
+    emit_consumers_rows: bool,
+    json: Option<&Path>,
+) -> Result<()> {
     let ledger_path = root.join(LEDGER_PATH);
     let ledger = load_ledger(&ledger_path)?;
     validate_ledger(&ledger, &ledger_path)?;
@@ -909,10 +1168,15 @@ pub fn run(root: &Path, write: bool, propose_rows: bool, json: Option<&Path>) ->
         return propose(&discovered, &ledger);
     }
 
-    reconcile(&discovered, &ledger)?;
-
     let edges = discover_consumers(root)?;
-    validate_consumer_references(&ledger, &edges)?;
+
+    if emit_consumers_rows {
+        emit_consumers(&discovered, &edges);
+        return Ok(());
+    }
+
+    reconcile(&discovered, &ledger)?;
+    validate_derived_consumers(&ledger, &edges)?;
 
     let projection = render_projection(&ledger, &edges);
     let projection_path = root.join(PROJECTION_PATH);
@@ -944,34 +1208,6 @@ pub fn run(root: &Path, write: bool, propose_rows: bool, json: Option<&Path>) ->
         edges.len()
     );
     Ok(())
-}
-
-/// Every crate a row names as a consumer must really declare the dependency.
-///
-/// This is what keeps `consumers` from decaying into prose: a crate that drops
-/// its dependency edge stops being a valid citation the moment it does so.
-fn validate_consumer_references(ledger: &Ledger, edges: &[ConsumerEdge]) -> Result<()> {
-    let known: BTreeSet<&str> = edges.iter().map(|edge| edge.crate_name.as_str()).collect();
-    let mut problems = Vec::new();
-    for entry in &ledger.entry {
-        for consumer in &entry.consumers {
-            let name = consumer.split_whitespace().next().unwrap_or(consumer.as_str());
-            if name == SUBJECT_CRATE || name == "self" {
-                continue;
-            }
-            if !known.contains(name) {
-                problems.push(format!(
-                    "row `{}` names consumer `{name}`, but that crate declares no dependency on \
-                     {SUBJECT_CRATE}",
-                    entry.id
-                ));
-            }
-        }
-    }
-    if problems.is_empty() {
-        return Ok(());
-    }
-    bail!("consumer citations are stale:\n  - {}", problems.join("\n  - "));
 }
 
 fn write_json_receipt(

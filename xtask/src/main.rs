@@ -118,12 +118,17 @@ enum Commands {
     TddSupportSurface {
         /// Regenerate `docs/policy/TDD_SUPPORT_SURFACE.md` instead of checking
         /// that it is current.
-        #[arg(long, conflicts_with = "propose")]
+        #[arg(long, conflicts_with_all = ["propose", "emit_consumers"])]
         write: bool,
 
         /// Print ledger row skeletons for public items that have no row yet.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "emit_consumers")]
         propose: bool,
+
+        /// Print `<row id>\t<crate,...>` — the edge-derived consumers each row
+        /// must list. Authoring aid for the ledger's `consumers` field.
+        #[arg(long)]
+        emit_consumers: bool,
 
         /// Also write a machine-readable receipt to this path.
         #[arg(long)]
@@ -4893,9 +4898,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckOnly => ci::check_only(),
         Commands::CheckAgentContext => check_agent_context::run(),
         Commands::CheckLintPolicy => check_lint_policy::run(),
-        Commands::TddSupportSurface { write, propose, json } => {
+        Commands::TddSupportSurface { write, propose, emit_consumers, json } => {
             let root = utils::project_root()?;
-            tasks::tdd_support_surface::run(&root, write, propose, json.as_deref())
+            tasks::tdd_support_surface::run(&root, write, propose, emit_consumers, json.as_deref())
         }
         Commands::CheckToolchain { doctor } => check_toolchain::run(doctor),
         Commands::CheckDevexDocs => devex_docs::run(),

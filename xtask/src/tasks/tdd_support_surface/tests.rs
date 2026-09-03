@@ -119,14 +119,6 @@ fn real_projection_is_current() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn every_named_consumer_really_depends_on_the_crate() -> Result<()> {
-    let root = repo_root()?;
-    let ledger = load_ledger(&root.join(LEDGER_PATH))?;
-    let edges = discover_consumers(&root)?;
-    validate_consumer_references(&ledger, &edges)
-}
-
 // ---------------------------------------------------------------------------
 // Surface drift
 // ---------------------------------------------------------------------------
@@ -438,7 +430,7 @@ fn an_empty_ledger_is_rejected() -> Result<()> {
 }
 
 #[test]
-fn a_consumer_that_does_not_depend_on_the_crate_is_rejected() -> Result<()> {
+fn a_consumer_the_symbol_never_reaches_is_rejected() -> Result<()> {
     let mut row = entry("struct:perl_tdd_support::A", "struct", "perl_tdd_support::A");
     row.consumer_class = "test_dev_workspace_consumer".to_string();
     row.consumers = vec!["perl-not-a-consumer".to_string()];
@@ -450,8 +442,8 @@ fn a_consumer_that_does_not_depend_on_the_crate_is_rejected() -> Result<()> {
         class: "must_only".to_string(),
     }];
     expect_err(
-        validate_consumer_references(&ledger(vec![row]), &edges),
-        "declares no dependency",
+        validate_derived_consumers(&ledger(vec![row]), &edges),
+        "consumers are stale",
         "a consumer citation that has gone stale",
     )
 }
@@ -535,6 +527,209 @@ fn production_and_dev_dependency_edges_are_distinguished() -> Result<()> {
         );
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Implicit Cargo features
+// ---------------------------------------------------------------------------
+
+/// An `optional = true` dependency creates an activatable feature even with no
+/// `[features]` entry; a downstream crate can name it, so it is public surface.
+#[test]
+fn optional_dependency_creates_an_implicit_feature() -> Result<()> {
+    let manifest = format!(
+        "{MINIMAL_MANIFEST}\n[dependencies]\nserde = {{ version = \"1\", optional = true }}\n"
+    );
+    let dir = fixture_root("", &manifest)?;
+    let discovered = discover_surface(dir.path())?;
+    let ids: Vec<&str> = discovered.iter().map(|item| item.id.as_str()).collect();
+    if !ids.contains(&"feature:serde") {
+        bail!("implicit feature `serde` from the optional dependency was not discovered: {ids:?}");
+    }
+    Ok(())
+}
+
+/// A `dep:foo` reference in a feature value suppresses the implicit `foo`
+/// feature — that is Cargo's rule, and the checker must follow it.
+#[test]
+fn dep_prefixed_reference_suppresses_the_implicit_feature() -> Result<()> {
+    let manifest = format!(
+        "{MINIMAL_MANIFEST}extra = [\"dep:serde\"]\n\n\
+         [dependencies]\nserde = {{ version = \"1\", optional = true }}\n"
+    );
+    let dir = fixture_root("", &manifest)?;
+    let discovered = discover_surface(dir.path())?;
+    let ids: Vec<&str> = discovered.iter().map(|item| item.id.as_str()).collect();
+    if ids.contains(&"feature:serde") {
+        bail!("`dep:serde` should suppress the implicit `serde` feature, but it was discovered");
+    }
+    if !ids.contains(&"feature:extra") {
+        bail!("the explicit `extra` feature was not discovered");
+    }
+    Ok(())
+}
+
+/// The real crate's two optional dependencies are discovered as features.
+#[test]
+fn real_crate_optional_deps_are_governed_features() -> Result<()> {
+    let root = repo_root()?;
+    let discovered = discover_surface(&root)?;
+    let ids: BTreeSet<&str> = discovered.iter().map(|item| item.id.as_str()).collect();
+    for expected in ["feature:lsp-types", "feature:url"] {
+        if !ids.contains(expected) {
+            bail!("implicit feature `{expected}` from an optional dependency was not discovered");
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Compound cfg(test)
+// ---------------------------------------------------------------------------
+
+/// `all(test, ..)` requires test, so the item is test-only and excluded.
+#[test]
+fn all_test_predicate_is_treated_as_test_only() -> Result<()> {
+    let dir =
+        fixture_root("#[cfg(all(test, windows))]\npub struct OnlyInTest;\n", MINIMAL_MANIFEST)?;
+    let discovered = discover_surface(dir.path())?;
+    if discovered.iter().any(|item| item.path == "perl_tdd_support::OnlyInTest") {
+        bail!("`#[cfg(all(test, windows))]` item must be excluded as test-only");
+    }
+    Ok(())
+}
+
+/// `any(test, feature = "x")` is reachable via the feature alone, so the item
+/// is NOT test-only and must be governed. A naive contains("test") would drop it.
+#[test]
+fn any_test_predicate_is_not_treated_as_test_only() -> Result<()> {
+    let dir = fixture_root(
+        "#[cfg(any(test, feature = \"x\"))]\npub struct AlsoInProd;\n",
+        MINIMAL_MANIFEST,
+    )?;
+    let discovered = discover_surface(dir.path())?;
+    if !discovered.iter().any(|item| item.path == "perl_tdd_support::AlsoInProd") {
+        bail!(
+            "`#[cfg(any(test, feature = ..))]` item is reachable without test and must be governed"
+        );
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Derived consumers
+// ---------------------------------------------------------------------------
+
+/// The committed ledger's `consumers` match what the crates actually reference.
+#[test]
+fn real_ledger_consumers_are_derivation_current() -> Result<()> {
+    let root = repo_root()?;
+    let ledger = load_ledger(&root.join(LEDGER_PATH))?;
+    let edges = discover_consumers(&root)?;
+    validate_derived_consumers(&ledger, &edges)
+}
+
+/// A row that lists a crate not referencing its symbol is rejected — the exact
+/// `must_err`/`perl-lexer` shape the review caught.
+#[test]
+fn a_consumer_the_symbol_does_not_reach_is_rejected() -> Result<()> {
+    let edges = vec![
+        ConsumerEdge {
+            crate_name: "perl-dap".to_string(),
+            manifest: "crates/perl-dap/Cargo.toml".to_string(),
+            dep_kind: "dev-dependencies".to_string(),
+            referenced: names(&["must_err"]),
+            class: "must_only".to_string(),
+        },
+        ConsumerEdge {
+            crate_name: "perl-lexer".to_string(),
+            manifest: "crates/perl-lexer/Cargo.toml".to_string(),
+            dep_kind: "dev-dependencies".to_string(),
+            referenced: names(&["must"]),
+            class: "must_only".to_string(),
+        },
+    ];
+    let mut row =
+        entry("reexport:perl_tdd_support::must_err", "reexport", "perl_tdd_support::must_err");
+    row.consumer_class = "published_compatibility_surface".to_string();
+    row.consumers = vec!["perl-dap".to_string(), "perl-lexer".to_string()]; // perl-lexer is wrong
+    expect_err(
+        validate_derived_consumers(&ledger(vec![row]), &edges),
+        "consumers are stale",
+        "a consumer list naming a crate that does not reference the symbol",
+    )
+}
+
+/// A row that omits a real consumer is equally rejected.
+#[test]
+fn a_missing_real_consumer_is_rejected() -> Result<()> {
+    let edges = vec![ConsumerEdge {
+        crate_name: "perl-dap".to_string(),
+        manifest: "crates/perl-dap/Cargo.toml".to_string(),
+        dep_kind: "dev-dependencies".to_string(),
+        referenced: names(&["must_some_with"]),
+        class: "must_only".to_string(),
+    }];
+    let mut row = entry(
+        "reexport:perl_tdd_support::must_some_with",
+        "reexport",
+        "perl_tdd_support::must_some_with",
+    );
+    row.consumer_class = "published_compatibility_surface".to_string();
+    row.consumers = vec![]; // perl-dap is missing
+    expect_err(
+        validate_derived_consumers(&ledger(vec![row]), &edges),
+        "consumers are stale",
+        "a consumer list omitting a crate that really references the symbol",
+    )
+}
+
+/// The tdd re-export alias means an item under `tdd::tdd_basic` is attributed
+/// to crates reaching it by either path.
+#[test]
+fn tdd_reexport_alias_attributes_both_paths() -> Result<()> {
+    let edges = vec![
+        ConsumerEdge {
+            crate_name: "perl-parser".to_string(),
+            manifest: "crates/perl-parser/Cargo.toml".to_string(),
+            dep_kind: "dependencies".to_string(),
+            referenced: names(&["tdd"]),
+            class: "other_only".to_string(),
+        },
+        ConsumerEdge {
+            crate_name: "perl-lsp-rs".to_string(),
+            manifest: "crates/perl-lsp-rs/Cargo.toml".to_string(),
+            dep_kind: "dependencies".to_string(),
+            referenced: names(&["tdd_basic"]),
+            class: "other_only".to_string(),
+        },
+    ];
+    let index = reference_index(&edges);
+    let derived = derived_consumers("perl_tdd_support::tdd::tdd_basic::TddWorkflow", &index);
+    if derived != names(&["perl-parser", "perl-lsp-rs"]) {
+        bail!("expected both the full-path and re-export-path consumers, found {derived:?}");
+    }
+    Ok(())
+}
+
+/// A proven consumer set is incompatible with a `self_only` class.
+#[test]
+fn proven_consumers_reject_a_self_only_class() -> Result<()> {
+    let edges = vec![ConsumerEdge {
+        crate_name: "perl-dap".to_string(),
+        manifest: "crates/perl-dap/Cargo.toml".to_string(),
+        dep_kind: "dev-dependencies".to_string(),
+        referenced: names(&["must"]),
+        class: "must_only".to_string(),
+    }];
+    let mut row = entry("reexport:perl_tdd_support::must", "reexport", "perl_tdd_support::must");
+    row.consumer_class = "self_only".to_string();
+    row.consumers = vec!["perl-dap".to_string()];
+    expect_err(
+        validate_derived_consumers(&ledger(vec![row]), &edges),
+        "claims consumer_class",
+        "a row with real consumers claiming self_only",
+    )
 }
 
 // ---------------------------------------------------------------------------
