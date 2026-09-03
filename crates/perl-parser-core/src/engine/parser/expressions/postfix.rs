@@ -1539,14 +1539,16 @@ impl<'a> Parser<'a> {
     }
 
     /// Attempt to parse a keyword or word operator (`not`, `and`, `or`, `xor`,
-    /// `do`, `eval`, `cmp`, etc.) as a bareword hash key when it appears directly
-    /// before `}` or as part of a comma-separated hash slice.
+    /// `do`, `eval`, `cmp`, etc.) as a bareword hash key. Non-control keywords
+    /// are accepted directly before `}` or within a comma-separated subscript.
+    /// `return`, `next`, `last`, and `redo` are accepted only as the initial,
+    /// sole key directly before `}`; after a comma they remain executable.
     ///
-    /// Returns `Some(Node)` if the current token is a keyword/operator followed
-    /// by `}` or `,`, otherwise returns `None` to fall through to general
-    /// expression parsing.
+    /// Returns `Some(Node)` when the current token satisfies the applicable
+    /// position-sensitive boundary, otherwise returns `None` to fall through
+    /// to general expression parsing.
     fn try_parse_keyword_bareword_key(&mut self) -> ParseResult<Option<Node>> {
-        if !self.peek_is_keyword_bareword_key() {
+        if !self.peek_is_keyword_bareword_key(true) {
             return Ok(None);
         }
 
@@ -1564,7 +1566,9 @@ impl<'a> Parser<'a> {
                 break;
             }
 
-            if self.peek_is_keyword_bareword_key() {
+            // Terminal controls are static keys only when they are the sole
+            // subscript expression. After a comma, Perl keeps them executable.
+            if self.peek_is_keyword_bareword_key(false) {
                 elements.push(self.consume_as_bareword_identifier()?);
             } else {
                 elements.push(self.parse_assignment()?);
@@ -1575,33 +1579,42 @@ impl<'a> Parser<'a> {
         Ok(Some(Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })))
     }
 
-    fn peek_is_keyword_bareword_key(&mut self) -> bool {
+    fn peek_is_keyword_bareword_key(&mut self, allow_terminal_control_key: bool) -> bool {
         let Ok(first) = self.tokens.peek() else {
             return false;
         };
 
-        let is_keyword_key = matches!(
-            first.kind(),
-            TokenKind::WordNot
-                | TokenKind::WordAnd
-                | TokenKind::WordOr
-                | TokenKind::WordXor
-                | TokenKind::Do
-                | TokenKind::Eval
-                | TokenKind::Local
-                | TokenKind::Try
-                | TokenKind::Defer
-                | TokenKind::StringCompare
-        ) || matches!(first.text.as_ref(), "tie" | "untie");
+        let kind = first.kind();
+        let is_terminal_control_key =
+            matches!(kind, TokenKind::Return | TokenKind::Next | TokenKind::Last | TokenKind::Redo);
+        let is_keyword_key = (allow_terminal_control_key && is_terminal_control_key)
+            || matches!(
+                kind,
+                TokenKind::WordNot
+                    | TokenKind::WordAnd
+                    | TokenKind::WordOr
+                    | TokenKind::WordXor
+                    | TokenKind::Do
+                    | TokenKind::Eval
+                    | TokenKind::Local
+                    | TokenKind::Try
+                    | TokenKind::Defer
+                    | TokenKind::StringCompare
+            )
+            || matches!(first.text.as_ref(), "tie" | "untie");
 
         if !is_keyword_key {
             return false;
         }
 
-        self.tokens
-            .peek_second()
-            .ok()
-            .is_some_and(|second| matches!(second.kind(), TokenKind::RightBrace | TokenKind::Comma))
+        let Ok(second) = self.tokens.peek_second() else {
+            return false;
+        };
+        if is_terminal_control_key {
+            second.kind() == TokenKind::RightBrace
+        } else {
+            matches!(second.kind(), TokenKind::RightBrace | TokenKind::Comma)
+        }
     }
 
     fn consume_as_bareword_identifier(&mut self) -> ParseResult<Node> {
