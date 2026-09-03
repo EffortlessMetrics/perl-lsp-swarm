@@ -419,17 +419,36 @@ def cfg_test_module_paths(path: Path, source: str) -> set[Path]:
         # `#[path = "..."]` changes the module file location. Recover only
         # an attribute immediately adjacent to this declaration; a broad
         # lookback can incorrectly borrow a path from an unrelated module.
-        prefix_lines = source[: match.start()].splitlines()
+        raw_prefix = source[: match.start()]
+        masked_prefix = masked[: match.start()]
+        raw_lines = raw_prefix.splitlines(keepends=True)
+        masked_lines = masked_prefix.splitlines(keepends=True)
         attributes: list[str] = []
-        for line in reversed(prefix_lines):
-            stripped = line.strip()
-            if not stripped:
+        bracket_depth = 0
+        for raw_line, masked_line in zip(reversed(raw_lines), reversed(masked_lines)):
+            stripped = masked_line.strip()
+            if bracket_depth:
+                attributes.append(raw_line)
+                bracket_depth += masked_line.count("[") - masked_line.count("]")
                 continue
-            if stripped.startswith("#["):
-                attributes.append(stripped)
+            if not stripped:
+                attributes.append(raw_line)
+                continue
+            if stripped.startswith("]"):
+                # A multiline attribute may close on its own line; retain it
+                # while walking back to the opening `#[...` line.
+                attributes.append(raw_line)
+                continue
+            if stripped.startswith("#"):
+                attributes.append(raw_line)
+                bracket_depth += masked_line.count("[") - masked_line.count("]")
                 continue
             break
-        path_match = re.findall(r"#\[\s*path\s*=\s*\"([^\"]+)\"\s*\]", "\n".join(attributes))
+        path_match = re.findall(
+            r"#\[\s*path\s*=\s*\"([^\"]+)\"\s*\]",
+            "".join(reversed(attributes)),
+            flags=re.DOTALL,
+        )
         if path_match:
             # An explicit path is relative to the declaring source file,
             # including when that source is a non-mod.rs module.
