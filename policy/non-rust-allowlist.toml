@@ -37,12 +37,11 @@ language = "yaml"
 surface = "release"
 classification = "documentation"
 owner = "release/ci"
-reason = "Changie release-note fragments staged for the next release. Each fragment is generated into a fixed naming convention and its content is validated by the changelog gate, so per-fragment allowlist rows added no review value and instead blocked every PR that produced one."
+reason = "Changie release-note fragments staged for the next release, created by `cargo change` and drained when the release renders. They are transient: a fragment exists for the life of one unreleased change, so a per-fragment allowlist row recorded an identity that disappears at release while forcing every producing PR to edit this shared file. One typed path rule governs the class instead; `cargo xtask changelog check` owns each fragment's project, kind, body, and PR-reference validity, and this ledger owns only whether the path class is accounted for."
 covered_by = [
   "cargo xtask changelog check",
   "cargo xtask check-file-policy",
 ]
-broad_glob_reason = "The fragment directory is a generated, uniformly shaped staging area drained on release. `cargo xtask changelog check` owns fragment schema and content; the file gate only needs to know the directory is accounted for."
 created = "2026-08-15"
 review_after = "2026-11-15"
 
@@ -200,17 +199,17 @@ review_after = "2027-02-28"
 
 [[allow]]
 id = "non-rust-root-governance-docs"
-glob = "*.md"
+glob = "**/*.md"
 kind = "documentation"
 language = "markdown"
 surface = "docs"
 classification = "documentation"
 owner = "docs"
-reason = "Top-level README, CHANGELOG, RELEASE_HISTORY, ROADMAP, CONTRIBUTING, SECURITY, SUPPORT, and governance docs."
+reason = "Top-level README, CHANGELOG, RELEASE_HISTORY, ROADMAP, CONTRIBUTING, SECURITY, SUPPORT, and governance docs, plus the markdown that is not claimed by a more specific entry."
 covered_by = [
   "cargo xtask check-file-policy",
 ]
-broad_glob_reason = "Repo root markdown files are governance/documentation by convention; non-Rust by definition."
+broad_glob_reason = "Markdown is non-executable prose and non-Rust by definition. The glob is written `**/*.md` because that is the breadth this entry has always had: until #9994 the checker let a single `*` cross `/`, so the previous `*.md` already matched markdown at every depth. Narrowing this entry back to repository-root governance docs, with explicit entries for the 259 files across 21 trees it currently absorbs, is #14583 and is deliberately not a silent side effect of the matcher fix."
 created = "2026-05-07"
 review_after = "2026-08-07"
 
@@ -3349,6 +3348,7 @@ covered_by = [
   "cargo xtask check-train-edge-contract",
   "cargo test -p xtask --bin xtask train_edge_contract --locked",
 ]
+broad_glob_reason = "The `**` spans the deliberately nested case layout under one owned fixture directory (valid, control, and invalid documents in sibling folders). Breadth is bounded by that directory; `cargo xtask check-train-edge-contract` fail-closed validates every document, and each invalid case names the reason code it must produce."
 created = "2026-08-24"
 review_after = "2026-11-24"
 
@@ -3397,6 +3397,7 @@ covered_by = [
   "cargo xtask check-agent-implementation-packet",
   "cargo test -p xtask --bin xtask agent_implementation_packet --locked",
 ]
+broad_glob_reason = "The `**` spans the deliberately nested case layout under one owned fixture directory (offline/live/consumer shapes, controls, goldens, and invalid documents in sibling folders). Breadth is bounded by that directory; `cargo xtask check-agent-implementation-packet` fail-closed validates every document."
 created = "2026-08-24"
 review_after = "2026-11-24"
 
@@ -3492,6 +3493,7 @@ reason = "Synthetic vectors for the #11179 standalone candidate/current-selectio
 covered_by = [
   "cargo run -p xtask --locked --example standalone_candidate_selection -- --verify-fixtures fixtures/experience/standalone_candidate_selection",
 ]
+broad_glob_reason = "The `**` spans the deliberately nested scenario layout under one owned fixture directory (required scenarios beside fail-closed falsifiers). Breadth is bounded by that directory; the example verifier reads exactly that root and rejects any document that does not name its expected reason code."
 created = "2026-08-24"
 review_after = "2026-11-24"
 
@@ -3556,6 +3558,7 @@ covered_by = [
   "cargo xtask check-agent-review-packet",
   "cargo test -p xtask --bin xtask agent_review_packet --locked",
 ]
+broad_glob_reason = "The `**` spans the deliberately nested case layout under one owned fixture directory (packet/finding/closure shapes, controls, goldens, and invalid documents in sibling folders). Breadth is bounded by that directory; `cargo xtask check-agent-review-packet` fail-closed validates every document."
 created = "2026-08-24"
 review_after = "2026-11-24"
 
@@ -3574,6 +3577,38 @@ covered_by = [
 ]
 created = "2026-08-24"
 review_after = "2026-11-24"
+
+[[allow]]
+id = "non-rust-critic-rule-proof-schema"
+path = "schemas/critic_rule_proof.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "critic"
+classification = "config"
+owner = "native-critic"
+reason = "JSON Schema for the critic_rule_proof.v1 rule-proof manifest (#6973); the xtask checker enforces schema, identity/remediation authorities, fixture digests, and live critic propositions."
+covered_by = [
+  "cargo xtask critic-rule-proof check",
+  "cargo test -p xtask --locked --test critic_rule_proof",
+]
+created = "2026-08-26"
+review_after = "2026-11-26"
+
+[[allow]]
+id = "non-rust-critic-rule-proof-manifest"
+path = "fixtures/critic-rule-proof/manifest.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "native-critic"
+reason = "Pilot rule-proof manifest (#6973) binding fixture identities, evidence classes, and expected critic propositions."
+covered_by = [
+  "cargo xtask critic-rule-proof check",
+  "cargo test -p xtask --locked --test critic_rule_proof",
+]
+created = "2026-08-26"
+review_after = "2026-11-26"
 
 [[allow]]
 id = "non-rust-compiler-lexical-cutline-schema"
@@ -3755,6 +3790,7 @@ covered_by = [
   "cargo test -p xtask --locked product_health_status",
   "cargo run -p xtask -- product-health check fixtures/product_health_status/expected/status.json",
 ]
+broad_glob_reason = "The `**` spans the deliberately nested rail-registry, source-packet, and golden-snapshot folders under one owned fixture directory. Breadth is bounded by that directory; the golden bytes are re-assembled and compared byte-for-byte, and the packet envelope is fail-closed validated."
 created = "2026-08-26"
 review_after = "2027-02-26"
 
