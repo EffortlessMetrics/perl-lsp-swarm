@@ -689,12 +689,24 @@ impl MemberIdentity {
 /// exactly server + DAP adapter. Anything else is drift.
 fn validate_member_set(unit: ProductUnit, members: &[MemberIdentity]) -> ContractResult<()> {
     let mut roles = BTreeSet::new();
+    let mut artifact_names = BTreeSet::new();
     for member in members {
         member.validate()?;
         if !roles.insert(member.role) {
             return violation(
                 ContractViolation::DuplicateMemberRole,
                 format!("role {} declared twice", member.role.as_str()),
+            );
+        }
+        // One artifact cannot certify two product roles: the pair requires
+        // distinct server and adapter binaries.
+        if !artifact_names.insert(member.artifact_name.as_str()) {
+            return violation(
+                ContractViolation::SubjectIncomplete,
+                format!(
+                    "artifact {:?} is assigned to multiple product roles",
+                    member.artifact_name
+                ),
             );
         }
     }
@@ -1019,6 +1031,26 @@ impl ResolvedStandaloneInstallSubject {
                 }
                 bounded_id(&subject.toolchain_policy_id, "toolchain_policy_id")?;
                 subject.target.validate()?;
+                // Product-unit coherence: a server-only subject must name the
+                // server executable, and one executable identity can never
+                // certify the server+DAP pair.
+                match (subject.product_unit, subject.executable_role) {
+                    (ProductUnit::ServerOnly, MemberRole::PerllspServer) => {}
+                    (ProductUnit::ServerOnly, _) => {
+                        return violation(
+                            ContractViolation::SubjectIncomplete,
+                            "a server-only registry subject must name the perllsp server \
+                             executable",
+                        );
+                    }
+                    (ProductUnit::ServerDapPair, _) => {
+                        return violation(
+                            ContractViolation::SubjectIncomplete,
+                            "one executable identity cannot certify the server+DAP pair: a \
+                             registry-source pair subject is not representable",
+                        );
+                    }
+                }
             }
             Self::ExplicitLocalDevelopment(subject) => {
                 schema_check(&subject.schema_version, SUBJECT_SCHEMA_VERSION)?;

@@ -563,6 +563,36 @@ fn malformed_subjects_fail_closed() {
         other => other,
     };
     expect_code(smuggled_package.validate().map(|_| ()), ContractViolation::MalformedDocument);
+
+    // One artifact cannot satisfy two roles: the pair requires distinct
+    // server and adapter binaries.
+    let shared_artifact = mutated(&|subject| {
+        subject.expected_members = vec![
+            MemberIdentity { role: MemberRole::PerllspServer, artifact_name: "perllsp".into() },
+            MemberIdentity { role: MemberRole::PerlDapAdapter, artifact_name: "perllsp".into() },
+        ];
+    });
+    expect_code(shared_artifact.validate().map(|_| ()), ContractViolation::SubjectIncomplete);
+
+    // A server-only registry subject must name the server executable, and a
+    // single registry executable identity can never certify the pair.
+    let adapter_only = match registry_candidate(&intent) {
+        ResolvedStandaloneInstallSubject::ExactRegistrySource(mut subject) => {
+            subject.executable_role = MemberRole::PerlDapAdapter;
+            ResolvedStandaloneInstallSubject::ExactRegistrySource(subject)
+        }
+        other => other,
+    };
+    expect_code(adapter_only.validate().map(|_| ()), ContractViolation::SubjectIncomplete);
+
+    let underspecified_pair = match registry_candidate(&intent) {
+        ResolvedStandaloneInstallSubject::ExactRegistrySource(mut subject) => {
+            subject.product_unit = ProductUnit::ServerDapPair;
+            ResolvedStandaloneInstallSubject::ExactRegistrySource(subject)
+        }
+        other => other,
+    };
+    expect_code(underspecified_pair.validate().map(|_| ()), ContractViolation::SubjectIncomplete);
 }
 
 #[test]
