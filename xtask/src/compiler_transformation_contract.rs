@@ -2178,10 +2178,12 @@ impl TransformationPlan {
 
     /// Classify one attempt after proving the plan conforms to its exact law.
     ///
-    /// [`Self::evaluate`] is plan-local: it cannot see the law, so it presumes
-    /// conformance was established beforehand. This is the safe entry point for
-    /// a caller that holds the law — a non-conforming plan yields
-    /// [`TransformationResult::InvalidPlan`] rather than any applied state.
+    /// This is the only public route to a terminal result. The plan-local step
+    /// it delegates to cannot see the law, so conformance is established here
+    /// rather than assumed: a non-conforming plan yields
+    /// [`TransformationResult::InvalidPlan`] rather than any applied state, and
+    /// a caller cannot reach the applied states without holding the exact law
+    /// the plan binds.
     pub fn evaluate_under_law(
         &self,
         law: &TransformationLaw,
@@ -4665,8 +4667,9 @@ mod tests {
     }
 
     // Review finding: `evaluate` is plan-local and cannot see the law, so
-    // legality depended on the caller having run conformance first.
-    // `evaluate_under_law` removes that discipline dependency.
+    // legality depended on caller discipline. It is no longer public --
+    // `evaluate_under_law` is the only public route to a terminal result, so
+    // the dependency is structural rather than conventional.
     #[test]
     fn evaluate_under_law_refuses_a_non_conforming_plan() -> Result<()> {
         let (law, plan) = folding();
