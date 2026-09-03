@@ -1574,7 +1574,7 @@ impl ExecutionAuthorizationDecision {
             .reasons
             .iter()
             .filter_map(|reason| reason.capability)
-            .filter(|capability| !self.granted.contains(*capability))
+            .filter(|&capability| !self.granted.contains(capability))
             .collect::<BTreeSet<_>>()
             .into_iter()
             .map(ExecutionCapability::identity_tag)
@@ -2084,7 +2084,7 @@ fn relevant_inputs<'a>(
     let mut inputs: Vec<&'a ClassifiedInput> = evidence
         .inputs
         .iter()
-        .filter(|input| wanted.contains(&input.id) || input.applies_regardless_of_intent())
+        .filter(|&input| wanted.contains(&input.id) || input.applies_regardless_of_intent())
         .collect();
     inputs.sort_by(|left, right| left.id.cmp(&right.id));
     inputs
@@ -2148,7 +2148,7 @@ fn evaluate_capability_from_facts(
 ) -> CapabilityFinding {
     // An input whose provenance is unknown blocks whatever it would support.
     if let Some(input) =
-        inputs.iter().find(|input| input.risk_class == InputRiskClass::UnknownProvenance)
+        inputs.iter().copied().find(|&input| input.risk_class == InputRiskClass::UnknownProvenance)
         && capability.is_execution_bearing()
     {
         reasons.push(reason(
@@ -2315,7 +2315,7 @@ fn evaluate_executable_tool(
 ) -> CapabilityFinding {
     let capability = ExecutionCapability::ExecutableTool;
 
-    if inputs.iter().any(|input| {
+    if inputs.iter().any(|&input| {
         input.risk_class == InputRiskClass::SelectedVerifiedTool && input.disposition.is_accepted()
     }) {
         return CapabilityFinding::Granted;
@@ -2323,8 +2323,10 @@ fn evaluate_executable_tool(
 
     // A project-supplied executable is project-controlled authority. An
     // explicit user action does not upgrade it.
-    if let Some(input) =
-        inputs.iter().find(|input| input.risk_class == InputRiskClass::ProjectExecutableOrCommand)
+    if let Some(input) = inputs
+        .iter()
+        .copied()
+        .find(|&input| input.risk_class == InputRiskClass::ProjectExecutableOrCommand)
     {
         reasons.push(reason(
             REASON_PROJECT_SUPPLIED_EXECUTABLE,
@@ -2336,7 +2338,7 @@ fn evaluate_executable_tool(
     }
 
     if let Some(input) =
-        inputs.iter().find(|input| input.risk_class == InputRiskClass::AmbientPathOrCwd)
+        inputs.iter().copied().find(|&input| input.risk_class == InputRiskClass::AmbientPathOrCwd)
     {
         reasons.push(reason(
             REASON_AMBIENT_TOOL_SELECTION,
@@ -2365,7 +2367,7 @@ fn evaluate_environment_code_loading(
 
     // Ambient PERL5LIB/PERL5OPT and friends never supply code-loading
     // authority. An explicitly reviewed activation is a different input.
-    if let Some(input) = inputs.iter().find(|input| {
+    if let Some(input) = inputs.iter().copied().find(|&input| {
         input.risk_class == InputRiskClass::AmbientPerlEnvironment
             && input.authority == EnvironmentInputAuthority::Ambient
     }) {
@@ -2378,7 +2380,7 @@ fn evaluate_environment_code_loading(
         return CapabilityFinding::Denied;
     }
 
-    if inputs.iter().any(|input| {
+    if inputs.iter().any(|&input| {
         input.risk_class == InputRiskClass::AmbientPerlEnvironment
             && input.authority == EnvironmentInputAuthority::ExplicitEnvironment
             && input.disposition.is_accepted()
@@ -2417,8 +2419,10 @@ fn evaluate_outside_root_path(
 ) -> CapabilityFinding {
     let capability = ExecutionCapability::OutsideRootPath;
 
-    if let Some(input) =
-        inputs.iter().find(|input| input.risk_class == InputRiskClass::SymlinkOrTraversalPath)
+    if let Some(input) = inputs
+        .iter()
+        .copied()
+        .find(|&input| input.risk_class == InputRiskClass::SymlinkOrTraversalPath)
     {
         reasons.push(reason(
             REASON_PATH_ESCAPES_ROOT,
@@ -2429,15 +2433,16 @@ fn evaluate_outside_root_path(
         return CapabilityFinding::Denied;
     }
 
-    let external: Vec<&&ClassifiedInput> = inputs
+    let external: Vec<&ClassifiedInput> = inputs
         .iter()
-        .filter(|input| input.risk_class == InputRiskClass::ExternalAbsolutePath)
+        .copied()
+        .filter(|&input| input.risk_class == InputRiskClass::ExternalAbsolutePath)
         .collect();
     if external.is_empty() {
         // Nothing outside the root is in play.
         return CapabilityFinding::Granted;
     }
-    if external.iter().all(|input| {
+    if external.iter().all(|&input| {
         input.authority == EnvironmentInputAuthority::UserConfiguration
             && input.disposition.is_accepted()
     }) {
@@ -2446,7 +2451,7 @@ fn evaluate_outside_root_path(
 
     let blocking = external
         .iter()
-        .find(|input| {
+        .find(|&input| {
             input.authority != EnvironmentInputAuthority::UserConfiguration
                 || !input.disposition.is_accepted()
         })
@@ -2466,7 +2471,7 @@ fn evaluate_persistent_cadence(
 ) -> CapabilityFinding {
     let capability = ExecutionCapability::PersistentCadence;
 
-    if inputs.iter().any(|input| {
+    if inputs.iter().any(|&input| {
         input.risk_class == InputRiskClass::UserScopedSetting
             && input.authority == EnvironmentInputAuthority::UserConfiguration
             && input.disposition.is_accepted()
@@ -2476,8 +2481,10 @@ fn evaluate_persistent_cadence(
 
     // A workspace- or resource-scoped setting cannot manufacture user or
     // machine authority merely by claiming provenance.
-    if let Some(input) =
-        inputs.iter().find(|input| input.risk_class == InputRiskClass::WorkspaceScopedSetting)
+    if let Some(input) = inputs
+        .iter()
+        .copied()
+        .find(|&input| input.risk_class == InputRiskClass::WorkspaceScopedSetting)
     {
         reasons.push(reason(
             REASON_WORKSPACE_SETTING_CANNOT_GRANT_USER_AUTHORITY,
