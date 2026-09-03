@@ -96,3 +96,23 @@ fn bare_field_argument_preserves_package_read() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn legacy_field_call_reuses_existing_lexical_target() -> TestResult {
+    let source = "my $x; field $x = 1;\n";
+    let mut parser = Parser::new(source);
+    let parsed = parser.parse_with_recovery();
+    let file = lower_ast(&parsed.ast);
+    let body = file.bodies.first().ok_or("program body is required")?;
+    let nodes = lower_single_body(body, HirBodyId(0), &file);
+
+    assert!(
+        nodes.iter().any(|node| matches!(node.operation, PirOperation::LexicalWrite { .. })),
+        "legacy field calls must preserve writes to an existing lexical: {nodes:?}"
+    );
+    assert!(
+        nodes.iter().any(|node| matches!(node.operation, PirOperation::Assign)),
+        "legacy field calls must preserve assignment effects: {nodes:?}"
+    );
+    Ok(())
+}

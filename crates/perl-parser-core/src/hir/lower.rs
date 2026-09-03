@@ -3335,7 +3335,13 @@ impl<'a> BodyBuilder2<'a> {
                     // assignment effects while keeping real declarations tied
                     // to their declaration storage class.
                     let place_kind = match declarator.as_str() {
-                        "our" | "field" => VariableKind::Package,
+                        "our" => VariableKind::Package,
+                        // `field` is also accepted as a declaration-shaped
+                        // legacy call. Resolve its argument like any other
+                        // variable expression; this preserves an existing
+                        // lexical target without creating a new binding, and
+                        // falls back to package storage when unbound.
+                        "field" => self.resolve_variable_kind(sigil_str, &var_name),
                         _ => VariableKind::Lexical,
                     };
                     let place_expr = HirExpr::Variable(HirVariable {
