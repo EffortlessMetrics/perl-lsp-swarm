@@ -557,12 +557,74 @@ fn compact_projections_stay_lossless_for_every_node() {
 
         let reviewer = reviewer_of(node_id);
         let review_compact = render::compact(&reviewer);
-        assert!(review_compact.contains(node_id), "{node_id} review compact lost subject");
+        let review_loss = render::validate_reviewer_compact_lossless(&reviewer, &review_compact);
+        assert!(
+            review_loss.is_empty(),
+            "{node_id} reviewer compact lost constraints: {:?}",
+            codes(&review_loss)
+        );
         assert!(
             review_compact.contains("FALSIFY[") || review_compact.contains("AUDIT "),
             "{node_id} review compact dropped falsifiers"
         );
     }
+}
+
+#[test]
+fn generated_packets_validate_against_both_checked_schemas() {
+    for node_id in ALL_NODE_IDS {
+        let (builder, _) = builder_of(node_id);
+        assert!(
+            validate::validate_schema_instance(&builder).is_empty(),
+            "builder schema drift for {node_id}"
+        );
+        let reviewer = reviewer_of(node_id);
+        assert!(
+            validate::validate_schema_instance(&reviewer).is_empty(),
+            "reviewer schema drift for {node_id}"
+        );
+    }
+}
+
+#[test]
+fn reviewer_identity_fields_are_bound_to_the_builder_subject() {
+    let (builder, _) = builder_of("fr_8305_import_containment_leaf");
+    let reviewer = reviewer_of("fr_8305_import_containment_leaf");
+    for field in ["issues", "role", "profile", "claim_ceiling_sentence"] {
+        let mut changed = reviewer.clone();
+        let path = format!("/subject/{field}");
+        if let Some(value) = changed.pointer_mut(&path) {
+            *value = if value.is_array() {
+                serde_json::json!([99999])
+            } else {
+                serde_json::json!("foreign")
+            };
+        }
+        assert!(
+            codes(&validate::validate_pair(&builder, &changed)).contains(&"subject_mismatch"),
+            "{field} was not bound"
+        );
+    }
+}
+
+#[test]
+fn equivalent_main_movement_preserves_packet_identity() {
+    let node = node("fr_8305_import_containment_leaf");
+    let snapshot = |head: &str| build::LiveSnapshot {
+        head_sha: head.to_owned(),
+        candidate_branch: None,
+        writer_active: false,
+        required_action: super::model::LiveAction::None,
+        source_digest: "d".repeat(64),
+    };
+    let first = build::builder_document(node, Some(&snapshot(&"a".repeat(40))));
+    let second = build::builder_document(node, Some(&snapshot(&"b".repeat(40))));
+    assert_eq!(first.0["packet_id"], second.0["packet_id"]);
+    assert_eq!(first.1, second.1);
+    let mut semantic = snapshot(&"b".repeat(40));
+    semantic.writer_active = true;
+    let changed = build::builder_document(node, Some(&semantic));
+    assert_ne!(first.0["packet_id"], changed.0["packet_id"]);
 }
 
 // Every documented artifact cell must survive the dense projection: an

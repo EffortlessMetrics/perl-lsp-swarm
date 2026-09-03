@@ -215,6 +215,10 @@ fn explicit_unblocks(node: &NodeSpec, nodes: &[NodeSpec]) -> Vec<u32> {
         .collect()
 }
 
+pub(crate) fn delivery_issue_ids(node: &NodeSpec, nodes: &[NodeSpec]) -> (u32, Vec<u32>, Vec<u32>) {
+    (node.controller_issue, explicit_dependencies(node, nodes), explicit_unblocks(node, nodes))
+}
+
 /// The builder document for `node` under the optional live observation.
 /// Returns the document (including its content-addressed `packet_id`) plus
 /// the hex digest of its canonical bytes.
@@ -649,6 +653,20 @@ pub fn content_digest(doc: &Value) -> String {
     if let Some(object) = stripped.as_object_mut() {
         object.remove("packet_id");
         object.remove("review_id");
+    }
+    // A conflict-free movement of main is observational, not a change to the
+    // candidate subject. Keep the observed semantic live cells in the digest,
+    // but canonicalize the moving main identity so equivalent refreshes do not
+    // invalidate an otherwise current review.
+    if let Some(delivery) = stripped.pointer_mut("/delivery").and_then(Value::as_object_mut) {
+        delivery.insert("base_head".to_owned(), Value::String("main@equivalent".to_owned()));
+    }
+    if let Some(currentness) = stripped.pointer_mut("/currentness").and_then(Value::as_object_mut) {
+        currentness.insert("base_head".to_owned(), Value::String("main@equivalent".to_owned()));
+    }
+    if let Some(live) = stripped.pointer_mut("/planes/live").and_then(Value::as_object_mut) {
+        live.insert("head_sha".to_owned(), Value::Null);
+        live.insert("snapshot_digest".to_owned(), Value::Null);
     }
     let canonical = render::canonical_json(&stripped);
     crate::tasks::emacs_train_context::digest::sha256_hex(canonical.as_bytes())

@@ -11,6 +11,53 @@ use super::denominator;
 use super::model::{DenominatorDisposition, NodeSpec};
 use super::nodes;
 
+/// Apply the checked-in JSON Schema to a generated instance. The handwritten
+/// validator remains responsible for domain relationships; this catches wire
+/// shape drift at the actual producer boundary too.
+pub fn validate_schema_instance(doc: &Value) -> Vec<Violation> {
+    let schema_path =
+        if doc.get("schema").and_then(Value::as_str) == Some(super::build::BUILDER_SCHEMA) {
+            "schemas/feature_readiness_builder_packet.v1.schema.json"
+        } else {
+            "schemas/feature_readiness_reviewer_packet.v1.schema.json"
+        };
+    let root = match crate::utils::project_root() {
+        Ok(root) => root,
+        Err(error) => return vec![Violation::new("schema_instrument_failure", error.to_string())],
+    };
+    let text = match std::fs::read_to_string(root.join(schema_path)) {
+        Ok(text) => text,
+        Err(error) => {
+            return vec![Violation::new(
+                "schema_instrument_failure",
+                format!("reading {schema_path}: {error}"),
+            )];
+        }
+    };
+    let schema: Value = match serde_json::from_str(&text) {
+        Ok(schema) => schema,
+        Err(error) => {
+            return vec![Violation::new(
+                "schema_instrument_failure",
+                format!("parsing {schema_path}: {error}"),
+            )];
+        }
+    };
+    let validator = match jsonschema::validator_for(&schema) {
+        Ok(validator) => validator,
+        Err(error) => {
+            return vec![Violation::new(
+                "schema_instrument_failure",
+                format!("compiling {schema_path}: {error}"),
+            )];
+        }
+    };
+    validator
+        .iter_errors(doc)
+        .map(|error| Violation::new("json_schema_violation", format!("{schema_path}: {error}")))
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Violation {
     pub code: String,
@@ -1100,6 +1147,45 @@ fn validate_delivery(object: &serde_json::Map<String, Value>, violations: &mut V
     }
 }
 
+fn validate_delivery_authority(
+    object: &serde_json::Map<String, Value>,
+    violations: &mut Vec<Violation>,
+) {
+    let Some(work) = object.get("work").and_then(Value::as_object) else { return };
+    let Some(node_id) = work.get("node_id").and_then(Value::as_str) else { return };
+    let Some(node) = nodes::all_nodes().into_iter().find(|node| node.node_id == node_id) else {
+        return;
+    };
+    let Some(delivery) = object.get("delivery").and_then(Value::as_object) else { return };
+    let Some(issues) = delivery.get("issues").and_then(Value::as_object) else { return };
+    let expected = build::delivery_issue_ids(&node, &nodes::all_nodes());
+    let actual_controller = issues.get("controller").and_then(Value::as_u64);
+    if actual_controller != Some(u64::from(expected.0)) {
+        violations.push(Violation::new(
+            "controller_mismatch",
+            "delivery.issues.controller must equal the registry controller issue",
+        ));
+    }
+    for (key, expected) in [("dependencies", expected.1), ("unblocks", expected.2)] {
+        let actual: Vec<u32> = issues
+            .get(key)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_u64)
+            .filter_map(|value| u32::try_from(value).ok())
+            .collect();
+        if actual != expected {
+            violations.push(Violation::new(
+                "routing_mismatch",
+                format!(
+                    "delivery.issues.{key} must equal the registry-derived authoritative routing"
+                ),
+            ));
+        }
+    }
+}
+
 fn validate_stop(
     object: &serde_json::Map<String, Value>,
     role: &str,
@@ -1195,6 +1281,7 @@ pub fn validate_builder(doc: &Value) -> Vec<Violation> {
     validate_sequence(object, &mut violations);
     validate_proof(object, &mut violations);
     validate_delivery(object, &mut violations);
+    validate_delivery_authority(object, &mut violations);
     validate_stop(object, role, &mut violations);
     check_banned_text(doc, &mut violations);
     check_no_mutable_state(doc, &mut violations);
@@ -1400,6 +1487,23 @@ pub fn validate_pair(builder: &Value, reviewer: &Value) -> Vec<Violation> {
             ),
         ));
     }
+    for (path, builder_value, reviewer_value) in [
+        ("issues", builder.pointer("/work/issues"), reviewer.pointer("/subject/issues")),
+        ("role", builder.pointer("/work/role"), reviewer.pointer("/subject/role")),
+        ("profile", builder.pointer("/work/profile"), reviewer.pointer("/subject/profile")),
+        (
+            "claim ceiling",
+            builder.pointer("/work/objective_sentence"),
+            reviewer.pointer("/subject/claim_ceiling_sentence"),
+        ),
+    ] {
+        if builder_value != reviewer_value {
+            violations.push(Violation::new(
+                "subject_mismatch",
+                format!("reviewer {path} does not match the builder subject"),
+            ));
+        }
+    }
     let expected_id = builder.get("packet_id").cloned().unwrap_or(Value::Null);
     let expected_digest = build::content_digest(builder);
     let actual_id = reviewer.pointer("/builder_ref/packet_id").cloned().unwrap_or(Value::Null);
@@ -1416,7 +1520,11 @@ pub fn validate_pair(builder: &Value, reviewer: &Value) -> Vec<Violation> {
     }
     let builder_base = builder.pointer("/delivery/base_head").cloned().unwrap_or(Value::Null);
     let reviewer_base = reviewer.pointer("/currentness/base_head").cloned().unwrap_or(Value::Null);
-    if builder_base != reviewer_base {
+    let equivalent_main =
+        |value: &Value| value.as_str().and_then(|text| text.strip_prefix("main@")).is_some();
+    if builder_base != reviewer_base
+        && !(equivalent_main(&builder_base) && equivalent_main(&reviewer_base))
+    {
         violations.push(Violation::new(
             "stale_head",
             "reviewer base/head differs from the builder packet; the review is stale for affected dimensions",

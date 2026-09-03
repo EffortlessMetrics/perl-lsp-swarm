@@ -144,9 +144,13 @@ fn run_one(
 
     let builder_violations = validate::validate_builder(&builder_doc);
     let reviewer_violations = validate::validate_reviewer(&reviewer_doc);
+    let builder_schema_violations = validate::validate_schema_instance(&builder_doc);
+    let reviewer_schema_violations = validate::validate_schema_instance(&reviewer_doc);
     let pair_violations = validate::validate_pair(&builder_doc, &reviewer_doc);
     report_violations("builder", node.node_id, &builder_violations)?;
     report_violations("reviewer", node.node_id, &reviewer_violations)?;
+    report_violations("builder-schema", node.node_id, &builder_schema_violations)?;
+    report_violations("reviewer-schema", node.node_id, &reviewer_schema_violations)?;
     report_violations("pair", node.node_id, &pair_violations)?;
 
     let doc = if reviewer { &reviewer_doc } else { &builder_doc };
@@ -168,6 +172,11 @@ fn run_one(
             if compact_text != render::compact(doc) {
                 bail!("non-deterministic reviewer compact rendering for {}", node.node_id);
             }
+            report_violations(
+                "reviewer-compact",
+                node.node_id,
+                &render::validate_reviewer_compact_lossless(doc, &compact_text),
+            )?;
         } else {
             let loss = render::validate_compact_lossless(doc, &compact_text);
             report_violations("compact", node.node_id, &loss)?;
@@ -223,6 +232,16 @@ fn run_all(snapshot_path: Option<&Path>) -> Result<()> {
         report_violations("builder", node.node_id, &validate::validate_builder(&builder_doc))?;
         report_violations("reviewer", node.node_id, &validate::validate_reviewer(&reviewer_doc))?;
         report_violations(
+            "builder-schema",
+            node.node_id,
+            &validate::validate_schema_instance(&builder_doc),
+        )?;
+        report_violations(
+            "reviewer-schema",
+            node.node_id,
+            &validate::validate_schema_instance(&reviewer_doc),
+        )?;
+        report_violations(
             "pair",
             node.node_id,
             &validate::validate_pair(&builder_doc, &reviewer_doc),
@@ -247,6 +266,11 @@ fn run_all(snapshot_path: Option<&Path>) -> Result<()> {
         if reviewer_compact != render::compact(&reviewer_doc) {
             bail!("non-deterministic reviewer compact rendering for {}", node.node_id);
         }
+        report_violations(
+            "reviewer-compact",
+            node.node_id,
+            &render::validate_reviewer_compact_lossless(&reviewer_doc, &reviewer_compact),
+        )?;
         println!(
             "FR_PACKET node={} builder={} role={} status=ok",
             node.node_id,

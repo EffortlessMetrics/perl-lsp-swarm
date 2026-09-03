@@ -450,17 +450,22 @@ pub fn compact(doc: &Value) -> String {
                 .to_owned()
         };
         out.push_str(&format!(
-            "REVIEW rv={} node={} role={} builder={}\n",
+            "REVIEW rv={} node={} role={} profile={} issues={} builder={} digest={}\n",
             clean("/review_id"),
             clean("/subject/node_id"),
             clean("/subject/role"),
+            clean("/subject/profile"),
+            compact_json(doc.pointer("/subject/issues")),
             clean("/builder_ref/packet_id"),
+            clean("/builder_ref/digest"),
         ));
         out.push_str(&format!("CEILING: {}\n", clean("/subject/claim_ceiling_sentence")));
         out.push_str(&format!(
-            "CURRENTNESS: base={} state={}\n",
+            "CURRENTNESS: base={} state={} invalidators={} stale_rule={}\n",
             clean("/currentness/base_head"),
-            clean("/currentness/live_state")
+            clean("/currentness/live_state"),
+            compact_json(doc.pointer("/currentness/invalidators")),
+            clean("/currentness/stale_rule"),
         ));
         out.push_str("LENSES: ");
         for (index, lens) in objects(doc, "/lenses").iter().enumerate() {
@@ -472,6 +477,10 @@ pub fn compact(doc: &Value) -> String {
                 out.push_str("; ");
             }
             out.push_str(lens.get("name").and_then(Value::as_str).unwrap_or("?"));
+            out.push_str(&format!(
+                " reason={}",
+                lens.get("reason").and_then(Value::as_str).unwrap_or("?")
+            ));
             for question in strings(lens.get("questions")) {
                 out.push_str(&format!("\n  Q: {question}"));
             }
@@ -667,6 +676,60 @@ pub fn validate_compact_lossless(builder: &Value, compact_text: &str) -> Vec<Vio
                 "compact_loss",
                 format!("compact projection dropped {label}"),
             ));
+        }
+    }
+    violations
+}
+
+/// Validate every load-bearing reviewer field in the compact projection.
+pub fn validate_reviewer_compact_lossless(reviewer: &Value, compact_text: &str) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    for (label, pointer) in [
+        ("review id", "/review_id"),
+        ("node", "/subject/node_id"),
+        ("issues", "/subject/issues"),
+        ("role", "/subject/role"),
+        ("profile", "/subject/profile"),
+        ("claim ceiling", "/subject/claim_ceiling_sentence"),
+        ("builder id", "/builder_ref/packet_id"),
+        ("builder digest", "/builder_ref/digest"),
+        ("base head", "/currentness/base_head"),
+        ("live state", "/currentness/live_state"),
+        ("invalidators", "/currentness/invalidators"),
+        ("stale rule", "/currentness/stale_rule"),
+        ("must-not", "/stop/reviewer_must_not"),
+    ] {
+        let Some(value) = reviewer.pointer(pointer) else { continue };
+        let present = value
+            .as_str()
+            .map(|token| !token.is_empty() && compact_text.contains(token))
+            .unwrap_or_else(|| {
+                strings_of(Some(value)).iter().all(|token| compact_text.contains(token))
+            });
+        if !present {
+            violations
+                .push(Violation::new("compact_loss", format!("compact reviewer dropped {label}")));
+        }
+    }
+    for token in strings_of(reviewer.pointer("/stop/reviewer_must_not")) {
+        if !compact_text.contains(token) {
+            violations.push(Violation::new(
+                "compact_loss",
+                "compact reviewer dropped a must-not constraint",
+            ));
+        }
+    }
+    for lens in objects(reviewer, "/lenses") {
+        if lens.get("applicable").and_then(Value::as_bool) == Some(true) {
+            for field in ["name", "reason"] {
+                let value = lens.get(field).and_then(Value::as_str).unwrap_or("");
+                if !value.is_empty() && !compact_text.contains(value) {
+                    violations.push(Violation::new(
+                        "compact_loss",
+                        format!("compact reviewer dropped lens {field}"),
+                    ));
+                }
+            }
         }
     }
     violations
