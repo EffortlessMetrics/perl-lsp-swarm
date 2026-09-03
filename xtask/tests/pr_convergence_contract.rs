@@ -16,11 +16,8 @@ fn root() -> Result<PathBuf, DynError> {
 fn read(root: &Path, path: &str) -> Result<String, DynError> {
     let full = root.join(path);
     fs::read_to_string(&full).map_err(|error| {
-        std::io::Error::new(
-            error.kind(),
-            format!("failed to read {}: {error}", full.display()),
-        )
-        .into()
+        std::io::Error::new(error.kind(), format!("failed to read {}: {error}", full.display()))
+            .into()
     })
 }
 
@@ -85,9 +82,7 @@ fn table_rows(body: &str) -> Vec<Vec<String>> {
                 .map(|cell| cell.trim().trim_matches('`').to_string())
                 .collect::<Vec<_>>();
             if cells.is_empty()
-                || cells
-                    .iter()
-                    .all(|cell| cell.chars().all(|ch| ch == '-' || ch == ':'))
+                || cells.iter().all(|cell| cell.chars().all(|ch| ch == '-' || ch == ':'))
                 || matches!(
                     cells.first().map(String::as_str),
                     Some("Disposition" | "Observation" | "Later event")
@@ -114,9 +109,7 @@ fn validate_contract(spec: &str) -> Result<(), String> {
     ];
     for marker in required_markers {
         if !spec.contains(marker) {
-            return Err(format!(
-                "missing current semantic-convergence marker {marker:?}"
-            ));
+            return Err(format!("missing current semantic-convergence marker {marker:?}"));
         }
     }
 
@@ -125,10 +118,8 @@ fn validate_contract(spec: &str) -> Result<(), String> {
     }
 
     let disposition_rows = table_rows(section(spec, "## Canonical dispositions")?);
-    let actual_dispositions = disposition_rows
-        .iter()
-        .filter_map(|row| row.first().cloned())
-        .collect::<BTreeSet<_>>();
+    let actual_dispositions =
+        disposition_rows.iter().filter_map(|row| row.first().cloned()).collect::<BTreeSet<_>>();
     let expected_dispositions = [
         "MERGE_EXISTING_CANDIDATE",
         "REPAIR_EXISTING_CANDIDATE",
@@ -152,10 +143,7 @@ fn validate_contract(spec: &str) -> Result<(), String> {
     let invalidation_rows = table_rows(section(spec, "## Invalidation matrix")?);
     let unrelated_main = invalidation_rows
         .iter()
-        .find(|row| {
-            row.first()
-                .is_some_and(|cell| prose(cell) == "unrelated main movement")
-        })
+        .find(|row| row.first().is_some_and(|cell| prose(cell) == "unrelated main movement"))
         .ok_or_else(|| "missing unrelated-main invalidation row".to_string())?;
     if unrelated_main
         .last()
@@ -169,10 +157,7 @@ fn validate_contract(spec: &str) -> Result<(), String> {
         .iter()
         .find(|row| row.first().is_some_and(|cell| cell == "BEHIND_ONLY"))
         .ok_or_else(|| "missing BEHIND_ONLY observation".to_string())?;
-    if behind_only
-        .last()
-        .is_none_or(|route| !prose(route).contains("no required action"))
-    {
+    if behind_only.last().is_none_or(|route| !prose(route).contains("no required action")) {
         return Err("BEHIND_ONLY must remain a no-action observation".to_string());
     }
 
@@ -197,9 +182,7 @@ fn validate_contract(spec: &str) -> Result<(), String> {
         "a prior rebase already happened or has not happened yet",
     ] {
         if !base_section.contains(insufficient) {
-            return Err(format!(
-                "base reconciliation lost insufficiency rule {insufficient:?}"
-            ));
+            return Err(format!("base reconciliation lost insufficiency rule {insufficient:?}"));
         }
     }
 
@@ -212,9 +195,7 @@ fn validate_contract(spec: &str) -> Result<(), String> {
         "the branch must be current with main before merge",
     ] {
         if normalized.contains(forbidden) {
-            return Err(format!(
-                "mandatory-refresh paraphrase restored: {forbidden:?}"
-            ));
+            return Err(format!("mandatory-refresh paraphrase restored: {forbidden:?}"));
         }
     }
 
@@ -313,18 +294,12 @@ fn validate_review_wave(address: &str, finish: &str) -> Result<(), String> {
         "finish-pr",
     )?;
 
-    for forbidden in [
-        "CLASS_REPAIR_REQUIRED",
-        "REPAIR_WAVE_NOT_PROVEN",
-        "HEAD_STABILIZED_FOR_CI",
-    ] {
+    for forbidden in ["CLASS_REPAIR_REQUIRED", "REPAIR_WAVE_NOT_PROVEN", "HEAD_STABILIZED_FOR_CI"] {
         if address.contains(forbidden) || finish.contains(forbidden) {
             return Err(format!("minted overlapping state {forbidden}"));
         }
     }
-    if !address.contains("`MUTABLE_FINDINGS_OPEN`")
-        || !finish.contains("`MUTABLE_FINDINGS_OPEN`")
-    {
+    if !address.contains("`MUTABLE_FINDINGS_OPEN`") || !finish.contains("`MUTABLE_FINDINGS_OPEN`") {
         return Err("lost canonical mutable-findings route".into());
     }
     Ok(())
@@ -389,26 +364,17 @@ fn ratchet_retains_invalidation_and_reconciliation_coverage() -> Result<(), DynE
     let root = root()?;
     let spec = read(&root, "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md")?;
 
-    let invalidation = spec.replacen(
-        "leave the candidate unchanged",
-        "refresh the candidate unconditionally",
-        1,
-    );
+    let invalidation =
+        spec.replacen("leave the candidate unchanged", "refresh the candidate unconditionally", 1);
     assert_ne!(invalidation, spec, "invalidation mutation fixture must apply");
     assert!(
         validate_contract(&invalidation).is_err(),
         "unrelated-main invalidation regression must fail the contract"
     );
 
-    let reconciliation = spec.replacen(
-        "an actual textual conflict",
-        "a branch that is merely behind",
-        1,
-    );
-    assert_ne!(
-        reconciliation, spec,
-        "base-reconciliation mutation fixture must apply"
-    );
+    let reconciliation =
+        spec.replacen("an actual textual conflict", "a branch that is merely behind", 1);
+    assert_ne!(reconciliation, spec, "base-reconciliation mutation fixture must apply");
     assert!(
         validate_contract(&reconciliation).is_err(),
         "base-reconciliation prerequisite loss must fail the contract"
@@ -451,13 +417,9 @@ fn catalogs_name_the_current_contract() -> Result<(), DynError> {
 fn provider_review_repair_convergence_is_bounded() -> Result<(), DynError> {
     let root = root()?;
     for (provider, prefix) in [("Codex", ".agents"), ("Claude", ".claude")] {
-        let address = read(
-            &root,
-            &format!("{prefix}/skills/address-review-comments/SKILL.md"),
-        )?;
+        let address = read(&root, &format!("{prefix}/skills/address-review-comments/SKILL.md"))?;
         let finish = read(&root, &format!("{prefix}/skills/finish-pr/SKILL.md"))?;
-        validate_review_wave(&address, &finish)
-            .map_err(|error| format!("{provider}: {error}"))?;
+        validate_review_wave(&address, &finish).map_err(|error| format!("{provider}: {error}"))?;
 
         let narrow = address.replacen(
             "materially false, misleading, unsafe, under-proven, incompatible with its accepted\ncontract, or outside its stated risk/rollback boundary",
@@ -520,8 +482,7 @@ fn provider_review_repair_convergence_is_bounded() -> Result<(), DynError> {
         assert!(validate_review_wave(&claim_procedure, &finish).is_err());
 
         assert!(
-            validate_review_wave(&format!("{address}\nCLASS_REPAIR_REQUIRED\n"), &finish)
-                .is_err()
+            validate_review_wave(&format!("{address}\nCLASS_REPAIR_REQUIRED\n"), &finish).is_err()
         );
         let thaw = finish.replacen(
             "bounded fresh merge-tree re-evaluation selected by",

@@ -131,7 +131,8 @@ armed.
 A confirmed auto-merge request leaves `REVIEW_CURRENT` intact and returns
 `PR_IN_FLIGHT`. The read-back and current-head compare-and-swap prevent a command success
 or stale branch observation from stranding the claim behind a transition GitHub never
-accepted. They do not make review currentness depend on the SHA.
+accepted. That prevents racing a moving branch. It does not make review currentness
+depend on the SHA.
 
 If the head moves before merge, re-read the candidate. Refresh only proof, review, and
 integration dimensions affected by the new commit. Never use administrative bypass to
