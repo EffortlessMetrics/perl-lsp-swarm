@@ -76,6 +76,13 @@ impl TcpAttachSession {
                     stream.set_write_timeout(Some(timeout))?;
                     self.stream = Some(stream);
                     self.set_connected(true);
+                    // Each successful connection starts with fresh drop
+                    // accounting: a replacement connection's notices must
+                    // count only its own losses, never those inherited from
+                    // the previous connection (#9521). Sharing is preserved
+                    // within the connection (the retired reader keeps writing
+                    // to the old handle, which decays unused).
+                    self.drop_accounting = Arc::new(TcpOutputDropAccounting::new());
                     tracing::info!(address = %addr, "Successfully connected to Perl debugger");
                     return Ok(());
                 }
@@ -146,6 +153,13 @@ impl TcpAttachSession {
     fn set_connected(&self, connected: bool) {
         *self.connected.lock().unwrap_or_else(|error| error.into_inner()) = connected;
     }
+
+    /// Dropped-output total of the CURRENT connection's accounting
+    /// (test instrumentation for the per-connection reset contract).
+    #[cfg(test)]
+    fn dropped_output_events_for_current_connection(&self) -> u64 {
+        self.drop_accounting.dropped_output_events()
+    }
 }
 
 impl Default for TcpAttachSession {
@@ -163,10 +177,107 @@ impl Drop for TcpAttachSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
+    use std::sync::mpsc::sync_channel;
+    use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn new_session_starts_disconnected() {
         let session = TcpAttachSession::new();
         assert!(!session.is_connected());
+    }
+
+    /// A reconnect is a new connection: its drop accounting starts at zero,
+    /// and its first shed output counts only its own loss — never the
+    /// previous connection's unreported drops (#9521 review).
+    #[test]
+    fn reconnect_starts_with_fresh_drop_accounting() -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let port = listener.local_addr()?.port();
+        // One accepted socket per connection; each writes two output frames,
+        // so the capacity-1 fan-in queue sheds exactly one per connection.
+        let frame_of = |seq: i64| -> Result<Vec<u8>, serde_json::Error> {
+            Ok(perl_lsp_rs_core::transport::framing::frame(
+                serde_json::to_vec(&serde_json::json!({
+                    "type": "event",
+                    "seq": seq,
+                    "event": "output",
+                    "body": { "category": "console", "output": format!("drop {seq}") }
+                }))?
+                .as_slice(),
+            ))
+        };
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&frame_of(1)?);
+        bytes.extend_from_slice(&frame_of(2)?);
+
+        let server = thread::spawn(move || -> std::io::Result<()> {
+            use std::io::Write;
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept()?;
+                socket.write_all(&bytes)?;
+                socket.flush()?;
+            }
+            Ok(())
+        });
+
+        let mut session = TcpAttachSession::new();
+        let (event_tx, event_rx) = sync_channel::<DapEvent>(1);
+        session.set_event_sender(event_tx);
+
+        let mut config = TcpAttachConfig::new("127.0.0.1".to_string(), port).with_timeout(2000);
+        session.connect(&mut config)?;
+        session.start_reader()?;
+
+        // Connection 1: capacity-1 queue takes the first output, sheds the
+        // second once the reader admits it.
+        let deadline = std::time::Instant::now() + Duration::from_millis(2000);
+        while session.dropped_output_events_for_current_connection() == 0 {
+            if std::time::Instant::now() > deadline {
+                return Err("connection 1 never recorded its own drop".into());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        session.disconnect()?;
+        session.connect(&mut config)?;
+        assert_eq!(
+            session.dropped_output_events_for_current_connection(),
+            0,
+            "a replacement connection must start with fresh drop accounting"
+        );
+
+        // Drain the previous connection's queued output so connection 2's
+        // first frame is admitted and only its second is shed.
+        loop {
+            match event_rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(_) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("the fan-in queue must stay alive for the replacement".into());
+                }
+            }
+        }
+
+        // Connection 2 sheds its own first output: the notice total counts
+        // only this connection's loss.
+        session.start_reader()?;
+        let deadline = std::time::Instant::now() + Duration::from_millis(2000);
+        while session.dropped_output_events_for_current_connection() == 0 {
+            if std::time::Instant::now() > deadline {
+                return Err("connection 2 never recorded its own drop".into());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            session.dropped_output_events_for_current_connection(),
+            1,
+            "connection 2's notice total must count only its own single loss"
+        );
+
+        let _ = session.disconnect();
+        server.join().map_err(|e| format!("server thread failed: {e:?}"))??;
+        Ok(())
     }
 }
