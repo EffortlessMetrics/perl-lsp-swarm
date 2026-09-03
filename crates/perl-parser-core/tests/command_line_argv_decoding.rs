@@ -725,6 +725,85 @@ fn a_module_expression_that_is_not_a_module_name_is_reported_as_ambiguous() {
 }
 
 #[test]
+fn an_earlier_utf8_pragma_makes_later_unicode_module_names_plain() {
+    // `-M` splices what perl's byte-wise option scan leaves behind into a `use`
+    // statement, which the lexer then reads under whatever pragmas the earlier
+    // `-M` arguments already put in force. So the same argument is a module
+    // name or a syntax error depending on what came before it. Against 5.38.2:
+    //
+    //   perl -Mutf8 -MFooα -e1 → Can't locate Fooα.pm in @INC
+    //   perl -MFooα -Mutf8 -e1 → Unrecognized character \xCE  (order matters)
+    //
+    // The pragma is keyed to the call perl makes, not the spelling:
+    //
+    //   -Mutf8   → Import   → enabled
+    //   -Mutf8=x → Import   → enabled
+    //   -mutf8   → NoCall   → unchanged (`use utf8 ()` runs no import)
+    //   -M-utf8  → Unimport → disabled
+    for (before, expected_plain) in [
+        (vec!["-Mutf8"], true),
+        (vec!["-Mutf8=x"], true),
+        (vec!["-mutf8"], false),
+        (vec!["-M-utf8"], false),
+        (vec!["-Mutf8", "-M-utf8"], false),
+        (vec!["-M-utf8", "-Mutf8"], true),
+        (vec![], false),
+    ] {
+        let mut argv = before.clone();
+        argv.push("-MFooα");
+        argv.extend_from_slice(&["-e", "print"]);
+        let invocation = perl(&argv);
+        let ContextFactKind::ModuleImport { spec, .. } = &facts(&invocation)[before.len()] else {
+            panic!("expected a module import after {before:?}");
+        };
+        assert_eq!(spec.module, "Fooα");
+        assert_eq!(
+            spec.module_is_plain_name, expected_plain,
+            "`Fooα` after {before:?} should have plain={expected_plain}",
+        );
+    }
+
+    // Under the pragma a Unicode *letter* leads a later component but a Unicode
+    // *digit* still does not, and the first component is always ASCII because
+    // perl's option scan never reads past a non-ASCII byte:
+    //
+    //   perl -Mutf8 -MFoo::α  -e1 → Can't locate Foo/α.pm
+    //   perl -Mutf8 -MFoo::α٢ -e1 → Can't locate Foo/α٢.pm
+    //   perl -Mutf8 -MFoo::٢  -e1 → Unrecognized character \x{662}
+    //   perl -Mutf8 -Mαβ      -e1 → Module name required with -M option.
+    for (module, expected_plain) in
+        [("Foo::α", true), ("Foo::α٢", true), ("Fooα٢", true), ("Foo::٢", false)]
+    {
+        let argv = format!("-M{module}");
+        let invocation = perl(&["-Mutf8", argv.as_str(), "-e", "print"]);
+        let ContextFactKind::ModuleImport { spec, .. } = &facts(&invocation)[1] else {
+            panic!("expected a module import for {module}");
+        };
+        assert_eq!(
+            spec.module_is_plain_name, expected_plain,
+            "`{module}` under utf8 should have plain={expected_plain}",
+        );
+    }
+    assert!(matches!(
+        perl_error(&["-Mutf8", "-Mαβ", "-e", "print"]),
+        InvocationDecodeError::EmptyModuleName { switch: 'M', .. }
+    ));
+
+    // The `-m` spelling is refused at option-parse time either way: perl reports
+    // `Can't use '...' after -mname` for both `perl -mFooα` and
+    // `perl -Mutf8 -mFooα`, so the pragma does not reach it.
+    for argv in [vec!["-mFooα", "-e", "print"], vec!["-Mutf8", "-mFooα", "-e", "print"]] {
+        assert!(
+            matches!(
+                perl_error(&argv),
+                InvocationDecodeError::UnexpectedModuleSuffix { character: 'α', .. }
+            ),
+            "{argv:?} must be refused at the option level",
+        );
+    }
+}
+
+#[test]
 fn an_empty_module_name_is_refused() {
     // perl: `Module name required with -M option.`
     assert!(matches!(

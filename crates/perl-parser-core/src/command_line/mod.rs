@@ -45,6 +45,11 @@
 //!   name scan stops, while `-m` refuses whatever the scan did not read. So
 //!   `-M5.010` is the version declaration `use 5.010`, which calls no module
 //!   method, and `-m5.010` dies with `Can't use '.' after -mname`;
+//! - because `-M` splices into a `use` statement, an earlier `-Mutf8` changes
+//!   how a later one is read: `perl -Mutf8 -MFooα` loads `Fooα.pm` while
+//!   `perl -MFooα -Mutf8` dies on `Unrecognized character`. Module-name
+//!   classification is therefore ordered argv state, not a per-argument
+//!   property;
 //! - a value-taking switch consumes the rest of its cluster, so `-ine` is `-i`
 //!   with the extension `ne`, not `-i -n -e`;
 //! - `-l` and `-0` consume octal digits and then keep bundling, so `-lane` is
