@@ -3089,6 +3089,51 @@
       "state": "active"
     },
     {
+      "path": "xtask/tests/ci_route_plan_canonical.rs",
+      "enclosing_test_or_function": "fixture",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|error| panic!(\"fixture {name}: {error}\"))",
+      "selector_identity": "invocation:5ed344838e120da0:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/ci_route_plan_canonical.rs",
+      "enclosing_test_or_function": "golden_digest",
+      "macro_family": "panic!",
+      "normalized_snippet": "digests[name].as_str().unwrap_or_else(|| panic!(\"digests.json carries {name}\")).to_string()",
+      "selector_identity": "invocation:9406fb6ec4c88e2c:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/ci_route_plan_canonical.rs",
+      "enclosing_test_or_function": "checked_schema",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|error| panic!(\"read checked schema {SCHEMA_PATH}: {error}\"));",
+      "selector_identity": "invocation:c580080e806a7b6e:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/ci_route_plan_canonical.rs",
+      "enclosing_test_or_function": "checked_schema",
+      "macro_family": "panic!",
+      "normalized_snippet": "serde_json::from_str(&text).unwrap_or_else(|error| panic!(\"parse checked schema: {error}\"))",
+      "selector_identity": "invocation:c713483ac18fc681:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/ci_route_plan_canonical.rs",
+      "enclosing_test_or_function": "generated_payloads_validate_against_the_checked_schema",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|error| panic!(\"schema conformance: {error}\"));",
+      "selector_identity": "invocation:35cd83aa8ec567d5:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
       "path": "crates/perl-dap/src/backend/native_perldb.rs",
       "enclosing_test_or_function": "rust_sources_under",
       "macro_family": "panic!",
