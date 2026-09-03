@@ -21,6 +21,7 @@ use common::{reset_sigkill_escalation_observation, sigkill_escalation_was_observ
 use common::{
     DEBUGGEE_PERL_OVERRIDE_ENV, ProbeThreadSpawnFailure,
     probe_debuggee_perl_for_test_with_descendant_pid,
+    probe_debuggee_perl_for_test_with_descendant_pid_publication_barrier,
     probe_debuggee_perl_for_test_with_thread_spawn_failure, resolve_debuggee_perl,
 };
 use std::fs;
@@ -161,6 +162,10 @@ fn main() {
         let _ = fs::write(ready_file, "ready");
     }
     if let Some(pid_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE") {
+        // Keep a separate receipt for the direct child so the PID-publication
+        // failure control can prove that cleanup reaps both process levels.
+        let child_pid_file = format!("{}.child", pid_file.to_string_lossy());
+        let _ = fs::write(child_pid_file, std::process::id().to_string());
         let descendant_binary = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_BINARY");
         let Some(ready_file) = env::var_os("PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE") else {
             thread::sleep(Duration::from_secs(60));
@@ -297,6 +302,57 @@ fn main() {
         require!(
             common::active_probe_reader_count() == 0,
             "{label} probe left an active reader thread"
+        );
+    }
+
+    // The PID receipt itself is deliberately made unwritable. The probe child
+    // has already spawned, so returning directly from fs::write would leak a
+    // live parent (and potentially its descendant) unless the publication
+    // failure uses the same process-tree cleanup boundary as later failures.
+    {
+        let before = current_process_probe_artifacts()?;
+        let pid_file = controls.path().join("pid-receipt-write-failure.pid");
+        let receipt_path = common::probe_pid_file_for_test(&pid_file);
+        fs::create_dir(&receipt_path)?;
+        let child_pid_path = PathBuf::from(format!("{}.child", pid_file.display()));
+        let binary = hanging.clone();
+        let descendant_binary = descendant.clone();
+        let pid_file_for_probe = pid_file.clone();
+        let probe = std::thread::spawn(move || {
+            probe_debuggee_perl_for_test_with_descendant_pid_publication_barrier(
+                &binary,
+                Duration::from_secs(10),
+                &pid_file_for_probe,
+                &descendant_binary,
+            )
+        });
+        let child_pid = wait_for_pid_file(&child_pid_path, Duration::from_secs(5))?;
+        let descendant_pid = wait_for_pid_file(&pid_file, Duration::from_secs(5))?;
+        wait_for_marker_file(&pid_file.with_extension("pid.ready"), Duration::from_secs(5))?;
+        let result =
+            probe.join().map_err(|_| io::Error::other("PID receipt failure probe panicked"))?;
+        let error = result
+            .err()
+            .ok_or_else(|| io::Error::other("PID receipt publication failure must be reported"))?;
+        require!(
+            error.contains("cannot publish probe child PID"),
+            "receipt failure must remain the primary error, got: {error}"
+        );
+        wait_for_process_exit("PID receipt failure child", child_pid, Duration::from_secs(5))?;
+        wait_for_process_exit(
+            "PID receipt failure descendant",
+            descendant_pid,
+            Duration::from_secs(5),
+        )?;
+        require!(
+            common::active_probe_reader_count() == 0,
+            "PID receipt failure probe left an active reader thread"
+        );
+        let after = current_process_probe_artifacts()?;
+        let new_artifacts: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
+        require!(
+            new_artifacts.is_empty(),
+            "PID receipt failure probe left newly created workspaces: {new_artifacts:?}"
         );
     }
 
