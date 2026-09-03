@@ -46,6 +46,21 @@ created = "2026-08-15"
 review_after = "2026-11-15"
 
 [[allow]]
+id = "non-rust-changelog-product-12815-fixture"
+path = "xtask/tests/fixtures/product-12815-Fixed-221500.yaml"
+kind = "test_fixture"
+language = "yaml"
+surface = "fixtures"
+classification = "test"
+owner = "tooling/changelog"
+reason = "Permanent Changie fragment fixture preserving the product-12815 folded-body regression after release batching removes unreleased entries."
+covered_by = [
+  "cargo test -p xtask --bin xtask tasks::changelog::tests::repaired_product_12815_fragment_is_schema_valid -- --exact --nocapture",
+]
+created = "2026-09-02"
+review_after = "2027-03-02"
+
+[[allow]]
 id = "non-rust-generated-badge-endpoints"
 glob = "badges/*.json"
 kind = "generated_badge_endpoint"
