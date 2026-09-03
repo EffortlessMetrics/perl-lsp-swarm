@@ -2,14 +2,14 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import {
-  openUserOwnedDemoProject,
-  prepareUserOwnedDemoProject,
-} from '../demoProject';
+import { openUserOwnedDemoProject, prepareUserOwnedDemoProject } from '../demoProject';
 
 const METADATA_FILE = '.perl-lsp-demo-template.json';
 
-function makeContext(extensionRoot: string, storageRoot: string): {
+function makeContext(
+  extensionRoot: string,
+  storageRoot: string,
+): {
   context: vscode.ExtensionContext;
   update: jest.Mock;
 } {

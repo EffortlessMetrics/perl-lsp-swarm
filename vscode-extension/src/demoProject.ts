@@ -245,10 +245,7 @@ export async function prepareUserOwnedDemoProject(
     }
 
     const version = safeVersion(context.extension.packageJSON.version);
-    const destination = path.join(
-      demosRealPath,
-      `perl-lsp-demo-${version}-${snapshot.digest}`,
-    );
+    const destination = path.join(demosRealPath, `perl-lsp-demo-${version}-${snapshot.digest}`);
     if (!isWithinBase(demosRealPath, destination)) {
       throw new Error('demo destination escaped the user-owned demo root');
     }
@@ -293,7 +290,9 @@ export async function prepareUserOwnedDemoProject(
 export async function openUserOwnedDemoProject(context: vscode.ExtensionContext): Promise<void> {
   const prepared = await prepareUserOwnedDemoProject(context);
   if (prepared.kind === 'failed') {
-    void vscode.window.showErrorMessage(`Perl LSP: demo project could not be prepared: ${prepared.reason}`);
+    void vscode.window.showErrorMessage(
+      `Perl LSP: demo project could not be prepared: ${prepared.reason}`,
+    );
     return;
   }
 
@@ -318,8 +317,5 @@ export async function openUserOwnedDemoProject(context: vscode.ExtensionContext)
     return;
   }
 
-  await context.globalState.update(
-    `perl-lsp.demoProjectOpened.${prepared.templateDigest}`,
-    true,
-  );
+  await context.globalState.update(`perl-lsp.demoProjectOpened.${prepared.templateDigest}`, true);
 }
