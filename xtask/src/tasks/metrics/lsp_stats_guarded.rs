@@ -1,6 +1,6 @@
 //! Fail-closed boundary for the receipt-based editor UX scorecard.
 //!
-//! The historical scorecard implementation remains in `lsp_stats.rs`; this
+//! The historical scorecard implementation remains in `lsp_stats_impl.rs`; this
 //! module validates receipt and fixture identity before delegating to it. The
 //! boundary prevents malformed or matrix-drifted UX run evidence from
 //! disappearing from an otherwise green aggregation while preserving other
@@ -43,6 +43,15 @@ const UX_RUN_SIGNATURE_FIELDS: &[&str] = &[
 const UX_RUN_DISTINCTIVE_FIELDS: &[&str] =
     &["operation_timings", "time_to_first_useful_result_ms", "canonical_repro", "friendly_repro"];
 
+/// Signature fields that alone identify a receipt as an editor-UX scenario run
+/// even when it declares no `kind`, used to decide whether an unrecognized
+/// receipt is a foreign companion or a malformed UX run that must fail closed.
+const UX_RUN_IDENTITY_FIELDS: &[&str] =
+    &["workflow_id", "scenario_file", "test_name", "ci_tier", "assertions"];
+
+/// Receipt `kind` values that legitimately share the UX receipt directory and
+/// carry overlapping signature fields without being UX scenario runs. Listing
+/// them keeps the fail-closed check from rejecting valid companion evidence.
 const KNOWN_NON_UX_COMPANION_KINDS: &[&str] = &["golden_editor_workload"];
 
 #[derive(Debug, Deserialize)]
@@ -201,9 +210,7 @@ fn looks_like_ux_scenario_run(value: &Value) -> bool {
         return false;
     }
 
-    let has_ux_identity = ["workflow_id", "scenario_file", "test_name", "ci_tier", "assertions"]
-        .iter()
-        .any(|field| object.contains_key(*field));
+    let has_ux_identity = UX_RUN_IDENTITY_FIELDS.iter().any(|field| object.contains_key(*field));
     let has_malformed_marker = signature_fields.iter().any(|field| malformed_marker(object, field));
     if has_malformed_marker {
         return true;
