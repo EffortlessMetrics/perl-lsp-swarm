@@ -1212,13 +1212,20 @@ fn ci_authority_cannot_be_synthesized_from_editor_trust() -> Result<(), Box<dyn 
         ),
     );
 
+    // `Unsupported`, not `Denied`: the operation cannot run in this scope at
+    // all, so there is no authority here for anyone to grant. The security
+    // property is unchanged — nothing is granted either way.
     require(
-        decision.outcome() == AuthorizationOutcome::Denied,
+        decision.outcome() == AuthorizationOutcome::Unsupported,
         "a trusted editor workspace must not authorize a hermetic CI process",
     )?;
     require(
+        !decision.outcome().permits_execution() && decision.granted().is_empty(),
+        "a scope the profile does not admit grants nothing",
+    )?;
+    require(
         has_reason(&decision, "ci_authority_not_synthesizable"),
-        "the denial must name the missing CI authority",
+        "the outcome must name the missing CI authority",
     )?;
     Ok(())
 }
@@ -2814,5 +2821,96 @@ fn caller_supplied_identity_material_is_bounded() -> Result<(), Box<dyn Error>> 
         vec![tool],
     );
     require(exact.validate().is_ok(), "a value exactly at the bound is accepted")?;
+    Ok(())
+}
+
+/// An unproven input asks for provenance, not for configuration.
+///
+/// Advising a user to change a setting cannot establish where an input came
+/// from, so the remedy has to track the finding rather than the code path.
+#[test]
+fn unproven_inputs_name_provenance_as_the_remedy() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let tool = verified_tool();
+
+    // An external path whose provenance could not be established.
+    let unproven_path = ClassifiedInput::new(
+        "include.root",
+        InputRiskClass::ExternalAbsolutePath,
+        EnvironmentInputAuthority::UserConfiguration,
+        InputDisposition::UnknownNotProven,
+        None,
+        "external_root_provenance_unknown",
+    );
+    let mut request = intent(
+        OperationProfile::SourceAnalysisOnly,
+        ExecutionReasonClass::Probe,
+        &scope,
+        &bound,
+        vec![unproven_path.id.clone()],
+    );
+    request.requested = CapabilitySet::new([
+        ExecutionCapability::SourceAnalysis,
+        ExecutionCapability::OutsideRootPath,
+    ]);
+    let path_decision = authorize(
+        &request,
+        &evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::None,
+            &bound,
+            vec![unproven_path],
+        ),
+    );
+    require(
+        path_decision
+            .reasons()
+            .iter()
+            .any(|reason| reason.actionable_authority == ActionableAuthority::InputProvenance),
+        "an unproven external path must ask for provenance",
+    )?;
+    require(
+        !has_reason(&path_decision, "external_path_unconfirmed"),
+        "an unproven path is not merely unconfirmed",
+    )?;
+
+    // A reviewed activation whose provenance could not be established.
+    let unproven_env = ClassifiedInput::new(
+        "environment.perl5lib",
+        InputRiskClass::AmbientPerlEnvironment,
+        EnvironmentInputAuthority::ExplicitEnvironment,
+        InputDisposition::UnknownNotProven,
+        None,
+        "activation_provenance_unknown",
+    );
+    let env_decision = authorize(
+        &intent(
+            OperationProfile::PerlCompileCurrentSavedFile,
+            ExecutionReasonClass::ExplicitUserAction,
+            &scope,
+            &bound,
+            vec![tool.id.clone(), unproven_env.id.clone()],
+        ),
+        &evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "compile".to_string() },
+            &bound,
+            vec![tool, unproven_env],
+        ),
+    );
+    require(
+        env_decision.outcome() == AuthorizationOutcome::NotProven,
+        "an unproven activation is not-proven",
+    )?;
+    require(
+        env_decision
+            .reasons()
+            .iter()
+            .any(|reason| reason.actionable_authority == ActionableAuthority::InputProvenance),
+        "an unproven activation must ask for provenance",
+    )?;
     Ok(())
 }

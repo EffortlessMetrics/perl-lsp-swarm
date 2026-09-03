@@ -46,11 +46,18 @@ use super::{
 };
 use crate::Digest;
 
-/// Schema version for [`ExecutionAuthorizationDecision`] and its inputs.
+/// Schema version carried on the wire by [`ExecutionAuthorizationDecision`].
 ///
 /// Bump whenever the meaning of an existing field, reason code, capability, or
 /// registry entry changes. Adding a reviewed operation profile that no existing
 /// caller can observe is additive; changing what a profile requires is not.
+///
+/// [`ExecutionIntent`] and [`AuthorizationEvidence`] do **not** carry this
+/// version on the wire. They are producer-constructed inputs evaluated in the
+/// same process version that built them, so a producer must re-derive them
+/// rather than persist and replay them across a version change; only the
+/// decision is versioned for transport, which is what #11095 requires of a
+/// published identity.
 pub const EXECUTION_AUTHORIZATION_SCHEMA_VERSION: u32 = 1;
 
 /// Version of the reviewed operation registry in [`OperationTrustRequirement`].
@@ -152,11 +159,16 @@ impl ExecutionCapability {
     }
 }
 
-/// An immutable set of capabilities.
+/// A set of capabilities, with no in-place mutation.
 ///
-/// There is deliberately no insert, extend, or union-in-place operation: a
-/// granted set produced by [`authorize`] cannot be widened by a downstream
-/// consumer.
+/// Anyone may *construct* an arbitrary set — [`Self::new`] and deserialization
+/// both allow it, and callers need that to declare what an intent requests. The
+/// property this buys is narrower and worth stating precisely: because there is
+/// no insert, extend, or union-in-place operation, and because
+/// [`ExecutionAuthorizationDecision`] keeps its granted set private behind a
+/// read-only accessor, a consumer holding a decision cannot widen the set that
+/// decision granted. Substituting a different decision is caught by
+/// [`ExecutionAuthorizationDecision::validate`], not by this type.
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct CapabilitySet(BTreeSet<ExecutionCapability>);
@@ -2223,8 +2235,11 @@ pub fn authorize(
         } else {
             ActionableAuthority::NotActionable
         };
+        // Not a refusal of authority — the operation cannot run in this scope
+        // at all. `Unsupported` is what this module documents for that, and
+        // saying `Denied` would invite a remedy that cannot work here.
         return finish(
-            AuthorizationOutcome::Denied,
+            AuthorizationOutcome::Unsupported,
             CapabilitySet::empty(),
             CapabilitySet::empty(),
             vec![reason(code, None, None, actionable)],
@@ -2742,12 +2757,12 @@ fn evaluate_environment_code_loading(
     }
     if saw_explicit {
         if worst != CapabilityFinding::Granted {
-            reasons.push(reason(
-                REASON_ENVIRONMENT_NOT_ACCEPTED,
-                Some(capability),
-                blocking,
-                ActionableAuthority::UserConfiguration,
-            ));
+            let (code, actionable) = if worst == CapabilityFinding::NotProven {
+                (REASON_UNKNOWN_PROVENANCE, ActionableAuthority::InputProvenance)
+            } else {
+                (REASON_ENVIRONMENT_NOT_ACCEPTED, ActionableAuthority::UserConfiguration)
+            };
+            reasons.push(reason(code, Some(capability), blocking, actionable));
         }
         return worst;
     }
@@ -2828,12 +2843,18 @@ fn evaluate_outside_root_path(
     if worst == CapabilityFinding::Granted {
         return worst;
     }
-    let code = if worst == CapabilityFinding::Denied {
-        REASON_EXTERNAL_PATH_DENIED
-    } else {
-        REASON_EXTERNAL_PATH_UNCONFIRMED
+    // The remedy has to match the finding: an unproven path needs its
+    // provenance established, which no amount of configuration will do.
+    let (code, actionable) = match worst {
+        CapabilityFinding::Denied => {
+            (REASON_EXTERNAL_PATH_DENIED, ActionableAuthority::UserConfiguration)
+        }
+        CapabilityFinding::NotProven => {
+            (REASON_UNKNOWN_PROVENANCE, ActionableAuthority::InputProvenance)
+        }
+        _ => (REASON_EXTERNAL_PATH_UNCONFIRMED, ActionableAuthority::UserConfiguration),
     };
-    reasons.push(reason(code, Some(capability), blocking, ActionableAuthority::UserConfiguration));
+    reasons.push(reason(code, Some(capability), blocking, actionable));
     worst
 }
 
