@@ -342,7 +342,16 @@ const TRANSFORM_OPTIONS: [&str; 3] = ["-as", "-prefix", "-postfix"];
 /// only that the token is not a prefix of a longer word (`-aside`) and that it
 /// sits in option position. `covers_every_recognizer_match` pins that.
 fn contains_transform_syntax(text: &str) -> bool {
+    count_transform_options(text) > 0
+}
+
+/// How many transform options sit in option position in `text`.
+///
+/// Shares one role predicate with [`contains_transform_syntax`] so the
+/// presence test and the arity test cannot drift apart.
+fn count_transform_options(text: &str) -> usize {
     let masked = mask_data_values(text);
+    let mut total = 0;
 
     for option in TRANSFORM_OPTIONS {
         let mut rest = masked.as_str();
@@ -356,12 +365,31 @@ fn contains_transform_syntax(text: &str) -> bool {
             if !after.starts_with(|next: char| next.is_alphanumeric() || next == '_')
                 && tail.trim_start().starts_with("=>")
             {
-                return true;
+                total += 1;
             }
             rest = &rest[offset + option.len()..];
         }
     }
-    false
+    total
+}
+
+/// Whether one recognizer-matched `name => { ... }` entry carries exactly one
+/// transform option.
+///
+/// Each recognizer reads a single option and claims the whole entry, never
+/// seeing what else the map holds. A map carrying two options therefore
+/// produces one alias per matching recognizer — two symbols for an entry
+/// Importer installs under exactly one name (`{-as => 'a', -prefix => 'p'}`
+/// yielded both `a` and `p_ok`), or one alias built from a single option when
+/// the real name composes both (`{-prefix => 'p', -postfix => 's'}` yielded
+/// `p_ok`). Either way a name that does not exist is published, and nothing
+/// downstream can catch it: the entry's span is stripped, so the residual scan
+/// sees nothing left to object to.
+///
+/// Which single name Importer composes for such a map is not decided here.
+/// This resolver only refuses to guess.
+fn entry_carries_one_transform_option(span: &str) -> bool {
+    count_transform_options(span) == 1
 }
 
 /// Blank the Perl values whose bytes are data rather than option syntax, so
@@ -669,11 +697,17 @@ fn scan_import_transforms(
 
     let mut renames: Vec<(String, String)> = Vec::new();
     for caps in rename_as.captures_iter(raw_args) {
+        if !entry_carries_one_transform_option(caps.get(0).map_or("", |span| span.as_str())) {
+            return TransformScan::Unresolved;
+        }
         if let (Some(name), Some(alias)) = (caps.get(1), caps.get(2)) {
             renames.push((name.as_str().to_string(), alias.as_str().to_string()));
         }
     }
     for caps in rename_fix.captures_iter(raw_args) {
+        if !entry_carries_one_transform_option(caps.get(0).map_or("", |span| span.as_str())) {
+            return TransformScan::Unresolved;
+        }
         if let (Some(name), Some(kind), Some(fix)) = (caps.get(1), caps.get(2), caps.get(3)) {
             let base = name.as_str();
             let alias = if kind.as_str() == "prefix" {
