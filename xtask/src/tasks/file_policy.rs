@@ -530,10 +530,6 @@ fn tree_file(root: &Path, sha: &str, path: &str) -> Result<(String, Vec<u8>)> {
     Ok((object_sha.to_string(), bytes))
 }
 
-fn classify_tree(root: &Path, sha: &str) -> Result<(Vec<FileRecord>, String)> {
-    classify_tree_at(root, sha, Utc::now().date_naive())
-}
-
 fn classify_tree_at(
     root: &Path,
     sha: &str,
