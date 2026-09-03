@@ -3600,6 +3600,24 @@
       "selector_identity": "invocation:793f59696a323163:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/tests/external_peer_conformance.rs",
+      "enclosing_test_or_function": "peer_reported_debuggee_failure_is_not_an_adapter_bug",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected PeerReported from a peer success:false, got {other:?}\"),",
+      "selector_identity": "invocation:597da1e9c968eb1e:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/tests/external_peer_conformance.rs",
+      "enclosing_test_or_function": "peer_response_echoing_a_different_command_is_a_protocol_violation",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"a crossed command must not be reported as an outcome, got {other:?}\"),",
+      "selector_identity": "invocation:47992d21a405fc9c:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
