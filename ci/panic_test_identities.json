@@ -3618,6 +3618,24 @@
       "selector_identity": "invocation:47992d21a405fc9c:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "xtask/tests/vim_host_freshness_contract.rs",
+      "enclosing_test_or_function": "teardown_deferred_shutdown_journey_needs_the_real_wire",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"shutdown_completed cell missing\"));",
+      "selector_identity": "invocation:962b086de8be951b:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/vim_host_freshness_contract.rs",
+      "enclosing_test_or_function": "teardown_deferred_shutdown_journey_needs_the_real_wire",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"shutdown_completed cell missing\"));",
+      "selector_identity": "invocation:962b086de8be951b:occurrence:2",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
