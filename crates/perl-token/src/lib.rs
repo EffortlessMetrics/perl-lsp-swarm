@@ -243,6 +243,64 @@ mod tests {
     }
 
     #[test]
+    fn token_new_checked_allows_geometry_only_unknown_rest() {
+        // The budget-stop recovery representation: empty text over a non-empty
+        // span. The payload-free geometry is the signal the parser's typed
+        // `lexer_budget_exhausted` stop cause is keyed on (#14158); it must
+        // construct instead of falling through to a silent `Eof`.
+        let tok = Token::new_checked(TokenKind::UnknownRest, "", 12, 70_013)
+            .expect("geometry-only UnknownRest is a legal recovery representation");
+        assert_eq!(tok.kind(), TokenKind::UnknownRest);
+        assert_eq!(tok.start(), 12);
+        assert_eq!(tok.end(), 70_013);
+        assert!(tok.is_geometry_only());
+    }
+
+    #[test]
+    fn token_new_checked_still_rejects_wrong_width_non_empty_text() {
+        // The width contract stays in force for every payload-bearing token.
+        assert_eq!(
+            Token::new_checked(TokenKind::UnknownRest, "a", 12, 70_013),
+            Err(TokenSpanError::TextLengthMismatch {
+                text_len: 1,
+                span_len: 70_001,
+                start: 12,
+                end: 70_013
+            })
+        );
+    }
+
+    #[test]
+    fn token_unknown_rest_at_builds_payload_free_geometry() {
+        let tok = Token::unknown_rest_at(7, 9).expect("non-empty span");
+        assert!(tok.is_geometry_only());
+        assert!(tok.text.is_empty());
+        // Empty and reversed spans are rejected: geometry-only still requires
+        // a real span to identify the unparsed remainder.
+        assert_eq!(
+            Token::unknown_rest_at(7, 7),
+            Err(TokenSpanError::EmptySpanNotAllowed {
+                kind: TokenKind::UnknownRest,
+                at: 7
+            })
+        );
+        assert_eq!(
+            Token::unknown_rest_at(9, 7),
+            Err(TokenSpanError::EndBeforeStart { start: 9, end: 7 })
+        );
+    }
+
+    #[test]
+    fn token_ref_to_owned_token_preserves_geometry_only_unknown_rest() {
+        let view =
+            TokenRef::new_checked(TokenKind::UnknownRest, "", 12, 70_013).expect("legal view");
+        assert!(view.is_geometry_only());
+        let owned = view.to_owned_token();
+        assert_eq!(owned.kind(), TokenKind::UnknownRest);
+        assert!(owned.is_geometry_only());
+    }
+
+    #[test]
     fn token_try_new_rejects_empty_non_eof() {
         assert_eq!(
             Token::try_new(TokenKind::Identifier, "", 5, 5),
