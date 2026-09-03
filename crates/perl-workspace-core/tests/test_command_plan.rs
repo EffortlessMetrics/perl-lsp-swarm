@@ -241,6 +241,80 @@ fn make_test_admission_tracks_makefile_freshness() -> Result<(), FixtureError> {
     Ok(())
 }
 
+/// A freshness verdict is about an artifact at a location; readiness is about
+/// the command in the working directory. The emitted argv passes neither
+/// `make -C` nor `-f`, so a makefile observed elsewhere is not the one it would
+/// read. Rules out: accepting any `Current` makefile as this command's evidence.
+#[test]
+fn a_makefile_outside_the_working_directory_does_not_make_the_command_ready()
+-> Result<(), FixtureError> {
+    for (location, expected) in [
+        ("/ws/Makefile", TestCommandAdmission::Ready),
+        ("/ws/build/Makefile", TestCommandAdmission::NotProvenGeneratedState),
+        ("/elsewhere/Makefile", TestCommandAdmission::NotProvenGeneratedState),
+    ] {
+        let (builder, _) = base_builder();
+        let tool_input = accepted_input("tool.make");
+        let build_input = accepted_input("build.eumm");
+        let snapshot = builder
+            .with_input(tool_input.clone())
+            .with_input(build_input.clone())
+            .with_tool_candidate(make_tool("make", tool_input.id.clone()))
+            .with_build_system(build_fact(
+                BuildSystemKind::ExtUtilsMakeMaker,
+                build_input.id.clone(),
+            ))
+            .build()?;
+
+        let evidence = GeneratedStateEvidence::new().with_observation(
+            GeneratedArtifact::Makefile,
+            observed(GeneratedStateFreshness::Current, Some(location)),
+        );
+        let plan = plan_test_commands(&snapshot, &evidence)?;
+        let make = candidates_of(&plan.candidates, TestRunnerKind::MakeTest);
+
+        assert_eq!(make.len(), 1, "{location} still reports the entry point");
+        assert_eq!(make[0].admission, expected, "admission for a makefile at {location}");
+    }
+    Ok(())
+}
+
+/// Snapshot paths are validated by the environment builder, but observation
+/// paths arrive from the caller and can be deserialized. Rules out: a Ready
+/// candidate whose launcher is an empty string.
+#[test]
+fn an_unusable_evidence_path_cannot_launch_a_ready_candidate() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let build_input = accepted_input("build.module_build");
+    let snapshot = builder
+        .with_input(build_input.clone())
+        .with_build_system(build_fact(BuildSystemKind::ModuleBuild, build_input.id.clone()))
+        .build()?;
+
+    let evidence = GeneratedStateEvidence::new().with_observation(
+        GeneratedArtifact::BuildScript,
+        GeneratedStateObservation::new(
+            GeneratedStateFreshness::Current,
+            Some(EnvironmentPathRef::new("", "")),
+            "fixture",
+        ),
+    );
+    let plan = plan_test_commands(&snapshot, &evidence)?;
+
+    for candidate in &plan.candidates {
+        assert!(
+            !candidate.program.normalized.is_empty(),
+            "a candidate must never advertise an empty launcher"
+        );
+        assert_ne!(
+            candidate.admission,
+            TestCommandAdmission::Ready,
+            "unusable evidence cannot be ready"
+        );
+    }
+    Ok(())
+}
+
 /// A `make` binary on `PATH` is not evidence that this project uses MakeMaker.
 /// Rules out: deriving the runner from the tool alone.
 #[test]

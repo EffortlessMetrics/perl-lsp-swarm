@@ -591,7 +591,10 @@ pub fn plan_test_commands(
                         tool.input_id.clone(),
                         Some(tool.id.clone()),
                         None,
-                        vec![evidence.requirement(GeneratedArtifact::BlibRoots)],
+                        vec![bind_requirement_to_working_dir(
+                            evidence.requirement(GeneratedArtifact::BlibRoots),
+                            &working_dir,
+                        )],
                     )?);
                 }
             }
@@ -608,7 +611,10 @@ pub fn plan_test_commands(
                         tool.input_id.clone(),
                         Some(tool.id.clone()),
                         Some(build.id.clone()),
-                        vec![evidence.requirement(GeneratedArtifact::Makefile)],
+                        vec![bind_requirement_to_working_dir(
+                            evidence.requirement(GeneratedArtifact::Makefile),
+                            &working_dir,
+                        )],
                     )?);
                 }
             }
@@ -620,12 +626,23 @@ pub fn plan_test_commands(
     // comes from generated-state evidence rather than from a discovered tool.
     // That is what keeps `./Build` and `Build.bat` apart without guessing a
     // platform or probing the host.
-    let build_script = evidence.requirement(GeneratedArtifact::BuildScript);
+    let build_script = bind_requirement_to_working_dir(
+        evidence.requirement(GeneratedArtifact::BuildScript),
+        &working_dir,
+    );
     for build in active_build_systems(snapshot, BuildFamily::ModuleBuild) {
         let Some(authority) = input_authority(snapshot, &build.input_id) else {
             continue;
         };
-        match build_script.path.clone() {
+        // A path that cannot name an executable is not a launcher, so it is
+        // treated exactly like an unobserved one rather than becoming the
+        // program of a candidate that could never run.
+        let launcher = build_script
+            .path
+            .clone()
+            .filter(|path| !path.normalized.is_empty() && !path.public_id.is_empty());
+
+        match launcher {
             Some(program) => candidates.push(build_candidate(
                 snapshot,
                 &working_dir,
@@ -808,11 +825,14 @@ fn relative_test_directories(
 ///
 /// Containment is a *segment* relationship, not a textual one: `/ws-other` is a
 /// sibling of `/ws`, so the remainder must begin at a separator. Without that
-/// check `/ws-other/t` would reduce to `-other/t`, which is not merely the wrong
-/// directory — a leading `-` makes the runner read it as an option rather than a
-/// path. For the same reason a legitimately contained directory whose name
-/// starts with `-` is refused: it cannot be passed as a bare argument without
-/// changing how the command parses.
+/// check `/ws-other/t` would reduce to `-other/t` — not merely the wrong
+/// directory, but an argument a runner reads as an option rather than a path.
+///
+/// A genuinely contained directory whose name starts with `-` has the same
+/// parsing hazard but is not the same problem: it is a real declared root, so it
+/// is encoded as `./-name` rather than refused. Dropping it would fall back to
+/// the conventional default and silently run a *different* directory than the
+/// project declared.
 fn relative_child(parent: &str, child: &str) -> Option<String> {
     let trimmed_parent = parent.trim_end_matches(['/', '\\']);
     let remainder = child.strip_prefix(trimmed_parent)?;
@@ -828,10 +848,15 @@ fn relative_child(parent: &str, child: &str) -> Option<String> {
     if !trimmed_parent.is_empty() && !remainder.starts_with(['/', '\\']) {
         return None;
     }
-    if is_absolute_path(relative) || relative.starts_with('-') {
+    if is_absolute_path(relative) {
         return None;
     }
-    Some(relative.replace('\\', "/"))
+
+    let relative = relative.replace('\\', "/");
+    if relative.starts_with('-') {
+        return Some(format!("{CURRENT_DIRECTORY}/{relative}"));
+    }
+    Some(relative)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -887,6 +912,55 @@ fn build_candidate(
         admission,
         reason_code,
     })
+}
+
+/// Re-bind an observed artifact to the command that will actually consume it.
+///
+/// A freshness verdict is about an artifact at a location; readiness is about
+/// the command in `working_dir`. `make test` reads the makefile in its working
+/// directory and `./Build test` runs the script there, so an artifact observed
+/// anywhere else is not the one the emitted argv would use. An observation whose
+/// path is structurally unusable is not evidence at all.
+///
+/// Either way the requirement degrades to [`GeneratedStateFreshness::NotProven`]
+/// rather than being accepted as current: the artifact may well be fresh, but
+/// this command's readiness is unproven.
+fn bind_requirement_to_working_dir(
+    mut requirement: GeneratedStateRequirement,
+    working_dir: &EnvironmentPathRef,
+) -> GeneratedStateRequirement {
+    if requirement.state != GeneratedStateFreshness::Current {
+        return requirement;
+    }
+
+    let artifact = requirement.artifact.identity_tag();
+    let downgrade = |requirement: &mut GeneratedStateRequirement, suffix: &str| {
+        requirement.state = GeneratedStateFreshness::NotProven;
+        requirement.reason_code = format!("generated_state.{suffix}.{artifact}");
+    };
+
+    match requirement.path.as_ref() {
+        Some(path) if path.normalized.is_empty() || path.public_id.is_empty() => {
+            downgrade(&mut requirement, "unusable_path");
+        }
+        Some(path) => {
+            // The artifact must sit directly in the working directory: the
+            // emitted argv passes neither `make -C/-f` nor a script path.
+            let contained = relative_child(&working_dir.normalized, &path.normalized)
+                .is_some_and(|relative| !relative.contains('/'));
+            if !contained {
+                downgrade(&mut requirement, "outside_working_directory");
+            }
+        }
+        None if requirement.artifact != GeneratedArtifact::BlibRoots => {
+            // A makefile or launcher cannot be bound to this command without a
+            // location; `blib` is a fixed directory relative to the runner.
+            downgrade(&mut requirement, "unlocated");
+        }
+        None => {}
+    }
+
+    requirement
 }
 
 /// Decide admission from the weakest requirement.
@@ -1074,13 +1148,23 @@ mod tests {
         assert_eq!(relative_child("C:\\ws", "C:\\ws-other\\t"), None);
     }
 
-    /// Even inside the workspace, a directory whose name starts with `-` cannot
-    /// be passed as a bare argument without changing how the runner parses it.
+    /// A directory whose name starts with `-` would be parsed as an option, but
+    /// it is still a declared root: encode it as `./-name` rather than dropping
+    /// it, which would silently run the conventional default instead.
     #[test]
-    fn a_leading_dash_directory_is_not_a_usable_argument() {
-        assert_eq!(relative_child("/ws", "/ws/-weird"), None);
-        assert_eq!(relative_child("/ws", "/ws/-l"), None);
-        assert_eq!(relative_child("/ws", "/ws/t"), Some("t".to_string()), "control");
+    fn a_leading_dash_directory_is_encoded_not_dropped() {
+        assert_eq!(relative_child("/ws", "/ws/-weird").as_deref(), Some("./-weird"));
+        assert_eq!(relative_child("/ws", "/ws/-l").as_deref(), Some("./-l"));
+        assert_eq!(
+            relative_child("/ws", "/ws/--exec=echo").as_deref(),
+            Some("./--exec=echo"),
+            "an option-shaped name with a value is still just a directory"
+        );
+        assert_eq!(relative_child("/ws", "/ws/t").as_deref(), Some("t"), "control");
+
+        // The encoding is only reached for genuine children; a sibling whose
+        // remainder merely looks option-shaped is still refused.
+        assert_eq!(relative_child("/ws", "/ws-other/t"), None);
     }
 
     /// The argv guard is defence in depth for future argument sources; the
