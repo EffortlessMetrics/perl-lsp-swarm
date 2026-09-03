@@ -855,6 +855,29 @@ impl TransformationLaw {
         if self.consumers.is_empty() {
             bail!("law {:?} must name at least one consumer class", self.id.as_str());
         }
+        let ceiling_consumers = self.claim_ceiling.permitted_consumers();
+        for consumer in &self.consumers {
+            if !ceiling_consumers.contains(consumer) {
+                bail!(
+                    "law {:?} claims {} but names the consumer {}, which that ceiling does not license",
+                    self.id.as_str(),
+                    self.claim_ceiling.tag(),
+                    consumer.tag()
+                );
+            }
+        }
+        for change in &self.permitted_changes {
+            if let Some(overlap) = preserved_counterpart(*change)
+                && self.load_bearing_preservations.contains(&overlap)
+            {
+                bail!(
+                    "law {:?} requires {} to be preserved while permitting the change {}; no plan could conform",
+                    self.id.as_str(),
+                    overlap.tag(),
+                    change.tag()
+                );
+            }
+        }
         if self.claim_ceiling == ClaimCeiling::AuthorizedSourceEdit
             && self.class != TransformationClass::SourceProjectionCandidate
         {
@@ -1453,6 +1476,18 @@ impl TransformationPlan {
         let mut seen_preconditions = BTreeSet::new();
         for precondition in &self.preconditions {
             precondition.validate()?;
+            // Internal consistency is not enough: a precondition stated *and*
+            // evidenced at some other stage would still be that stage's proof
+            // discharging this plan's legality.
+            if precondition.stage != self.input.stage {
+                bail!(
+                    "plan {:?} states precondition {:?} at stage {} but operates on stage {}",
+                    self.id.as_str(),
+                    precondition.id.as_str(),
+                    precondition.stage.tag(),
+                    self.input.stage.tag()
+                );
+            }
             if !seen_preconditions.insert(precondition.id.clone()) {
                 bail!(
                     "plan {:?} instantiates precondition {:?} more than once",
@@ -3274,9 +3309,25 @@ mod tests {
             "an EIR operation is not selectable by a HIR plan",
         );
 
+        // Internal consistency is not enough: a precondition stated *and*
+        // evidenced at a foreign stage still discharges this plan's legality
+        // with another stage's proof.
+        let mut consistently_foreign = plan.clone();
+        consistently_foreign.preconditions[0].stage = CompilerStage::Effects;
+        consistently_foreign.preconditions[0].evidence_stage = CompilerStage::Effects;
+        assert_invalid(
+            &consistently_foreign,
+            "but operates on stage hir",
+            "a foreign-stage precondition is still foreign proof",
+        );
+
         let mut wrong_input_stage = plan.clone();
         wrong_input_stage.input.stage = CompilerStage::PirA;
         wrong_input_stage.expected_output.stage = CompilerStage::PirA;
+        for precondition in &mut wrong_input_stage.preconditions {
+            precondition.stage = CompilerStage::PirA;
+            precondition.evidence_stage = CompilerStage::PirA;
+        }
         for location in &mut wrong_input_stage.locations {
             if let LocationSelector::CanonicalOperation { stage, .. } = location {
                 *stage = CompilerStage::PirA;
@@ -3580,6 +3631,21 @@ mod tests {
         let error = match widened_law.validate() {
             Err(error) => format!("{error:#}"),
             Ok(()) => unreachable!("an internal law cannot reach the source-edit ceiling"),
+        };
+        // The ceiling licenses only the source-edit consumer, so an internal
+        // law's own consumers are rejected first.
+        assert!(error.contains("authorized_source_edit"), "got {error}");
+
+        // Isolate the class rule on a law whose consumer set every ceiling
+        // licenses, so the ceiling/consumer check cannot shadow it.
+        let mut unsupported_at_edit_ceiling = shape_fixtures::exact_value_folding_law()?;
+        unsupported_at_edit_ceiling.class = TransformationClass::UnsupportedOrNotApplicable;
+        unsupported_at_edit_ceiling.consumers = [ConsumerClass::NoConsumer].into_iter().collect();
+        unsupported_at_edit_ceiling.permitted_changes = BTreeSet::new();
+        unsupported_at_edit_ceiling.claim_ceiling = ClaimCeiling::AuthorizedSourceEdit;
+        let error = match unsupported_at_edit_ceiling.validate() {
+            Err(error) => format!("{error:#}"),
+            Ok(()) => unreachable!("only a source projection reaches the source-edit ceiling"),
         };
         assert!(error.contains("authorized-source-edit ceiling"), "got {error}");
         Ok(())
@@ -5119,6 +5185,44 @@ mod tests {
             "the unchanged input subject",
             "a subplan that applies operations must move its output",
         );
+        Ok(())
+    }
+
+    // Review findings: the law carries the same ceiling/consumer and
+    // preserve-versus-change rules the plan does. Without them a registry could
+    // accept a law claiming authority above its ceiling, or one that no plan
+    // could ever conform to.
+    #[test]
+    fn a_law_cannot_outrun_its_own_ceiling_or_contradict_itself() -> Result<()> {
+        let base = shape_fixtures::exact_value_folding_law()?;
+        base.validate()?;
+
+        // An internal-fact law may not name analysis consumers.
+        let mut over_reaching = base.clone();
+        over_reaching.claim_ceiling = ClaimCeiling::InternalFactOnly;
+        let error = match over_reaching.validate() {
+            Err(error) => format!("{error:#}"),
+            Ok(()) => unreachable!("an internal-fact law cannot serve analysis"),
+        };
+        assert!(error.contains("which that ceiling does not license"), "got {error}");
+        assert!(error.contains("analysis"), "got {error}");
+
+        // Narrowing the consumers alongside the ceiling is accepted.
+        let mut consistent = base.clone();
+        consistent.claim_ceiling = ClaimCeiling::InternalFactOnly;
+        consistent.consumers = [ConsumerClass::InternalStageRewrite].into_iter().collect();
+        consistent.validate()?;
+
+        // A law requiring source mapping while permitting a source change is
+        // one no plan could conform to, so it is rejected at the law.
+        let mut contradictory = shape_fixtures::source_projection_law()?;
+        contradictory.load_bearing_preservations.insert(PreservedProposition::SourceMapping);
+        let error = match contradictory.validate() {
+            Err(error) => format!("{error:#}"),
+            Ok(()) => unreachable!("a self-contradictory law must not validate"),
+        };
+        assert!(error.contains("no plan could conform"), "got {error}");
+        assert!(error.contains("source_mapping"), "got {error}");
         Ok(())
     }
 }
