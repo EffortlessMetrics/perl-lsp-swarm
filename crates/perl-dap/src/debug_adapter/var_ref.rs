@@ -170,8 +170,8 @@ pub enum VariableReference {
 /// EvalResult: [EVAL_BASE, EVAL_MAX]               = [1_000_000, 1_999_999_999]
 /// Child:      [CHILD_BASE, i32::MAX]              = [2_000_000_000, 2_147_483_647]
 const SCOPE_MIN: i32 = 1;
-const SCOPE_MAX: i32 = 999_999; // 99_999 * 10 + 3 = 999_993 < 999_999; max Scope wire
-const SCOPE_FRAME_ID_MAX: i32 = 99_999; // frame_id bound: 99_999 * 10 + 3 = 999_993 ≤ SCOPE_MAX
+const SCOPE_MAX: i32 = 999_999; // 99_999 * 10 + 4 = 999_994 < 999_999; max Scope wire
+const SCOPE_FRAME_ID_MAX: i32 = 99_999; // frame_id bound: 99_999 * 10 + 4 = 999_994 ≤ SCOPE_MAX
 const EVAL_BASE: i32 = 1_000_000;
 const EVAL_MAX: i32 = 1_999_999_999;
 const CHILD_BASE: i32 = 2_000_000_000;
@@ -190,14 +190,14 @@ impl VariableReference {
     pub fn encode(&self) -> Option<i32> {
         match self {
             VariableReference::Scope { frame_id, kind } => {
-                // Scope wire = frame_id * 10 + kind_disc (1-3).
+                // Scope wire = frame_id * 10 + kind_disc (1-4).
                 // frame_id must be in [0, SCOPE_FRAME_ID_MAX] to stay within the Scope band.
                 if *frame_id < 0 || *frame_id > SCOPE_FRAME_ID_MAX {
                     return None;
                 }
                 let kind_disc = *kind as i32;
-                // frame_id in [0, 99_999] and kind_disc in [1, 3]:
-                // max wire = 99_999 * 10 + 3 = 999_993 ≤ SCOPE_MAX ✓
+                // frame_id in [0, 99_999] and kind_disc in [1, 4]:
+                // max wire = 99_999 * 10 + 4 = 999_994 ≤ SCOPE_MAX ✓
                 Some(frame_id * 10 + kind_disc)
             }
             VariableReference::EvalResult { counter } => {
@@ -238,7 +238,7 @@ impl VariableReference {
     ///
     /// - `raw in [2_000_000_000, i32::MAX]` → `Child`
     /// - `raw in [1_000_000, 1_999_999_999]` → `EvalResult{counter: raw - 1_000_000}`
-    /// - `raw in [1, 999_999]` → `Scope` if `raw % 10 ∈ {1,2,3}`, else `None`
+    /// - `raw in [1, 999_999]` → `Scope` if `raw % 10 ∈ {1,2,3,4}`, else `None`
     /// - All others (0, negative, gaps) → `None`
     ///
     /// Because the bands are pairwise disjoint, no value can match more than one case.

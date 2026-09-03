@@ -12,8 +12,8 @@ fn repository_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn operational_docs_do_not_recommend_retired_command_wrapper()
--> Result<(), Box<dyn std::error::Error>> {
+fn operational_docs_do_not_recommend_retired_command_wrapper(
+) -> Result<(), Box<dyn std::error::Error>> {
     let root = repository_root()?;
     // Forensic notes retain historical incident vocabulary; these trees are
     // current operational guidance and copy/paste surfaces.
@@ -123,8 +123,8 @@ fn missing_cache_writer_authority_contract_fails_discovery() {
 }
 
 #[test]
-fn cache_writer_contract_rejects_governed_root_without_workflow()
--> Result<(), Box<dyn std::error::Error>> {
+fn cache_writer_contract_rejects_governed_root_without_workflow(
+) -> Result<(), Box<dyn std::error::Error>> {
     let root = repository_root()?;
     let script = cache_writer_contract_path(&root)?;
     let root_without_workflow = root.join("xtask");
