@@ -811,6 +811,32 @@ fn build_packet(
                 ));
                 effects.push(EffectRef::new(EffectKind::Modify, op_ref(node), anchor));
             }
+            // A `field` access is a named place the callable reads or writes,
+            // like a lexical and unlike a stash symbol — the place facet has to
+            // count it, or the summary declares completeness while missing a
+            // real access. Identity comes from `source`, not from the name
+            // string, so recording the place claims no storage class.
+            PirOperation::FieldRead { name } => bindings.push(BindingPlaceRef::new(
+                format!("{}{}", name.sigil, name.name),
+                PlaceRole::Read,
+                op_ref(node),
+                anchor,
+            )),
+            PirOperation::FieldWrite { name } => bindings.push(BindingPlaceRef::new(
+                format!("{}{}", name.sigil, name.name),
+                PlaceRole::Write,
+                op_ref(node),
+                anchor,
+            )),
+            PirOperation::FieldModify { name, .. } => {
+                bindings.push(BindingPlaceRef::new(
+                    format!("{}{}", name.sigil, name.name),
+                    PlaceRole::Modify,
+                    op_ref(node),
+                    anchor,
+                ));
+                effects.push(EffectRef::new(EffectKind::FieldModify, op_ref(node), anchor));
+            }
             PirOperation::Assign => {
                 effects.push(EffectRef::new(EffectKind::Assign, op_ref(node), anchor));
             }

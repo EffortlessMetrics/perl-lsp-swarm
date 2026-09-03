@@ -224,6 +224,62 @@ fn fields_do_not_leak_into_a_sibling_class() -> TestResult {
 }
 
 #[test]
+fn a_named_sub_inside_a_method_does_not_inherit_the_method_s_fields() -> TestResult {
+    // The sub is nested inside a method, so the walk out to the class frame
+    // crosses a `Method` frame as well as a `Subroutine` one. Only the
+    // innermost callable decides: a named sub is not a method, and an
+    // enclosing method does not lend it field access.
+    let file = lower_source(
+        "use feature 'class';\nclass C {\n    field $x;\n    method m { sub inner { $x } }\n}\n",
+    );
+    let body = file
+        .bodies
+        .iter()
+        .find(|b| matches!(&b.owner, BodyOwnerKind::Subroutine { name: Some(n) } if n == "inner"))
+        .ok_or_else(|| "no lowered body for sub `inner`".to_string())?;
+    assert_eq!(
+        variable_kind(body, "x")?,
+        VariableKind::Package,
+        "a named sub inside a method must not resolve the class's field"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_nested_class_does_not_inherit_the_outer_class_s_fields() -> TestResult {
+    // The outer class's frame *is* an ancestor of the inner class's method, so
+    // unlike the sibling case this one is not structural — the walk has to stop
+    // claiming fields once it leaves a class.
+    let file = lower_source(
+        "use feature 'class';\nclass Outer {\n    field $outer_only;\n    class Inner {\n        method peek { $outer_only }\n    }\n}\n",
+    );
+    let body = method_body(&file, "peek")?;
+    assert_eq!(
+        variable_kind(body, "outer_only")?,
+        VariableKind::Package,
+        "a nested class must not resolve the enclosing class's field"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_nested_class_still_resolves_its_own_field() -> TestResult {
+    // The discriminating half: same nesting, but the field belongs to the
+    // inner class. Without this, refusing every field inside a nested class
+    // would pass the test above.
+    let file = lower_source(
+        "use feature 'class';\nclass Outer {\n    field $outer_only;\n    class Inner {\n        field $mine;\n        method peek { $mine }\n    }\n}\n",
+    );
+    let body = method_body(&file, "peek")?;
+    assert_eq!(
+        variable_kind(body, "mine")?,
+        VariableKind::Field,
+        "a nested class must still resolve its own field"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_class_body_opens_a_class_scope_frame() -> TestResult {
     // The frame that owns the three visibility answers above. Before this, a
     // class body was an ordinary `Block`, so sibling isolation was incidental

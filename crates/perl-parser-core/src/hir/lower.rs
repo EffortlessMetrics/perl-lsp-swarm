@@ -2480,12 +2480,14 @@ fn resolve_binding_in_scope_graph<'graph>(
     reference_start: Option<usize>,
 ) -> Option<&'graph Binding> {
     let mut cursor = Some(scope_id);
-    // Whether the walk has left an ordinary `sub`, and whether it has left a
-    // `method`, on its way out to a class frame. Perl gives a method access to
-    // its class's fields and an ordinary sub none, so what matters at a class
-    // frame is which of the two the reference actually sits in.
-    let mut crossed_subroutine = false;
-    let mut crossed_method = false;
+    // The innermost callable the reference sits in, if any. Only the innermost
+    // matters: an enclosing `method` does not lend its field access to a `sub`
+    // nested inside it, because that sub is still not a method.
+    let mut innermost_callable: Option<ScopeKind> = None;
+    // Whether a class frame has already been passed. A field belongs to one
+    // class, so once the walk leaves a class, a further-out class's field is
+    // not in view even though its frame is still an ancestor.
+    let mut left_a_class = false;
     while let Some(current_scope) = cursor {
         let scope = scope_graph.scopes.get(current_scope.index() as usize);
         for binding in scope_graph.bindings.iter().rev() {
@@ -2495,7 +2497,8 @@ fn resolve_binding_in_scope_graph<'graph>(
             if binding.storage == StorageClass::ClassField
                 && !class_field_is_visible(
                     binding,
-                    crossed_subroutine && !crossed_method,
+                    innermost_callable,
+                    left_a_class,
                     reference_start,
                 )
             {
@@ -2507,8 +2510,10 @@ fn resolve_binding_in_scope_graph<'graph>(
             return Some(binding);
         }
         match scope.map(|scope| scope.kind) {
-            Some(ScopeKind::Subroutine) => crossed_subroutine = true,
-            Some(ScopeKind::Method) => crossed_method = true,
+            Some(kind @ (ScopeKind::Subroutine | ScopeKind::Method)) => {
+                innermost_callable.get_or_insert(kind);
+            }
+            Some(ScopeKind::Class) => left_a_class = true,
             _ => {}
         }
         cursor = scope.and_then(|scope| scope.parent);
@@ -2519,20 +2524,33 @@ fn resolve_binding_in_scope_graph<'graph>(
 /// Whether a class field declared in a class frame is visible to a reference
 /// that reached that frame.
 ///
-/// Perl gives a field three visibility conditions. It belongs to its own class
-/// — structural here, because a sibling class's frame is never an ancestor of
-/// this one. It is visible inside that class's methods but not inside an
-/// ordinary `sub`, which `in_ordinary_sub` carries. And it is visible only
-/// after its own declaration, which the offset comparison carries.
+/// Perl gives a field three visibility conditions, and this decides all three.
 ///
-/// `reference_start` of `None` means the caller has no position to compare and
-/// skips only the ordering condition.
+/// It belongs to its own class. A sibling class's frame is never an ancestor,
+/// so that case is structural; `outside_its_class` covers the case a nested
+/// `class` creates, where the outer class's frame *is* still an ancestor.
+///
+/// It is visible inside that class's methods and inside the class body itself
+/// (a field initializer may name an earlier field), but not inside an ordinary
+/// `sub`. `innermost_callable` of `None` is the class body; `Method` is in
+/// view; `Subroutine` is not — including a named `sub` written inside a method,
+/// which is still not a method.
+///
+/// It is visible only after its own declaration, which the offset comparison
+/// carries. `reference_start` of `None` means the caller has no position to
+/// compare and skips only that condition.
+///
+/// An anonymous `sub` inside a method opens a `Subroutine` frame too, so a
+/// closure over a field is refused here. That is deliberately conservative:
+/// the reference then resolves what it resolved before class fields were
+/// modeled at all, rather than gaining a new answer that may be wrong.
 fn class_field_is_visible(
     binding: &Binding,
-    in_ordinary_sub: bool,
+    innermost_callable: Option<ScopeKind>,
+    outside_its_class: bool,
     reference_start: Option<usize>,
 ) -> bool {
-    if in_ordinary_sub {
+    if outside_its_class || matches!(innermost_callable, Some(ScopeKind::Subroutine)) {
         return false;
     }
     match reference_start {
