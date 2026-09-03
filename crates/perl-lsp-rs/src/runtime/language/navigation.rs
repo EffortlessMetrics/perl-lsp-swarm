@@ -964,15 +964,32 @@ fn cursor_in_regex_capture(regex: &regex::Regex, text: &str, cursor: usize, grou
         .any(|cap| cap.get(group).is_some_and(|m| cursor >= m.start() && cursor <= m.end()))
 }
 
+/// Which `::`-separated component of a fully-qualified name the cursor is on.
+///
+/// Shared with `references.rs` so go-to-definition and find-references answer the
+/// same question with one implementation instead of two drifting copies (#1849).
 #[cfg(feature = "workspace")]
 #[derive(Debug, PartialEq, Eq)]
-enum FqnCursorComponent {
+pub(super) enum FqnCursorComponent {
+    /// The cursor is on a package component or on a `::` separator -- not on the
+    /// final component, so the match does not name the sub the caller is after.
     Prefix,
+    /// The cursor is on the final component, which names the sub.
     Final { package: String, name: String },
 }
 
+/// Resolve which component of the fully-qualified name under `cursor` the cursor
+/// is on, or `None` when the cursor is not inside a `::`-qualified match.
+///
+/// `text` must contain the *complete* qualified name around `cursor`. The final
+/// component is identified by the last `::` in the match, so a `text` that clips
+/// the name partway through a component makes that component look final and
+/// reports `Final` where the truth is `Prefix`. Pass a whole line
+/// (`util::line_window_around_offset`) rather than a fixed-radius window: a Perl
+/// qualified name cannot span a line break, but it can easily be longer than a
+/// radius.
 #[cfg(feature = "workspace")]
-fn fqn_component_at_cursor(
+pub(super) fn fqn_component_at_cursor(
     regex: &regex::Regex,
     text: &str,
     cursor: usize,
