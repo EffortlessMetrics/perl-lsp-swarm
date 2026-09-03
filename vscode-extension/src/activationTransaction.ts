@@ -226,7 +226,20 @@ export class ActivationTransaction {
     return this.resources.map((resource) => resource.id);
   }
 
-  /** Ownership-aware count of the resources this attempt still holds. */
+  /**
+   * Ownership-aware count of the resources this attempt still holds.
+   *
+   * Valid for the whole life of the attempt, including after commit: {@link
+   * commit} hands {@link CommittedActivation} this same resource array rather
+   * than a copy, so deactivating the committed runtime is visible here. That is
+   * why the census lives only on the transaction — a second accessor on the
+   * committed runtime would be a duplicate view of one ledger that had to be
+   * kept identical by hand.
+   *
+   * A resource whose cleanup threw was never confirmed released and stays
+   * counted, as does one deliberately retained by a rollback
+   * (`retain_support_surfaces`).
+   */
   public resourceCensus(): ActivationResourceCensus {
     return censusOf(this.resources);
   }
@@ -279,19 +292,6 @@ export class CommittedActivation {
 
   public currentState(): ActivationAttemptState {
     return this.state;
-  }
-
-  /**
-   * Ownership-aware count of the resources the committed runtime still holds.
-   *
-   * Shares the attempt's resource ledger, so a resource released during
-   * deactivation leaves the census here and in the originating transaction
-   * together. A resource whose cleanup threw was never confirmed released and
-   * stays counted, as does one deliberately retained by a rollback
-   * (`retain_support_surfaces`).
-   */
-  public resourceCensus(): ActivationResourceCensus {
-    return censusOf(this.resources);
   }
 
   public async deactivate(): Promise<ActivationCleanupReceipt> {

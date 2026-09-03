@@ -1,9 +1,9 @@
 {
   "base_baseline_file_sha256": "c10baf7bd1d62390aeacebfb54510dddee90e4a6ddc1f538533b3b834537c56a",
   "base_inventory_sha256": "4ff8fc287eaa5524348eb4afa96f6a8923ba1c9cd183ff5d3094f1b962cac6a3",
-  "candidate_baseline_file_sha256": "dd2924250d753f04f522b49fbc1c603ce404c48feb1ce5dabf89b4c38c6a0372",
-  "candidate_inventory_sha256": "35c3a3136f6546447e1de320a2bd46d26cd0e6a54c2cb8abffb7d1914357b179",
+  "candidate_baseline_file_sha256": "a3dd382a239a04c9b93e458d530facb95df78235112927120868f03e9441694e",
+  "candidate_inventory_sha256": "271dd905a85c5a43fdbd90bb8068b6328f1c8939c711b85617511a08b109e89c",
   "owner_issue": 14678,
-  "reason": "Sources the extension-owned resource census from the activation ownership registry (#14678, parent #7866). The candidate adds src/extensionOwnedResourceCensus.ts (the census projection into vscode_client_measurement.v1) plus census accessors on the activation transaction, the activation owner, and the activate() extension API, growing the bundled out/extension.js from 1615152 to 1624194 bytes. The measured 29-file package remains size-only: no file additions, removals, or permission loosening.",
+  "reason": "Sources the extension-owned resource census from the activation ownership registry (#14678, parent #7866). The candidate adds src/extensionOwnedResourceCensus.ts (the census projection into vscode_client_measurement.v1) plus census accessors on the activation transaction, the activation owner, and the activate() extension API, growing the bundled out/extension.js from 1615152 to 1624365 bytes. The measured 29-file package remains size-only: no file additions, removals, or permission loosening.",
   "schema_version": 1
 }

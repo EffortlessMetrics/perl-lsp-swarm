@@ -93,10 +93,9 @@ describe('activation resource census', () => {
     expect(baseline.live_total).toBe(2);
 
     const runtime = transaction.commit();
-    expect(runtime.resourceCensus().live_total).toBe(2);
+    expect(transaction.resourceCensus().live_total).toBe(2);
 
     await runtime.deactivate();
-    expect(runtime.resourceCensus().live_total).toBe(0);
     expect(transaction.resourceCensus().live_total).toBe(0);
   });
 
@@ -169,7 +168,7 @@ describe('activation resource census', () => {
     await runtime.deactivate();
 
     const after = measurement(
-      extensionOwnedResourceMeasurements(runtime.resourceCensus()),
+      extensionOwnedResourceMeasurements(transaction.resourceCensus()),
       'extension_owned_activation_resources',
     );
     // A confirmed release would have taken the count to 0. It stays at 1, so
@@ -306,55 +305,52 @@ describe('extension-owned resource measurements', () => {
     expect(empty.value).toBe(0);
   });
 
-  test('a leaked resource across reload is detectable, a clean reload is not a leak', async () => {
-    async function ownedCountAfterCycle(leak: boolean): Promise<ClientResourceMeasurement> {
-      const transaction = new ActivationTransaction(`attempt-cycle-${leak ? 'leak' : 'clean'}`);
+  test('a reload that fails to release is detectable; a clean reload is not', async () => {
+    // Residue is derived from the real cleanup path, never hand-injected: the
+    // only difference between the two cycles is whether one dispose() throws.
+    async function residueAfterCycle(failRelease: boolean): Promise<ClientResourceMeasurement> {
+      const suffix = failRelease ? 'leak' : 'clean';
+      const transaction = new ActivationTransaction(`attempt-cycle-${suffix}`);
       transaction.registerResource({
         id: 'commands',
         phase: 'commands',
         resource_class: 'mandatory_for_activation',
         cleanup: noop,
       });
+      transaction.registerResource({
+        id: 'listeners',
+        phase: 'workspace_listeners',
+        resource_class: 'mandatory_for_activation',
+        cleanup: failRelease
+          ? () => {
+              throw new Error('dispose exploded');
+            }
+          : noop,
+      });
+
       const runtime = transaction.commit();
       await runtime.deactivate();
-
-      const next = new ActivationTransaction(`attempt-cycle-${leak ? 'leak' : 'clean'}-2`);
-      next.registerResource({
-        id: 'commands',
-        phase: 'commands',
-        resource_class: 'mandatory_for_activation',
-        cleanup: noop,
-      });
-      if (leak) {
-        // A reload that re-registers a listener the previous attempt never
-        // released shows up as a strictly larger owned set.
-        next.registerResource({
-          id: 'stale-listener',
-          phase: 'workspace_listeners',
-          resource_class: 'mandatory_for_activation',
-          cleanup: noop,
-        });
-      }
       return measurement(
-        extensionOwnedResourceMeasurements(next.resourceCensus()),
+        extensionOwnedResourceMeasurements(transaction.resourceCensus()),
         'extension_owned_activation_resources',
       );
     }
 
-    const firstActivation = new ActivationTransaction('attempt-baseline');
-    firstActivation.registerResource({
-      id: 'commands',
-      phase: 'commands',
-      resource_class: 'mandatory_for_activation',
-      cleanup: noop,
-    });
-    const before = measurement(
-      extensionOwnedResourceMeasurements(firstActivation.resourceCensus()),
+    const emptyBaseline = measurement(
+      extensionOwnedResourceMeasurements(
+        new ActivationTransaction('attempt-baseline').resourceCensus(),
+      ),
       'extension_owned_activation_resources',
     );
+    expect(emptyBaseline.value).toBe(0);
 
-    expect(resourceReturnedToBaseline(before, await ownedCountAfterCycle(false))).toBe(true);
-    expect(resourceReturnedToBaseline(before, await ownedCountAfterCycle(true))).toBe(false);
+    const clean = await residueAfterCycle(false);
+    expect(clean.value).toBe(0);
+    expect(resourceReturnedToBaseline(emptyBaseline, clean)).toBe(true);
+
+    const leaked = await residueAfterCycle(true);
+    expect(leaked.value).toBe(1);
+    expect(resourceReturnedToBaseline(emptyBaseline, leaked)).toBe(false);
   });
 
   test('records through the recorder so the closed resource-id set stays authoritative', () => {

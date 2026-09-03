@@ -62,12 +62,13 @@ export class ExtensionActivationOwner {
   /**
    * Ownership-aware count of the resources this attempt still holds (#14678).
    *
-   * Reads the committed runtime once the attempt commits so a deactivation
-   * drains the census; both views share one resource ledger, so the value is
-   * the same fact observed through the current owner.
+   * Always read from the transaction. The committed runtime shares the very
+   * same resource array, so a deactivation through it is already visible here;
+   * preferring the committed runtime would have implied a divergence that does
+   * not exist and left an untestable branch behind.
    */
   public resourceCensus(): ActivationResourceCensus {
-    return (this.committedRuntime ?? this.transaction).resourceCensus();
+    return this.transaction.resourceCensus();
   }
 
   public lastCleanupReceipt(): ActivationCleanupReceipt | null {
