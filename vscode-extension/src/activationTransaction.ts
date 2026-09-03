@@ -35,17 +35,33 @@ export type ActivationResourceClass =
   | 'support_surface_allowed_after_failure';
 
 /**
- * Runtime authority for {@link ActivationResourceClass}, kept in lockstep with
- * the literal union so the extension-owned resource census (#14678) can report
- * one deterministic bucket per class instead of only the classes that happen to
- * be populated by the current attempt.
+ * Zeroed census buckets, one per declared {@link ActivationResourceClass}.
+ *
+ * Written as an explicit typed literal rather than built from a name list and
+ * cast: the annotation makes exhaustiveness a compile error in both directions
+ * — a class added to the union without a bucket here fails to typecheck, and so
+ * does a bucket for a class the union does not declare. A cast would instead
+ * let a missing bucket survive to runtime and turn that class's count into
+ * `NaN` on the first increment.
  */
-export const ACTIVATION_RESOURCE_CLASSES: readonly ActivationResourceClass[] = [
-  'mandatory_for_activation',
-  'optional_degradable',
-  'lazy_user_triggered',
-  'support_surface_allowed_after_failure',
-];
+function emptyClassCounts(): Record<ActivationResourceClass, number> {
+  return {
+    mandatory_for_activation: 0,
+    optional_degradable: 0,
+    lazy_user_triggered: 0,
+    support_surface_allowed_after_failure: 0,
+  };
+}
+
+/**
+ * Runtime authority for {@link ActivationResourceClass}, derived from the
+ * census buckets so the two cannot drift, letting the extension-owned resource
+ * census (#14678) report one deterministic bucket per class instead of only the
+ * classes the current attempt happens to populate.
+ */
+export const ACTIVATION_RESOURCE_CLASSES: readonly ActivationResourceClass[] = Object.keys(
+  emptyClassCounts(),
+) as ActivationResourceClass[];
 
 /**
  * Bounded count of the resources this attempt still owns.
@@ -109,10 +125,7 @@ function validateResourceSpec(spec: ActivationResourceSpec): void {
 }
 
 function censusOf(resources: readonly OwnedActivationResource[]): ActivationResourceCensus {
-  const liveByClass = Object.fromEntries(
-    ACTIVATION_RESOURCE_CLASSES.map((resourceClass) => [resourceClass, 0]),
-  ) as Record<ActivationResourceClass, number>;
-
+  const liveByClass = emptyClassCounts();
   let liveTotal = 0;
   for (const resource of resources) {
     if (resource.cleaned) {

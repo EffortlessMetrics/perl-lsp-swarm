@@ -109,11 +109,20 @@ export function notProvenResource(id: string, reason: string): ClientResourceMea
   return { id: resourceId, availability: 'not_proven', value: null, reason: normalizedReason };
 }
 
-/** Deterministic row order for a set of resource measurements. */
+/**
+ * Deterministic row order for a set of resource measurements.
+ *
+ * Code-unit ordering, not `localeCompare`: a receipt must serialize identically
+ * on every host, and locale-sensitive collation can order the same ids
+ * differently across runners with different ICU/locale data — the same reason
+ * `scripts/check-vsix-inventory-transition.js` sorts its inventory this way.
+ */
 export function sortResourceMeasurements(
   measurements: readonly ClientResourceMeasurement[],
 ): ClientResourceMeasurement[] {
-  return [...measurements].sort((left, right) => left.id.localeCompare(right.id));
+  return [...measurements].sort((left, right) =>
+    left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
+  );
 }
 
 export class VscodeClientMeasurementRecorder {
