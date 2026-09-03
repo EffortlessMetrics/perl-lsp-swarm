@@ -135,7 +135,8 @@ impl PerlLexer<'_> {
         }
     }
 
-    /// The `@` arm: `@{expr}`, qualified arrays, `@$ref` deref chains, `@+`/`@-`.
+    /// The `@` arm: `@{expr}`, qualified arrays with slice tails, `@$ref`
+    /// deref chains, `@+`/`@-`.
     fn scan_at_island_tail(
         &mut self,
         part_start: usize,
@@ -157,6 +158,27 @@ impl PerlLexer<'_> {
             {
                 self.consume_qualified_identifier_in_string();
                 parts.push(StringPart::Variable(Arc::from(&self.input[part_start..self.position])));
+                // Array and hash slices interpolate with the array
+                // (`qq{@a[0]}` yields the slice element, `@h{key}` the hash
+                // slice; verified against real perl: `@a=(x,y); print
+                // qq{@a[0]}` prints `x`). Consume the balanced tail as an
+                // interpolation part instead of leaving it to the literal
+                // bucket, mirroring the `$`-island subscript tails.
+                if self.current_char() == Some('[') {
+                    let tail_start = self.position;
+                    let _ = self
+                        .consume_balanced_segment_in_string_with_terminator('[', ']', terminator);
+                    parts.push(StringPart::ArraySlice(Arc::from(
+                        &self.input[tail_start..self.position],
+                    )));
+                } else if self.current_char() == Some('{') {
+                    let tail_start = self.position;
+                    let _ = self
+                        .consume_balanced_segment_in_string_with_terminator('{', '}', terminator);
+                    parts.push(StringPart::Expression(Arc::from(
+                        &self.input[tail_start..self.position],
+                    )));
+                }
             }
             Some('$') => {
                 while self.current_char() == Some('$') {
@@ -165,7 +187,10 @@ impl PerlLexer<'_> {
                 self.consume_qualified_identifier_in_string();
                 parts.push(StringPart::Variable(Arc::from(&self.input[part_start..self.position])));
             }
-            Some('+' | '-') => {
+            Some(ch @ ('+' | '-')) if terminator != Some(ch) => {
+                // The active terminator wins over the `@+`/`@-` match-offset
+                // arrays: in `qq+@+` the `+` closes the quote, and `@` stays
+                // literal text.
                 self.advance();
                 parts.push(StringPart::Variable(Arc::from(&self.input[part_start..self.position])));
             }
@@ -305,7 +330,21 @@ impl PerlLexer<'_> {
                 self.consume_qualified_identifier_in_string();
                 parts.push(StringPart::Variable(Arc::from(&self.input[part_start..self.position])));
             }
-            Some(ch) if is_perl_punctuation_variable(ch) => {
+            // `$"` is the list-separator special variable and interpolates on
+            // every surface whose terminator is not `"`. The ordinary
+            // `"..."` scanner keeps its close precedence by construction, so
+            // only a `qq` with a non-quote delimiter (or a heredoc body,
+            // which has none) admits it here. Verified against real perl:
+            // with `local $" = "SEP"`, `print qq{<$">}` prints `<SEP>`.
+            Some('"') if terminator != Some('"') => {
+                self.advance();
+                parts.push(StringPart::Variable(Arc::from(&self.input[part_start..self.position])));
+            }
+            Some(ch) if is_perl_punctuation_variable(ch) && terminator != Some(ch) => {
+                // Terminator precedence: a character that is both a
+                // punctuation variable and the active delimiter is the close
+                // (`qq!$!`, `qq[$]`), so it stays available to the outer
+                // scanner and the sigil returns to the literal bucket.
                 self.advance();
                 parts.push(StringPart::Variable(Arc::from(&self.input[part_start..self.position])));
             }

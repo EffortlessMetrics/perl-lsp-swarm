@@ -1006,9 +1006,11 @@ pub fn collect_semantic_tokens_controlled(
                                     cursor = rel + var.len();
                                 }
                             }
-                            // Expression, ArraySlice, MethodCall: defined in StringPart but
-                            // the current lexer never emits them — only Literal and Variable
-                            // are populated. Skip silently.
+                            // Expression, ArraySlice, MethodCall: defined in StringPart
+                            // and emitted by the lexer for subscripts, slices, and
+                            // method tails. They render as string-fragment text here
+                            // (no dedicated semantic-token kind); skipping them
+                            // leaves only their Variable head highlighted.
                             _ => {}
                         }
                     }

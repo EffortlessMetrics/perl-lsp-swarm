@@ -2797,6 +2797,27 @@ impl<'a> PerlLexer<'a> {
                             self.consume_qualified_identifier_in_string();
                             let part_text = &self.input[part_start..self.position];
                             parts.push(StringPart::Variable(Arc::from(part_text)));
+                            // Array and hash slices interpolate with the
+                            // array (`"@a[0]"` yields the slice element,
+                            // `@h{key}` the hash slice; verified against
+                            // real perl: `@a=(x,y); print "@a[0]"` prints
+                            // `x`). Consume the balanced tail as an
+                            // interpolation part instead of leaving it to
+                            // the literal bucket, mirroring the `$`-island
+                            // subscript tails and the qq/heredoc `@` arm.
+                            if self.current_char() == Some('[') {
+                                let tail_start = self.position;
+                                let _ = self.consume_balanced_segment_in_string('[', ']', '"');
+                                parts.push(StringPart::ArraySlice(Arc::from(
+                                    &self.input[tail_start..self.position],
+                                )));
+                            } else if self.current_char() == Some('{') {
+                                let tail_start = self.position;
+                                let _ = self.consume_balanced_segment_in_string('{', '}', '"');
+                                parts.push(StringPart::Expression(Arc::from(
+                                    &self.input[tail_start..self.position],
+                                )));
+                            }
                         }
                         // Array dereference: `@$ref`, `@$$ref`, `@$main::ref`.
                         // Perl interpolates the whole deref chain as one array

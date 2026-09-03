@@ -160,6 +160,8 @@ fn qq_parts_match_the_ordinary_string_scanner_over_the_island_matrix() -> R {
         "$h->{k}",
         "$a->[0]",
         "$foo->bar",
+        "@a[0]",
+        "@h{key}",
         r"\$literal",
         "$x$y",
         "plain text",
@@ -173,6 +175,67 @@ fn qq_parts_match_the_ordinary_string_scanner_over_the_island_matrix() -> R {
             "island policy diverged between \"...\" and qq(...) for body {body:?}"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn punctuation_variables_yield_to_the_active_qq_terminator() -> R {
+    // A closing delimiter directly after the sigil wins over punctuation-
+    // variable classification, for paired and unpaired delimiters and for
+    // the `@+`/`@-` match-offset arrays when `+`/`-` is the delimiter.
+    assert_eq!(quote_double_parts("qq!$!", true)?, vec![StringPart::Literal("$".into())]);
+    assert_eq!(quote_double_parts("qq[$]", true)?, vec![StringPart::Literal("$".into())]);
+    assert_eq!(quote_double_parts("qq@$@", true)?, vec![StringPart::Literal("$".into())]);
+    assert_eq!(quote_double_parts("qq+$+", true)?, vec![StringPart::Literal("$".into())]);
+    assert_eq!(quote_double_parts("qq+@+", true)?, vec![StringPart::Literal("@".into())]);
+    assert_eq!(quote_double_parts("qq-@-", true)?, vec![StringPart::Literal("@".into())]);
+    // Away from the delimiter the same characters still interpolate.
+    assert_eq!(
+        quote_double_parts("qq[$! and @-]", true)?,
+        vec![
+            StringPart::Variable("$!".into()),
+            StringPart::Literal(" and ".into()),
+            StringPart::Variable("@-".into()),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn list_separator_dollar_quote_interpolates_when_quote_is_not_the_delimiter() -> R {
+    // `$"` interpolates on qq surfaces whose delimiter is not `"`; oracle:
+    // `local $" = "SEP"; print qq{<$">}` prints `<SEP>`. A quote-delimited
+    // qq keeps its close precedence, and the ordinary `"..."` scanner is
+    // unchanged (its terminator is always `"`).
+    assert_eq!(
+        quote_double_parts(r#"qq{<$">}"#, true)?,
+        vec![
+            StringPart::Literal("<".into()),
+            StringPart::Variable("$\"".into()),
+            StringPart::Literal(">".into()),
+        ]
+    );
+    assert_eq!(
+        quote_double_parts(r#"qq"$""#, true)?,
+        vec![StringPart::Literal("$".into())],
+        "the quote delimiter must win over `$\"` classification"
+    );
+    Ok(())
+}
+
+#[test]
+fn array_and_hash_slices_interpolate_with_the_array() -> R {
+    // Oracle: `@a=(x,y); print qq{@a[0]}` prints `x`, and `%h=(k=>1);
+    // print qq{@h{key}}` prints `1`. The slice tail is an interpolation
+    // part, not literal text, on both the qq and ordinary scanners.
+    assert_eq!(
+        quote_double_parts("qq{@a[0]}", true)?,
+        vec![StringPart::Variable("@a".into()), StringPart::ArraySlice("[0]".into()),]
+    );
+    assert_eq!(
+        quote_double_parts("qq{@h{key}}", true)?,
+        vec![StringPart::Variable("@h".into()), StringPart::Expression("{key}".into()),]
+    );
     Ok(())
 }
 
@@ -319,6 +382,31 @@ fn interpolating_heredoc_segments_across_multiple_body_lines() -> R {
 }
 
 #[test]
+fn interpolating_heredoc_segments_slices_and_list_separator() -> R {
+    // Same policy as qq inside heredoc bodies: slice tails are interpolation
+    // parts and `$"` interpolates (a heredoc body has no quote terminator).
+    let source = heredoc_source("v=@a[0] h=@h{key} s=<\"$\">");
+    match heredoc_body_kind(&source, true)? {
+        TokenType::InterpolatedHeredocBody(parts) => assert_eq!(
+            parts,
+            vec![
+                StringPart::Literal("v=".into()),
+                StringPart::Variable("@a".into()),
+                StringPart::ArraySlice("[0]".into()),
+                StringPart::Literal(" h=".into()),
+                StringPart::Variable("@h".into()),
+                StringPart::Expression("{key}".into()),
+                StringPart::Literal(" s=<\"".into()),
+                StringPart::Variable("$\"".into()),
+                StringPart::Literal(">\n".into()),
+            ]
+        ),
+        other => return Err(missing(format!("expected interpolated heredoc body, got {other:?}"))),
+    }
+    Ok(())
+}
+
+#[test]
 fn interpolating_heredoc_allows_multiline_interpolation_islands() -> R {
     let source = heredoc_source("before ${\n  $name\n} after");
     match heredoc_body_kind(&source, true)? {
@@ -427,4 +515,54 @@ fn checkpoint_rejects_a_different_interpolation_policy_for_pending_heredocs() {
 
     let same_policy = PerlLexer::with_config_and_body_tokens(&source, config(true));
     assert!(same_policy.can_restore(&checkpoint));
+}
+
+#[test]
+fn checkpoint_policy_identity_is_independent_of_the_pending_heredoc_form() -> R {
+    // `PendingHeredocCheckpoint::interpolates` describes the quote form, not
+    // the lexer configuration: single-quoted, backslashed, and backtick
+    // heredocs are queued with `interpolates == false` even under an
+    // interpolation-enabled lexer. A same-policy checkpoint holding such
+    // heredocs must restore, and an opposite-policy checkpoint must be
+    // rejected with or without a queued heredoc.
+    for opener in ["<<'END'", "<<\\END", "<<`END`"] {
+        let source = format!("my $text = {opener};\nbody\nEND\nprint $text;\n");
+        let mut enabled = PerlLexer::with_config_and_body_tokens(&source, config(true));
+        while enabled.checkpoint().pending_heredocs.is_empty() {
+            assert!(enabled.next_token().is_some(), "heredoc opener {opener} should be reached");
+        }
+        let checkpoint = enabled.checkpoint();
+        assert!(
+            checkpoint.pending_heredocs.iter().all(|heredoc| !heredoc.interpolates),
+            "{opener} must queue a non-interpolating heredoc"
+        );
+
+        let same_policy = PerlLexer::with_config_and_body_tokens(&source, config(true));
+        assert!(
+            same_policy.can_restore(&checkpoint),
+            "{opener} checkpoint must restore under its own policy: the quote \
+             form is not the policy"
+        );
+
+        let disabled = PerlLexer::with_config_and_body_tokens(&source, config(false));
+        assert!(
+            !disabled.can_restore(&checkpoint),
+            "{opener} checkpoint must be rejected across policies despite its \
+             non-interpolating queue"
+        );
+    }
+
+    // An empty queue must not bypass the policy check: a fresh checkpoint
+    // created before any token is still policy-bound.
+    let plain_source = "my $x = 1;\n";
+    let fresh_enabled = PerlLexer::with_config_and_body_tokens(plain_source, config(true));
+    let fresh_checkpoint = fresh_enabled.checkpoint();
+    assert!(fresh_checkpoint.pending_heredocs.is_empty());
+    let fresh_disabled = PerlLexer::with_config_and_body_tokens(plain_source, config(false));
+    assert!(
+        !fresh_disabled.can_restore(&fresh_checkpoint),
+        "an empty queue must not accept an opposite-policy checkpoint"
+    );
+    assert!(fresh_enabled.can_restore(&fresh_checkpoint));
+    Ok(())
 }
