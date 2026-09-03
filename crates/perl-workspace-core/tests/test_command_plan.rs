@@ -1131,7 +1131,134 @@ fn a_test_root_outside_the_workspace_is_reported_not_guessed() -> Result<(), Fix
                     "a derived path argument may be neither absolute nor option-shaped: {argument}"
                 );
             }
+            assert_eq!(
+                candidate.admission,
+                TestCommandAdmission::BlockedIncompleteTestRoots,
+                "a command that substitutes `t` for `{detached}` is not ready"
+            );
         }
+    }
+    Ok(())
+}
+
+/// The mixed case is the dangerous one: with one expressible root the command
+/// looks complete, runs, and passes — while never visiting the detached root the
+/// project also declared. Rules out: a `Ready` prove candidate that silently
+/// covers a subset of the declared test surface.
+#[test]
+fn a_partially_expressible_test_surface_is_not_a_ready_command() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.prove");
+    let inside_input = accepted_input("root.test.inside");
+    let detached_input = accepted_input("root.test.detached");
+    let snapshot = builder
+        .with_input(tool_input.clone())
+        .with_input(inside_input.clone())
+        .with_input(detached_input.clone())
+        .with_tool_candidate(prove_tool(tool_input.id.clone()))
+        .with_project_root(ProjectRoot::new(
+            ProjectRootRole::Test,
+            path("/ws/t"),
+            inside_input.id.clone(),
+        ))
+        .with_project_root(ProjectRoot::new(
+            ProjectRootRole::Test,
+            path("/elsewhere/integration"),
+            detached_input.id.clone(),
+        ))
+        .build()?;
+
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+    let prove = candidates_of(&plan.candidates, TestRunnerKind::Prove);
+    let candidate = prove.first().ok_or(FixtureError::Missing("prove"))?;
+
+    // The expressible root is still emitted: the command is well-formed, and
+    // withholding it would lose the entry point entirely. What must not happen
+    // is calling it ready.
+    assert_eq!(candidate.argv, vec!["-l".to_string(), "t".to_string()]);
+    assert_eq!(candidate.admission, TestCommandAdmission::BlockedIncompleteTestRoots);
+    assert_eq!(candidate.reason_code, "test_command.test_root_outside_working_directory");
+    assert!(
+        plan.limitations
+            .iter()
+            .any(|item| item.code == "test_command.test_root_outside_working_directory"),
+        "the dropped root stays visible as a limitation as well as an admission"
+    );
+    Ok(())
+}
+
+/// Incomplete coverage is a property of the arguments this plan emits. `make
+/// test` and `Build test` pass none, so the build system's own selection is
+/// unaffected. Rules out: blocking every runner because one detached root
+/// cannot become a `prove` argument.
+#[test]
+fn a_detached_test_root_does_not_block_build_system_managed_runners() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.make");
+    let build_input = accepted_input("build.eumm");
+    let test_input = accepted_input("root.test.detached");
+    let snapshot = builder
+        .with_input(tool_input.clone())
+        .with_input(build_input.clone())
+        .with_input(test_input.clone())
+        .with_tool_candidate(make_tool("make", tool_input.id.clone()))
+        .with_build_system(build_fact(BuildSystemKind::ExtUtilsMakeMaker, build_input.id.clone()))
+        .with_project_root(ProjectRoot::new(
+            ProjectRootRole::Test,
+            path("/elsewhere/t"),
+            test_input.id.clone(),
+        ))
+        .build()?;
+
+    let evidence = GeneratedStateEvidence::for_snapshot(&snapshot).with_observation(
+        GeneratedArtifact::Makefile,
+        observed(GeneratedStateFreshness::Current, Some("/ws/Makefile")),
+    );
+    let plan = plan_test_commands(&snapshot, &evidence)?;
+    let make = candidates_of(&plan.candidates, TestRunnerKind::MakeTest);
+    let candidate = make.first().ok_or(FixtureError::Missing("make test"))?;
+
+    assert_eq!(candidate.admission, TestCommandAdmission::Ready);
+    assert_eq!(candidate.reason_code, "test_command.generated_state_current");
+    Ok(())
+}
+
+/// `make test` is passed no `-f`, so it discovers its makefile by name in the
+/// working directory. A current observation of some other direct child is
+/// evidence about a file this command would never read. Rules out: treating any
+/// direct child as proof that `make test` can run.
+#[test]
+fn only_a_name_make_discovers_proves_the_command_is_ready() -> Result<(), FixtureError> {
+    for (location, expected) in [
+        ("/ws/Makefile", TestCommandAdmission::Ready),
+        ("/ws/makefile", TestCommandAdmission::Ready),
+        ("/ws/GNUmakefile", TestCommandAdmission::Ready),
+        ("/ws/README.md", TestCommandAdmission::NotProvenGeneratedState),
+        ("/ws/Makefile.PL", TestCommandAdmission::NotProvenGeneratedState),
+        ("/ws/Makefile.old", TestCommandAdmission::NotProvenGeneratedState),
+    ] {
+        let (builder, _) = base_builder();
+        let tool_input = accepted_input("tool.make");
+        let build_input = accepted_input("build.eumm");
+        let snapshot = builder
+            .with_input(tool_input.clone())
+            .with_input(build_input.clone())
+            .with_tool_candidate(make_tool("make", tool_input.id.clone()))
+            .with_build_system(build_fact(
+                BuildSystemKind::ExtUtilsMakeMaker,
+                build_input.id.clone(),
+            ))
+            .build()?;
+
+        let evidence = GeneratedStateEvidence::for_snapshot(&snapshot).with_observation(
+            GeneratedArtifact::Makefile,
+            observed(GeneratedStateFreshness::Current, Some(location)),
+        );
+        let plan = plan_test_commands(&snapshot, &evidence)?;
+        let make = candidates_of(&plan.candidates, TestRunnerKind::MakeTest);
+        let candidate = make.first().ok_or(FixtureError::Missing("make test"))?;
+
+        assert_eq!(candidate.admission, expected, "admission for evidence naming {location}");
     }
     Ok(())
 }

@@ -296,6 +296,13 @@ pub enum TestCommandAdmission {
     BlockedStaleGeneratedState,
     /// A required artifact's freshness could not be established.
     NotProvenGeneratedState,
+    /// A declared test root could not be expressed as an argument to this
+    /// command, so running it would cover less than the project declared.
+    ///
+    /// The command itself is well-formed; what is missing is coverage, and
+    /// silently running a subset of the declared test surface is the failure
+    /// this state exists to prevent.
+    BlockedIncompleteTestRoots,
 }
 
 impl TestCommandAdmission {
@@ -305,6 +312,7 @@ impl TestCommandAdmission {
             Self::BlockedMissingGeneratedState => "blocked_missing_generated_state",
             Self::BlockedStaleGeneratedState => "blocked_stale_generated_state",
             Self::NotProvenGeneratedState => "not_proven_generated_state",
+            Self::BlockedIncompleteTestRoots => "blocked_incomplete_test_roots",
         }
     }
 
@@ -316,12 +324,20 @@ impl TestCommandAdmission {
         matches!(self, Self::Ready)
     }
 
+    /// Rank used to surface the most consequential blocker.
+    ///
+    /// Incomplete test-root coverage ranks above every generated-state blocker
+    /// because it is the only one that would still *run*. A missing or stale
+    /// artifact stops the command and says why; an under-covering command
+    /// succeeds while testing less than the project declared, so it is the
+    /// verdict a caller most needs to see.
     const fn severity(self) -> u8 {
         match self {
             Self::Ready => 0,
             Self::NotProvenGeneratedState => 1,
             Self::BlockedStaleGeneratedState => 2,
             Self::BlockedMissingGeneratedState => 3,
+            Self::BlockedIncompleteTestRoots => 4,
         }
     }
 }
@@ -581,7 +597,7 @@ pub fn plan_test_commands(
             input_id: None,
         });
     }
-    let test_directories = relative_test_directories(snapshot, &working_dir, &mut limitations);
+    let test_roots = relative_test_directories(snapshot, &working_dir, &mut limitations);
 
     let mut candidates = Vec::new();
 
@@ -604,7 +620,7 @@ pub fn plan_test_commands(
         match classify_runner(&tool.role, &tool.logical_name) {
             Some(RunnerShape::Prove) => {
                 let mut source_argv = vec!["-l".to_string()];
-                source_argv.extend(test_directories.iter().cloned());
+                source_argv.extend(test_roots.arguments.iter().cloned());
                 candidates.push(build_candidate(
                     snapshot,
                     &working_dir,
@@ -617,11 +633,12 @@ pub fn plan_test_commands(
                     Some(tool.id.clone()),
                     None,
                     Vec::new(),
+                    test_roots.coverage,
                 )?);
 
                 if blib_available {
                     let mut blib_argv = vec!["-b".to_string()];
-                    blib_argv.extend(test_directories.iter().cloned());
+                    blib_argv.extend(test_roots.arguments.iter().cloned());
                     candidates.push(build_candidate(
                         snapshot,
                         &working_dir,
@@ -638,6 +655,7 @@ pub fn plan_test_commands(
                             &working_dir,
                             evidence_matches_snapshot,
                         )],
+                        test_roots.coverage,
                     )?);
                 }
             }
@@ -659,6 +677,10 @@ pub fn plan_test_commands(
                             &working_dir,
                             evidence_matches_snapshot,
                         )],
+                        // The `test` target chooses its own files from the
+                        // generated makefile; this plan passes no test roots, so
+                        // an inexpressible root does not narrow this command.
+                        TestRootCoverage::Complete,
                     )?);
                 }
             }
@@ -700,6 +722,9 @@ pub fn plan_test_commands(
                 None,
                 Some(build.id.clone()),
                 vec![build_script.clone()],
+                // As with `make test`, the generated script selects its own
+                // files; no test root reaches this argv.
+                TestRootCoverage::Complete,
             )?),
             None => limitations.push(EnvironmentLimitation {
                 code: "test_command.build_script_location_unknown".to_string(),
@@ -810,17 +835,39 @@ fn workspace_working_dir(
         .ok_or(TestCommandPlanError::MissingWorkspaceRoot)
 }
 
-/// Workspace-relative test directories, in deterministic order.
+/// Whether emitted arguments cover every test root the project declared.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TestRootCoverage {
+    /// Every active test root became an argument — or none was declared, and
+    /// the conventional default stands in for the project's own choice.
+    Complete,
+    /// At least one active test root could not be expressed, so the arguments
+    /// describe less than the declared test surface.
+    Incomplete,
+}
+
+/// Workspace-relative test roots, in deterministic order, with their coverage.
 ///
 /// Only a test root that is actually inside the working directory can become a
 /// relative argument. Anything else would need path arithmetic this module
-/// deliberately does not own, so it degrades to the conventional default and
-/// records a limitation rather than emitting a wrong argument.
+/// deliberately does not own, so it is dropped with a recorded limitation
+/// rather than emitted as a wrong argument.
+///
+/// Dropping it also makes the remaining arguments an incomplete description of
+/// the declared test surface, and the coverage verdict carries that fact to
+/// admission. A limitation alone would not: a caller reading a `Ready` prove
+/// candidate would run a command that passes while testing less than the
+/// project declared.
+struct TestRootArguments {
+    arguments: Vec<String>,
+    coverage: TestRootCoverage,
+}
+
 fn relative_test_directories(
     snapshot: &ProjectEnvironmentSnapshot,
     working_dir: &EnvironmentPathRef,
     limitations: &mut Vec<EnvironmentLimitation>,
-) -> Vec<String> {
+) -> TestRootArguments {
     let mut directories = Vec::new();
     let mut had_unrelatable_root = false;
 
@@ -859,7 +906,22 @@ fn relative_test_directories(
         directories.push(DEFAULT_TEST_DIRECTORY.to_string());
     }
 
-    directories
+    let coverage = if had_unrelatable_root {
+        TestRootCoverage::Incomplete
+    } else {
+        TestRootCoverage::Complete
+    };
+
+    TestRootArguments { arguments: directories, coverage }
+}
+
+/// Whether a name is one `make` will discover in its working directory.
+///
+/// GNU make looks for `GNUmakefile`, `makefile`, then `Makefile`; ExtUtils::
+/// MakeMaker generates the last. Anything else in the directory is a file the
+/// emitted `make test` would never read.
+fn is_discoverable_makefile(relative: &str) -> bool {
+    matches!(relative, "Makefile" | "makefile" | "GNUmakefile")
 }
 
 /// Whether a path is this working directory's own `blib` tree.
@@ -930,6 +992,7 @@ fn build_candidate(
     tool_candidate_id: Option<String>,
     build_system_id: Option<String>,
     required_generated_state: Vec<GeneratedStateRequirement>,
+    test_root_coverage: TestRootCoverage,
 ) -> Result<TestCommandCandidate, TestCommandPlanError> {
     for argument in &argv {
         if is_absolute_path(argument) {
@@ -940,7 +1003,7 @@ fn build_candidate(
         }
     }
 
-    let (admission, reason_code) = admit(&required_generated_state);
+    let (admission, reason_code) = admit(&required_generated_state, test_root_coverage);
 
     // Provenance is part of identity, not decoration hung off it. Two build
     // facts can justify the same command shape; if the tool and build-fact
@@ -1036,7 +1099,19 @@ fn bind_requirement_to_working_dir(
                 // `make test` reads the makefile in its working directory and
                 // `./Build test` runs the script there; neither is given a
                 // path, so the artifact must be directly in that directory.
-                GeneratedArtifact::Makefile | GeneratedArtifact::BuildScript => {
+                // `make test` is passed no `-f`, so it discovers its makefile
+                // *by name* in the working directory. Any other direct child is
+                // therefore not the file this command would read, however
+                // current the observation is.
+                GeneratedArtifact::Makefile => {
+                    relative_child(&working_dir.normalized, &path.normalized)
+                        .is_some_and(|relative| is_discoverable_makefile(&relative))
+                }
+                // The Build script is different: its path becomes the program,
+                // so the command reads exactly what was observed and the file
+                // name carries no meaning. Requiring one would reject the
+                // legitimate `Build.bat` variant.
+                GeneratedArtifact::BuildScript => {
                     relative_child(&working_dir.normalized, &path.normalized)
                         .is_some_and(|relative| !relative.contains('/'))
                 }
@@ -1060,11 +1135,16 @@ fn bind_requirement_to_working_dir(
     requirement
 }
 
-/// Decide admission from the weakest requirement.
+/// Decide admission from the weakest precondition.
 ///
 /// A missing artifact is a stronger statement than a stale one, and an
-/// unobserved artifact must never read as ready.
-fn admit(requirements: &[GeneratedStateRequirement]) -> (TestCommandAdmission, String) {
+/// unobserved artifact must never read as ready. Incomplete test-root coverage
+/// is not a generated-state fact at all, but it reaches the same verdict: a
+/// command that would test less than the project declared is not ready either.
+fn admit(
+    requirements: &[GeneratedStateRequirement],
+    test_root_coverage: TestRootCoverage,
+) -> (TestCommandAdmission, String) {
     let mut worst = TestCommandAdmission::Ready;
     let mut reason = "test_command.no_generated_state_required".to_string();
 
@@ -1090,6 +1170,15 @@ fn admit(requirements: &[GeneratedStateRequirement]) -> (TestCommandAdmission, S
 
     if worst.is_ready() && !requirements.is_empty() {
         reason = "test_command.generated_state_current".to_string();
+    }
+
+    // Applied after the loop so it can outrank every generated-state verdict
+    // without the loop having to special-case a non-artifact precondition.
+    if test_root_coverage == TestRootCoverage::Incomplete
+        && TestCommandAdmission::BlockedIncompleteTestRoots.severity() > worst.severity()
+    {
+        worst = TestCommandAdmission::BlockedIncompleteTestRoots;
+        reason = "test_command.test_root_outside_working_directory".to_string();
     }
 
     (worst, reason)
@@ -1302,6 +1391,7 @@ mod tests {
             None,
             None,
             Vec::new(),
+            TestRootCoverage::Complete,
         );
 
         assert_eq!(
@@ -1324,9 +1414,15 @@ mod tests {
             reason_code: "fixture".to_string(),
         };
 
-        assert_eq!(admit(&[]).0, TestCommandAdmission::Ready);
+        let complete = TestRootCoverage::Complete;
+
+        assert_eq!(admit(&[], complete).0, TestCommandAdmission::Ready);
         assert_eq!(
-            admit(&[requirement(GeneratedArtifact::Makefile, GeneratedStateFreshness::Current)]).0,
+            admit(
+                &[requirement(GeneratedArtifact::Makefile, GeneratedStateFreshness::Current)],
+                complete
+            )
+            .0,
             TestCommandAdmission::Ready
         );
 
@@ -1336,13 +1432,43 @@ mod tests {
             requirement(GeneratedArtifact::Makefile, GeneratedStateFreshness::Missing),
             requirement(GeneratedArtifact::BuildScript, GeneratedStateFreshness::Stale),
         ];
-        let (admission, reason) = admit(&mixed);
+        let (admission, reason) = admit(&mixed, complete);
         assert_eq!(admission, TestCommandAdmission::BlockedMissingGeneratedState);
         assert_eq!(reason, "test_command.missing_generated_state.makefile");
 
         let mut reversed = mixed;
         reversed.reverse();
-        assert_eq!(admit(&reversed), (admission, reason));
+        assert_eq!(admit(&reversed, complete), (admission, reason));
+    }
+
+    /// Incomplete coverage is the one verdict that survives every artifact
+    /// blocker, because it is the only one describing a command that would run.
+    #[test]
+    fn incomplete_test_roots_outrank_every_generated_state_verdict() {
+        let requirement = |artifact, state| GeneratedStateRequirement {
+            artifact,
+            state,
+            path: None,
+            reason_code: "fixture".to_string(),
+        };
+        let incomplete = TestRootCoverage::Incomplete;
+
+        let (admission, reason) = admit(&[], incomplete);
+        assert_eq!(admission, TestCommandAdmission::BlockedIncompleteTestRoots);
+        assert_eq!(reason, "test_command.test_root_outside_working_directory");
+
+        for state in [
+            GeneratedStateFreshness::Current,
+            GeneratedStateFreshness::Missing,
+            GeneratedStateFreshness::Stale,
+            GeneratedStateFreshness::NotProven,
+        ] {
+            assert_eq!(
+                admit(&[requirement(GeneratedArtifact::BlibRoots, state)], incomplete).0,
+                TestCommandAdmission::BlockedIncompleteTestRoots,
+                "{state:?} must not mask an under-covering command"
+            );
+        }
     }
 
     #[test]
