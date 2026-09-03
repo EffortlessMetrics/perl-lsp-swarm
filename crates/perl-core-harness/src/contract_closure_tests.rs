@@ -679,3 +679,72 @@ fn the_drift_status_conditional_is_enforced() -> Result<()> {
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Falsifier: a reader that decodes more loosely than the library types
+// ---------------------------------------------------------------------------
+
+/// The closed-world rule has to hold at the seam production actually reads
+/// through, not only for a `serde_json::from_value` in a test.
+///
+/// `read_matrix` and `read_drift` are the file-facing readers the CLI units
+/// use. They decode into the same strict types, but nothing asserted that, so a
+/// reader that grew its own permissive mirror of a contract would not be
+/// caught. Each case injects one unknown field into a real pinned artifact on
+/// disk and requires the reader to refuse it.
+#[test]
+fn the_file_readers_decode_as_strictly_as_the_library_types() -> Result<()> {
+    let scratch = tempfile::tempdir().map_err(|error| eyre!(error))?;
+
+    // --- bundle reader: index and part members ---
+    let bundle = scratch.path().join("matrix");
+    std::fs::create_dir_all(&bundle).map_err(|error| eyre!(error))?;
+    let source = repo_file(MATRIX_FIXTURE);
+    for entry in std::fs::read_dir(&source).map_err(|error| eyre!(error))? {
+        let entry = entry.map_err(|error| eyre!(error))?;
+        std::fs::copy(entry.path(), bundle.join(entry.file_name()))
+            .map_err(|error| eyre!(error))?;
+    }
+    // Control: the copy is readable, so a later rejection is caused by the
+    // injected field rather than by the copy itself.
+    read_matrix(&bundle).map_err(|error| eyre!("the copied bundle must read cleanly: {error}"))?;
+
+    for member in ["index.json", "01-components-a.json"] {
+        let path = bundle.join(member);
+        let original = std::fs::read(&path).map_err(|error| eyre!(error))?;
+        let mut document: Value =
+            serde_json::from_slice(&original).map_err(|error| eyre!(error))?;
+        document
+            .as_object_mut()
+            .ok_or_else(|| eyre!("{member} is not an object"))?
+            .insert(UNKNOWN_KEY.to_string(), json!("interloper"));
+        std::fs::write(&path, serde_json::to_vec(&document).map_err(|error| eyre!(error))?)
+            .map_err(|error| eyre!(error))?;
+        assert!(
+            read_matrix(&bundle).is_err(),
+            "read_matrix must refuse an unknown field in {member}"
+        );
+        std::fs::write(&path, &original).map_err(|error| eyre!(error))?;
+    }
+    // Restoring every member returns the bundle to a readable state, so the
+    // rejections above were not cumulative damage.
+    read_matrix(&bundle)
+        .map_err(|error| eyre!("the restored bundle must read cleanly: {error}"))?;
+
+    // --- drift reader ---
+    let drift = scratch.path().join("drift.json");
+    let original = std::fs::read(repo_file(DRIFT_FIXTURE)).map_err(|error| eyre!(error))?;
+    std::fs::write(&drift, &original).map_err(|error| eyre!(error))?;
+    read_drift(&drift)
+        .map_err(|error| eyre!("the copied drift receipt must read cleanly: {error}"))?;
+
+    let mut document: Value = serde_json::from_slice(&original).map_err(|error| eyre!(error))?;
+    document
+        .as_object_mut()
+        .ok_or_else(|| eyre!("the drift receipt is not an object"))?
+        .insert(UNKNOWN_KEY.to_string(), json!("interloper"));
+    std::fs::write(&drift, serde_json::to_vec(&document).map_err(|error| eyre!(error))?)
+        .map_err(|error| eyre!(error))?;
+    assert!(read_drift(&drift).is_err(), "read_drift must refuse an unknown field");
+    Ok(())
+}
