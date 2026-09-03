@@ -3564,6 +3564,24 @@
       "selector_identity": "invocation:2ea2fbf45ef15246:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "crates/perl-semantic-analyzer/src/analysis/dbix_class_result.rs",
+      "enclosing_test_or_function": "quoted_and_padded_table_spellings_normalize_to_one_identity",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"double-quoted table spelling must stay static\");",
+      "selector_identity": "invocation:67c3d10101035e59:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-semantic-analyzer/src/analysis/dbix_class_result.rs",
+      "enclosing_test_or_function": "quoted_and_padded_table_spellings_normalize_to_one_identity",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"padded table spelling must stay static\");",
+      "selector_identity": "invocation:3d92fccfef182a95:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
