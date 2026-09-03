@@ -18,6 +18,8 @@ pub use result::{
     FormatDiagnostic, FormatDiagnosticSeverity, FormatResult, TextEdit, TextPosition, TextRange,
 };
 
+use crate::native::inferred_line_ending;
+
 use result::utf16_len;
 
 const PARSE_ERROR_CODE: &str = "native.format.parse_error";
@@ -99,12 +101,12 @@ impl NativeFormatter {
 
     fn format_safe_subset(source: &str, config: &FormatConfig) -> String {
         let mut formatted = String::with_capacity(source.len());
-        let inferred_line_ending = inferred_generated_line_ending(source);
+        let fallback_line_ending = inferred_line_ending(source);
 
         for line in source.split_inclusive('\n') {
             let (body, line_ending) = split_line_ending(line);
             let generated_line_ending =
-                if line_ending.is_empty() { inferred_line_ending } else { line_ending };
+                if line_ending.is_empty() { fallback_line_ending } else { line_ending };
             let formatted_body =
                 format_simple_line(body, config).unwrap_or_else(|| body.to_string());
             formatted
@@ -122,13 +124,13 @@ impl NativeFormatter {
     ) -> (String, Vec<TextEdit>) {
         let mut formatted = String::with_capacity(source.len());
         let mut edits = Vec::new();
-        let inferred_line_ending = inferred_generated_line_ending(source);
+        let fallback_line_ending = inferred_line_ending(source);
 
         for (line_index, line) in source.split_inclusive('\n').enumerate() {
             let line_index = line_index as u32;
             let (body, line_ending) = split_line_ending(line);
             let generated_line_ending =
-                if line_ending.is_empty() { inferred_line_ending } else { line_ending };
+                if line_ending.is_empty() { fallback_line_ending } else { line_ending };
             let formatted_body = if range_includes_line(range, line_index) {
                 format_simple_line(body, config)
             } else {
@@ -159,14 +161,24 @@ impl NativeFormatter {
         (formatted, edits)
     }
 
-    fn apply_final_newline(source: &str, config: &FormatConfig) -> String {
+    /// Apply the configured final-newline policy.
+    ///
+    /// The argument is [`Self::format_safe_subset`]'s output, not the caller's
+    /// original document, so the terminator appended here is the line-ending
+    /// convention [`inferred_line_ending`] infers from the *formatted* text's
+    /// last LF — not what that text happens to end with, which may be an
+    /// unterminated final line. That convention matches the caller's document
+    /// only because `format_safe_subset` preserves each line's existing
+    /// terminator; it is not independently guaranteed. Hence `formatted`
+    /// rather than `source`.
+    fn apply_final_newline(formatted: &str, config: &FormatConfig) -> String {
         match config.final_newline {
-            FinalNewline::Preserve => source.to_string(),
+            FinalNewline::Preserve => formatted.to_string(),
             FinalNewline::Insert => {
-                let trimmed = source.trim_end_matches(['\n', '\r']);
-                format!("{trimmed}{}", inferred_generated_line_ending(source))
+                let trimmed = formatted.trim_end_matches(['\n', '\r']);
+                format!("{trimmed}{}", inferred_line_ending(formatted))
             }
-            FinalNewline::Trim => source.trim_end_matches(['\n', '\r']).to_string(),
+            FinalNewline::Trim => formatted.trim_end_matches(['\n', '\r']).to_string(),
         }
     }
 }
@@ -271,15 +283,6 @@ fn split_line_ending(line: &str) -> (&str, &str) {
     } else {
         (line, "")
     }
-}
-
-fn inferred_generated_line_ending(source: &str) -> &'static str {
-    let bytes = source.as_bytes();
-    let Some(last_lf) = bytes.iter().rposition(|byte| *byte == b'\n') else {
-        return "\n";
-    };
-
-    if last_lf > 0 && bytes[last_lf - 1] == b'\r' { "\r\n" } else { "\n" }
 }
 
 fn preserve_generated_line_endings(formatted: String, source_line_ending: &str) -> String {

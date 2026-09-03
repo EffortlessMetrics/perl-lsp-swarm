@@ -241,6 +241,10 @@ Otherwise detect, explain, repair, and continue.
 - read nearest package-local owner guidance before modifying an owning crate;
 - production code must not use `unwrap`, `expect`, `panic!`, `todo!`,
   `unimplemented!`, `abort`, or `dbg!` outside documented narrow exceptions;
+- migrating a test's `.expect("…")` onto the `perl-test-must` helpers uses the
+  context-preserving `must_with`/`must_some_with`/`must_err_with`; the bare
+  `must`/`must_some`/`must_err` are only correct when the call site carried no
+  explanation (`cargo xtask ci-hygiene check-must-context` reports the drop);
 - never use `git stash` in worktrees; use scoped restore or a WIP commit;
 - stage intended paths explicitly;
 - use one worktree per genuine concurrent write claim, not per lifecycle pass;
