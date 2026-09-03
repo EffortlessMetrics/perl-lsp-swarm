@@ -3813,7 +3813,7 @@ mod tests {
             bail!("fixture produced no PhaseBlock effect");
         };
         let Some(start) = source.find(slice) else {
-            bail!("slice must exist in source");
+            bail!("slice must exist in source: {slice:?}");
         };
         effect.range = SourceLocation { start, end: start + slice.len() };
         Ok(effect)

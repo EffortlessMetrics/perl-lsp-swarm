@@ -1937,11 +1937,12 @@ mod tests {
                 .build()?;
         let mut value = serde_json::to_value(&snapshot)?;
         value["schema_version"] = serde_json::Value::from(1_u32);
-        let Err(error) = serde_json::from_value::<ProjectEnvironmentSnapshot>(value) else {
-            return Err(
-                "v1 snapshots must not gain v2 authority implicitly: deserialization unexpectedly succeeded"
-                    .into(),
-            );
+        let Err(error) = serde_json::from_value::<ProjectEnvironmentSnapshot>(value.clone()) else {
+            return Err(format!(
+                "v1 snapshots must not gain v2 authority implicitly: \
+                 deserialization unexpectedly succeeded for value: {value:?}"
+            )
+            .into());
         };
         assert!(error.to_string().contains("unsupported project environment schema version"));
         Ok(())
