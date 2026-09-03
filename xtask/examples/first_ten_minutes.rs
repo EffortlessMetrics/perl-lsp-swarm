@@ -30,20 +30,38 @@ const FIXTURE_MANIFEST_SCHEMA_VERSION: &str = "first_ten_minutes_fixtures.v1";
 /// accepting any nonblank description.
 const FIXTURE_HASH_RECIPE: &str = "sha256 over all regular files of the fixture directory sorted by relative POSIX path; each file contributes its path bytes, LF, its decimal byte length, LF, then its file bytes";
 /// Canonical identity of the checked-in representative set: exactly these
-/// fixture ids bound to exactly these content digests. Verified-child artifact
-/// emission requires the verified set to match this identity, so a synthetic
-/// self-consistent five-family set can never emit an indistinguishable
+/// fixture ids bound to exactly these families and content digests.
+/// Verified-child artifact emission requires the verified set to match this
+/// identity, so a synthetic self-consistent five-family set — including one
+/// that merely swaps family labels — can never emit an indistinguishable
 /// trusted artifact. The unit tests pin this table to the checked-in
 /// manifest.json, so any fixture refresh must update both together.
-const CANONICAL_FIXTURE_SET: [(&str, &str); FIXTURE_FAMILY_COUNT] = [
-    ("conventional-modules-v1", "0dc6672278fcac9248381a50ce483203772633abdb2a7d280cb6eac0125a6246"),
-    ("test-heavy-v1", "c851ad7fd74133ee0f14e95a17592dcb0dc3e90640eff4d5181242d205268ac8"),
-    ("framework-shaped-v1", "02264e9564e2ae7830ceabdb7d0337c0e32788334456d42e1443bd98ec460f7f"),
+const CANONICAL_FIXTURE_SET: [(&str, ProjectFamily, &str); FIXTURE_FAMILY_COUNT] = [
+    (
+        "conventional-modules-v1",
+        ProjectFamily::ConventionalModules,
+        "0dc6672278fcac9248381a50ce483203772633abdb2a7d280cb6eac0125a6246",
+    ),
+    (
+        "test-heavy-v1",
+        ProjectFamily::TestHeavy,
+        "c851ad7fd74133ee0f14e95a17592dcb0dc3e90640eff4d5181242d205268ac8",
+    ),
+    (
+        "framework-shaped-v1",
+        ProjectFamily::FrameworkShaped,
+        "02264e9564e2ae7830ceabdb7d0337c0e32788334456d42e1443bd98ec460f7f",
+    ),
     (
         "environment-sensitive-v1",
+        ProjectFamily::EnvironmentSensitive,
         "7684d6cf700fbbef9723c838758d51b32726a048de32ece93f0c647a496c8664",
     ),
-    ("dynamic-boundary-v1", "d72fc32c859eb6dc11f5ed73cbbdee9c437cc47fc891a60631f703f10a8c5c46"),
+    (
+        "dynamic-boundary-v1",
+        ProjectFamily::DynamicBoundaryControl,
+        "d72fc32c859eb6dc11f5ed73cbbdee9c437cc47fc891a60631f703f10a8c5c46",
+    ),
 ];
 const OWNER_ISSUE: &str = "#5902";
 const FIXTURE_FAMILY_COUNT: usize = 5;
@@ -247,7 +265,7 @@ struct VerifiedChildArtifact<'a> {
     limitation: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FixtureManifest {
     schema_version: String,
@@ -256,7 +274,7 @@ struct FixtureManifest {
     fixtures: Vec<FixtureEntry>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FixtureEntry {
     fixture_id: String,
@@ -794,13 +812,20 @@ fn assert_receipt_binds_fixture_set(
 /// self-consistent synthetic set. Standalone verification of synthetic sets
 /// stays available; only artifact emission is gated here.
 fn assert_canonical_fixture_set(manifest: &FixtureManifest) -> Result<()> {
-    for (fixture_id, content_sha256) in &CANONICAL_FIXTURE_SET {
+    for (fixture_id, family, content_sha256) in &CANONICAL_FIXTURE_SET {
         let entry = manifest.fixtures.iter().find(|entry| entry.fixture_id == *fixture_id);
         let Some(entry) = entry else {
             bail!(
                 "fixture {fixture_id} from the canonical checked-in set is missing; verified child artifacts may only be emitted from the checked-in representative set"
             );
         };
+        if entry.family != *family {
+            bail!(
+                "fixture {fixture_id} is registered as family {:?} but the canonical checked-in set binds it to {:?}; verified child artifacts may only be emitted from the checked-in representative set",
+                entry.family,
+                family
+            );
+        }
         if !entry.content_sha256.eq_ignore_ascii_case(content_sha256) {
             bail!(
                 "fixture {fixture_id} content digest {} does not match the canonical checked-in set digest {content_sha256}; verified child artifacts may only be emitted from the checked-in representative set",
@@ -929,7 +954,7 @@ fn main() -> Result<()> {
 mod tests {
     use super::{
         CANONICAL_FIXTURE_SET, FIXTURE_HASH_RECIPE, FixtureEntry, FixtureManifest, OWNER_ISSUE,
-        Receipt, ReceiptStatus, StepStatus, assert_canonical_fixture_set,
+        ProjectFamily, Receipt, ReceiptStatus, StepStatus, assert_canonical_fixture_set,
         assert_receipt_binds_fixture_set, fixture_content_digest, load, load_fixture_manifest,
         reject_unmanifested_fixture_directories, require_artifact_preconditions, sha256_hex,
         validate, validate_raw_shape, verify_fixture_set, write_verified_child_artifact,
@@ -1556,6 +1581,32 @@ mod tests {
         assert_canonical_fixture_set(&manifest)?;
         assert_eq!(CANONICAL_FIXTURE_SET.len(), manifest.fixtures.len());
         Ok(())
+    }
+
+    /// Negative control: a manifest that keeps every canonical id and digest
+    /// but swaps two family labels must fail artifact eligibility, so family
+    /// assignments cannot be rearranged behind a trusted artifact.
+    #[test]
+    fn swapped_canonical_families_fail_artifact_eligibility() -> Result<()> {
+        let manifest = checked_in_manifest()?;
+        let mut entries = manifest.fixtures.clone();
+        entries[0].family = ProjectFamily::TestHeavy;
+        entries[1].family = ProjectFamily::ConventionalModules;
+        let swapped = FixtureManifest {
+            schema_version: manifest.schema_version.clone(),
+            owner_issue: manifest.owner_issue.clone(),
+            hash_recipe: manifest.hash_recipe.clone(),
+            fixtures: entries,
+        };
+        let outcome = match assert_canonical_fixture_set(&swapped) {
+            Ok(()) => "unexpectedly passed".to_string(),
+            Err(error) => format!("{error}"),
+        };
+        expect_error_contains(
+            &outcome,
+            "is registered as family",
+            "a family-swapped canonical set claimed artifact eligibility",
+        )
     }
 
     /// A synthetic self-consistent set stays verifiable standalone but can
