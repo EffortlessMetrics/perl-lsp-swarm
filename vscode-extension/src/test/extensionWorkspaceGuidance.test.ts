@@ -129,6 +129,29 @@ test('a configured symlink alias covers its canonical candidate', async () => {
   ).resolves.toBe(true);
 });
 
+test('does not scan or suggest a candidate symlinked outside the workspace', async () => {
+  const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-escape-'));
+  const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-outside-'));
+  fs.writeFileSync(path.join(outsideDir, 'Escaped.pm'), 'package Escaped; 1;\n');
+  try {
+    fs.symlinkSync(outsideDir, path.join(workspaceDir, 'vendor'), 'dir');
+  } catch {
+    return;
+  }
+
+  mountWorkspace(workspaceDir, ['lib']);
+  const reports = await runDiscoveredIncludePathGuidance({
+    globalState: makeState(),
+  } as unknown as vscode.ExtensionContext);
+
+  expect(reports).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ folder: 'workspace', discovered: [] }),
+    ]),
+  );
+  expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+});
+
 test('dismissal is sticky for an unchanged discovered module layout', async () => {
   const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-cache-'));
   fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
@@ -141,6 +164,23 @@ test('dismissal is sticky for an unchanged discovered module layout', async () =
   await runDiscoveredIncludePathGuidance({ globalState } as unknown as vscode.ExtensionContext);
 
   expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
+});
+
+test('configuration changes invalidate a prior discovery dismissal', async () => {
+  const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-config-'));
+  fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceDir, 'src', 'Module.pm'), 'package Module; 1;\n');
+  const globalState = makeState();
+  let includePaths = ['lib'];
+  mountWorkspace(workspaceDir, includePaths);
+  (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Dismiss');
+
+  await runDiscoveredIncludePathGuidance({ globalState } as unknown as vscode.ExtensionContext);
+  includePaths = ['lib', 'manual'];
+  mountWorkspace(workspaceDir, includePaths);
+  await runDiscoveredIncludePathGuidance({ globalState } as unknown as vscode.ExtensionContext);
+
+  expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(2);
 });
 
 test('retries a discovered-path suggestion after an update failure', async () => {
