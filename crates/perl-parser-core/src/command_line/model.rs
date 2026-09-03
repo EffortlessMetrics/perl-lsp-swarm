@@ -117,10 +117,15 @@ pub struct ModuleSpec {
     pub import_arguments: Option<String>,
     /// Where `import_arguments` came from.
     pub import_arguments_span: Option<ArgvSpan>,
-    /// Whether `module` is a plain `Foo::Bar` module name. When this is false
-    /// Perl still compiles `use <module>;`, so the text is arbitrary code rather
-    /// than an import, and an [`AmbiguityKind::ModuleExpressionIsNotAModuleName`]
-    /// is recorded.
+    /// Whether `module` is *decidably* a plain `Foo::Bar` module name — one
+    /// this layer can classify from argv alone, which means an ASCII one.
+    ///
+    /// A false answer has two causes, told apart by the recorded ambiguity.
+    /// [`AmbiguityKind::ModuleExpressionIsNotAModuleName`] means the text is
+    /// arbitrary code: Perl compiles `use <module>;` regardless, so
+    /// `-M'Foo; ...'` runs at compile time. Non-ASCII text instead records
+    /// [`AmbiguityKind::ModuleNameDependsOnSourceContext`], because whether it
+    /// is a name is a question about Perl source rather than about argv.
     pub module_is_plain_name: bool,
 }
 
@@ -378,6 +383,29 @@ pub enum AmbiguityKind {
     /// compiles `use <text>;` regardless, so the text is arbitrary code — a
     /// meaningful distinction, because `-M'Foo; ...'` runs at compile time.
     ModuleExpressionIsNotAModuleName,
+    /// `-M`/`-m` whose module component contains non-ASCII text, so whether it
+    /// names a module cannot be decided from argv.
+    ///
+    /// `-M` splices what Perl's byte-wise option scan leaves behind into a
+    /// `use` statement, which the lexer then reads under whatever pragmas the
+    /// earlier arguments already put in force:
+    ///
+    /// ```text
+    /// perl -MFooα                    -e1 → Unrecognized character \xCE
+    /// perl -Mutf8 -MFooα             -e1 → Can't locate Fooα.pm in @INC
+    /// perl -Mstrict;use utf8 -MFooα  -e1 → Can't locate Fooα.pm in @INC
+    /// perl -Mutf8 -Mstrict;no utf8 -MFooα -e1 → Unrecognized character \xCE
+    /// ```
+    ///
+    /// Deciding between them means knowing whether `utf8` is in force, and the
+    /// third and fourth lines show that an *arbitrary expression* can turn it on
+    /// or off — so answering requires parsing the Perl source this decoder
+    /// deliberately does not read. Settling it also needs Perl's Unicode
+    /// identifier rules, which admit combining marks and connector punctuation
+    /// (`perl -Mutf8 -MFoo::á` and `-MFoo::a‿` both load). This layer therefore
+    /// reports the question instead of guessing an answer; the module text and
+    /// its span are still recorded exactly.
+    ModuleNameDependsOnSourceContext,
     /// `-F` written with no pattern. Perl accepts it, but the resulting split
     /// behavior is not determined by `argv`.
     EmptySplitPattern,

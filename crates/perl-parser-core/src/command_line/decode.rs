@@ -6,10 +6,9 @@
 
 use super::model::{
     Ambiguity, AmbiguityKind, ArgvLead, ArgvSpan, ContextFact, ContextFactKind,
-    InvocationDecodeError, ModuleForm, ModuleImportAction, ModuleSpec, NeutralSwitch,
-    NeutralSwitchUse, PerlInvocation, ProgramArgument, ProgramSource, RecordSeparatorDigits,
-    SourceFragment, SourceSwitch, TerminatingAction, TerminatingActionKind, UnsupportedSwitch,
-    UnsupportedSwitchKind,
+    InvocationDecodeError, ModuleForm, ModuleSpec, NeutralSwitch, NeutralSwitchUse, PerlInvocation,
+    ProgramArgument, ProgramSource, RecordSeparatorDigits, SourceFragment, SourceSwitch,
+    TerminatingAction, TerminatingActionKind, UnsupportedSwitch, UnsupportedSwitchKind,
 };
 
 /// The Unicode option letters `-C` accepts. Any other letter makes Perl report
@@ -66,9 +65,6 @@ pub fn decode<S: AsRef<str>>(
     };
 
     let mut index = 0usize;
-    // Ordered argv state: an earlier `-Mutf8` changes how later `-M` module
-    // expressions are read. See `apply_utf8_pragma`.
-    let mut utf8 = Utf8Names::Disabled;
 
     if lead == ArgvLead::Interpreter {
         let first = argv.first().ok_or(InvocationDecodeError::MissingInterpreter)?;
@@ -93,7 +89,7 @@ pub fn decode<S: AsRef<str>>(
             }
             continue;
         }
-        index = decode_cluster(argv, index, &mut invocation, &mut utf8)?;
+        index = decode_cluster(argv, index, &mut invocation)?;
         if invocation.terminating_action.is_some() {
             break;
         }
@@ -254,7 +250,6 @@ fn decode_cluster<S: AsRef<str>>(
     argv: &[S],
     index: usize,
     invocation: &mut PerlInvocation,
-    utf8: &mut Utf8Names,
 ) -> Result<usize, InvocationDecodeError> {
     let argument = argv.get(index).map(AsRef::as_ref).unwrap_or_default();
     let mut cluster = Cluster::new(argument, index);
@@ -324,13 +319,17 @@ fn decode_cluster<S: AsRef<str>>(
                 } else {
                     ModuleForm::UseSuppressingDefaultImport
                 };
-                let spec = decode_module_spec(attached, attached_span, letter, *utf8)?;
-                apply_utf8_pragma(utf8, &spec, form);
+                let spec = decode_module_spec(attached, attached_span, letter)?;
                 if !spec.module_is_plain_name {
-                    invocation.ambiguities.push(Ambiguity {
-                        kind: AmbiguityKind::ModuleExpressionIsNotAModuleName,
-                        span: spec.module_span,
-                    });
+                    // Non-ASCII text is a different report from arbitrary code:
+                    // it is a module name exactly when an earlier argument put
+                    // `utf8` in force, which is a question about Perl source.
+                    let kind = if spec.module.is_ascii() {
+                        AmbiguityKind::ModuleExpressionIsNotAModuleName
+                    } else {
+                        AmbiguityKind::ModuleNameDependsOnSourceContext
+                    };
+                    invocation.ambiguities.push(Ambiguity { kind, span: spec.module_span });
                 }
                 push_fact(
                     invocation,
@@ -611,49 +610,12 @@ fn neutral_switch(letter: char) -> Option<NeutralSwitch> {
     })
 }
 
-/// Whether the `utf8` pragma is already in force for the `use` statements that
-/// later `-M` arguments are spliced into.
-///
-/// This is ordered argv state, not runtime state: it is decided entirely by the
-/// earlier `-M`/`-m` arguments, and nothing is resolved, loaded or executed to
-/// determine it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Utf8Names {
-    Disabled,
-    Enabled,
-}
-
-/// Apply one decoded module spec to the running `utf8` state.
-///
-/// Only `utf8` itself matters, and only when perl actually calls a method on
-/// it — the pragma takes effect through `import`. Verified against 5.38.2 with
-/// `-MFooα` as the probe, which loads only when the pragma is in force:
-///
-/// ```text
-/// perl -Mutf8   -MFooα -e1 → Can't locate Fooα.pm      (Import   → enabled)
-/// perl -Mutf8=x -MFooα -e1 → Can't locate Fooα.pm      (Import   → enabled)
-/// perl -mutf8   -MFooα -e1 → Unrecognized character    (NoCall   → unchanged)
-/// perl -M-utf8  -MFooα -e1 → Unrecognized character    (Unimport → disabled)
-/// perl -Mutf8 -M-utf8 -MFooα -e1 → Unrecognized character
-/// ```
-fn apply_utf8_pragma(utf8: &mut Utf8Names, spec: &ModuleSpec, form: ModuleForm) {
-    if spec.module != "utf8" {
-        return;
-    }
-    match spec.import_action(form) {
-        ModuleImportAction::Import => *utf8 = Utf8Names::Enabled,
-        ModuleImportAction::Unimport => *utf8 = Utf8Names::Disabled,
-        ModuleImportAction::NoCall | ModuleImportAction::Undetermined => {}
-    }
-}
-
 /// Decode a `-M`/`-m` argument into negation, module expression and import
 /// arguments, keeping each part's location.
 fn decode_module_spec(
     text: &str,
     span: ArgvSpan,
     switch: char,
-    utf8: Utf8Names,
 ) -> Result<ModuleSpec, InvocationDecodeError> {
     let (negated, body, body_start) = match text.strip_prefix('-') {
         Some(body) => (true, body, span.start + 1),
@@ -708,7 +670,7 @@ fn decode_module_spec(
         module_span,
         import_arguments: import_arguments.map(str::to_owned),
         import_arguments_span,
-        module_is_plain_name: is_plain_module_name(module, utf8),
+        module_is_plain_name: is_plain_module_name(module),
     })
 }
 
@@ -761,10 +723,10 @@ fn scan_module_option_name(body: &str) -> Result<usize, ModuleNameScanError> {
 /// from `::` in one way that matters: a trailing `::` still names a module
 /// (`Foo::` loads `Foo/.pm`) while a trailing apostrophe opens a string, so
 /// `-MFoo'` dies on an unterminated string rather than loading anything.
-fn is_plain_module_name(text: &str, utf8: Utf8Names) -> bool {
+fn is_plain_module_name(text: &str) -> bool {
     const LEGACY_SEPARATOR: char = '\'';
 
-    let Some((first, mut rest)) = split_leading_component(text, utf8) else {
+    let Some((first, mut rest)) = split_leading_component(text) else {
         return false;
     };
     // The first component always leads with ASCII, whatever `utf8` says: perl's
@@ -773,7 +735,7 @@ fn is_plain_module_name(text: &str, utf8: Utf8Names) -> bool {
     // any source is compiled.
     let mut characters = first.chars();
     let leads = matches!(characters.next(), Some(c) if c.is_ascii_alphabetic() || c == '_');
-    if !leads || !characters.all(|c| is_name_character(c, utf8)) {
+    if !leads || !characters.all(is_name_character) {
         return false;
     }
 
@@ -788,17 +750,13 @@ fn is_plain_module_name(text: &str, utf8: Utf8Names) -> bool {
         } else {
             return false;
         };
-        match split_leading_component(after, utf8) {
+        match split_leading_component(after) {
             Some((component, remainder)) => {
-                // A later component may lead with a digit, but only an ASCII
-                // one. Under `utf8` a Unicode *letter* leads (`Foo::α` loads
-                // `Foo/α.pm`) while a Unicode *digit* still does not:
-                // `perl -Mutf8 -MFoo::٢` dies with `Unrecognized character`.
+                // A later component may lead with a digit, unlike the first.
                 let mut characters = component.chars();
-                let leads = matches!(characters.next(), Some(c) if c.is_ascii_alphanumeric()
-                    || c == '_'
-                    || (utf8 == Utf8Names::Enabled && c.is_alphabetic()));
-                if !leads || !characters.all(|c| is_name_character(c, utf8)) {
+                let leads =
+                    matches!(characters.next(), Some(c) if c.is_ascii_alphanumeric() || c == '_');
+                if !leads || !characters.all(is_name_character) {
                     return false;
                 }
                 rest = remainder;
@@ -811,10 +769,10 @@ fn is_plain_module_name(text: &str, utf8: Utf8Names) -> bool {
 }
 
 /// Split off the leading run of name characters, if any.
-fn split_leading_component(text: &str, utf8: Utf8Names) -> Option<(&str, &str)> {
+fn split_leading_component(text: &str) -> Option<(&str, &str)> {
     let length: usize = text
         .chars()
-        .take_while(|character| is_name_character(*character, utf8))
+        .take_while(|character| is_name_character(*character))
         .map(char::len_utf8)
         .sum();
     if length == 0 {
@@ -836,8 +794,6 @@ fn split_leading_component(text: &str, utf8: Utf8Names) -> Option<(&str, &str)> 
 /// perl -MFooα -Mutf8 -e1 → Unrecognized character \xCE   (order matters)
 /// perl -MFoo2        -e1 → Can't locate Foo2.pm in @INC  (the ASCII control)
 /// ```
-fn is_name_character(character: char, utf8: Utf8Names) -> bool {
-    character.is_ascii_alphanumeric()
-        || character == '_'
-        || (utf8 == Utf8Names::Enabled && character.is_alphanumeric())
+fn is_name_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || character == '_'
 }
