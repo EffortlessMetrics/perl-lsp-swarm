@@ -9,6 +9,21 @@ const DEMO_ENTRY_POINT = 'main.pl';
 const DEMO_METADATA_FILE = '.perl-lsp-demo-template.json';
 const DEMO_METADATA_SCHEMA = 'perl-lsp-demo-template.v1';
 
+function errorCode(error: unknown): string | undefined {
+  return error !== null && typeof error === 'object' && 'code' in error
+    ? String((error as NodeJS.ErrnoException).code)
+    : undefined;
+}
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.promises.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 interface TemplateEntry {
   readonly relativePath: string;
   readonly bytes: Buffer;
@@ -155,13 +170,29 @@ async function validateExistingDestination(
   }
 
   const entryPoint = path.join(destination, DEMO_ENTRY_POINT);
-  const entryStat = await fs.promises.lstat(entryPoint);
+  let entryStat: fs.Stats;
+  try {
+    entryStat = await fs.promises.lstat(entryPoint);
+  } catch (error: unknown) {
+    if (errorCode(error) === 'ENOENT') {
+      throw new Error(`existing demo destination has no regular ${DEMO_ENTRY_POINT}`);
+    }
+    throw error;
+  }
   if (!entryStat.isFile() || entryStat.isSymbolicLink()) {
     throw new Error(`existing demo destination has no regular ${DEMO_ENTRY_POINT}`);
   }
 
   const metadataPath = path.join(destination, DEMO_METADATA_FILE);
-  const metadataStat = await fs.promises.lstat(metadataPath);
+  let metadataStat: fs.Stats;
+  try {
+    metadataStat = await fs.promises.lstat(metadataPath);
+  } catch (error: unknown) {
+    if (errorCode(error) === 'ENOENT') {
+      throw new Error('existing demo destination has no regular template metadata');
+    }
+    throw error;
+  }
   if (!metadataStat.isFile() || metadataStat.isSymbolicLink()) {
     throw new Error('existing demo destination has no regular template metadata');
   }
@@ -231,6 +262,9 @@ export async function prepareUserOwnedDemoProject(
   context: vscode.ExtensionContext,
 ): Promise<DemoProjectPreparation> {
   const templateRoot = path.join(context.extensionPath, 'assets', 'demo-project');
+  if (!(await pathExists(templateRoot))) {
+    return { kind: 'failed', reason: 'demo project is not available in this extension build' };
+  }
   try {
     const snapshot = await collectTemplate(templateRoot);
     const storageRoot = context.globalStorageUri.fsPath;
