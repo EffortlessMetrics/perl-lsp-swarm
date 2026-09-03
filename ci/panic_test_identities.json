@@ -3339,6 +3339,42 @@
       "selector_identity": "invocation:ee2ab3111d4227b2:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs/src/runtime/outbound.rs",
+      "enclosing_test_or_function": "writer_write_failure_preserves_first_cause_against_broken_pipe_observations",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected WriteFailed first cause, got {other:?}\"),",
+      "selector_identity": "invocation:8370848bcc30998d:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs/src/runtime/outbound.rs",
+      "enclosing_test_or_function": "writer_flush_failure_is_distinct_from_write_failure",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"forced flush failure must not be misclassified as write failure\")",
+      "selector_identity": "invocation:f3c29028ae447353:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs/src/runtime/outbound.rs",
+      "enclosing_test_or_function": "writer_flush_failure_is_distinct_from_write_failure",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected FlushFailed outcome, got {other:?}\"),",
+      "selector_identity": "invocation:683a3c54fd3c06e9:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs/src/runtime/outbound.rs",
+      "enclosing_test_or_function": "flush",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected WriteFailed outcome, got {other:?}\"),",
+      "selector_identity": "invocation:5a5d4c479a2cd580:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
