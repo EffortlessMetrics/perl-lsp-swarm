@@ -2952,6 +2952,69 @@
       "selector_identity": "invocation:120d9cc00bf771ae:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "xtask/tests/ci_route_plan.rs",
+      "enclosing_test_or_function": "aggregate_profile_cannot_lose_inherited_gate",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected error outcome, got {other:?}\"),",
+      "selector_identity": "invocation:e3e08719853d8dfc:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/ci_route_plan.rs",
+      "enclosing_test_or_function": "skipped_quarantined_gate_never_becomes_scoped_noop",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected quarantined outcome, got {other:?}\"),",
+      "selector_identity": "invocation:49198566f6e65666:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/ci_route_plan.rs",
+      "enclosing_test_or_function": "generic_skip_without_selector_proof_is_error",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected error outcome, got {other:?}\"),",
+      "selector_identity": "invocation:e3e08719853d8dfc:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/ci_route_plan.rs",
+      "enclosing_test_or_function": "expired_invalid_and_ownerless_quarantine_cannot_become_active",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected error outcome for {resolution:?}, got {other:?}\"),",
+      "selector_identity": "invocation:a15d1cd26b68bf56:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/ci_route_plan.rs",
+      "enclosing_test_or_function": "non_runnable_lifecycles_never_become_runnable",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected error outcome for {state:?}, got {other:?}\"),",
+      "selector_identity": "invocation:6bdda4c598c4cc77:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/ci_route_plan.rs",
+      "enclosing_test_or_function": "missing_or_contradictory_selector_evidence_is_never_scoped_noop",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected contradiction error, got {other:?}\"),",
+      "selector_identity": "invocation:b5463605ee1378d9:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/ci_route_plan.rs",
+      "enclosing_test_or_function": "missing_or_contradictory_selector_evidence_is_never_scoped_noop",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected contradiction error, got {other:?}\"),",
+      "selector_identity": "invocation:b5463605ee1378d9:occurrence:2",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
