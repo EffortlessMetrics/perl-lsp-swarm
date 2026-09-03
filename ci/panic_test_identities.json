@@ -2396,6 +2396,132 @@
       "state": "active"
     },
     {
+      "path": "xtask/tests/emacs_subject_manifest_contract.rs",
+      "enclosing_test_or_function": "ambient_user_package_cannot_shadow_the_bundled_client",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected AmbientStateRejected, got {other:?}\"),",
+      "selector_identity": "invocation:2d890f913685debd:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_subject_manifest_contract.rs",
+      "enclosing_test_or_function": "cache_entry_rejects_unexpected_files",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected AmbientStateRejected, got {other:?}\"),",
+      "selector_identity": "invocation:2d890f913685debd:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_subject_manifest_contract.rs",
+      "enclosing_test_or_function": "compiled_only_installation_is_typed_unavailable",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected UnavailableSubject, got {other:?}\"),",
+      "selector_identity": "invocation:bd5120b083c2a514:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_subject_manifest_contract.rs",
+      "enclosing_test_or_function": "emacs_29_bundled_file_with_emacs_30_subject_is_rejected",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected IdentityMismatch, got {other:?}\"),",
+      "selector_identity": "invocation:4b5a34120181d004:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_subject_manifest_contract.rs",
+      "enclosing_test_or_function": "floating_refs_and_mutable_aliases_are_rejected",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|rejection| panic!(\"an exact commit pin is not floating: {rejection:?}\"));",
+      "selector_identity": "invocation:e6811dbfb7dc6cb1:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_subject_manifest_contract.rs",
+      "enclosing_test_or_function": "floating_refs_and_mutable_aliases_are_rejected",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected InvalidManifest, got {other:?}\"),",
+      "selector_identity": "invocation:f2aeb149f4a14dc4:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_subject_manifest_contract.rs",
+      "enclosing_test_or_function": "manifest_identity_is_never_treated_as_runtime_proof",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected an instrument failure on the corrupt record, got {rejection:?}\")",
+      "selector_identity": "invocation:0976c5015c4a8308:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_subject_manifest_contract.rs",
+      "enclosing_test_or_function": "mutable_cache_entry_cannot_satisfy_a_changed_identity",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected StaleCacheEntry, got {other:?}\"),",
+      "selector_identity": "invocation:96b5d832298edc91:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_subject_manifest_contract.rs",
+      "enclosing_test_or_function": "probed_version_token_mismatch_is_incompatible",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected IncompatibleSubject, got {other:?}\"),",
+      "selector_identity": "invocation:5503a663f4bcfa71:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_subject_manifest_contract.rs",
+      "enclosing_test_or_function": "rejection_of",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a typed rejection, got an instrument failure: {message}\")",
+      "selector_identity": "invocation:0c10d8383270f93d:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_subject_manifest_contract.rs",
+      "enclosing_test_or_function": "same_version_different_bundled_eglot_file_is_rejected",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected IdentityMismatch, got {other:?}\"),",
+      "selector_identity": "invocation:4b5a34120181d004:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_subject_manifest_contract.rs",
+      "enclosing_test_or_function": "same_version_different_emacs_build_digest_is_rejected",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected StaleCacheEntry, got {other:?}\"),",
+      "selector_identity": "invocation:96b5d832298edc91:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_subject_manifest_contract.rs",
+      "enclosing_test_or_function": "site_lisp_package_layout_inside_the_installation_is_rejected",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected AmbientStateRejected, got {other:?}\"),",
+      "selector_identity": "invocation:2d890f913685debd:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_subject_manifest_contract.rs",
+      "enclosing_test_or_function": "unknown_subject_ids_are_typed_errors_listing_the_registry",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected UnknownSubject, got {other:?}\"),",
+      "selector_identity": "invocation:4838c6cdadf585f4:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
       "path": "xtask/tests/flake_config_test.rs",
       "enclosing_test_or_function": "workspace_package_version",
       "macro_family": "panic!",
