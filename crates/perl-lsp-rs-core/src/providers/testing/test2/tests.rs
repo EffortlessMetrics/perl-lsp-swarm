@@ -566,16 +566,16 @@ fn test2_transform_detection_requires_option_position() {
 }
 
 #[test]
-fn test2_transform_detection_covers_every_recognizer_match() {
-    // Load-bearing safety property. `resolve_import` only consults the
-    // recognizers when this detector fires, so anything the recognizers match
-    // MUST be detected — otherwise the no-transform path bareword-scans text
-    // the patterns own and fabricates imports, which is the exact leak this
-    // change exists to close.
+fn test2_no_recognizer_owned_span_reaches_the_bareword_scan() {
+    // Load-bearing safety property, stated where it actually bites: for any
+    // import text a recognizer matches, `resolve_import` must never fall
+    // through to the ordinary bareword scan. That scan would report the span's
+    // structural atoms — the container key, and an original a rename removes —
+    // as imported symbols, which is the exact leak this change closes.
     //
-    // The interesting cases are the ones where a word character precedes the
-    // option token: both patterns place it after `[^}]*?`, which admits that,
-    // so a word-boundary requirement here would silently uncover them.
+    // Two ways the property can break, both represented below:
+    //   * a detector boundary rule narrower than `[^}]*?` (word-char prefixes);
+    //   * the detector and the recognizers disagreeing about quoted values.
     let corpus = [
         "ok => {-as => 'my_ok'}",
         "ok => { -as => 'my_ok' }",
@@ -588,24 +588,52 @@ fn test2_transform_detection_covers_every_recognizer_match() {
         "':DEFAULT', ok => {-as => 'my_ok'}",
         "ok => {-as=>'my_ok'}",
         "ok => {other => 1, -as => 'my_ok'}",
+        // Option-shaped text inside a quoted value: the detector treats it as
+        // data, the regex bridge still matches across it. The disagreement
+        // must resolve fail-closed, never into a bareword scan.
+        "ok => {target => '-as => my_ok'}",
+        "ok => {target => \"-prefix => my_\"}",
     ];
 
     let rename_as = RENAME_AS.as_ref().expect("static -as pattern compiles");
     let rename_fix = RENAME_FIX.as_ref().expect("static -prefix/-postfix pattern compiles");
 
-    let uncovered: Vec<&str> = corpus
+    let leaked: Vec<(&str, TransformScan)> = corpus
         .into_iter()
-        .filter(|case| {
-            (rename_as.is_match(case) || rename_fix.is_match(case))
-                && !contains_transform_syntax(case)
-        })
+        .filter(|case| rename_as.is_match(case) || rename_fix.is_match(case))
+        .map(|case| (case, scan_import_transforms(case, Some(rename_as), Some(rename_fix))))
+        .filter(|(_, scan)| matches!(scan, TransformScan::None))
         .collect();
+
+    let uncovered: Vec<&str> = leaked.into_iter().map(|(case, _)| case).collect();
 
     assert!(
         uncovered.is_empty(),
-        "recognizer matches these but the detector reports no transform syntax, \
+        "a recognizer owns these spans but the scan resolved to None, \
          so they would reach the bareword scan: {uncovered:?}"
     );
+}
+
+#[test]
+fn test2_quoted_option_shaped_value_never_imports_container_atoms() {
+    // The concrete regression the property above prevents. `target` is a hash
+    // key and `ok` is the rename's original, which a real `-as` removes from
+    // scope; neither is an imported symbol under any reading. Reporting them —
+    // and reporting them as a clean result — is a fabricated fact.
+    for args in ["ok => {target => '-as => my_ok'}", "ok => {target => \"-prefix => my_\"}"] {
+        let resolved = resolve_import("Test2::V0", args).expect("recognized module");
+        assert!(
+            !resolved.symbols.contains("target"),
+            "{args}: container key must never be an imported symbol, got {:?}",
+            resolved.symbols
+        );
+        assert!(
+            !resolved.symbols.contains("ok"),
+            "{args}: rename original must not be imported, got {:?}",
+            resolved.symbols
+        );
+        assert!(resolved.analysis_limited, "{args}: an unresolved span is never a clean result");
+    }
 }
 
 #[test]
