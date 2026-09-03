@@ -12,6 +12,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from parser_facade_authority import check, load_ledger, render_markdown
+from parser_facade_inventory import CargoTarget, cargo_targets
 
 FIXTURE_LEDGER = Path(__file__).resolve().parents[2] / ".ci/parser-facade"
 
@@ -508,6 +509,68 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
     def test_auto_discovered_target_honors_package_opt_out(self) -> None:
         self.write("crates/perl-parser/tests/conventional_target.rs", "#[test]\nfn probe() {}\n")
         check(self.root, self.ledger_path)
+
+    def synthetic_targets(self, package: dict[str, object] | None = None) -> set[CargoTarget]:
+        root = self.root / "synthetic"
+        root.mkdir(parents=True, exist_ok=True)
+        manifest: dict[str, object] = {"package": {"name": "synthetic", **(package or {})}}
+        return cargo_targets(manifest, root)
+
+    def test_auto_discovery_matches_cargo_shallow_target_layout(self) -> None:
+        """Nested Rust modules are not independent Cargo targets."""
+        for relative in (
+            "src/main.rs", "src/bin/flat.rs", "src/bin/group/main.rs", "src/bin/group/helper.rs",
+            "examples/flat.rs", "examples/group/main.rs", "examples/group/helper.rs",
+            "tests/flat.rs", "tests/group/main.rs", "tests/group/helper.rs",
+            "benches/flat.rs", "benches/group/main.rs", "benches/group/helper.rs",
+        ):
+            self.write(f"synthetic/{relative}", "fn main() {}\n")
+        observed = self.synthetic_targets()
+        for kind, names in {
+            "bin": {"synthetic", "flat", "group"},
+            "example": {"flat", "group"},
+            "test": {"flat", "group"},
+            "bench": {"flat", "group"},
+        }.items():
+            self.assertEqual({target.name for target in observed if target.kind == kind}, names)
+
+    def test_explicit_default_directory_main_is_not_rediscovered(self) -> None:
+        """An explicit target's directory/main.rs default must suppress auto discovery."""
+        root = self.root / "synthetic"
+        for kind, directory in (("bin", "src/bin"), ("example", "examples"),
+                                ("test", "tests"), ("bench", "benches")):
+            self.write(f"synthetic/{directory}/named/main.rs", "fn main() {}\n")
+        manifest = {"package": {"name": "synthetic"}}
+        for kind in ("bin", "example", "test", "bench"):
+            manifest[kind] = [{
+                "name": "named", "required-features": [f"{kind}-feature"]
+            }]
+        observed = cargo_targets(manifest, root)
+        self.assertEqual(
+            observed,
+            {
+                CargoTarget(kind, "named", (f"{kind}-feature",))
+                for kind in ("bin", "example", "test", "bench")
+            },
+        )
+
+    def test_each_auto_target_family_opt_out_is_honored(self) -> None:
+        families = {
+            "bin": ("autobins", "src/bin/probe.rs"),
+            "bench": ("autobenches", "benches/probe.rs"),
+            "example": ("autoexamples", "examples/probe.rs"),
+            "test": ("autotests", "tests/probe.rs"),
+        }
+        for kind, (_, relative) in families.items():
+            self.write(f"synthetic/{relative}", "fn main() {}\n")
+            options = {option: True for option, _ in families.values()}
+            options[families[kind][0]] = False
+            observed = self.synthetic_targets(options)
+            self.assertNotIn(CargoTarget(kind, "probe", ()), observed)
+
+    def test_auto_target_switches_must_be_booleans(self) -> None:
+        with self.assertRaisesRegex(ValueError, "package autobins must be a boolean"):
+            self.synthetic_targets({"autobins": "false"})
 
     def test_review_row_target_owner_must_be_actionable(self) -> None:
         row = next(r for r in self.ledger["features"] if r["disposition"] == "review")
