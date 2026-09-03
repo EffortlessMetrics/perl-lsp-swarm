@@ -761,9 +761,18 @@ fn is_plain_module_name(text: &str) -> bool {
                 }
                 rest = remainder;
             }
-            // An empty component ends a `::` name but never a legacy one.
+            // An empty component is a component. Perl maps each separator to a
+            // path separator without collapsing them, so `Foo::` loads
+            // `Foo/.pm`, `Foo::::Bar` loads `Foo//Bar.pm` and `Foo::::` loads
+            // `Foo//.pm` — all module names. A trailing apostrophe is different:
+            // it opens a string, so `-MFoo'` dies before loading anything, and
+            // `Foo''Bar` is `Bareword found where operator expected`.
+            //
+            // Continuing here rather than returning is what lets the next
+            // separator be read. It terminates because each pass removes at
+            // least one separator byte from `rest`.
             None if separator_is_legacy => return false,
-            None => return after.is_empty(),
+            None => rest = after,
         }
     }
 }

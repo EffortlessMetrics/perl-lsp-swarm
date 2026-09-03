@@ -691,7 +691,26 @@ fn a_module_expression_that_is_not_a_module_name_is_reported_as_ambiguous() {
     // `Foo::1` and even `Foo::` (as `Foo/.pm`), so reporting those as arbitrary
     // code would be a false positive on ordinary module names — the failure
     // mode this flag can least afford, since consumers use it to spot injection.
-    for plain in ["Foo::1", "Foo::1Bar", "Foo::_x", "_Foo", "Foo9", "Foo::Bar::9", "Foo::"] {
+    // Adjacent and mixed separators are still names: perl maps each separator
+    // to a path separator without collapsing them.
+    //
+    //   perl -MFoo::::Bar -e1 → Can't locate Foo//Bar.pm in @INC
+    //   perl -MFoo::::    -e1 → Can't locate Foo//.pm in @INC
+    //   perl -MFoo::'Bar  -e1 → Old package separator "'" deprecated
+    //   perl -MFoo:::Bar  -e1 → Invalid module name ... contains single ':'
+    //                           (refused at the option level, tested elsewhere)
+    for plain in [
+        "Foo::1",
+        "Foo::1Bar",
+        "Foo::_x",
+        "_Foo",
+        "Foo9",
+        "Foo::Bar::9",
+        "Foo::",
+        "Foo::::Bar",
+        "Foo::::",
+        "Foo::'Bar",
+    ] {
         let argv = format!("-M{plain}");
         let invocation = perl(&[argv.as_str(), "-e", "print"]);
         let ContextFactKind::ModuleImport { spec, .. } = &facts(&invocation)[0] else {
@@ -704,7 +723,10 @@ fn a_module_expression_that_is_not_a_module_name_is_reported_as_ambiguous() {
     // `perl -M::Foo` is refused outright, `1Foo` is a syntax error, and
     // `Foo-Bar` compiles as an expression (`use Foo` minus `Bar`).
     //
-    for opaque in ["::Foo", "1Foo", "Foo-Bar"] {
+    // `perl -MFoo''Bar` is `Bareword found where operator expected` and
+    // `perl -MFoo'` dies on an unterminated string, so a legacy separator still
+    // needs a component after it.
+    for opaque in ["::Foo", "1Foo", "Foo-Bar", "Foo''Bar", "Foo'"] {
         let argv = format!("-M{opaque}");
         let invocation = perl(&[argv.as_str(), "-e", "print"]);
         let ContextFactKind::ModuleImport { spec, .. } = &facts(&invocation)[0] else {
