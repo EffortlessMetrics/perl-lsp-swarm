@@ -266,6 +266,7 @@ fn outcome(
 fn scan_stream_safety(doc: &mut Doc) -> Result<(), MetaYmlFinding> {
     let mut body: Vec<Line> = Vec::new();
     let mut seen_first_marker = false;
+    let mut seen_document_end = false;
 
     for (idx, line) in doc.raw.iter().enumerate() {
         if has_forbidden_control(&line.text) {
@@ -277,7 +278,15 @@ fn scan_stream_safety(doc: &mut Doc) -> Result<(), MetaYmlFinding> {
         }
         let trimmed = line.text.trim();
         if trimmed == "..." {
+            seen_document_end = true;
             continue;
+        }
+        if seen_document_end && !trimmed.is_empty() {
+            return Err(MetaYmlFinding::new(
+                MetaYmlFindingKind::MultipleDocuments,
+                Some(line.number),
+                "content appears after the first document's explicit end marker",
+            ));
         }
         if trimmed == "---" || trimmed.starts_with("--- ") {
             let has_later_content = doc.raw[idx + 1..]
@@ -321,8 +330,10 @@ fn scan_stream_safety(doc: &mut Doc) -> Result<(), MetaYmlFinding> {
         }
         // A block-scalar indicator is either the whole line or the value of a
         // `key: |` / `key: >` mapping entry (or a bare `- |` sequence item).
-        let value_part =
-            split_key(trimmed).map(|(_, rest)| rest).unwrap_or_else(|| trimmed.to_string());
+        let scalar_or_map = trimmed.strip_prefix('-').map(str::trim_start).unwrap_or(trimmed);
+        let value_part = split_key(scalar_or_map)
+            .map(|(_, rest)| rest)
+            .unwrap_or_else(|| scalar_or_map.to_string());
         let value_trimmed = value_part.trim_start();
         if value_trimmed.starts_with('|') || value_trimmed.starts_with('>') {
             return Err(MetaYmlFinding::new(
@@ -686,22 +697,35 @@ impl<'a> Parser<'a> {
             )
         })?;
         self.charge_node_at(line)?;
-        let mut items = Vec::new();
-        for part in split_flow(inner) {
-            let part = part.trim();
-            if part.is_empty() {
-                continue;
-            }
-            self.charge_node_at(line)?;
-            if part.starts_with('[') {
-                items.push(self.flow_seq(part, line)?);
-            } else if part.starts_with('{') {
-                items.push(self.flow_map(part, line)?);
-            } else {
-                items.push(Yaml::Scalar(unquote(part)));
-            }
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            self.depth -= 1;
+            return Err(MetaYmlFinding::new(
+                MetaYmlFindingKind::ResourceLimit,
+                Some(line),
+                format!("nesting deeper than {MAX_DEPTH} levels"),
+            ));
         }
-        Ok(Yaml::Seq(items))
+        let mut items = Vec::new();
+        let result = (|| {
+            for part in split_flow(inner) {
+                let part = part.trim();
+                if part.is_empty() {
+                    continue;
+                }
+                self.charge_node_at(line)?;
+                if part.starts_with('[') {
+                    items.push(self.flow_seq(part, line)?);
+                } else if part.starts_with('{') {
+                    items.push(self.flow_map(part, line)?);
+                } else {
+                    items.push(Yaml::Scalar(unquote(part)));
+                }
+            }
+            Ok(Yaml::Seq(items))
+        })();
+        self.depth -= 1;
+        result
     }
 
     /// Parse a flow map `{a: 1, b: 2}` with the same budgets as block
@@ -716,32 +740,47 @@ impl<'a> Parser<'a> {
             )
         })?;
         self.charge_node_at(line)?;
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            self.depth -= 1;
+            return Err(MetaYmlFinding::new(
+                MetaYmlFindingKind::ResourceLimit,
+                Some(line),
+                format!("nesting deeper than {MAX_DEPTH} levels"),
+            ));
+        }
         let mut entries = Vec::new();
         let mut seen_keys: HashSet<String> = HashSet::new();
-        for part in split_flow(inner) {
-            let part = part.trim();
-            if part.is_empty() {
-                continue;
+        let result = (|| {
+            for part in split_flow(inner) {
+                let part = part.trim();
+                if part.is_empty() {
+                    continue;
+                }
+                let Some((raw_key, value)) = part.split_once(':') else {
+                    return Err(MetaYmlFinding::new(
+                        MetaYmlFindingKind::MalformedSyntax,
+                        Some(line),
+                        format!("flow mapping entry without ':': {part:.40}"),
+                    ));
+                };
+                self.charge_node_at(line)?;
+                let key = unquote(raw_key.trim());
+                if !seen_keys.insert(key.clone()) {
+                    return Err(MetaYmlFinding::new(
+                        MetaYmlFindingKind::DuplicateKey,
+                        Some(line),
+                        format!(
+                            "duplicate key `{key}` in a flow mapping; last-value-wins is refused"
+                        ),
+                    ));
+                }
+                entries.push((key, Yaml::Scalar(unquote(value.trim()))));
             }
-            let Some((raw_key, value)) = part.split_once(':') else {
-                return Err(MetaYmlFinding::new(
-                    MetaYmlFindingKind::MalformedSyntax,
-                    Some(line),
-                    format!("flow mapping entry without ':': {part:.40}"),
-                ));
-            };
-            self.charge_node_at(line)?;
-            let key = unquote(raw_key.trim());
-            if !seen_keys.insert(key.clone()) {
-                return Err(MetaYmlFinding::new(
-                    MetaYmlFindingKind::DuplicateKey,
-                    Some(line),
-                    format!("duplicate key `{key}` in a flow mapping; last-value-wins is refused"),
-                ));
-            }
-            entries.push((key, Yaml::Scalar(unquote(value.trim()))));
-        }
-        Ok(Yaml::Map(entries))
+            Ok(Yaml::Map(entries))
+        })();
+        self.depth -= 1;
+        result
     }
 
     fn peek(&self) -> Option<&Line<'a>> {
@@ -1104,6 +1143,13 @@ build_requires:
     fn multiple_documents_are_an_explicit_non_success() {
         let outcome = parse_meta_yml(fid(), "name: X\nversion: 1\n---\nname: Y\nversion: 2\n");
         assert_non_success(&outcome, MetaYmlFindingKind::MultipleDocuments, "second document");
+
+        let outcome = parse_meta_yml(fid(), "name: X\nversion: 1\n...\nname: Y\n");
+        assert_non_success(
+            &outcome,
+            MetaYmlFindingKind::MultipleDocuments,
+            "content after explicit document end",
+        );
     }
 
     #[test]
@@ -1127,6 +1173,13 @@ build_requires:
     fn block_scalars_are_refused() {
         let outcome = parse_meta_yml(fid(), "name: X\nabstract: |\n  long text\nversion: 1\n");
         assert_non_success(&outcome, MetaYmlFindingKind::BlockScalar, "block scalar");
+
+        let outcome = parse_meta_yml(fid(), "name: X\nitems:\n  - |\n    long text\nversion: 1\n");
+        assert_non_success(
+            &outcome,
+            MetaYmlFindingKind::BlockScalar,
+            "sequence block scalar",
+        );
     }
 
     #[test]
@@ -1169,6 +1222,14 @@ build_requires:
         let wide = format!("name: {}\nversion: 1\n", "x".repeat(MAX_INPUT_BYTES + 1));
         let outcome = parse_meta_yml(fid(), &wide);
         assert_non_success(&outcome, MetaYmlFindingKind::ResourceLimit, "oversized input");
+
+        let flow = format!(
+            "name: X\nversion: 1\nnested: {}x{}\n",
+            "[".repeat(MAX_DEPTH + 2),
+            "]".repeat(MAX_DEPTH + 2)
+        );
+        let outcome = parse_meta_yml(fid(), &flow);
+        assert_non_success(&outcome, MetaYmlFindingKind::ResourceLimit, "nested flow depth");
     }
 
     #[test]
