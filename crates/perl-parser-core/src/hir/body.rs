@@ -229,6 +229,14 @@ pub enum VariableKind {
     Lexical,
     /// Package / stash variable.
     Package,
+    /// Per-object `field` of a Perl 5.38+ `class`, in scope at this reference.
+    ///
+    /// A field is neither: its storage is per instance, not a pad slot and not
+    /// a stash slot. Answering `Lexical` would assert downstream that a field
+    /// *is* an ordinary lexical binding, and answering `Package` would send a
+    /// field read to the package stash. Naming it keeps both claims out of the
+    /// fact layer (#13817).
+    Field,
 }
 
 /// A variable reference node.

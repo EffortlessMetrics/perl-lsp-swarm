@@ -1503,6 +1503,12 @@ impl BodyLowerer {
             VariableKind::Lexical => {
                 PirOperation::LexicalWrite { name: LexicalName { sigil, name: v.name.clone() } }
             }
+            VariableKind::Field if v.access == AccessMode::Read => {
+                PirOperation::FieldRead { name: LexicalName { sigil, name: v.name.clone() } }
+            }
+            VariableKind::Field => {
+                PirOperation::FieldWrite { name: LexicalName { sigil, name: v.name.clone() } }
+            }
             VariableKind::Package if v.access == AccessMode::Read => PirOperation::StashRead {
                 symbol: SymbolName {
                     sigil,
@@ -1533,6 +1539,10 @@ impl BodyLowerer {
         let sigil = sigil_str(&v.sigil);
         let op = match &v.kind {
             VariableKind::Lexical => PirOperation::Modify {
+                name: LexicalName { sigil, name: v.name.clone() },
+                op: op_text,
+            },
+            VariableKind::Field => PirOperation::FieldModify {
                 name: LexicalName { sigil, name: v.name.clone() },
                 op: op_text,
             },

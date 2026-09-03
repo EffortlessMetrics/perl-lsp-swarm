@@ -937,6 +937,15 @@ pub enum ScopeKind {
     Package,
     /// Plain block scope.
     Block,
+    /// Body of a Perl 5.38+ `class` declaration.
+    ///
+    /// Named separately from [`Block`](Self::Block) because it owns field
+    /// visibility: a `field` binding lives in this frame, and whether a
+    /// reference may see it depends on how the lookup reached the frame —
+    /// through a method, or through an ordinary `sub` that Perl gives no field
+    /// access. A sibling class's frame is never an ancestor of this one, so
+    /// class isolation follows from the frame rather than from a name check.
+    Class,
     /// Subroutine pad scope.
     Subroutine,
     /// Method pad scope.

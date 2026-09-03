@@ -14,30 +14,40 @@
 //!    to a never-declared `$undeclared` — a read of the package stash rather
 //!    than of the field.
 //!
-//! These tests pin consequence 1 — the declaration's storage identity — and the
-//! boundaries that make it honest: only a `field` that is a direct statement of
-//! a class body is a declaration at all, because the parser accepts `field` as a
-//! declarator wherever the next token starts a variable.
+//! Both consequences are repaired here, because they are one representation:
+//! a storage class no consumer can observe is not an identity.
 //!
-//! Consequence 2 is **deliberately not repaired here**. Reclassifying a field
-//! *reference* needs Perl's real field-visibility rules — visible in methods but
-//! not ordinary subs, only after the declaration, only for the field's own class
-//! — and modelling those belongs to #13844, which owns class-body scope.
-//! `resolve_variable_kind` therefore still answers `Package` for a field
-//! reference, exactly as it did before this change;
-//! `field_reference_classification_is_deferred` pins that so a future change is
-//! a deliberate decision rather than an accident.
+//! Consequence 1 is the declaration side, plus the boundaries that make it
+//! honest — only a `field` that is a direct statement of a class body is a
+//! declaration at all, because the parser accepts `field` as a declarator
+//! wherever the next token starts a variable.
 //!
-//! Scope note: this names *storage identity only*. Construction order,
-//! `ADJUST`, invocant rules, MRO and dispatch remain unmodeled (#6672).
+//! Consequence 2 is the reference side. A visible field now resolves
+//! [`VariableKind::Field`], and PIR carries it as `FieldRead`/`FieldWrite`, so
+//! `extract_lexical_facts` never publishes a field as a `LexicalBindingFact`.
+//! "Visible" is Perl's rule, decided in the single scope walk both HIR views
+//! share: a field belongs to its own class (a sibling's frame is not an
+//! ancestor of it), is seen by that class's methods but not by an ordinary
+//! `sub`, and only after its own declaration. Each of those three has a
+//! discriminating control below, and each has a same-shape positive case so a
+//! resolver that simply never resolved fields would fail.
+//!
+//! Scope note: this names *storage and visibility*. Construction order,
+//! `ADJUST`, invocant rules, MRO and dispatch remain unmodeled (#6672). A named
+//! `sub` nested *inside* a method is also unmodeled: it is treated as inside
+//! the method for visibility, which is not Perl's closure behavior for named
+//! subs, and no test claims otherwise.
 //!
 //! The implementation lives in `src/hir/lower.rs`
-//! (`storage_class_for_declarator`).
+//! (`storage_class_for_declarator`, `resolve_binding_in_scope_graph`,
+//! `class_field_is_visible`).
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
-    Binding, BodyOwnerKind, HirBody, HirExpr, HirFile, StorageClass, VariableKind, lower_ast,
+    Binding, BodyOwnerKind, HirBody, HirExpr, HirFile, ScopeKind, StorageClass, VariableKind,
+    lower_ast,
 };
+use perl_parser_core::pir::{PirOperation, extract_lexical_facts, lower_hir_bodies};
 
 type TestResult = Result<(), String>;
 
@@ -89,27 +99,158 @@ fn variable_kind(body: &HirBody, name: &str) -> Result<VariableKind, String> {
 }
 
 // ---------------------------------------------------------------------------
-// Reference classification is deferred (#13844)
+// Reference classification: a field read is neither lexical nor package
 // ---------------------------------------------------------------------------
 
 #[test]
-fn field_reference_classification_is_deferred() -> TestResult {
-    // Giving the declaration its own storage class does NOT reclassify
-    // references to it. `VariableKind` is a binary Lexical/Package split, and
-    // promoting a field read to `Lexical` would export it downstream as an
-    // ordinary lexical binding fact (`pir::extractor::LexicalBindingFact`)
-    // while still not applying Perl's field-visibility rules.
-    //
-    // So a field reference keeps the answer it had before this change. When
-    // #13844 models class scope, this expectation should change deliberately,
-    // together with method-vs-sub visibility and declaration order.
+fn field_reference_in_a_method_resolves_as_a_field() -> TestResult {
+    // The whole point of the storage class. A method reading its own class's
+    // field must not answer `Package` — that sends the read to the package
+    // stash, the same answer a never-declared global gets — and must not
+    // answer `Lexical`, which asserts downstream that a field *is* an ordinary
+    // lexical binding.
     let file = lower_source(CLASS_SOURCE);
     let body = method_body(&file, "show")?;
+    let kind = variable_kind(body, "x")?;
+    assert_eq!(kind, VariableKind::Field, "a field read in a method must resolve as a field");
+    assert_ne!(kind, VariableKind::Package, "a field read must not be a package-stash read");
+    assert_ne!(kind, VariableKind::Lexical, "a field read must not claim lexical storage");
+    Ok(())
+}
+
+#[test]
+fn a_field_read_lowers_to_a_field_pir_operation() -> TestResult {
+    // The reference must keep its identity all the way into PIR. `FieldRead`
+    // exists so `pir::extractor` never folds a field into a
+    // `LexicalBindingFact`, and so the reference is still present for
+    // navigation rather than dropped.
+    let mut parser = Parser::new(CLASS_SOURCE);
+    let output = parser.parse_with_recovery();
+    let hir = lower_ast(&output.ast);
+    let pir = lower_hir_bodies(&hir);
+
+    let mut saw_field_read = false;
+    for node in pir.nodes.iter() {
+        match &node.operation {
+            PirOperation::FieldRead { name } if name.name == "x" => saw_field_read = true,
+            PirOperation::LexicalRead { name } | PirOperation::LexicalWrite { name }
+                if name.name == "x" =>
+            {
+                return Err("a field must never lower to a lexical PIR operation".to_string());
+            }
+            _ => {}
+        }
+    }
+    if !saw_field_read {
+        return Err("expected a `FieldRead` for the field read in `method show`".to_string());
+    }
+    Ok(())
+}
+
+#[test]
+fn a_field_read_produces_no_lexical_binding_fact() -> TestResult {
+    // The downstream consequence, asserted where it is actually consumed:
+    // `LexicalBindingFact` drives navigation and reference detection, so a
+    // field appearing there would be a false claim about its storage, not
+    // merely a lossy one.
+    let mut parser = Parser::new(CLASS_SOURCE);
+    let output = parser.parse_with_recovery();
+    let hir = lower_ast(&output.ast);
+    let receipt = extract_lexical_facts(&hir);
+    let named = |wanted: &str| {
+        receipt.bodies.iter().any(|body| body.facts.iter().any(|fact| fact.name.name == wanted))
+    };
+
+    if named("x") {
+        return Err("a field read must not be extracted as a lexical binding fact".to_string());
+    }
+    // Negative control: the ordinary lexical in the same method still is one,
+    // so this test cannot pass merely because extraction produced nothing.
+    if !named("lex") {
+        return Err("the ordinary `my $lex` read must still be a lexical binding fact".to_string());
+    }
+    Ok(())
+}
+
+#[test]
+fn a_field_is_not_visible_before_its_own_declaration() -> TestResult {
+    // Declaration-order visibility. A method written above the field it names
+    // does not see it, so the reference falls back exactly as if no field had
+    // been declared. The rule lives in the shared scope walk, so both HIR
+    // views answer this the same way.
+    let file =
+        lower_source("use feature 'class';\nclass C {\n    method m { $x }\n    field $x;\n}\n");
+    let body = method_body(&file, "m")?;
     assert_eq!(
         variable_kind(body, "x")?,
         VariableKind::Package,
-        "field-reference classification is deferred to #13844"
+        "a field declared after a method must not be visible inside it"
     );
+    Ok(())
+}
+
+#[test]
+fn a_field_declared_before_a_method_is_visible_inside_it() -> TestResult {
+    // The discriminating half of the ordering control: same two statements,
+    // opposite order. Without this, a resolver that simply never resolved
+    // fields would pass the test above.
+    let file =
+        lower_source("use feature 'class';\nclass C {\n    field $x;\n    method m { $x }\n}\n");
+    let body = method_body(&file, "m")?;
+    assert_eq!(
+        variable_kind(body, "x")?,
+        VariableKind::Field,
+        "a field declared before a method must be visible inside it"
+    );
+    Ok(())
+}
+
+#[test]
+fn fields_do_not_leak_into_a_sibling_class() -> TestResult {
+    // Class ownership. `class B`'s method names `$secret`, which belongs to
+    // `class A`. A's frame is not an ancestor of B's, so the field is not
+    // reachable — but that has to be proved, not assumed, because both classes
+    // sit in the same file and the same package context.
+    let file = lower_source(
+        "use feature 'class';\nclass A {\n    field $secret;\n}\nclass B {\n    method peek { $secret }\n}\n",
+    );
+    let body = method_body(&file, "peek")?;
+    assert_eq!(
+        variable_kind(body, "secret")?,
+        VariableKind::Package,
+        "a sibling class's field must not be visible"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_class_body_opens_a_class_scope_frame() -> TestResult {
+    // The frame that owns the three visibility answers above. Before this, a
+    // class body was an ordinary `Block`, so sibling isolation was incidental
+    // to block nesting rather than a property of the class.
+    let file = lower_source(CLASS_SOURCE);
+    let field = binding(&file, "x")?;
+    let scope = file
+        .scope_graph
+        .scopes
+        .get(field.scope_id.index() as usize)
+        .ok_or_else(|| "field binding names a scope that does not exist".to_string())?;
+    assert_eq!(scope.kind, ScopeKind::Class, "a field must be bound in the class frame");
+    Ok(())
+}
+
+#[test]
+fn a_plain_block_is_still_a_plain_block() -> TestResult {
+    // Negative control for the frame: only a class body earns `Class`. A bare
+    // block that happens to declare a variable must not.
+    let file = lower_source("{\n    my $inner;\n}\n");
+    let inner = binding(&file, "inner")?;
+    let scope = file
+        .scope_graph
+        .scopes
+        .get(inner.scope_id.index() as usize)
+        .ok_or_else(|| "binding names a scope that does not exist".to_string())?;
+    assert_eq!(scope.kind, ScopeKind::Block, "a bare block must not become a class frame");
     Ok(())
 }
 
@@ -128,10 +269,10 @@ fn undeclared_global_in_method_still_resolves_to_package() -> TestResult {
 
 #[test]
 fn an_ordinary_sub_in_a_class_body_does_not_see_a_field() -> TestResult {
-    // Perl does not give ordinary subs access to class fields. Since reference
-    // classification is deferred, `$x` here is a package read — the same
-    // answer as before this change. This is a control against a future
-    // reference change quietly granting subs field access.
+    // Perl does not give ordinary subs access to class fields. The sub sits
+    // directly inside the class frame, so the field binding *is* on its scope
+    // chain — the walk has to refuse it, which is exactly what makes this a
+    // discriminating control rather than a restatement of scope nesting.
     let file =
         lower_source("use feature 'class';\nclass C {\n    field $x;\n    sub f { $x }\n}\n");
     let body = file
