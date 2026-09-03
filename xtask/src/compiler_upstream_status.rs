@@ -523,6 +523,24 @@ impl<'a> Violations<'a> {
         }
     }
 
+    fn scan_identity(&mut self, field: &str, value: &str) {
+        self.reject_unless(
+            is_identifier_charset(value),
+            format!("field `{field}` has invalid identity charset"),
+        );
+        self.scan_text_value(field, value);
+    }
+
+    fn scan_optional_identity(&mut self, field: &str, value: &Option<String>) {
+        if let Some(value) = value {
+            self.scan_text_value(field, value);
+            self.reject_unless(
+                !value.chars().any(char::is_control),
+                format!("field `{field}` contains control characters"),
+            );
+        }
+    }
+
     fn scan_free_text(&mut self, field: &str, value: &str) {
         self.scan_text_value(field, value);
         self.reject_unless(!value.trim().is_empty(), format!("field `{field}` must not be empty"));
@@ -597,7 +615,12 @@ fn validate_upstream_ref(v: &mut Violations, upstream: &UpstreamCaseRef) {
     v.scan_text_value("upstream.case_name", &upstream.case_name);
 }
 
-fn validate_history(v: &mut Violations, row_id: &str, history: &RowHistory) {
+fn validate_history(
+    v: &mut Violations,
+    row_id: &str,
+    history: &RowHistory,
+    row_ids: &BTreeSet<&str>,
+) {
     match history.upstream_change {
         UpstreamChange::Removed => {
             // Falsifier 8: a removed upstream test keeps its semantic
@@ -619,6 +642,12 @@ fn validate_history(v: &mut Violations, row_id: &str, history: &RowHistory) {
         if let Some(id) = link {
             v.reject_unless(id != row_id, format!("{field} references its own row"));
             v.reject_unless(is_identifier_charset(id), format!("{field} has invalid charset"));
+            if field == "history.successor_row_id" {
+                v.reject_unless(
+                    row_ids.contains(id.as_str()),
+                    format!("{field} references missing row `{id}`"),
+                );
+            }
         }
     }
 }
@@ -654,12 +683,18 @@ fn validate_performance(
                 "performance evidence identity has invalid charset".to_string(),
             );
         }
+    } else {
+        v.reject_unless(
+            performance.evidence_identity.is_none(),
+            "performance evidence attached without correctness eligibility".to_string(),
+        );
     }
 }
 
 fn validate_row_against_series(
     row: &PublishedRow,
     selected_snapshot_by_series: &BTreeMap<String, Option<String>>,
+    row_ids: &BTreeSet<&str>,
 ) -> Vec<String> {
     let mut v = Violations::new(&row.row_id);
 
@@ -689,6 +724,13 @@ fn validate_row_against_series(
                     format!(
                         "row snapshot_ref `{}` does not match selected snapshot `{}` for series `{}`",
                         row.upstream_case.snapshot_ref, selected_snapshot, row.series_id
+                    ),
+                );
+                v.reject_unless(
+                    row.terminal_state != TerminalState::NoCurrentSnapshot,
+                    format!(
+                        "series `{}` selects an accepted snapshot so the row cannot be no_current_snapshot",
+                        row.series_id
                     ),
                 );
             }
@@ -798,7 +840,7 @@ fn validate_row_against_series(
     }
 
     validate_owner(&mut v, &row.owner);
-    validate_history(&mut v, &row.row_id, &row.history);
+    validate_history(&mut v, &row.row_id, &row.history, row_ids);
     validate_performance(&mut v, row.terminal_state, &row.performance);
 
     v.out
@@ -816,13 +858,18 @@ fn validate_manifest(v: &mut Violations, manifest: &StatusInputsManifest) {
         is_identifier_charset(&manifest.status_id),
         "manifest status_id has invalid charset".to_string(),
     );
-    v.reject_unless(
-        is_identifier_charset(&manifest.compiler_candidate_identity),
-        "compiler_candidate_identity has invalid charset".to_string(),
+    v.scan_identity("compiler_candidate_identity", &manifest.compiler_candidate_identity);
+    v.scan_identity("toolchain_build_identity", &manifest.toolchain_build_identity);
+    v.scan_optional_identity(
+        "semantic_obligation_graph_identity",
+        &manifest.semantic_obligation_graph_identity,
     );
-    v.reject_unless(
-        is_identifier_charset(&manifest.toolchain_build_identity),
-        "toolchain_build_identity has invalid charset".to_string(),
+    v.scan_optional_identity("slice_registry_identity", &manifest.slice_registry_identity);
+    v.scan_optional_identity("maintained_sync_identity", &manifest.maintained_sync_identity);
+    v.scan_optional_identity("performance_packet_identity", &manifest.performance_packet_identity);
+    v.scan_optional_identity(
+        "compiler_profile_generation_identity",
+        &manifest.compiler_profile_generation_identity,
     );
     let mut seen_series = BTreeSet::new();
     for series in &manifest.maintained_series {
@@ -868,6 +915,31 @@ pub fn validate_packet(packet: &ConformanceStatusPacket) -> Result<()> {
     }
 
     let mut v = Violations::new("subject_binding");
+    v.scan_identity(
+        "compiler_candidate_identity",
+        &packet.subject_binding.compiler_candidate_identity,
+    );
+    v.scan_identity("toolchain_build_identity", &packet.subject_binding.toolchain_build_identity);
+    v.scan_optional_identity(
+        "semantic_obligation_graph_identity",
+        &packet.subject_binding.semantic_obligation_graph_identity,
+    );
+    v.scan_optional_identity(
+        "slice_registry_identity",
+        &packet.subject_binding.slice_registry_identity,
+    );
+    v.scan_optional_identity(
+        "maintained_sync_identity",
+        &packet.subject_binding.maintained_sync_identity,
+    );
+    v.scan_optional_identity(
+        "performance_packet_identity",
+        &packet.subject_binding.performance_packet_identity,
+    );
+    v.scan_optional_identity(
+        "compiler_profile_generation_identity",
+        &packet.subject_binding.compiler_profile_generation_identity,
+    );
     let mut seen_series = BTreeSet::new();
     for series in &packet.subject_binding.maintained_series {
         if !seen_series.insert(series.series_id.as_str()) {
@@ -875,8 +947,8 @@ pub fn validate_packet(packet: &ConformanceStatusPacket) -> Result<()> {
         }
         v.scan_text_value("series.role", &series.role);
         v.scan_text("series.snapshot_relation", &series.snapshot_relation);
-        v.scan_text("series.snapshot_identity", &series.snapshot_identity);
-        v.scan_text("series.upstream_index_identity", &series.upstream_index_identity);
+        v.scan_optional_identity("series.snapshot_identity", &series.snapshot_identity);
+        v.scan_optional_identity("series.upstream_index_identity", &series.upstream_index_identity);
     }
     let sorted_series_ids: Vec<&str> =
         packet.subject_binding.maintained_series.iter().map(|s| s.series_id.as_str()).collect();
@@ -894,6 +966,7 @@ pub fn validate_packet(packet: &ConformanceStatusPacket) -> Result<()> {
         .map(|series| (series.series_id.clone(), series.snapshot_identity.clone()))
         .collect::<BTreeMap<String, Option<String>>>();
 
+    let row_ids: BTreeSet<&str> = packet.rows.iter().map(|row| row.row_id.as_str()).collect();
     let mut row_ids_seen = BTreeSet::new();
     let mut ordered_keys: Vec<(&str, &str, &str, &str, &str)> = Vec::new();
     for row in &packet.rows {
@@ -901,7 +974,7 @@ pub fn validate_packet(packet: &ConformanceStatusPacket) -> Result<()> {
             global.push(format!("[rows]: duplicate row_id `{}`", row.row_id));
             continue;
         }
-        global.extend(validate_row_against_series(row, &selected_snapshot_by_series));
+        global.extend(validate_row_against_series(row, &selected_snapshot_by_series, &row_ids));
         ordered_keys.push(row.sort_key());
     }
     let mut ordered_sorted = ordered_keys.clone();
@@ -1253,6 +1326,69 @@ pub fn run_diff(before: &Path, after: &Path) -> Result<String> {
         match after_by_id.get(row_id) {
             None => lines.push(format!("- row {row_id} disappeared")),
             Some(after_row) => {
+                diff_row_field(
+                    &mut lines,
+                    row_id,
+                    "series_id",
+                    &before_row.series_id,
+                    &after_row.series_id,
+                );
+                diff_row_field(
+                    &mut lines,
+                    row_id,
+                    "concept_family",
+                    &before_row.concept_family,
+                    &after_row.concept_family,
+                );
+                diff_row_field(
+                    &mut lines,
+                    row_id,
+                    "concept_id",
+                    &before_row.concept_id,
+                    &after_row.concept_id,
+                );
+                diff_row_field(
+                    &mut lines,
+                    row_id,
+                    "obligation_id",
+                    &before_row.obligation_id,
+                    &after_row.obligation_id,
+                );
+                diff_row_field(
+                    &mut lines,
+                    row_id,
+                    "boundary",
+                    &before_row.boundary,
+                    &after_row.boundary,
+                );
+                diff_row_field(
+                    &mut lines,
+                    row_id,
+                    "oracle_subject",
+                    &before_row.oracle_subject,
+                    &after_row.oracle_subject,
+                );
+                diff_row_field(
+                    &mut lines,
+                    row_id,
+                    "compiler_subject",
+                    &before_row.compiler_subject,
+                    &after_row.compiler_subject,
+                );
+                diff_row_field(
+                    &mut lines,
+                    row_id,
+                    "instrument_identity",
+                    &before_row.instrument_identity,
+                    &after_row.instrument_identity,
+                );
+                diff_row_field(
+                    &mut lines,
+                    row_id,
+                    "upstream_case",
+                    &before_row.upstream_case,
+                    &after_row.upstream_case,
+                );
                 if before_row.terminal_state != after_row.terminal_state {
                     lines.push(format!(
                         "~ row {row_id}: `{}` -> `{}`",
@@ -1260,12 +1396,42 @@ pub fn run_diff(before: &Path, after: &Path) -> Result<String> {
                         after_row.terminal_state.as_str()
                     ));
                 }
-                if before_row.history.upstream_change != after_row.history.upstream_change {
-                    lines.push(format!(
-                        "~ row {row_id}: upstream_change `{:?}` -> `{:?}`",
-                        before_row.history.upstream_change, after_row.history.upstream_change
-                    ));
-                }
+                diff_row_field(
+                    &mut lines,
+                    row_id,
+                    "witness",
+                    &before_row.witness,
+                    &after_row.witness,
+                );
+                diff_row_field(
+                    &mut lines,
+                    row_id,
+                    "support_boundary",
+                    &before_row.support_boundary,
+                    &after_row.support_boundary,
+                );
+                diff_row_field(
+                    &mut lines,
+                    row_id,
+                    "limitation",
+                    &before_row.limitation,
+                    &after_row.limitation,
+                );
+                diff_row_field(&mut lines, row_id, "owner", &before_row.owner, &after_row.owner);
+                diff_row_field(
+                    &mut lines,
+                    row_id,
+                    "performance",
+                    &before_row.performance,
+                    &after_row.performance,
+                );
+                diff_row_field(
+                    &mut lines,
+                    row_id,
+                    "history",
+                    &before_row.history,
+                    &after_row.history,
+                );
             }
         }
     }
@@ -1283,28 +1449,73 @@ pub fn run_diff(before: &Path, after: &Path) -> Result<String> {
     )
 }
 
+fn diff_row_field<T: PartialEq>(
+    lines: &mut Vec<String>,
+    row_id: &str,
+    field: &str,
+    before: &T,
+    after: &T,
+) {
+    if before != after {
+        lines.push(format!("~ row {row_id}: {field} changed"));
+    }
+}
+
 fn summarize_binding_diff(
     before: &SubjectBinding,
     after: &SubjectBinding,
     lines: &mut Vec<String>,
 ) {
-    let fields = [
-        (
-            "compiler_candidate_identity",
-            (&before.compiler_candidate_identity, &after.compiler_candidate_identity),
-        ),
-        (
-            "toolchain_build_identity",
-            (&before.toolchain_build_identity, &after.toolchain_build_identity),
-        ),
-    ];
-    for (name, (earlier, later)) in fields {
-        if earlier != later {
-            lines.push(format!("~ subject binding {name} changed"));
-        }
-    }
+    diff_binding_field(
+        lines,
+        "compiler_candidate_identity",
+        &before.compiler_candidate_identity,
+        &after.compiler_candidate_identity,
+    );
+    diff_binding_field(
+        lines,
+        "toolchain_build_identity",
+        &before.toolchain_build_identity,
+        &after.toolchain_build_identity,
+    );
+    diff_binding_field(
+        lines,
+        "semantic_obligation_graph_identity",
+        &before.semantic_obligation_graph_identity,
+        &after.semantic_obligation_graph_identity,
+    );
+    diff_binding_field(
+        lines,
+        "slice_registry_identity",
+        &before.slice_registry_identity,
+        &after.slice_registry_identity,
+    );
+    diff_binding_field(
+        lines,
+        "maintained_sync_identity",
+        &before.maintained_sync_identity,
+        &after.maintained_sync_identity,
+    );
+    diff_binding_field(
+        lines,
+        "performance_packet_identity",
+        &before.performance_packet_identity,
+        &after.performance_packet_identity,
+    );
+    diff_binding_field(
+        lines,
+        "compiler_profile_generation_identity",
+        &before.compiler_profile_generation_identity,
+        &after.compiler_profile_generation_identity,
+    );
     if before.maintained_series != after.maintained_series {
         lines.push("~ subject binding maintained_series changed".to_string());
+    }
+}
+
+fn diff_binding_field<T: PartialEq>(lines: &mut Vec<String>, name: &str, before: &T, after: &T) {
+    if before != after {
+        lines.push(format!("~ subject binding {name} changed"));
     }
 }
 
@@ -1314,8 +1525,8 @@ fn summarize_binding_diff(
 
 fn opt_line(label: &str, value: &Option<String>) -> String {
     match value {
-        Some(text) => format!("- {label}: `{text}`"),
-        None => format!("- {label}: absent"),
+        Some(text) => format!("- {label}: `{text}`\n"),
+        None => format!("- {label}: absent\n"),
     }
 }
 

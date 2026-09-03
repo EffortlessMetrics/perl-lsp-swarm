@@ -434,6 +434,7 @@ fn compiler_upstream_conformance_status_multi_series_projection_is_exact() -> Te
         nonclaims: vec!["no provider/editor behavior claim".to_string()],
         claim_ceiling: "declared scalar slice of perl-5.40 parser stage".to_string(),
     });
+    limited.witness = installed_witness(&limited.upstream_case.case_path);
     let absent_snapshots =
         vec![agreement_row("op-z", "perl-5.38"), failing_row("op-red", "perl-5.38"), limited, {
             let mut pending = agreement_row("op-dev", "perl-dev");
@@ -528,16 +529,88 @@ fn compiler_upstream_conformance_status_limitation_requires_installed_witness() 
         nonclaims: vec!["no broader claim".to_string()],
         claim_ceiling: "declared slice only".to_string(),
     });
+    row.witness = None;
     write_inputs(dir.path(), &manifest, std::slice::from_ref(&row))?;
-    project_from(dir.path())?;
+    let message = error_message(project_from(dir.path()));
+    assert!(message.contains("requires a recorded installed witness"), "{message}");
 
     let witness = installed_witness("t/op/op-limited-witness.t")
         .ok_or_else(|| anyhow::anyhow!("fixture witness must be present"))?;
+    row.witness = Some(witness.clone());
+    write_inputs(dir.path(), &manifest, std::slice::from_ref(&row))?;
+    project_from(dir.path())?;
+
     row.witness =
         Some(WitnessRecord { installation: WitnessInstallation::NotInstalled, ..witness });
     write_inputs(dir.path(), &manifest, &[row])?;
     let message = error_message(project_from(dir.path()));
     assert!(message.contains("requires an installed witness"), "{message}");
+    Ok(())
+}
+
+#[test]
+fn compiler_upstream_conformance_status_rejects_dangling_successor() -> TestResult {
+    let dir = TempDir::new()?;
+    let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+    let mut row = failing_row("op-removed", "perl-5.38");
+    row.history.upstream_change = UpstreamChange::Removed;
+    row.history.successor_row_id = Some("op-missing".to_string());
+    write_inputs(dir.path(), &manifest, &[row])?;
+    let message = error_message(project_from(dir.path()));
+    assert!(message.contains("successor_row_id") && message.contains("missing row"), "{message}");
+    Ok(())
+}
+
+#[test]
+fn compiler_upstream_conformance_status_rejects_ineligible_evidence_and_private_bindings()
+-> TestResult {
+    let dir = TempDir::new()?;
+    let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+    write_inputs(dir.path(), &manifest, &[agreement_row("op-evidence", "perl-5.38")])?;
+    let mut packet = project_from(dir.path())?;
+    packet.rows[0].performance.evidence_identity = Some("perf:unreported".to_string());
+    let message = error_message(validate_packet(&packet));
+    assert!(message.contains("without correctness eligibility"), "{message}");
+
+    packet = project_from(dir.path())?;
+    packet.subject_binding.toolchain_build_identity = "C:\\Users\\builder\\secret".to_string();
+    let message = error_message(validate_packet(&packet));
+    assert!(
+        message.contains("host/private/path") || message.contains("absolute host path"),
+        "{message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn compiler_upstream_conformance_status_diff_reports_row_and_binding_changes() -> TestResult {
+    let dir = TempDir::new()?;
+    let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+    write_inputs(dir.path(), &manifest, &[agreement_row("op-diff-fields", "perl-5.38")])?;
+    let before = project_from(dir.path())?;
+    let mut after = before.clone();
+    after.rows[0].compiler_subject = "compiler:other-tree".to_string();
+    after.subject_binding.semantic_obligation_graph_identity =
+        Some("obligation-graph:u09".to_string());
+    let before_path = dir.path().join("before.json");
+    let after_path = dir.path().join("after.json");
+    fs::write(&before_path, canonical_bytes(&before)?)?;
+    fs::write(&after_path, canonical_bytes(&after)?)?;
+    let message = error_message(run_diff(&before_path, &after_path));
+    assert!(message.contains("compiler_subject changed"), "{message}");
+    assert!(message.contains("semantic_obligation_graph_identity changed"), "{message}");
+    assert!(!message.contains("0 summarized differences"), "{message}");
+    Ok(())
+}
+
+#[test]
+fn compiler_upstream_conformance_status_markdown_metadata_is_line_terminated() -> TestResult {
+    let dir = TempDir::new()?;
+    let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+    write_inputs(dir.path(), &manifest, &[agreement_row("op-metadata", "perl-5.38")])?;
+    let rendered = render_markdown(&project_from(dir.path())?)?;
+    assert!(rendered.contains("- compiler_candidate_identity: `candidate:local/main-worktree`\n- toolchain_build_identity:"));
+    assert!(!rendered.contains("worktree`- toolchain"));
     Ok(())
 }
 
