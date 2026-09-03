@@ -184,11 +184,13 @@
       },
       "allOf": [
         {
+          "$comment": "Retirement is required IFF the class is compatibility_shim. The `else` arm is what makes it an iff: a retirement plan on a product or lab row states a lifecycle nothing owns, and the model documents the field as `Required iff class == compatibility_shim`.",
           "if": {
             "properties": { "class": { "const": "compatibility_shim" } },
             "required": ["class"]
           },
-          "then": { "required": ["retirement"] }
+          "then": { "required": ["retirement"] },
+          "else": { "not": { "required": ["retirement"] } }
         },
         {
           "if": {

@@ -220,10 +220,22 @@ fn validate_class_rules(row: &ActivationRow, violations: &mut Vec<String>) {
         .retirement
         .as_ref()
         .is_some_and(|plan| !plan.owner.trim().is_empty() && !plan.boundary.trim().is_empty());
-    if row.class == ActivationClass::CompatibilityShim && !retirement_stated {
+    if row.class == ActivationClass::CompatibilityShim {
+        if !retirement_stated {
+            violations.push(format!(
+                "row `{}`: compatibility shim requires a retirement owner and boundary",
+                row.surface_id
+            ));
+        }
+    } else if row.retirement.is_some() {
+        // The model documents retirement as required *iff* the class is
+        // compatibility_shim, and only enforcing one direction made the "iff"
+        // false: a product or lab row could state a retirement plan that no
+        // class contract owns and no reader is required to honour.
         violations.push(format!(
-            "row `{}`: compatibility shim requires a retirement owner and boundary",
-            row.surface_id
+            "row `{}`: only a compatibility shim may carry a retirement plan (class is `{}`)",
+            row.surface_id,
+            row.class.as_str()
         ));
     }
 }

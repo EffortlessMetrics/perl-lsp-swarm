@@ -565,46 +565,104 @@ fn declared_test_api_name(name: &str) -> bool {
         || matches!(name, "stress-tests" | "slow_tests" | "integration-test")
 }
 
-/// Every tracked `.rs` file under the crate that names `cfg(feature = "…")`
-/// for this feature, sorted so the result does not depend on filesystem
-/// iteration order.
+/// Files Cargo actually compiles for this crate, in sorted order.
 ///
-/// This is a textual scan, not a parse, and it is deliberately conservative:
-/// a match inside a comment or string would count as a usage site. That can
-/// only make a feature look *less* test-only than it is (an extra non-test
-/// site suppresses the `ProvenByUsage` signal), so the failure direction is
-/// under-classification, which the rule already reports, rather than a false
-/// test-api claim.
-fn feature_cfg_sites(
+/// `src/**` plus the IMMEDIATE children of `tests/` and `benches/`, because
+/// those are the paths Cargo turns into targets. Anything nested below
+/// `tests/` — most importantly `tests/fixtures/**` — is data a test reads,
+/// not code that is built, and must not count as a usage site.
+fn compiled_target_files(
     root: &Path,
     crate_dir: &str,
-    feature: &str,
-) -> Result<Vec<String>, ActivationError> {
-    let needle = format!("feature = \"{feature}\"");
+) -> Result<Vec<std::path::PathBuf>, ActivationError> {
     let crate_root = root.join("crates").join(crate_dir);
-    let mut sites = Vec::new();
-    let mut stack = vec![crate_root.clone()];
+    let mut files = Vec::new();
+
+    let mut stack = vec![crate_root.join("src")];
     while let Some(dir) = stack.pop() {
-        let entries = fs::read_dir(&dir).map_err(|error| {
-            ActivationError::new(format!("crates/{crate_dir}: cannot read directory: {error}"))
-        })?;
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries {
             let entry = entry.map_err(|error| {
                 ActivationError::new(format!("crates/{crate_dir}: cannot read entry: {error}"))
             })?;
             let path = entry.path();
             if path.is_dir() {
-                // `target/` is build output, not source, and may not exist.
-                if path.file_name().is_some_and(|name| name == "target") {
-                    continue;
-                }
                 stack.push(path);
-            } else if path.extension().is_some_and(|extension| extension == "rs")
-                && fs::read_to_string(&path).is_ok_and(|text| text.contains(&needle))
-            {
-                let relative = path.strip_prefix(root).unwrap_or(&path);
-                sites.push(relative.to_string_lossy().replace('\\', "/"));
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                files.push(path);
             }
+        }
+    }
+
+    for directory in ["tests", "benches"] {
+        let Ok(entries) = fs::read_dir(crate_root.join(directory)) else {
+            continue;
+        };
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                ActivationError::new(format!("crates/{crate_dir}: cannot read entry: {error}"))
+            })?;
+            let path = entry.path();
+            if path.is_file() && path.extension().is_some_and(|extension| extension == "rs") {
+                files.push(path);
+            }
+        }
+    }
+
+    files.sort();
+    Ok(files)
+}
+
+/// Does this line apply a `cfg` predicate on `feature`?
+///
+/// Only the three forms that actually gate compilation count: an outer or
+/// inner attribute (`#[cfg(…)]`, `#![cfg(…)]`, `#[cfg_attr(…)]`) or the
+/// `cfg!(…)` macro. Requiring the attribute at the START of the line is what
+/// separates a real gate from the same text quoted inside a string literal or
+/// a comment — `assert!(f(r#"#[cfg(feature = "simd")]"#))` is test data, not a
+/// usage of the feature.
+fn line_gates_on_feature(line: &str, feature: &str) -> bool {
+    let needle = format!("feature = \"{feature}\"");
+    let trimmed = line.trim_start();
+    let attribute = (trimmed.starts_with("#[cfg(")
+        || trimmed.starts_with("#![cfg(")
+        || trimmed.starts_with("#[cfg_attr(")
+        || trimmed.starts_with("#![cfg_attr("))
+        && trimmed.contains(&needle);
+    let macro_call = line
+        .split("cfg!(")
+        .skip(1)
+        .any(|rest| rest.split(')').next().is_some_and(|args| args.contains(&needle)));
+    attribute || macro_call
+}
+
+/// Every compiled file in the crate that gates on this feature, sorted so the
+/// result does not depend on filesystem iteration order.
+///
+/// An earlier version scanned every `.rs` file for the substring
+/// `feature = "…"`, and its doc comment claimed the only possible error was
+/// under-classification. That was wrong, and review produced the
+/// counterexample: `perl-lexer`'s unused `simd = []` no-op was classified
+/// `test_api` because three fixtures under `tests/fixtures/` and two string
+/// literals in a test mentioned the text — one of them the test's own
+/// NEGATIVE control, asserting that `let feature = "simd";` is not a feature
+/// selection. Over-classification is the more dangerous direction, because it
+/// puts a surface in the inventory that no authority supports.
+fn feature_cfg_sites(
+    root: &Path,
+    crate_dir: &str,
+    feature: &str,
+) -> Result<Vec<String>, ActivationError> {
+    let mut sites = Vec::new();
+    for path in compiled_target_files(root, crate_dir)? {
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if text.lines().any(|line| line_gates_on_feature(line, feature)) {
+            let relative = path.strip_prefix(root).unwrap_or(&path);
+            sites.push(relative.to_string_lossy().replace('\\', "/"));
         }
     }
     sites.sort();
@@ -744,8 +802,19 @@ fn derive_fuzz(root: &Path) -> Result<RuleOutput, ActivationError> {
         ActivationError::new(format!("{FUZZ_CARGO_TOML}: invalid TOML: {error}"))
     })?;
     let fuzz_package = package_name(FUZZ_CARGO_TOML, &fuzz_manifest)?;
-    let bins =
-        fuzz_manifest.get("bin").and_then(toml::Value::as_array).cloned().unwrap_or_default();
+    // An absent `[[bin]]` section is a real state (no target is registered);
+    // a present one of the wrong shape is malformed authority data. Collapsing
+    // both to an empty list would let every fuzz row silently fall back to its
+    // source-file stem — reintroducing exactly the misnamed-surface defect an
+    // earlier round fixed — while generation still reported success.
+    let bins = match fuzz_manifest.get("bin") {
+        None => Vec::new(),
+        Some(value) => value.as_array().cloned().ok_or_else(|| {
+            ActivationError::new(format!(
+                "{FUZZ_CARGO_TOML}: `bin` must be an array of [[bin]] targets"
+            ))
+        })?,
+    };
 
     let mut rows = Vec::with_capacity(stems.len());
     for stem in &stems {
@@ -1082,6 +1151,89 @@ mod tests {
         };
         let _ = fs::remove_dir_all(&root);
         assert!(message.contains("has no non-empty string `package.name`"), "{message}");
+    }
+
+    #[test]
+    fn quoted_cfg_text_is_not_a_usage_site() {
+        // The exact shape review caught: a test asserting on cfg text held in
+        // a string literal. The line does not START with the attribute, so it
+        // is data, not a gate.
+        let root = scratch_root("feature-quoted-cfg");
+        assert!(write(
+            &root,
+            "crates/demo/Cargo.toml",
+            "[package]\nname = \"demo\"\n[features]\nquiet-feature = []\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/demo/tests/thing.rs",
+            "fn t() { assert!(selects(r##\"#[cfg(feature = \\\"quiet-feature\\\")]\"##)); }\n"
+        ));
+        let ids = derive_test_features(&root)
+            .map(|output| output.rows.iter().map(|row| row.surface_id.clone()).collect::<Vec<_>>());
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(ids, Ok(Vec::new()));
+    }
+
+    #[test]
+    fn a_fixture_under_tests_is_not_a_usage_site() {
+        // `tests/fixtures/**` is data a test reads, not a Cargo target. A real
+        // cfg attribute there gates nothing.
+        let root = scratch_root("feature-fixture-cfg");
+        assert!(write(
+            &root,
+            "crates/demo/Cargo.toml",
+            "[package]\nname = \"demo\"\n[features]\nquiet-feature = []\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/demo/tests/fixtures/sample/input.rs",
+            "#[cfg(feature = \"quiet-feature\")]\nfn f() {}\n"
+        ));
+        let ids = derive_test_features(&root)
+            .map(|output| output.rows.iter().map(|row| row.surface_id.clone()).collect::<Vec<_>>());
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(ids, Ok(Vec::new()));
+    }
+
+    #[test]
+    fn a_cfg_macro_call_in_a_compiled_test_is_a_usage_site() {
+        // The control that keeps the syntax rule from being too strict:
+        // `cfg!(feature = "...")` gates at runtime and is a real usage.
+        let root = scratch_root("feature-cfg-macro");
+        assert!(write(
+            &root,
+            "crates/demo/Cargo.toml",
+            "[package]\nname = \"demo\"\n[features]\nquiet-feature = []\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/demo/tests/thing.rs",
+            "fn t() { if cfg!(feature = \"quiet-feature\") { } }\n"
+        ));
+        let ids = derive_test_features(&root)
+            .map(|output| output.rows.iter().map(|row| row.surface_id.clone()).collect::<Vec<_>>());
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(ids, Ok(vec!["cargo-feature:demo/quiet-feature".to_string()]));
+    }
+
+    #[test]
+    fn malformed_fuzz_bin_section_fails_instead_of_falling_back_to_stems() {
+        // A wrong-shaped `bin` collapsing to an empty list would make every
+        // fuzz row fall back to its source-file stem, reintroducing the
+        // misnamed-surface defect an earlier round fixed, while generation
+        // still reported success.
+        let root = scratch_root("fuzz-bin-wrong-shape");
+        // `bin` must precede the [package] header, or TOML nests it inside
+        // that table and the manifest simply has no top-level `bin`.
+        assert!(write(&root, "fuzz/Cargo.toml", "bin = \"nope\"\n[package]\nname = \"fuzz\"\n"));
+        assert!(write(&root, "fuzz/fuzz_targets/demo.rs", "fn main() {}\n"));
+        let message = match derive_fuzz(&root) {
+            Ok(output) => format!("unexpectedly derived {} row(s)", output.rows.len()),
+            Err(error) => error.to_string(),
+        };
+        let _ = fs::remove_dir_all(&root);
+        assert!(message.contains("`bin` must be an array of [[bin]] targets"), "{message}");
     }
 
     #[test]

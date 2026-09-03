@@ -65,7 +65,7 @@ const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
     ("product", 16),
     ("preview", 2),
     ("compatibility_shim", 1),
-    ("test_api", 28),
+    ("test_api", 27),
     ("lab", 21),
     ("oracle", 1),
     ("benchmark", 14),
@@ -643,7 +643,6 @@ fn test_api_rule_seeds_features_whose_usage_proves_them_test_only() -> TestResul
         "cargo-feature:perl-lsp-rs/strict-jsonrpc",
         "cargo-feature:perl-parser/crash-repros",
         "cargo-feature:perl-parser/doc-coverage",
-        "cargo-feature:perl-lexer/simd",
     ] {
         assert!(ids.contains(&expected), "usage-proven test_api row `{expected}` is missing");
     }
@@ -687,7 +686,7 @@ fn every_test_api_row_records_which_signal_classified_it() -> TestResult {
             }
         }
     }
-    assert_eq!((by_name, by_usage), (13, 15), "test_api signal split drifted");
+    assert_eq!((by_name, by_usage), (13, 14), "test_api signal split drifted");
     Ok(())
 }
 
@@ -708,4 +707,34 @@ fn whitespace_only_retirement_boundary_fails_artifact_validation() -> TestResult
     row_mut(&mut inventory, "crate:perl-tree-sitter-compat")
         .ok_or("compat shim row not found")?["retirement"]["boundary"] = json!("\t ");
     expect_violation(&inventory, "compatibility shim requires a retirement owner and boundary")
+}
+
+#[test]
+fn a_non_shim_row_may_not_carry_a_retirement_plan() -> TestResult {
+    // `Retirement` is documented as required *iff* the class is
+    // compatibility_shim. Enforcing only the "required for shims" direction
+    // left the other half unchecked, so a row of any other class could state
+    // a lifecycle no class contract owns.
+    let mut inventory = canonical_inventory()?;
+    let shim = row_mut(&mut inventory, "crate:perl-tree-sitter-compat")
+        .ok_or("compat shim row not found")?["retirement"]
+        .clone();
+    row_mut(&mut inventory, "gate:whitespace_check").ok_or("gate row not found")?["retirement"] =
+        shim;
+    expect_violation(&inventory, "only a compatibility shim may carry a retirement plan")
+}
+
+#[test]
+fn quoted_cfg_text_in_a_test_does_not_classify_an_unused_feature() -> TestResult {
+    // `perl-lexer`'s `simd = []` is an unused no-op. A substring scan counted
+    // three fixtures under `tests/fixtures/` and two string literals in a test
+    // — one of them the test's own negative control — as usage, and inventoried
+    // it as a test API. Only real cfg gates in files Cargo compiles count.
+    let inventory = activation::validate(&repo_root()).map_err(|error| error.to_string())?;
+    let ids: Vec<&str> = inventory.rows.iter().map(|row| row.surface_id.as_str()).collect();
+    assert!(
+        !ids.contains(&"cargo-feature:perl-lexer/simd"),
+        "an unused feature mentioned only in test data must not be inventoried"
+    );
+    Ok(())
 }

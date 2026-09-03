@@ -18,7 +18,7 @@
       "authority": "crates/*/Cargo.toml",
       "emits": "test_api",
       "considered": 78,
-      "emitted": 28,
+      "emitted": 27,
       "not_seeded_reason": "a feature is seeded when its NAME declares test-only intent (test-*, expose_*, experimental-*, stress-tests, slow_tests, integration-test) or its USAGE proves it (at least one cfg(feature = \"...\") site, all under tests/ or benches/). Each row records which signal settled it. A feature with no cfg sites at all is not seeded by usage: an unused feature is neither shown to gate tests nor shown not to. A feature gating both production and test code is seeded only if its name declares the intent, since gating production code is what an exposed test API does"
     },
     {
@@ -575,37 +575,6 @@
         "state": "not_evaluated"
       },
       "notes": "test_api by name: the feature's own spelling declares test-only intent"
-    },
-    {
-      "surface_id": "cargo-feature:perl-lexer/simd",
-      "class": "test_api",
-      "class_authority": {
-        "kind": "derived",
-        "authority": "crates/perl-lexer/Cargo.toml",
-        "rule": "cargo-test-features"
-      },
-      "semantic_authority": "crates/perl-lexer/Cargo.toml#features.simd",
-      "consumers": [
-        "crates/perl-lexer"
-      ],
-      "compile_profiles": [
-        "simd"
-      ],
-      "registration": {
-        "state": "established",
-        "authority": "crates/perl-lexer/Cargo.toml",
-        "detail": "[features] simd = []"
-      },
-      "proof_references": [],
-      "publication": {
-        "state": "not_applicable",
-        "authority": "crates/perl-lexer/Cargo.toml"
-      },
-      "owner": "perl-lexer",
-      "promotion": {
-        "state": "not_evaluated"
-      },
-      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
     },
     {
       "surface_id": "cargo-feature:perl-lexer/slow_tests",
