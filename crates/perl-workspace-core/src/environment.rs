@@ -11,6 +11,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{Digest, fnv1a};
 
+pub mod authorization;
+
 /// Schema version for [`ProjectEnvironmentSnapshot`].
 pub const PROJECT_ENVIRONMENT_SCHEMA_VERSION: u32 = 2;
 

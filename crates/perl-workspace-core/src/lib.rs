@@ -88,6 +88,16 @@ pub use carmel::{
 };
 pub use dist::{DistMetadataFacts, DistMetadataSource, Prereq};
 pub use effects::CompileEffectFacts;
+pub use environment::authorization::{
+    ActionableAuthority, AuthorizationActor, AuthorizationError, AuthorizationEvidence,
+    AuthorizationEvidenceId, AuthorizationFingerprint, AuthorizationOutcome, AuthorizationReason,
+    BoundGenerations, CapabilitySet, ClassifiedInput, ClassifiedInputId,
+    EXECUTION_AUTHORIZATION_SCHEMA_VERSION, ExecutionAuthorizationDecision, ExecutionCapability,
+    ExecutionIntent, ExecutionIntentId, ExecutionReasonClass, InputDisposition, InputRiskClass,
+    OPERATION_REGISTRY_VERSION, OperationProfile, OperationTrustRequirement, PolicyDenial,
+    PublicAuthorizationExplanation, RequiredScope, RevalidationRequirement, SessionOverride,
+    TrustScope, TrustScopeKind, authorize, operation_registry,
+};
 pub use environment::{
     BuildSystemFactRef, BuildSystemKind, EnvironmentBuildError, EnvironmentFingerprint,
     EnvironmentInput, EnvironmentInputAuthority, EnvironmentInputId, EnvironmentInputState,
