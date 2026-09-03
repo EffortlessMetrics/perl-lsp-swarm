@@ -269,17 +269,31 @@ def member_dirs(root: Path) -> list[Path]:
     members = workspace.get("members")
     if not isinstance(members, list) or not members:
         raise ValidationError("root Cargo.toml declares no workspace members")
+    # `[workspace].exclude` removes a directory from GLOB expansion. It does not
+    # override a path listed literally in `members`: Cargo treats an explicit
+    # member as a member. Applying it to literal entries would silently drop a
+    # crate that really is in the workspace, which is the worse error here.
+    excluded: set[Path] = set()
+    for pattern in workspace.get("exclude") or []:
+        if not isinstance(pattern, str):
+            raise ValidationError(f"non-string workspace exclude: {pattern!r}")
+        if any(char in pattern for char in "*?["):
+            excluded.update(root.glob(pattern))
+        else:
+            excluded.add(root / pattern)
+    excluded = {path.resolve() for path in excluded}
+
     resolved: set[Path] = set()
     for pattern in members:
         if not isinstance(pattern, str):
             raise ValidationError(f"non-string workspace member: {pattern!r}")
         # `Path.glob` rejects patterns with no parts (".") and needlessly walks
         # for literal paths, so resolve non-glob members directly.
-        if any(char in pattern for char in "*?["):
-            candidates = root.glob(pattern)
-        else:
-            candidates = iter([root / pattern])
+        is_glob = any(char in pattern for char in "*?[")
+        candidates = root.glob(pattern) if is_glob else iter([root / pattern])
         for path in candidates:
+            if is_glob and path.resolve() in excluded:
+                continue
             if (path / "Cargo.toml").is_file():
                 resolved.add(path)
     if not resolved:

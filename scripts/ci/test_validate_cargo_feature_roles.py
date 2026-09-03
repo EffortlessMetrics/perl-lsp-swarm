@@ -633,6 +633,42 @@ class DiscoveryUnitTests(unittest.TestCase):
             self.assertEqual(facts.cfg_uses, 0)
             self.assertEqual(facts.observed_signals(), ())
 
+    def test_workspace_exclude_removes_a_glob_matched_member(self) -> None:
+        # Cargo's [workspace].exclude removes a directory from glob expansion.
+        # Without this the excluded crate's features would be demanded in the
+        # registry, which would block CI on a manifest that is not a member.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.write_workspace(
+                root,
+                {
+                    "kept": '[package]\nname = "kept"\n[features]\nalpha = []\n',
+                    "dropped": '[package]\nname = "dropped"\n[features]\nbeta = []\n',
+                },
+            )
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["crates/*"]\nexclude = ["crates/dropped"]\n',
+                encoding="utf-8",
+            )
+            discovered = validator.discover(root)
+            self.assertIn(("kept", "alpha"), discovered)
+            self.assertNotIn(("dropped", "beta"), discovered)
+
+    def test_workspace_exclude_does_not_drop_an_explicit_member(self) -> None:
+        # An explicitly listed member is a member even if exclude names it;
+        # dropping it would silently stop governing a real crate.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.write_workspace(
+                root,
+                {"kept": '[package]\nname = "kept"\n[features]\nalpha = []\n'},
+            )
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["crates/kept"]\nexclude = ["crates/kept"]\n',
+                encoding="utf-8",
+            )
+            self.assertIn(("kept", "alpha"), validator.discover(root))
+
     def test_include_from_src_into_an_excluded_dir_is_a_compiled_consumer(self) -> None:
         # The exclusion is about what the compiler sees, not about the
         # directory's name. crates/perl-lexer/src/lexer/helpers/cursor.rs really
