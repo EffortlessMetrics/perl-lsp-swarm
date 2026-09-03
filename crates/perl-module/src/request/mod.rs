@@ -49,6 +49,9 @@ mod outcome;
 
 use std::fmt;
 
+use serde::ser::SerializeStruct;
+use serde::{Serialize, Serializer};
+
 pub use file_path::{ModuleFilePath, ModuleFilePathError};
 pub use name::{LegacySeparatorProfile, ModuleName, ModuleNameError, PackageSeparatorForm};
 pub use outcome::{
@@ -105,7 +108,7 @@ impl fmt::Display for RequestBoundary {
 /// span are retained. A partially static request is never promoted to an exact
 /// one merely because it contains a plausible-looking fragment.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PartialModuleRequest {
     source_form: String,
     static_fragments: Vec<String>,
@@ -141,7 +144,7 @@ impl PartialModuleRequest {
 
 /// A request whose operand is fully dynamic.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct DynamicModuleRequest {
     source_form: String,
     span: Option<ModuleTokenSpan>,
@@ -240,7 +243,7 @@ impl From<ModuleFilePathError> for ModuleRequestError {
 /// quoted `require "Foo::Bar"` is a *filename* and never becomes a bareword
 /// module request.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum ModuleRequest {
     /// A module-style bareword operand.
     BarewordModule(ModuleName),
@@ -406,11 +409,96 @@ impl fmt::Display for ModuleRequest {
         match self {
             Self::BarewordModule(name) => write!(f, "module:{name}"),
             Self::LiteralRelativeFile(path) => write!(f, "file:{path}"),
-            Self::PartiallyStatic(request) => {
-                write!(f, "partial:{}", request.source_form())
-            }
-            Self::Dynamic(request) => write!(f, "dynamic:{}", request.source_form()),
+            Self::PartiallyStatic(_) => f.write_str("partial:<redacted>"),
+            Self::Dynamic(_) => f.write_str("dynamic:<redacted>"),
         }
+    }
+}
+
+impl fmt::Debug for PartialModuleRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = f.debug_struct("PartialModuleRequest");
+        debug
+            .field("kind", &ModuleRequestKind::PartiallyStatic)
+            .field("boundary", &self.boundary)
+            .field("span", &self.span)
+            .field("static_fragment_count", &self.static_fragments.len())
+            .finish()
+    }
+}
+
+impl fmt::Debug for DynamicModuleRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = f.debug_struct("DynamicModuleRequest");
+        debug
+            .field("kind", &ModuleRequestKind::Dynamic)
+            .field("boundary", &self.boundary)
+            .field("span", &self.span)
+            .finish()
+    }
+}
+
+impl fmt::Debug for ModuleRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = f.debug_struct("ModuleRequest");
+        debug.field("kind", &self.kind());
+        match self {
+            Self::BarewordModule(_) | Self::LiteralRelativeFile(_) => {}
+            Self::PartiallyStatic(request) => {
+                debug
+                    .field("boundary", &request.boundary)
+                    .field("span", &request.span)
+                    .field("static_fragment_count", &request.static_fragments.len());
+            }
+            Self::Dynamic(request) => {
+                debug.field("boundary", &request.boundary).field("span", &request.span);
+            }
+        }
+        debug.finish()
+    }
+}
+
+impl Serialize for ModuleRequest {
+    /// Serialize only the request's structural classification.
+    ///
+    /// Raw source expressions and validated file/module payloads remain
+    /// available only through their explicitly named evidence accessors. This
+    /// one-way representation is intentionally not deserializable: callers
+    /// must use the validating constructors to mint a request.
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("ModuleRequest", 5)?;
+        state.serialize_field("kind", request_kind_name(self.kind()))?;
+        state.serialize_field("boundary", &self.boundary().map(RequestBoundary::boundary_id))?;
+        match self {
+            Self::PartiallyStatic(request) => {
+                state.serialize_field("span_start", &request.span.map(|span| span.start))?;
+                state.serialize_field("span_end", &request.span.map(|span| span.end))?;
+                state.serialize_field("static_fragment_count", &request.static_fragments.len())?;
+            }
+            Self::Dynamic(request) => {
+                state.serialize_field("span_start", &request.span.map(|span| span.start))?;
+                state.serialize_field("span_end", &request.span.map(|span| span.end))?;
+                state.serialize_field("static_fragment_count", &0usize)?;
+            }
+            Self::BarewordModule(_) | Self::LiteralRelativeFile(_) => {
+                state.serialize_field("span_start", &Option::<usize>::None)?;
+                state.serialize_field("span_end", &Option::<usize>::None)?;
+                state.serialize_field("static_fragment_count", &0usize)?;
+            }
+        }
+        state.end()
+    }
+}
+
+fn request_kind_name(kind: ModuleRequestKind) -> &'static str {
+    match kind {
+        ModuleRequestKind::BarewordModule => "bareword_module",
+        ModuleRequestKind::LiteralRelativeFile => "literal_relative_file",
+        ModuleRequestKind::PartiallyStatic => "partially_static",
+        ModuleRequestKind::Dynamic => "dynamic",
     }
 }
 
@@ -448,7 +536,7 @@ mod tests {
         assert_eq!(
             ModuleRequest::dynamic("$class", None, RequestBoundary::VariableInterpolation)
                 .to_string(),
-            "dynamic:$class"
+            "dynamic:<redacted>"
         );
         assert_eq!(
             ModuleRequest::partially_static(
@@ -458,8 +546,30 @@ mod tests {
                 RequestBoundary::VariableInterpolation,
             )
             .to_string(),
-            "partial:\"Foo::$leaf\""
+            "partial:<redacted>"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn display_debug_and_serde_redact_source_evidence() -> Result<(), Box<dyn std::error::Error>> {
+        let source = "/private/customer/$class";
+        let request = ModuleRequest::dynamic(
+            source,
+            Some(ModuleTokenSpan { start: 8, end: 32 }),
+            RequestBoundary::RuntimeString,
+        );
+
+        let display = request.to_string();
+        let debug = format!("{request:?}");
+        let serialized = serde_json::to_string(&request)?;
+
+        assert!(!display.contains(source));
+        assert!(!debug.contains(source));
+        assert!(!serialized.contains(source));
+        assert!(serialized.contains("dynamic"));
+        assert!(serialized.contains("request_boundary.runtime_string"));
+        assert!(serialized.contains("static_fragment_count"));
         Ok(())
     }
 

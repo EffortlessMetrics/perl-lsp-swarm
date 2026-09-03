@@ -12,6 +12,9 @@
 
 use std::fmt;
 
+use serde::ser::SerializeStruct;
+use serde::{Serialize, Serializer};
+
 use crate::resolution::ModuleUriResolution;
 
 use super::{ModuleRequest, ModuleRequestError, ModuleRequestKind, RequestBoundary};
@@ -46,7 +49,7 @@ fn is_exact_lookup_subject(request: &ModuleRequest) -> bool {
 ///
 /// It also holds `selected_uri` as a plain `String` rather than an `Option`:
 /// a resolution that selected nothing is not a resolution.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ResolvedEvidence {
     request: ModuleRequest,
     selected_uri: String,
@@ -71,7 +74,7 @@ impl ResolvedEvidence {
 /// Carries no URI at all, so it cannot be rewrapped into a resolution: there is
 /// no winner to invent. See [`ResolvedEvidence`] for why the two are distinct
 /// types.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AbsenceEvidence {
     request: ModuleRequest,
 }
@@ -147,7 +150,7 @@ impl AbsenceEvidence {
 /// assert!(!outcome.has_complete_denominator());
 /// ```
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum ModuleResolutionOutcome {
     /// An existing module was selected. Carries the winning URI.
     ///
@@ -312,15 +315,15 @@ impl ModuleResolutionOutcome {
 impl fmt::Display for ModuleResolutionOutcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Resolved(evidence) => write!(f, "resolved to {}", evidence.selected_uri()),
-            Self::NotProvenPrecedence(uri) => {
-                write!(f, "found {uri}, but higher-precedence roots were not proven inspected")
-            }
+            Self::Resolved(_) => f.write_str("resolved <redacted>"),
+            Self::NotProvenPrecedence(_) => f.write_str(
+                "found <redacted>, but higher-precedence roots were not proven inspected",
+            ),
             Self::NotFound(_) => f.write_str("not found"),
             Self::NotProvenAbsent => {
                 f.write_str("no candidate matched, but the denominator was not proven complete")
             }
-            Self::InvalidRequest(error) => write!(f, "invalid request: {error}"),
+            Self::InvalidRequest(error) => write!(f, "invalid request ({})", error.boundary_id()),
             Self::Dynamic(boundary) => write!(f, "dynamic request: {boundary}"),
             Self::Ambiguous => f.write_str("ambiguous"),
             Self::OutsideAuthority => f.write_str("outside granted authority"),
@@ -328,6 +331,71 @@ impl fmt::Display for ModuleResolutionOutcome {
             Self::TimedOut => f.write_str("search budget expired"),
             Self::IoLimited => f.write_str("stopped by I/O limits"),
         }
+    }
+}
+
+impl fmt::Debug for ResolvedEvidence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResolvedEvidence")
+            .field("request", &self.request)
+            .field("selected_uri", &"<redacted>")
+            .finish()
+    }
+}
+
+impl fmt::Debug for AbsenceEvidence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AbsenceEvidence").field("request", &self.request).finish()
+    }
+}
+
+impl fmt::Debug for ModuleResolutionOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = f.debug_struct("ModuleResolutionOutcome");
+        debug.field("kind", &self.boundary_id());
+        if let Some(cause) = self.cause_boundary_id() {
+            debug.field("cause", &cause);
+        }
+        debug.finish()
+    }
+}
+
+impl Serialize for ResolvedEvidence {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("ResolvedEvidence", 2)?;
+        state.serialize_field("kind", "resolved")?;
+        state.serialize_field("request", &self.request)?;
+        state.end()
+    }
+}
+
+impl Serialize for AbsenceEvidence {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("AbsenceEvidence", 2)?;
+        state.serialize_field("kind", "not_found")?;
+        state.serialize_field("request", &self.request)?;
+        state.end()
+    }
+}
+
+impl Serialize for ModuleResolutionOutcome {
+    /// Serialize the outcome class and nested classification without exposing
+    /// source expressions, validated file names, or selected physical URIs.
+    /// This is intentionally one-way; exact evidence remains resolver-owned.
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("ModuleResolutionOutcome", 2)?;
+        state.serialize_field("kind", self.boundary_id())?;
+        state.serialize_field("cause", &self.cause_boundary_id())?;
+        state.end()
     }
 }
 
@@ -658,5 +726,27 @@ mod tests {
                 "{causeless:?} carries no nested classification to report"
             );
         }
+    }
+
+    #[test]
+    fn display_debug_and_serde_redact_resolution_evidence() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let outcome = match ModuleResolutionOutcome::resolved(
+            probe_request(),
+            "file:///private/customer/secret.pm".to_owned(),
+        ) {
+            Some(outcome) => outcome,
+            None => return Err("the exact probe request must produce evidence".into()),
+        };
+
+        let display = outcome.to_string();
+        let debug = format!("{outcome:?}");
+        let serialized = serde_json::to_string(&outcome)?;
+
+        for representation in [display, debug, serialized] {
+            assert!(!representation.contains("private/customer"));
+            assert!(!representation.contains("secret.pm"));
+        }
+        Ok(())
     }
 }
