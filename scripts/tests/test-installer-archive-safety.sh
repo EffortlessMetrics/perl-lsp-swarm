@@ -48,11 +48,40 @@ if [ -z "${PERL_LSP_TEST_TAR_PROFILE:-}" ]; then
         fi
     done
 
+    # Which implementation actually answered for each profile, recorded and
+    # validated rather than assumed. CI installs `libarchive-tools` and
+    # `busybox-static` unversioned, so the decoder under test can change
+    # between runs; that is acceptable only if a run states what it exercised
+    # and refuses a profile whose implementation is not the expected family.
+    # Pinning apt versions instead would rot fast — Ubuntu drops superseded
+    # versions from the archive, so a pinned install 404s once a security
+    # update lands (#11508).
     DRIVER_FAIL=0
+    PROFILE_RECEIPT=""
     for profile in "${PROFILES[@]}"; do
-        printf '\n##### tar profile: %s (%s) #####\n' \
-            "$profile" \
-            "$(PATH="${DRIVER_TMP}/${profile}:$PATH" tar --version 2>/dev/null | head -n 1)"
+        banner="$(PATH="${DRIVER_TMP}/${profile}:$PATH" tar --version 2>/dev/null | head -n 1 | tr ',' ' ')"
+        case "$profile" in
+            bsdtar)
+                printf '%s' "$banner" | grep -Eqi 'bsdtar|libarchive' || {
+                    printf 'FAIL  profile bsdtar resolved to an unexpected implementation: %s\n' "${banner:-<none>}" >&2
+                    DRIVER_FAIL=1
+                }
+                ;;
+            busybox)
+                printf '%s' "$banner" | grep -qi 'busybox' || {
+                    printf 'FAIL  profile busybox resolved to an unexpected implementation: %s\n' "${banner:-<none>}" >&2
+                    DRIVER_FAIL=1
+                }
+                ;;
+            *)
+                [ -n "$banner" ] || {
+                    printf 'FAIL  profile system reports no tar version banner\n' >&2
+                    DRIVER_FAIL=1
+                }
+                ;;
+        esac
+        PROFILE_RECEIPT="${PROFILE_RECEIPT}${PROFILE_RECEIPT:+, }${profile}=${banner:-<none>}"
+        printf '\n##### tar profile: %s (%s) #####\n' "$profile" "$banner"
         if PERL_LSP_TEST_TAR_PROFILE="$profile" \
             PATH="${DRIVER_TMP}/${profile}:$PATH" \
             bash "${BASH_SOURCE[0]}"; then
@@ -63,6 +92,7 @@ if [ -z "${PERL_LSP_TEST_TAR_PROFILE:-}" ]; then
     done
 
     printf '\n=== tar profiles exercised: %s ===\n' "${PROFILES[*]}"
+    printf 'archive_profile_receipt %s\n' "$PROFILE_RECEIPT"
     if [ -n "$MISSING_PROFILES" ]; then
         printf '=== tar profiles NOT PROVEN: %s===\n' "$MISSING_PROFILES"
         if [ "$REQUIRE_PROFILES" = "1" ]; then
