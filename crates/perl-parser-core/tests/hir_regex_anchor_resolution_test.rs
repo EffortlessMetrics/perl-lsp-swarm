@@ -232,6 +232,25 @@ fn a_match_record_does_not_answer_a_substitution_anchor() {
 }
 
 #[test]
+fn an_exact_range_does_not_bypass_the_family_filter_for_a_real_operator() {
+    // Exact-range resolution deliberately accepts a record that carries *no*
+    // operator, so an unavailable record can still report its reason. That
+    // relaxation must not extend to a record whose operator is known and
+    // belongs to another family: there the mismatch is real evidence.
+    let source = "my $r = qr/foo/i;";
+    let table = table_for(source);
+    let exact = SourceLocation { start: 8, end: 16 };
+    assert!(
+        table.find_enclosed_by(exact, RegexAnalysisFamily::Regex).is_some(),
+        "the record's own family must resolve at its exact range"
+    );
+    assert!(
+        table.find_enclosed_by(exact, RegexAnalysisFamily::Substitution).is_none(),
+        "an exact range must not resolve a record from a different operator family"
+    );
+}
+
+#[test]
 fn regex_and_match_families_accept_the_same_operator_set() {
     // Documented and deliberate: the parser does not distinguish `qr//` from an
     // unbound `m//` or a bare `/.../`, so these two families cannot be

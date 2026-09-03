@@ -347,14 +347,13 @@ impl RegexAnalysisTable {
     /// binding operator, while a record's `full_range` is the operator range
     /// alone. Exact equality therefore fails for every bound form.
     ///
-    /// Selection is **family-bearing**: only records whose operator belongs to
-    /// `family` are considered, then an exact `full_range` match is preferred,
-    /// then the last-starting record wholly contained in `range`. That is the
-    /// same rule — and the same order — the parser's own AST compatibility
-    /// projection (`regex_retention::record_for_node`) applies, so the two
-    /// resolve identically rather than becoming rival authorities.
+    /// Selection prefers an exact `full_range` match, then falls back to the
+    /// last-starting record wholly contained in `range`. That is the same rule
+    /// — and the same order — the parser's own AST compatibility projection
+    /// (`regex_retention::record_for_node`) applies, so the two resolve
+    /// identically rather than becoming rival authorities.
     ///
-    /// Both filters are load-bearing and guard different confusions:
+    /// Two filters are load-bearing and guard different confusions:
     ///
     /// - the **last-starting** tie-break makes a bound anchor resolve to its
     ///   own operator, since the operator is the rightmost part of a binding
@@ -365,8 +364,21 @@ impl RegexAnalysisTable {
     ///   say — starts later and would otherwise win the tie-break despite
     ///   belonging to a different operator family.
     ///
+    /// The family filter constrains *selection among candidates*, so it applies
+    /// where a choice is actually being made. An exact `full_range` match is
+    /// not such a choice: the anchor names one construct at one range, and the
+    /// only reason to reject that record would be a genuine family mismatch. So
+    /// an exact match is accepted when the record is in `family` **or carries no
+    /// operator at all** — the shape [`Self::retain_unavailable`] produces when
+    /// geometry could not be recovered. Requiring an operator there would drop
+    /// exactly the records that exist to report a recovery reason, turning a
+    /// modeled `GeometryUnavailable` state into an indistinguishable `None`.
+    /// A record with an operator from another family is still rejected.
+    ///
     /// Returning `None` means the analysis is **unavailable** for that anchor,
-    /// never that the pattern is clean.
+    /// never that the pattern is clean. A returned record may itself be
+    /// unavailable; callers must read [`RegexAnalysisRecord::availability`]
+    /// rather than treating resolution as a completeness claim.
     #[must_use]
     pub fn find_enclosed_by(
         &self,
@@ -376,9 +388,12 @@ impl RegexAnalysisTable {
         let in_family = |record: &&RegexAnalysisRecord| {
             record.operator.is_some_and(|operator| family.accepts(operator))
         };
-        if let Some(exact) =
-            self.records.iter().find(|record| record.full_range == range && in_family(record))
-        {
+        // An exact range identifies the construct on its own; a record that
+        // never established an operator is not a family mismatch, it is an
+        // unavailability reason, and must survive resolution.
+        if let Some(exact) = self.records.iter().find(|record| {
+            record.full_range == range && (record.operator.is_none() || in_family(record))
+        }) {
             return Some(exact);
         }
         self.records
@@ -620,6 +635,65 @@ mod tests {
         assert_eq!(table.find_at_offset(10).map(|record| record.id), Some(id));
         assert!(table.find_at_offset(11).is_none());
         assert!(table.find_at_offset(7).is_none());
+    }
+
+    /// A record retained without an operator must still answer an exact anchor.
+    ///
+    /// `retain_unavailable` models a construct whose geometry could not be
+    /// recovered: `operator` is `None` and `availability` carries the reason.
+    /// Anchor resolution is family-bearing, but a family test reads `operator`,
+    /// so a filter that requires one silently discards precisely the records
+    /// that exist to report unavailability — the caller then sees `None`, which
+    /// it cannot distinguish from "no record here at all". Exact-range
+    /// resolution therefore accepts an operator-less record.
+    ///
+    /// The narrowing this pins was introduced with `find_enclosed_by` itself
+    /// and is proven here as a contract property. No source input that reaches
+    /// `RetentionInput::Unavailable` has been demonstrated, so this is a
+    /// robustness gate over a modeled state rather than a reproduced user-facing
+    /// bug; the state is constructible through the crate-internal retention API
+    /// regardless, and the resolver must not lose it.
+    #[test]
+    fn an_exact_anchor_resolves_a_record_retained_without_an_operator() {
+        let source = "my $x = /a/;";
+        let range = SourceLocation { start: 8, end: 11 };
+        let mut table = RegexAnalysisTable::for_source(source);
+        let id = table
+            .retain_unavailable(range, RegexAnalysisAvailability::GeometryUnavailable, profile())
+            .id;
+
+        // Every family an anchor can carry must reach it: with no operator
+        // there is nothing to mismatch against.
+        for family in [
+            RegexAnalysisFamily::Regex,
+            RegexAnalysisFamily::Match,
+            RegexAnalysisFamily::Substitution,
+        ] {
+            // Resolution is not a completeness claim: the reason must survive it.
+            let resolved = table
+                .find_enclosed_by(range, family)
+                .map(|record| (record.id, record.availability, record.operator));
+            assert_eq!(
+                resolved,
+                Some((id, RegexAnalysisAvailability::GeometryUnavailable, None)),
+                "exact anchor must resolve to the unavailable record for {family:?}"
+            );
+        }
+
+        // Exactness is still required. Containment selects among candidates, and
+        // an operator-less record cannot be shown to belong to the anchor's
+        // family, so it is not a containment candidate. A bound anchor over an
+        // unavailable operator consequently still reports unavailable — a known
+        // limitation, not an accident.
+        assert!(
+            table
+                .find_enclosed_by(
+                    SourceLocation { start: 0, end: source.len() },
+                    RegexAnalysisFamily::Match
+                )
+                .is_none(),
+            "an operator-less record must not be selected by containment"
+        );
     }
 
     #[test]
