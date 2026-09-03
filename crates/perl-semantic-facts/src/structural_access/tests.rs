@@ -1783,13 +1783,17 @@ fn an_empty_package_name_shape_is_rejected_at_construction() -> Result<(), Box<d
 fn an_empty_package_in_a_shape_mismatch_is_rejected() -> Result<(), Box<dyn Error>> {
     // The mismatch arm carries an identity for the same reason the selected
     // arm does: it names the shape the aggregate actually had.
+    // The mismatch is recorded over an *arrow* subscript on a scalar, which is
+    // where a mismatch can honestly occur. A plain `%config` subscript cannot
+    // mismatch its own container (law 12), so building this fixture that way
+    // would make the test pass on the wrong law and its control unbuildable.
     let build = |package: &str| {
         StructuralAccessHop::new(
             0,
-            hash_variable(),
-            StructuralAccessOperator::HashSlot,
+            base_variable(),
+            StructuralAccessOperator::HashRefSlot,
             StructuralAccessSelector::StaticKey("k".to_string()),
-            spelling("{k}", 0, 3)?,
+            spelling("->{k}", 0, 5)?,
             StructuralHopOutcome::ShapeMismatch {
                 observed: ValueShape::PackageName { package: package.to_string() },
             },
@@ -2628,6 +2632,104 @@ fn a_contradictory_limitation_cannot_survive_the_transport_boundary() -> Result<
     assert!(
         decoded.validate().is_err(),
         "a limitation contradicting the disposition must not survive transport"
+    );
+    Ok(())
+}
+
+// ── Plain subscripts cannot mismatch their own sigil (found by Devin) ─────
+
+/// A hop whose outcome is a shape mismatch, over the given aggregate/operator.
+fn mismatching_hop(
+    aggregate: StructuralAccessAggregate,
+    operator: StructuralAccessOperator,
+    selector: StructuralAccessSelector,
+    text: &str,
+    observed: ValueShape,
+) -> Result<StructuralAccessHop, StructuralAccessContractError> {
+    StructuralAccessHop::new(
+        0,
+        aggregate,
+        operator,
+        selector,
+        spelling(text, 0, 4)?,
+        StructuralHopOutcome::ShapeMismatch { observed },
+        StructuralHopCertainty::Definite,
+        StructuralAggregateCompleteness::Closed,
+        StructuralAggregateDisposition::Stable,
+        SemanticProducer::SemanticAnalyzer,
+        SemanticProvenance::Known(crate::Provenance::ExactAst),
+        SemanticConfidence::Known(Confidence::High),
+        SemanticReasonCode::ExactSource,
+        StructuralAccessBudget::new(10, 9)?,
+        Vec::new(),
+    )
+}
+
+#[test]
+fn a_plain_hash_subscript_cannot_mismatch_its_own_hash() -> Result<(), Box<dyn Error>> {
+    // `$config{k}` reads `%config`, which is a hash in every execution. A
+    // recorded mismatch describes a conflict Perl cannot produce.
+    let error = contract_error(mismatching_hop(
+        hash_variable(),
+        StructuralAccessOperator::HashSlot,
+        StructuralAccessSelector::StaticKey("k".to_string()),
+        "{k}",
+        ValueShape::ArrayRef,
+    ))?;
+    assert!(
+        matches!(error, StructuralAccessContractError::ContradictoryStatus(_)),
+        "a plain hash subscript must not report a shape mismatch, got {error:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_plain_array_subscript_cannot_mismatch_its_own_array() -> Result<(), Box<dyn Error>> {
+    let error = contract_error(mismatching_hop(
+        array_variable(),
+        StructuralAccessOperator::ArrayIndex,
+        StructuralAccessSelector::StaticIndex(0),
+        "[0]",
+        ValueShape::HashRef,
+    ))?;
+    assert!(
+        matches!(error, StructuralAccessContractError::ContradictoryStatus(_)),
+        "a plain array subscript must not report a shape mismatch, got {error:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_arrow_subscript_on_a_scalar_still_reports_a_real_mismatch() -> Result<(), Box<dyn Error>> {
+    // The discriminating control. `$ref->{k}` names a scalar whose runtime
+    // shape is genuinely unknown, so a mismatch there is honest evidence and
+    // the law must not reach it. A law keyed on "named variable" alone, rather
+    // than on the plain operators, would wrongly reject this.
+    mismatching_hop(
+        base_variable(),
+        StructuralAccessOperator::HashRefSlot,
+        StructuralAccessSelector::StaticKey("k".to_string()),
+        "->{k}",
+        ValueShape::ArrayRef,
+    )?;
+    Ok(())
+}
+
+#[test]
+fn a_plain_subscript_mismatch_cannot_survive_the_transport_boundary() -> Result<(), Box<dyn Error>>
+{
+    // `nested_chain`'s second hop is a plain `{staff}` over its predecessor.
+    // Rewriting its aggregate to a named hash variable and its outcome to a
+    // mismatch is the serialized form of the record law 12 forbids.
+    let mut value = serde_json::to_value(nested_chain()?)?;
+    value["hops"][1]["aggregate"] =
+        serde_json::json!({ "Variable": { "sigil": "%", "name": "config" } });
+    value["hops"][1]["outcome"] =
+        serde_json::json!({ "ShapeMismatch": { "observed": "ArrayRef" } });
+    let decoded: StructuralAccessChain = serde_json::from_value(value)?;
+    assert!(
+        decoded.validate().is_err(),
+        "a fabricated plain-subscript mismatch must not survive transport"
     );
     Ok(())
 }

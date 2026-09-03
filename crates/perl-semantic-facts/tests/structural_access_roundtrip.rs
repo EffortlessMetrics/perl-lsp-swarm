@@ -261,15 +261,20 @@ fn every_non_selecting_outcome_round_trips() -> Result<(), Box<dyn Error>> {
         } else {
             StructuralAccessBudget::new(500, 499)?
         };
+        // `$table->{missing}` rather than `$table{missing}`: one of these
+        // outcomes is a shape mismatch, and a plain subscript cannot mismatch
+        // the container its own sigil names. An arrow subscript on a scalar
+        // has a genuinely open runtime shape and is honest for every outcome
+        // in this table, so one hop shape still covers them all.
         let single = StructuralAccessHop::new(
             0,
             StructuralAccessAggregate::Variable {
-                sigil: "%".to_string(),
+                sigil: "$".to_string(),
                 name: "table".to_string(),
             },
-            StructuralAccessOperator::HashSlot,
+            StructuralAccessOperator::HashRefSlot,
             StructuralAccessSelector::StaticKey("missing".to_string()),
-            StructuralAccessSpelling::new("{missing}", anchor(0, 9))?,
+            StructuralAccessSpelling::new("->{missing}", anchor(0, 11))?,
             outcome,
             StructuralHopCertainty::Possible,
             completeness,

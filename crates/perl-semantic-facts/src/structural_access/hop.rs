@@ -241,6 +241,12 @@ impl StructuralAccessHop {
     ///     and covers only those three; the remaining limitations either
     ///     restate no field or are deliberately weaker than the outcome that
     ///     shares their name.
+    /// 12. A plain subscript on a named variable cannot report
+    ///     [`StructuralHopOutcome::ShapeMismatch`]. Law 9 has already bound
+    ///     the operator to the variable's own sigil, so the shape is fixed in
+    ///     the source and there is nothing left to conflict with. Arrow
+    ///     operators and non-variable aggregates keep the outcome, because
+    ///     their runtime shape is genuinely open.
     ///
     /// # Errors
     /// Returns the first violated law as a [`StructuralAccessContractError`].
@@ -322,6 +328,32 @@ impl StructuralAccessHop {
             {
                 return Err(StructuralAccessContractError::ContradictoryStatus(
                     "an array or hash container is not a reference an arrow can dereference",
+                ));
+            }
+
+            // Law 12: a plain subscript on a named variable cannot mismatch the
+            // shape it just named. Law 9 has already forced `{}` onto a `%`
+            // variable and `[]` onto an `@` one, so by this point the sigil
+            // *is* the shape declaration, fixed in the source rather than
+            // discovered at run time: `%config` is a hash in every execution,
+            // and `$config{k}` accesses it as one. There is no shape left to
+            // conflict with, so a recorded `ShapeMismatch` describes a conflict
+            // that cannot occur, and nothing else constrains its `observed`
+            // payload on a first hop — chain law 8 only binds `observed` when a
+            // predecessor selected a shape.
+            //
+            // The law stops exactly here. An arrow operator on a variable keeps
+            // `ShapeMismatch`, because `$ref->{k}` names a scalar whose runtime
+            // shape genuinely is unknown and may well be the wrong one, and so
+            // does every non-`Variable` aggregate, whose shape this record does
+            // not fix either.
+            if matches!(
+                self.operator,
+                StructuralAccessOperator::HashSlot | StructuralAccessOperator::ArrayIndex
+            ) && matches!(self.outcome, StructuralHopOutcome::ShapeMismatch { .. })
+            {
+                return Err(StructuralAccessContractError::ContradictoryStatus(
+                    "a plain subscript cannot mismatch the container its own sigil names",
                 ));
             }
         }
