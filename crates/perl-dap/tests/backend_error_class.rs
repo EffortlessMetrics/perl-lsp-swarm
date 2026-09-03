@@ -132,8 +132,6 @@ fn backend_error_category_contract() {
             BackendError::Timeout(_) => ErrorCategory::Transient,
             BackendError::ResourceLimit(_) => ErrorCategory::ResourceLimit,
             BackendError::Engine(_) => ErrorCategory::Bug,
-            // No wildcard on the cause either: a new cause must choose its
-            // category here deliberately rather than inherit one.
             BackendError::PeerReported { cause, .. } => match cause {
                 Some(PeerFailureCause::Debuggee) => ErrorCategory::Advisory,
                 Some(PeerFailureCause::SessionState | PeerFailureCause::InvalidRequest) => {
@@ -141,6 +139,19 @@ fn backend_error_category_contract() {
                 }
                 Some(PeerFailureCause::Transport) => ErrorCategory::Infra,
                 Some(PeerFailureCause::Unrecognized) | None => ErrorCategory::Advisory,
+                // `PeerFailureCause` is `#[non_exhaustive]`, so this crate — an
+                // integration test, and therefore a downstream consumer — is
+                // required to carry a fallback and cannot lock the cause axis by
+                // exhaustiveness the way it locks the variant axis above.
+                //
+                // The guard that matters is not lost. `error_class` matches this
+                // same type from *inside* `perl-dap`, where `#[non_exhaustive]`
+                // does not apply, so a new cause that no arm handles fails to
+                // compile there. What this arm gives up is only the independent
+                // second opinion: a new cause added to `every_cause()` and
+                // `backend_variants()` still trips this test unless production
+                // agreed on `Advisory`, which is the honest default to assume.
+                _ => ErrorCategory::Advisory,
             },
             BackendError::Unsupported(_) => ErrorCategory::UserError,
             BackendError::Protocol(_) => ErrorCategory::Protocol,

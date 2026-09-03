@@ -38,11 +38,26 @@ pub struct PeerRequest {
 /// A peer may only have its cause honoured when it advertised
 /// [`PeerReportedCapabilities::can_report_failure_cause`] in `peer/hello`.
 ///
+/// # Extensibility
+///
+/// `#[non_exhaustive]`, because this vocabulary is explicitly designed to grow —
+/// that is the whole reason [`Self::Unrecognized`] exists. Recognising a cause
+/// this build currently maps to `Unrecognized` must stay a routine addition, not
+/// a source-breaking change for a downstream crate that matched exhaustively.
+/// Marking it here, before the first release that carries it, is the only point
+/// at which that costs nothing.
+///
+/// The host's own classification is unaffected: `error_class` in
+/// [`crate::backend`] matches this type from inside the crate, where
+/// exhaustiveness is still enforced, so a new cause cannot silently inherit a
+/// category there.
+///
 /// [`BackendError::error_class`]: crate::backend::BackendError
 /// [`PeerReportedCapabilities::can_report_failure_cause`]:
 ///     crate::peer_protocol::PeerReportedCapabilities::can_report_failure_cause
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum PeerFailureCause {
     /// The debuggee itself failed: a `die`, an undefined subroutine, a runtime
     /// error. The request was served correctly and this is its outcome.
@@ -95,11 +110,45 @@ pub struct PeerResponse {
     ///
     /// [`PeerReportedCapabilities::can_report_failure_cause`]:
     ///     crate::peer_protocol::PeerReportedCapabilities::can_report_failure_cause
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_lenient_cause",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub cause: Option<PeerFailureCause>,
     /// Response body, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<serde_json::Value>,
+}
+
+/// Deserialize [`PeerResponse::cause`] without letting a malformed value
+/// destroy the reply that carries it (#14582).
+///
+/// `#[serde(other)]` rescues an unrecognised cause *word*, but not a value of
+/// the wrong JSON *shape*. Without this, a peer sending `"cause": 123` — or some
+/// future dialect sending a richer `{"code": …}` form — would fail the entire
+/// [`PeerResponse`] to parse. The reader thread drops a frame it cannot
+/// deserialize, so the pending request would never be answered and the host
+/// would report a `Timeout` (`Transient`) instead of the `PeerReported` failure
+/// the peer actually sent. Losing the failure is strictly worse than reporting
+/// it with an unknown cause.
+///
+/// So anything that is not a recognised cause string degrades to
+/// [`PeerFailureCause::Unrecognized`], which classifies exactly as an absent
+/// cause does. Explicit JSON `null` stays `None` — the peer said nothing, rather
+/// than something this build failed to read.
+fn deserialize_lenient_cause<'de, D>(deserializer: D) -> Result<Option<PeerFailureCause>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(match raw {
+        None | Some(serde_json::Value::Null) => None,
+        Some(value) => match serde_json::from_value::<PeerFailureCause>(value) {
+            Ok(cause) => Some(cause),
+            Err(_) => Some(PeerFailureCause::Unrecognized),
+        },
+    })
 }
 
 /// An asynchronous event from one peer to the other.
@@ -271,6 +320,46 @@ mod tests {
         ));
         assert_eq!(resp.cause, Some(PeerFailureCause::Unrecognized));
         assert_eq!(resp.message.as_deref(), Some("no active suspension"));
+    }
+
+    /// A cause of the wrong JSON *shape* must not destroy the reply either.
+    ///
+    /// `#[serde(other)]` alone does not cover this: it rescues an unrecognised
+    /// string, but a number, array, object, or bool would fail the whole
+    /// `PeerResponse` to parse. The reader thread drops a frame it cannot
+    /// deserialize, so the failure the peer actually reported would surface as a
+    /// `Timeout` instead — losing it entirely. Each row here fails without
+    /// `deserialize_lenient_cause`.
+    #[test]
+    fn a_cause_of_the_wrong_json_type_still_yields_the_reply() {
+        for malformed in ["123", "true", "[\"session_state\"]", "{\"code\":\"session_state\"}"] {
+            let body = format!(
+                r#"{{"seq":2,"requestSeq":1,"success":false,"command":"stackTrace",
+                     "message":"no active suspension","cause":{malformed}}}"#
+            );
+            let resp: PeerResponse = must(serde_json::from_str(&body));
+            assert_eq!(
+                resp.cause,
+                Some(PeerFailureCause::Unrecognized),
+                "malformed cause {malformed} must degrade, not fail the response"
+            );
+            assert_eq!(
+                resp.message.as_deref(),
+                Some("no active suspension"),
+                "the reported reason must survive a malformed cause: {malformed}"
+            );
+        }
+    }
+
+    /// An explicit JSON `null` is the peer saying nothing, which is different
+    /// from this build failing to read something. It stays `None`.
+    #[test]
+    fn an_explicit_null_cause_is_absent_not_unrecognized() {
+        let resp: PeerResponse = must(serde_json::from_str(
+            r#"{"seq":2,"requestSeq":1,"success":false,"command":"stackTrace",
+                "message":"no active suspension","cause":null}"#,
+        ));
+        assert_eq!(resp.cause, None);
     }
 
     /// Each known word maps to its own arm — a negative control against a

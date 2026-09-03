@@ -1266,8 +1266,31 @@ mod tests {
         StackTraceParams { thread_id: ThreadId(1), start_frame: None, levels: None }
     }
 
-    /// Drive one `stackTrace` against a peer that answers with `reply`, and
-    /// return the error the host produced.
+    /// Drive one request against a peer that answers `wire_command` with
+    /// `reply`, and return the error the host produced.
+    ///
+    /// The command is a parameter because the gate lives in `request()` and is
+    /// command-agnostic. A helper hard-wired to `stackTrace` would let a gate
+    /// narrowed to one command pass every test in this module.
+    fn peer_failure(
+        caps: PeerReportedCapabilities,
+        wire_command: &'static str,
+        reply: PeerResponse,
+        drive: impl FnOnce(&mut ExternalDebuggerPeerBackend) -> BackendResult<()>,
+    ) -> crate::backend::BackendError {
+        let (listener, addr) = bind_ephemeral();
+        let peer = spawn_fake_peer(addr, caps, move |req| {
+            (req.command == wire_command).then(|| reply.clone())
+        });
+        let mut backend = accept_backend(listener);
+        must(backend.initialize(InitializeBackendParams::default()));
+        let err = must_err(drive(&mut backend));
+        drop(backend);
+        let _ = peer.join();
+        err
+    }
+
+    /// Drive one `stackTrace` against a peer that answers with `reply`.
     ///
     /// The peer's capability report is the only thing callers vary, so the tests
     /// below can hold the response bytes fixed and move the negotiation.
@@ -1275,16 +1298,25 @@ mod tests {
         caps: PeerReportedCapabilities,
         reply: PeerResponse,
     ) -> crate::backend::BackendError {
-        let (listener, addr) = bind_ephemeral();
-        let peer = spawn_fake_peer(addr, caps, move |req| {
-            (req.command == command::STACK_TRACE).then(|| reply.clone())
-        });
-        let mut backend = accept_backend(listener);
-        must(backend.initialize(InitializeBackendParams::default()));
-        let err = must_err(backend.stack_trace(stack_trace_params()));
-        drop(backend);
-        let _ = peer.join();
-        err
+        peer_failure(caps, command::STACK_TRACE, reply, |backend| {
+            backend.stack_trace(stack_trace_params()).map(|_| ())
+        })
+    }
+
+    /// The same, driven through `evaluate` instead.
+    fn evaluate_failure(
+        caps: PeerReportedCapabilities,
+        reply: PeerResponse,
+    ) -> crate::backend::BackendError {
+        peer_failure(caps, command::EVALUATE, reply, |backend| {
+            backend
+                .evaluate(EvaluateParams {
+                    expression: "foo()".to_string(),
+                    frame_id: Some(FrameId(1)),
+                    context: EvaluateContext::Watch,
+                })
+                .map(|_| ())
+        })
     }
 
     /// Destructure a [`BackendError::PeerReported`], or fail the test naming
@@ -1307,22 +1339,20 @@ mod tests {
         must_some_with(peer_reported_parts(err), format_args!("expected PeerReported, got {err:?}"))
     }
 
-    /// A peer that can report a stack trace *and* speaks the cause vocabulary.
+    /// A peer that can serve the requests these tests drive *and* speaks the
+    /// cause vocabulary.
     fn cause_reporting_caps() -> PeerReportedCapabilities {
         PeerReportedCapabilities {
             can_list_stack: true,
+            can_evaluate: true,
             can_report_failure_cause: true,
             ..Default::default()
         }
     }
 
-    /// The same peer, minus only the cause advertisement.
+    /// The same peer, differing in the cause advertisement and nothing else.
     fn silent_cause_caps() -> PeerReportedCapabilities {
-        PeerReportedCapabilities {
-            can_list_stack: true,
-            can_report_failure_cause: false,
-            ..Default::default()
-        }
+        PeerReportedCapabilities { can_report_failure_cause: false, ..cause_reporting_caps() }
     }
 
     /// A negotiated peer's reported cause reaches the host error (#14582).
@@ -1415,6 +1445,42 @@ mod tests {
         let (_, message, cause) = expect_peer_reported(&err);
         assert_eq!(message, "no active suspension");
         assert_eq!(cause, Some(PeerFailureCause::Unrecognized));
+    }
+
+    /// The gate lives in `request()`, which every command shares, so it must be
+    /// proved on more than one command.
+    ///
+    /// Without this pair, narrowing the gate to `command == STACK_TRACE` passes
+    /// the whole module — the seam is centralized today, and nothing else here
+    /// would notice if it stopped being.
+    #[test]
+    fn a_negotiated_cause_is_honoured_for_commands_other_than_stack_trace() {
+        let err = evaluate_failure(
+            cause_reporting_caps(),
+            fail_resp(
+                command::EVALUATE,
+                "Undefined subroutine &main::foo called",
+                Some(PeerFailureCause::Debuggee),
+            ),
+        );
+        let (command, message, cause) = expect_peer_reported(&err);
+        assert_eq!(command, command::EVALUATE);
+        assert_eq!(message, "Undefined subroutine &main::foo called");
+        assert_eq!(cause, Some(PeerFailureCause::Debuggee));
+    }
+
+    #[test]
+    fn an_unadvertised_cause_is_dropped_for_commands_other_than_stack_trace() {
+        let reply = fail_resp(
+            command::EVALUATE,
+            "Undefined subroutine &main::foo called",
+            Some(PeerFailureCause::Debuggee),
+        );
+        assert_eq!(
+            expect_peer_reported(&evaluate_failure(silent_cause_caps(), reply)).2,
+            None,
+            "the gate must drop an unadvertised cause on every command, not just stackTrace"
+        );
     }
 
     #[test]

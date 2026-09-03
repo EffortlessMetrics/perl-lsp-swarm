@@ -1450,7 +1450,6 @@ pub const perl_dap::peer_protocol::message::event::OUTPUT: &str
 pub const perl_dap::peer_protocol::message::event::SOURCE_FACTS: &str
 pub const perl_dap::peer_protocol::message::event::STOPPED: &str
 pub const perl_dap::peer_protocol::message::event::TERMINATED: &str
-pub enum perl_dap::peer_protocol::message::PeerFailureCause
 pub perl_dap::peer_protocol::message::PeerFailureCause::Debuggee
 pub perl_dap::peer_protocol::message::PeerFailureCause::InvalidRequest
 pub perl_dap::peer_protocol::message::PeerFailureCause::SessionState
@@ -1737,7 +1736,6 @@ pub fn perl_dap::peer_protocol::payloads::WireVariable::eq(&self, other: &perl_d
 pub fn perl_dap::peer_protocol::payloads::WireVariable::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::peer_protocol::payloads::WireVariable::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::peer_protocol::payloads::WireVariable::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub enum perl_dap::peer_protocol::PeerFailureCause
 pub perl_dap::peer_protocol::PeerFailureCause::Debuggee
 pub perl_dap::peer_protocol::PeerFailureCause::InvalidRequest
 pub perl_dap::peer_protocol::PeerFailureCause::SessionState
