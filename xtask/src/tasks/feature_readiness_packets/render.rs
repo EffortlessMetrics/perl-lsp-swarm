@@ -332,6 +332,12 @@ pub fn compact(doc: &Value) -> String {
             strings(doc.pointer("/claim_ceiling/establishes")).join("; "),
             strings(doc.pointer("/claim_ceiling/cannot_establish")).join("; "),
         ));
+        out.push_str(&format!(
+            "PREREQUISITES: disposition={} successors={} remaining_not_proven={}\n",
+            clean("/claim_ceiling/prerequisite_disposition"),
+            compact_json(doc.pointer("/claim_ceiling/successors")),
+            compact_json(doc.pointer("/claim_ceiling/remaining_not_proven")),
+        ));
         out.push_str("AUTHORITIES: ");
         let authorities = objects(doc, "/authorities");
         for (index, entry) in authorities.iter().enumerate() {
@@ -346,6 +352,10 @@ pub fn compact(doc: &Value) -> String {
             ));
         }
         out.push('\n');
+        out.push_str("OPERATIONS: ");
+        out.push_str(&compact_json(doc.get("operations")));
+        out.push('\n');
+        out.push_str(&format!("SEQUENCE: {}\n", compact_json(doc.get("sequence"))));
         out.push_str("ALLOWED: ");
         out.push_str(&strings(doc.pointer("/surfaces/allowed")).join("; "));
         out.push_str("\nFORBIDDEN: ");
@@ -403,11 +413,11 @@ pub fn compact(doc: &Value) -> String {
         }
         out.push('\n');
         out.push_str(&format!(
-            "LIVE: state={} preflight={} action={}\n",
-            clean("/planes/live/state"),
-            get("/planes/live/preflight_required"),
-            clean("/planes/live/required_action"),
+            "ROUTING: {}\nDURABLE_SPEC: {}\n",
+            compact_json(doc.pointer("/delivery/issues")),
+            compact_json(doc.get("durable_spec")),
         ));
+        out.push_str(&format!("LIVE: {}\n", compact_json(doc.pointer("/planes/live")),));
         out.push_str("STOP: ");
         out.push_str(&strings(doc.pointer("/stop/conditions")).join(" / "));
         out.push_str("\nNEVER: ");
@@ -571,7 +581,33 @@ pub fn validate_compact_lossless(builder: &Value, compact_text: &str) -> Vec<Vio
             ));
         }
     }
+    for (label, pointer) in [
+        ("operations", "/operations"),
+        ("prerequisite disposition", "/claim_ceiling/prerequisite_disposition"),
+        ("successors", "/claim_ceiling/successors"),
+        ("remaining not-proven", "/claim_ceiling/remaining_not_proven"),
+        ("sequence", "/sequence"),
+        ("routing", "/delivery/issues"),
+        ("durable spec", "/durable_spec"),
+        ("live observations", "/planes/live"),
+    ] {
+        let Some(value) = builder.pointer(pointer) else {
+            continue;
+        };
+        let encoded =
+            value.as_str().map(str::to_owned).unwrap_or_else(|| compact_json(Some(value)));
+        if encoded.is_empty() || !compact_text.contains(&encoded) {
+            violations.push(Violation::new(
+                "compact_loss",
+                format!("compact projection dropped {label}"),
+            ));
+        }
+    }
     violations
+}
+
+fn compact_json(value: Option<&Value>) -> String {
+    value.map(|value| serde_json::to_string(value).unwrap_or_default()).unwrap_or_default()
 }
 
 fn strings_of(value: Option<&Value>) -> Vec<&str> {

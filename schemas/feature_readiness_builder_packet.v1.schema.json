@@ -297,6 +297,7 @@
         "pr_title_suggestion",
         "base_head",
         "issues",
+        "changed_surfaces",
         "old_path_dispositions",
         "limitations",
         "review_map",

@@ -433,28 +433,151 @@ fn base_sequence(role: Role) -> Vec<SequenceStep> {
 /// Deterministic registry digest over every node's stable identity fields.
 /// Inputs are sorted by node id, so iteration order never changes bytes.
 pub fn registry_digest(nodes: &[NodeSpec]) -> String {
-    let inputs: Vec<(String, String)> = nodes
+    let mut ordered = nodes.to_vec();
+    ordered.sort_by_key(|node| node.node_id);
+    let inputs: Vec<(String, String)> = ordered
         .iter()
         .map(|node| {
             let mut text = String::new();
-            text.push_str(node.node_id);
-            for issue in &node.issues {
-                text.push_str(&format!("|issue:{issue}"));
-            }
-            text.push_str("|domain:");
-            text.push_str(node.domain.as_str());
-            text.push_str("|role:");
-            text.push_str(node.role.as_str());
-            text.push_str("|disposition:");
-            text.push_str(node.disposition.as_str());
-            text.push_str("|profile:");
-            text.push_str(node.profile.as_str());
-            text.push_str("|objective:");
-            text.push_str(node.objective_sentence);
+            digest_field(&mut text, "node_id", node.node_id);
+            digest_field(&mut text, "issues", &format!("{:?}", node.issues));
+            digest_field(&mut text, "controller_issue", &node.controller_issue.to_string());
+            digest_field(&mut text, "domain", node.domain.as_str());
+            digest_field(&mut text, "role", node.role.as_str());
+            digest_field(&mut text, "disposition", node.disposition.as_str());
+            digest_field(&mut text, "profile", node.profile.as_str());
+            digest_field(&mut text, "objective", node.objective_sentence);
+            digest_field(&mut text, "establishes", &format!("{:?}", node.establishes));
+            digest_field(&mut text, "cannot_establish", &format!("{:?}", node.cannot_establish));
+            digest_field(&mut text, "prerequisite_disposition", node.prerequisite_disposition);
+            digest_field(&mut text, "successors", &format!("{:?}", node.successors));
+            digest_field(
+                &mut text,
+                "remaining_not_proven",
+                &format!("{:?}", node.remaining_not_proven),
+            );
+            digest_field(&mut text, "rollback", node.rollback_meaning);
+            digest_field(
+                &mut text,
+                "authorities",
+                &format!(
+                    "{:?}",
+                    node.authorities
+                        .iter()
+                        .map(|row| (row.reference, row.subject, row.group.as_str()))
+                        .collect::<Vec<_>>()
+                ),
+            );
+            digest_field(
+                &mut text,
+                "operations",
+                &format!(
+                    "{:?}",
+                    node.operations
+                        .iter()
+                        .map(|row| (
+                            row.feature,
+                            row.provider_or_client,
+                            row.source_subject,
+                            row.policy_semantic,
+                            row.policy_currentness,
+                            row.policy_fallback,
+                            row.policy_refusal,
+                            row.policy_legitimate_empty,
+                            row.canonical_owner,
+                            row.old_path,
+                            row.proof_owner
+                        ))
+                        .collect::<Vec<_>>()
+                ),
+            );
+            digest_field(&mut text, "allowed_surfaces", &format!("{:?}", node.allowed_surfaces));
+            digest_field(
+                &mut text,
+                "forbidden_surfaces",
+                &format!("{:?}", node.forbidden_surfaces),
+            );
+            digest_field(
+                &mut text,
+                "artifacts",
+                &format!(
+                    "{:?}",
+                    node.artifacts
+                        .iter()
+                        .map(|row| (
+                            row.id,
+                            row.kind,
+                            row.owner,
+                            row.mode.as_str(),
+                            row.current_disposition,
+                            row.required_change_or_proof,
+                            row.check_command,
+                            row.review_lens,
+                            row.claim_impact
+                        ))
+                        .collect::<Vec<_>>()
+                ),
+            );
+            digest_field(
+                &mut text,
+                "durable_spec",
+                &format!(
+                    "{:?}",
+                    (node.durable_spec.0.as_str(), node.durable_spec.1, node.durable_spec.2)
+                ),
+            );
+            digest_field(&mut text, "first_falsifier", &format!("{:?}", node.first_falsifier));
+            digest_field(&mut text, "positive_discriminator", node.positive_discriminator);
+            digest_field(
+                &mut text,
+                "controls",
+                &format!(
+                    "{:?}",
+                    node.controls.iter().map(|row| (row.class, row.subject)).collect::<Vec<_>>()
+                ),
+            );
+            digest_field(&mut text, "commands", &format!("{:?}", node.commands));
+            digest_field(
+                &mut text,
+                "lenses",
+                &format!(
+                    "{:?}",
+                    node.lenses
+                        .iter()
+                        .map(|row| (row.name, row.applicable, row.reason, row.questions))
+                        .collect::<Vec<_>>()
+                ),
+            );
+            digest_field(&mut text, "stage_examples", &format!("{:?}", node.stage_examples));
+            digest_field(
+                &mut text,
+                "old_paths",
+                &format!(
+                    "{:?}",
+                    node.old_paths
+                        .iter()
+                        .map(|row| (row.seam, row.terminal_disposition))
+                        .collect::<Vec<_>>()
+                ),
+            );
+            digest_field(
+                &mut text,
+                "extra_stop_conditions",
+                &format!("{:?}", node.extra_stop_conditions),
+            );
             (node.node_id.to_owned(), text)
         })
         .collect();
     crate::tasks::emacs_train_context::digest::composite_digest(&inputs)
+}
+
+fn digest_field(text: &mut String, name: &str, value: &str) {
+    text.push_str(name);
+    text.push(':');
+    text.push_str(&value.len().to_string());
+    text.push(':');
+    text.push_str(value);
+    text.push('|');
 }
 pub(crate) fn sequence_strings(role: Role) -> Vec<String> {
     base_sequence(role).iter().map(|step| step.as_str().to_owned()).collect()

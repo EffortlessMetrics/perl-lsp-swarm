@@ -147,32 +147,27 @@ fn role_kind_word(role: Role) -> &'static str {
     }
 }
 
-fn explicit_dependencies(node: &NodeSpec) -> Vec<u32> {
-    match node.node_id {
-        "fr_11259_semantic_token_live_cutover" => vec![11250],
-        "fr_8336_import_claim_proof_row" => vec![8277],
-        "fr_6992_installed_critic_journey_proof" => vec![6997],
-        "fr_10724_formatting_currentness_proof" => vec![9349],
-        "fr_11263_application_framework_projection" => vec![11261],
-        _ => vec![],
-    }
+fn explicit_dependencies(node: &NodeSpec, nodes: &[NodeSpec]) -> Vec<u32> {
+    nodes
+        .iter()
+        .filter(|candidate| candidate.successors.contains(&node.node_id))
+        .filter_map(|candidate| candidate.issues.first().copied())
+        .collect()
 }
 
-fn explicit_unblocks(node: &NodeSpec) -> Vec<u32> {
-    match node.node_id {
-        "fr_11250_semantic_token_shadow" => vec![11259],
-        "fr_8277_import_governed_operations_leaf" => vec![8336],
-        "fr_6997_critic_product_child" => vec![6992],
-        "fr_9349_formatter_product_child" => vec![10724],
-        "fr_11261_object_facts_source_anchors" => vec![11263],
-        _ => vec![],
-    }
+fn explicit_unblocks(node: &NodeSpec, nodes: &[NodeSpec]) -> Vec<u32> {
+    node.successors
+        .iter()
+        .filter_map(|successor| nodes.iter().find(|candidate| candidate.node_id == *successor))
+        .filter_map(|successor| successor.issues.first().copied())
+        .collect()
 }
 
 /// The builder document for `node` under the optional live observation.
 /// Returns the document (including its content-addressed `packet_id`) plus
 /// the hex digest of its canonical bytes.
 pub fn builder_document(node: &NodeSpec, live: Option<&LiveSnapshot>) -> (Value, String) {
+    let nodes = super::nodes::all_nodes();
     let doc = json!({
         "schema": BUILDER_SCHEMA,
         "repository": { "name": REPOSITORY_NAME },
@@ -186,7 +181,7 @@ pub fn builder_document(node: &NodeSpec, live: Option<&LiveSnapshot>) -> (Value,
             "profile": node.profile.as_str(),
             "objective_sentence": node.objective_sentence,
             "registry_scope": "representative_packet_fixtures",
-            "registry_digest": registry_digest(&super::nodes::all_nodes()),
+            "registry_digest": registry_digest(&nodes),
         },
         "claim_ceiling": {
             "establishes": node.establishes,
@@ -199,7 +194,7 @@ pub fn builder_document(node: &NodeSpec, live: Option<&LiveSnapshot>) -> (Value,
         "planes": {
             "stable": {
                 "status": "embedded_fixture_registry",
-                "digest": registry_digest(&super::nodes::all_nodes()),
+                "digest": registry_digest(&nodes),
                 "full_dag_authority_issue": FULL_DAG_AUTHORITY_ISSUE,
             },
             "current_tree": {
@@ -282,8 +277,8 @@ pub fn builder_document(node: &NodeSpec, live: Option<&LiveSnapshot>) -> (Value,
             "base_head": base_head_value(live),
             "issues": {
                 "controller": node.controller_issue,
-                "dependencies": explicit_dependencies(node),
-                "unblocks": explicit_unblocks(node),
+                "dependencies": explicit_dependencies(node, &nodes),
+                "unblocks": explicit_unblocks(node, &nodes),
             },
             "changed_surfaces": node.allowed_surfaces,
             "old_path_dispositions": old_path_values(node),

@@ -177,6 +177,67 @@ fn registry_input_order_never_changes_digest() {
     assert_eq!(forward_digest, reverse_digest);
 }
 
+#[test]
+fn registry_digest_covers_every_semantic_registry_section() {
+    let baseline = nodes::all_nodes();
+    let digest = |nodes: &[super::model::NodeSpec]| super::model::registry_digest(nodes);
+    let mut cases = Vec::new();
+
+    let mut changed = baseline.clone();
+    changed[0].authorities[0].subject = "changed authority";
+    cases.push(changed);
+    let mut changed = baseline.clone();
+    changed[0].operations[0].policy_semantic = "changed operation policy";
+    cases.push(changed);
+    let mut changed = baseline.clone();
+    changed[0].allowed_surfaces.push("changed surface");
+    cases.push(changed);
+    let mut changed = baseline.clone();
+    changed[0].artifacts[0].claim_impact = "changed artifact impact";
+    cases.push(changed);
+    let mut changed = baseline.clone();
+    changed[0].controls[0].subject = "changed control";
+    cases.push(changed);
+    let mut changed = baseline.clone();
+    changed[0].commands[0].1 = "changed command";
+    cases.push(changed);
+    let mut changed = baseline.clone();
+    changed[0].lenses[0].applicable = !changed[0].lenses[0].applicable;
+    cases.push(changed);
+    let mut changed = baseline.clone();
+    changed[0].old_paths.push(super::model::OldPathRow {
+        seam: "changed old path",
+        terminal_disposition: "removed",
+    });
+    cases.push(changed);
+
+    let baseline_digest = digest(&baseline);
+    assert!(cases.into_iter().all(|candidate| digest(&candidate) != baseline_digest));
+}
+
+#[test]
+fn delivery_routing_is_derived_from_declared_successors() {
+    for (node_id, dependencies, unblocks) in [
+        ("fr_1850_semantic_token_geometry", &[][..], &[11250, 11259][..]),
+        ("fr_11250_semantic_token_shadow", &[1850][..], &[11259][..]),
+        ("fr_11259_semantic_token_live_cutover", &[1850, 11250][..], &[][..]),
+        ("fr_8305_import_containment_leaf", &[][..], &[8277][..]),
+        ("fr_8277_import_governed_operations_leaf", &[8305][..], &[8336][..]),
+        ("fr_11261_object_facts_source_anchors", &[][..], &[11263][..]),
+        ("fr_11263_application_framework_projection", &[11261][..], &[][..]),
+    ] {
+        let (builder, _) = builder_of(node_id);
+        assert_eq!(
+            builder.pointer("/delivery/issues/dependencies"),
+            Some(&serde_json::json!(dependencies))
+        );
+        assert_eq!(
+            builder.pointer("/delivery/issues/unblocks"),
+            Some(&serde_json::json!(unblocks))
+        );
+    }
+}
+
 fn mutate(doc: &Value, path: &dyn Fn(&mut Value)) -> Value {
     let mut copy = doc.clone();
     path(&mut copy);
@@ -538,6 +599,51 @@ fn compact_projection_detects_dropped_constraints() {
     assert!(codes(&loss).contains(&"compact_loss"));
 }
 
+#[test]
+fn compact_projection_detects_each_required_packet_section_loss() {
+    let (builder, _) = builder_of("fr_8305_import_containment_leaf");
+    let compact_text = render::compact(&builder);
+    for (section, replacement) in [
+        ("operations", serde_json::json!([{"feature": "dropped"}])),
+        (
+            "claim_ceiling",
+            serde_json::json!({"prerequisite_disposition": "dropped", "successors": [], "remaining_not_proven": []}),
+        ),
+        ("sequence", serde_json::json!(["dropped"])),
+        (
+            "delivery",
+            serde_json::json!({"issues": {"controller": 0, "dependencies": [], "unblocks": []}}),
+        ),
+        (
+            "durable_spec",
+            serde_json::json!({"disposition": "dropped", "owner": "dropped", "note": "dropped"}),
+        ),
+        (
+            "live",
+            serde_json::json!({"state": "dropped", "snapshot_digest": null, "head_sha": null, "candidate_branch": null, "writer_active": null, "required_action": "none", "preflight_required": true}),
+        ),
+    ] {
+        let mut mutated = builder.clone();
+        if section == "delivery" {
+            if let Some(delivery) = mutated.get_mut("delivery").and_then(Value::as_object_mut) {
+                delivery.insert("issues".to_owned(), replacement["issues"].clone());
+            }
+        } else if section == "claim_ceiling" {
+            if let Some(target) = mutated.get_mut(section) {
+                *target = replacement;
+            }
+        } else if section == "live" {
+            if let Some(target) = mutated.pointer_mut("/planes/live") {
+                *target = replacement;
+            }
+        } else if let Some(target) = mutated.get_mut(section) {
+            *target = replacement;
+        }
+        let loss = render::validate_compact_lossless(&mutated, &compact_text);
+        assert!(codes(&loss).contains(&"compact_loss"), "{section} loss was not detected");
+    }
+}
+
 // Schema files stay pinned to the Rust closed vocabularies.
 #[test]
 fn schema_files_match_closed_vocabularies() -> TestResult {
@@ -598,6 +704,15 @@ fn schema_files_match_closed_vocabularies() -> TestResult {
 #[test]
 fn builder_schema_describes_emitted_old_path_rows() -> TestResult {
     let schema = read_schema_file("schemas/feature_readiness_builder_packet.v1.schema.json")?;
+    let delivery_required: Vec<&str> = schema
+        .pointer("/properties/delivery/required")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    assert!(
+        delivery_required.contains(&"changed_surfaces"),
+        "builder schema must require runtime-validated delivery.changed_surfaces"
+    );
     let items = schema.pointer("/properties/delivery/properties/old_path_dispositions/items");
     let Some(items) = items else {
         panic!("builder schema must constrain delivery.old_path_dispositions items");
