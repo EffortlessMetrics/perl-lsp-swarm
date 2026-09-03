@@ -10,6 +10,7 @@ on:
       - 'xtask/src/tasks/mod.rs'
       - 'xtask/tests/ux_regression_gate_workflow_policy.rs'
       - 'xtask/tests/public_api_pr_gating_workflow.rs'
+      - 'xtask/tests/perl_version_matrix_cache_contract.rs'
       - '.github/ci-config.yml'
       - 'scripts/gh/ensure-labels.sh'
       - 'scripts/tests/test-public-api-ratchet.sh'
@@ -28,6 +29,7 @@ on:
       - 'xtask/src/tasks/mod.rs'
       - 'xtask/tests/ux_regression_gate_workflow_policy.rs'
       - 'xtask/tests/public_api_pr_gating_workflow.rs'
+      - 'xtask/tests/perl_version_matrix_cache_contract.rs'
       - '.github/ci-config.yml'
       - 'scripts/gh/ensure-labels.sh'
       - 'scripts/tests/test-public-api-ratchet.sh'
@@ -65,6 +67,8 @@ jobs:
           test "$(git rev-parse 'HEAD^{commit}')" = "$TESTED_SHA"
       - name: UX receipt workflow policy proof
         run: cargo test -p xtask --test ux_regression_gate_workflow_policy --locked
+      - name: Perl matrix cache policy contract
+        run: cargo test -p xtask --test perl_version_matrix_cache_contract --locked
       - name: Public API trigger label contract
         run: cargo test -p xtask --test public_api_pr_gating_workflow --locked
       - name: Public API label reconciliation stub proof
