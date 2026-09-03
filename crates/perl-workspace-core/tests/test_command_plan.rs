@@ -137,7 +137,7 @@ fn source_only_project_offers_prove_without_generated_state() -> Result<(), Fixt
         .with_tool_candidate(prove_tool(tool_input.id.clone()))
         .build()?;
 
-    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::new())?;
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
 
     let prove = candidates_of(&plan.candidates, TestRunnerKind::Prove);
     assert_eq!(prove.len(), 1, "source-only project offers exactly one prove candidate");
@@ -170,7 +170,7 @@ fn unobserved_generated_state_is_not_proven_rather_than_ready() -> Result<(), Fi
         .with_build_system(build_fact(BuildSystemKind::ExtUtilsMakeMaker, build_input.id.clone()))
         .build()?;
 
-    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::new())?;
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
 
     let make = candidates_of(&plan.candidates, TestRunnerKind::MakeTest);
     assert_eq!(make.len(), 1);
@@ -226,7 +226,7 @@ fn make_test_admission_tracks_makefile_freshness() -> Result<(), FixtureError> {
             ))
             .build()?;
 
-        let evidence = GeneratedStateEvidence::new().with_observation(
+        let evidence = GeneratedStateEvidence::for_snapshot(&snapshot).with_observation(
             GeneratedArtifact::Makefile,
             observed(freshness, Some("/ws/Makefile")),
         );
@@ -266,7 +266,7 @@ fn a_makefile_outside_the_working_directory_does_not_make_the_command_ready()
             ))
             .build()?;
 
-        let evidence = GeneratedStateEvidence::new().with_observation(
+        let evidence = GeneratedStateEvidence::for_snapshot(&snapshot).with_observation(
             GeneratedArtifact::Makefile,
             observed(GeneratedStateFreshness::Current, Some(location)),
         );
@@ -291,7 +291,7 @@ fn an_unusable_evidence_path_cannot_launch_a_ready_candidate() -> Result<(), Fix
         .with_build_system(build_fact(BuildSystemKind::ModuleBuild, build_input.id.clone()))
         .build()?;
 
-    let evidence = GeneratedStateEvidence::new().with_observation(
+    let evidence = GeneratedStateEvidence::for_snapshot(&snapshot).with_observation(
         GeneratedArtifact::BuildScript,
         GeneratedStateObservation::new(
             GeneratedStateFreshness::Current,
@@ -315,6 +315,112 @@ fn an_unusable_evidence_path_cannot_launch_a_ready_candidate() -> Result<(), Fix
     Ok(())
 }
 
+/// Evidence describes one configuration generation. Carrying a `Current`
+/// verdict into a later snapshot would let readiness outlive the inputs that
+/// justified it, while the candidate stamps the *new* fingerprint. Rules out:
+/// accepting evidence that does not describe the snapshot being planned.
+#[test]
+fn evidence_from_another_snapshot_cannot_make_a_command_ready() -> Result<(), FixtureError> {
+    let plan_for = |generation: u64| -> Result<ProjectEnvironmentSnapshot, FixtureError> {
+        let root_input = accepted_input("root.workspace");
+        let tool_input = accepted_input("tool.make");
+        let prove_input = accepted_input("tool.prove");
+        let build_input = accepted_input("build.module_build");
+        let eumm_input = accepted_input("build.eumm");
+        let blib_input = accepted_input("include.blib");
+        Ok(ProjectEnvironmentSnapshotBuilder::new(
+            WORKSPACE_ID,
+            generation,
+            WorkspaceTrust::Trusted,
+        )
+        .with_input(root_input.clone())
+        .with_input(tool_input.clone())
+        .with_input(prove_input.clone())
+        .with_input(build_input.clone())
+        .with_input(eumm_input.clone())
+        .with_input(blib_input.clone())
+        .with_project_root(ProjectRoot::new(
+            ProjectRootRole::Workspace,
+            path(WORKSPACE_PATH),
+            root_input.id.clone(),
+        ))
+        .with_tool_candidate(make_tool("make", tool_input.id.clone()))
+        .with_tool_candidate(prove_tool(prove_input.id.clone()))
+        .with_build_system(build_fact(BuildSystemKind::ModuleBuild, build_input.id.clone()))
+        .with_build_system(build_fact(BuildSystemKind::ExtUtilsMakeMaker, eumm_input.id.clone()))
+        .with_include_entry(IncludeEntry::new(
+            IncludeEntryRole::BlibLib,
+            path("/ws/blib/lib"),
+            blib_input.id.clone(),
+            0,
+        ))
+        .build()?)
+    };
+
+    let observed_snapshot = plan_for(11)?;
+    let later_snapshot = plan_for(12)?;
+    assert_ne!(
+        observed_snapshot.fingerprint, later_snapshot.fingerprint,
+        "the fixture must actually change generation"
+    );
+
+    // Everything an adapter could observe, all Current, all correctly located.
+    let evidence = GeneratedStateEvidence::for_snapshot(&observed_snapshot)
+        .with_observation(
+            GeneratedArtifact::Makefile,
+            observed(GeneratedStateFreshness::Current, Some("/ws/Makefile")),
+        )
+        .with_observation(
+            GeneratedArtifact::BuildScript,
+            observed(GeneratedStateFreshness::Current, Some("/ws/Build")),
+        )
+        .with_observation(
+            GeneratedArtifact::BlibRoots,
+            observed(GeneratedStateFreshness::Current, None),
+        );
+
+    // Against the snapshot it describes, that evidence is usable.
+    let matching = plan_test_commands(&observed_snapshot, &evidence)?;
+    assert!(
+        matching.ready_candidates().count() > 0,
+        "the fixture must be capable of producing ready candidates"
+    );
+
+    // Carried into the next generation, nothing generated may read as ready.
+    let carried = plan_test_commands(&later_snapshot, &evidence)?;
+    for candidate in &carried.candidates {
+        if candidate.required_generated_state.is_empty() {
+            continue;
+        }
+        assert_eq!(
+            candidate.admission,
+            TestCommandAdmission::NotProvenGeneratedState,
+            "{:?}/{:?} inherited readiness across a generation change",
+            candidate.kind,
+            candidate.include_mode
+        );
+        for requirement in &candidate.required_generated_state {
+            assert_eq!(requirement.state, GeneratedStateFreshness::NotProven);
+            assert!(requirement.reason_code.starts_with("generated_state.snapshot_mismatch."));
+        }
+    }
+    assert!(
+        carried
+            .limitations
+            .iter()
+            .any(|item| item.code == "test_command.generated_state_from_another_snapshot"),
+        "the mismatch is recorded, not silent"
+    );
+
+    // The source-lib prove candidate needs no generated state and is unaffected.
+    let source = candidates_of(&carried.candidates, TestRunnerKind::Prove)
+        .into_iter()
+        .find(|candidate| candidate.include_mode == TestIncludeMode::SourceLib)
+        .ok_or(FixtureError::Missing("source form"))?;
+    assert_eq!(source.admission, TestCommandAdmission::Ready);
+    Ok(())
+}
+
 /// A `make` binary on `PATH` is not evidence that this project uses MakeMaker.
 /// Rules out: deriving the runner from the tool alone.
 #[test]
@@ -329,7 +435,7 @@ fn make_tool_without_a_makemaker_fact_offers_no_make_candidate() -> Result<(), F
         .with_build_system(build_fact(BuildSystemKind::ModuleBuild, build_input.id.clone()))
         .build()?;
 
-    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::new())?;
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
 
     assert!(
         candidates_of(&plan.candidates, TestRunnerKind::MakeTest).is_empty(),
@@ -355,7 +461,7 @@ fn each_recorded_make_launcher_gets_its_own_candidate() -> Result<(), FixtureErr
         .with_build_system(build_fact(BuildSystemKind::ExtUtilsMakeMaker, build_input.id.clone()))
         .build()?;
 
-    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::new())?;
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
     let make = candidates_of(&plan.candidates, TestRunnerKind::MakeTest);
 
     assert_eq!(make.len(), 2, "both recorded launchers stay distinct");
@@ -386,7 +492,7 @@ fn blib_prove_candidate_appears_only_with_blib_roots() -> Result<(), FixtureErro
         ))
         .build()?;
 
-    let evidence = GeneratedStateEvidence::new().with_observation(
+    let evidence = GeneratedStateEvidence::for_snapshot(&snapshot).with_observation(
         GeneratedArtifact::BlibRoots,
         observed(GeneratedStateFreshness::Current, None),
     );
@@ -430,7 +536,7 @@ fn build_test_without_a_located_script_reports_a_limitation() -> Result<(), Fixt
         .with_build_system(build_fact(BuildSystemKind::ModuleBuild, build_input.id.clone()))
         .build()?;
 
-    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::new())?;
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
 
     assert!(candidates_of(&plan.candidates, TestRunnerKind::BuildTest).is_empty());
     assert!(
@@ -454,7 +560,7 @@ fn build_test_uses_the_observed_script_location_verbatim() -> Result<(), Fixture
             .with_build_system(build_fact(BuildSystemKind::ModuleBuild, build_input.id.clone()))
             .build()?;
 
-        let evidence = GeneratedStateEvidence::new().with_observation(
+        let evidence = GeneratedStateEvidence::for_snapshot(&snapshot).with_observation(
             GeneratedArtifact::BuildScript,
             observed(GeneratedStateFreshness::Current, Some(location)),
         );
@@ -487,7 +593,7 @@ fn inactive_inputs_contribute_no_candidates() -> Result<(), FixtureError> {
             .with_tool_candidate(prove_tool(tool_input.id.clone()))
             .build()?;
 
-        let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::new())?;
+        let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
 
         assert!(
             plan.candidates.is_empty(),
@@ -508,7 +614,7 @@ fn every_candidate_carries_exact_reproduction_identity() -> Result<(), FixtureEr
         .with_tool_candidate(prove_tool(tool_input.id.clone()))
         .build()?;
 
-    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::new())?;
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
     assert_eq!(plan.schema_version, TEST_COMMAND_PLAN_SCHEMA_VERSION);
 
     for candidate in &plan.candidates {
@@ -548,7 +654,7 @@ fn a_changed_environment_changes_candidate_binding() -> Result<(), FixtureError>
         ))
         .with_tool_candidate(prove_tool(tool_input.id.clone()))
         .build()?;
-        Ok(plan_test_commands(&snapshot, &GeneratedStateEvidence::new())?)
+        Ok(plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?)
     }
 
     let first = build_plan(11)?;
@@ -605,7 +711,14 @@ fn plan_is_independent_of_input_order() -> Result<(), FixtureError> {
         .with_input(root_input)
         .build()?;
 
-    let evidence = GeneratedStateEvidence::new().with_observation(
+    assert_eq!(
+        forward.fingerprint, reverse.fingerprint,
+        "insertion order must not change snapshot identity either"
+    );
+
+    // One evidence value serves both, which is only sound because the two
+    // snapshots are the same content and therefore the same fingerprint.
+    let evidence = GeneratedStateEvidence::for_snapshot(&forward).with_observation(
         GeneratedArtifact::Makefile,
         observed(GeneratedStateFreshness::Current, Some("/ws/Makefile")),
     );
@@ -632,7 +745,7 @@ fn public_receipt_redacts_every_host_path() -> Result<(), FixtureError> {
         .with_build_system(build_fact(BuildSystemKind::ExtUtilsMakeMaker, build_input.id.clone()))
         .build()?;
 
-    let evidence = GeneratedStateEvidence::new().with_observation(
+    let evidence = GeneratedStateEvidence::for_snapshot(&snapshot).with_observation(
         GeneratedArtifact::Makefile,
         observed(GeneratedStateFreshness::Current, Some("/ws/Makefile")),
     );
@@ -663,7 +776,7 @@ fn planning_without_a_workspace_root_fails_closed() -> Result<(), FixtureError> 
         .build()?;
 
     assert_eq!(
-        plan_test_commands(&snapshot, &GeneratedStateEvidence::new()),
+        plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot)),
         Err(TestCommandPlanError::MissingWorkspaceRoot)
     );
     Ok(())
@@ -687,7 +800,7 @@ fn declared_test_roots_replace_the_assumed_default() -> Result<(), FixtureError>
         ))
         .build()?;
 
-    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::new())?;
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
     let prove = candidates_of(&plan.candidates, TestRunnerKind::Prove);
 
     assert_eq!(prove[0].argv, vec!["-l".to_string(), "xt".to_string()]);
@@ -720,7 +833,7 @@ fn a_test_root_at_the_workspace_becomes_the_current_directory() -> Result<(), Fi
         ))
         .build()?;
 
-    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::new())?;
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
     let prove = candidates_of(&plan.candidates, TestRunnerKind::Prove);
 
     assert_eq!(prove[0].argv, vec!["-l".to_string(), ".".to_string()]);
@@ -747,7 +860,7 @@ fn an_assumed_test_directory_is_recorded_as_a_limitation() -> Result<(), Fixture
         .with_tool_candidate(prove_tool(tool_input.id.clone()))
         .build()?;
 
-    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::new())?;
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
 
     assert!(
         plan.limitations
@@ -781,7 +894,7 @@ fn a_test_root_outside_the_workspace_is_reported_not_guessed() -> Result<(), Fix
             ))
             .build()?;
 
-        let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::new())?;
+        let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
 
         assert!(
             plan.limitations
@@ -817,7 +930,7 @@ fn plan_round_trips_through_json() -> Result<(), FixtureError> {
         .with_tool_candidate(prove_tool(tool_input.id.clone()))
         .build()?;
 
-    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::new())?;
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
     let encoded = serde_json::to_string(&plan)?;
     let decoded: TestCommandPlan = serde_json::from_str(&encoded)?;
 
@@ -840,7 +953,7 @@ fn a_tampered_snapshot_is_refused() -> Result<(), FixtureError> {
 
     assert!(
         matches!(
-            plan_test_commands(&snapshot, &GeneratedStateEvidence::new()),
+            plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot)),
             Err(TestCommandPlanError::InvalidSnapshot(_))
         ),
         "a stale fingerprint must not be planned against"

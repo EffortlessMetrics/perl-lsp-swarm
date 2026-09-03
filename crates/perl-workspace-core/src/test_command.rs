@@ -193,22 +193,39 @@ impl GeneratedStateObservation {
     }
 }
 
-/// Caller-supplied generated-state evidence.
+/// Caller-supplied generated-state evidence, bound to the snapshot it describes.
 ///
 /// An artifact with no recorded observation reads as
-/// [`GeneratedStateFreshness::NotProven`], never as current. Planning therefore
-/// fails closed on an empty evidence set.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
+/// [`GeneratedStateFreshness::NotProven`], never as current, so planning fails
+/// closed on an empty evidence set.
+///
+/// The binding is not decoration. Observing a project produces facts about one
+/// configuration generation; carrying those facts into a later generation would
+/// let a `Current` verdict outlive the inputs that justified it — the emitted
+/// candidate would stamp the *new* snapshot's fingerprint while its readiness
+/// came from the old one. [`plan_test_commands`] therefore refuses to treat
+/// evidence from another snapshot as current.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GeneratedStateEvidence {
+    /// Snapshot these observations were gathered against.
+    observed_for: EnvironmentFingerprint,
     observations: BTreeMap<GeneratedArtifact, GeneratedStateObservation>,
 }
 
 impl GeneratedStateEvidence {
-    /// Empty evidence; every artifact reads as `NotProven`.
+    /// Empty evidence gathered against one exact snapshot.
+    ///
+    /// Every artifact reads as `NotProven` until an observation is recorded.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn for_snapshot(snapshot: &ProjectEnvironmentSnapshot) -> Self {
+        Self { observed_for: snapshot.fingerprint.clone(), observations: BTreeMap::new() }
+    }
+
+    /// The snapshot these observations describe.
+    #[must_use]
+    pub fn observed_for(&self) -> &EnvironmentFingerprint {
+        &self.observed_for
     }
 
     /// Record one artifact observation, replacing any previous one.
@@ -546,6 +563,21 @@ pub fn plan_test_commands(
 
     let working_dir = workspace_working_dir(snapshot)?;
     let mut limitations = Vec::new();
+
+    // Evidence gathered against another snapshot cannot speak for this one.
+    let evidence_matches_snapshot = evidence.observed_for() == &snapshot.fingerprint;
+    if !evidence_matches_snapshot {
+        limitations.push(EnvironmentLimitation {
+            code: "test_command.generated_state_from_another_snapshot".to_string(),
+            detail: format!(
+                "generated-state evidence was gathered against snapshot {} but this plan \
+                 describes {}, so no generated artifact can be treated as current",
+                evidence.observed_for(),
+                snapshot.fingerprint
+            ),
+            input_id: None,
+        });
+    }
     let test_directories = relative_test_directories(snapshot, &working_dir, &mut limitations);
 
     let mut candidates = Vec::new();
@@ -594,6 +626,7 @@ pub fn plan_test_commands(
                         vec![bind_requirement_to_working_dir(
                             evidence.requirement(GeneratedArtifact::BlibRoots),
                             &working_dir,
+                            evidence_matches_snapshot,
                         )],
                     )?);
                 }
@@ -614,6 +647,7 @@ pub fn plan_test_commands(
                         vec![bind_requirement_to_working_dir(
                             evidence.requirement(GeneratedArtifact::Makefile),
                             &working_dir,
+                            evidence_matches_snapshot,
                         )],
                     )?);
                 }
@@ -629,6 +663,7 @@ pub fn plan_test_commands(
     let build_script = bind_requirement_to_working_dir(
         evidence.requirement(GeneratedArtifact::BuildScript),
         &working_dir,
+        evidence_matches_snapshot,
     );
     for build in active_build_systems(snapshot, BuildFamily::ModuleBuild) {
         let Some(authority) = input_authority(snapshot, &build.input_id) else {
@@ -928,6 +963,7 @@ fn build_candidate(
 fn bind_requirement_to_working_dir(
     mut requirement: GeneratedStateRequirement,
     working_dir: &EnvironmentPathRef,
+    evidence_matches_snapshot: bool,
 ) -> GeneratedStateRequirement {
     if requirement.state != GeneratedStateFreshness::Current {
         return requirement;
@@ -938,6 +974,14 @@ fn bind_requirement_to_working_dir(
         requirement.state = GeneratedStateFreshness::NotProven;
         requirement.reason_code = format!("generated_state.{suffix}.{artifact}");
     };
+
+    // Evidence from another configuration generation describes inputs that may
+    // since have changed; it cannot establish that *this* snapshot's command is
+    // ready, whatever it said about the one it was gathered against.
+    if !evidence_matches_snapshot {
+        downgrade(&mut requirement, "snapshot_mismatch");
+        return requirement;
+    }
 
     match requirement.path.as_ref() {
         Some(path) if path.normalized.is_empty() || path.public_id.is_empty() => {
