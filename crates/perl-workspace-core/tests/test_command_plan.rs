@@ -1087,6 +1087,158 @@ fn an_assumed_test_directory_is_recorded_as_a_limitation() -> Result<(), Fixture
     Ok(())
 }
 
+/// The Build launcher's observed path *becomes the program*, so it must be able
+/// to name a file. The working directory is a directory, and `relative_child`
+/// reduces it to `.` — a legitimate answer for a test-root argument, but never a
+/// launcher. Rules out: publishing a candidate that would try to execute the
+/// workspace directory.
+#[test]
+fn the_working_directory_itself_is_not_a_build_launcher() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let build_input = accepted_input("build.module_build");
+    let snapshot = builder
+        .with_input(build_input.clone())
+        .with_build_system(build_fact(BuildSystemKind::ModuleBuild, build_input.id.clone()))
+        .build()?;
+
+    let evidence = GeneratedStateEvidence::for_snapshot(&snapshot).with_observation(
+        GeneratedArtifact::BuildScript,
+        observed(GeneratedStateFreshness::Current, Some(WORKSPACE_PATH)),
+    );
+    let plan = plan_test_commands(&snapshot, &evidence)?;
+
+    assert!(
+        candidates_of(&plan.candidates, TestRunnerKind::BuildTest).is_empty(),
+        "the workspace directory is not a launcher, so no Build candidate can name it"
+    );
+    assert!(
+        plan.limitations
+            .iter()
+            .any(|item| item.code == "test_command.build_script_location_unknown"),
+        "the entry point is reported as unlocated rather than silently lost"
+    );
+
+    // The control: a real script directly in the working directory is still a
+    // launcher, so the guard rejects the directory rather than the location.
+    let usable = GeneratedStateEvidence::for_snapshot(&snapshot).with_observation(
+        GeneratedArtifact::BuildScript,
+        observed(GeneratedStateFreshness::Current, Some("/ws/Build")),
+    );
+    let usable_plan = plan_test_commands(&snapshot, &usable)?;
+    let build = candidates_of(&usable_plan.candidates, TestRunnerKind::BuildTest);
+    let candidate = build.first().ok_or(FixtureError::Missing("Build test"))?;
+    assert_eq!(candidate.program.normalized, "/ws/Build");
+    assert_eq!(candidate.admission, TestCommandAdmission::Ready);
+    Ok(())
+}
+
+/// The plan fingerprint claims to cover every behaviour-bearing field, and the
+/// public receipt publishes redacted path identities. Two plans whose receipts
+/// differ must not share a fingerprint, or a fingerprint-keyed cache serves a
+/// receipt that no longer matches. Rules out: a fingerprint computed only from
+/// the internal `normalized` half of each path.
+///
+/// The receipt publishes three redacted identities — the program, the working
+/// directory, and each required artifact's location — so each is varied on its
+/// own. Covering only one would leave the same gap reachable through the others.
+#[test]
+fn a_receipt_difference_always_moves_the_plan_fingerprint() -> Result<(), FixtureError> {
+    /// Which published identity this case moves; every other field is fixed.
+    #[derive(Clone, Copy)]
+    enum PublishedIdentity {
+        Program,
+        WorkingDirectory,
+        ArtifactLocation,
+    }
+
+    let plan_with = |varied: PublishedIdentity,
+                     public_id: &str|
+     -> Result<TestCommandPlan, FixtureError> {
+        let redaction = |field: PublishedIdentity, fixed: &str| {
+            if matches!(
+                (field, varied),
+                (PublishedIdentity::Program, PublishedIdentity::Program)
+                    | (PublishedIdentity::WorkingDirectory, PublishedIdentity::WorkingDirectory)
+                    | (PublishedIdentity::ArtifactLocation, PublishedIdentity::ArtifactLocation)
+            ) {
+                public_id.to_string()
+            } else {
+                fixed.to_string()
+            }
+        };
+
+        let root_input = accepted_input("root.workspace");
+        let tool_input = accepted_input("tool.make");
+        let build_input = accepted_input("build.eumm");
+        let snapshot =
+            ProjectEnvironmentSnapshotBuilder::new(WORKSPACE_ID, 11, WorkspaceTrust::Trusted)
+                .with_input(root_input.clone())
+                .with_input(tool_input.clone())
+                .with_input(build_input.clone())
+                .with_project_root(ProjectRoot::new(
+                    ProjectRootRole::Workspace,
+                    EnvironmentPathRef::new(
+                        WORKSPACE_PATH,
+                        redaction(PublishedIdentity::WorkingDirectory, "public:ws"),
+                    ),
+                    root_input.id.clone(),
+                ))
+                .with_tool_candidate(ToolCandidate::new(
+                    ToolCandidateRole::BuildTool,
+                    "make",
+                    EnvironmentPathRef::new(
+                        "/usr/bin/make",
+                        redaction(PublishedIdentity::Program, "public:make"),
+                    ),
+                    tool_input.id.clone(),
+                ))
+                .with_build_system(build_fact(
+                    BuildSystemKind::ExtUtilsMakeMaker,
+                    build_input.id.clone(),
+                ))
+                .build()?;
+
+        let evidence = GeneratedStateEvidence::for_snapshot(&snapshot).with_observation(
+            GeneratedArtifact::Makefile,
+            GeneratedStateObservation::new(
+                GeneratedStateFreshness::Current,
+                Some(EnvironmentPathRef::new(
+                    "/ws/Makefile",
+                    redaction(PublishedIdentity::ArtifactLocation, "public:makefile"),
+                )),
+                "fixture",
+            ),
+        );
+        Ok(plan_test_commands(&snapshot, &evidence)?)
+    };
+
+    for varied in [
+        PublishedIdentity::Program,
+        PublishedIdentity::WorkingDirectory,
+        PublishedIdentity::ArtifactLocation,
+    ] {
+        let left = plan_with(varied, "public:one")?;
+        let right = plan_with(varied, "public:two")?;
+
+        // The premise: only the redacted half moved. If the snapshot fingerprint
+        // already separated these, this test would prove nothing about the plan.
+        assert_eq!(
+            left.environment_fingerprint, right.environment_fingerprint,
+            "the snapshot fingerprint does not cover public identities, so the plan must"
+        );
+        assert_ne!(
+            left.public_receipt(),
+            right.public_receipt(),
+            "the published receipts genuinely differ"
+        );
+        assert_ne!(
+            left.fingerprint, right.fingerprint,
+            "a published difference must move the fingerprint that keys it"
+        );
+    }
+    Ok(())
+}
+
 /// A test root outside the working directory cannot become a relative argument
 /// and must not be silently dropped. Rules out: emitting a wrong or absolute
 /// argument for a detached root.

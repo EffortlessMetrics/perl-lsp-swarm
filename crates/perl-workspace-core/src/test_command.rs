@@ -703,11 +703,13 @@ pub fn plan_test_commands(
         };
         // A path that cannot name an executable is not a launcher, so it is
         // treated exactly like an unobserved one rather than becoming the
-        // program of a candidate that could never run.
-        let launcher = build_script
-            .path
-            .clone()
-            .filter(|path| !path.normalized.is_empty() && !path.public_id.is_empty());
+        // program of a candidate that could never run. An empty path names
+        // nothing; the working directory names a directory, not a script.
+        let launcher = build_script.path.clone().filter(|path| {
+            !path.normalized.is_empty()
+                && !path.public_id.is_empty()
+                && !is_working_directory_itself(&working_dir, &path.normalized)
+        });
 
         match launcher {
             Some(program) => candidates.push(build_candidate(
@@ -924,6 +926,17 @@ fn is_discoverable_makefile(relative: &str) -> bool {
     matches!(relative, "Makefile" | "makefile" | "GNUmakefile")
 }
 
+/// Whether an observed path is the working directory itself, not a file in it.
+///
+/// `relative_child` reduces the directory to `.`, which is a legitimate answer
+/// for a test-root argument — `prove -l .` runs the tests there. It is never a
+/// legitimate launcher: a directory cannot be executed, so a candidate whose
+/// program is `.` could not run and must not be published.
+fn is_working_directory_itself(working_dir: &EnvironmentPathRef, candidate: &str) -> bool {
+    relative_child(&working_dir.normalized, candidate)
+        .is_some_and(|relative| relative == CURRENT_DIRECTORY)
+}
+
 /// Whether a path is this working directory's own `blib` tree.
 ///
 /// `prove -b` puts `blib/lib` and `blib/arch` on `@INC` relative to the
@@ -1111,6 +1124,12 @@ fn bind_requirement_to_working_dir(
                 // so the command reads exactly what was observed and the file
                 // name carries no meaning. Requiring one would reject the
                 // legitimate `Build.bat` variant.
+                //
+                // Whether the path can name a *file* at all is a separate
+                // question, answered once at the launcher rather than repeated
+                // here: `relative_child` reduces the working directory itself to
+                // `.`, and a candidate whose program is a directory is dropped
+                // before it is built.
                 GeneratedArtifact::BuildScript => {
                     relative_child(&working_dir.normalized, &path.normalized)
                         .is_some_and(|relative| !relative.contains('/'))
@@ -1217,10 +1236,17 @@ fn compute_plan_fingerprint(
         push_field(&mut material, "candidate.kind", candidate.kind.identity_tag());
         push_field(&mut material, "candidate.include", candidate.include_mode.identity_tag());
         push_field(&mut material, "candidate.program", candidate.program.normalized.as_str());
+        // The redacted half is hashed alongside the internal one because
+        // `public_receipt` publishes it. A fingerprint that moved only with
+        // `normalized` would let two materially different receipts share a key,
+        // and a fingerprint-keyed cache would then serve a receipt that no
+        // longer matches the plan it claims to describe.
+        push_field(&mut material, "candidate.program.public", candidate.program.public_id.as_str());
         for argument in &candidate.argv {
             push_field(&mut material, "candidate.arg", argument.as_str());
         }
         push_field(&mut material, "candidate.cwd", candidate.working_dir.normalized.as_str());
+        push_field(&mut material, "candidate.cwd.public", candidate.working_dir.public_id.as_str());
         push_field(&mut material, "candidate.trust", trust_tag(candidate.trust));
         push_field(&mut material, "candidate.input", candidate.input_id.as_str());
         push_field(
@@ -1240,6 +1266,11 @@ fn compute_plan_fingerprint(
                 &mut material,
                 "candidate.need.path",
                 requirement.path.as_ref().map_or("", |path| path.normalized.as_str()),
+            );
+            push_field(
+                &mut material,
+                "candidate.need.path.public",
+                requirement.path.as_ref().map_or("", |path| path.public_id.as_str()),
             );
             push_field(&mut material, "candidate.need.reason", requirement.reason_code.as_str());
         }
