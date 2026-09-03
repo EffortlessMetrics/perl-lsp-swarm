@@ -3,7 +3,7 @@
 use crate::{Node, NodeKind, SourceLocation};
 use perl_pragma::{CompileTimePragmaEnvironment, PragmaSnapshot};
 use perl_semantic_facts::AnchorId;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
@@ -67,6 +67,26 @@ struct Lowerer {
     /// Label inherited from an enclosing `LABEL:` statement, consumed by the
     /// loop it directly wraps.
     pending_label: Option<String>,
+    /// Source spans of `field` declarations that are *direct* statements of a
+    /// Perl 5.38+ `class` body.
+    ///
+    /// The parser treats `field` as a declarator whenever the next token
+    /// starts a variable, with no class or feature gate, so legacy code
+    /// calling a `field` sub (`field $x;`) also parses as a
+    /// `VariableDeclaration`. Only a declaration in the class declaration
+    /// scope itself is a real field: a `field $x;` inside a method, nested
+    /// sub, or nested block is a call, even though it is a descendant of the
+    /// class. Membership here, not subtree depth, gates class-field storage
+    /// (#13817).
+    class_field_decls: BTreeSet<(usize, usize)>,
+    /// Source spans of the body blocks of Perl 5.38+ `class` declarations.
+    ///
+    /// The body of a `class` is an ordinary `Block` node, so the block arm
+    /// cannot tell a class body from any other block. Registering the span
+    /// here lets that arm open a [`ScopeKind::Class`] frame instead, which is
+    /// what owns field visibility. Registration happens in the `Class` arm,
+    /// which the traversal reaches before the body block it names (#13817).
+    class_body_spans: BTreeSet<(usize, usize)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +123,8 @@ impl Lowerer {
             pragma_environment,
             scope_stack: vec![file_scope],
             pending_label: None,
+            class_field_decls: BTreeSet::new(),
+            class_body_spans: BTreeSet::new(),
         }
     }
 
@@ -137,8 +159,17 @@ impl Lowerer {
                 // *inside* the labeled block, not the labeled block itself.
                 // Drop it so the loop gets no spurious label.
                 let _ = self.pending_label.take();
+                // The body of a `class` is an ordinary `Block` node; the
+                // `Class` arm registered its span so this frame can be the
+                // class frame that owns field visibility (#13817).
+                let scope_kind =
+                    if self.class_body_spans.contains(&(node.location.start, node.location.end)) {
+                        ScopeKind::Class
+                    } else {
+                        ScopeKind::Block
+                    };
                 let scope_id =
-                    self.enter_scope(ScopeKind::Block, node.location, self.package_context.clone());
+                    self.enter_scope(scope_kind, node.location, self.package_context.clone());
                 self.push_item(
                     node,
                     None,
@@ -187,11 +218,17 @@ impl Lowerer {
                 body,
                 ..
             } => {
-                let sub_scope = self.enter_scope(
-                    ScopeKind::Subroutine,
-                    node.location,
-                    self.package_context.clone(),
-                );
+                // `sub { ... }` closes over its enclosing pad; `sub foo { ... }`
+                // is a package-level declaration compiled once. Perl treats the
+                // two differently for capture, so the frames are named
+                // differently (#13817).
+                let sub_scope_kind = if name.is_none() {
+                    ScopeKind::AnonymousSubroutine
+                } else {
+                    ScopeKind::Subroutine
+                };
+                let sub_scope =
+                    self.enter_scope(sub_scope_kind, node.location, self.package_context.clone());
                 let item_id = self.push_item(
                     node,
                     *name_span,
@@ -860,15 +897,12 @@ impl Lowerer {
                 // statements still lower to their own HIR items.
                 self.visit_children(node, confidence);
             }
-            NodeKind::Class { name, name_span, parents, .. } => {
-                // First slice: shell + child traversal only. Unlike `Package`,
-                // this does not yet enter a dedicated scope frame or record a
-                // package-stash slot for the class name — `ScopeKind` has no
-                // `Class` variant and `record_package_declaration` assumes
-                // package semantics that a Perl 5.38+ class body only partly
-                // shares (methods/fields, not arbitrary package globals).
-                // Follow-up: model a `Class` scope frame once method/field
-                // lowering needs it.
+            NodeKind::Class { name, name_span, parents, body } => {
+                // No package-stash slot is recorded for the class name:
+                // `record_package_declaration` assumes package semantics that
+                // a Perl 5.38+ class body does not fully share (methods and
+                // fields, not arbitrary package globals). The class *scope*
+                // frame is modeled — see the body-span registration below.
                 self.push_item(
                     node,
                     *name_span,
@@ -881,6 +915,37 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
+                // Register the `field` declarations that are direct
+                // statements of this class body. Only those are real field
+                // declarations; a `field $x;` nested inside a method or block
+                // is a call, even though it descends from the class (#13817).
+                let mut direct_field_decls = Vec::new();
+                body.for_each_child_with_field(|_, child| {
+                    // A label does not change what statement this is, so look
+                    // through `LABEL: field $x;`. Only this wrapper is
+                    // unwrapped: blocks, methods and subs form scopes, and a
+                    // `field $x;` inside one is a call, not a declaration.
+                    let mut statement = child;
+                    while let NodeKind::LabeledStatement { statement: inner, .. } = &statement.kind
+                    {
+                        statement = inner;
+                    }
+                    let declarator = match &statement.kind {
+                        NodeKind::VariableDeclaration { declarator, .. }
+                        | NodeKind::VariableListDeclaration { declarator, .. } => {
+                            Some(declarator.as_str())
+                        }
+                        _ => None,
+                    };
+                    if declarator == Some("field") {
+                        direct_field_decls.push((statement.location.start, statement.location.end));
+                    }
+                });
+                self.class_field_decls.extend(direct_field_decls);
+                // The block arm turns this span into a `ScopeKind::Class`
+                // frame, which is where the field bindings above will land and
+                // what decides who can see them.
+                self.class_body_spans.insert((body.location.start, body.location.end));
                 self.visit_children(node, confidence);
             }
             NodeKind::Defer { .. } => {
@@ -916,7 +981,12 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                self.record_declaration_bindings(declarator, &variables, item_id);
+                self.record_declaration_bindings(
+                    declarator,
+                    &variables,
+                    item_id,
+                    self.class_field_decls.contains(&(node.location.start, node.location.end)),
+                );
                 self.record_variable_stash_effects(
                     declarator,
                     &variables,
@@ -953,7 +1023,12 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                self.record_declaration_bindings(declarator, &bindings, item_id);
+                self.record_declaration_bindings(
+                    declarator,
+                    &bindings,
+                    item_id,
+                    self.class_field_decls.contains(&(node.location.start, node.location.end)),
+                );
                 self.visit_declaration_list_entries(variables, confidence);
                 if let Some(initializer) = initializer {
                     self.visit(initializer, confidence);
@@ -1329,8 +1404,9 @@ impl Lowerer {
         declarator: &str,
         variables: &[VariableBinding],
         declaration_item: HirId,
+        is_class_field_decl: bool,
     ) {
-        let storage = storage_class_for_declarator(declarator);
+        let storage = storage_class_for_declarator(declarator, is_class_field_decl);
         for variable in variables {
             self.record_binding(
                 variable.sigil.clone(),
@@ -1407,7 +1483,7 @@ impl Lowerer {
         scope_id: HirScopeId,
         declaration_item: Option<HirId>,
     ) -> HirBindingId {
-        let shadows = self.resolve_visible_binding(scope_id, &sigil, &name);
+        let shadows = self.resolve_visible_binding(scope_id, &sigil, &name, Some(range.start));
         let id = HirBindingId::from_index(to_u32_saturating(self.scope_graph.bindings.len()));
         self.scope_graph.bindings.push(Binding {
             id,
@@ -1425,7 +1501,8 @@ impl Lowerer {
 
     fn record_reference(&mut self, sigil: &str, name: &str, range: SourceLocation) {
         let scope_id = self.current_scope();
-        let resolved_binding = self.resolve_visible_binding(scope_id, sigil, name);
+        let resolved_binding =
+            self.resolve_visible_binding(scope_id, sigil, name, Some(range.start));
         self.scope_graph.references.push(BindingReference {
             scope_id,
             sigil: sigil.to_string(),
@@ -2249,7 +2326,7 @@ impl Lowerer {
         // the lexical-suppression check must not apply to it.
         if !qualified
             && let Some(binding_id) =
-                self.resolve_visible_binding(self.current_scope(), "@", &symbol)
+                self.resolve_visible_binding(self.current_scope(), "@", &symbol, None)
             && self
                 .scope_graph
                 .bindings
@@ -2348,24 +2425,19 @@ impl Lowerer {
         scope_id: HirScopeId,
         sigil: &str,
         name: &str,
+        reference_start: Option<usize>,
     ) -> Option<HirBindingId> {
-        let mut cursor = Some(scope_id);
-        while let Some(current_scope) = cursor {
-            for binding in self.scope_graph.bindings.iter().rev() {
-                if binding.scope_id == current_scope
-                    && binding.sigil == sigil
-                    && binding.name == name
-                {
-                    return Some(binding.id);
-                }
-            }
-            cursor = self
-                .scope_graph
-                .scopes
-                .get(current_scope.index() as usize)
-                .and_then(|scope| scope.parent);
-        }
-        None
+        self.resolve_binding_from(scope_id, sigil, name, reference_start).map(|binding| binding.id)
+    }
+
+    fn resolve_binding_from(
+        &self,
+        scope_id: HirScopeId,
+        sigil: &str,
+        name: &str,
+        reference_start: Option<usize>,
+    ) -> Option<&Binding> {
+        resolve_binding_in_scope_graph(&self.scope_graph, scope_id, sigil, name, reference_start)
     }
 
     fn visit_declaration_variable_payload(
@@ -2395,12 +2467,125 @@ impl Lowerer {
     }
 }
 
-fn storage_class_for_declarator(declarator: &str) -> StorageClass {
+/// Walk the scope chain outward from `scope_id` for the binding a reference to
+/// `sigil`/`name` sees.
+///
+/// This is the single lookup both HIR views use — the first pass, which records
+/// `BindingReference`, and the body view's `resolve_variable_kind` — so the two
+/// cannot answer differently. A field-visibility rule applied in only one of
+/// them is exactly the disagreement this shape exists to prevent (#13817).
+///
+/// `reference_start` is the source offset the lookup happens at, used for
+/// declaration-order visibility of class fields. `None` means the caller has no
+/// position to compare, and skips only that check.
+fn resolve_binding_in_scope_graph<'graph>(
+    scope_graph: &'graph ScopeGraph,
+    scope_id: HirScopeId,
+    sigil: &str,
+    name: &str,
+    reference_start: Option<usize>,
+) -> Option<&'graph Binding> {
+    let mut cursor = Some(scope_id);
+    // Whether the walk has left a *named* `sub` on its way out. Any one of
+    // them blocks: a named sub gets no field access, and neither does anything
+    // written inside it, however many methods enclose it. Anonymous frames are
+    // transparent here — a closure created inside a method captures the field
+    // the same way it captures a lexical.
+    let mut crossed_named_subroutine = false;
+    // Whether a class frame has already been passed. A field belongs to one
+    // class, so once the walk leaves a class, a further-out class's field is
+    // not in view even though its frame is still an ancestor.
+    let mut left_a_class = false;
+    while let Some(current_scope) = cursor {
+        let scope = scope_graph.scopes.get(current_scope.index() as usize);
+        for binding in scope_graph.bindings.iter().rev() {
+            if binding.scope_id != current_scope || binding.sigil != sigil || binding.name != name {
+                continue;
+            }
+            if binding.storage == StorageClass::ClassField
+                && !class_field_is_visible(
+                    binding,
+                    crossed_named_subroutine,
+                    left_a_class,
+                    reference_start,
+                )
+            {
+                // Out of view from here. Keep walking outward instead of
+                // binding to it, so the reference resolves exactly as it would
+                // if this field had never been declared.
+                continue;
+            }
+            return Some(binding);
+        }
+        match scope.map(|scope| scope.kind) {
+            Some(ScopeKind::Subroutine) => crossed_named_subroutine = true,
+            Some(ScopeKind::Class) => left_a_class = true,
+            _ => {}
+        }
+        cursor = scope.and_then(|scope| scope.parent);
+    }
+    None
+}
+
+/// Whether a class field declared in a class frame is visible to a reference
+/// that reached that frame.
+///
+/// Perl gives a field three visibility conditions, and this decides all three.
+///
+/// It belongs to its own class. A sibling class's frame is never an ancestor,
+/// so that case is structural; `outside_its_class` covers the case a nested
+/// `class` creates, where the outer class's frame *is* still an ancestor.
+///
+/// It is visible inside that class's methods and inside the class body itself
+/// (a field initializer may name an earlier field), but not inside a named
+/// `sub`. `in_named_sub` says a named `sub` frame lies between the reference
+/// and the class — one anywhere on that path is enough, since a named sub gets
+/// no field access and neither does anything written inside it, however many
+/// methods enclose it. An anonymous `sub` is transparent: `sub { ... }` closes
+/// over its enclosing pad, so a closure created in a method captures the field
+/// the way it captures a lexical, while a closure created in a named sub still
+/// sees nothing, because the named frame is on the path either way.
+///
+/// It is visible only after its own declaration, which the offset comparison
+/// carries. `reference_start` of `None` means the caller has no position to
+/// compare and skips only that condition.
+fn class_field_is_visible(
+    binding: &Binding,
+    in_named_sub: bool,
+    outside_its_class: bool,
+    reference_start: Option<usize>,
+) -> bool {
+    if outside_its_class || in_named_sub {
+        return false;
+    }
+    match reference_start {
+        Some(start) => start >= binding.range.start,
+        None => true,
+    }
+}
+
+/// Storage class for a declaration.
+///
+/// `is_class_field_decl` is `field`-specific: it says that *this* declaration
+/// is a direct statement of a Perl 5.38+ `class` body, and it is consumed only
+/// by the `field` arm. No other declarator's storage depends on it.
+///
+/// The distinction is needed because the parser accepts `field` as a
+/// declarator wherever the next token starts a variable, so legacy code that
+/// calls a `field` sub (`field $x;`) produces the same AST shape as a real
+/// field declaration. Only a class-level declaration earns class-field
+/// storage; everywhere else `field` keeps the ordinary unknown-declarator
+/// fallback it had before (#13817).
+fn storage_class_for_declarator(declarator: &str, is_class_field_decl: bool) -> StorageClass {
     match declarator {
         "my" => StorageClass::LexicalMy,
         "our" => StorageClass::PackageOur,
         "state" => StorageClass::LexicalState,
         "local" => StorageClass::LocalizedPackage,
+        // A `field` in a class body is per-object storage. Without this arm it
+        // fell to `PackageGlobal` below, which made `field $x`
+        // indistinguishable from an undeclared package global (#13817).
+        "field" if is_class_field_decl => StorageClass::ClassField,
         _ => StorageClass::PackageGlobal,
     }
 }
@@ -3243,40 +3428,47 @@ impl<'a> BodyBuilder2<'a> {
     /// the current scope chain. An `our` binding resolves to `Package` (package
     /// alias). A qualified name (`Foo::x`) is always `Package`.
     ///
-    /// Uses the same parent-chain walk as the first-pass `resolve_visible_binding`
-    /// (lower.rs ~1892). Starting from `start_scope`, walk up through
-    /// `scope_graph.scopes[id].parent` until None — matching the identical
-    /// algorithm used in pass 1.
-    fn resolve_variable_kind(&self, sigil: &str, name: &str) -> VariableKind {
+    /// A `field` of the enclosing class, visible at this reference, resolves
+    /// [`VariableKind::Field`]. Visibility is decided by
+    /// [`resolve_binding_in_scope_graph`], the same walk the first pass uses,
+    /// so the two views agree by construction. A field that is *not* visible
+    /// here — read from an ordinary `sub`, read before its own declaration, or
+    /// belonging to another class — is never reached, and the reference falls
+    /// back exactly as if no field had been declared (#13817).
+    ///
+    /// `reference_start` is the reference's source offset, which the ordering
+    /// half of field visibility needs.
+    fn resolve_variable_kind(
+        &self,
+        sigil: &str,
+        name: &str,
+        reference_start: usize,
+    ) -> VariableKind {
         // Qualified names are always package-qualified.
         if name.contains("::") {
             return VariableKind::Package;
         }
-        let mut cursor = Some(self.start_scope);
-        while let Some(current_scope) = cursor {
-            for binding in self.scope_graph.bindings.iter().rev() {
-                if binding.scope_id == current_scope
-                    && binding.sigil == sigil
-                    && binding.name == name
-                {
-                    return match binding.storage {
-                        StorageClass::LexicalMy
-                        | StorageClass::LexicalState
-                        | StorageClass::Parameter => VariableKind::Lexical,
-                        StorageClass::PackageOur
-                        | StorageClass::LocalizedPackage
-                        | StorageClass::PackageGlobal
-                        | StorageClass::MethodInvocant
-                        | StorageClass::Implicit => VariableKind::Package,
-                    };
-                }
+        let Some(binding) = resolve_binding_in_scope_graph(
+            self.scope_graph,
+            self.start_scope,
+            sigil,
+            name,
+            Some(reference_start),
+        ) else {
+            // No binding visible in any ancestor scope — treat as package global.
+            return VariableKind::Package;
+        };
+        match binding.storage {
+            StorageClass::LexicalMy | StorageClass::LexicalState | StorageClass::Parameter => {
+                VariableKind::Lexical
             }
-            // Walk up to the parent scope — identical to first-pass resolve_visible_binding.
-            cursor =
-                self.scope_graph.scopes.get(current_scope.index() as usize).and_then(|s| s.parent);
+            StorageClass::ClassField => VariableKind::Field,
+            StorageClass::PackageOur
+            | StorageClass::LocalizedPackage
+            | StorageClass::PackageGlobal
+            | StorageClass::MethodInvocant
+            | StorageClass::Implicit => VariableKind::Package,
         }
-        // No binding found in any ancestor scope — treat as package global.
-        VariableKind::Package
     }
 
     fn lower_statement(&mut self, node: &Node) -> HirStmtId {
@@ -3393,7 +3585,7 @@ impl<'a> BodyBuilder2<'a> {
             NodeKind::ExpressionStatement { expression } => self.lower_expr(expression),
 
             NodeKind::Variable { sigil, name } => {
-                let kind = self.resolve_variable_kind(sigil, name);
+                let kind = self.resolve_variable_kind(sigil, name, range.start);
                 let var = HirVariable {
                     sigil: sigil_from_str(sigil),
                     name: name.clone(),
@@ -4020,7 +4212,7 @@ impl<'a> BodyBuilder2<'a> {
         let range = node.location;
         match &node.kind {
             NodeKind::Variable { sigil, name } => {
-                let kind = self.resolve_variable_kind(sigil, name);
+                let kind = self.resolve_variable_kind(sigil, name, range.start);
                 let var =
                     HirVariable { sigil: sigil_from_str(sigil), name: name.clone(), kind, access };
                 self.alloc_expr(HirExpr::Variable(var), range)
@@ -4238,6 +4430,42 @@ fn storage_class_for_decl(declarator: &str) -> DeclStorageClass {
         "local" => DeclStorageClass::Local,
         "state" => DeclStorageClass::State,
         _ => DeclStorageClass::My,
+    }
+}
+
+#[cfg(test)]
+mod declarator_storage_tests {
+    use super::{StorageClass, storage_class_for_declarator};
+
+    /// Declarators whose storage meaning does not depend on class context.
+    #[test]
+    fn ordinary_declarators_are_context_independent() {
+        for in_class in [false, true] {
+            assert_eq!(storage_class_for_declarator("my", in_class), StorageClass::LexicalMy);
+            assert_eq!(storage_class_for_declarator("our", in_class), StorageClass::PackageOur);
+            assert_eq!(storage_class_for_declarator("state", in_class), StorageClass::LexicalState);
+            assert_eq!(
+                storage_class_for_declarator("local", in_class),
+                StorageClass::LocalizedPackage
+            );
+        }
+    }
+
+    /// `field` earns class-field storage only inside a class body. Outside
+    /// one the parser still produces a `field` declarator for a legacy
+    /// `field $x;` call, which must keep its previous treatment.
+    #[test]
+    fn field_storage_requires_class_context() {
+        assert_eq!(storage_class_for_declarator("field", true), StorageClass::ClassField);
+        assert_eq!(storage_class_for_declarator("field", false), StorageClass::PackageGlobal);
+    }
+
+    /// An unrecognized declarator keeps the existing catch-all behavior in
+    /// both contexts; this fix does not widen the repair beyond `field`.
+    #[test]
+    fn unknown_declarator_still_falls_back_to_package_global() {
+        assert_eq!(storage_class_for_declarator("nonesuch", false), StorageClass::PackageGlobal);
+        assert_eq!(storage_class_for_declarator("nonesuch", true), StorageClass::PackageGlobal);
     }
 }
 

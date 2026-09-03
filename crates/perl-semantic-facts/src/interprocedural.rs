@@ -1100,6 +1100,13 @@ pub enum EffectKind {
     StashWrite,
     /// Compound read-modify-write on a package/stash symbol.
     StashModify,
+    /// Compound read-modify-write on a per-object `field` of a `class`.
+    ///
+    /// Separate from [`Modify`](Self::Modify), which names a lexical place, and
+    /// from [`StashModify`](Self::StashModify), which names a package slot: a
+    /// field is neither, and folding it into either would misreport what the
+    /// callable mutates.
+    FieldModify,
 }
 
 /// One effect of the callable, in source (lowered) order.

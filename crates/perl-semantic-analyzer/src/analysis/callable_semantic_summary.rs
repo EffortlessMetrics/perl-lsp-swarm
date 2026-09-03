@@ -54,7 +54,7 @@
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
     BodyOwnerKind, DynamicBoundaryKind as HirDynamicBoundaryKind, HirBody, HirExpr, HirExprId,
-    HirFile, HirItem, HirKind, HirScopeId, ScopeKind, lower_ast,
+    HirFile, HirItem, HirKind, HirScopeId, lower_ast,
 };
 use perl_parser_core::pir::{PirNode, PirOperation, lower_single_body};
 use perl_semantic_facts::interprocedural::{
@@ -301,7 +301,9 @@ fn owning_callable_scope(file: &HirFile, start: HirScopeId) -> Option<HirScopeId
         }
         remaining -= 1;
         let frame = file.scope_graph.scopes.iter().find(|scope| scope.id == id)?;
-        if matches!(frame.kind, ScopeKind::Subroutine | ScopeKind::Method) {
+        // Anonymous subs are callable frames too; `is_callable` keeps this
+        // from having to enumerate them (#13817).
+        if frame.kind.is_callable() {
             return Some(id);
         }
         current = frame.parent;
@@ -810,6 +812,32 @@ fn build_packet(
                     anchor,
                 ));
                 effects.push(EffectRef::new(EffectKind::Modify, op_ref(node), anchor));
+            }
+            // A `field` access is a named place the callable reads or writes,
+            // like a lexical and unlike a stash symbol — the place facet has to
+            // count it, or the summary declares completeness while missing a
+            // real access. Identity comes from `source`, not from the name
+            // string, so recording the place claims no storage class.
+            PirOperation::FieldRead { name } => bindings.push(BindingPlaceRef::new(
+                format!("{}{}", name.sigil, name.name),
+                PlaceRole::Read,
+                op_ref(node),
+                anchor,
+            )),
+            PirOperation::FieldWrite { name } => bindings.push(BindingPlaceRef::new(
+                format!("{}{}", name.sigil, name.name),
+                PlaceRole::Write,
+                op_ref(node),
+                anchor,
+            )),
+            PirOperation::FieldModify { name, .. } => {
+                bindings.push(BindingPlaceRef::new(
+                    format!("{}{}", name.sigil, name.name),
+                    PlaceRole::Modify,
+                    op_ref(node),
+                    anchor,
+                ));
+                effects.push(EffectRef::new(EffectKind::FieldModify, op_ref(node), anchor));
             }
             PirOperation::Assign => {
                 effects.push(EffectRef::new(EffectKind::Assign, op_ref(node), anchor));
