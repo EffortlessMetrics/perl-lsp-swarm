@@ -386,7 +386,7 @@ fn cargo_test_args(cargo_args: &[String], rust_test_threads: &str) -> Vec<String
         args.extend_from_slice(cargo_args);
         args.push("--".to_owned());
     }
-    if !args.iter().any(|arg| arg.starts_with("--test-threads=")) {
+    if !args.iter().any(|arg| arg == "--test-threads" || arg.starts_with("--test-threads=")) {
         args.push(format!("--test-threads={rust_test_threads}"));
     }
     args
@@ -3101,6 +3101,12 @@ mod tests {
     fn cargo_wrapper_does_not_duplicate_explicit_thread_limit() {
         let cargo_args = ["--".to_owned(), "--test-threads=1".to_owned()];
         assert_eq!(cargo_test_args(&cargo_args, "2"), ["test", "--", "--test-threads=1"]);
+    }
+
+    #[test]
+    fn cargo_wrapper_does_not_duplicate_spaced_explicit_thread_limit() {
+        let cargo_args = ["--".to_owned(), "--test-threads".to_owned(), "1".to_owned()];
+        assert_eq!(cargo_test_args(&cargo_args, "2"), ["test", "--", "--test-threads", "1"]);
     }
 
     #[test]
