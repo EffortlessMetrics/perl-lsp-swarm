@@ -216,14 +216,14 @@ fn registry_digest_covers_every_semantic_registry_section() {
 }
 
 #[test]
-fn delivery_routing_is_derived_from_declared_successors() {
+fn delivery_routing_matches_declared_prerequisites_and_successors() {
     for (node_id, dependencies, unblocks) in [
         ("fr_1850_semantic_token_geometry", &[][..], &[11250, 11259][..]),
         ("fr_11250_semantic_token_shadow", &[1850][..], &[11259][..]),
-        ("fr_11259_semantic_token_live_cutover", &[1850, 11250][..], &[][..]),
-        ("fr_8305_import_containment_leaf", &[][..], &[8277][..]),
+        ("fr_11259_semantic_token_live_cutover", &[11250][..], &[][..]),
+        ("fr_8305_import_containment_leaf", &[8277][..], &[8277][..]),
         ("fr_8277_import_governed_operations_leaf", &[8305][..], &[8336][..]),
-        ("fr_11261_object_facts_source_anchors", &[][..], &[11263][..]),
+        ("fr_11261_object_facts_source_anchors", &[11259][..], &[11263][..]),
         ("fr_11263_application_framework_projection", &[11261][..], &[][..]),
     ] {
         let (builder, _) = builder_of(node_id);
@@ -234,6 +234,39 @@ fn delivery_routing_is_derived_from_declared_successors() {
         assert_eq!(
             builder.pointer("/delivery/issues/unblocks"),
             Some(&serde_json::json!(unblocks))
+        );
+    }
+}
+
+#[test]
+fn delivery_dependency_mutations_fail_closed() {
+    let (builder, _) = builder_of("fr_11261_object_facts_source_anchors");
+    let mutated = mutate(&builder, &|doc| {
+        doc.pointer_mut("/delivery/issues/dependencies")
+            .and_then(Value::as_array_mut)
+            .map(|dependencies| dependencies.push(Value::from(11259)));
+    });
+    assert!(codes(&validate::validate_builder(&mutated)).contains(&"dependency_mismatch"));
+}
+
+#[test]
+fn every_non_product_role_rejects_each_foreign_core_step() {
+    let cases = [
+        ("fr_8336_import_claim_proof_row", "execute_research_protocol"),
+        ("fr_6992_installed_critic_journey_proof", "execute_registry_mapping"),
+        ("fr_11271_zydeco_research", "execute_proof_protocol"),
+        ("fr_7122_support_registry_governance_row", "execute_proof_protocol"),
+    ];
+    for (node_id, foreign_step) in cases {
+        let (builder, _) = builder_of(node_id);
+        let mutated = mutate(&builder, &|doc| {
+            doc.get_mut("sequence")
+                .and_then(Value::as_array_mut)
+                .map(|steps| steps.push(Value::String(foreign_step.to_owned())));
+        });
+        assert!(
+            codes(&validate::validate_builder(&mutated)).contains(&"wrong_role_sequence"),
+            "{node_id} accepted {foreign_step}"
         );
     }
 }

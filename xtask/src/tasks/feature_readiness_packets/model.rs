@@ -401,6 +401,13 @@ pub struct NodeSpec {
     pub extra_stop_conditions: Vec<&'static str>,
 }
 
+/// Surfaces forbidden to every feature-readiness packet, regardless of node.
+pub const FORBIDDEN_SURFACES_SHARED: &[&str] = &[
+    "model invocation or agent scheduling machinery",
+    "generic prompt framework or .spec planning tree",
+    "support/release/publication state mutation",
+];
+
 fn base_sequence(role: Role) -> Vec<SequenceStep> {
     let core_step = match role {
         Role::ProductImplementation => SequenceStep::ImplementProposition,
@@ -548,7 +555,23 @@ pub fn registry_digest(nodes: &[NodeSpec]) -> String {
                         .collect::<Vec<_>>()
                 ),
             );
-            digest_field(&mut text, "stage_examples", &format!("{:?}", node.stage_examples));
+            digest_field(
+                &mut text,
+                "stage_examples",
+                &format!(
+                    "{:?}",
+                    node.stage_examples
+                        .iter()
+                        .filter_map(|index| super::nodes::STAGE_EXAMPLES.get(*index))
+                        .map(|example| (example.stage, example.question))
+                        .collect::<Vec<_>>()
+                ),
+            );
+            digest_field(
+                &mut text,
+                "shared_forbidden_surfaces",
+                &format!("{:?}", FORBIDDEN_SURFACES_SHARED),
+            );
             digest_field(
                 &mut text,
                 "old_paths",

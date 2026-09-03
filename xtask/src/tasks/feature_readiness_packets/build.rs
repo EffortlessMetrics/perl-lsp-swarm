@@ -9,7 +9,10 @@
 
 use serde_json::{Value, json};
 
-use super::model::{Disposition, LiveAction, NodeSpec, Role, registry_digest, sequence_strings};
+use super::model::{
+    Disposition, FORBIDDEN_SURFACES_SHARED, LiveAction, NodeSpec, Role, registry_digest,
+    sequence_strings,
+};
 use super::render;
 
 pub const BUILDER_SCHEMA: &str = "feature_readiness_builder_packet.v1";
@@ -148,11 +151,60 @@ fn role_kind_word(role: Role) -> &'static str {
 }
 
 fn explicit_dependencies(node: &NodeSpec, nodes: &[NodeSpec]) -> Vec<u32> {
-    nodes
-        .iter()
-        .filter(|candidate| candidate.successors.contains(&node.node_id))
-        .filter_map(|candidate| candidate.issues.first().copied())
+    declared_prerequisites(node)
+        .into_iter()
+        .filter(|issue| nodes.iter().any(|candidate| candidate.issues.contains(issue)))
         .collect()
+}
+
+pub(crate) fn declared_prerequisites(node: &NodeSpec) -> Vec<u32> {
+    let mut values = Vec::new();
+    let text = node.prerequisite_disposition.as_bytes();
+    let mut index = 0;
+    while index < text.len() {
+        if text[index] == b'#' {
+            let start = index + 1;
+            let mut end = start;
+            while end < text.len() && text[end].is_ascii_digit() {
+                end += 1;
+            }
+            if end > start {
+                if let Ok(issue) = node.prerequisite_disposition[start..end].parse::<u32>() {
+                    if !values.contains(&issue) {
+                        values.push(issue);
+                    }
+                }
+            }
+            index = end;
+        } else {
+            index += 1;
+        }
+    }
+    // Registry prose also names prerequisites by their stable `fr_<issue>`
+    // node identity. Treat both spellings as the same declaration so routing
+    // cannot silently diverge from the claim ceiling.
+    let text = node.prerequisite_disposition.as_bytes();
+    let mut index = 0;
+    while index + 3 < text.len() {
+        if text[index..].starts_with(b"fr_") {
+            let start = index + 3;
+            let mut end = start;
+            while end < text.len() && text[end].is_ascii_digit() {
+                end += 1;
+            }
+            if end > start {
+                if let Ok(issue) = node.prerequisite_disposition[start..end].parse::<u32>() {
+                    if !values.contains(&issue) {
+                        values.push(issue);
+                    }
+                }
+            }
+            index = end;
+        } else {
+            index += 1;
+        }
+    }
+    values
 }
 
 fn explicit_unblocks(node: &NodeSpec, nodes: &[NodeSpec]) -> Vec<u32> {
@@ -386,12 +438,6 @@ fn stop_condition_values(node: &NodeSpec) -> Vec<String> {
     conditions.extend(derived_stop_conditions(node));
     conditions
 }
-
-const FORBIDDEN_SURFACES_SHARED: &[&str] = &[
-    "model invocation or agent scheduling machinery",
-    "generic prompt framework or .spec planning tree",
-    "support/release/publication state mutation",
-];
 
 fn live_plane_value(live: Option<&LiveSnapshot>) -> Value {
     match live {

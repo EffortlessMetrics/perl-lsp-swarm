@@ -803,17 +803,56 @@ fn validate_sequence(object: &serde_json::Map<String, Value>, violations: &mut V
     }
     let role =
         object.get("work").and_then(|work| work.get("role")).and_then(Value::as_str).unwrap_or("");
-    let implements = steps.contains(&"implement_proposition");
-    if role == "product_implementation" && !implements {
+    let expected = match role {
+        "product_implementation" => "implement_proposition",
+        "proof_only" | "installed_client_proof" => "execute_proof_protocol",
+        "research_decision" => "execute_research_protocol",
+        "governance_support" => "execute_registry_mapping",
+        _ => "",
+    };
+    if !expected.is_empty() && !steps.contains(&expected) {
         violations.push(Violation::new(
             "wrong_role_sequence",
-            "a product implementation packet without an implementation step is not builder work",
+            format!("role {role:?} requires sequence step {expected:?}"),
         ));
     }
-    if role != "product_implementation" && implements {
+    for step in [
+        "implement_proposition",
+        "execute_proof_protocol",
+        "execute_research_protocol",
+        "execute_registry_mapping",
+    ] {
+        if step != expected && steps.contains(&step) {
+            violations.push(Violation::new(
+                "wrong_role_sequence",
+                format!("role {role:?} must not encode foreign core step {step:?}"),
+            ));
+        }
+    }
+    for step in [
+        "implement_proposition",
+        "execute_proof_protocol",
+        "execute_research_protocol",
+        "execute_registry_mapping",
+        "record_disposition_no_execution",
+    ] {
+        if steps.iter().filter(|candidate| **candidate == step).count() > 1 {
+            violations.push(Violation::new(
+                "wrong_role_sequence",
+                format!("sequence contains duplicate role-specific step {step:?}"),
+            ));
+        }
+    }
+    if role == "governance_support" && !steps.contains(&"record_disposition_no_execution") {
         violations.push(Violation::new(
             "wrong_role_sequence",
-            format!("role {role:?} must never encode implement_proposition; that widens the claim ceiling"),
+            "governance packets require record_disposition_no_execution",
+        ));
+    }
+    if role != "governance_support" && steps.contains(&"record_disposition_no_execution") {
+        violations.push(Violation::new(
+            "wrong_role_sequence",
+            "only governance packets may record disposition without execution",
         ));
     }
     for required in [
@@ -939,16 +978,110 @@ fn validate_delivery(object: &serde_json::Map<String, Value>, violations: &mut V
     for key in ["branch_suggestion", "pr_title_suggestion", "base_head"] {
         check_nonempty_string(delivery, key, "delivery", violations);
     }
+    for key in ["changed_surfaces", "limitations", "review_map", "stop_before"] {
+        if !delivery.get(key).is_some_and(Value::is_array) {
+            violations.push(Violation::new(
+                "shape_violation",
+                format!("delivery.{key} must be an array"),
+            ));
+        } else if let Some(items) = delivery.get(key).and_then(Value::as_array) {
+            for (index, item) in items.iter().enumerate() {
+                if item.as_str().is_none_or(|value| value.trim().is_empty()) {
+                    violations.push(Violation::new(
+                        "shape_violation",
+                        format!("delivery.{key}[{index}] must be a non-empty string"),
+                    ));
+                }
+            }
+        }
+    }
+    let Some(issues) = delivery.get("issues").and_then(Value::as_object) else {
+        violations.push(Violation::new("shape_violation", "delivery.issues must be an object"));
+        return;
+    };
+    check_closed_keys(
+        issues,
+        &["controller", "dependencies", "unblocks"],
+        "delivery.issues",
+        violations,
+    );
+    if !issues.get("controller").is_some_and(Value::is_u64) {
+        violations.push(Violation::new(
+            "shape_violation",
+            "delivery.issues.controller must be an integer",
+        ));
+    }
+    for key in ["dependencies", "unblocks"] {
+        if !issues.get(key).is_some_and(Value::is_array) {
+            violations.push(Violation::new(
+                "shape_violation",
+                format!("delivery.issues.{key} must be an array"),
+            ));
+        } else if let Some(items) = issues.get(key).and_then(Value::as_array) {
+            for (index, item) in items.iter().enumerate() {
+                if !item.is_u64() {
+                    violations.push(Violation::new(
+                        "shape_violation",
+                        format!("delivery.issues.{key}[{index}] must be an integer"),
+                    ));
+                }
+            }
+        }
+    }
+    let declared = object
+        .get("claim_ceiling")
+        .and_then(|claim| claim.get("prerequisite_disposition"))
+        .and_then(Value::as_str)
+        .map(|text| {
+            text.replace("fr_", "#")
+                .split('#')
+                .skip(1)
+                .filter_map(|part| {
+                    part.chars()
+                        .take_while(char::is_ascii_digit)
+                        .collect::<String>()
+                        .parse::<u32>()
+                        .ok()
+                })
+                .fold(Vec::new(), |mut issues, issue| {
+                    if !issues.contains(&issue) {
+                        issues.push(issue);
+                    }
+                    issues
+                })
+        })
+        .unwrap_or_default();
+    let emitted = issues.get("dependencies").and_then(Value::as_array).cloned().unwrap_or_default();
+    let expected: Vec<Value> = declared.into_iter().map(Value::from).collect();
+    if emitted != expected {
+        violations.push(Violation::new(
+            "dependency_mismatch",
+            "delivery.issues.dependencies must equal issue references declared by claim_ceiling.prerequisite_disposition",
+        ));
+    }
     check_nonempty_array(delivery, "review_map", 1, "delivery", violations);
     check_nonempty_array(delivery, "stop_before", 1, "delivery", violations);
     let dispositions = delivery.get("old_path_dispositions").and_then(Value::as_array);
     match dispositions {
         Some(items) if !items.is_empty() => {
             for (index, item) in items.iter().enumerate() {
-                let disposition = item
-                    .as_object()
-                    .and_then(|row| row.get("terminal_disposition"))
-                    .and_then(Value::as_str);
+                let row = item.as_object();
+                if let Some(row) = row {
+                    check_closed_keys(
+                        row,
+                        &["seam", "terminal_disposition"],
+                        &format!("delivery.old_path_dispositions[{index}]"),
+                        violations,
+                    );
+                    check_nonempty_string(
+                        row,
+                        "seam",
+                        &format!("delivery.old_path_dispositions[{index}]"),
+                        violations,
+                    );
+                }
+                let disposition =
+                    row.and_then(|row| row.get("terminal_disposition")).and_then(Value::as_str);
                 match disposition {
                     Some(value) if TERMINAL_OLD_PATH_DISPOSITIONS.contains(&value) => {}
                     _ => violations.push(Violation::new(

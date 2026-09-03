@@ -333,10 +333,11 @@ pub fn compact(doc: &Value) -> String {
             strings(doc.pointer("/claim_ceiling/cannot_establish")).join("; "),
         ));
         out.push_str(&format!(
-            "PREREQUISITES: disposition={} successors={} remaining_not_proven={}\n",
+            "PREREQUISITES: disposition={} successors={} remaining_not_proven={} rollback={}\n",
             clean("/claim_ceiling/prerequisite_disposition"),
             compact_json(doc.pointer("/claim_ceiling/successors")),
             compact_json(doc.pointer("/claim_ceiling/remaining_not_proven")),
+            clean("/claim_ceiling/rollback_meaning"),
         ));
         out.push_str("AUTHORITIES: ");
         let authorities = objects(doc, "/authorities");
@@ -395,9 +396,17 @@ pub fn compact(doc: &Value) -> String {
         ));
         for command in objects(doc, "/proof/commands") {
             out.push_str(&format!(
-                "CMD {}: {}\n",
+                "CMD {} [{}]: {}\n",
                 command.get("id").and_then(Value::as_str).unwrap_or("?"),
+                command.get("scope").and_then(Value::as_str).unwrap_or("?"),
                 command.get("command").and_then(Value::as_str).unwrap_or("?"),
+            ));
+        }
+        for control in objects(doc, "/proof/controls") {
+            out.push_str(&format!(
+                "CONTROL {}: {}\n",
+                control.get("class").and_then(Value::as_str).unwrap_or("?"),
+                control.get("subject").and_then(Value::as_str).unwrap_or("?"),
             ));
         }
         out.push_str("OLDPATH: ");
@@ -417,11 +426,20 @@ pub fn compact(doc: &Value) -> String {
             compact_json(doc.pointer("/delivery/issues")),
             compact_json(doc.get("durable_spec")),
         ));
+        out.push_str(&format!(
+            "DELIVERY: surfaces={} limitations={} review_map={} stop_before={}\n",
+            compact_json(doc.pointer("/delivery/changed_surfaces")),
+            compact_json(doc.pointer("/delivery/limitations")),
+            compact_json(doc.pointer("/delivery/review_map")),
+            compact_json(doc.pointer("/delivery/stop_before")),
+        ));
         out.push_str(&format!("LIVE: {}\n", compact_json(doc.pointer("/planes/live")),));
         out.push_str("STOP: ");
         out.push_str(&strings(doc.pointer("/stop/conditions")).join(" / "));
         out.push_str("\nNEVER: ");
         out.push_str(&strings(doc.pointer("/stop/forbidden_actions")).join(", "));
+        out.push_str("\nHANDOFF: ");
+        out.push_str(&clean("/stop/handoff"));
         out.push('\n');
     } else {
         let clean = |pointer: &str| {
@@ -570,6 +588,54 @@ pub fn validate_compact_lossless(builder: &Value, compact_text: &str) -> Vec<Vio
             violations.push(Violation::new(
                 "compact_loss",
                 format!("compact projection dropped stop condition {condition:?}"),
+            ));
+        }
+    }
+    for (label, pointer) in [
+        ("changed surface", "/delivery/changed_surfaces"),
+        ("limitation", "/delivery/limitations"),
+        ("review-map entry", "/delivery/review_map"),
+        ("stop-before condition", "/delivery/stop_before"),
+    ] {
+        for value in strings(builder.pointer(pointer)) {
+            if !value.is_empty() && !compact_text.contains(value) {
+                violations.push(Violation::new(
+                    "compact_loss",
+                    format!("compact projection dropped {label} {value:?}"),
+                ));
+            }
+        }
+    }
+    for (index, control) in objects(builder, "/proof/controls").iter().enumerate() {
+        for field in ["class", "subject"] {
+            let value = control.get(field).and_then(Value::as_str).unwrap_or("");
+            if !value.is_empty() && !compact_text.contains(value) {
+                violations.push(Violation::new(
+                    "compact_loss",
+                    format!("compact projection dropped proof control {index} {field} {value:?}"),
+                ));
+            }
+        }
+    }
+    for (index, command) in objects(builder, "/proof/commands").iter().enumerate() {
+        for field in ["id", "command", "scope"] {
+            let value = command.get(field).and_then(Value::as_str).unwrap_or("");
+            if !value.is_empty() && !compact_text.contains(value) {
+                violations.push(Violation::new(
+                    "compact_loss",
+                    format!("compact projection dropped proof command {index} {field} {value:?}"),
+                ));
+            }
+        }
+    }
+    for (label, pointer) in
+        [("rollback", "/claim_ceiling/rollback_meaning"), ("handoff", "/stop/handoff")]
+    {
+        let value = builder.pointer(pointer).and_then(Value::as_str).unwrap_or("");
+        if !value.is_empty() && !compact_text.contains(value) {
+            violations.push(Violation::new(
+                "compact_loss",
+                format!("compact projection dropped {label} {value:?}"),
             ));
         }
     }
