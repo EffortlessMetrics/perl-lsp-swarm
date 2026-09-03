@@ -96,20 +96,20 @@ pub fn subjects_from_product_identity(
         .ok_or_else(|| eyre!("{} is missing product.public_repository", path.display()))?;
 
     let (development_branch, public_branch) = match branch_override {
-        Some(branch) => (branch, branch),
+        Some(branch) => (branch.to_string(), branch.to_string()),
         None => {
             let topology = crate::contributor_topology::build_projection(repo_root, None)
                 .map_err(|error| eyre!("loading contributor topology branch authority: {error}"))?;
             (
-                topology.static_topology.development_default_branch.as_str(),
-                topology.static_topology.publication_branch.as_str(),
+                topology.static_topology.development_default_branch,
+                topology.static_topology.publication_branch,
             )
         }
     };
 
     Ok(vec![
-        parse_subject(&development, development_branch)?,
-        parse_subject(&public, public_branch)?,
+        parse_subject(&development, &development_branch)?,
+        parse_subject(&public, &public_branch)?,
     ])
 }
 
