@@ -492,8 +492,13 @@ pub struct PerlInvocation {
     /// The switch that made Perl print and exit, when one was written. Decoding
     /// stops there, because Perl stops there.
     pub terminating_action: Option<TerminatingAction>,
-    /// Arguments Perl never interpreted, because a terminating switch preceded
-    /// them. They are neither switches nor program arguments.
+    /// Text Perl never interpreted, because a terminating switch preceded it.
+    /// It is neither switches nor program arguments.
+    ///
+    /// Usually whole later arguments, but the first entry can be the unread
+    /// tail of the terminating switch's own cluster: perl stops reading at the
+    /// switch letter, so `perl -hZ` exits 0 like `perl -h` and the `Z` is never
+    /// a switch. Its span then covers only that tail, not the whole argument.
     pub uninterpreted_arguments: Vec<ProgramArgument>,
     /// The `--` terminator's location, when one was written.
     pub terminator: Option<ArgvSpan>,

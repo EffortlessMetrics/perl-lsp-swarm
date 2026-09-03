@@ -1185,6 +1185,36 @@ fn help_and_version_stop_decoding_because_perl_stops() {
         );
     }
 
+    // The same holds *inside* the cluster, and the unread tail is recorded
+    // rather than dropped. Perl stops at the switch letter, so `perl -hZ` and
+    // `perl -vZ` exit 0 exactly like `-h` and `-v` while a bare `perl -Z` is
+    // rejected — the `Z` is never read as a switch. Recording it is what keeps
+    // `-hZ` distinguishable from `-h`: the argument-accounting property is
+    // satisfied by either, because it works at whole-argument granularity.
+    for (argv, kind, tail, start) in [
+        (vec!["-hZ"], TerminatingActionKind::Usage, "Z", 2),
+        (vec!["-vZ"], TerminatingActionKind::Version, "Z", 2),
+        (vec!["-nhZ"], TerminatingActionKind::Usage, "Z", 3),
+        (vec!["-vhZ"], TerminatingActionKind::Version, "hZ", 2),
+    ] {
+        let invocation = perl(&argv);
+        assert_eq!(invocation.terminating_action.as_ref().map(|a| a.kind), Some(kind));
+        let unread = &invocation.uninterpreted_arguments;
+        assert_eq!(unread.len(), 1, "{argv:?} must record its unread cluster tail");
+        assert_eq!(unread[0].text, tail, "{argv:?} tail text");
+        // The span covers the tail alone, not the whole argument, so a consumer
+        // can point at the exact bytes perl never read.
+        // Argument 1, because `perl` helper puts the interpreter at 0.
+        assert_eq!(unread[0].span.argument_index, 1);
+        assert_eq!(unread[0].span.start, start, "{argv:?} tail starts after the switch letter");
+        assert_eq!(unread[0].span.end, argv[0].len());
+        assert_eq!(&argv[0][unread[0].span.start..unread[0].span.end], tail);
+    }
+
+    // A cluster that ends exactly at the terminating letter has no tail, so
+    // nothing is invented for it.
+    assert!(perl(&["-nh"]).uninterpreted_arguments.is_empty());
+
     // Ordering still matters: `perl -Z -v` reports `Unrecognized switch: -Z`.
     assert!(matches!(
         perl_error(&["-Z", "-v"]),

@@ -456,6 +456,17 @@ fn decode_cluster<S: AsRef<str>>(
                     TerminatingActionKind::Usage
                 };
                 invocation.terminating_action = Some(TerminatingAction { kind, span: letter_span });
+                // Perl stops reading switches here, so the rest of the cluster
+                // is unread text rather than more switches: `perl -hZ` exits 0
+                // exactly like `perl -h`, while a bare `perl -Z` is rejected.
+                // Record it the same way the identical text one argument to the
+                // right is recorded, so `-hZ` stays distinguishable from `-h`.
+                let (tail, tail_span) = cluster.rest();
+                if !tail.is_empty() {
+                    invocation
+                        .uninterpreted_arguments
+                        .push(ProgramArgument { text: tail.to_owned(), span: tail_span });
+                }
                 break;
             }
             // Neutral switches taking no value; bundling continues.
