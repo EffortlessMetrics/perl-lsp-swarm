@@ -982,6 +982,11 @@ impl ParseWorker {
         handles.iter().any(|h| !h.is_finished())
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_request_shutdown(&self) {
+        self.coordinator.request_shutdown();
+    }
+
     /// Enqueue (or coalesce-replace) a parse job for `normalized_uri`.
     ///
     /// Returns `true` if this call established a NEW pending-parse lifecycle

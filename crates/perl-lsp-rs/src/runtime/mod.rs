@@ -1584,9 +1584,11 @@ impl LspServer {
     }
 
     /// The installed off-lock parse worker, if any. `None` means the
-    /// synchronous fallback path is active.
+    /// synchronous fallback path is active. A pool whose threads have all
+    /// exited is treated the same as no installed worker, so edits cannot be
+    /// accepted into a queue that nobody can drain.
     pub(crate) fn parse_worker(&self) -> Option<Arc<parse_worker::ParseWorker>> {
-        self.parse_worker_handle.lock().clone()
+        self.parse_worker_handle.lock().clone().filter(|worker| worker.is_operational())
     }
 
     /// Install the file watcher debouncer (called from Scheduler::new after Arc wrapping).
@@ -1806,6 +1808,28 @@ mod tests {
             "doc outside all folders must not match any folder",
         );
         assert!(server.config_for_doc(&doc_uri).is_none());
+    }
+
+    #[test]
+    fn parse_worker_selection_falls_back_after_pool_shutdown() {
+        let server = Arc::new(LspServer::new());
+        server.install_default_parse_worker();
+        let worker = server.parse_worker().expect("default parse worker must install");
+
+        worker.test_request_shutdown();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while worker.is_operational() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "parse worker threads did not stop after shutdown"
+            );
+            std::thread::yield_now();
+        }
+
+        assert!(
+            server.parse_worker().is_none(),
+            "a stopped parse worker must select the synchronous fallback"
+        );
     }
 
     #[test]
