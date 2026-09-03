@@ -1589,7 +1589,10 @@ fn project_server_capabilities(
 
     // Workspace surface (folders, textDocumentContent, file operations).
     let workspace_folders_supported = client.workspace_folders.is_supported();
-    let perl_globs = ["**/*.pl", "**/*.pm", "**/*.t", "**/*.psgi"];
+    // Mirrors `perl-lsp-rs` lifecycle/watchers.rs PERL_WATCH_PATTERNS: the
+    // catch-all advertisement keeps extensionless shebang scripts observable;
+    // handler-side classification stays the Perl-source authority (#13308).
+    let perl_globs = ["**/*"];
     let filters: Vec<serde_json::Value> =
         perl_globs.iter().map(|glob| serde_json::json!({ "pattern": { "glob": glob } })).collect();
     let mut file_operations = serde_json::Map::new();
