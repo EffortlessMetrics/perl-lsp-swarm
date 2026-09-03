@@ -3510,6 +3510,24 @@
       "selector_identity": "invocation:8c9fac5a821d6681:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/configuration_observation.rs",
+      "enclosing_test_or_function": "unmodeled_evidence_floor_and_digest_only_identity",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected digest-only evidence, got {other:?}\"),",
+      "selector_identity": "invocation:cc52f20ad70e4644:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/configuration_observation.rs",
+      "enclosing_test_or_function": "unmodeled_evidence_floor_and_digest_only_identity",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected digest-only evidence, got {other:?}\"),",
+      "selector_identity": "invocation:cc52f20ad70e4644:occurrence:2",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
