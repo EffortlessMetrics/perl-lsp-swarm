@@ -94,6 +94,7 @@ pub mod hardening;
 #[cfg(feature = "parser-tasks")]
 pub mod highlight;
 pub mod hook_checks;
+pub mod htmx_catalog_drift;
 pub mod ignored_tests;
 pub mod inc_claim_boundary;
 pub mod incremental_proof;

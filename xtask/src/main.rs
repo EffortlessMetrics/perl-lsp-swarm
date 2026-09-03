@@ -44,11 +44,11 @@ use tasks::{
     devex_plan, doc, doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs,
     features, finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts,
     gates, generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
-    ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
-    inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
-    issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
-    merge_ready, methodology_gate, metrics, module_train, module_train_live, native_critic,
-    native_format, native_neovim_train, native_product_surface, native_tooling,
+    htmx_catalog_drift, ignored_tests, incremental_proof, inject_sha_assets,
+    inline_completion_quality, inline_completion_smoke, install_surface_check, integration_proof,
+    intent_diff_gate, issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
+    memory_trends, merge_ready, methodology_gate, metrics, module_train, module_train_live,
+    native_critic, native_format, native_neovim_train, native_product_surface, native_tooling,
     oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
     parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
     perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
@@ -2076,6 +2076,18 @@ enum Commands {
     MergeReady {
         #[command(subcommand)]
         command: MergeReadyCommand,
+    },
+
+    /// Report htmx catalog drift against a local copy of the htmx reference.
+    ///
+    /// Maintainer command. Nothing in this repository fetches the reference
+    /// document; obtain it deliberately and pass its path. Exits non-zero when
+    /// the committed catalog and the supplied reference disagree.
+    HtmxCatalogDrift {
+        /// Path to a local copy of `www/content/reference.md` from the htmx
+        /// repository, at the release whose catalog you want to compare against.
+        #[arg(long)]
+        reference: PathBuf,
     },
 
     /// Track ignored tests and enforce gate policy
@@ -6211,6 +6223,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             }
             MergeReadyCommand::Verify { pr, fixture } => merge_ready::verify(pr, fixture),
         },
+        Commands::HtmxCatalogDrift { reference } => htmx_catalog_drift::run(&reference),
         Commands::IgnoredTests { update, check, check_issue_refs, verbose } => {
             ignored_tests::run(update, check, check_issue_refs, verbose)
         }
