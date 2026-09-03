@@ -1222,17 +1222,19 @@ fn discoverable_makefile_names_depend_on_the_launcher() -> Result<(), FixtureErr
         ("make", "/ws/makefile", TestCommandAdmission::Ready),
         ("make", "/ws/Makefile", TestCommandAdmission::Ready),
         ("make", "/ws/GNUmakefile", TestCommandAdmission::NotProvenGeneratedState),
-        // nmake does not discover the GNU variant, and is Windows-only — so its
-        // filesystem is case-insensitive and `MAKEFILE`, the spelling
-        // Microsoft's own documentation uses, must be accepted.
+        // nmake does not discover the GNU variant. It discovers the
+        // conventional `Makefile` / `makefile` that EU::MM emits, but *not* a
+        // case-folded `MAKEFILE`: Windows filesystems can be case-sensitive
+        // per-directory, the snapshot carries no case-sensitivity fact, and
+        // this module is fail-closed on readiness it cannot prove.
         ("nmake", "/ws/GNUmakefile", TestCommandAdmission::NotProvenGeneratedState),
         ("nmake", "/ws/Makefile", TestCommandAdmission::Ready),
         ("nmake", "/ws/makefile", TestCommandAdmission::Ready),
-        ("nmake", "/ws/MAKEFILE", TestCommandAdmission::Ready),
-        ("nmake", "/ws/MakeFile", TestCommandAdmission::Ready),
-        // A case-folded name is *not* accepted for the cross-platform
-        // launchers: case-insensitivity is a filesystem property, and only
-        // `nmake` pins the filesystem.
+        ("nmake", "/ws/MAKEFILE", TestCommandAdmission::NotProvenGeneratedState),
+        ("nmake", "/ws/MakeFile", TestCommandAdmission::NotProvenGeneratedState),
+        // No launcher case-folds: without a filesystem case-sensitivity fact, a
+        // differently cased name cannot prove the launcher's lookup will find
+        // it, so every launcher matches the observed spelling exactly.
         ("gmake", "/ws/MAKEFILE", TestCommandAdmission::NotProvenGeneratedState),
         ("make", "/ws/MAKEFILE", TestCommandAdmission::NotProvenGeneratedState),
         // dmake discovers the portable names only.

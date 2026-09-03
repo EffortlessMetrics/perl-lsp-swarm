@@ -945,7 +945,9 @@ enum MakeFlavor {
     /// not guess from the host it happens to run on, so only the names every
     /// implementation discovers count.
     Portable,
-    /// Microsoft nmake.
+    /// Microsoft nmake. Windows-only, but Windows filesystems can be
+    /// case-sensitive per directory and the snapshot records no case fact, so
+    /// discovery is exact — see [`MakeFlavor::discovers`].
     Nmake,
     /// Digital Mars dmake.
     Dmake,
@@ -955,17 +957,23 @@ impl MakeFlavor {
     /// Whether this launcher will discover the makefile at `name` without a
     /// filename passed on the command line.
     ///
-    /// Case sensitivity is a property of the *filesystem*, not the launcher, so
-    /// it is only relaxed where the launcher pins the platform: `nmake` is
-    /// Windows-only, and Windows lookup is case-insensitive, so `MAKEFILE` —
-    /// the spelling Microsoft's documentation uses — names the same file as
-    /// `Makefile`. `gmake`, `make`, and `dmake` all run on case-sensitive
-    /// filesystems too, so for those the observed spelling must match.
+    /// Matching is always exact. Case sensitivity is a property of the
+    /// *filesystem*, not the launcher, and no snapshot fact records it: Windows
+    /// filesystems can be case-sensitive per directory (the NTFS flag used for
+    /// WSL interop), and a case-sensitive directory anywhere makes a
+    /// differently cased name a file the launcher's default lookup would not
+    /// find. Folding case for `nmake` would therefore claim a readiness this
+    /// module cannot prove, so a differently cased observation stays
+    /// [`GeneratedStateFreshness::NotProven`] — the fail-closed default — until
+    /// a filesystem-case fact exists to justify anything looser.
+    ///
+    /// The launchers differ only in *which* default names they look for:
+    /// GNU make also reads `GNUmakefile`; the rest read the conventional
+    /// `Makefile` / `makefile` that ExtUtils::MakeMaker emits.
     fn discovers(self, name: &str) -> bool {
         match self {
             Self::Gnu => matches!(name, "Makefile" | "makefile" | "GNUmakefile"),
-            Self::Portable | Self::Dmake => matches!(name, "Makefile" | "makefile"),
-            Self::Nmake => name.eq_ignore_ascii_case("Makefile"),
+            Self::Portable | Self::Dmake | Self::Nmake => matches!(name, "Makefile" | "makefile"),
         }
     }
 }
