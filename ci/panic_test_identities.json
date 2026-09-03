@@ -3582,6 +3582,24 @@
       "selector_identity": "invocation:3d92fccfef182a95:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "crates/perl-core-harness/src/observed_discovery/decode.rs",
+      "enclosing_test_or_function": "classification_resolves_every_disposition_directly",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected duplicate of canonical, got {other:?}\"),",
+      "selector_identity": "invocation:9fa7d927b2e3f08a:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-core-harness/src/observed_discovery/decode.rs",
+      "enclosing_test_or_function": "streams_beyond_the_decoded_row_bound_are_refused",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(decoded) => panic!( \"stream beyond the decoded-row bound was accepted with {} rows\", decoded.rows.len() ),",
+      "selector_identity": "invocation:793f59696a323163:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
