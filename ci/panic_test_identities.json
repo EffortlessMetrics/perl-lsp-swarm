@@ -3069,6 +3069,15 @@
       "selector_identity": "invocation:f4bc9b08eed82b48:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/metrics/parser_accuracy.rs",
+      "enclosing_test_or_function": "whitespace_sample_gate_matches_legacy_population_projection",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"probe population for {source:?} must project: {error:?}\")",
+      "selector_identity": "invocation:468b7e0a70031fc1:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
