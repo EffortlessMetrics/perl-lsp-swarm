@@ -535,7 +535,7 @@ impl<'a> Parser<'a> {
                 (
                     Node::new(
                         NodeKind::Program { statements: vec![] },
-                        SourceLocation { start: 0, end: 0 },
+                        SourceLocation::new(0, 0),
                     ),
                     Some(cause),
                 )

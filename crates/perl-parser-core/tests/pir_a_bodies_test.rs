@@ -1363,7 +1363,7 @@ fn pir_a_rmw_variable_in_expr_position_is_fail_closed() {
     // Build a synthetic HIR body containing exactly one statement:
     // `HirStmt::Expr(rmw_var_id)` where the expression is
     // `HirExpr::Variable { access: ReadModifyWrite, kind: Lexical }`.
-    let loc = SourceLocation { start: 0, end: 3 };
+    let loc = SourceLocation::new(0, 3);
 
     let mut exprs: Arena<HirExpr> = Arena::default();
     let rmw_var = HirExpr::Variable(HirVariable {

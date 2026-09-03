@@ -218,7 +218,7 @@ impl CodeLensProvider {
     /// Add "Run Test" and "Debug Test" code lenses
     fn add_run_test_lens(&self, node: &Node, name: &str, lenses: &mut Vec<CodeLens>) {
         let range =
-            WireRange::from_byte_offsets(&self.source, node.location.start, node.location.end);
+            WireRange::from_byte_offsets(&self.source, node.location.start(), node.location.end());
         let file_path_str = self.file_path.as_deref().unwrap_or("");
         let test_id = format!("{}::{}", file_path_str, name);
         lenses.push(CodeLens {
@@ -255,7 +255,7 @@ impl CodeLensProvider {
         });
         let name = subtest_name.unwrap_or("<anonymous>");
         let range =
-            WireRange::from_byte_offsets(&self.source, node.location.start, node.location.end);
+            WireRange::from_byte_offsets(&self.source, node.location.start(), node.location.end());
         // Pass the file path (when known) as the first argument so the command
         // can run the whole file and focus its output on this subtest. When no
         // path is available, fall back to the name-only (legacy) argument shape.
@@ -277,7 +277,7 @@ impl CodeLensProvider {
 
     /// Add an "X references" code lens
     fn add_references_lens(&self, node: &Node, name: &str, lenses: &mut Vec<CodeLens>) {
-        let start_pos = WirePosition::from_byte_offset(&self.source, node.location.start);
+        let start_pos = WirePosition::from_byte_offset(&self.source, node.location.start());
         lenses.push(CodeLens {
             range: WireRange::empty(start_pos),
             command: None,

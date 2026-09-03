@@ -743,7 +743,7 @@ fn lower_statement(builder: &mut BodyBuilder, node: &Node) -> HirStmtId {
 
                 // Wrap in an Assign node spanning the full declaration range
                 let assign_range =
-                    SourceLocation { start: variable.location.start, end: init_node.location.end };
+                    SourceLocation::new(variable.location.start(), init_node.location.end());
                 let assign_expr =
                     HirExpr::Assign { lhs: place_id, rhs: rhs_id, mode: AssignMode::Simple };
                 builder.alloc_expr(assign_expr, assign_range)

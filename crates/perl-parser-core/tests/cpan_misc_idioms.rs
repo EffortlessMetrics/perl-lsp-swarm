@@ -325,10 +325,10 @@ fn parse_indirect_call_call_presence_observer() -> Result<(), String> {
         indirect_calls.first().ok_or_else(|| "expected one indirect call".to_string())?;
     let try_start = code.find("try").ok_or_else(|| "expected try token in source".to_string())?;
     let try_end = try_start + "try".len();
-    if object.location.start != try_start || object.location.end != try_end {
+    if object.location.start() != try_start || object.location.end() != try_end {
         return Err(format!(
             "expected consumed object range {try_start}..{try_end}, got {}..{}",
-            object.location.start, object.location.end
+            object.location.start(), object.location.end()
         ));
     }
     Ok(())

@@ -70,10 +70,10 @@ fn pir_a_return_has_explicit_source_anchor() -> TestResult {
     let expected_start = src.find("return").ok_or("source contains `return`")?;
     let expected_end = src.find(';').ok_or("source contains `;`")?;
     assert_eq!(
-        (r.start, r.end),
+        (r.start(), r.end()),
         (expected_start, expected_end),
         "Return anchor must span exactly the `return $x` expression, got {:?}",
-        src.get(r.start..r.end)
+        src.get(r.start()..r.end())
     );
     Ok(())
 }
@@ -89,17 +89,17 @@ fn pir_a_bare_return_has_wellformed_source_anchor() -> TestResult {
     assert_eq!(node.source_anchor.kind, PirAnchorKind::ExplicitSource);
     let r = node.source_anchor.range.ok_or("Return must preserve a source range")?;
     assert!(
-        r.end >= r.start,
+        r.end() >= r.start(),
         "bare return anchor must not be inverted, got {}..{}",
-        r.start,
-        r.end
+        r.start(),
+        r.end()
     );
     let expected_start = src.find("return").ok_or("source contains `return`")?;
     assert_eq!(
-        (r.start, r.end),
+        (r.start(), r.end()),
         (expected_start, expected_start + "return".len()),
         "bare Return anchor must span exactly `return`, got {:?}",
-        src.get(r.start..r.end)
+        src.get(r.start()..r.end())
     );
     Ok(())
 }

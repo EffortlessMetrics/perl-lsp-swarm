@@ -193,7 +193,7 @@ impl InlayHintsProvider {
             // Filter by range if specified
             if let Some(filter_range) = range {
                 let lsp_pos =
-                    LspPosition::new(arg.location.start, position.line + 1, position.character + 1);
+                    LspPosition::new(arg.location.start(), position.line + 1, position.character + 1);
                 if !filter_range.contains(lsp_pos) {
                     continue;
                 }
@@ -229,7 +229,7 @@ impl InlayHintsProvider {
             // Filter by range if specified
             if let Some(filter_range) = range {
                 let lsp_pos = LspPosition::new(
-                    variable.location.end,
+                    variable.location.end(),
                     position.line + 1,
                     position.character + 1,
                 );
@@ -261,7 +261,7 @@ impl InlayHintsProvider {
             // Filter by range if specified
             if let Some(filter_range) = range {
                 let lsp_pos =
-                    LspPosition::new(expr.location.end, position.line + 1, position.character + 1);
+                    LspPosition::new(expr.location.end(), position.line + 1, position.character + 1);
                 if !filter_range.contains(lsp_pos) {
                     return;
                 }
@@ -433,14 +433,14 @@ impl InlayHintsProvider {
 
     /// Get the start position of a node
     fn get_node_start_position(&self, node: &Node) -> Position {
-        let offset = node.location.start;
+        let offset = node.location.start();
         let (line, character) = self.offset_to_position(offset);
         Position { line, character }
     }
 
     /// Get the end position of a node
     fn get_node_end_position(&self, node: &Node) -> Position {
-        let offset = node.location.end;
+        let offset = node.location.end();
         let (line, character) = self.offset_to_position(offset);
         Position { line, character }
     }
@@ -567,7 +567,7 @@ print("Hello, World!");
     #[test]
     fn visit_children_walks_if_and_while_with_keyword_metadata() {
         let provider = InlayHintsProvider::new(String::new());
-        let loc = |start, end| perl_parser::ast::SourceLocation { start, end };
+        let loc = |start, end| perl_parser::ast::SourceLocation::new(start, end);
         let number =
             |start| Node::new(NodeKind::Number { value: "1".to_string() }, loc(start, start + 1));
         let call = |name: &str, start| {
@@ -630,7 +630,7 @@ print("Hello, World!");
         let hints = provider.extract(&ast);
         assert!(hints.is_empty(), "unresolved ampersand calls must not use builtin metadata");
 
-        let loc = |start, end| perl_parser::ast::SourceLocation { start, end };
+        let loc = |start, end| perl_parser::ast::SourceLocation::new(start, end);
         let builtin_call = Node::new(
             perl_parser::ast::NodeKind::FunctionCall {
                 name: "push".to_string(),
@@ -657,7 +657,7 @@ print("Hello, World!");
     fn test_amper_call_does_not_infer_builtin_type() {
         let provider = InlayHintsProvider::new(String::new());
         use perl_parser::ast::{Node, NodeKind, SourceLocation};
-        let loc = SourceLocation { start: 0, end: 1 };
+        let loc = SourceLocation::new(0, 1);
         let split_amper =
             Node::new(NodeKind::AmperCall { name: "split".to_string(), args: vec![] }, loc);
         let result = provider.infer_type(&split_amper);

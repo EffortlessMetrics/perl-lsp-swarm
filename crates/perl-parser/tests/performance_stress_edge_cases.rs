@@ -521,16 +521,16 @@ fn generate_massive_array(size: usize) -> String {
 
 fn assert_shallow_program_shape(ast: &Node, input: &str, case_name: &str) {
     assert!(
-        ast.location.start <= ast.location.end,
+        ast.location.start() <= ast.location.end(),
         "Invalid root location for {}: {:?}",
         case_name,
         ast.location
     );
     assert!(
-        ast.location.end <= input.len(),
+        ast.location.end() <= input.len(),
         "Root location exceeds input length for {}: end={} len={}",
         case_name,
-        ast.location.end,
+        ast.location.end(),
         input.len()
     );
 

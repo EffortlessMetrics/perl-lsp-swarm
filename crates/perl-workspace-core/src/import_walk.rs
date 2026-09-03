@@ -51,8 +51,8 @@ pub(crate) fn walk_imports(
 }
 
 fn range_of(node: &Node, line_index: &Utf8LineIndex) -> SourceRange {
-    let start = u32::try_from(node.location.start).unwrap_or(u32::MAX);
-    let end = u32::try_from(node.location.end).unwrap_or(u32::MAX);
+    let start = u32::try_from(node.location.start()).unwrap_or(u32::MAX);
+    let end = u32::try_from(node.location.end()).unwrap_or(u32::MAX);
     line_index.source_range(start, end)
 }
 

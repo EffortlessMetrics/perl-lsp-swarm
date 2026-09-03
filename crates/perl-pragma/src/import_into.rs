@@ -50,7 +50,7 @@ fn collect_import_into_calls(node: &Node, calls: &mut Vec<ImportIntoCall>) {
         && method == "import::into"
     {
         calls.push(ImportIntoCall {
-            range: node.location.start..node.location.end,
+            range: node.location.start()..node.location.end(),
             source: source_from_node(object),
             target: target_from_args(args),
         });

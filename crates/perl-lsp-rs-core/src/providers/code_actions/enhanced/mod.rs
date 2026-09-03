@@ -150,7 +150,7 @@ impl EnhancedCodeActionsProvider {
         actions: &mut Vec<CodeAction>,
     ) {
         // Prune subtrees that cannot overlap the range.
-        if node.location.end < range.0 || node.location.start > range.1 {
+        if node.location.end() < range.0 || node.location.start() > range.1 {
             return;
         }
 
@@ -221,7 +221,7 @@ impl EnhancedCodeActionsProvider {
         // Prune entire subtree when the node is completely outside the range.
         // Children are always within the parent span, so if the parent doesn't
         // overlap the range neither can any child.
-        if node.location.end < range.0 || node.location.start > range.1 {
+        if node.location.end() < range.0 || node.location.start() > range.1 {
             return;
         }
 
@@ -234,12 +234,12 @@ impl EnhancedCodeActionsProvider {
         // selection (8..25), the FunctionCall's end (20) is before the selection's
         // end (25) and is skipped; only the outermost matching node emits an action.
         // Partial-left overlap (cursor inside expression) is still supported.
-        let node_reaches_selection_end = node.location.end >= range.1;
+        let node_reaches_selection_end = node.location.end() >= range.1;
         if node_reaches_selection_end && self.is_extractable_expression(node) {
             let action =
                 extract_variable::create_extract_variable_action(node, &self.source, &helpers);
             if let Some(decl) = action.edit.changes.first() {
-                let key = (decl.location.start, decl.new_text.clone());
+                let key = (decl.location.start(), decl.new_text.clone());
                 if extract_var_seen.insert(key) {
                     actions.push(action);
                 }
@@ -459,7 +459,7 @@ impl EnhancedCodeActionsProvider {
                 diagnostics: Vec::new(),
                 edit: CodeActionEdit {
                     changes: vec![TextEdit {
-                        location: SourceLocation { start: insert_pos, end: insert_pos },
+                        location: SourceLocation::new(insert_pos, insert_pos),
                         new_text: format!("{}\n", pragmas.join("\n")),
                     }],
                 },
@@ -487,7 +487,7 @@ impl EnhancedCodeActionsProvider {
                 diagnostics: Vec::new(),
                 edit: CodeActionEdit {
                     changes: vec![TextEdit {
-                        location: SourceLocation { start: insert_pos, end: insert_pos },
+                        location: SourceLocation::new(insert_pos, insert_pos),
                         new_text: format!("{}\n", missing_pragmas.join("\n")),
                     }],
                 },

@@ -439,8 +439,8 @@ fn walk_errors(
 ) {
     if let NodeKind::Error { message, .. } = &node.kind {
         *count += 1;
-        if node.location.start < *first_start {
-            *first_start = node.location.start;
+        if node.location.start() < *first_start {
+            *first_start = node.location.start();
             *first_message = Some(message.clone());
         }
     }
@@ -1450,7 +1450,7 @@ mod tests {
 
     /// Helper to create a Node with the given kind at the given byte offset.
     fn node_at(kind: NodeKind, start: usize, end: usize) -> Node {
-        Node::new(kind, SourceLocation { start, end })
+        Node::new(kind, SourceLocation::new(start, end))
     }
 
     #[test]

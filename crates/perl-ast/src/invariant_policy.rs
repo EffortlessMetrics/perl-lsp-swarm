@@ -303,7 +303,7 @@ pub struct NodeKindFixture {
 pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
     use crate::{GotoTargetForm, Node, NodeKind, SourceLocation};
 
-    let loc = SourceLocation { start: 0, end: 0 };
+    let loc = SourceLocation::new(0, 0);
     let dummy = || Node::new(NodeKind::Undef, loc);
     let boxed = || Box::new(dummy());
     let text = || "fixture".to_string();

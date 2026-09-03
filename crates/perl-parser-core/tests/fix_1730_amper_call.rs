@@ -46,9 +46,9 @@ fn amper_call_with_args_produces_amper_call_node() -> TestResult {
 fn amper_call_location_includes_parenthesized_arguments() -> TestResult {
     let source = "&foo(1, 2);";
     let expr = first_statement_expr(source)?;
-    assert_eq!(expr.location.start, 0);
+    assert_eq!(expr.location.start(), 0);
     assert_eq!(
-        expr.location.end,
+        expr.location.end(),
         source.find(';').ok_or("expected statement terminator")?,
         "AmperCall location must include its arguments and closing parenthesis"
     );

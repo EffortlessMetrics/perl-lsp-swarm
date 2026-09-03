@@ -89,17 +89,13 @@ mod tests {
 
     #[test]
     fn public_totals_include_children_of_every_node_kind() {
-        let value = Node::new(
-            NodeKind::Number { value: "1".to_string() },
-            SourceLocation { start: 7, end: 8 },
-        );
-        let return_statement = Node::new(
-            NodeKind::Return { value: Some(Box::new(value)) },
-            SourceLocation { start: 0, end: 8 },
-        );
+        let value =
+            Node::new(NodeKind::Number { value: "1".to_string() }, SourceLocation::new(7, 8));
+        let return_statement =
+            Node::new(NodeKind::Return { value: Some(Box::new(value)) }, SourceLocation::new(0, 8));
         let tree = Node::new(
             NodeKind::Program { statements: vec![return_statement] },
-            SourceLocation { start: 0, end: 8 },
+            SourceLocation::new(0, 8),
         );
 
         let mut analyzer = AdvancedReuseAnalyzer::new();
@@ -121,30 +117,30 @@ mod tests {
                 statements: vec![
                     Node::new(
                         NodeKind::Number { value: "1".to_string() },
-                        SourceLocation { start: 1, end: 2 },
+                        SourceLocation::new(1, 2),
                     ),
                     Node::new(
                         NodeKind::Number { value: "2".to_string() },
-                        SourceLocation { start: 10, end: 11 },
+                        SourceLocation::new(10, 11),
                     ),
                 ],
             },
-            SourceLocation { start: 0, end: 11 },
+            SourceLocation::new(0, 11),
         );
         let new_tree = Node::new(
             NodeKind::Program {
                 statements: vec![
                     Node::new(
                         NodeKind::Number { value: "3".to_string() },
-                        SourceLocation { start: 1, end: 2 },
+                        SourceLocation::new(1, 2),
                     ),
                     Node::new(
                         NodeKind::Number { value: "4".to_string() },
-                        SourceLocation { start: 10, end: 11 },
+                        SourceLocation::new(10, 11),
                     ),
                 ],
             },
-            SourceLocation { start: 0, end: 11 },
+            SourceLocation::new(0, 11),
         );
         let mut edits = EditSet::new();
         edits.add(Edit::new(

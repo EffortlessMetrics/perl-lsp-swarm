@@ -152,8 +152,8 @@ fn sketch_node<O: DebugObserver>(root: &Node, observer: &mut O) -> Sketch {
         let truncated = frame.truncated || payload.truncated;
         let sketch = Sketch {
             kind: frame.node.kind.kind_name(),
-            start: frame.node.location.start,
-            end: frame.node.location.end,
+            start: frame.node.location.start(),
+            end: frame.node.location.end(),
             payload: payload.text,
             children: frame.built_children,
             omitted_children: frame.omitted_children,
@@ -169,8 +169,8 @@ fn sketch_node<O: DebugObserver>(root: &Node, observer: &mut O) -> Sketch {
 
     Sketch {
         kind: root.kind.kind_name(),
-        start: root.location.start,
-        end: root.location.end,
+        start: root.location.start(),
+        end: root.location.end(),
         payload: payload_summary(&root.kind).text,
         children: Vec::new(),
         omitted_children: 0,
@@ -529,7 +529,7 @@ mod tests {
     }
 
     fn loc(start: usize, end: usize) -> SourceLocation {
-        SourceLocation { start, end }
+        SourceLocation::new(start, end)
     }
 
     fn numbered(value: &str, start: usize) -> Node {

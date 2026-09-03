@@ -236,7 +236,7 @@ impl OccurrenceAnchor {
         let anchor_id = anchor.anchor_id?;
         Some(Self {
             anchor_kind: anchor.kind,
-            range: (range.start, range.end),
+            range: (range.start(), range.end()),
             anchor_id,
             hir_item_index: anchor.hir_item.map(|hir_item| hir_item.index()),
         })

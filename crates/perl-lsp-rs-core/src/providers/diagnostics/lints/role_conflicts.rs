@@ -160,7 +160,7 @@ fn role_anchor_location(
         if let Some(reference) = symbol_table.references.get(role_name).and_then(|references| {
             references.iter().find(|reference| reference.kind == SymbolKind::Role)
         }) {
-            return Some((reference.location.start, reference.location.end));
+            return Some((reference.location.start(), reference.location.end()));
         }
     }
 

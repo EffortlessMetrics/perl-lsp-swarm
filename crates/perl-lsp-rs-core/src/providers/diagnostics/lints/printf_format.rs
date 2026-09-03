@@ -75,12 +75,12 @@ fn check_format_args(name: &str, args: &[Node], node: &Node, diagnostics: &mut V
             if arg_count == 1 { "" } else { "s" },
         );
         diagnostics.push(Diagnostic {
-            range: (node.location.start, node.location.end),
+            range: (node.location.start(), node.location.end()),
             severity: DiagnosticSeverity::Warning,
             code: Some(DiagnosticCode::PrintfFormatMismatch.as_str().to_string()),
             message: msg,
             related_information: vec![RelatedInformation {
-                location: (fmt_node.location.start, fmt_node.location.end),
+                location: (fmt_node.location.start(), fmt_node.location.end()),
                 message: format!(
                     "Format string contains {} specifier{}",
                     specifier_count,

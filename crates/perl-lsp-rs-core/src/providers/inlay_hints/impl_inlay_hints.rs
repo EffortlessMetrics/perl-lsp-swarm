@@ -457,7 +457,7 @@ pub fn parameter_hints_with_resolver(
                     if i >= param_names.len() {
                         break;
                     }
-                    let (l, c) = to_pos16(arg.location.start);
+                    let (l, c) = to_pos16(arg.location.start());
 
                     // Filter by range if specified
                     if let Some(filter_range) = range {
@@ -538,7 +538,7 @@ pub fn parameter_hints_with_resolver(
                     if i >= param_names.len() {
                         break;
                     }
-                    let (l, c) = to_pos16(arg.location.start);
+                    let (l, c) = to_pos16(arg.location.start());
 
                     // Filter by range if specified
                     if let Some(filter_range) = range {
@@ -630,7 +630,7 @@ pub fn trivial_type_hints(
                     if let Some((hint, tooltip)) = inferred {
                         // Emit the hint at the variable's position, not the
                         // initializer's. This shows `: Num` after the declarator.
-                        let (vl, vc) = to_pos16(variable.location.end);
+                        let (vl, vc) = to_pos16(variable.location.end());
                         if let Some(filter_range) = range {
                             let hint_pos = Position::new(vl, vc);
                             if !pos_in_range(hint_pos, filter_range) {
@@ -664,7 +664,7 @@ pub fn trivial_type_hints(
         };
 
         if let Some((hint, tooltip)) = type_hint {
-            let (l, c) = to_pos16(node.location.end);
+            let (l, c) = to_pos16(node.location.end());
 
             // Filter by range if specified
             if let Some(filter_range) = range {

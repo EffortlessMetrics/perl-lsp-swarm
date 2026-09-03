@@ -45,14 +45,14 @@ pub fn add_parameter_action(source: &str, node: &Node, ast: &Node) -> Option<Cod
 
     // Edit 1: Insert new parameter before the closing `)` of the signature.
     changes.push(TextEdit {
-        location: SourceLocation { start: sig_close_paren, end: sig_close_paren },
+        location: SourceLocation::new(sig_close_paren, sig_close_paren),
         new_text: new_param_text.to_string(),
     });
 
     // Edits 2..N: Insert default value before the closing `)` of each call.
     for call_close_paren in call_sites {
         changes.push(TextEdit {
-            location: SourceLocation { start: call_close_paren, end: call_close_paren },
+            location: SourceLocation::new(call_close_paren, call_close_paren),
             new_text: call_default_text.to_string(),
         });
     }
@@ -84,8 +84,8 @@ fn find_signature_close_paren(
     // First, try to find the `(` that starts the signature by scanning forward
     // from the subroutine node's start position.  The signature `(` must appear
     // before the `{` that opens the body.
-    let sub_start = subroutine_node.location.start;
-    let sub_end = subroutine_node.location.end.min(source.len());
+    let sub_start = subroutine_node.location.start();
+    let sub_end = subroutine_node.location.end().min(source.len());
 
     // Find the first `{` in the subroutine span (body opener).
     let body_open = source[sub_start..sub_end].find('{').map(|p| sub_start + p)?;
@@ -112,8 +112,8 @@ fn find_signature_close_paren(
     }
 
     // Fallback: use rfind on the signature node region if it has a non-zero span.
-    let sig_end = signature.location.end.min(source.len());
-    let search_start = signature.location.start;
+    let sig_end = signature.location.end().min(source.len());
+    let search_start = signature.location.start();
     if sig_end > search_start {
         source[search_start..sig_end].rfind(')').map(|rel| search_start + rel)
     } else {
@@ -158,7 +158,7 @@ fn is_call_to(call_name: &str, sub_name: &str) -> bool {
 /// closing paren is at `node.location.end - 1`.  We insert text at that
 /// position to place the new argument before the `)`.
 fn find_call_close_paren(call_node: &Node, _args: &[Node]) -> Option<usize> {
-    let node_end = call_node.location.end;
+    let node_end = call_node.location.end();
     if node_end > 0 { Some(node_end - 1) } else { None }
 }
 
@@ -262,7 +262,7 @@ mod tests {
     use super::*;
 
     fn loc(start: usize, end: usize) -> SourceLocation {
-        SourceLocation { start, end }
+        SourceLocation::new(start, end)
     }
 
     fn ident(name: &str, start: usize) -> Node {

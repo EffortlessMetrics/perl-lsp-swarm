@@ -37,17 +37,17 @@ fn test_valueless_return_span_is_wellformed() -> Result<(), Box<dyn std::error::
     let ret = return_node(source)?;
 
     assert!(
-        ret.location.end >= ret.location.start,
+        ret.location.end() >= ret.location.start(),
         "valueless return span must not be inverted (got {}..{})",
-        ret.location.start,
-        ret.location.end
+        ret.location.start(),
+        ret.location.end()
     );
 
-    let sliced = source.get(ret.location.start..ret.location.end).ok_or_else(|| {
+    let sliced = source.get(ret.location.start()..ret.location.end()).ok_or_else(|| {
         format!(
             "span {}..{} out of bounds for source len {}",
-            ret.location.start,
-            ret.location.end,
+            ret.location.start(),
+            ret.location.end(),
             source.len()
         )
     })?;
@@ -64,8 +64,8 @@ fn test_value_return_span_unchanged() -> Result<(), Box<dyn std::error::Error>> 
     let source = "sub f { return $x; }";
     let ret = return_node(source)?;
 
-    let sliced = source.get(ret.location.start..ret.location.end).ok_or_else(|| {
-        format!("span {}..{} out of bounds", ret.location.start, ret.location.end)
+    let sliced = source.get(ret.location.start()..ret.location.end()).ok_or_else(|| {
+        format!("span {}..{} out of bounds", ret.location.start(), ret.location.end())
     })?;
     assert_eq!(
         sliced, "return $x",
@@ -81,12 +81,12 @@ fn test_toplevel_valueless_return_span() -> Result<(), Box<dyn std::error::Error
     let ret = return_node(source)?;
 
     assert!(
-        ret.location.end >= ret.location.start,
+        ret.location.end() >= ret.location.start(),
         "top-level valueless return span must not be inverted (got {}..{})",
-        ret.location.start,
-        ret.location.end
+        ret.location.start(),
+        ret.location.end()
     );
-    let sliced = source.get(ret.location.start..ret.location.end).ok_or("span out of bounds")?;
+    let sliced = source.get(ret.location.start()..ret.location.end()).ok_or("span out of bounds")?;
     assert_eq!(sliced, "return", "top-level return span should cover the keyword, got {sliced:?}");
     Ok(())
 }
@@ -99,12 +99,12 @@ fn test_expression_context_valueless_return_span() -> Result<(), Box<dyn std::er
     let ret = return_node(source)?;
 
     assert!(
-        ret.location.end >= ret.location.start,
+        ret.location.end() >= ret.location.start(),
         "expression-context valueless return span must not be inverted (got {}..{})",
-        ret.location.start,
-        ret.location.end
+        ret.location.start(),
+        ret.location.end()
     );
-    let sliced = source.get(ret.location.start..ret.location.end).ok_or("span out of bounds")?;
+    let sliced = source.get(ret.location.start()..ret.location.end()).ok_or("span out of bounds")?;
     assert_eq!(
         sliced, "return",
         "expression-context return span should cover the keyword, got {sliced:?}"

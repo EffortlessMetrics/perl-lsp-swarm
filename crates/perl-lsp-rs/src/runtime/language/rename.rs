@@ -732,18 +732,18 @@ impl LspServer {
         let mut edits = Vec::new();
         let mut has_sub_declaration_edit = false;
         for edit in &result.edits {
-            if crate::declaration::current_package_at(ast, edit.location.start) != "main" {
+            if crate::declaration::current_package_at(ast, edit.location.start()) != "main" {
                 return None;
             }
             let (start, end) = same_file_rename_span(
                 &doc.text,
-                edit.location.start,
-                edit.location.end,
+                edit.location.start(),
+                edit.location.end(),
                 current_symbol,
                 current_symbol,
             )?;
             let narrowed = RenameEdit {
-                location: perl_parser_core::SourceLocation { start, end },
+                location: perl_parser_core::SourceLocation::new(start, end),
                 new_text: edit.new_text.clone(),
             };
             if sub_declaration_keyword_before(&doc.text, start) {
@@ -760,10 +760,10 @@ impl LspServer {
         doc: &crate::state::DocumentState,
         edit: &RenameEdit,
     ) -> bool {
-        if edit.location.start == 0 || edit.location.start > doc.text.len() {
+        if edit.location.start() == 0 || edit.location.start() > doc.text.len() {
             return false;
         }
-        let Some(prefix) = doc.text.get(..edit.location.start) else {
+        let Some(prefix) = doc.text.get(..edit.location.start()) else {
             return false;
         };
         let Some(previous) = prefix.chars().next_back() else {
@@ -772,7 +772,7 @@ impl LspServer {
         if !is_perl_sigil(previous) {
             return false;
         }
-        lexical_declaration_keyword_before(&doc.text, edit.location.start - previous.len_utf8())
+        lexical_declaration_keyword_before(&doc.text, edit.location.start() - previous.len_utf8())
     }
 
     fn rename_edit_to_lsp_text_edit(
@@ -781,7 +781,7 @@ impl LspServer {
         edit: &RenameEdit,
         normalized_name: &str,
     ) -> Value {
-        let mut start = edit.location.start;
+        let mut start = edit.location.start();
         let mut new_text = edit.new_text.clone();
 
         if start > 0
@@ -794,7 +794,7 @@ impl LspServer {
         }
 
         let (start_line, start_char) = self.offset_to_pos16(doc, start);
-        let (end_line, end_char) = self.offset_to_pos16(doc, edit.location.end);
+        let (end_line, end_char) = self.offset_to_pos16(doc, edit.location.end());
 
         json!({
             "range": {
@@ -1798,8 +1798,8 @@ impl LspServer {
                         for location in references {
                             let Some((edit_start, edit_end)) = same_file_rename_span(
                                 &doc.text,
-                                location.start,
-                                location.end,
+                                location.start(),
+                                location.end(),
                                 &current_symbol,
                                 current_symbol_bare,
                             ) else {
@@ -1822,10 +1822,7 @@ impl LspServer {
                             }
 
                             let narrowed = RenameEdit {
-                                location: perl_parser_core::SourceLocation {
-                                    start: edit_start,
-                                    end: edit_end,
-                                },
+                                location: perl_parser_core::SourceLocation::new(edit_start, edit_end,),
                                 new_text: normalized_name.to_string(),
                             };
                             edits.push(self.rename_edit_to_lsp_text_edit(
@@ -2718,7 +2715,7 @@ mod tests {
         let bare_start = source.rfind("value").ok_or("missing bare variable reference")?;
         let bare_end = bare_start + "value".len();
         let edit = RenameEdit {
-            location: perl_parser_core::SourceLocation { start: bare_start, end: bare_end },
+            location: perl_parser_core::SourceLocation::new(bare_start, bare_end),
             new_text: "$renamed".to_string(),
         };
         let documents = server.documents_guard();

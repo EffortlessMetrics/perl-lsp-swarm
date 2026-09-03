@@ -53,7 +53,7 @@ fn collect_runtime_import_authority(
         let Some(next) = statements.get(index + 1) else { continue };
         let Some(spec) = specs.iter().find(|spec| {
             spec.kind == ImportKind::RequireThenImport
-                && spec.span_start_byte == Some(statement.location.start as u32)
+                && spec.span_start_byte == Some(statement.location.start() as u32)
         }) else {
             continue;
         };
@@ -65,12 +65,11 @@ fn collect_runtime_import_authority(
             continue;
         }
         let ImportSymbols::Explicit(symbols) = &spec.symbols else { continue };
-        if !authorities
-            .iter()
-            .any(|authority| authority.end == next.location.end && authority.module == spec.module)
-        {
+        if !authorities.iter().any(|authority| {
+            authority.end == next.location.end() && authority.module == spec.module
+        }) {
             authorities.push(RuntimeImportAuthority {
-                end: next.location.end,
+                end: next.location.end(),
                 module: spec.module.clone(),
                 symbols: symbols.iter().cloned().collect(),
             });

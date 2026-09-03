@@ -245,7 +245,7 @@ impl AstBreakpointValidator {
 
     fn has_only_comments_in_range_node(&self, node: &Node, start: usize, end: usize) -> bool {
         // Check if node overlaps with line range
-        if node.location.start >= end || node.location.end <= start {
+        if node.location.start() >= end || node.location.end() <= start {
             return false;
         }
 
@@ -257,8 +257,8 @@ impl AstBreakpointValidator {
                 let nodes_in_range: Vec<_> = statements
                     .iter()
                     .filter(|s| {
-                        s.location.start < end
-                            && s.location.end > start
+                        s.location.start() < end
+                            && s.location.end() > start
                             && s.kind.safe_for_breakpoint()
                     })
                     .collect();
@@ -280,8 +280,8 @@ impl AstBreakpointValidator {
     fn is_inside_heredoc_interior_node(&self, node: &Node, byte_offset: usize) -> bool {
         // Check if this is a heredoc with a body span containing the offset
         if let NodeKind::Heredoc { body_span: Some(span), .. } = &node.kind
-            && byte_offset >= span.start
-            && byte_offset < span.end
+            && byte_offset >= span.start()
+            && byte_offset < span.end()
         {
             return true;
         }

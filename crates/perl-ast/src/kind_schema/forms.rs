@@ -9,7 +9,7 @@ use super::GrammarInputWitness;
 use crate::{Node, NodeKind, SourceLocation};
 
 fn loc() -> SourceLocation {
-    SourceLocation { start: 0, end: 0 }
+    SourceLocation::new(0, 0)
 }
 
 fn dummy() -> Node {

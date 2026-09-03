@@ -198,7 +198,7 @@ impl ExportSymbolExtractor {
                     let is_export_var = (sigil == "@" && (name == "EXPORT" || name == "EXPORT_OK"))
                         || (sigil == "%" && name == "EXPORT_TAGS");
                     if is_export_var {
-                        return Some(AnchorId(node.location.start as u64));
+                        return Some(AnchorId(node.location.start() as u64));
                     }
                 }
             }
@@ -208,7 +208,7 @@ impl ExportSymbolExtractor {
                     let is_export_var = (sigil == "@" && (name == "EXPORT" || name == "EXPORT_OK"))
                         || (sigil == "%" && name == "EXPORT_TAGS");
                     if is_export_var {
-                        return Some(AnchorId(node.location.start as u64));
+                        return Some(AnchorId(node.location.start() as u64));
                     }
                 }
             }

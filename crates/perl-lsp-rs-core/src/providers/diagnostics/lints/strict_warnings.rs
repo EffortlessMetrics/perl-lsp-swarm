@@ -283,8 +283,8 @@ fn collect_phase_scoped_pragma_uses_inner(
         {
             let phase_range = phase_span
                 .as_ref()
-                .map(|span| (span.start, span.end))
-                .unwrap_or((node.location.start, node.location.end));
+                .map(|span| (span.start(), span.end()))
+                .unwrap_or((node.location.start(), node.location.end()));
             collect_phase_scoped_pragma_uses_inner(
                 block,
                 Some(phase.as_str()),
@@ -297,7 +297,7 @@ fn collect_phase_scoped_pragma_uses_inner(
                 hits.push(PhaseScopedPragmaUse {
                     module: module.clone(),
                     phase: phase.to_string(),
-                    use_range: (node.location.start, node.location.end),
+                    use_range: (node.location.start(), node.location.end()),
                     phase_range,
                 });
             }
@@ -371,7 +371,7 @@ fn check_misspelled_pragma(module: &str, node: &Node, diagnostics: &mut Vec<Diag
     for &(correct, typos) in PRAGMA_TYPOS {
         if typos.contains(&module) {
             diagnostics.push(Diagnostic {
-                range: (node.location.start, node.location.end),
+                range: (node.location.start(), node.location.end()),
                 severity: DiagnosticSeverity::Warning,
                 code: Some(DiagnosticCode::MisspelledPragma.as_str().to_string()),
                 message: format!(
@@ -379,7 +379,7 @@ fn check_misspelled_pragma(module: &str, node: &Node, diagnostics: &mut Vec<Diag
                     correct, module
                 ),
                 related_information: vec![RelatedInformation {
-                    location: (node.location.start, node.location.end),
+                    location: (node.location.start(), node.location.end()),
                     message: format!("Replace '{}' with '{}'", module, correct),
                 }],
                 tags: Vec::new(),

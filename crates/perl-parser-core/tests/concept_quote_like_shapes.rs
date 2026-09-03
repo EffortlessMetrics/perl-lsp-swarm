@@ -63,7 +63,7 @@ fn substitution_transliteration_and_quotes_keep_exact_native_payloads() -> Resul
                 if *has_embedded_code || *negated {
                     return Err("substitution flags were not preserved".into());
                 }
-                if source.get(node.location.start..node.location.end)
+                if source.get(node.location.start()..node.location.end())
                     != Some("$message =~ s/hello/hello world/g")
                 {
                     return Err("substitution source span was not preserved".into());
@@ -77,7 +77,7 @@ fn substitution_transliteration_and_quotes_keep_exact_native_payloads() -> Resul
                 ) {
                     return Err("transliteration target was not $message".into());
                 }
-                if let Some(text) = source.get(node.location.start..node.location.end) {
+                if let Some(text) = source.get(node.location.start()..node.location.end()) {
                     transliterations.push((
                         text.to_owned(),
                         search.clone(),
@@ -99,7 +99,7 @@ fn substitution_transliteration_and_quotes_keep_exact_native_payloads() -> Resul
                 quote_payloads.push((
                     "declaration".to_string(),
                     source
-                        .get(initializer.location.start..initializer.location.end)
+                        .get(initializer.location.start()..initializer.location.end())
                         .map(ToOwned::to_owned),
                     value.clone(),
                     *interpolated,
@@ -111,7 +111,7 @@ fn substitution_transliteration_and_quotes_keep_exact_native_payloads() -> Resul
                 };
                 quote_payloads.push((
                     "return".to_string(),
-                    source.get(value.location.start..value.location.end).map(ToOwned::to_owned),
+                    source.get(value.location.start()..value.location.end()).map(ToOwned::to_owned),
                     string_value.clone(),
                     *interpolated,
                 ));
@@ -163,8 +163,8 @@ fn paired_quote_delimiters_do_not_fabricate_block_nodes() -> Result<(), String> 
 
     walk(&ast, &mut |node| {
         if matches!(&node.kind, NodeKind::Block { .. }) {
-            let text = source.get(node.location.start..node.location.end).map_or_else(
-                || format!("<unmapped {}..{}>", node.location.start, node.location.end),
+            let text = source.get(node.location.start()..node.location.end()).map_or_else(
+                || format!("<unmapped {}..{}>", node.location.start(), node.location.end()),
                 ToOwned::to_owned,
             );
             fabricated_blocks.push(text);

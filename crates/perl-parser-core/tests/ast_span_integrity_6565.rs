@@ -31,16 +31,16 @@ fn declaration_span_contains_initializer() -> Result<(), String> {
         statements(&ast)?.first().ok_or_else(|| "expected one declaration".to_string())?;
     let initializer = initializer(statement)?;
 
-    if statement.location.start != 0 {
-        return Err(format!("declaration starts at {}", statement.location.start));
+    if statement.location.start() != 0 {
+        return Err(format!("declaration starts at {}", statement.location.start()));
     }
-    if statement.location.end != initializer.location.end {
+    if statement.location.end() != initializer.location.end() {
         return Err(format!(
             "declaration ends at {}, initializer ends at {}",
-            statement.location.end, initializer.location.end
+            statement.location.end(), initializer.location.end()
         ));
     }
-    let text = source_text(source, initializer.location.start, initializer.location.end)?;
+    let text = source_text(source, initializer.location.start(), initializer.location.end())?;
     if text != "qw(Accuracy::Parent)" {
         return Err(format!("unexpected initializer text: {text:?}"));
     }
@@ -60,15 +60,15 @@ fn qw_elements_have_individual_source_spans() -> Result<(), String> {
     let [first, second] = elements.as_slice() else {
         return Err(format!("expected two qw elements, got {}", elements.len()));
     };
-    let first_text = source_text(source, first.location.start, first.location.end)?;
-    let second_text = source_text(source, second.location.start, second.location.end)?;
+    let first_text = source_text(source, first.location.start(), first.location.end())?;
+    let second_text = source_text(source, second.location.start(), second.location.end())?;
     if first_text != "foo" || second_text != "bar" {
         return Err(format!("unexpected qw element text: {first_text:?}, {second_text:?}"));
     }
-    if first.location.end > second.location.start {
+    if first.location.end() > second.location.start() {
         return Err(format!(
             "qw element spans overlap: {} > {}",
-            first.location.end, second.location.start
+            first.location.end(), second.location.start()
         ));
     }
     Ok(())
@@ -82,13 +82,13 @@ fn declaration_span_retains_consumed_parenthesized_delimiter() -> Result<(), Str
         statements(&ast)?.first().ok_or_else(|| "expected one declaration".to_string())?;
     let initializer = initializer(statement)?;
 
-    if statement.location.end < initializer.location.end {
+    if statement.location.end() < initializer.location.end() {
         return Err(format!(
             "declaration ends before initializer: {} < {}",
-            statement.location.end, initializer.location.end
+            statement.location.end(), initializer.location.end()
         ));
     }
-    let text = source_text(source, statement.location.start, statement.location.end)?;
+    let text = source_text(source, statement.location.start(), statement.location.end())?;
     if text != "my $value = (42)" {
         return Err(format!("parenthesized declaration lost consumed delimiter: {text:?}"));
     }
@@ -108,8 +108,8 @@ fn qw_span_search_starts_inside_literal_content() -> Result<(), String> {
     let [first, second] = elements.as_slice() else {
         return Err(format!("expected two qw elements, got {}", elements.len()));
     };
-    let first_text = source_text(source, first.location.start, first.location.end)?;
-    let second_text = source_text(source, second.location.start, second.location.end)?;
+    let first_text = source_text(source, first.location.start(), first.location.end())?;
+    let second_text = source_text(source, second.location.start(), second.location.end())?;
     if first_text != "qw" || second_text != "foo" {
         return Err(format!("unexpected qw element text: {first_text:?}, {second_text:?}"));
     }
@@ -129,7 +129,7 @@ fn qw_span_search_ignores_comment_text_before_words() -> Result<(), String> {
     let [element] = elements.as_slice() else {
         return Err(format!("expected one surviving qw element, got {}", elements.len()));
     };
-    let text = source_text(source, element.location.start, element.location.end)?;
+    let text = source_text(source, element.location.start(), element.location.end())?;
     if text != "bar" {
         return Err(format!("comment text stole qw span: {text:?}"));
     }

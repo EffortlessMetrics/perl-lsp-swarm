@@ -33,22 +33,22 @@ fn unpaired_substitution_replacement_ignores_delimiters_inside_quotes() -> Resul
         assert_eq!(replacement.text, expected_replacement);
         assert_eq!(
             replacement.range,
-            SourceLocation { start: replacement_start, end: replacement_end }
+            SourceLocation::new(replacement_start, replacement_end)
         );
         assert_eq!(
             replacement.opening_delimiter_range,
-            SourceLocation { start: replacement_start - 1, end: replacement_start }
+            SourceLocation::new(replacement_start - 1, replacement_start)
         );
         assert_eq!(
             replacement.closing_delimiter_range,
-            Some(SourceLocation { start: replacement_end, end: replacement_end + 1 })
+            Some(SourceLocation::new(replacement_end, replacement_end + 1))
         );
         assert_eq!(geometry.modifiers.text, expected_modifiers);
         assert_eq!(
             geometry.modifiers.range,
-            SourceLocation { start: modifier_start, end: modifier_end }
+            SourceLocation::new(modifier_start, modifier_end)
         );
-        assert_eq!(geometry.full_range, SourceLocation { start: source_start, end: modifier_end });
+        assert_eq!(geometry.full_range, SourceLocation::new(source_start, modifier_end));
 
         let parsed = extract_substitution_parts_strict(source).map_err(|error| {
             format!("strict substitution parse failed for {source:?}: {error:?}")

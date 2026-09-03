@@ -243,7 +243,7 @@ $name, $age, $salary
     }
 
     // Manual-only coverage (Missing* + UnknownRest + Error).
-    let manual_ast = manual_recovery_nodekind_fixture(SourceLocation { start: 0, end: 0 });
+    let manual_ast = manual_recovery_nodekind_fixture(SourceLocation::new(0, 0));
     collect_node_kinds(&manual_ast, &mut observed);
 
     let missing: Vec<_> =
@@ -256,7 +256,7 @@ $name, $age, $salary
 
 #[test]
 fn test_manual_only_nodekinds_exist_and_analyze_without_panic() {
-    let location = SourceLocation { start: 0, end: 0 };
+    let location = SourceLocation::new(0, 0);
     let manual_ast = manual_recovery_nodekind_fixture(location);
 
     // 1) Ensure the fixture still contains the intended synthetic kinds.

@@ -15,7 +15,7 @@ pub fn find_symbol_at_position(
     // First check if we're on a definition
     for (name, symbols) in &symbol_table.symbols {
         for symbol in symbols {
-            if symbol.location.start <= position && position <= symbol.location.end {
+            if symbol.location.start() <= position && position <= symbol.location.end() {
                 return Some((name.clone(), symbol.kind));
             }
         }
@@ -24,7 +24,7 @@ pub fn find_symbol_at_position(
     // Then check references
     for (name, references) in &symbol_table.references {
         for reference in references {
-            if reference.location.start <= position && position <= reference.location.end {
+            if reference.location.start() <= position && position <= reference.location.end() {
                 return Some((name.clone(), reference.kind));
             }
         }
@@ -43,7 +43,7 @@ pub fn extract_symbol_from_source(position: usize, source: &str) -> Option<(Stri
 /// Get the range of a symbol at position
 pub fn get_symbol_range_at_position(position: usize, source: &str) -> Option<SourceLocation> {
     let (start, end) = cursor::get_symbol_range_at_position(position, source)?;
-    Some(SourceLocation { start, end })
+    Some(SourceLocation::new(start, end))
 }
 
 fn map_cursor_kind(kind: cursor::CursorSymbolKind) -> SymbolKind {

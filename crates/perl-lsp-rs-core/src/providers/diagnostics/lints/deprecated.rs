@@ -34,7 +34,7 @@ pub fn check_deprecated_syntax(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                 {
                     let type_name = if sigil == "@" { "array" } else { "hash" };
                     diagnostics.push(Diagnostic {
-                        range: (n.location.start, n.location.end),
+                        range: (n.location.start(), n.location.end()),
                         severity: DiagnosticSeverity::Warning,
                         code: Some(DiagnosticCode::DeprecatedDefined.as_str().to_string()),
                         message: format!(
@@ -43,11 +43,11 @@ pub fn check_deprecated_syntax(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
                         ),
                         related_information: vec![
                             RelatedInformation {
-                                location: (arg.location.start, arg.location.end),
+                                location: (arg.location.start(), arg.location.end()),
                                 message: format!("Suggestion: Use 'if ({}{})'  or 'if ({}{}[0])' instead", sigil, name, sigil, name),
                             },
                             RelatedInformation {
-                                location: (n.location.start, n.location.end),
+                                location: (n.location.start(), n.location.end()),
                                 message: format!("Note: Testing definedness of {} is deprecated because it was rarely useful and often wrong. Empty {}s are false in boolean context.", type_name, type_name),
                             }
                         ],
@@ -62,17 +62,17 @@ pub fn check_deprecated_syntax(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             // Check for deprecated $[ variable
             NodeKind::Variable { sigil, name } if sigil == "$" && name == "[" => {
                 diagnostics.push(Diagnostic {
-                        range: (n.location.start, n.location.start + 2),
+                        range: (n.location.start(), n.location.start() + 2),
                         severity: DiagnosticSeverity::Warning,
                         code: Some(DiagnosticCode::DeprecatedArrayBase.as_str().to_string()),
                         message: "Use of '$[' is deprecated and will be removed".to_string(),
                         related_information: vec![
                             RelatedInformation {
-                                location: (n.location.start, n.location.start + 2),
+                                location: (n.location.start(), n.location.start() + 2),
                                 message: "Suggestion: Remove usage of '$[' - arrays always start at index 0".to_string(),
                             },
                             RelatedInformation {
-                                location: (n.location.start, n.location.start + 2),
+                                location: (n.location.start(), n.location.start() + 2),
                                 message: "Note: The $[ variable was used to change the base index of arrays, but this feature has been deprecated since Perl 5.12 and will be removed in future versions.".to_string(),
                             }
                         ],

@@ -526,8 +526,8 @@ fn assert_bareword_fact<'a>(
         .ok_or_else(|| format!("expected bareword fact for {name} as {role:?}"))?;
 
     assert_eq!(fact.package_context.as_deref(), Some("Bareword::Demo"));
-    assert_eq!(&source[fact.range.start..fact.range.end], name);
-    assert_eq!(fact.anchor_id, AnchorId(fact.range.start as u64));
+    assert_eq!(&source[fact.range.start()..fact.range.end()], name);
+    assert_eq!(fact.anchor_id, AnchorId(fact.range.start() as u64));
     assert_eq!(fact.provenance, CompileProvenance::ExactAst);
     assert_eq!(fact.confidence, CompileConfidence::High);
     let item = file
@@ -570,7 +570,7 @@ fn hir_lowers_first_slice_constructs_with_stable_metadata() -> Result<(), Box<dy
 
     for (index, item) in file.items.iter().enumerate() {
         assert_eq!(item.id.index(), index as u32);
-        assert!(item.range.end >= item.range.start, "HIR item range should be ordered: {:?}", item);
+        assert!(item.range.end() >= item.range.start(), "HIR item range should be ordered: {:?}", item);
         assert_eq!(item.range, item.anchor.range);
     }
 
@@ -1367,7 +1367,7 @@ fn hir_compile_effect_log_links_source_mutations_facts_and_boundaries()
         .ok_or("expected source-backed proto prototype fact")?;
     assert_eq!(proto_fact.package_context.as_deref(), Some("Effect::Demo"));
     assert_eq!(proto_fact.content, "$");
-    assert_eq!(&source[proto_fact.range.start..proto_fact.range.end], "($)");
+    assert_eq!(&source[proto_fact.range.start()..proto_fact.range.end()], "($)");
     assert_eq!(
         proto_fact.declaration_range,
         file.items
@@ -1377,7 +1377,7 @@ fn hir_compile_effect_log_links_source_mutations_facts_and_boundaries()
             .range
     );
     assert_eq!(proto_fact.scope_id.map(|scope| scope.index()), Some(2));
-    assert_eq!(proto_fact.anchor_id, AnchorId(proto_fact.range.start as u64));
+    assert_eq!(proto_fact.anchor_id, AnchorId(proto_fact.range.start() as u64));
     assert_eq!(proto_fact.provenance, CompileProvenance::ExactAst);
     assert_eq!(proto_fact.confidence, CompileConfidence::High);
     let literal_fact = file
@@ -1387,7 +1387,7 @@ fn hir_compile_effect_log_links_source_mutations_facts_and_boundaries()
         .find(|fact| fact.sub_name == "literal")
         .ok_or("expected source-backed empty prototype fact")?;
     assert_eq!(literal_fact.content, "");
-    assert_eq!(&source[literal_fact.range.start..literal_fact.range.end], "()");
+    assert_eq!(&source[literal_fact.range.start()..literal_fact.range.end()], "()");
     assert!(
         effects.iter().all(|effect| {
             effect.model_version == COMPILE_EFFECT_MODEL_VERSION
@@ -1559,7 +1559,7 @@ ${$strict_again} = 2;
         .iter()
         .filter_map(|item| match &item.kind {
             HirKind::DerefExpr(expr) => {
-                Some((item.range.start, expr.aggregate_kind, expr.operand_kind))
+                Some((item.range.start(), expr.aggregate_kind, expr.operand_kind))
             }
             _ => None,
         })
@@ -1587,7 +1587,7 @@ ${$strict_again} = 2;
         .filter(|boundary| boundary.kind == CompileEnvironmentBoundaryKind::SymbolicReferenceDeref)
         .collect::<Vec<_>>();
     assert_eq!(
-        symbolic_boundaries.iter().map(|boundary| boundary.range.start).collect::<Vec<_>>(),
+        symbolic_boundaries.iter().map(|boundary| boundary.range.start()).collect::<Vec<_>>(),
         vec![literal_symbol, computed_symbol, interpolated_symbol],
         "only string-valued dereference operands should retain deferred symbolic boundaries"
     );
@@ -1688,7 +1688,7 @@ fn hir_compile_environment_proves_scoped_pragma_state_facts()
     let strict_effect = environment
         .pragma_effects
         .iter()
-        .find(|effect| effect.range.start == strict_offset && effect.pragma == "strict")
+        .find(|effect| effect.range.start() == strict_offset && effect.pragma == "strict")
         .ok_or("expected broad strict effect")?;
     assert_eq!(strict_effect.argument_kind, PragmaArgumentKind::Broad);
     assert!(strict_effect.args.is_empty());
@@ -1698,12 +1698,12 @@ fn hir_compile_environment_proves_scoped_pragma_state_facts()
     let no_strict_effect = environment
         .pragma_effects
         .iter()
-        .find(|effect| effect.range.start == no_strict_offset && effect.pragma == "strict")
+        .find(|effect| effect.range.start() == no_strict_offset && effect.pragma == "strict")
         .ok_or("expected category strict effect")?;
     assert_eq!(no_strict_effect.argument_kind, PragmaArgumentKind::Categories);
     assert_eq!(no_strict_effect.args, vec!["refs".to_string()]);
-    assert_eq!(no_strict_effect.range.start, no_strict_offset);
-    assert!(strict_effect.range.start < no_strict_effect.range.start);
+    assert_eq!(no_strict_effect.range.start(), no_strict_offset);
+    assert!(strict_effect.range.start() < no_strict_effect.range.start());
 
     let after_strict = environment
         .pragma_state_at(strict_offset)
@@ -1736,7 +1736,7 @@ fn hir_compile_environment_proves_scoped_pragma_state_facts()
     assert!(outside_state.has_feature("say"));
 
     assert!(
-        !environment.pragma_state_facts().iter().any(|fact| fact.range.start == dynamic_offset),
+        !environment.pragma_state_facts().iter().any(|fact| fact.range.start() == dynamic_offset),
         "dynamic pragma arguments must not produce a confirmed state fact"
     );
     let dynamic_boundary = environment
@@ -1744,7 +1744,7 @@ fn hir_compile_environment_proves_scoped_pragma_state_facts()
         .iter()
         .find(|boundary| boundary.kind == CompileEnvironmentBoundaryKind::DynamicPragmaArgs)
         .ok_or("expected dynamic pragma boundary")?;
-    assert_eq!(dynamic_boundary.range.start, dynamic_offset);
+    assert_eq!(dynamic_boundary.range.start(), dynamic_offset);
     assert_eq!(dynamic_boundary.package_context.as_deref(), Some("Env::Scoped"));
     assert_eq!(dynamic_boundary.provenance, CompileProvenance::DynamicBoundary);
     assert_eq!(dynamic_boundary.confidence, CompileConfidence::Low);
@@ -1961,7 +1961,7 @@ fn hir_module_resolution_outcomes_resolve_against_explicit_roots()
         file.compile_environment.resolved_module_resolution_candidates(&supplied_roots, |_| false);
     assert!(
         outcome_facts.iter().all(|candidate| {
-            candidate.directive_item.is_some() && candidate.range.end >= candidate.range.start
+            candidate.directive_item.is_some() && candidate.range.end() >= candidate.range.start()
         }),
         "resolved/not-found outcome facts should preserve source anchors"
     );
@@ -2106,18 +2106,18 @@ fn hir_module_resolution_cache_key_excludes_dynamic_requires() {
 #[test]
 fn hir_marks_items_lowered_from_error_partials_as_recovered()
 -> Result<(), Box<dyn std::error::Error>> {
-    let loc = SourceLocation { start: 0, end: 12 };
+    let loc = SourceLocation::new(0, 12);
     let partial = Node::new(
         NodeKind::Subroutine {
             name: Some("broken".to_string()),
-            name_span: Some(SourceLocation { start: 4, end: 10 }),
+            name_span: Some(SourceLocation::new(4, 10)),
             declarator: None,
             prototype: None,
             signature: None,
             attributes: Vec::new(),
             body: Box::new(Node::new(
                 NodeKind::MissingBlock,
-                SourceLocation { start: 11, end: 11 },
+                SourceLocation::new(11, 11),
             )),
         },
         loc,

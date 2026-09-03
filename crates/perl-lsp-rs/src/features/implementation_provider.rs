@@ -485,9 +485,9 @@ impl ImplementationProvider {
     ) -> Option<Node> {
         if let Some(src) = source {
             let (start_line, start_col) =
-                crate::position::offset_to_utf16_line_col(src, node.location.start);
+                crate::position::offset_to_utf16_line_col(src, node.location.start());
             let (end_line, end_col) =
-                crate::position::offset_to_utf16_line_col(src, node.location.end);
+                crate::position::offset_to_utf16_line_col(src, node.location.end());
 
             if line >= start_line
                 && line <= end_line
@@ -517,9 +517,9 @@ impl ImplementationProvider {
     /// Convert node to LSP range
     fn node_to_range(&self, node: &Node, source: &str) -> LspRange {
         let (start_line, start_col) =
-            crate::position::offset_to_utf16_line_col(source, node.location.start);
+            crate::position::offset_to_utf16_line_col(source, node.location.start());
         let (end_line, end_col) =
-            crate::position::offset_to_utf16_line_col(source, node.location.end);
+            crate::position::offset_to_utf16_line_col(source, node.location.end());
 
         LspRange {
             start: LspPosition::new(start_line, start_col),

@@ -106,10 +106,13 @@ impl SimpleIncrementalParser {
 
     #[allow(clippy::only_used_in_recursion)]
     fn affects_structure(&self, node: &Node, range: &Range) -> bool {
-        // Check if this node is a structural element and overlaps with the edit
-        let node_range = Range::from(node.location);
+        // Check if this node is a structural element and overlaps with the edit.
+        // Byte comparison only: a byte-only span must not invent line/column
+        // values (#8740 removed the source-free `Range::from(SourceLocation)`).
+        let node_start = node.location.start();
+        let node_end = node.location.end();
 
-        if range.start.byte < node_range.end.byte && range.end.byte > node_range.start.byte {
+        if range.start.byte < node_end && range.end.byte > node_start {
             match &node.kind {
                 NodeKind::If { .. }
                 | NodeKind::While { .. }
@@ -283,7 +286,7 @@ mod tests {
     #[test]
     fn count_nodes_visits_if_children_with_keyword_metadata() {
         let parser = SimpleIncrementalParser::new();
-        let loc = |start, end| perl_parser_core::ast::SourceLocation { start, end };
+        let loc = |start, end| perl_parser_core::ast::SourceLocation::new(start, end);
         let number =
             |start| Node::new(NodeKind::Number { value: "1".to_string() }, loc(start, start + 1));
         let block = |start, end| {
@@ -306,7 +309,7 @@ mod tests {
     #[test]
     fn vstring_nodes_match_only_when_version_text_matches() {
         let parser = SimpleIncrementalParser::new();
-        let loc = |start, end| perl_parser_core::ast::SourceLocation { start, end };
+        let loc = |start, end| perl_parser_core::ast::SourceLocation::new(start, end);
         let vstring = |value: &str| {
             Node::new(NodeKind::VString { value: value.to_string() }, loc(0, value.len()))
         };

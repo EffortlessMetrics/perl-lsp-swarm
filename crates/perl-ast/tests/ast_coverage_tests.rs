@@ -24,7 +24,7 @@ mod helpers;
 // ---------------------------------------------------------------------------
 
 fn loc(start: usize, end: usize) -> SourceLocation {
-    SourceLocation { start, end }
+    SourceLocation::new(start, end)
 }
 
 fn num(value: &str) -> Node {
@@ -123,10 +123,7 @@ fn for_each_child_try_with_multiple_catches_and_finally() -> Result<(), Box<dyn 
         NodeKind::Try {
             body: Box::new(block(vec![])),
             catch_blocks: vec![
-                (
-                    Some(("$e1".to_string(), SourceLocation { start: 0, end: 0 })),
-                    Box::new(block(vec![])),
-                ),
+                (Some(("$e1".to_string(), SourceLocation::new(0, 0))), Box::new(block(vec![]))),
                 (None, Box::new(block(vec![]))),
             ],
             finally_block: Some(Box::new(block(vec![]))),
@@ -376,8 +373,8 @@ fn for_each_child_mut_can_modify_locations() -> Result<(), Box<dyn std::error::E
     });
     if let NodeKind::Program { statements } = &prog.kind {
         for stmt in statements {
-            assert_eq!(stmt.location.start, 99);
-            assert_eq!(stmt.location.end, 100);
+            assert_eq!(stmt.location.start(), 99);
+            assert_eq!(stmt.location.end(), 100);
         }
     }
     Ok(())
@@ -595,7 +592,7 @@ fn count_nodes_try_catch_finally() -> Result<(), Box<dyn std::error::Error>> {
         NodeKind::Try {
             body: Box::new(block(vec![num("1")])),
             catch_blocks: vec![(
-                Some(("$e".to_string(), SourceLocation { start: 0, end: 0 })),
+                Some(("$e".to_string(), SourceLocation::new(0, 0))),
                 Box::new(block(vec![num("2")])),
             )],
             finally_block: Some(Box::new(block(vec![num("3")]))),
@@ -683,10 +680,10 @@ fn ne_missing_variants_differ() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn source_location_zero_length_span() -> Result<(), Box<dyn std::error::Error>> {
     let sl = loc(5, 5);
-    assert_eq!(sl.start, 5);
-    assert_eq!(sl.end, 5);
+    assert_eq!(sl.start(), 5);
+    assert_eq!(sl.end(), 5);
     let node = Node::new(NodeKind::MissingExpression, sl);
-    assert_eq!(node.location.start, node.location.end);
+    assert_eq!(node.location.start(), node.location.end());
     Ok(())
 }
 
@@ -694,8 +691,8 @@ fn source_location_zero_length_span() -> Result<(), Box<dyn std::error::Error>> 
 fn source_location_large_offsets() -> Result<(), Box<dyn std::error::Error>> {
     let sl = loc(1_000_000, 1_000_042);
     let node = Node::new(NodeKind::Number { value: "42".to_string() }, sl);
-    assert_eq!(node.location.start, 1_000_000);
-    assert_eq!(node.location.end, 1_000_042);
+    assert_eq!(node.location.start(), 1_000_000);
+    assert_eq!(node.location.end(), 1_000_042);
     Ok(())
 }
 
@@ -704,8 +701,8 @@ fn source_location_copy_semantics() -> Result<(), Box<dyn std::error::Error>> {
     let a = loc(10, 20);
     let b = a; // Copy
     assert_eq!(a, b);
-    assert_eq!(a.start, b.start);
-    assert_eq!(a.end, b.end);
+    assert_eq!(a.start(), b.start());
+    assert_eq!(a.end(), b.end());
     Ok(())
 }
 
@@ -1471,7 +1468,7 @@ fn clone_if_is_independent() -> Result<(), Box<dyn std::error::Error>> {
         condition.location = loc(99, 100);
     }
     if let NodeKind::If { condition, .. } = &original.kind {
-        assert_eq!(condition.location.start, 0, "original should be unmodified");
+        assert_eq!(condition.location.start(), 0, "original should be unmodified");
     }
     Ok(())
 }

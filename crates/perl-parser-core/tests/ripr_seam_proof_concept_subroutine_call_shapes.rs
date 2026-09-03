@@ -23,11 +23,11 @@ fn walk(node: &Node, visit: &mut impl FnMut(&Node)) {
 }
 
 fn source_text(source: &str, node: &Node) -> Option<String> {
-    source.get(node.location.start..node.location.end).map(str::to_owned)
+    source.get(node.location.start()..node.location.end()).map(str::to_owned)
 }
 
 fn assert_span_contains(parent: &Node, child: &Node, relationship: &str) -> Result<(), String> {
-    if parent.location.start <= child.location.start && child.location.end <= parent.location.end {
+    if parent.location.start() <= child.location.start() && child.location.end() <= parent.location.end() {
         Ok(())
     } else {
         Err(format!(
@@ -73,7 +73,7 @@ fn prototype_is_owned_by_the_exact_forward_declaration() -> Result<(), String> {
     else {
         return Err("collected declaration changed NodeKind".to_string());
     };
-    assert_eq!(name_span.and_then(|span| source.get(span.start..span.end)), Some("shaped"));
+    assert_eq!(name_span.and_then(|span| source.get(span.start()..span.end())), Some("shaped"));
     assert!(signature.is_none(), "prototype declaration must not fabricate a signature");
 
     let prototype = prototype

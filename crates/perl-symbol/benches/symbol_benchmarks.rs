@@ -8,7 +8,7 @@ use perl_symbol::{
 use std::hint::black_box;
 
 fn loc(start: usize, end: usize) -> SourceLocation {
-    SourceLocation { start, end }
+    SourceLocation::new(start, end)
 }
 
 fn variable(name: &str, sigil: &str, start: usize, end: usize) -> Node {

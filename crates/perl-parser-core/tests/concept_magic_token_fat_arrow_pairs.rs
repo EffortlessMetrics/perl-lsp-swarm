@@ -17,7 +17,7 @@ fn walk(node: &Node, visit: &mut impl FnMut(&Node)) {
 }
 
 fn source_text<'a>(source: &'a str, node: &Node) -> Option<&'a str> {
-    source.get(node.location.start..node.location.end)
+    source.get(node.location.start()..node.location.end())
 }
 
 #[test]

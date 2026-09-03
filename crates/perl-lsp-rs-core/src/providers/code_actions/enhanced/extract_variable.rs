@@ -12,11 +12,11 @@ pub fn create_extract_variable_action(
     source: &str,
     helpers: &Helpers<'_>,
 ) -> CodeAction {
-    let expr_text = &source[node.location.start..node.location.end];
+    let expr_text = &source[node.location.start()..node.location.end()];
     let var_name = suggest_variable_name(node);
 
     // Find the best insertion point
-    let stmt_start = helpers.find_statement_start(node.location.start);
+    let stmt_start = helpers.find_statement_start(node.location.start());
     let indent = helpers.get_indent_at(stmt_start);
 
     CodeAction {
@@ -27,7 +27,7 @@ pub fn create_extract_variable_action(
             changes: vec![
                 // Insert variable declaration
                 TextEdit {
-                    location: SourceLocation { start: stmt_start, end: stmt_start },
+                    location: SourceLocation::new(stmt_start, stmt_start),
                     new_text: format!("{}my ${} = {};\n", indent, var_name, expr_text),
                 },
                 // Replace expression with variable

@@ -381,8 +381,8 @@ fn semantic_boundary_record(
             disposition: SemanticBoundaryDisposition::DeferredRuntime,
             reason,
             source_span: SemanticBoundarySourceSpan {
-                start: effect.range.start,
-                end: effect.range.end,
+                start: effect.range.start(),
+                end: effect.range.end(),
             },
             source_kind: format!("{:?}", effect.source_kind),
             confidence: SemanticBoundaryConfidence::Conservative,
@@ -403,8 +403,8 @@ fn semantic_boundary_record(
             disposition: SemanticBoundaryDisposition::SourceLockedCompatibility,
             reason,
             source_span: SemanticBoundarySourceSpan {
-                start: effect.range.start,
-                end: effect.range.end,
+                start: effect.range.start(),
+                end: effect.range.end(),
             },
             source_kind: format!("{:?}", effect.source_kind),
             confidence: SemanticBoundaryConfidence::Exact,
@@ -420,8 +420,8 @@ fn semantic_boundary_record(
         disposition: SemanticBoundaryDisposition::Unsupported,
         reason,
         source_span: SemanticBoundarySourceSpan {
-            start: effect.range.start,
-            end: effect.range.end,
+            start: effect.range.start(),
+            end: effect.range.end(),
         },
         source_kind: format!("{:?}", effect.source_kind),
         confidence: SemanticBoundaryConfidence::Unresolved,
@@ -518,8 +518,8 @@ fn is_compile_phase_symbolic_reference(effect: &CompileEffect, hir: &HirFile) ->
         matches!(
             phase_block.phase,
             CompilePhase::Begin | CompilePhase::UnitCheck | CompilePhase::Check
-        ) && effect.range.start >= phase_block.range.start
-            && effect.range.end <= phase_block.range.end
+        ) && effect.range.start() >= phase_block.range.start()
+            && effect.range.end() <= phase_block.range.end()
     });
     in_compile_phase && !is_runtime_callable_scope(effect.scope_id, hir)
 }
@@ -568,7 +568,7 @@ fn is_static_perl_core_test_bootstrap_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -630,7 +630,7 @@ fn is_run_dtrace_platform_probe_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     slice.replace("\r\n", "\n") == RUN_DTRACE_PLATFORM_PROBE_SOURCE
@@ -652,7 +652,7 @@ fn is_run_switchc_platform_probe_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     slice.replace("\r\n", "\n") == RUN_SWITCHC_PLATFORM_PROBE_SOURCE
@@ -671,7 +671,7 @@ fn is_run_locale_posix_probe_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     slice.replace("\r\n", "\n")
@@ -691,7 +691,7 @@ fn is_run_todo_bootstrap_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     slice.replace("\r\n", "\n")
@@ -741,7 +741,7 @@ fn is_base_term_cwd_setup_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -761,7 +761,7 @@ fn is_base_lex_map_begin_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -780,7 +780,7 @@ fn is_base_rs_filehandle_alias_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -800,7 +800,7 @@ fn is_comp_our_tieall_autoload_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -823,7 +823,7 @@ fn is_comp_line_debug_inc_setup_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -843,7 +843,7 @@ fn is_comp_filter_exception_test_pl_setup_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -863,7 +863,7 @@ fn is_comp_filter_exception_inc_filter_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -889,7 +889,7 @@ fn is_comp_redef_warning_setup_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -910,7 +910,7 @@ fn is_comp_redef_suppressed_warning_eval_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -930,7 +930,7 @@ fn is_comp_parser_run_test_pl_setup_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -951,7 +951,7 @@ fn is_comp_proto_inc_setup_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -970,7 +970,7 @@ fn is_comp_proto_typeglob_sub_assignment_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -995,7 +995,7 @@ fn is_comp_form_scope_format_stdout_alias_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized_slice = slice.replace("\r\n", "\n");
@@ -1033,7 +1033,7 @@ fn is_comp_form_scope_terminal_phase_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -1057,7 +1057,7 @@ fn is_comp_use_inc_feature_setup_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -1078,7 +1078,7 @@ fn is_comp_parser_inc_setup_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -1096,7 +1096,7 @@ fn is_comp_parser_line_table_self_write_boundary(
 
     if effect.source_kind == CompileEffectSourceKind::SymbolicReferenceDeref {
         let normalized = source.replace("\r\n", "\n");
-        let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+        let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
             return false;
         };
         if slice != r#"${"_<".__FILE__}"# {
@@ -1124,7 +1124,7 @@ BEGIN{ ${"_<".__FILE__} = \1 }
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -1144,7 +1144,7 @@ fn is_comp_require_setup_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -1164,15 +1164,15 @@ fn is_comp_require_runtime_dynamic_require_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized_slice = slice.replace("\r\n", "\n");
     let trimmed_slice = normalized_slice.trim();
-    let line_start = source[..effect.range.start].rfind('\n').map_or(0, |index| index + 1);
-    let line_end = source[effect.range.end..]
+    let line_start = source[..effect.range.start()].rfind('\n').map_or(0, |index| index + 1);
+    let line_end = source[effect.range.end()..]
         .find('\n')
-        .map_or(source.len(), |index| effect.range.end + index);
+        .map_or(source.len(), |index| effect.range.end() + index);
     let normalized_line = source[line_start..line_end].replace("\r\n", "\n");
     let trimmed_line = normalized_line.trim();
     let recognized_dynamic_require = trimmed_slice == "require $ver"
@@ -1221,7 +1221,7 @@ fn is_comp_require_module_true_setup_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -1249,7 +1249,7 @@ fn is_comp_hints_phase_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let canonical = canonicalize_comp_hints_phase_slice(slice);
@@ -1318,7 +1318,7 @@ fn is_run_cloexec_config_setup_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -1340,7 +1340,7 @@ fn is_run_switch_setup_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -1363,7 +1363,7 @@ fn is_run_test_pl_setup_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -1384,7 +1384,7 @@ fn is_run_fresh_perl_setup_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -1405,7 +1405,7 @@ fn is_run_script_setup_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -1426,7 +1426,7 @@ fn is_run_runenv_setup_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -1447,7 +1447,7 @@ fn is_run_switch_i_setup_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     slice.replace("\r\n", "\n") == RUN_SWITCHI_SETUP_SOURCE
@@ -1466,7 +1466,7 @@ fn is_run_switchd_debugger_setup_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -1487,7 +1487,7 @@ fn is_run_switchdx_miniperl_setup_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -1513,7 +1513,7 @@ fn is_run_data_argv_setup_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -1537,7 +1537,7 @@ fn is_run_switchp_data_setup_boundary(
         return false;
     }
 
-    let Some(slice) = source.get(effect.range.start..effect.range.end) else {
+    let Some(slice) = source.get(effect.range.start()..effect.range.end()) else {
         return false;
     };
     let normalized = slice.replace("\r\n", "\n");
@@ -3813,7 +3813,7 @@ mod tests {
             bail!("fixture produced no PhaseBlock effect");
         };
         let start = source.find(slice).expect("slice must exist in source");
-        effect.range = SourceLocation { start, end: start + slice.len() };
+        effect.range = SourceLocation::new(start, start + slice.len());
         Ok(effect)
     }
 
@@ -6284,14 +6284,14 @@ my $result = runperl(
             .iter()
             .filter(|effect| is_unsupported_compile_boundary(effect, &invocation, source, &hir))
         {
-            let slice = source.get(effect.range.start..effect.range.end).unwrap_or("<invalid>");
+            let slice = source.get(effect.range.start()..effect.range.end()).unwrap_or("<invalid>");
             use std::fmt::Write as _;
             writeln!(
                 &mut summary,
                 "{:?} {}..{}: {}",
                 effect.source_kind,
-                effect.range.start,
-                effect.range.end,
+                effect.range.start(),
+                effect.range.end(),
                 slice.replace('\n', "\\n")
             )?;
         }

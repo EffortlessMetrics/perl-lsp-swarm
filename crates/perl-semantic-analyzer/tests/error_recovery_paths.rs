@@ -78,12 +78,12 @@ fn error_node_full_pipeline_no_panic() -> Result<(), Box<dyn std::error::Error>>
     for symbols in table.symbols.values() {
         for sym in symbols {
             assert!(
-                sym.location.start <= sym.location.end,
+                sym.location.start() <= sym.location.end(),
                 "symbol location start > end: {:?}",
                 sym.location
             );
             assert!(
-                sym.location.end <= source_len,
+                sym.location.end() <= source_len,
                 "symbol location end out of bounds: {:?}",
                 sym.location
             );
@@ -92,12 +92,12 @@ fn error_node_full_pipeline_no_panic() -> Result<(), Box<dyn std::error::Error>>
 
     for token in tokens {
         assert!(
-            token.location.start <= token.location.end,
+            token.location.start() <= token.location.end(),
             "token location start > end: {:?}",
             token.location
         );
         assert!(
-            token.location.end <= source_len,
+            token.location.end() <= source_len,
             "token location end out of bounds: {:?}",
             token.location
         );
@@ -351,12 +351,12 @@ fn multi_error_source_semantic_model_is_consistent() -> Result<(), Box<dyn std::
     for symbols in table.symbols.values() {
         for sym in symbols {
             assert!(
-                sym.location.start <= sym.location.end,
+                sym.location.start() <= sym.location.end(),
                 "symbol location inverted: {:?}",
                 sym.location
             );
             assert!(
-                sym.location.end <= source_len,
+                sym.location.end() <= source_len,
                 "symbol location end out of bounds: {:?}",
                 sym.location
             );
@@ -365,12 +365,12 @@ fn multi_error_source_semantic_model_is_consistent() -> Result<(), Box<dyn std::
 
     for token in tokens {
         assert!(
-            token.location.start <= token.location.end,
+            token.location.start() <= token.location.end(),
             "token location inverted: {:?}",
             token.location
         );
         assert!(
-            token.location.end <= source_len,
+            token.location.end() <= source_len,
             "token location end out of bounds: {:?}",
             token.location
         );

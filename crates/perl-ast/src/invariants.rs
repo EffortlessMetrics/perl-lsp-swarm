@@ -227,7 +227,7 @@ pub fn validate_ast(source: &str, root: &Node, options: AstInvariantOptions) -> 
         report.max_depth_reached = report.max_depth_reached.max(current.depth);
 
         let range = current.node.location;
-        if range.start > range.end
+        if range.start() > range.end()
             && !push_finding(
                 &mut report,
                 options.max_findings,
@@ -242,7 +242,7 @@ pub fn validate_ast(source: &str, root: &Node, options: AstInvariantOptions) -> 
         {
             break;
         }
-        if range.start > source.len() || range.end > source.len() {
+        if range.start() > source.len() || range.end() > source.len() {
             if !push_finding(
                 &mut report,
                 options.max_findings,
@@ -256,7 +256,7 @@ pub fn validate_ast(source: &str, root: &Node, options: AstInvariantOptions) -> 
             ) {
                 break;
             }
-        } else if (!source.is_char_boundary(range.start) || !source.is_char_boundary(range.end))
+        } else if (!source.is_char_boundary(range.start()) || !source.is_char_boundary(range.end()))
             && !push_finding(
                 &mut report,
                 options.max_findings,
@@ -272,7 +272,7 @@ pub fn validate_ast(source: &str, root: &Node, options: AstInvariantOptions) -> 
             break;
         }
         if !options.allow_empty_ranges
-            && range.start == range.end
+            && range.start() == range.end()
             && !push_finding(
                 &mut report,
                 options.max_findings,
@@ -356,7 +356,7 @@ pub fn validate_ast(source: &str, root: &Node, options: AstInvariantOptions) -> 
             let child_range = child.location;
             let path = child_path(&current.path, field, index, child);
 
-            if (child_range.start < range.start || child_range.end > range.end)
+            if (child_range.start() < range.start() || child_range.end() > range.end())
                 && !push_finding(
                     &mut report,
                     options.max_findings,
@@ -373,7 +373,8 @@ pub fn validate_ast(source: &str, root: &Node, options: AstInvariantOptions) -> 
             }
 
             if options.require_child_source_order
-                && previous.is_some_and(|previous_range| child_range.start < previous_range.start)
+                && previous
+                    .is_some_and(|previous_range| child_range.start() < previous_range.start())
                 && !push_finding(
                     &mut report,
                     options.max_findings,

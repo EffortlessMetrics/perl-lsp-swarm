@@ -1354,8 +1354,8 @@ impl LspServer {
                             .iter()
                             .take(cap)
                             .map(|loc| {
-                                let (start_line, start_char) = self.offset_to_pos16(doc, loc.start);
-                                let (end_line, end_char) = self.offset_to_pos16(doc, loc.end);
+                                let (start_line, start_char) = self.offset_to_pos16(doc, loc.start());
+                                let (end_line, end_char) = self.offset_to_pos16(doc, loc.end());
 
                                 json!({
                                     "uri": uri,
@@ -1919,9 +1919,9 @@ impl LspServer {
                             .iter()
                             .map(|highlight| {
                                 let (start_line, start_char) =
-                                    self.offset_to_pos16(doc, highlight.location.start);
+                                    self.offset_to_pos16(doc, highlight.location.start());
                                 let (end_line, end_char) =
-                                    self.offset_to_pos16(doc, highlight.location.end);
+                                    self.offset_to_pos16(doc, highlight.location.end());
 
                                 json!({
                                     "range": {

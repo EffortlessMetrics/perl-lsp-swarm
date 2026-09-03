@@ -32,7 +32,7 @@ fn first_let_name_and_binding(source: &str) -> Option<(String, (usize, usize))> 
     let root = body.block(body.root_block)?;
     for stmt_id in &root.stmts {
         if let Some(HirStmt::Let { name, binding_range, .. }) = body.stmt(*stmt_id) {
-            return Some((name.clone(), (binding_range.start, binding_range.end)));
+            return Some((name.clone(), (binding_range.start(), binding_range.end())));
         }
     }
     None
@@ -51,7 +51,7 @@ fn decl_write_range(source: &str, name: &str) -> Option<(usize, usize)> {
         for f in &body.facts {
             if f.name.name == name && matches!(f.role, LexicalRole::Write) {
                 let r = f.source_anchor.range.as_ref()?;
-                return Some((r.start, r.end));
+                return Some((r.start(), r.end()));
             }
         }
     }

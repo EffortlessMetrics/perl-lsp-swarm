@@ -98,7 +98,7 @@ impl Drop for ShellCloneGuard {
 fn clone_slot_placeholder() -> Node {
     // Same constructor Drop uses for detached slots so clone-created nodes
     // participate in `drop_audit` rather than destroying without a construct.
-    Node::new(NodeKind::Ellipsis, SourceLocation { start: 0, end: 0 })
+    Node::new(NodeKind::Ellipsis, SourceLocation::new(0, 0))
 }
 
 fn clone_payload_shell(source: &Node) -> Node {
@@ -135,11 +135,11 @@ fn map_token_span<F>(token: &mut Token, map: &F) -> bool
 where
     F: Fn(SourceLocation) -> SourceLocation,
 {
-    let mapped = map(SourceLocation { start: token.start(), end: token.end() });
-    let Some(mapped_end) = mapped.start.checked_add(token.len()) else {
+    let mapped = map(SourceLocation::new(token.start(), token.end()));
+    let Some(mapped_end) = mapped.start().checked_add(token.len()) else {
         return false;
     };
-    let Ok(mapped_token) = token.with_span(mapped.start, mapped_end) else {
+    let Ok(mapped_token) = token.with_span(mapped.start(), mapped_end) else {
         return false;
     };
     *token = mapped_token;
@@ -361,7 +361,7 @@ mod tests {
     use std::cell::Cell;
 
     fn loc(start: usize, end: usize) -> SourceLocation {
-        SourceLocation { start, end }
+        SourceLocation::new(start, end)
     }
 
     fn numbered(value: &str, start: usize) -> Node {
@@ -370,7 +370,7 @@ mod tests {
 
     fn program(children: Vec<Node>) -> Node {
         let end = match children.last() {
-            Some(child) => child.location.end,
+            Some(child) => child.location.end(),
             None => 0,
         };
         Node::new(NodeKind::Program { statements: children }, loc(0, end))
@@ -449,7 +449,7 @@ mod tests {
         let mapped = source
             .clone_with_mapped_locations(|location| {
                 calls.set(calls.get().saturating_add(1));
-                loc(location.start.saturating_add(10), location.end.saturating_add(10))
+                loc(location.start().saturating_add(10), location.end().saturating_add(10))
             })
             .ok_or("location mapping unexpectedly failed")?;
 
@@ -491,11 +491,16 @@ mod tests {
 
         let mapped = source
             .clone_with_mapped_locations(|location| {
-                loc(location.start.saturating_add(10), location.end.saturating_add(10))
+                loc(location.start().saturating_add(10), location.end().saturating_add(10))
             })
             .ok_or("location mapping unexpectedly failed")?;
 
-        let rejected = source.clone_with_mapped_locations(|location| loc(usize::MAX, location.end));
+        // A reversed mapped span is unrepresentable since #8740 (ByteSpan
+        // ordering is enforced at construction), so fail-closed is proven by
+        // overflowing the recovery token's validated byte width instead: the
+        // mapped start sits at usize::MAX, where start + token width cannot
+        // be represented.
+        let rejected = source.clone_with_mapped_locations(|_| loc(usize::MAX, usize::MAX));
         assert!(rejected.is_none(), "invalid mapped token geometry must fail closed");
 
         let source_found = match &source.kind {
@@ -519,7 +524,7 @@ mod tests {
 
     #[test]
     fn payload_location_map_covers_every_source_location_family() {
-        let shift = |location: SourceLocation| loc(location.start + 10, location.end + 10);
+        let shift = |location: SourceLocation| loc(location.start() + 10, location.end() + 10);
 
         let mut heredoc = NodeKind::Heredoc {
             delimiter: "EOF".to_string(),
@@ -701,8 +706,8 @@ mod tests {
             }
             (left, _) => assert_eq!(left.kind_name(), "Number"),
         }
-        assert_eq!(taken[0].location.start, 0);
-        assert_eq!(taken[1].location.start, 1);
+        assert_eq!(taken[0].location.start(), 0);
+        assert_eq!(taken[1].location.start(), 1);
         assert_eq!(done.len(), 1);
         match &done[0].kind {
             NodeKind::Number { value } => assert_eq!(value, "keep"),

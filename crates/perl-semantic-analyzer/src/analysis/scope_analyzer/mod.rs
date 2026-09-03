@@ -707,7 +707,7 @@ impl ScopeAnalyzer {
         context: &AnalysisContext<'a>,
     ) {
         // Get effective pragma state at this node's location
-        let pragma_state = context.pragma_state_for_offset(node.location.start);
+        let pragma_state = context.pragma_state_for_offset(node.location.start());
         let strict_vars_mode = pragma_state.strict_vars || pragma_state.signatures_strict;
         let strict_subs_mode = pragma_state.strict_subs || pragma_state.signatures_strict;
         match &node.kind {
@@ -1046,7 +1046,7 @@ impl ScopeAnalyzer {
         if (sigil == "@" || sigil == "%" || sigil == "$")
             && context
                 .code
-                .get(node.location.start..node.location.end)
+                .get(node.location.start()..node.location.end())
                 .is_some_and(is_explicit_scalar_reference_deref)
         {
             return Some(("$", normalize_scalar_deref_base_name(name)));
@@ -1178,14 +1178,15 @@ impl ScopeAnalyzer {
         node: &Node,
         context: &AnalysisContext<'_>,
     ) -> bool {
-        let Some(selector_text) = context.code.get(node.location.start..node.location.end) else {
+        let Some(selector_text) = context.code.get(node.location.start()..node.location.end())
+        else {
             return false;
         };
         if !selector_text.contains("->${") {
             return false;
         }
 
-        let Some(suffix) = context.code.get(node.location.end..) else {
+        let Some(suffix) = context.code.get(node.location.end()..) else {
             return false;
         };
         suffix.trim_start().starts_with("()")
@@ -1224,8 +1225,8 @@ impl ScopeAnalyzer {
         issues.push(ScopeIssue {
             kind: IssueKind::UndeclaredVariable,
             variable_name: full_name.clone(),
-            line: context.get_line(node.location.start),
-            range: (node.location.start, node.location.end),
+            line: context.get_line(node.location.start()),
+            range: (node.location.start(), node.location.end()),
             description: format!("Variable '{}' is used but not declared", full_name),
         });
     }
@@ -1247,15 +1248,16 @@ impl ScopeAnalyzer {
         // range map. See `uninitialized_warning_suppressed` for why this gates on
         // the specific category rather than the global `warnings` bit or a blanket
         // `all`.
-        if uninitialized_warning_suppressed(&context.pragma_state_for_offset(node.location.start)) {
+        if uninitialized_warning_suppressed(&context.pragma_state_for_offset(node.location.start()))
+        {
             return;
         }
         let full_name = format!("{}{}", sigil, name);
         issues.push(ScopeIssue {
             kind: IssueKind::UninitializedVariable,
             variable_name: full_name.clone(),
-            line: context.get_line(node.location.start),
-            range: (node.location.start, node.location.end),
+            line: context.get_line(node.location.start()),
+            range: (node.location.start(), node.location.end()),
             description: format!("Variable '{}' is used before being initialized", full_name),
         });
     }

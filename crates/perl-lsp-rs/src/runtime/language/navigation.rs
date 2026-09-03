@@ -1669,8 +1669,8 @@ impl LspServer {
                                     current_package,
                                     method_match.as_str(),
                                 ) {
-                                    let lsp_start = self.offset_to_pos16(doc, location.start);
-                                    let lsp_end = self.offset_to_pos16(doc, location.end);
+                                    let lsp_start = self.offset_to_pos16(doc, location.start());
+                                    let lsp_end = self.offset_to_pos16(doc, location.end());
                                     return Ok(Some(json!([{
                                         "uri": uri,
                                         "range": {
@@ -2033,9 +2033,9 @@ impl LspServer {
                     // Find definition at the position
                     if let Some(definition) = model.definition_at(offset) {
                         let (def_line, def_char) =
-                            self.offset_to_pos16(doc, definition.location.start);
+                            self.offset_to_pos16(doc, definition.location.start());
                         let (def_end_line, def_end_char) =
-                            self.offset_to_pos16(doc, definition.location.end);
+                            self.offset_to_pos16(doc, definition.location.end());
 
                         return Ok(Some(json!([{
                             "uri": uri,

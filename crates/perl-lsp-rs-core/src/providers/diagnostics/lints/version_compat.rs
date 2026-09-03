@@ -222,7 +222,7 @@ pub fn check_version_compat_with_project_version(
     // Second pass: walk AST for version-gated constructs.
     let diagnostics_before_walk = diagnostics.len();
     walk_node(node, &mut |n| {
-        let pragma_state = pragma_cursor.state_for_offset(&pragma_map, n.location.start);
+        let pragma_state = pragma_cursor.state_for_offset(&pragma_map, n.location.start());
 
         match &n.kind {
             // `class Foo { }` — the `class` feature shipped in v5.38 and is still
@@ -712,7 +712,7 @@ fn make_diagnostic(
     };
 
     Diagnostic {
-        range: (node.location.start, node.location.end),
+        range: (node.location.start(), node.location.end()),
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
         message,
@@ -819,7 +819,7 @@ fn make_experimental_feature_diagnostic(
     };
 
     Diagnostic {
-        range: (node.location.start, node.location.end),
+        range: (node.location.start(), node.location.end()),
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
         message,
@@ -842,7 +842,7 @@ fn make_given_when_default_diagnostic(node: &Node, declared_version: PerlVersion
     );
 
     Diagnostic {
-        range: (node.location.start, node.location.end),
+        range: (node.location.start(), node.location.end()),
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
         message,
@@ -872,7 +872,7 @@ fn make_given_when_feature_diagnostic(node: &Node, declared_version: PerlVersion
     );
 
     Diagnostic {
-        range: (node.location.start, node.location.end),
+        range: (node.location.start(), node.location.end()),
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
         message,
@@ -895,7 +895,7 @@ fn make_smartmatch_diagnostic(node: &Node, declared_version: PerlVersion) -> Dia
     );
 
     Diagnostic {
-        range: (node.location.start, node.location.end),
+        range: (node.location.start(), node.location.end()),
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
         message,
@@ -928,7 +928,7 @@ fn make_smartmatch_feature_gate_diagnostic(
     );
 
     Diagnostic {
-        range: (node.location.start, node.location.end),
+        range: (node.location.start(), node.location.end()),
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
         message,
@@ -963,7 +963,7 @@ fn make_diagnostic_with_details(
     );
 
     Diagnostic {
-        range: (node.location.start, node.location.end),
+        range: (node.location.start(), node.location.end()),
         severity,
         code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
         message,

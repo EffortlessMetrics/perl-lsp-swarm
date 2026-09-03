@@ -141,7 +141,7 @@ fn program_root_stays_anchored_with_leading_whitespace() -> TestResult {
     let source = "\n  my $x = 1;\n";
     let fresh = parse_fresh(source)?;
     let fresh_start = match &fresh.kind {
-        NodeKind::Program { .. } => fresh.location.start,
+        NodeKind::Program { .. } => fresh.location.start(),
         other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
     };
     assert_eq!(fresh_start, 0);
@@ -149,7 +149,7 @@ fn program_root_stays_anchored_with_leading_whitespace() -> TestResult {
     let shifted = format!(" {source}");
     let shifted_fresh = parse_fresh(&shifted)?;
     let shifted_fresh_start = match &shifted_fresh.kind {
-        NodeKind::Program { .. } => shifted_fresh.location.start,
+        NodeKind::Program { .. } => shifted_fresh.location.start(),
         other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
     };
 
@@ -158,7 +158,7 @@ fn program_root_stays_anchored_with_leading_whitespace() -> TestResult {
     parser.edit(edit(0, 0, 1));
     let incremental = parser.parse(&shifted)?;
     let incremental_start = match &incremental.kind {
-        NodeKind::Program { .. } => incremental.location.start,
+        NodeKind::Program { .. } => incremental.location.start(),
         other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
     };
 
@@ -235,7 +235,7 @@ fn mapped_statement_spans_are_safe_for_range_consumers() -> TestResult {
     };
     let statement_text: Vec<&str> = statements
         .iter()
-        .map(|statement| &source2[statement.location.start..statement.location.end])
+        .map(|statement| &source2[statement.location.start()..statement.location.end()])
         .collect();
 
     let fresh = parse_fresh(source2)?;
@@ -245,7 +245,7 @@ fn mapped_statement_spans_are_safe_for_range_consumers() -> TestResult {
     };
     let fresh_statement_text: Vec<&str> = fresh_statements
         .iter()
-        .map(|statement| &source2[statement.location.start..statement.location.end])
+        .map(|statement| &source2[statement.location.start()..statement.location.end()])
         .collect();
 
     assert_eq!(statement_text, fresh_statement_text);

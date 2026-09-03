@@ -425,7 +425,7 @@ fn semantic_analyzer_symbol_at_returns_most_specific() -> Result<(), Box<dyn std
     let ast = parser.parse()?;
     let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
     let pos = code.find("$x").ok_or("$x not found")?;
-    let loc = perl_semantic_analyzer::SourceLocation { start: pos + 1, end: pos + 2 };
+    let loc = perl_semantic_analyzer::SourceLocation::new(pos + 1, pos + 2);
     let sym = analyzer.symbol_at(loc);
     assert!(sym.is_some(), "should find symbol at $x position");
     Ok(())

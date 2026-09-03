@@ -242,7 +242,7 @@ fn walk_scoped_uses(
 }
 
 fn source_use_statement(node: &Node, source: &str, module: &str, args: &[String]) -> String {
-    let raw = source.get(node.location.start..node.location.end).unwrap_or_default().trim();
+    let raw = source.get(node.location.start()..node.location.end()).unwrap_or_default().trim();
     let raw = raw.strip_suffix(';').unwrap_or(raw).trim();
     if raw.strip_prefix("use").is_some_and(|rest| rest.starts_with(char::is_whitespace)) {
         return raw.to_string();

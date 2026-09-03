@@ -78,8 +78,8 @@ impl AstBreakpointOracle {
             out.push(DebugFunctionSymbol {
                 name: name.clone(),
                 source: self.source.clone(),
-                start_line: self.line_of(node.location.start),
-                end_line: self.line_of(node.location.end),
+                start_line: self.line_of(node.location.start()),
+                end_line: self.line_of(node.location.end()),
             });
         }
         node.for_each_child(|child| self.collect_subs(child, out));

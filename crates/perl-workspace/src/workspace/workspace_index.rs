@@ -5295,8 +5295,8 @@ fn dynamic_isa_facts(
     }) {
         let mut anchor_hasher = DefaultHasher::new();
         uri.hash(&mut anchor_hasher);
-        boundary.range.start.hash(&mut anchor_hasher);
-        boundary.range.end.hash(&mut anchor_hasher);
+        boundary.range.start().hash(&mut anchor_hasher);
+        boundary.range.end().hash(&mut anchor_hasher);
         boundary.kind.hash(&mut anchor_hasher);
         let anchor_id = AnchorId(anchor_hasher.finish());
         let mut occurrence_hasher = DefaultHasher::new();
@@ -5306,8 +5306,8 @@ fn dynamic_isa_facts(
         anchors.push(AnchorFact {
             id: anchor_id,
             file_id,
-            span_start_byte: boundary.range.start.min(u32::MAX as usize) as u32,
-            span_end_byte: boundary.range.end.min(u32::MAX as usize) as u32,
+            span_start_byte: boundary.range.start().min(u32::MAX as usize) as u32,
+            span_end_byte: boundary.range.end().min(u32::MAX as usize) as u32,
             scope_id: None,
             provenance: Provenance::DynamicBoundary,
             confidence: Confidence::Low,
@@ -5966,11 +5966,11 @@ impl IndexVisitor {
     fn node_to_range(&mut self, node: &Node) -> Range {
         // LineIndex.range returns line numbers and UTF-16 code unit columns
         let ((start_line, start_col), (end_line, end_col)) =
-            self.document.line_index.range(node.location.start, node.location.end);
+            self.document.line_index.range(node.location.start(), node.location.end());
         // Use byte offsets from node.location directly
         Range {
-            start: Position { byte: node.location.start, line: start_line, column: start_col },
-            end: Position { byte: node.location.end, line: end_line, column: end_col },
+            start: Position { byte: node.location.start(), line: start_line, column: start_col },
+            end: Position { byte: node.location.end(), line: end_line, column: end_col },
         }
     }
 
@@ -6499,7 +6499,7 @@ impl IndexVisitor {
                 // `goto &handler` / `goto LABEL` coderef targets are
                 // invisible. See coverage-delta case 4.
                 if let Some(symbol_ref) =
-                    canonical_coderef_target_ref(target, (node.location.start, node.location.end))
+                    canonical_coderef_target_ref(target, (node.location.start(), node.location.end()))
                 {
                     let var_name = format!("&{}", symbol_ref.name);
                     file_index.references.entry(var_name).or_default().push(SymbolReference {
@@ -6528,7 +6528,7 @@ impl IndexVisitor {
                 // always produced for it).
                 match canonical_coderef_target_ref(
                     operand,
-                    (node.location.start, node.location.end),
+                    (node.location.start(), node.location.end()),
                 ) {
                     Some(symbol_ref) => {
                         symbol_refs.push(symbol_ref);
@@ -6643,8 +6643,8 @@ fn canonical_ref_for_node(node: &Node) -> Option<perl_symbol::surface::r#ref::Sy
                 qualified_name,
                 sigil: Some(sigil.clone()),
                 package_qualifier,
-                full_span: (node.location.start, node.location.end),
-                anchor_span: Some((node.location.start, node.location.end)),
+                full_span: (node.location.start(), node.location.end()),
+                anchor_span: Some((node.location.start(), node.location.end())),
             })
         }
         NodeKind::Typeglob { name } => {
@@ -6658,8 +6658,8 @@ fn canonical_ref_for_node(node: &Node) -> Option<perl_symbol::surface::r#ref::Sy
                 qualified_name,
                 sigil: Some("*".to_string()),
                 package_qualifier,
-                full_span: (node.location.start, node.location.end),
-                anchor_span: Some((node.location.start, node.location.end)),
+                full_span: (node.location.start(), node.location.end()),
+                anchor_span: Some((node.location.start(), node.location.end())),
             })
         }
         NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
@@ -6675,8 +6675,8 @@ fn canonical_ref_for_node(node: &Node) -> Option<perl_symbol::surface::r#ref::Sy
                 qualified_name,
                 sigil: None,
                 package_qualifier,
-                full_span: (node.location.start, node.location.end),
-                anchor_span: Some((node.location.start, node.location.end)),
+                full_span: (node.location.start(), node.location.end()),
+                anchor_span: Some((node.location.start(), node.location.end())),
             })
         }
         NodeKind::MethodCall { object, method, .. } => {
@@ -6693,7 +6693,7 @@ fn canonical_ref_for_node(node: &Node) -> Option<perl_symbol::surface::r#ref::Sy
                 qualified_name,
                 sigil: None,
                 package_qualifier,
-                full_span: (node.location.start, node.location.end),
+                full_span: (node.location.start(), node.location.end()),
                 anchor_span: None,
             })
         }
@@ -6716,7 +6716,7 @@ fn canonical_coderef_target_ref(
         NodeKind::Variable { sigil, name } if sigil == "&" => name.as_str(),
         NodeKind::FunctionCall { name, args }
             if args.is_empty()
-                && node.location.end.saturating_sub(node.location.start) == name.len() + 1 =>
+                && node.location.end().saturating_sub(node.location.start()) == name.len() + 1 =>
         {
             name.as_str()
         }
@@ -6735,7 +6735,7 @@ fn canonical_coderef_target_ref(
         sigil: Some("&".to_string()),
         package_qualifier,
         full_span,
-        anchor_span: Some((node.location.start, node.location.end)),
+        anchor_span: Some((node.location.start(), node.location.end())),
     })
 }
 

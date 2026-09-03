@@ -355,9 +355,9 @@ fn collect_error_node_line_ranges(
     lines: &mut std::collections::BTreeSet<usize>,
 ) {
     if matches!(node.kind, NodeKind::Error { .. }) {
-        let start_line = byte_offset_to_line(source, node.location.start);
+        let start_line = byte_offset_to_line(source, node.location.start());
         // `end` is exclusive; an empty/zero-width node still contributes its start line.
-        let end_offset = node.location.end.saturating_sub(1).max(node.location.start);
+        let end_offset = node.location.end().saturating_sub(1).max(node.location.start());
         let end_line = byte_offset_to_line(source, end_offset);
         for line in start_line..=end_line {
             lines.insert(line);
@@ -460,11 +460,11 @@ fn collect_observed_nodes_rec<'a>(
     depth: usize,
     parent_operator: Option<&str>,
 ) {
-    let span_text = source.get(node.location.start..node.location.end).unwrap_or_default();
+    let span_text = source.get(node.location.start()..node.location.end()).unwrap_or_default();
     let operator = node_operator(node).map(str::to_owned);
     nodes.push(ObservedNode {
         kind: node.kind.kind_name(),
-        line: byte_offset_to_line(source, node.location.start),
+        line: byte_offset_to_line(source, node.location.start()),
         span_text,
         parent_kind,
         depth,

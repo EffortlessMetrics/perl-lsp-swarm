@@ -37,7 +37,7 @@ impl<'a> Parser<'a> {
         }
 
         let end = self.previous_position();
-        Ok(Node::new(NodeKind::Identifier { name }, SourceLocation { start, end }))
+        Ok(Node::new(NodeKind::Identifier { name }, SourceLocation::new(start, end)))
     }
 
     /// Parse primary expression
@@ -205,15 +205,12 @@ impl<'a> Parser<'a> {
                     || !bytes[after].is_ascii_alphanumeric() && bytes[after] != b'_';
                 if before_ok && after_ok {
                     *search_offset = after;
-                    return SourceLocation {
-                        start: token_start + index,
-                        end: token_start + after,
-                    };
+                    return SourceLocation::new(token_start + index, token_start + after,);
                 }
             }
             index += 1;
         }
-        SourceLocation { start: token_start, end: fallback_end }
+        SourceLocation::new(token_start, fallback_end)
     }
 
     /// Inner implementation of parse_primary (called under recursion guard)
@@ -226,7 +223,7 @@ impl<'a> Parser<'a> {
                 let token = self.tokens.next()?;
                 Ok(Node::new(
                     NodeKind::Number { value: token.text.to_string() },
-                    SourceLocation { start: token.start(), end: token.end() },
+                    SourceLocation::new(token.start(), token.end()),
                 ))
             }
 
@@ -234,7 +231,7 @@ impl<'a> Parser<'a> {
                 let token = self.tokens.next()?;
                 Ok(Node::new(
                     NodeKind::VString { value: token.text.to_string() },
-                    SourceLocation { start: token.start(), end: token.end() },
+                    SourceLocation::new(token.start(), token.end()),
                 ))
             }
 
@@ -247,7 +244,7 @@ impl<'a> Parser<'a> {
                 }
                 Ok(Node::new(
                     NodeKind::String { value: token.text.to_string(), interpolated },
-                    SourceLocation { start: token.start(), end: token.end() },
+                    SourceLocation::new(token.start(), token.end()),
                 ))
             }
 
@@ -259,7 +256,7 @@ impl<'a> Parser<'a> {
 
                 Ok(Node::new(
                     NodeKind::Regex { pattern, replacement: None, modifiers, has_embedded_code },
-                    SourceLocation { start: token.start(), end: token.end() },
+                    SourceLocation::new(token.start(), token.end()),
                 ))
             }
 
@@ -293,7 +290,7 @@ impl<'a> Parser<'a> {
 
                 Ok(Node::new(
                     NodeKind::String { value: text.to_string(), interpolated },
-                    SourceLocation { start: token.start(), end: token.end() },
+                    SourceLocation::new(token.start(), token.end()),
                 ))
             }
 
@@ -367,13 +364,13 @@ impl<'a> Parser<'a> {
 
                     Ok(Node::new(
                         NodeKind::ArrayLiteral { elements: words },
-                        SourceLocation { start, end: token.end() },
+                        SourceLocation::new(start, token.end()),
                     ))
                 } else {
                     // Fallback - shouldn't happen with proper lexer
                     Ok(Node::new(
                         NodeKind::String { value: token.text.to_string(), interpolated: false },
-                        SourceLocation { start, end: token.end() },
+                        SourceLocation::new(start, token.end()),
                     ))
                 }
             }
@@ -383,7 +380,7 @@ impl<'a> Parser<'a> {
                 // qx/backticks - for now treat as a string
                 Ok(Node::new(
                     NodeKind::String { value: token.text.to_string(), interpolated: true },
-                    SourceLocation { start: token.start(), end: token.end() },
+                    SourceLocation::new(token.start(), token.end()),
                 ))
             }
 
@@ -436,7 +433,7 @@ impl<'a> Parser<'a> {
                     NodeKind::Substitution {
                         expr: Box::new(Node::new(
                             NodeKind::Identifier { name: String::from("$_") },
-                            SourceLocation { start: token.start(), end: token.start() },
+                            SourceLocation::new(token.start(), token.start()),
                         )),
                         pattern,
                         replacement,
@@ -444,7 +441,7 @@ impl<'a> Parser<'a> {
                         has_embedded_code,
                         negated: false,
                     },
-                    SourceLocation { start: token.start(), end: token.end() },
+                    SourceLocation::new(token.start(), token.end()),
                 ))
             }
 
@@ -491,14 +488,14 @@ impl<'a> Parser<'a> {
                     NodeKind::Transliteration {
                         expr: Box::new(Node::new(
                             NodeKind::Identifier { name: String::from("$_") },
-                            SourceLocation { start: token.start(), end: token.start() },
+                            SourceLocation::new(token.start(), token.start()),
                         )),
                         search,
                         replace,
                         modifiers,
                         negated: false,
                     },
-                    SourceLocation { start: token.start(), end: token.end() },
+                    SourceLocation::new(token.start(), token.end()),
                 ))
             }
 
@@ -528,7 +525,7 @@ impl<'a> Parser<'a> {
                         command,
                         body_span: None, // Populated by drain_pending_heredocs
                     },
-                    SourceLocation { start, end },
+                    SourceLocation::new(start, end),
                 ))
             }
 
@@ -546,7 +543,7 @@ impl<'a> Parser<'a> {
                     let token = self.tokens.next()?;
                     Ok(Node::new(
                         NodeKind::Identifier { name: token.text.to_string() },
-                        SourceLocation { start: token.start(), end: token.end() },
+                        SourceLocation::new(token.start(), token.end()),
                     ))
                 } else {
                     self.parse_eval()
@@ -559,7 +556,7 @@ impl<'a> Parser<'a> {
                     let token = self.tokens.next()?;
                     Ok(Node::new(
                         NodeKind::Identifier { name: token.text.to_string() },
-                        SourceLocation { start: token.start(), end: token.end() },
+                        SourceLocation::new(token.start(), token.end()),
                     ))
                 } else {
                     self.parse_do()
@@ -584,7 +581,7 @@ impl<'a> Parser<'a> {
                     let token = self.tokens.next()?;
                     Ok(Node::new(
                         NodeKind::Identifier { name: token.text.to_string() },
-                        SourceLocation { start: token.start(), end: token.end() },
+                        SourceLocation::new(token.start(), token.end()),
                     ))
                 } else {
                     self.parse_try()
@@ -597,7 +594,7 @@ impl<'a> Parser<'a> {
                     let token = self.tokens.next()?;
                     Ok(Node::new(
                         NodeKind::Identifier { name: token.text.to_string() },
-                        SourceLocation { start: token.start(), end: token.end() },
+                        SourceLocation::new(token.start(), token.end()),
                     ))
                 } else {
                     self.parse_defer()
@@ -615,7 +612,7 @@ impl<'a> Parser<'a> {
                 if self.peek_kind() == Some(TokenKind::RightShift) {
                     self.consume_token()?; // consume >>
                     let end = self.previous_position();
-                    Ok(Node::new(NodeKind::Diamond, SourceLocation { start, end }))
+                    Ok(Node::new(NodeKind::Diamond, SourceLocation::new(start, end)))
                 } else {
                     Err(ParseError::unexpected(
                         "expression",
@@ -633,7 +630,7 @@ impl<'a> Parser<'a> {
                     // Diamond operator <>
                     self.consume_token()?; // consume >
                     let end = self.previous_position();
-                    Ok(Node::new(NodeKind::Diamond, SourceLocation { start, end }))
+                    Ok(Node::new(NodeKind::Diamond, SourceLocation::new(start, end)))
                 } else {
                     // Try to parse content until >
                     let mut pattern = String::new();
@@ -660,15 +657,15 @@ impl<'a> Parser<'a> {
 
                         if pattern.is_empty() {
                             // Empty <> is diamond operator
-                            Ok(Node::new(NodeKind::Diamond, SourceLocation { start, end }))
+                            Ok(Node::new(NodeKind::Diamond, SourceLocation::new(start, end)))
                         } else if has_glob_chars || pattern.contains('/') {
                             // Looks like a glob pattern
-                            Ok(Node::new(NodeKind::Glob { pattern }, SourceLocation { start, end }))
+                            Ok(Node::new(NodeKind::Glob { pattern }, SourceLocation::new(start, end)))
                         } else if pattern.chars().all(|c| c.is_uppercase() || c == '_') {
                             // Bareword filehandle e.g. <STDIN>, <FH>
                             Ok(Node::new(
                                 NodeKind::Readline { filehandle: Some(pattern) },
-                                SourceLocation { start, end },
+                                SourceLocation::new(start, end),
                             ))
                         } else if is_simple_scalar_variable(&pattern) {
                             // Simple scalar variable e.g. <$fh>, <$FH>, <$Foo::bar>.
@@ -676,11 +673,11 @@ impl<'a> Parser<'a> {
                             // so this is an indirect readline, not a glob.
                             Ok(Node::new(
                                 NodeKind::Readline { filehandle: Some(pattern) },
-                                SourceLocation { start, end },
+                                SourceLocation::new(start, end),
                             ))
                         } else {
                             // Default to glob
-                            Ok(Node::new(NodeKind::Glob { pattern }, SourceLocation { start, end }))
+                            Ok(Node::new(NodeKind::Glob { pattern }, SourceLocation::new(start, end)))
                         }
                     } else {
                         Err(ParseError::syntax(
@@ -728,7 +725,7 @@ impl<'a> Parser<'a> {
                                         value: tok.text.to_string(),
                                         interpolated: false,
                                     },
-                                    SourceLocation { start: tok.start(), end: tok.end() },
+                                    SourceLocation::new(tok.start(), tok.end()),
                                 ))
                             } else {
                                 self.parse_quote_operator()
@@ -739,7 +736,7 @@ impl<'a> Parser<'a> {
                                 let tok = self.tokens.next()?;
                                 return Ok(Node::new(
                                     NodeKind::Identifier { name: tok.text.to_string() },
-                                    SourceLocation { start: tok.start(), end: tok.end() },
+                                    SourceLocation::new(tok.start(), tok.end()),
                                 ));
                             }
 
@@ -786,7 +783,7 @@ impl<'a> Parser<'a> {
                             let end = self.previous_position();
                             Ok(Node::new(
                                 NodeKind::Tie { variable, package, args },
-                                SourceLocation { start, end },
+                                SourceLocation::new(start, end),
                             ))
                         }
                         "untie" => {
@@ -794,7 +791,7 @@ impl<'a> Parser<'a> {
                                 let tok = self.tokens.next()?;
                                 return Ok(Node::new(
                                     NodeKind::Identifier { name: tok.text.to_string() },
-                                    SourceLocation { start: tok.start(), end: tok.end() },
+                                    SourceLocation::new(tok.start(), tok.end()),
                                 ));
                             }
 
@@ -804,7 +801,7 @@ impl<'a> Parser<'a> {
                             let end = self.previous_position();
                             Ok(Node::new(
                                 NodeKind::Untie { variable },
-                                SourceLocation { start, end },
+                                SourceLocation::new(start, end),
                             ))
                         }
                         "new" => {
@@ -833,7 +830,7 @@ impl<'a> Parser<'a> {
                                 let tok = self.tokens.next()?;
                                 return Ok(Node::new(
                                     NodeKind::Identifier { name: tok.text.to_string() },
-                                    SourceLocation { start: tok.start(), end: tok.end() },
+                                    SourceLocation::new(tok.start(), tok.end()),
                                 ));
                             }
 
@@ -853,7 +850,7 @@ impl<'a> Parser<'a> {
                                         name: String::from("new"),
                                         args,
                                     },
-                                    SourceLocation { start, end },
+                                    SourceLocation::new(start, end),
                                 ));
                             }
 
@@ -891,7 +888,7 @@ impl<'a> Parser<'a> {
                                     object,
                                     args,
                                 },
-                                SourceLocation { start, end },
+                                SourceLocation::new(start, end),
                             ))
                         }
                         _ => {
@@ -924,7 +921,7 @@ impl<'a> Parser<'a> {
                     let end_token = self.tokens.next()?;
                     return Ok(Node::new(
                         NodeKind::ArrayLiteral { elements: vec![] },
-                        SourceLocation { start, end: end_token.end() },
+                        SourceLocation::new(start, end_token.end()),
                     ));
                 }
 
@@ -960,7 +957,7 @@ impl<'a> Parser<'a> {
                                 _ => None,
                             };
                             if let Some(name) = bare_call_name {
-                                let call_start = expr.location.start;
+                                let call_start = expr.location.start();
                                 let first_arg = self.parse_assignment_or_declaration()?;
                                 let args_node =
                                     self.collect_comma_fat_arrow_continuation(first_arg)?;
@@ -974,11 +971,11 @@ impl<'a> Parser<'a> {
                                 };
                                 let call_end = args
                                     .last()
-                                    .map(|arg| arg.location.end.max(self.previous_position()))
+                                    .map(|arg| arg.location.end().max(self.previous_position()))
                                     .unwrap_or_else(|| self.previous_position());
                                 let call = Node::new(
                                     NodeKind::FunctionCall { name, args },
-                                    SourceLocation { start: call_start, end: call_end },
+                                    SourceLocation::new(call_start, call_end),
                                 );
                                 self.parse_word_or_expr(call)?
                             } else {
@@ -1120,7 +1117,7 @@ impl<'a> Parser<'a> {
                 let token = self.tokens.next()?;
                 Ok(Node::new(
                     NodeKind::Ellipsis,
-                    SourceLocation { start: token.start(), end: token.end() },
+                    SourceLocation::new(token.start(), token.end()),
                 ))
             }
 
@@ -1128,7 +1125,7 @@ impl<'a> Parser<'a> {
                 let token = self.tokens.next()?;
                 Ok(Node::new(
                     NodeKind::Undef,
-                    SourceLocation { start: token.start(), end: token.end() },
+                    SourceLocation::new(token.start(), token.end()),
                 ))
             }
 
@@ -1151,7 +1148,7 @@ impl<'a> Parser<'a> {
                     let token = self.tokens.next()?;
                     Ok(Node::new(
                         NodeKind::Identifier { name: token.text.to_string() },
-                        SourceLocation { start: token.start(), end: token.end() },
+                        SourceLocation::new(token.start(), token.end()),
                     ))
                 }
             }
@@ -1169,7 +1166,7 @@ impl<'a> Parser<'a> {
                     let token = self.tokens.next()?;
                     Ok(Node::new(
                         NodeKind::Identifier { name: token.text.to_string() },
-                        SourceLocation { start: token.start(), end: token.end() },
+                        SourceLocation::new(token.start(), token.end()),
                     ))
                 } else {
                     self.parse_local_statement()
@@ -1183,7 +1180,7 @@ impl<'a> Parser<'a> {
                     let token = self.tokens.next()?;
                     Ok(Node::new(
                         NodeKind::Identifier { name: token.text.to_string() },
-                        SourceLocation { start: token.start(), end: token.end() },
+                        SourceLocation::new(token.start(), token.end()),
                     ))
                 } else {
                     self.parse_declaration_expression()
@@ -1224,7 +1221,7 @@ impl<'a> Parser<'a> {
                 let token = self.tokens.next()?;
                 Ok(Node::new(
                     NodeKind::Identifier { name: token.text.to_string() },
-                    SourceLocation { start: token.start(), end: token.end() },
+                    SourceLocation::new(token.start(), token.end()),
                 ))
             }
 
@@ -1237,7 +1234,7 @@ impl<'a> Parser<'a> {
                     let token = self.tokens.next()?;
                     Ok(Node::new(
                         NodeKind::Identifier { name: token.text.to_string() },
-                        SourceLocation { start: token.start(), end: token.end() },
+                        SourceLocation::new(token.start(), token.end()),
                     ))
                 } else {
                     self.parse_return_expr()
@@ -1249,7 +1246,7 @@ impl<'a> Parser<'a> {
                     let token = self.tokens.next()?;
                     Ok(Node::new(
                         NodeKind::Identifier { name: token.text.to_string() },
-                        SourceLocation { start: token.start(), end: token.end() },
+                        SourceLocation::new(token.start(), token.end()),
                     ))
                 } else {
                     self.parse_loop_control()
@@ -1341,7 +1338,7 @@ impl<'a> Parser<'a> {
 
         self.expect_closing_delimiter(TokenKind::RightBracket)?;
         let end = self.previous_position();
-        Ok(Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end }))
+        Ok(Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation::new(start, end)))
     }
 }
 

@@ -324,8 +324,9 @@ fn try_as_subtest(node: &Node, source: &str) -> Option<DiscoveredSubtest> {
 
     let first = args.first()?;
     let name = subtest_name_from_arg(first);
-    let name_range = WireRange::from_byte_offsets(source, first.location.start, first.location.end);
-    let range = WireRange::from_byte_offsets(source, node.location.start, node.location.end);
+    let name_range =
+        WireRange::from_byte_offsets(source, first.location.start(), first.location.end());
+    let range = WireRange::from_byte_offsets(source, node.location.start(), node.location.end());
 
     // Collect nested subtests from the block body of the anonymous sub argument.
     let mut children = Vec::new();

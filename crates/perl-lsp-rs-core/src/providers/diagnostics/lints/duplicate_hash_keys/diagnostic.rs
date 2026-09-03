@@ -12,7 +12,7 @@ pub(super) fn duplicate_key_diagnostic(
     let (first_start, first_end) = first_occurrence;
 
     Diagnostic {
-        range: (key.location.start, key.location.end),
+        range: (key.location.start(), key.location.end()),
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::DuplicateHashKey.as_str().to_string()),
         message: format!("Duplicate hash key '{key_text}' -- only the last value will be used"),

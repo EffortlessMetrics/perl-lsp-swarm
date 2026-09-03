@@ -264,7 +264,7 @@ fn regex_op_shells_have_valid_source_ranges() -> TestResult {
     let item =
         must_some(file.items.iter().find(|item| matches!(item.kind, HirKind::SubstitutionExpr(_))));
     assert!(
-        item.range.end >= item.range.start,
+        item.range.end() >= item.range.start(),
         "HIR item range must be non-empty and ordered; got {:?}",
         item.range,
     );

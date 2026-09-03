@@ -74,13 +74,13 @@ fn marker_range_is_exactly_the_marker_bytes_and_smaller_than_the_whole_node() {
     let expected_end = expected_start + "__DATA__".len();
     assert_eq!(
         decl.marker_range,
-        SourceLocation { start: expected_start, end: expected_end },
+        SourceLocation::new(expected_start, expected_end),
         "marker_range must be exactly the 8-byte marker token span, not the whole node span"
     );
-    assert_eq!(&source[decl.marker_range.start..decl.marker_range.end], "__DATA__");
+    assert_eq!(&source[decl.marker_range.start()..decl.marker_range.end()], "__DATA__");
 
-    let marker_len = decl.marker_range.end - decl.marker_range.start;
-    let whole_node_len = item.range.end - item.range.start;
+    let marker_len = decl.marker_range.end() - decl.marker_range.start();
+    let whole_node_len = item.range.end() - item.range.start();
     assert!(
         marker_len < whole_node_len,
         "marker_range ({marker_len} bytes) must be strictly smaller than the whole node range \
@@ -101,12 +101,12 @@ fn marker_range_excludes_trailing_whitespace_and_the_line_terminator() {
         let expected_start = source.find(expected_marker).expect("marker text present in source");
         assert_eq!(
             decl.marker_range,
-            SourceLocation { start: expected_start, end: expected_start + expected_marker.len() },
+            SourceLocation::new(expected_start, expected_start + expected_marker.len()),
             "marker_range must cover only {expected_marker:?} in {source:?}, \
              not the trailing whitespace or newline the marker token consumes"
         );
         assert_eq!(
-            &source[decl.marker_range.start..decl.marker_range.end],
+            &source[decl.marker_range.start()..decl.marker_range.end()],
             expected_marker,
             "marker_range must slice back to exactly the marker word"
         );
@@ -122,10 +122,10 @@ fn payload_range_covers_exactly_the_payload_and_excludes_the_marker() {
     let payload_start = source.find("foo\n").expect("payload text present in source");
     let payload_end = payload_start + "foo\n".len();
     let payload_range = decl.payload_range.expect("payload_range must be present");
-    assert_eq!(payload_range, SourceLocation { start: payload_start, end: payload_end });
-    assert_eq!(&source[payload_range.start..payload_range.end], "foo\n");
+    assert_eq!(payload_range, SourceLocation::new(payload_start, payload_end));
+    assert_eq!(&source[payload_range.start()..payload_range.end()], "foo\n");
     assert!(
-        decl.marker_range.end <= payload_range.start,
+        decl.marker_range.end() <= payload_range.start(),
         "payload_range must not overlap marker_range"
     );
 }
@@ -168,8 +168,8 @@ fn perl_looking_payload_text_is_never_lowered_as_perl() {
     let decl = data_section_decl(&file);
     let payload_start = source.find("sub foo").expect("payload text present in source");
     let payload_range = decl.payload_range.expect("payload_range must be present");
-    assert_eq!(payload_range.start, payload_start);
-    assert_eq!(payload_range.end, source.len());
+    assert_eq!(payload_range.start(), payload_start);
+    assert_eq!(payload_range.end(), source.len());
 }
 
 #[test]
@@ -183,9 +183,9 @@ fn crlf_and_non_ascii_payload_bytes_are_preserved_and_ranges_are_byte_exact() {
     assert_eq!(decl.marker, DataSectionMarker::Data);
 
     let payload_range = decl.payload_range.expect("payload_range must be present");
-    assert_eq!(payload_range, SourceLocation { start: prefix.len(), end: source.len() });
+    assert_eq!(payload_range, SourceLocation::new(prefix.len(), source.len()));
     assert_eq!(
-        &source[payload_range.start..payload_range.end],
+        &source[payload_range.start()..payload_range.end()],
         payload,
         "payload bytes (CRLF line endings and multi-byte UTF-8 characters) must be preserved \
          exactly, byte for byte"
@@ -206,7 +206,7 @@ fn crlf_and_non_ascii_payload_bytes_are_preserved_and_ranges_are_byte_exact() {
 
 /// Lower a hand-built program containing exactly one `DataSection` node.
 fn lower_data_section_node(kind: NodeKind) -> HirFile {
-    let span = SourceLocation { start: 0, end: 8 };
+    let span = SourceLocation::new(0, 8);
     let program = Node::new(NodeKind::Program { statements: vec![Node::new(kind, span)] }, span);
     lower_ast(&program)
 }
@@ -215,9 +215,9 @@ fn lower_data_section_node(kind: NodeKind) -> HirFile {
 fn unrecognized_marker_text_emits_no_item_instead_of_guessing() {
     let file = lower_data_section_node(NodeKind::DataSection {
         marker: "__NOT_A_MARKER__".to_string(),
-        marker_span: Some(SourceLocation { start: 0, end: 16 }),
+        marker_span: Some(SourceLocation::new(0, 16)),
         body: Some("payload\n".to_string()),
-        body_span: Some(SourceLocation { start: 17, end: 25 }),
+        body_span: Some(SourceLocation::new(17, 25)),
     });
     assert!(
         !file.items.iter().any(|item| matches!(&item.kind, HirKind::DataSectionDecl(_))),
@@ -232,7 +232,7 @@ fn missing_marker_span_emits_no_item_instead_of_fabricating_a_range() {
         marker: "__DATA__".to_string(),
         marker_span: None,
         body: Some("payload\n".to_string()),
-        body_span: Some(SourceLocation { start: 9, end: 17 }),
+        body_span: Some(SourceLocation::new(9, 17)),
     });
     assert!(
         !file.items.iter().any(|item| matches!(&item.kind, HirKind::DataSectionDecl(_))),
@@ -249,9 +249,9 @@ fn missing_marker_span_emits_no_item_instead_of_fabricating_a_range() {
 fn payload_span_without_body_text_emits_no_item_instead_of_claiming_an_empty_region() {
     let file = lower_data_section_node(NodeKind::DataSection {
         marker: "__DATA__".to_string(),
-        marker_span: Some(SourceLocation { start: 0, end: 8 }),
+        marker_span: Some(SourceLocation::new(0, 8)),
         body: None,
-        body_span: Some(SourceLocation { start: 9, end: 17 }),
+        body_span: Some(SourceLocation::new(9, 17)),
     });
     assert!(
         !file.items.iter().any(|item| matches!(&item.kind, HirKind::DataSectionDecl(_))),
@@ -264,7 +264,7 @@ fn payload_span_without_body_text_emits_no_item_instead_of_claiming_an_empty_reg
 fn payload_body_without_span_emits_no_item_instead_of_dropping_known_payload() {
     let file = lower_data_section_node(NodeKind::DataSection {
         marker: "__DATA__".to_string(),
-        marker_span: Some(SourceLocation { start: 0, end: 8 }),
+        marker_span: Some(SourceLocation::new(0, 8)),
         body: Some("payload\n".to_string()),
         body_span: None,
     });
@@ -289,7 +289,7 @@ fn marker_and_payload_ranges_are_exact_and_the_separator_belongs_to_neither() {
     let payload_range = decl.payload_range.expect("payload_range must be present");
 
     // Trailing spaces plus the newline sit between the two ranges.
-    let separator = &source[decl.marker_range.end..payload_range.start];
+    let separator = &source[decl.marker_range.end()..payload_range.start()];
     assert_eq!(separator, "   \n", "the separator must be marker-line layout only");
     assert!(
         separator.chars().all(|c| c.is_whitespace()),
@@ -298,7 +298,7 @@ fn marker_and_payload_ranges_are_exact_and_the_separator_belongs_to_neither() {
 
     // The enclosing item range still covers the whole construct.
     assert!(
-        item.range.start <= decl.marker_range.start && item.range.end >= payload_range.end,
+        item.range.start() <= decl.marker_range.start() && item.range.end() >= payload_range.end(),
         "HirItem::range must remain the full-coverage span for the construct"
     );
 }

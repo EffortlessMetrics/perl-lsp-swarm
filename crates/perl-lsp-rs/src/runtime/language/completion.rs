@@ -1468,8 +1468,8 @@ impl LspServer {
                 .additional_edits
                 .iter()
                 .map(|(loc, new_text)| {
-                    let (sl, sc) = self.offset_to_pos16(doc, loc.start);
-                    let (el, ec) = self.offset_to_pos16(doc, loc.end);
+                    let (sl, sc) = self.offset_to_pos16(doc, loc.start());
+                    let (el, ec) = self.offset_to_pos16(doc, loc.end());
                     json!({
                         "range": {
                             "start": { "line": sl, "character": sc },
@@ -3235,7 +3235,7 @@ mod tests {
             documentation: Some("Render the current context.".into()),
             insert_text: Some("render($ctx)".into()),
             additional_edits: vec![(
-                SourceLocation { start: 0, end: 0 },
+                SourceLocation::new(0, 0),
                 "use Demo::Renderer;\n".to_string(),
             )],
             sort_text: Some("2_render".into()),

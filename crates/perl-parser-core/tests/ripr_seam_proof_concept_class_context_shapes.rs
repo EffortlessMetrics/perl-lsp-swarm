@@ -23,7 +23,7 @@ fn walk(node: &Node, visit: &mut impl FnMut(&Node)) {
 }
 
 fn source_text(source: &str, node: &Node) -> Option<String> {
-    source.get(node.location.start..node.location.end).map(str::to_owned)
+    source.get(node.location.start()..node.location.end()).map(str::to_owned)
 }
 
 #[test]
@@ -46,9 +46,9 @@ fn class_owns_exact_field_method_and_adjust_members() -> Result<(), String> {
         };
 
         let name_text =
-            name_span.and_then(|span| source.get(span.start..span.end)).map(str::to_owned);
+            name_span.and_then(|span| source.get(span.start()..span.end())).map(str::to_owned);
         let header_tail = name_span
-            .and_then(|span| source.get(span.end..body.location.start))
+            .and_then(|span| source.get(span.end()..body.location.start()))
             .map(str::trim)
             .map(str::to_owned);
         let NodeKind::Block { statements } = &body.kind else {
@@ -74,7 +74,7 @@ fn class_owns_exact_field_method_and_adjust_members() -> Result<(), String> {
                         source_text(source, member).as_deref(),
                         Some("field $value :param :reader = 1")
                     );
-                    assert_eq!(source.as_bytes().get(member.location.end), Some(&b';'));
+                    assert_eq!(source.as_bytes().get(member.location.end()), Some(&b';'));
                     members.push((
                         "field".to_string(),
                         source_text(source, member),
@@ -171,7 +171,7 @@ fn class_owns_exact_field_method_and_adjust_members() -> Result<(), String> {
                         "method".to_string(),
                         source_text(source, member),
                         name_span
-                            .and_then(|span| source.get(span.start..span.end))
+                            .and_then(|span| source.get(span.start()..span.end()))
                             .map(str::to_owned),
                         attributes.clone(),
                         Some(format!("{signature_shape:?}")),
@@ -189,7 +189,7 @@ fn class_owns_exact_field_method_and_adjust_members() -> Result<(), String> {
                         "adjust".to_string(),
                         source_text(source, member),
                         name_span
-                            .and_then(|span| source.get(span.start..span.end))
+                            .and_then(|span| source.get(span.start()..span.end()))
                             .map(str::to_owned),
                         attributes.clone(),
                         signature.as_deref().and_then(|value| source_text(source, value)),

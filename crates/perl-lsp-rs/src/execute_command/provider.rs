@@ -857,7 +857,7 @@ impl ExecuteCommandProvider {
                             found: None,
                             partial: None,
                         },
-                        crate::ast::SourceLocation { start: 0, end: code_text.len() },
+                        crate::ast::SourceLocation::new(0, code_text.len()),
                     ),
                     Some(error),
                 )
@@ -957,7 +957,7 @@ impl ExecuteCommandProvider {
                             found: None,
                             partial: None,
                         },
-                        crate::ast::SourceLocation { start: 0, end: code_text.len() },
+                        crate::ast::SourceLocation::new(0, code_text.len()),
                     ),
                     Some(error),
                 )

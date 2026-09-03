@@ -30,8 +30,8 @@ impl<'a> Parser<'a> {
                     right = self.parse_word_and_expr_with(right)?;
                     right = self.collect_comma_fat_arrow_continuation(right)?;
 
-                    let start = expr.location.start;
-                    let end = right.location.end;
+                    let start = expr.location.start();
+                    let end = right.location.end();
 
                     expr = Node::new(
                         NodeKind::Binary {
@@ -39,7 +39,7 @@ impl<'a> Parser<'a> {
                             left: Box::new(expr),
                             right: Box::new(right),
                         },
-                        SourceLocation { start, end },
+                        SourceLocation::new(start, end),
                     );
                 }
                 _ => break,
@@ -66,8 +66,8 @@ impl<'a> Parser<'a> {
             let mut right = self.parse_word_not_expr()?;
             right = self.collect_comma_fat_arrow_continuation(right)?;
 
-            let start = expr.location.start;
-            let end = right.location.end;
+            let start = expr.location.start();
+            let end = right.location.end();
 
             expr = Node::new(
                 NodeKind::Binary {
@@ -75,7 +75,7 @@ impl<'a> Parser<'a> {
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             );
         }
 
@@ -89,11 +89,11 @@ impl<'a> Parser<'a> {
                 let op_token = s.tokens.next()?;
                 let start = op_token.start();
                 let operand = s.parse_word_not_expr()?;
-                let end = operand.location.end;
+                let end = operand.location.end();
 
                 return Ok(Node::new(
                     NodeKind::Unary { op: op_token.text.to_string(), operand: Box::new(operand) },
-                    SourceLocation { start, end },
+                    SourceLocation::new(start, end),
                 ));
             }
 
@@ -167,7 +167,7 @@ impl<'a> Parser<'a> {
                 let token = self.tokens.next()?;
                 return Ok(Node::new(
                     NodeKind::Identifier { name: token.text.to_string() },
-                    SourceLocation { start: token.start(), end: token.end() },
+                    SourceLocation::new(token.start(), token.end()),
                 ));
             }
 
@@ -195,8 +195,8 @@ impl<'a> Parser<'a> {
             } else {
                 self.parse_assignment()?
             };
-            let start = expr.location.start;
-            let end = rhs.location.end;
+            let start = expr.location.start();
+            let end = rhs.location.end();
 
             expr = Node::new(
                 NodeKind::Assignment {
@@ -204,7 +204,7 @@ impl<'a> Parser<'a> {
                     rhs: Box::new(rhs),
                     op: op.to_string(),
                 },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             );
         }
 
@@ -239,8 +239,8 @@ impl<'a> Parser<'a> {
             // Likewise for the else-branch.
             let else_expr = self.collect_fat_arrow_ternary_branch(else_expr)?;
 
-            let start = expr.location.start;
-            let end = else_expr.location.end;
+            let start = expr.location.start();
+            let end = else_expr.location.end();
 
             expr = Node::new(
                 NodeKind::Ternary {
@@ -248,7 +248,7 @@ impl<'a> Parser<'a> {
                     then_expr: Box::new(then_expr),
                     else_expr: Box::new(else_expr),
                 },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             );
         }
 
@@ -267,8 +267,8 @@ impl<'a> Parser<'a> {
             let else_expr = self.parse_ternary()?;
             let else_expr = self.collect_fat_arrow_ternary_branch(else_expr)?;
 
-            let start = expr.location.start;
-            let end = else_expr.location.end;
+            let start = expr.location.start();
+            let end = else_expr.location.end();
 
             expr = Node::new(
                 NodeKind::Ternary {
@@ -276,7 +276,7 @@ impl<'a> Parser<'a> {
                     then_expr: Box::new(then_expr),
                     else_expr: Box::new(else_expr),
                 },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             );
         }
 
@@ -404,12 +404,12 @@ impl<'a> Parser<'a> {
             }
         }
 
-        let start = elements[0].location.start;
+        let start = elements[0].location.start();
         let end = elements
             .last()
             .ok_or_else(|| ParseError::syntax("Empty ternary branch list", start))?
             .location
-            .end;
+            .end();
         Ok(Self::build_list_or_hash(elements, saw_fat_arrow, start, end))
     }
 
@@ -501,8 +501,8 @@ impl<'a> Parser<'a> {
             } else {
                 self.parse_and()?
             };
-            let start = expr.location.start;
-            let end = right.location.end;
+            let start = expr.location.start();
+            let end = right.location.end();
 
             expr = Node::new(
                 NodeKind::Binary {
@@ -510,7 +510,7 @@ impl<'a> Parser<'a> {
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             );
         }
 
@@ -525,8 +525,8 @@ impl<'a> Parser<'a> {
             } else {
                 self.parse_bitwise_or()?
             };
-            let start = expr.location.start;
-            let end = right.location.end;
+            let start = expr.location.start();
+            let end = right.location.end();
 
             expr = Node::new(
                 NodeKind::Binary {
@@ -534,7 +534,7 @@ impl<'a> Parser<'a> {
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             );
         }
 
@@ -549,8 +549,8 @@ impl<'a> Parser<'a> {
             } else {
                 self.parse_bitwise_xor()?
             };
-            let start = expr.location.start;
-            let end = right.location.end;
+            let start = expr.location.start();
+            let end = right.location.end();
 
             expr = Node::new(
                 NodeKind::Binary {
@@ -558,7 +558,7 @@ impl<'a> Parser<'a> {
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             );
         }
 
@@ -573,8 +573,8 @@ impl<'a> Parser<'a> {
             } else {
                 self.parse_bitwise_and()?
             };
-            let start = expr.location.start;
-            let end = right.location.end;
+            let start = expr.location.start();
+            let end = right.location.end();
 
             expr = Node::new(
                 NodeKind::Binary {
@@ -582,7 +582,7 @@ impl<'a> Parser<'a> {
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             );
         }
 
@@ -606,8 +606,8 @@ impl<'a> Parser<'a> {
             } else {
                 self.parse_or()?
             };
-            let start = expr.location.start;
-            let end = right.location.end;
+            let start = expr.location.start();
+            let end = right.location.end();
 
             expr = Node::new(
                 NodeKind::Binary {
@@ -615,7 +615,7 @@ impl<'a> Parser<'a> {
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             );
         }
 
@@ -630,8 +630,8 @@ impl<'a> Parser<'a> {
             } else {
                 self.parse_equality()?
             };
-            let start = expr.location.start;
-            let end = right.location.end;
+            let start = expr.location.start();
+            let end = right.location.end();
 
             expr = Node::new(
                 NodeKind::Binary {
@@ -639,7 +639,7 @@ impl<'a> Parser<'a> {
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             );
         }
 
@@ -660,8 +660,8 @@ impl<'a> Parser<'a> {
                         } else {
                             self.parse_relational()?
                         };
-                        let start = expr.location.start;
-                        let end = right.location.end;
+                        let start = expr.location.start();
+                        let end = right.location.end();
 
                         expr = Node::new(
                             NodeKind::Binary {
@@ -669,7 +669,7 @@ impl<'a> Parser<'a> {
                                 left: Box::new(expr),
                                 right: Box::new(right),
                             },
-                            SourceLocation { start, end },
+                            SourceLocation::new(start, end),
                         );
                     } else {
                         break;
@@ -683,8 +683,8 @@ impl<'a> Parser<'a> {
                         } else {
                             self.parse_relational()?
                         };
-                    let start = expr.location.start;
-                    let end = right.location.end;
+                    let start = expr.location.start();
+                    let end = right.location.end();
 
                     expr = Node::new(
                         NodeKind::Binary {
@@ -692,7 +692,7 @@ impl<'a> Parser<'a> {
                             left: Box::new(expr),
                             right: Box::new(right),
                         },
-                        SourceLocation { start, end },
+                        SourceLocation::new(start, end),
                     );
                 }
                 TokenKind::Equal
@@ -707,8 +707,8 @@ impl<'a> Parser<'a> {
                         } else {
                             self.parse_relational()?
                         };
-                    let start = expr.location.start;
-                    let end = right.location.end;
+                    let start = expr.location.start();
+                    let end = right.location.end();
 
                     if matches!(op_token.kind(), TokenKind::Match | TokenKind::NotMatch) {
                         if let NodeKind::Substitution {
@@ -729,7 +729,7 @@ impl<'a> Parser<'a> {
                                     has_embedded_code: *has_embedded_code,
                                     negated,
                                 },
-                                SourceLocation { start, end },
+                                SourceLocation::new(start, end),
                             );
                         } else if let NodeKind::Transliteration {
                             search, replace, modifiers, ..
@@ -744,7 +744,7 @@ impl<'a> Parser<'a> {
                                     modifiers: modifiers.clone(),
                                     negated,
                                 },
-                                SourceLocation { start, end },
+                                SourceLocation::new(start, end),
                             );
                         } else if let NodeKind::Regex {
                             pattern,
@@ -769,7 +769,7 @@ impl<'a> Parser<'a> {
                                         has_embedded_code: *has_embedded_code,
                                         negated,
                                     },
-                                    SourceLocation { start, end },
+                                    SourceLocation::new(start, end),
                                 );
                             } else {
                                 expr = Node::new(
@@ -780,7 +780,7 @@ impl<'a> Parser<'a> {
                                         has_embedded_code: *has_embedded_code,
                                         negated,
                                     },
-                                    SourceLocation { start, end },
+                                    SourceLocation::new(start, end),
                                 );
                             }
                         } else {
@@ -790,7 +790,7 @@ impl<'a> Parser<'a> {
                                     left: Box::new(expr),
                                     right: Box::new(right),
                                 },
-                                SourceLocation { start, end },
+                                SourceLocation::new(start, end),
                             );
                         }
                     } else {
@@ -800,7 +800,7 @@ impl<'a> Parser<'a> {
                                 left: Box::new(expr),
                                 right: Box::new(right),
                             },
-                            SourceLocation { start, end },
+                            SourceLocation::new(start, end),
                         );
                     }
                 }
@@ -843,15 +843,15 @@ impl<'a> Parser<'a> {
                 } else {
                     self.parse_shift()?
                 };
-                let start = lhs.location.start;
-                let end = right.location.end;
+                let start = lhs.location.start();
+                let end = right.location.end();
                 lhs = Node::new(
                     NodeKind::Binary {
                         op: op_token.text.to_string(),
                         left: Box::new(lhs),
                         right: Box::new(right),
                     },
-                    SourceLocation { start, end },
+                    SourceLocation::new(start, end),
                 );
             } else if matches!(peek_text.as_str(), "lt" | "le" | "gt" | "ge") {
                 // fall through to chained-relational handling below
@@ -875,21 +875,21 @@ impl<'a> Parser<'a> {
 
         // If no second relational op follows, emit a plain Binary node.
         if !self.peek_is_relational_op() {
-            let start = lhs.location.start;
-            let end = rhs1.location.end;
+            let start = lhs.location.start();
+            let end = rhs1.location.end();
             return Ok(Node::new(
                 NodeKind::Binary {
                     op: op1.text.to_string(),
                     left: Box::new(lhs),
                     right: Box::new(rhs1),
                 },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             ));
         }
 
         // Chain mode: two or more consecutive relational comparisons.
         // Perl 5.32+ semantics: `1 < $x < 10` ≡ `(1 < $x) && ($x < 10)`.
-        let start = lhs.location.start;
+        let start = lhs.location.start();
         let mut operands = vec![lhs, rhs1];
         let mut ops = vec![op1.text.to_string()];
 
@@ -904,8 +904,8 @@ impl<'a> Parser<'a> {
             operands.push(operand);
         }
 
-        let end = operands.last().map_or(start, |n| n.location.end);
-        Ok(Node::new(NodeKind::ChainedComparison { operands, ops }, SourceLocation { start, end }))
+        let end = operands.last().map_or(start, |n| n.location.end());
+        Ok(Node::new(NodeKind::ChainedComparison { operands, ops }, SourceLocation::new(start, end)))
     }
 
     /// Parse shift expression
@@ -945,8 +945,8 @@ impl<'a> Parser<'a> {
                         } else {
                             self.parse_additive()?
                         };
-                    let start = expr.location.start;
-                    let end = right.location.end;
+                    let start = expr.location.start();
+                    let end = right.location.end();
 
                     expr = Node::new(
                         NodeKind::Binary {
@@ -954,7 +954,7 @@ impl<'a> Parser<'a> {
                             left: Box::new(expr),
                             right: Box::new(right),
                         },
-                        SourceLocation { start, end },
+                        SourceLocation::new(start, end),
                     );
                 }
                 _ => break,
@@ -975,8 +975,8 @@ impl<'a> Parser<'a> {
                         } else {
                             self.parse_multiplicative()?
                         };
-                    let start = expr.location.start;
-                    let end = right.location.end;
+                    let start = expr.location.start();
+                    let end = right.location.end();
 
                     expr = Node::new(
                         NodeKind::Binary {
@@ -984,7 +984,7 @@ impl<'a> Parser<'a> {
                             left: Box::new(expr),
                             right: Box::new(right),
                         },
-                        SourceLocation { start, end },
+                        SourceLocation::new(start, end),
                     );
                 }
                 _ => break,
@@ -1007,8 +1007,8 @@ impl<'a> Parser<'a> {
                         } else {
                             self.parse_power()?
                         };
-                    let start = expr.location.start;
-                    let end = right.location.end;
+                    let start = expr.location.start();
+                    let end = right.location.end();
 
                     expr = Node::new(
                         NodeKind::Binary {
@@ -1016,7 +1016,7 @@ impl<'a> Parser<'a> {
                             left: Box::new(expr),
                             right: Box::new(right),
                         },
-                        SourceLocation { start, end },
+                        SourceLocation::new(start, end),
                     );
                 }
                 TokenKind::Identifier => {
@@ -1036,17 +1036,17 @@ impl<'a> Parser<'a> {
                         let num_end = op_token.end();
                         let right = Node::new(
                             NodeKind::Number { value: num_str },
-                            SourceLocation { start: num_start, end: num_end },
+                            SourceLocation::new(num_start, num_end),
                         );
-                        let start = expr.location.start;
-                        let end = right.location.end;
+                        let start = expr.location.start();
+                        let end = right.location.end();
                         expr = Node::new(
                             NodeKind::Binary {
                                 op: "x".to_string(),
                                 left: Box::new(expr),
                                 right: Box::new(right),
                             },
-                            SourceLocation { start, end },
+                            SourceLocation::new(start, end),
                         );
                         continue;
                     }
@@ -1110,8 +1110,8 @@ impl<'a> Parser<'a> {
                     // Use parse_power() so that `a x b**c` parses as `a x (b**c)`.
                     // Exponentiation binds more tightly than repetition in Perl.
                     let right = self.parse_power()?;
-                    let start = expr.location.start;
-                    let end = right.location.end;
+                    let start = expr.location.start();
+                    let end = right.location.end();
 
                     expr = Node::new(
                         NodeKind::Binary {
@@ -1119,7 +1119,7 @@ impl<'a> Parser<'a> {
                             left: Box::new(expr),
                             right: Box::new(right),
                         },
-                        SourceLocation { start, end },
+                        SourceLocation::new(start, end),
                     );
                 }
                 _ => break,
@@ -1137,8 +1137,8 @@ impl<'a> Parser<'a> {
             } else {
                 self.parse_power()?
             };
-            let start = expr.location.start;
-            let end = right.location.end;
+            let start = expr.location.start();
+            let end = right.location.end();
 
             expr = Node::new(
                 NodeKind::Binary {
@@ -1146,7 +1146,7 @@ impl<'a> Parser<'a> {
                     left: Box::new(expr),
                     right: Box::new(right),
                 },
-                SourceLocation { start, end },
+                SourceLocation::new(start, end),
             );
         }
 

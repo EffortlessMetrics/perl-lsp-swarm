@@ -32,7 +32,7 @@ fn actions_for(source: &str, message: &str) -> Vec<CodeAction> {
 fn apply_first(source: &str, action: &CodeAction) -> String {
     let edit = &action.edit.changes[0];
     let mut result = source.to_string();
-    result.replace_range(edit.location.start..edit.location.end, &edit.new_text);
+    result.replace_range(edit.location.start()..edit.location.end(), &edit.new_text);
     result
 }
 
@@ -68,7 +68,7 @@ fn pl003_inserts_the_brace_at_end_of_source() {
 
     let action = must_some(actions.iter().find(|action| action.title.contains("closing brace")));
     let edit = &action.edit.changes[0];
-    assert_eq!((edit.location.start, edit.location.end), (source.len(), source.len()));
+    assert_eq!((edit.location.start(), edit.location.end()), (source.len(), source.len()));
     assert_eq!(edit.new_text, "\n}");
 }
 

@@ -39,7 +39,7 @@ impl<'a> Parser<'a> {
             return Ok(validator.detects_code_execution(pattern));
         };
         let pattern = geometry.pattern.text.as_str();
-        let pattern_start = geometry.pattern.range.start;
+        let pattern_start = geometry.pattern.range.start();
         let has_embedded_code = validator.find_code_execution(pattern, pattern_start).is_some();
         let nested_quantifier = validator.find_nested_quantifier(pattern, pattern_start);
 

@@ -23,7 +23,7 @@ fn walk(node: &Node, visit: &mut impl FnMut(&Node)) {
 }
 
 fn source_text(source: &str, node: &Node) -> Option<String> {
-    source.get(node.location.start..node.location.end).map(str::to_owned)
+    source.get(node.location.start()..node.location.end()).map(str::to_owned)
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn heredoc_opener_keeps_exact_payload_and_body_span_without_diamond() -> Result<
     walk(&ast, &mut |node| match &node.kind {
         NodeKind::Heredoc { delimiter, content, interpolated, indented, command, body_span } => {
             let body_geometry = body_span.as_ref().map(|span| {
-                (span.start, span.end, source.get(span.start..span.end).map(str::to_owned))
+                (span.start(), span.end(), source.get(span.start()..span.end()).map(str::to_owned))
             });
             heredocs.push((
                 delimiter.clone(),

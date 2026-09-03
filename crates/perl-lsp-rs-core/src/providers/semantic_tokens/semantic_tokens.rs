@@ -1096,8 +1096,8 @@ pub fn collect_semantic_tokens_controlled(
             // For nodes with name_span, use the precise span for better highlighting
             match &node.kind {
                 NodeKind::Package { name_span, .. } => {
-                    let (sl, sc) = to_pos16(name_span.start);
-                    let (el, ec) = to_pos16(name_span.end);
+                    let (sl, sc) = to_pos16(name_span.start());
+                    let (el, ec) = to_pos16(name_span.end());
                     let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
                     if len > 0 {
                         ast_tokens.push((
@@ -1111,8 +1111,8 @@ pub fn collect_semantic_tokens_controlled(
                     return Ok(true);
                 }
                 NodeKind::Subroutine { name: Some(_), name_span: Some(span), .. } => {
-                    let (sl, sc) = to_pos16(span.start);
-                    let (el, ec) = to_pos16(span.end);
+                    let (sl, sc) = to_pos16(span.start());
+                    let (el, ec) = to_pos16(span.end());
                     let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
                     if len > 0 {
                         ast_tokens.push((
@@ -1126,8 +1126,8 @@ pub fn collect_semantic_tokens_controlled(
                     return Ok(true);
                 }
                 NodeKind::Subroutine { name: Some(_), .. } => {
-                    let (sl, sc) = to_pos16(node.location.start);
-                    let (el, ec) = to_pos16(node.location.end);
+                    let (sl, sc) = to_pos16(node.location.start());
+                    let (el, ec) = to_pos16(node.location.end());
                     let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
                     if len > 0 {
                         ast_tokens.push((
@@ -1143,11 +1143,11 @@ pub fn collect_semantic_tokens_controlled(
                 NodeKind::Method { name, .. } => {
                     let (start, end) = method_declaration_name_offsets(
                         text,
-                        node.location.start,
-                        node.location.end,
+                        node.location.start(),
+                        node.location.end(),
                         name,
                     )
-                    .unwrap_or((node.location.start, node.location.end));
+                    .unwrap_or((node.location.start(), node.location.end()));
                     let (sl, sc) = to_pos16(start);
                     let (el, ec) = to_pos16(end);
                     let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
@@ -1163,8 +1163,8 @@ pub fn collect_semantic_tokens_controlled(
                     return Ok(true);
                 }
                 NodeKind::Class { .. } => {
-                    let (sl, sc) = to_pos16(node.location.start);
-                    let (el, ec) = to_pos16(node.location.end);
+                    let (sl, sc) = to_pos16(node.location.start());
+                    let (el, ec) = to_pos16(node.location.end());
                     let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
                     if len > 0 {
                         ast_tokens.push((
@@ -1178,8 +1178,8 @@ pub fn collect_semantic_tokens_controlled(
                     return Ok(true);
                 }
                 NodeKind::PhaseBlock { phase_span: Some(span), .. } => {
-                    let (sl, sc) = to_pos16(span.start);
-                    let (el, ec) = to_pos16(span.end);
+                    let (sl, sc) = to_pos16(span.start());
+                    let (el, ec) = to_pos16(span.end());
                     let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
                     if len > 0 {
                         ast_tokens.push((sl, sc, len, kind_idx(&leg, "macro"), 0));
@@ -1187,16 +1187,16 @@ pub fn collect_semantic_tokens_controlled(
                     return Ok(true);
                 }
                 NodeKind::LabeledStatement { label, .. } => {
-                    let Some(fallback_end) = node.location.start.checked_add(label.len()) else {
+                    let Some(fallback_end) = node.location.start().checked_add(label.len()) else {
                         return Ok(true);
                     };
                     let (start, end) = statement_label_offsets(
                         text,
-                        node.location.start,
-                        node.location.end,
+                        node.location.start(),
+                        node.location.end(),
                         label,
                     )
-                    .unwrap_or((node.location.start, fallback_end));
+                    .unwrap_or((node.location.start(), fallback_end));
                     let (sl, sc) = to_pos16(start);
                     let (el, ec) = to_pos16(end);
                     let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
@@ -1214,8 +1214,8 @@ pub fn collect_semantic_tokens_controlled(
                 NodeKind::LoopControl { op, label: Some(label) } => {
                     if let Some((start, end)) = loop_control_label_offsets(
                         text,
-                        node.location.start,
-                        node.location.end,
+                        node.location.start(),
+                        node.location.end(),
                         op,
                         label,
                     ) {
@@ -1234,7 +1234,7 @@ pub fn collect_semantic_tokens_controlled(
                     // `->method` (perldoc perlop), so scan forward for the span rather
                     // than assuming `->` abuts the receiver at object.location.end + 2.
                     if let Some((method_name_start, method_name_end)) =
-                        method_call_name_offsets(text, object.location.end, method)
+                        method_call_name_offsets(text, object.location.end(), method)
                     {
                         let (sl, sc) = to_pos16(method_name_start);
                         let (el, ec) = to_pos16(method_name_end);
@@ -1264,8 +1264,8 @@ pub fn collect_semantic_tokens_controlled(
                         && let Some(first_arg) = args.first()
                         && matches!(first_arg.kind, NodeKind::String { .. })
                     {
-                        let (asl, asc) = to_pos16(first_arg.location.start);
-                        let (ael, aec) = to_pos16(first_arg.location.end);
+                        let (asl, asc) = to_pos16(first_arg.location.start());
+                        let (ael, aec) = to_pos16(first_arg.location.end());
                         let alen = if asl == ael { aec.saturating_sub(asc) } else { 0 };
                         if alen > 0 {
                             ast_tokens.push((asl, asc, alen, kind_idx(&leg, "sql_string"), 0));
@@ -1276,7 +1276,7 @@ pub fn collect_semantic_tokens_controlled(
                 _ => {}
             }
 
-            let (s, e) = (node.location.start, node.location.end);
+            let (s, e) = (node.location.start(), node.location.end());
             let (sl, sc) = to_pos16(s);
             let (el, ec) = to_pos16(e);
             let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
@@ -1331,7 +1331,7 @@ pub fn collect_semantic_tokens_controlled(
                     }
                 }
                 NodeKind::Variable { sigil, name } => {
-                    let (vs, ve) = (node.location.start, node.location.end);
+                    let (vs, ve) = (node.location.start(), node.location.end());
                     let decl_info = declaration_flag(&decl_spans, (vs, ve), traversal)?;
                     let full_name = format!("{sigil}{name}");
                     let special_mod = if is_special_variable(&full_name) { 512 } else { 0 }; // defaultLibrary bit 9
@@ -1586,7 +1586,7 @@ fn mark_declaration_target_flags(
                 .with(|count| count.set(count.get().saturating_add(1)));
             traversal.admit_work()?;
             flags
-                .entry((node.location.start, node.location.end))
+                .entry((node.location.start(), node.location.end()))
                 .and_modify(|flag| *flag |= is_readonly)
                 .or_insert(is_readonly);
         }
@@ -1613,7 +1613,7 @@ fn assignment_lhs_spans(
     let mut spans = FxHashSet::default();
     walk_ast_full_controlled(ast, traversal, &mut |node| {
         if let NodeKind::Assignment { lhs, .. } = &node.kind {
-            spans.insert((lhs.location.start, lhs.location.end));
+            spans.insert((lhs.location.start(), lhs.location.end()));
         }
         true
     })?;

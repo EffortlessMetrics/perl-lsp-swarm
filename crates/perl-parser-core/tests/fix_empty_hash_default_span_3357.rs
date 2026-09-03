@@ -33,15 +33,15 @@ where
 fn assert_span_valid(node: &Node, source: &str, label: &str) {
     let loc = &node.location;
     assert!(
-        loc.start <= loc.end,
+        loc.start() <= loc.end(),
         "{label}: span is REVERSED — start({}) > end({})",
-        loc.start,
-        loc.end,
+        loc.start(),
+        loc.end(),
     );
     assert!(
-        loc.end <= source.len(),
+        loc.end() <= source.len(),
         "{label}: end({}) exceeds source length({})",
-        loc.end,
+        loc.end(),
         source.len(),
     );
 }
@@ -85,8 +85,8 @@ fn optional_param_empty_hash_default_span_covers_braces() -> Result<(), Box<dyn 
 
     // Slice the source using the span — must not panic (no reversed/out-of-bounds).
     let sliced = source
-        .get(loc.start..loc.end)
-        .ok_or_else(|| format!("span {}..{} is out of bounds for source", loc.start, loc.end))?;
+        .get(loc.start()..loc.end())
+        .ok_or_else(|| format!("span {}..{} is out of bounds for source", loc.start(), loc.end()))?;
 
     assert_eq!(sliced, "{}", "the HashLiteral span should cover exactly `{{}}`");
     Ok(())
@@ -151,7 +151,7 @@ fn standalone_empty_hash_literal_span_is_not_reversed() -> Result<(), Box<dyn st
     assert_span_valid(hash_node, source, "empty HashLiteral in `my $h = {}`");
 
     let sliced = source
-        .get(hash_node.location.start..hash_node.location.end)
+        .get(hash_node.location.start()..hash_node.location.end())
         .ok_or("span should be in bounds")?;
     assert_eq!(sliced, "{}", "standalone empty hash span should cover `{{}}`");
     Ok(())

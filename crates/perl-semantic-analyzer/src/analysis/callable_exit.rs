@@ -143,7 +143,12 @@ impl CallableExitSummary {
         let mut analyzer = ExitAnalyzer::new(budget);
         analyzer.analyze_body(body);
         analyzer.exits.sort_by_key(|exit| {
-            (exit.statement_range.start, exit.statement_range.end, exit.kind, exit.control_depth)
+            (
+                exit.statement_range.start(),
+                exit.statement_range.end(),
+                exit.kind,
+                exit.control_depth,
+            )
         });
         analyzer.exits.dedup();
 

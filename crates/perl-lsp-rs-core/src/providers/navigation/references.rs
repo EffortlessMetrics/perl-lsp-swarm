@@ -197,7 +197,7 @@ pub fn find_references_single_file(ast: &Node, offset: usize) -> Option<Vec<(usi
             NodeKind::Variable { sigil, name } if want_kind == "var" => {
                 let sig_char = sigil.chars().next();
                 if sig_char == want_sigil && name == want_name {
-                    out.push((location.start, location.end));
+                    out.push((location.start(), location.end()));
                 }
             }
             NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. }
@@ -206,14 +206,14 @@ pub fn find_references_single_file(ast: &Node, offset: usize) -> Option<Vec<(usi
                 let (pkg, bare) = split_qualified_name(name);
                 let pkg = pkg.unwrap_or("main");
                 if bare == want_name && pkg == want_pkg {
-                    out.push((location.start, location.end));
+                    out.push((location.start(), location.end()));
                 }
             }
             NodeKind::Subroutine { name: Some(name), .. } if want_kind == "sub" => {
                 let (pkg, bare) = split_qualified_name(name);
                 let pkg = pkg.unwrap_or("main");
                 if bare == want_name && pkg == want_pkg {
-                    out.push((location.start, location.end));
+                    out.push((location.start(), location.end()));
                 }
             }
             _ => {}
@@ -230,7 +230,7 @@ pub fn find_references_single_file(ast: &Node, offset: usize) -> Option<Vec<(usi
 }
 
 fn find_node_at_offset(node: &Node, offset: usize) -> Option<&Node> {
-    if offset < node.location.start || offset > node.location.end {
+    if offset < node.location.start() || offset > node.location.end() {
         return None;
     }
 

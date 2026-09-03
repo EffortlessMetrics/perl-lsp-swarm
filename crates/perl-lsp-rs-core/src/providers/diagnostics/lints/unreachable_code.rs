@@ -578,7 +578,7 @@ fn labeled_statement_name(node: &Node) -> Option<&str> {
 
 fn emit_unreachable(stmt: &Node, diagnostics: &mut Vec<Diagnostic>) {
     diagnostics.push(Diagnostic {
-        range: (stmt.location.start, stmt.location.end),
+        range: (stmt.location.start(), stmt.location.end()),
         severity: DiagnosticSeverity::Hint,
         code: Some(DiagnosticCode::UnreachableCode.as_str().to_string()),
         message: "Unreachable code: this statement cannot be executed".to_string(),

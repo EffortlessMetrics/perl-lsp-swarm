@@ -730,8 +730,8 @@ greet();
     if let Some(syms) = table.symbols.get("greet")
         && let Some(sym) = syms.first()
     {
-        let refs_incl = analyzer.find_all_references(sym.location.start, true);
-        let refs_excl = analyzer.find_all_references(sym.location.start, false);
+        let refs_incl = analyzer.find_all_references(sym.location.start(), true);
+        let refs_excl = analyzer.find_all_references(sym.location.start(), false);
         assert!(refs_incl.len() >= refs_excl.len(), "include_declaration should return >= refs");
     }
     Ok(())

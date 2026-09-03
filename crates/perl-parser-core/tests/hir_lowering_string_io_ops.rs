@@ -328,7 +328,7 @@ fn heredoc_body_range_addresses_the_body_text_in_the_source() -> TestResult {
     let heredoc = must_some(heredocs(&file).first().copied());
     let body_range = must_some(heredoc.body_range);
 
-    let body = must_some(source.get(body_range.start as usize..body_range.end as usize));
+    let body = must_some(source.get(body_range.start() as usize..body_range.end() as usize));
     assert_eq!(
         body, "hello",
         "body_range must address the heredoc body so consumers read it from source \

@@ -105,7 +105,7 @@ pub(super) fn handle_foreach<'a>(
     // the duration of the loop) rather than merely analyzed as a use — otherwise
     // `$_` is never inserted as a binding and bareword `print;`, `chomp;`, etc.
     // inside the loop produce false `UndeclaredVariable` diagnostics.
-    let is_implicit_topic = variable.location.start == variable.location.end
+    let is_implicit_topic = variable.location.start() == variable.location.end()
         && matches!(&variable.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "_");
 
     if is_implicit_topic {
@@ -113,7 +113,7 @@ pub(super) fn handle_foreach<'a>(
             &loop_scope,
             "$",
             "_",
-            variable.location.start,
+            variable.location.start(),
             false,
             true,
             context,
@@ -177,8 +177,8 @@ fn process_callable_scope<'a>(
                 issues.push(ScopeIssue {
                     kind: IssueKind::DuplicateParameter,
                     variable_name: full_name.clone(),
-                    line: context.get_line(param.location.start),
-                    range: (param.location.start, param.location.end),
+                    line: context.get_line(param.location.start()),
+                    range: (param.location.start(), param.location.end()),
                     description: format!(
                         "Duplicate parameter '{}' in subroutine signature",
                         full_name
@@ -191,8 +191,8 @@ fn process_callable_scope<'a>(
                 issues.push(ScopeIssue {
                     kind: IssueKind::ParameterShadowsGlobal,
                     variable_name: full_name.clone(),
-                    line: context.get_line(param.location.start),
-                    range: (param.location.start, param.location.end),
+                    line: context.get_line(param.location.start()),
+                    range: (param.location.start(), param.location.end()),
                     description: format!(
                         "Parameter '{}' shadows a variable from outer scope",
                         full_name
@@ -205,7 +205,7 @@ fn process_callable_scope<'a>(
                 sub_scope,
                 sigil,
                 name,
-                param.location.start,
+                param.location.start(),
                 false,
                 true,
                 context,
@@ -254,8 +254,8 @@ fn process_callable_scope<'a>(
                                 issues.push(ScopeIssue {
                                     kind: IssueKind::UnusedParameter,
                                     variable_name: full_name.clone(),
-                                    line: context.get_line(param.location.start),
-                                    range: (param.location.start, param.location.end),
+                                    line: context.get_line(param.location.start()),
+                                    range: (param.location.start(), param.location.end()),
                                     description: format!(
                                         "Parameter '{}' is declared but never used",
                                         full_name
@@ -317,7 +317,7 @@ pub(super) fn handle_method<'a>(
         &sub_scope,
         "$",
         "self",
-        node.location.start,
+        node.location.start(),
         false,
         true,
         context,
@@ -353,7 +353,7 @@ pub(super) fn handle_try<'a>(
         if let Some((full_name, var_loc)) = catch_var {
             // Use the parser-provided source range directly instead of re-deriving
             // it via a fragile backward substring scan.
-            let catch_var_range = (var_loc.start, var_loc.end);
+            let catch_var_range = (var_loc.start(), var_loc.end());
             let (sigil, name) = split_variable_name(full_name);
             if !sigil.is_empty() && !name.is_empty() && !name.contains("::") {
                 if let Some(issue_kind) =

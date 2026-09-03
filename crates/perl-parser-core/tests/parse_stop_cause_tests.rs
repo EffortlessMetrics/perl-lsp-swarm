@@ -32,7 +32,7 @@ use perl_parser_core::{
 // ---------------------------------------------------------------------------
 
 fn empty_ast() -> Node {
-    Node::new(NodeKind::Program { statements: vec![] }, SourceLocation { start: 0, end: 0 })
+    Node::new(NodeKind::Program { statements: vec![] }, SourceLocation::new(0, 0))
 }
 
 // ---------------------------------------------------------------------------

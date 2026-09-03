@@ -19,7 +19,7 @@ const SMALL_STACK_BYTES: usize = 256 * 1024;
 const DEEP_DEPTH: usize = 50_000;
 
 fn loc(start: usize, end: usize) -> SourceLocation {
-    SourceLocation { start, end }
+    SourceLocation::new(start, end)
 }
 
 fn number_leaf(start: usize, end: usize) -> Node {

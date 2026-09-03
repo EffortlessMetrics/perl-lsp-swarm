@@ -137,8 +137,8 @@ mod ast_analysis {
             }
 
             // Record position information (targets position arithmetic mutations)
-            let start = node.location.start;
-            let end = node.location.end;
+            let start = node.location.start();
+            let end = node.location.end();
             self.position_sequence.push((start, end));
 
             // Recursively analyze children (targets iteration and indexing mutations)

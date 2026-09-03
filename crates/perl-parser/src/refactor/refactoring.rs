@@ -1478,7 +1478,8 @@ impl RefactoringEngine {
                 found_names.insert(sub_name.clone());
                 elements_to_move.push(ElementToMove {
                     location: child.location,
-                    content: source_content[child.location.start..child.location.end].to_string(),
+                    content: source_content[child.location.start()..child.location.end()]
+                        .to_string(),
                 });
             }
         });
@@ -1502,14 +1503,14 @@ impl RefactoringEngine {
         }
 
         // Sort by start position descending for safe removal from source
-        elements_to_move.sort_by_key(|e| std::cmp::Reverse(e.location.start));
+        elements_to_move.sort_by_key(|e| std::cmp::Reverse(e.location.start()));
 
         let mut modified_source = source_content.clone();
 
         // Remove from source (in descending order)
         for element in &elements_to_move {
-            let start = element.location.start;
-            let end = element.location.end;
+            let start = element.location.start();
+            let end = element.location.end();
 
             // Check for trailing newline to remove
             let remove_end =
@@ -1523,7 +1524,7 @@ impl RefactoringEngine {
         }
 
         // Sort by start position ascending for correct append order
-        elements_to_move.sort_by_key(|e| e.location.start);
+        elements_to_move.sort_by_key(|e| e.location.start());
 
         // Construct moved content
         let mut moved_content = String::new();
@@ -1939,7 +1940,7 @@ fn visit_node(
     declared_in_scope: &mut HashSet<String>,
     declared_in_range: &mut HashSet<String>,
 ) {
-    let in_range = node.location.start >= start && node.location.end <= end;
+    let in_range = node.location.start() >= start && node.location.end() <= end;
 
     match &node.kind {
         NodeKind::VariableDeclaration { declarator, variable, initializer, .. } => {
@@ -2022,7 +2023,7 @@ fn visit_node(
                 {
                     inputs.insert(full_name.clone());
                 }
-            } else if node.location.start >= end {
+            } else if node.location.start() >= end {
                 // Usage after range
                 // If declared in range OR used in range (input), it might have changed and is used after.
                 if declared_in_range.contains(&full_name) || inputs.contains(&full_name) {

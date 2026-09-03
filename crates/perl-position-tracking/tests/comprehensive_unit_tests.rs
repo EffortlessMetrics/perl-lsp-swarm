@@ -16,8 +16,8 @@ use perl_tdd_support::must_some;
 #[test]
 fn byte_span_new_and_accessors() {
     let span = ByteSpan::new(3, 7);
-    assert_eq!(span.start, 3);
-    assert_eq!(span.end, 7);
+    assert_eq!(span.start(), 3);
+    assert_eq!(span.end(), 7);
     assert_eq!(span.len(), 4);
     assert!(!span.is_empty());
 }
@@ -27,23 +27,23 @@ fn byte_span_empty_at_zero() {
     let span = ByteSpan::empty(0);
     assert!(span.is_empty());
     assert_eq!(span.len(), 0);
-    assert_eq!(span.start, 0);
-    assert_eq!(span.end, 0);
+    assert_eq!(span.start(), 0);
+    assert_eq!(span.end(), 0);
 }
 
 #[test]
 fn byte_span_empty_at_nonzero() {
     let span = ByteSpan::empty(42);
     assert!(span.is_empty());
-    assert_eq!(span.start, 42);
+    assert_eq!(span.start(), 42);
 }
 
 #[test]
 fn byte_span_whole() {
     let src = "hello world";
     let span = ByteSpan::whole(src);
-    assert_eq!(span.start, 0);
-    assert_eq!(span.end, 11);
+    assert_eq!(span.start(), 0);
+    assert_eq!(span.end(), 11);
     assert_eq!(span.slice(src), "hello world");
 }
 
@@ -122,8 +122,8 @@ fn byte_span_to_range() {
 #[test]
 fn byte_span_from_range() {
     let span: ByteSpan = (3..9).into();
-    assert_eq!(span.start, 3);
-    assert_eq!(span.end, 9);
+    assert_eq!(span.start(), 3);
+    assert_eq!(span.end(), 9);
 }
 
 #[test]
@@ -143,16 +143,16 @@ fn byte_span_display() {
 #[test]
 fn byte_span_default_is_empty_at_zero() {
     let span = ByteSpan::default();
-    assert_eq!(span.start, 0);
-    assert_eq!(span.end, 0);
+    assert_eq!(span.start(), 0);
+    assert_eq!(span.end(), 0);
     assert!(span.is_empty());
 }
 
 #[test]
 fn source_location_alias() {
     let loc: SourceLocation = ByteSpan::new(1, 2);
-    assert_eq!(loc.start, 1);
-    assert_eq!(loc.end, 2);
+    assert_eq!(loc.start(), 1);
+    assert_eq!(loc.end(), 2);
 }
 
 // ─── Position (engine type) ──────────────────────────────────────────────────
@@ -309,11 +309,18 @@ fn range_display() {
 }
 
 #[test]
-fn range_from_source_location() {
+fn range_from_source_location() -> Result<(), Box<dyn std::error::Error>> {
+    // The source-free `From<ByteSpan> for Range` conversion was removed by
+    // #8740: a byte-only span cannot invent line/column values. Byte-ordered
+    // construction is fallible through `Range::try_new` instead.
     let loc = SourceLocation::new(3, 7);
-    let r: perl_position_tracking::Range = loc.into();
+    let r = perl_position_tracking::Range::try_new(
+        perl_position_tracking::Position::new(loc.start(), 1, 1),
+        perl_position_tracking::Position::new(loc.end(), 1, 1 + (loc.end() - loc.start()) as u32),
+    )?;
     assert_eq!(r.start.byte, 3);
     assert_eq!(r.end.byte, 7);
+    Ok(())
 }
 
 // ─── LineStartsCache ─────────────────────────────────────────────────────────
@@ -1210,8 +1217,8 @@ fn byte_span_union_nested() {
 #[test]
 fn byte_span_whole_empty_string() {
     let span = ByteSpan::whole("");
-    assert_eq!(span.start, 0);
-    assert_eq!(span.end, 0);
+    assert_eq!(span.start(), 0);
+    assert_eq!(span.end(), 0);
     assert!(span.is_empty());
 }
 
@@ -1232,7 +1239,7 @@ fn byte_span_copy_semantics() {
     let a = ByteSpan::new(1, 5);
     let b = a; // Copy
     assert_eq!(a, b);
-    assert_eq!(a.start, b.start);
+    assert_eq!(a.start(), b.start());
 }
 
 #[test]
@@ -1297,7 +1304,7 @@ fn byte_span_display_empty() {
 fn byte_span_from_range_empty() {
     let span: ByteSpan = (5..5).into();
     assert!(span.is_empty());
-    assert_eq!(span.start, 5);
+    assert_eq!(span.start(), 5);
 }
 
 // ─── Additional Position edge cases ─────────────────────────────────────────
@@ -1338,11 +1345,14 @@ fn position_advance_char_cjk() {
 }
 
 #[test]
-fn position_default_is_all_zeros() {
+fn position_default_matches_documented_origin() {
+    // #8740: the engine default must match the documented 1-based origin,
+    // not a zero-derived line/column that disagrees with `Position::start`.
     let pos = perl_position_tracking::Position::default();
     assert_eq!(pos.byte, 0);
-    assert_eq!(pos.line, 0);
-    assert_eq!(pos.column, 0);
+    assert_eq!(pos.line, 1);
+    assert_eq!(pos.column, 1);
+    assert_eq!(pos, perl_position_tracking::Position::start());
 }
 
 #[test]

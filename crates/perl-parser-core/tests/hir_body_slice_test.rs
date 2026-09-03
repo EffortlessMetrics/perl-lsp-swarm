@@ -70,7 +70,7 @@ fn hir_body_slice_specimen_structure() -> Result<(), String> {
     // anchor at the variable, not the statement span.
     assert_eq!(
         let_binding_range,
-        SourceLocation { start: 3, end: 5 },
+        SourceLocation::new(3, 5),
         "binding_range must be the `$x` variable token span (3..5)"
     );
 
@@ -82,7 +82,7 @@ fn hir_body_slice_specimen_structure() -> Result<(), String> {
         .ok_or_else(|| "stmt source range must be present".to_string())?;
     assert_eq!(
         stmt_range,
-        SourceLocation { start: 0, end: 15 },
+        SourceLocation::new(0, 15),
         "stmt range must span bytes 0..15 (VariableDeclaration node, semicolon at 15 excluded)"
     );
 
@@ -106,7 +106,7 @@ fn hir_body_slice_specimen_structure() -> Result<(), String> {
         .ok_or_else(|| "assign expr range must be present".to_string())?;
     assert_eq!(
         assign_range,
-        SourceLocation { start: 3, end: 15 },
+        SourceLocation::new(3, 15),
         "Assign expr must span bytes 3..15"
     );
 
@@ -126,7 +126,7 @@ fn hir_body_slice_specimen_structure() -> Result<(), String> {
         .source_map
         .expr_range(assign_lhs)
         .ok_or_else(|| "LHS expr range must be present".to_string())?;
-    assert_eq!(lhs_range, SourceLocation { start: 3, end: 5 }, "LHS $x must span bytes 3..5");
+    assert_eq!(lhs_range, SourceLocation::new(3, 5), "LHS $x must span bytes 3..5");
 
     // ── 7. Assign RHS is Binary(Add) with explicit child IDs ──────────────
     let rhs_expr = body.expr(assign_rhs).ok_or_else(|| "rhs expr must exist".to_string())?;
@@ -144,7 +144,7 @@ fn hir_body_slice_specimen_structure() -> Result<(), String> {
         .ok_or_else(|| "binary expr range must be present".to_string())?;
     assert_eq!(
         bin_range,
-        SourceLocation { start: 8, end: 15 },
+        SourceLocation::new(8, 15),
         "Binary expr must span bytes 8..15 ($a + $b)"
     );
 
@@ -166,7 +166,7 @@ fn hir_body_slice_specimen_structure() -> Result<(), String> {
         .source_map
         .expr_range(bin_lhs)
         .ok_or_else(|| "binary LHS range must be present".to_string())?;
-    assert_eq!(bin_lhs_range, SourceLocation { start: 8, end: 10 }, "$a must span bytes 8..10");
+    assert_eq!(bin_lhs_range, SourceLocation::new(8, 10), "$a must span bytes 8..10");
 
     // ── 9. Binary RHS is Variable($b, Read) at 13..15 ────────────────────
     let bin_rhs_expr =
@@ -186,7 +186,7 @@ fn hir_body_slice_specimen_structure() -> Result<(), String> {
         .source_map
         .expr_range(bin_rhs)
         .ok_or_else(|| "binary RHS range must be present".to_string())?;
-    assert_eq!(bin_rhs_range, SourceLocation { start: 13, end: 15 }, "$b must span bytes 13..15");
+    assert_eq!(bin_rhs_range, SourceLocation::new(13, 15), "$b must span bytes 13..15");
 
     // ── 10. Source map is parallel to the arenas (consistency check) ───────
     assert_eq!(

@@ -235,10 +235,10 @@ fn make_test_file_ast() -> Node {
                         attributes: vec![],
                         body: Box::new(Node::new(
                             NodeKind::Block { statements: vec![] },
-                            SourceLocation { start: 10, end: 20 },
+                            SourceLocation::new(10, 20),
                         )),
                     },
-                    SourceLocation { start: 0, end: 20 },
+                    SourceLocation::new(0, 20),
                 ),
                 Node::new(
                     NodeKind::Subroutine {
@@ -250,10 +250,10 @@ fn make_test_file_ast() -> Node {
                         attributes: vec![],
                         body: Box::new(Node::new(
                             NodeKind::Block { statements: vec![] },
-                            SourceLocation { start: 30, end: 40 },
+                            SourceLocation::new(30, 40),
                         )),
                     },
-                    SourceLocation { start: 25, end: 40 },
+                    SourceLocation::new(25, 40),
                 ),
                 Node::new(
                     NodeKind::Subroutine {
@@ -265,14 +265,14 @@ fn make_test_file_ast() -> Node {
                         attributes: vec![],
                         body: Box::new(Node::new(
                             NodeKind::Block { statements: vec![] },
-                            SourceLocation { start: 50, end: 60 },
+                            SourceLocation::new(50, 60),
                         )),
                     },
-                    SourceLocation { start: 45, end: 60 },
+                    SourceLocation::new(45, 60),
                 ),
             ],
         },
-        SourceLocation { start: 0, end: 60 },
+        SourceLocation::new(0, 60),
     )
 }
 
@@ -412,13 +412,13 @@ fn refactoring_analyzer_default() -> Result<(), Box<dyn std::error::Error>> {
                     attributes: vec![],
                     body: Box::new(Node::new(
                         NodeKind::Block { statements: vec![] },
-                        SourceLocation { start: 10, end: 13 },
+                        SourceLocation::new(10, 13),
                     )),
                 },
-                SourceLocation { start: 0, end: 13 },
+                SourceLocation::new(0, 13),
             )],
         },
-        SourceLocation { start: 0, end: 13 },
+        SourceLocation::new(0, 13),
     );
     let suggestions = analyzer.analyze(&ast, source);
     // Simple sub should yield no refactoring suggestions
@@ -473,13 +473,13 @@ fn make_sub_ast(name: &str) -> Node {
                     attributes: vec![],
                     body: Box::new(Node::new(
                         NodeKind::Block { statements: vec![] },
-                        SourceLocation { start: 10, end: 20 },
+                        SourceLocation::new(10, 20),
                     )),
                 },
-                SourceLocation { start: 0, end: 20 },
+                SourceLocation::new(0, 20),
             )],
         },
-        SourceLocation { start: 0, end: 20 },
+        SourceLocation::new(0, 20),
     )
 }
 
@@ -628,7 +628,7 @@ fn test_results_default() -> Result<(), Box<dyn std::error::Error>> {
 fn refactoring_suggester_empty_program() -> Result<(), Box<dyn std::error::Error>> {
     let mut suggester = RefactoringSuggester::new();
     let ast =
-        Node::new(NodeKind::Program { statements: vec![] }, SourceLocation { start: 0, end: 0 });
+        Node::new(NodeKind::Program { statements: vec![] }, SourceLocation::new(0, 0));
     let suggestions = suggester.analyze(&ast, "");
     assert!(suggestions.is_empty());
     Ok(())
@@ -1071,17 +1071,17 @@ fn test_range_construction() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn node_construction() -> Result<(), Box<dyn std::error::Error>> {
     let node =
-        Node::new(NodeKind::Program { statements: vec![] }, SourceLocation { start: 0, end: 0 });
+        Node::new(NodeKind::Program { statements: vec![] }, SourceLocation::new(0, 0));
     assert!(matches!(node.kind, NodeKind::Program { .. }));
-    assert_eq!(node.location.start, 0);
+    assert_eq!(node.location.start(), 0);
     Ok(())
 }
 
 #[test]
 fn source_location_fields() -> Result<(), Box<dyn std::error::Error>> {
-    let loc = SourceLocation { start: 10, end: 50 };
-    assert_eq!(loc.start, 10);
-    assert_eq!(loc.end, 50);
+    let loc = SourceLocation::new(10, 50);
+    assert_eq!(loc.start(), 10);
+    assert_eq!(loc.end(), 50);
     Ok(())
 }
 

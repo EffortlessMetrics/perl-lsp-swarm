@@ -2,7 +2,7 @@
 /// that cover the full `(...)` text.
 ///
 /// Before the fix, both nodes were constructed with
-/// `SourceLocation { start: self.current_position(), end: self.current_position() }`
+/// `SourceLocation::new(self.current_position(), self.current_position())`
 /// AFTER consuming the `(...)` tokens, yielding an empty span.
 mod cpan_test_helpers;
 use cpan_test_helpers::parse;
@@ -30,11 +30,11 @@ fn test_signature_span_covers_parens() -> Result<(), Box<dyn std::error::Error>>
     let sig = find_node_by_kind(&ast, "Signature").ok_or("no Signature node found in AST")?;
 
     let expected = "($x, $y)";
-    let sliced = source.get(sig.location.start..sig.location.end).ok_or_else(|| {
+    let sliced = source.get(sig.location.start()..sig.location.end()).ok_or_else(|| {
         format!(
             "span {}..{} out of bounds for source len {}",
-            sig.location.start,
-            sig.location.end,
+            sig.location.start(),
+            sig.location.end(),
             source.len()
         )
     })?;
@@ -42,7 +42,7 @@ fn test_signature_span_covers_parens() -> Result<(), Box<dyn std::error::Error>>
     assert_eq!(
         sliced, expected,
         "Signature span should cover '($x, $y)', got {:?} (span {}..{})",
-        sliced, sig.location.start, sig.location.end
+        sliced, sig.location.start(), sig.location.end()
     );
     Ok(())
 }
@@ -56,8 +56,8 @@ fn test_signature_span_is_nonempty() -> Result<(), Box<dyn std::error::Error>> {
     assert!(
         !sig.location.is_empty(),
         "Signature location must not be empty (got span {}..{})",
-        sig.location.start,
-        sig.location.end
+        sig.location.start(),
+        sig.location.end()
     );
     Ok(())
 }
@@ -70,8 +70,8 @@ fn test_signature_span_with_default_value() -> Result<(), Box<dyn std::error::Er
     let sig = find_node_by_kind(&ast, "Signature").ok_or("no Signature node found in AST")?;
 
     let expected = "($x, $y = 0, @rest)";
-    let sliced = source.get(sig.location.start..sig.location.end).ok_or_else(|| {
-        format!("span {}..{} out of bounds", sig.location.start, sig.location.end)
+    let sliced = source.get(sig.location.start()..sig.location.end()).ok_or_else(|| {
+        format!("span {}..{} out of bounds", sig.location.start(), sig.location.end())
     })?;
 
     assert_eq!(
@@ -92,8 +92,8 @@ fn test_method_signature_span_covers_parens() -> Result<(), Box<dyn std::error::
         find_node_by_kind(&ast, "Signature").ok_or("no Signature node found in method AST")?;
 
     let expected = "($name)";
-    let sliced = source.get(sig.location.start..sig.location.end).ok_or_else(|| {
-        format!("span {}..{} out of bounds", sig.location.start, sig.location.end)
+    let sliced = source.get(sig.location.start()..sig.location.end()).ok_or_else(|| {
+        format!("span {}..{} out of bounds", sig.location.start(), sig.location.end())
     })?;
 
     assert_eq!(sliced, expected, "Method Signature span should cover '($name)', got {:?}", sliced);
@@ -108,8 +108,8 @@ fn test_method_invocant_signature_span_covers_parens() -> Result<(), Box<dyn std
         find_node_by_kind(&ast, "Signature").ok_or("no Signature node found in method AST")?;
 
     let expected = "($self: $name)";
-    let sliced = source.get(sig.location.start..sig.location.end).ok_or_else(|| {
-        format!("span {}..{} out of bounds", sig.location.start, sig.location.end)
+    let sliced = source.get(sig.location.start()..sig.location.end()).ok_or_else(|| {
+        format!("span {}..{} out of bounds", sig.location.start(), sig.location.end())
     })?;
 
     assert_eq!(
@@ -129,8 +129,8 @@ fn test_prototype_span_covers_parens() -> Result<(), Box<dyn std::error::Error>>
     let proto = find_node_by_kind(&ast, "Prototype").ok_or("no Prototype node found in AST")?;
 
     let expected = "($$)";
-    let sliced = source.get(proto.location.start..proto.location.end).ok_or_else(|| {
-        format!("span {}..{} out of bounds", proto.location.start, proto.location.end)
+    let sliced = source.get(proto.location.start()..proto.location.end()).ok_or_else(|| {
+        format!("span {}..{} out of bounds", proto.location.start(), proto.location.end())
     })?;
 
     assert_eq!(sliced, expected, "Prototype span should cover '($$)', got {:?}", sliced);
@@ -146,8 +146,8 @@ fn test_prototype_span_is_nonempty() -> Result<(), Box<dyn std::error::Error>> {
     assert!(
         !proto.location.is_empty(),
         "Prototype location must not be empty (got span {}..{})",
-        proto.location.start,
-        proto.location.end
+        proto.location.start(),
+        proto.location.end()
     );
     Ok(())
 }

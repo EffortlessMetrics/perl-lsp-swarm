@@ -488,12 +488,12 @@ impl<'a> Parser<'a> {
         } else {
             self.parse_assignment()?
         };
-        let start = expr.location.start;
-        let end = rhs.location.end;
+        let start = expr.location.start();
+        let end = rhs.location.end();
 
         Ok(Node::new(
             NodeKind::Assignment { lhs: Box::new(expr), rhs: Box::new(rhs), op: op.to_string() },
-            SourceLocation { start, end },
+            SourceLocation::new(start, end),
         ))
     }
 
@@ -604,9 +604,9 @@ impl<'a> Parser<'a> {
             for chunk in elements.chunks(2) {
                 pairs.push((chunk[0].clone(), chunk[1].clone()));
             }
-            Node::new(NodeKind::HashLiteral { pairs }, SourceLocation { start, end })
+            Node::new(NodeKind::HashLiteral { pairs }, SourceLocation::new(start, end))
         } else {
-            Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end })
+            Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation::new(start, end))
         }
     }
 
@@ -637,7 +637,7 @@ impl<'a> Parser<'a> {
             return Ok(first);
         }
 
-        let start = first.location.start;
+        let start = first.location.start();
         let mut expressions = vec![first];
         let mut saw_fat_arrow = false;
 
@@ -715,7 +715,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        let end = expressions.last().map(|expr| expr.location.end).unwrap_or(start);
+        let end = expressions.last().map(|expr| expr.location.end()).unwrap_or(start);
         Ok(Self::build_list_or_hash(expressions, saw_fat_arrow, start, end))
     }
 
@@ -907,7 +907,7 @@ impl<'a> Parser<'a> {
             location: op_pos,
         });
         let pos = op_pos;
-        Some(Node::new(NodeKind::MissingExpression, SourceLocation { start: pos, end: pos }))
+        Some(Node::new(NodeKind::MissingExpression, SourceLocation::new(pos, pos)))
     }
 
     /// Expect a closing delimiter, recovering gracefully if missing.
@@ -1086,7 +1086,7 @@ impl<'a> Parser<'a> {
 
         Node::new(
             NodeKind::Error { message, expected: vec![], found: found_token, partial: None },
-            SourceLocation { start: location, end },
+            SourceLocation::new(location, end),
         )
     }
 
@@ -1132,7 +1132,7 @@ impl<'a> Parser<'a> {
 
         Node::new(
             NodeKind::Error { message, expected, found, partial: None },
-            SourceLocation { start, end: start },
+            SourceLocation::new(start, start),
         )
     }
 

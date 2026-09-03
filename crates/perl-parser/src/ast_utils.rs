@@ -44,7 +44,7 @@ pub fn find_function_insert_position(source: &str) -> usize {
 #[allow(clippy::only_used_in_recursion)]
 #[must_use]
 pub fn find_node_at_range(node: &Node, range: (usize, usize)) -> Option<&Node> {
-    if node.location.start <= range.0 && node.location.end >= range.1 {
+    if node.location.start() <= range.0 && node.location.end() >= range.1 {
         match &node.kind {
             NodeKind::Program { statements } | NodeKind::Block { statements } => {
                 for stmt in statements {

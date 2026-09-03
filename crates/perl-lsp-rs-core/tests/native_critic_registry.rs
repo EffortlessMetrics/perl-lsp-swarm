@@ -234,7 +234,7 @@ fn run_check(registry: &NativeCriticRegistry, config: &CriticConfig) -> Vec<Crit
 }
 
 fn empty_program() -> Node {
-    Node::new(NodeKind::Program { statements: vec![] }, SourceLocation { start: 0, end: 0 })
+    Node::new(NodeKind::Program { statements: vec![] }, SourceLocation::new(0, 0))
 }
 
 /// Minimal `CriticRule` impl used to drive the registry filtering logic.

@@ -64,11 +64,11 @@ impl CompletionContext {
         let mut scope_start: Option<usize> = None;
         for scope in symbol_table.scopes.values() {
             if scope.kind == ScopeKind::Package
-                && scope.location.start <= position
-                && position < scope.location.end
-                && scope_start.is_none_or(|s| scope.location.start >= s)
+                && scope.location.start() <= position
+                && position < scope.location.end()
+                && scope_start.is_none_or(|s| scope.location.start() >= s)
             {
-                scope_start = Some(scope.location.start);
+                scope_start = Some(scope.location.start());
             }
         }
 
@@ -77,7 +77,7 @@ impl CompletionContext {
                 .symbols
                 .values()
                 .flat_map(|v| v.iter())
-                .find(|sym| sym.location.start == start && is_package_like_symbol(sym.kind))
+                .find(|sym| sym.location.start() == start && is_package_like_symbol(sym.kind))
         {
             return sym.name.clone();
         }
@@ -93,25 +93,25 @@ impl CompletionContext {
             .flat_map(|v| v.iter())
             .filter(|sym| is_package_like_symbol(sym.kind))
             .collect();
-        packages.sort_by_key(|sym| sym.location.start);
+        packages.sort_by_key(|sym| sym.location.start());
         for sym in packages {
-            if sym.location.start > position {
+            if sym.location.start() > position {
                 break;
             }
 
             let package_scope = symbol_table.scopes.values().find(|scope| {
-                scope.kind == ScopeKind::Package && scope.location.start == sym.location.start
+                scope.kind == ScopeKind::Package && scope.location.start() == sym.location.start()
             });
 
             match package_scope {
                 Some(scope)
-                    if scope.location.start <= position && position < scope.location.end =>
+                    if scope.location.start() <= position && position < scope.location.end() =>
                 {
                     current = sym.name.clone();
                 }
                 Some(scope)
-                    if position >= scope.location.end
-                        && scope.location.end <= sym.location.end
+                    if position >= scope.location.end()
+                        && scope.location.end() <= sym.location.end()
                         && matches!(sym.kind, SymbolKind::Class | SymbolKind::Role) =>
                 {
                     // Declaration-line class/role scopes name the lexical package for the

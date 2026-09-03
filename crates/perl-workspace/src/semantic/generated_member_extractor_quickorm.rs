@@ -308,8 +308,8 @@ fn collect_static_name_candidates(node: &Node) -> Vec<NameCandidate> {
                 .into_iter()
                 .map(|name| NameCandidate {
                     name,
-                    span_start: node.location.start,
-                    span_end: node.location.end,
+                    span_start: node.location.start(),
+                    span_end: node.location.end(),
                 })
                 .collect()
         }
@@ -326,8 +326,8 @@ fn collect_static_name_candidates(node: &Node) -> Vec<NameCandidate> {
             .filter_map(|element| match &element.kind {
                 NodeKind::String { value, interpolated: false } => Some(NameCandidate {
                     name: normalize_symbol_name(value)?,
-                    span_start: element.location.start,
-                    span_end: element.location.end,
+                    span_start: element.location.start(),
+                    span_end: element.location.end(),
                 }),
                 _ => None,
             })

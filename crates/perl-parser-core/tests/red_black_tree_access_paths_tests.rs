@@ -90,7 +90,7 @@ fn expression_text(source: &str, body: &HirBody, id: HirExprId) -> String {
         return String::from("<missing-range>");
     };
     source
-        .get(range.start..range.end)
+        .get(range.start()..range.end())
         .map_or_else(|| String::from("<invalid-range>"), str::to_owned)
 }
 

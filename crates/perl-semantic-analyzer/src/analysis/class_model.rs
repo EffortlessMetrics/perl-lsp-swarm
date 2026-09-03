@@ -810,7 +810,7 @@ impl ClassModelBuilder {
             if is_has_marker {
                 if let NodeKind::ExpressionStatement { expression } = &second.kind {
                     let has_location =
-                        SourceLocation { start: first.location.start, end: second.location.end };
+                        SourceLocation::new(first.location.start(), second.location.end());
 
                     match &expression.kind {
                         NodeKind::HashLiteral { pairs } => {
@@ -1031,7 +1031,7 @@ impl ClassModelBuilder {
             return None;
         };
 
-        let location = SourceLocation { start: first.location.start, end: second.location.end };
+        let location = SourceLocation::new(first.location.start(), second.location.end());
 
         for (key_node, _) in pairs {
             let method_names = collect_symbol_names(key_node);
@@ -1262,7 +1262,7 @@ impl ClassModelBuilder {
     /// `:mutator`) are identical for both frameworks.
     fn try_extract_field_declaration(&mut self, statement: &Node) -> Option<usize> {
         let allow_named_writer = self.current_framework == Framework::ObjectPad
-            || self.native_named_writers_allowed(statement.location.start);
+            || self.native_named_writers_allowed(statement.location.start());
         let allow_bare_writer =
             self.current_framework == Framework::ObjectPad || allow_named_writer;
         let field = Self::object_pad_field_from_statement(
@@ -1451,14 +1451,14 @@ impl ClassModelBuilder {
                 field.writer = None;
                 continue;
             }
-            accepted.insert((field.location.start, field.location.end, writer.to_owned()));
+            accepted.insert((field.location.start(), field.location.end(), writer.to_owned()));
         }
 
         self.current_methods.retain(|method| {
             method.generated_kind != Some(GeneratedMethodKind::Writer)
                 || accepted.contains(&(
-                    method.location.start,
-                    method.location.end,
+                    method.location.start(),
+                    method.location.end(),
                     method.name.clone(),
                 ))
         });

@@ -28,8 +28,8 @@ pub fn convert_loop_style(node: &Node, source: &str) -> Option<CodeAction> {
             && name == "_"
             && sigil == "$"
         {
-            let list_text = &source[list.location.start..list.location.end];
-            let body_text = &source[body.location.start..body.location.end];
+            let list_text = &source[list.location.start()..list.location.end()];
+            let body_text = &source[body.location.start()..body.location.end()];
 
             return Some(CodeAction {
                 title: "Use explicit loop variable instead of $_".to_string(),
@@ -110,7 +110,7 @@ pub fn try_convert_c_style_loop(
 
                         if is_increment {
                             // Replace array subscripts in body with $item
-                            let body_text = &source[body.location.start..body.location.end];
+                            let body_text = &source[body.location.start()..body.location.end()];
                             let modified_body = body_text
                                 .replace(
                                     &format!("${}[${}", array.trim_start_matches('@'), iter_name),

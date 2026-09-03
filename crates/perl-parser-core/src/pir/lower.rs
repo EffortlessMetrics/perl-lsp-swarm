@@ -128,7 +128,7 @@ impl Lowerer {
             && self
                 .pending_initializer_parent
                 .get(&item.scope_context)
-                .is_some_and(|(_, initializer_range)| initializer_range.end < item.range.start);
+                .is_some_and(|(_, initializer_range)| initializer_range.end() < item.range.start());
         if !matches!(&item.kind, HirKind::LiteralExpr(_)) || stale_initializer {
             self.pending_initializer_parent.remove(&item.scope_context);
         }
@@ -606,9 +606,9 @@ impl Lowerer {
             .filter_map(|id| self.nodes.get(id.index() as usize))
             .filter(|node| {
                 node.source_anchor.range.is_some_and(|range| {
-                    range.start <= item.range.start && range.end >= item.range.end
+                    range.start() <= item.range.start() && range.end() >= item.range.end()
                 }) && node.source_anchor.range.is_some_and(|range| {
-                    range.start < item.range.start || range.end > item.range.end
+                    range.start() < item.range.start() || range.end() > item.range.end()
                 })
             })
             .min_by_key(|node| {
@@ -616,7 +616,7 @@ impl Lowerer {
                 // smallest containing span, then the latest same-span node
                 // because that is the innermost pre-order parent.
                 node.source_anchor.range.map(|range| {
-                    (range.end.saturating_sub(range.start), std::cmp::Reverse(node.id))
+                    (range.end().saturating_sub(range.start()), std::cmp::Reverse(node.id))
                 })
             })
             .map(|node| node.id);
@@ -627,8 +627,8 @@ impl Lowerer {
             self.pending_initializer_parent
                 .get(&item.scope_context)
                 .filter(|(_, initializer_range)| {
-                    initializer_range.start <= item.range.start
-                        && initializer_range.end >= item.range.end
+                    initializer_range.start() <= item.range.start()
+                        && initializer_range.end() >= item.range.end()
                 })
                 .map(|(parent, _)| *parent)
         })
@@ -1559,7 +1559,7 @@ impl BodyLowerer {
         PirSourceAnchor {
             kind: super::model::PirAnchorKind::ExplicitSource,
             range: Some(range),
-            anchor_id: Some(perl_semantic_facts::AnchorId(range.start as u64)),
+            anchor_id: Some(perl_semantic_facts::AnchorId(range.start() as u64)),
             hir_item: Some(HirId::from_index(0)),
         }
     }

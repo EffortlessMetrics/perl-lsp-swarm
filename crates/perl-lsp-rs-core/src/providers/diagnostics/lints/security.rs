@@ -446,7 +446,7 @@ fn check_global_signal_handler_assignment(
     }
 
     diagnostics.push(Diagnostic {
-        range: (node.location.start, node.location.end),
+        range: (node.location.start(), node.location.end()),
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::SecuritySignalHandler.as_str().to_string()),
         message: format!(
@@ -455,7 +455,7 @@ fn check_global_signal_handler_assignment(
             signal_handler.signal_name
         ),
         related_information: vec![RelatedInformation {
-            location: (node.location.start, node.location.end),
+            location: (node.location.start(), node.location.end()),
             message: "Localized signal handlers avoid leaking exception or warning hooks across unrelated code.".to_string(),
         }],
         tags: Vec::new(),
@@ -538,13 +538,13 @@ fn check_eval_node(block: &Node, eval_node: &Node, diagnostics: &mut Vec<Diagnos
     }
 
     diagnostics.push(Diagnostic {
-        range: (eval_node.location.start, eval_node.location.end),
+        range: (eval_node.location.start(), eval_node.location.end()),
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::SecurityStringEval.as_str().to_string()),
         message: "String eval is a security risk. Consider eval { } for exception handling."
             .to_string(),
         related_information: vec![RelatedInformation {
-            location: (eval_node.location.start, eval_node.location.end),
+            location: (eval_node.location.start(), eval_node.location.end()),
             message: "String eval executes arbitrary Perl code at runtime. If the string contains user input, this allows code injection.".to_string(),
         }],
         tags: Vec::new(),
@@ -587,12 +587,12 @@ fn check_two_arg_open(name: &str, args: &[Node], node: &Node, diagnostics: &mut 
     }
 
     diagnostics.push(Diagnostic {
-        range: (node.location.start, node.location.end),
+        range: (node.location.start(), node.location.end()),
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::TwoArgOpen.as_str().to_string()),
         message: "Use 3-argument open for safety: open(my $fh, '>', 'file')".to_string(),
         related_information: vec![RelatedInformation {
-            location: (node.location.start, node.location.end),
+            location: (node.location.start(), node.location.end()),
             message: "Two-argument open combines mode and filename, which can allow shell injection if the filename is derived from user input".to_string(),
         }],
         tags: Vec::new(),
@@ -627,13 +627,13 @@ fn check_string_eval(name: &str, args: &[Node], node: &Node, diagnostics: &mut V
     }
 
     diagnostics.push(Diagnostic {
-        range: (node.location.start, node.location.end),
+        range: (node.location.start(), node.location.end()),
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::SecurityStringEval.as_str().to_string()),
         message: "String eval is a security risk. Consider eval { } for exception handling."
             .to_string(),
         related_information: vec![RelatedInformation {
-            location: (node.location.start, node.location.end),
+            location: (node.location.start(), node.location.end()),
             message: "String eval executes arbitrary Perl code at runtime. If the string contains user input, this allows code injection.".to_string(),
         }],
         tags: Vec::new(),
@@ -661,7 +661,7 @@ fn check_system_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>)
         return;
     }
 
-    let range = (node.location.start, node.location.end);
+    let range = (node.location.start(), node.location.end());
     let message = "system() executes a shell command. Ensure input is sanitized.".to_string();
     let explanation =
         "Use the list form system($cmd, @args) to avoid shell injection when arguments come from user input".to_string();
@@ -707,7 +707,7 @@ fn check_exec_call(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
         return;
     }
 
-    let range = (node.location.start, node.location.end);
+    let range = (node.location.start(), node.location.end());
     let message =
         "exec() replaces the current process with a shell command. Ensure input is sanitized."
             .to_string();
@@ -786,12 +786,12 @@ fn check_pipe_open(name: &str, args: &[Node], node: &Node, diagnostics: &mut Vec
     }
 
     diagnostics.push(Diagnostic {
-        range: (node.location.start, node.location.end),
+        range: (node.location.start(), node.location.end()),
         severity: DiagnosticSeverity::Warning,
         code: Some(DiagnosticCode::SecurityPipeOpen.as_str().to_string()),
         message: "Pipe-open executes a shell command. Ensure input is sanitized.".to_string(),
         related_information: vec![RelatedInformation {
-            location: (node.location.start, node.location.end),
+            location: (node.location.start(), node.location.end()),
             message: "Use the list form open(my $fh, '-|', $cmd, @args) to avoid shell injection when arguments come from user input".to_string(),
         }],
         tags: Vec::new(),
@@ -848,7 +848,7 @@ fn check_readpipe(name: &str, node: &Node, diagnostics: &mut Vec<Diagnostic>) {
         return;
     }
 
-    let range = (node.location.start, node.location.end);
+    let range = (node.location.start(), node.location.end());
     let message =
         "readpipe() executes a shell command (equivalent to qx//). Ensure input is sanitized."
             .to_string();
@@ -887,7 +887,7 @@ fn push_command_execution_diagnostic(
     observe: impl Fn(Severity, (usize, usize), String, Option<String>) -> BuiltInCriticObservation,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let range = (node.location.start, node.location.end);
+    let range = (node.location.start(), node.location.end());
     let message = "Command execution detected. Ensure input is sanitized.".to_string();
     let explanation =
         "Consider using open() with a pipe, or IPC::Run for safer command execution with proper input validation".to_string();
@@ -918,7 +918,7 @@ fn push_command_execution_diagnostic(
 /// ordinary row carries no overlap observation: the #11918 observation
 /// constructors only admit the reviewed cohorts.
 fn push_substitution_eval_diagnostic(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
-    let range = (node.location.start, node.location.end);
+    let range = (node.location.start(), node.location.end());
     diagnostics.push(Diagnostic {
         range,
         severity: DiagnosticSeverity::Warning,
@@ -944,7 +944,7 @@ fn push_substitution_eval_diagnostic(node: &Node, diagnostics: &mut Vec<Diagnost
 ///
 /// Same no-native-alias boundary as [`push_substitution_eval_diagnostic`].
 fn push_embedded_pattern_code_diagnostic(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
-    let range = (node.location.start, node.location.end);
+    let range = (node.location.start(), node.location.end());
     diagnostics.push(Diagnostic {
         range,
         severity: DiagnosticSeverity::Warning,
@@ -1047,12 +1047,12 @@ fn collect_receiver_assignments(node: &Node, index: &mut ReceiverAssignmentIndex
         // evidence about the receiver's origin either way.
         NodeKind::VariableDeclaration { variable, initializer: Some(init), .. } => {
             if let Some(name) = scalar_variable_name(variable) {
-                index.record(name, node.location.start, connect_assigned(init));
+                index.record(name, node.location.start(), connect_assigned(init));
             }
         }
         NodeKind::Assignment { lhs, rhs, .. } => {
             if let Some(name) = scalar_variable_name(lhs) {
-                index.record(name, node.location.start, connect_assigned(rhs));
+                index.record(name, node.location.start(), connect_assigned(rhs));
             }
         }
         _ => {}
@@ -1147,7 +1147,7 @@ fn check_sql_injection_method_call(
     // Anything else (unassigned `$dbh`, shadowed or rebound names, another
     // class's `prepare`, a later connect) stays silent.
     let receiver_is_dbh = scalar_variable_name(object)
-        .is_some_and(|name| index.is_proven_dbh(&name, node.location.start));
+        .is_some_and(|name| index.is_proven_dbh(&name, node.location.start()));
     if !receiver_is_dbh {
         return;
     }
@@ -1161,7 +1161,7 @@ fn check_sql_injection_method_call(
         SqlTextEvidence::Static | SqlTextEvidence::DynamicBoundary => return,
     }
 
-    let range = (node.location.start, node.location.end);
+    let range = (node.location.start(), node.location.end());
     let message = format!(
         "Interpolated SQL passed to ->{method}() is a SQL injection risk. Use placeholders (?) and bind values."
     );
