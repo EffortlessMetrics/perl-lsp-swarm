@@ -231,6 +231,56 @@ describe('gherkin ReDoS guard: a repeated group seams with itself (#9806)', () =
   });
 });
 
+// Four ways the scan could be talked out of seeing a chain it should see. Every
+// source below is accepted by `main`; each was raised in review and confirmed by
+// execution before being fixed.
+describe('gherkin ReDoS guard: chains that hide from the scan (#9806)', () => {
+  const deeplyWrapped = `${'('.repeat(33)}(a+)(a+)(a+)(a+)b${')'.repeat(33)}`;
+
+  test('rejects a chain wrapped past the analysis depth cap', () => {
+    // 83 characters, 2,091 ms at 120 and unfinished at 200. Wrapping a chain in
+    // enough groups to exhaust the budget does not make it cheaper to match, so
+    // an unanalysed group reports a chain instead of swallowing one.
+    expect(deeplyWrapped.length).toBeLessThanOrEqual(MAX_MATCH_REGEX_LENGTH);
+    expect(isPotentiallyExpensiveRegex(deeplyWrapped)).toBe(true);
+  });
+
+  test('does not let an unanalysable construct separate a chain', () => {
+    // An unrecognised `(?…)` form may match nothing, so it cannot be relied on
+    // to separate its neighbours. (`(?i:)` does not compile under Node 22's V8,
+    // so this exact source cannot reach `RegExp.test()` there; the guard must
+    // still not treat an unknown as a separator, because a runtime that does
+    // support inline modifiers would run the four-atom chain around it.)
+    expect(isPotentiallyExpensiveRegex('^(a+)(a+)(?i:)(a+)(a+)b$')).toBe(true);
+  });
+
+  test('keeps the path in which a nullable atom is absent', () => {
+    // `a?` looks like a separator between the `b+` runs, but on all-`b` input it
+    // vanishes and three unbounded repetitions compete — 213 ms at the ceiling.
+    expect(isPotentiallyExpensiveRegex('^([ab]+)(a?)(b+)(b+)c$')).toBe(true);
+  });
+
+  test.each([
+    ['unbounded repeat', '^((aa*a))+b$'],
+    ['bounded repeat', '^((a?a*a)){5}$'],
+  ])('charges a repeated group whose variability is interior: %s', (_name, source) => {
+    // Both edges are a fixed `a`, but the interior still redistributes input
+    // between copies. `^((aa*a))+b$` is twelve characters and exceeds nine
+    // seconds on forty.
+    expect(isPotentiallyExpensiveRegex(source)).toBe(true);
+  });
+
+  // The four fixes above all widen rejection, so each needs a neighbour that
+  // stays accepted.
+  test.each([
+    ['nesting well under the cap', `${'('.repeat(5)}(a+)(a+)b${')'.repeat(5)}`],
+    ['a nullable atom over a disjoint domain', '^([ab]+)(x?)(c+)$'],
+    ['a repeated group with no interior variability', '^((ab)){5}$'],
+  ])('keeps %s available', (_name, source) => {
+    expect(isPotentiallyExpensiveRegex(source)).toBe(false);
+  });
+});
+
 // `\b` and `\B` are zero-width, so they separate nothing. `readRegexAtom` hands
 // them back as ordinary fixed atoms, which made `^a+\Ba+\Ba+\Ba+b$` — the same
 // shape as `^(a+)(a+)(a+)(a+)b$`, and 26.8 s on the same input — look separated.

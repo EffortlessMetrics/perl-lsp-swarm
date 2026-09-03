@@ -445,6 +445,11 @@ interface ChainAtom {
   fixedWidth: number | null;
   nullable: boolean;
   chain: boolean;
+  // Total freedom anywhere inside this atom, in bits. An edge can be fixed
+  // while the interior still varies — `(aa*a)` begins and ends on a literal
+  // `a` — and it is the interior that lets consecutive copies redistribute
+  // input between them.
+  variabilityBits: number;
 }
 
 type SequenceFacts = Omit<ChainAtom, 'end'>;
@@ -538,8 +543,13 @@ function opaqueAtom(end: number): ChainAtom {
     trailing: { domain: null, bits: 0 },
     union: null,
     fixedWidth: null,
-    nullable: false,
+    // An unanalysable construct may match nothing — a zero-width modifier
+    // group, for instance — so it cannot be relied on to separate the atoms
+    // around it. Treating it as nullable keeps a chain alive across it rather
+    // than letting an unknown reset the run, which would fail open.
+    nullable: true,
     chain: false,
+    variabilityBits: 0,
   };
 }
 
@@ -606,6 +616,10 @@ function readChainAtom(
     if (depth >= MAX_GROUP_ANALYSIS_DEPTH) {
       // Fail closed: an unanalysed group varies over an unknown domain, so it
       // links to whatever sits beside it.
+      // Fail closed. Wrapping a chain in enough groups to exhaust the
+      // analysis budget does not make it cheaper to match — 33 wrappers around
+      // `(a+)(a+)(a+)(a+)b` is 83 characters and takes over two seconds at 120
+      // — so an unanalysed group reports a chain rather than swallowing one.
       return {
         end: quantifier.end,
         leading: { domain: null, bits: UNBOUNDED_ATOM_BITS },
@@ -613,7 +627,8 @@ function readChainAtom(
         union: null,
         fixedWidth: null,
         nullable: quantifier.nullable,
-        chain: false,
+        chain: true,
+        variabilityBits: UNBOUNDED_ATOM_BITS,
       };
     }
 
@@ -641,8 +656,14 @@ function readChainAtom(
     // nothing. Measured: `^((a+a{2})){5}$` takes 5.4 s at 120 characters and
     // does not finish at 200. Disjoint edges are what actually block a seam,
     // which is why `(\w+ )+` and `((a+b+)){5}` stay accepted.
+    // What blocks a self-seam is a boundary the neighbouring copy cannot
+    // cross, so disjoint edges — `(\w+ )+`, `((a+b+)){5}` — are safe however
+    // often the group repeats. When the edges do overlap, the cost is whatever
+    // the interior can redistribute, not what the edge atoms alone vary by:
+    // `((aa*a))+` begins and ends on a fixed `a` yet exceeds nine seconds on
+    // forty characters.
     const selfSeamBits = domainsOverlap(group.trailing.domain, group.leading.domain)
-      ? Math.max(group.trailing.bits, group.leading.bits)
+      ? group.variabilityBits
       : 0;
     const selfChain =
       selfSeamBits > 0 &&
@@ -667,6 +688,7 @@ function readChainAtom(
           : group.fixedWidth * quantifier.repeat,
       nullable: quantifier.nullable || group.nullable,
       chain: group.chain || selfChain,
+      variabilityBits: quantifier.bits + group.variabilityBits,
     };
   }
 
@@ -682,6 +704,7 @@ function readChainAtom(
     end: quantifier.end,
     leading: edge,
     trailing: edge,
+    variabilityBits: quantifier.bits,
     union: domain,
     fixedWidth: quantifier.repeat,
     nullable: quantifier.nullable,
@@ -718,7 +741,18 @@ function summarizeBranch(atoms: ChainAtom[]): SequenceFacts {
       chain = true;
       break;
     }
-    previousTrailing = atom.trailing;
+    // A nullable atom that links on its left still has an absent path, in
+    // which the atoms on either side of it meet directly. Carrying the union
+    // of both edges forward keeps that path visible: `^([ab]+)(a?)(b+)(b+)c$`
+    // looks separated by `a?`, but on all-`b` input the `a?` vanishes and
+    // three unbounded repetitions compete — 213 ms at the input ceiling.
+    previousTrailing =
+      atom.nullable && previousTrailing !== null
+        ? {
+            domain: unionDomains([previousTrailing.domain, atom.trailing.domain]),
+            bits: Math.max(previousTrailing.bits, atom.trailing.bits),
+          }
+        : atom.trailing;
   }
 
   const leadingParts: ChainAtom[] = [];
@@ -751,6 +785,7 @@ function summarizeBranch(atoms: ChainAtom[]): SequenceFacts {
       bits: Math.max(0, ...trailingParts.map((atom) => atom.trailing.bits)),
     },
     union: unionDomains(atoms.map((atom) => atom.union)),
+    variabilityBits: atoms.reduce((total, atom) => total + atom.variabilityBits, 0),
     fixedWidth: widths.includes(null)
       ? null
       : widths.reduce((total: number, width) => total + (width ?? 0), 0),
@@ -781,6 +816,8 @@ function summarizeAlternatives(branches: SequenceFacts[]): SequenceFacts {
       bits: alternationBits + Math.max(0, ...branches.map((branch) => branch.trailing.bits)),
     },
     union: unionDomains(branches.map((branch) => branch.union)),
+    variabilityBits:
+      alternationBits + Math.max(0, ...branches.map((branch) => branch.variabilityBits)),
     fixedWidth: alternationBits > 0 ? null : (widths[0] ?? null),
     nullable: branches.some((branch) => branch.nullable),
     chain: branches.some((branch) => branch.chain),
