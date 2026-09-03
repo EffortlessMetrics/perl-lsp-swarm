@@ -605,6 +605,40 @@ fn a_dependency_blib_root_does_not_justify_the_blib_form() -> Result<(), Fixture
     Ok(())
 }
 
+/// The blib limitation explains why a `prove -b` form is missing, so it may
+/// only be reported when a `prove` candidate exists to be missing it. Without
+/// an active `prove` tool no prove form is offered at all, and blaming the blib
+/// root would send a caller to fix something that still would not produce a
+/// command. Rules out: a limitation naming the wrong cause.
+#[test]
+fn no_prove_tool_means_no_blib_limitation_to_report() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let blib_input = accepted_input("include.blib");
+    // A blib role that is not this workspace's — the case that *would* report
+    // the limitation if a `prove` candidate existed.
+    let snapshot = builder
+        .with_input(blib_input.clone())
+        .with_include_entry(IncludeEntry::new(
+            IncludeEntryRole::BlibLib,
+            path("/home/dep/.cpanm/work/Foo-1.0/blib/lib"),
+            blib_input.id.clone(),
+            0,
+        ))
+        .build()?;
+
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+
+    assert!(
+        candidates_of(&plan.candidates, TestRunnerKind::Prove).is_empty(),
+        "no prove tool means no prove candidate of any include mode"
+    );
+    assert!(
+        !plan.limitations.iter().any(|item| item.code == "test_command.no_workspace_blib_root"),
+        "the `-b` form is absent because there is no `prove`, not because of the blib root"
+    );
+    Ok(())
+}
+
 /// The control that keeps the previous limitation from over-firing: a project
 /// that declared no blib role at all lost nothing, so there is nothing to
 /// report. Rules out: a limitation on every source-only project.

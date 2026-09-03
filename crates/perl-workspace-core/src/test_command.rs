@@ -628,26 +628,6 @@ pub fn plan_test_commands(
         }
     }
 
-    // Withholding the form is correct, but it must not be silent. The project
-    // declared a blib role and receives no `-b` candidate, and a caller needs
-    // to know that an entry point was considered and rejected rather than never
-    // existing. The reason is deliberately cause-agnostic: a dependency's tree,
-    // a detached path, and a casing the producer did not normalize are all
-    // "this is not the tree `prove -b` would resolve", and distinguishing them
-    // would need filesystem facts this module does not have.
-    //
-    // A project that declared no blib role at all lost nothing, so it gets no
-    // limitation — `a_project_with_no_blib_role_reports_no_blib_limitation`.
-    if declared_blib_role && !blib_available {
-        limitations.push(EnvironmentLimitation {
-            code: "test_command.no_workspace_blib_root".to_string(),
-            detail: "an active include entry carries a blib role, but none of them is this \
-                     working directory's own `blib` tree, so the `prove -b` form is not offered"
-                .to_string(),
-            input_id: None,
-        });
-    }
-
     for tool in snapshot.active_tool_candidates() {
         let Some(authority) = input_authority(snapshot, &tool.input_id) else {
             continue;
@@ -724,6 +704,36 @@ pub fn plan_test_commands(
             }
             None => {}
         }
+    }
+
+    // Withholding the `-b` form is correct, but it must not be silent. The
+    // project declared a blib role and receives no `-b` candidate, and a caller
+    // needs to know that an entry point was considered and rejected rather than
+    // never existing. The reason is deliberately cause-agnostic: a dependency's
+    // tree, a detached path, and a casing the producer did not normalize are all
+    // "this is not the tree `prove -b` would resolve", and distinguishing them
+    // would need filesystem facts this module does not have.
+    //
+    // Reported only when a `prove` candidate was actually emitted, because this
+    // limitation explains why *that* candidate has no blib variant. Gating on an
+    // emitted candidate rather than on a discovered `prove` tool also covers a
+    // tool whose input carries no authority: in both cases no prove form exists,
+    // so blaming the blib root would send a caller to fix something that still
+    // could not produce a command.
+    //
+    // A project that declared no blib role at all lost nothing, so it gets no
+    // limitation — `a_project_with_no_blib_role_reports_no_blib_limitation`.
+    if declared_blib_role
+        && !blib_available
+        && candidates.iter().any(|candidate| candidate.kind == TestRunnerKind::Prove)
+    {
+        limitations.push(EnvironmentLimitation {
+            code: "test_command.no_workspace_blib_root".to_string(),
+            detail: "an active include entry carries a blib role, but none of them is this \
+                     working directory's own `blib` tree, so the `prove -b` form is not offered"
+                .to_string(),
+            input_id: None,
+        });
     }
 
     // The Module::Build launcher is the generated script itself, so its program
