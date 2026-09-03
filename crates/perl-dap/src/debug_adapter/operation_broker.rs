@@ -308,12 +308,6 @@ impl OperationBroker {
             .any(|entry| entry.operation.id == id)
     }
 
-    /// Retire one operation from the table (cancellation, timeout).
-    pub(crate) fn retire(&self, id: OperationId) {
-        let mut table = lock_or_recover(&self.pending, "operation_broker.pending");
-        table.fifo.retain(|entry| entry.operation.id != id);
-    }
-
     /// Retire an operation only if it is still pending. Completion and session
     /// settlement race on this arbitration point; whichever removes the entry
     /// first owns the terminal outcome.
@@ -330,6 +324,12 @@ impl OperationBroker {
         } else {
             self.take_settled(id).unwrap_or(BrokerTerminal::SessionGone("settled"))
         }
+    }
+
+    /// Remove a query after transport write failure and consume any terminal
+    /// outcome saved by a concurrent session settlement.
+    pub(crate) fn retire_after_write_failure(&self, id: OperationId) {
+        let _ = self.retire_or_settled(id, BrokerTerminal::TimedOut);
     }
 
     fn take_settled(&self, id: OperationId) -> Option<BrokerTerminal> {
@@ -724,6 +724,16 @@ mod tests {
             broker.retire_or_settled(operation.id, BrokerTerminal::TimedOut),
             BrokerTerminal::SessionGone("restart")
         );
+        assert!(broker.take_settled(operation.id).is_none());
+    }
+
+    #[test]
+    fn write_failure_cleanup_consumes_settled_terminal() {
+        let broker = OperationBroker::new();
+        let operation = broker.submit(query_spec(&broker, NEGATIVE_WAIT)).expect("submit");
+        broker.settle_all("debugger_eof");
+
+        broker.retire_after_write_failure(operation.id);
         assert!(broker.take_settled(operation.id).is_none());
     }
 

@@ -468,23 +468,6 @@ impl DebugAdapter {
         Ok(())
     }
 
-    /// Send commands wrapped with unique begin/end markers.
-    ///
-    /// Returns `(begin_marker, end_marker)` so callers can wait for framed output.
-    fn send_framed_debugger_commands(
-        &self,
-        stdin: &mut impl Write,
-        commands: &[String],
-    ) -> Result<(String, String), String> {
-        self.debugger_query_count.fetch_add(1, Ordering::Relaxed);
-        let marker_id = self.next_debugger_marker_id();
-        let begin_marker = format!("DAP_BEGIN_{marker_id}");
-        let end_marker = format!("DAP_END_{marker_id}");
-
-        self.write_framed_debugger_commands(stdin, commands, &begin_marker, &end_marker)?;
-        Ok((begin_marker, end_marker))
-    }
-
     /// Register a framed query before writing its markers and command.
     ///
     /// Registration must precede transport I/O: an EOF or replacement between
@@ -515,7 +498,7 @@ impl DebugAdapter {
         if let Err(error) =
             self.write_framed_debugger_commands(stdin, commands, &begin_marker, &end_marker)
         {
-            self.operation_broker.retire(operation.id);
+            self.operation_broker.retire_after_write_failure(operation.id);
             return Err(error);
         }
 
@@ -551,6 +534,7 @@ impl DebugAdapter {
     /// contract is unchanged for existing callers; `Cancelled`, `TimedOut`,
     /// `SessionGone`, `Rejected`, and `StaleGeneration` all map to `None`
     /// exactly as the previous untyped loop did.
+    #[cfg(test)]
     fn capture_framed_debugger_output(
         &self,
         begin_marker: &str,
@@ -582,7 +566,7 @@ impl DebugAdapter {
         end_marker: &str,
     ) -> Option<Vec<String>> {
         match self.operation_broker.await_framed_payload(
-            &operation,
+            operation,
             begin_marker,
             end_marker,
             &self.recent_output,
