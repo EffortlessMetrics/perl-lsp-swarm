@@ -40,10 +40,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::reload::{
-    IndeterminateCause, LoadedModuleReloadEligibility, LoadedModuleReloadOutcome,
-    PreMutationFailureCause, ReloadTransactionPhase, RuntimeModuleGeneration,
-    RuntimeModuleGenerationClock,
+    GenerationEffect, IndeterminateCause, LoadedModuleReloadEligibility, LoadedModuleReloadOutcome,
+    PreMutationFailureCause, ReloadExecution, ReloadTransactionPhase, RuntimeModuleGeneration,
 };
+
+#[cfg(test)]
+use crate::reload::GenerationAdvance;
 
 /// The registered custom family identity: a non-empty namespace, the `/`
 /// separator, and a non-empty local name (ADR-0046 §6).
@@ -880,8 +882,8 @@ pub enum ReloadRequestEvaluation {
 
 // --- Outcome projection -----------------------------------------------------
 
-/// Project one frozen contract outcome onto the wire body, applying the
-/// generation clock exactly as the contract demands.
+/// Project one frozen contract outcome onto the wire body, reporting the
+/// generation transition the transaction already performed.
 ///
 /// The terminal outcome is projected verbatim: `reloaded` is the only
 /// success; `indeterminate_possibly_applied` carries
@@ -890,13 +892,25 @@ pub enum ReloadRequestEvaluation {
 /// reason codes are clamped (with the `reasons_truncated` marker) and an
 /// over-bound remediation detail is replaced by the content-free
 /// `detail_redacted` code before publication.
-pub fn project_outcome(
-    outcome: &LoadedModuleReloadOutcome,
-    operation_id: u64,
-    clock: &mut RuntimeModuleGenerationClock,
+///
+/// # Clock ownership
+///
+/// This projector **reports**; it does not apply. The transaction that
+/// performed the mutation owns the clock and hands its
+/// [`ReloadExecution`] here, so one reload spends exactly one generation and
+/// the published `previous`/`current` describe that reload rather than an
+/// intermediate value minted by a second application (#14550). The outcome
+/// and witness are deliberately inseparable at this boundary: a caller cannot
+/// pair a later outcome with an earlier witness, even after an operation ID is
+/// reused.
+pub fn project_execution(
+    execution: &ReloadExecution,
     reasons: &[String],
     remediation: Option<&str>,
 ) -> Result<LoadedModuleReloadWireResponse, WireProjectionRefusal> {
+    let outcome = execution.outcome();
+    let advance = execution.generation();
+    let operation_id = execution.operation_id();
     let kind = WireOutcomeKind::from(outcome);
     let phase = match outcome {
         LoadedModuleReloadOutcome::Reloaded => WirePhase::TerminalProjection,
@@ -907,7 +921,7 @@ pub fn project_outcome(
         }
     };
 
-    // Fail closed before the clock moves: an outcome whose phase/kind
+    // Fail closed before anything is published: an outcome whose phase/kind
     // pairing the frozen contract does not permit (for example a
     // `failed_before_mutation` carrying a phase at or after the mutation
     // boundary) can never be published as a clean pre-mutation failure.
@@ -923,8 +937,30 @@ pub fn project_outcome(
         return Err(WireProjectionRefusal::OutcomePhaseKindMismatch);
     }
 
-    let previous = generation_value(clock.current());
-    let advance = clock.apply(outcome);
+    // The witness must be structurally consistent with the outcome being
+    // published. The transaction owns the clock, so this projector cannot
+    // recompute the transition. Receiving one `ReloadExecution` keeps the
+    // outcome and witness paired, including when operation IDs are later
+    // reused; the checks below are defensive shape checks, not an independent
+    // operation-identity lookup.
+    //
+    // Two conditions, both fail-closed:
+    //
+    // 1. Direction. An advance handed in for an outcome that advances
+    //    nothing, or the reverse, is a mispaired witness.
+    // 2. Contiguity. A published transition must be one step of the clock.
+    //    `RuntimeModuleGenerationClock::apply` cannot produce anything else
+    //    and `GenerationAdvance` has no public constructor, so this is
+    //    unreachable from outside the crate — it is stated here anyway so
+    //    the guarantee is enforced at the boundary that serializes it
+    //    rather than assumed from a caller two leaves away.
+    if advance.advanced() != matches!(outcome.generation_effect(), GenerationEffect::Advance)
+        || !advance.is_contiguous()
+    {
+        return Err(WireProjectionRefusal::GenerationAdvanceMismatch);
+    }
+
+    let previous = generation_value(advance.previous());
     let current = generation_value(advance.generation());
 
     let disposition = match outcome {
@@ -971,6 +1007,14 @@ pub enum WireProjectionRefusal {
     /// contract (`phase_permits_outcome`); publishing it would serialize a
     /// contradictory terminal body.
     OutcomePhaseKindMismatch,
+    /// The execution's generation witness is structurally inconsistent with
+    /// its outcome: its direction contradicts the outcome's own generation
+    /// effect (an advance handed in for an outcome that advances nothing, or
+    /// the reverse), or its endpoints are not one contiguous step of the
+    /// clock. The transaction owns the clock, so the projector cannot
+    /// recompute the transition; transaction-owned pairing prevents stale
+    /// cross-operation values from being supplied at this boundary.
+    GenerationAdvanceMismatch,
 }
 
 impl std::fmt::Display for WireProjectionRefusal {
@@ -978,6 +1022,9 @@ impl std::fmt::Display for WireProjectionRefusal {
         match self {
             WireProjectionRefusal::OutcomePhaseKindMismatch => {
                 formatter.write_str("outcome_phase_kind_mismatch")
+            }
+            WireProjectionRefusal::GenerationAdvanceMismatch => {
+                formatter.write_str("generation_advance_mismatch")
             }
         }
     }
@@ -1044,8 +1091,8 @@ mod tests {
     use crate::debug_adapter::{DapMessage, DebugAdapter, SUPPORTED_COMMANDS};
     use crate::reload::{
         GenerationEffect, IndeterminateCause, LoadedModuleReloadEligibility,
-        LoadedModuleReloadOutcome, PreMutationFailureCause, ReloadTransactionPhase,
-        RuntimeModuleGenerationClock,
+        LoadedModuleReloadOutcome, PreMutationFailureCause, ReloadExecution,
+        ReloadTransactionPhase, RuntimeModuleGenerationClock,
     };
     use serde_json::Value;
     use std::collections::BTreeSet;
@@ -1053,6 +1100,31 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// Build a deliberately local execution for the corpus tests. Production
+    /// callers cannot construct `ReloadExecution`: its fields are crate
+    /// visible and `execute_reload` is the sole production constructor. The
+    /// helper keeps legacy fixture vectors focused on projection behavior
+    /// while the public projector accepts only the transaction-owned pair.
+    fn test_execution(
+        outcome: &LoadedModuleReloadOutcome,
+        generation: GenerationAdvance,
+    ) -> ReloadExecution {
+        ReloadExecution::from_projection_parts_for_test(outcome.clone(), generation)
+    }
+
+    /// Compatibility helper for unit vectors that intentionally exercise
+    /// malformed outcome/witness pairings. The public API does not expose
+    /// this independent-argument seam.
+    fn project_outcome(
+        outcome: &LoadedModuleReloadOutcome,
+        _operation_id: u64,
+        generation: GenerationAdvance,
+        reasons: &[String],
+        remediation: Option<&str>,
+    ) -> Result<LoadedModuleReloadWireResponse, WireProjectionRefusal> {
+        project_execution(&test_execution(outcome, generation), reasons, remediation)
+    }
 
     fn repository_root() -> Result<PathBuf, String> {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1346,7 +1418,7 @@ mod tests {
         for disposition in refusal_dispositions() {
             let outcome = LoadedModuleReloadOutcome::Refused { disposition };
             let mut clock = RuntimeModuleGenerationClock::new();
-            let response = project_outcome(&outcome, 42, &mut clock, &[], None)?;
+            let response = project_outcome(&outcome, 42, clock.apply(&outcome, 42), &[], None)?;
             assert!(!response.success, "a refusal is never success");
             let LoadedModuleReloadResponseBody::Outcome(body) = response.body else {
                 return Err("a refusal must project an outcome body".into());
@@ -1378,7 +1450,7 @@ mod tests {
             for cause in PreMutationFailureCause::ALL {
                 let outcome = LoadedModuleReloadOutcome::FailedBeforeMutation { phase, cause };
                 let mut clock = RuntimeModuleGenerationClock::new();
-                let response = project_outcome(&outcome, 42, &mut clock, &[], None)?;
+                let response = project_outcome(&outcome, 42, clock.apply(&outcome, 42), &[], None)?;
                 assert!(!response.success);
                 let LoadedModuleReloadResponseBody::Outcome(body) = response.body else {
                     return Err("a pre-mutation failure must project an outcome body".into());
@@ -1409,7 +1481,7 @@ mod tests {
                 let outcome =
                     LoadedModuleReloadOutcome::IndeterminatePossiblyApplied { phase, cause };
                 let mut clock = RuntimeModuleGenerationClock::new();
-                let response = project_outcome(&outcome, 42, &mut clock, &[], None)?;
+                let response = project_outcome(&outcome, 42, clock.apply(&outcome, 42), &[], None)?;
                 assert!(
                     !response.success,
                     "an indeterminate outcome is never DAP success ({cause:?} at {phase:?})"
@@ -1457,7 +1529,7 @@ mod tests {
         ];
         for outcome in advancing {
             let mut clock = RuntimeModuleGenerationClock::new();
-            let response = project_outcome(&outcome, 42, &mut clock, &[], None)?;
+            let response = project_outcome(&outcome, 42, clock.apply(&outcome, 42), &[], None)?;
             let LoadedModuleReloadResponseBody::Outcome(body) = response.body else {
                 return Err("advancing outcomes must project outcome bodies".into());
             };
@@ -1474,7 +1546,7 @@ mod tests {
         ];
         for outcome in static_outcomes {
             let mut clock = RuntimeModuleGenerationClock::new();
-            let response = project_outcome(&outcome, 42, &mut clock, &[], None)?;
+            let response = project_outcome(&outcome, 42, clock.apply(&outcome, 42), &[], None)?;
             let LoadedModuleReloadResponseBody::Outcome(body) = response.body else {
                 return Err("static outcomes must project outcome bodies".into());
             };
@@ -1529,7 +1601,7 @@ mod tests {
         let reasons: Vec<String> = (0..20).map(|index| format!("reason_{index:02}")).collect();
         let outcome = LoadedModuleReloadOutcome::Reloaded;
         let mut clock = RuntimeModuleGenerationClock::new();
-        let response = project_outcome(&outcome, 42, &mut clock, &reasons, None)?;
+        let response = project_outcome(&outcome, 42, clock.apply(&outcome, 42), &reasons, None)?;
         let LoadedModuleReloadResponseBody::Outcome(body) = response.body else {
             return Err("expected an outcome body".into());
         };
@@ -1545,7 +1617,8 @@ mod tests {
             disposition: LoadedModuleReloadEligibility::OutsideLaunchAuthority,
         };
         let mut clock = RuntimeModuleGenerationClock::new();
-        let response = project_outcome(&outcome, 42, &mut clock, &[], Some(&private_detail))?;
+        let response =
+            project_outcome(&outcome, 42, clock.apply(&outcome, 42), &[], Some(&private_detail))?;
         let LoadedModuleReloadResponseBody::Outcome(body) = &response.body else {
             return Err("expected an outcome body".into());
         };
@@ -1571,7 +1644,7 @@ mod tests {
             cause: IndeterminateCause::TimeoutAfterMutationBegan,
         };
         let mut clock = RuntimeModuleGenerationClock::new();
-        let response = project_outcome(&outcome, 7, &mut clock, &reasons, None)?;
+        let response = project_outcome(&outcome, 7, clock.apply(&outcome, 7), &reasons, None)?;
         let LoadedModuleReloadResponseBody::Outcome(body) = &response.body else {
             return Err("expected an outcome body".into());
         };
@@ -1588,8 +1661,13 @@ mod tests {
             disposition: LoadedModuleReloadEligibility::OutsideLaunchAuthority,
         };
         let mut clock = RuntimeModuleGenerationClock::new();
-        let response =
-            project_outcome(&outcome, 7, &mut clock, &[], Some("/private/path/secret.pm"))?;
+        let response = project_outcome(
+            &outcome,
+            7,
+            clock.apply(&outcome, 7),
+            &[],
+            Some("/private/path/secret.pm"),
+        )?;
         let LoadedModuleReloadResponseBody::Outcome(body) = &response.body else {
             return Err("expected an outcome body".into());
         };
@@ -1598,39 +1676,218 @@ mod tests {
     }
 
     #[test]
-    fn a_post_boundary_pre_mutation_outcome_refuses_projection_and_moves_nothing() -> TestResult {
+    fn a_post_boundary_pre_mutation_outcome_refuses_projection_and_publishes_nothing() -> TestResult
+    {
         // The frozen contract treats this shape as malformed-but-advancing
         // in its clock; the wire must not serialize it as a clean
-        // pre-mutation failure at all — it refuses before the clock moves.
+        // pre-mutation failure at all — it refuses before anything is
+        // published, and no advance it is handed can rescue it.
         let outcome = LoadedModuleReloadOutcome::FailedBeforeMutation {
             phase: ReloadTransactionPhase::RuntimeMutationBegins,
             cause: PreMutationFailureCause::PrepareFailed,
         };
-        let mut clock = RuntimeModuleGenerationClock::new();
-        let refusal =
-            project_outcome(&outcome, 42, &mut clock, &[], None).expect_err("must refuse");
-        assert_eq!(refusal, WireProjectionRefusal::OutcomePhaseKindMismatch);
-        assert_eq!(
-            project_outcome(
-                &LoadedModuleReloadOutcome::FailedBeforeMutation {
-                    phase: ReloadTransactionPhase::TerminalProjection,
-                    cause: PreMutationFailureCause::CancelledBeforeMutationBegan,
+        let mut advancing = RuntimeModuleGenerationClock::new();
+        for advance in [
+            RuntimeModuleGenerationClock::new().apply(
+                &LoadedModuleReloadOutcome::Refused {
+                    disposition: LoadedModuleReloadEligibility::NotLoaded,
                 },
                 42,
-                &mut clock,
-                &[],
-                None
-            )
-            .expect_err("any post-boundary pairing must refuse"),
-            WireProjectionRefusal::OutcomePhaseKindMismatch
-        );
-        // Nothing was published and the clock never moved.
+            ),
+            advancing.apply(&LoadedModuleReloadOutcome::Reloaded, 42),
+        ] {
+            assert_eq!(
+                project_outcome(&outcome, 42, advance, &[], None).expect_err("must refuse"),
+                WireProjectionRefusal::OutcomePhaseKindMismatch
+            );
+            assert_eq!(
+                project_outcome(
+                    &LoadedModuleReloadOutcome::FailedBeforeMutation {
+                        phase: ReloadTransactionPhase::TerminalProjection,
+                        cause: PreMutationFailureCause::CancelledBeforeMutationBegan,
+                    },
+                    42,
+                    advance,
+                    &[],
+                    None
+                )
+                .expect_err("any post-boundary pairing must refuse"),
+                WireProjectionRefusal::OutcomePhaseKindMismatch
+            );
+        }
+        // A refused projection consumed nothing, so a genuine reload on a
+        // fresh transaction still starts from the initial generation.
         let outcome = LoadedModuleReloadOutcome::Reloaded;
-        let response = project_outcome(&outcome, 42, &mut clock, &[], None)?;
+        let mut clock = RuntimeModuleGenerationClock::new();
+        let response = project_outcome(&outcome, 42, clock.apply(&outcome, 42), &[], None)?;
         let LoadedModuleReloadResponseBody::Outcome(body) = response.body else {
             return Err("expected an outcome body".into());
         };
-        assert_eq!(body.generation.ok_or("witness required")?.previous, 0);
+        let witness = body.generation.ok_or("witness required")?;
+        assert_eq!(witness.previous, 0);
+        assert_eq!(witness.current, 1);
+        Ok(())
+    }
+
+    /// The projector reports the transaction's advance rather than minting
+    /// its own, so a caller could in principle hand it a witness from a
+    /// different outcome. A witness whose direction contradicts the
+    /// outcome's generation effect is refused instead of published (#14550).
+    #[test]
+    fn a_mispaired_generation_witness_is_refused() -> TestResult {
+        // An advancing outcome handed a witness that moved nothing.
+        let unchanged = RuntimeModuleGenerationClock::new().apply(
+            &LoadedModuleReloadOutcome::Refused {
+                disposition: LoadedModuleReloadEligibility::NotLoaded,
+            },
+            42,
+        );
+        for outcome in [
+            LoadedModuleReloadOutcome::Reloaded,
+            LoadedModuleReloadOutcome::IndeterminatePossiblyApplied {
+                phase: ReloadTransactionPhase::RuntimeMutationBegins,
+                cause: IndeterminateCause::TimeoutAfterMutationBegan,
+            },
+        ] {
+            assert_eq!(
+                project_outcome(&outcome, 42, unchanged, &[], None)
+                    .expect_err("an advancing outcome cannot publish an unchanged witness"),
+                WireProjectionRefusal::GenerationAdvanceMismatch
+            );
+        }
+
+        // A static outcome handed a witness that advanced.
+        let mut clock = RuntimeModuleGenerationClock::new();
+        let advanced = clock.apply(&LoadedModuleReloadOutcome::Reloaded, 42);
+        for outcome in [
+            LoadedModuleReloadOutcome::Refused {
+                disposition: LoadedModuleReloadEligibility::NotLoaded,
+            },
+            LoadedModuleReloadOutcome::FailedBeforeMutation {
+                phase: ReloadTransactionPhase::Preflight,
+                cause: PreMutationFailureCause::PrepareFailed,
+            },
+        ] {
+            assert_eq!(
+                project_outcome(&outcome, 42, advanced, &[], None)
+                    .expect_err("a static outcome cannot publish an advanced witness"),
+                WireProjectionRefusal::GenerationAdvanceMismatch
+            );
+        }
+
+        // The correctly paired witness still publishes.
+        let outcome = LoadedModuleReloadOutcome::Reloaded;
+        let mut clock = RuntimeModuleGenerationClock::new();
+        project_outcome(&outcome, 42, clock.apply(&outcome, 42), &[], None)?;
+        Ok(())
+    }
+
+    /// A witness whose endpoints are not one contiguous step of the clock
+    /// never reaches a client, whatever its direction claims.
+    ///
+    /// `RuntimeModuleGenerationClock::apply` cannot produce these shapes and
+    /// `GenerationAdvance` has no public constructor, so they are
+    /// unreachable from outside the crate; the `forged` test seam exists
+    /// precisely so the guard that rejects them is itself proven rather than
+    /// assumed (#14550).
+    #[test]
+    fn a_non_contiguous_generation_witness_is_refused() -> TestResult {
+        let outcome = LoadedModuleReloadOutcome::Reloaded;
+        let malformed = [
+            // Decreasing: the transaction would publish a generation older
+            // than the one it started from.
+            GenerationAdvance::forged(
+                RuntimeModuleGeneration::new(9),
+                RuntimeModuleGeneration::new(3),
+                true,
+                42,
+            ),
+            // Skipping: two generations spent on one outcome — the exact
+            // symptom the double application produced.
+            GenerationAdvance::forged(
+                RuntimeModuleGeneration::new(0),
+                RuntimeModuleGeneration::new(2),
+                true,
+                42,
+            ),
+            // Standing still while claiming an advance.
+            GenerationAdvance::forged(
+                RuntimeModuleGeneration::new(4),
+                RuntimeModuleGeneration::new(4),
+                true,
+                42,
+            ),
+        ];
+        for advance in malformed {
+            assert!(!advance.is_contiguous(), "the fixture must be malformed to be discriminating");
+            assert_eq!(
+                project_outcome(&outcome, 42, advance, &[], None)
+                    .expect_err("a non-contiguous transition is never published"),
+                WireProjectionRefusal::GenerationAdvanceMismatch
+            );
+        }
+
+        // The saturating ceiling is contiguous, not malformed: `next()` of
+        // `u64::MAX` is itself, so an exhausted advance keeps publishing.
+        let exhausted = GenerationAdvance::forged(
+            RuntimeModuleGeneration::new(u64::MAX),
+            RuntimeModuleGeneration::new(u64::MAX),
+            true,
+            42,
+        );
+        assert!(exhausted.is_contiguous());
+        project_outcome(&outcome, 42, exhausted, &[], None)?;
+        Ok(())
+    }
+
+    /// An execution keeps its outcome and witness paired even when admission
+    /// later evicts and re-admits the same numeric operation ID. The public
+    /// projector accepts the opaque execution, not independent values, so a
+    /// stale witness cannot be supplied for the later outcome (#14670).
+    ///
+    /// This is intentionally mutation-sensitive: changing the projector back
+    /// to independent `(outcome, operation_id, advance)` arguments makes this
+    /// test fail to compile, while changing the production constructor or
+    /// dropping the pairing changes the endpoint assertions.
+    #[test]
+    fn execution_pairing_survives_operation_id_eviction_and_reuse() -> TestResult {
+        let mut session = negotiated_backed_session(7);
+        assert!(matches!(
+            session.evaluate(&request_value(42, 7)),
+            ReloadRequestEvaluation::Admitted { operation_id: 42 }
+        ));
+
+        let outcome = LoadedModuleReloadOutcome::Reloaded;
+        let mut clock = RuntimeModuleGenerationClock::new();
+        let first = test_execution(&outcome, clock.apply(&outcome, 42));
+
+        // Fill the retention window with different IDs so 42 is evicted.
+        for operation in 100..(100 + MAX_RETAINED_OPERATIONS as u64) {
+            assert!(matches!(
+                session.evaluate(&request_value(operation, 7)),
+                ReloadRequestEvaluation::Admitted { .. }
+            ));
+        }
+        assert!(matches!(
+            session.evaluate(&request_value(42, 7)),
+            ReloadRequestEvaluation::Admitted { operation_id: 42 }
+        ));
+        let later = test_execution(&outcome, clock.apply(&outcome, 42));
+
+        let first_response = project_execution(&first, &[], None)?;
+        let later_response = project_execution(&later, &[], None)?;
+        let LoadedModuleReloadResponseBody::Outcome(first_body) = first_response.body else {
+            return Err("the first execution must project an outcome body".into());
+        };
+        let LoadedModuleReloadResponseBody::Outcome(later_body) = later_response.body else {
+            return Err("the later execution must project an outcome body".into());
+        };
+        let first_witness = first_body.generation.ok_or("first witness required")?;
+        let later_witness = later_body.generation.ok_or("later witness required")?;
+        assert_eq!((first_witness.previous, first_witness.current), (0, 1));
+        assert_eq!((later_witness.previous, later_witness.current), (1, 2));
+        assert_eq!(first_response.operation_id, 42);
+        assert_eq!(later_response.operation_id, 42);
         Ok(())
     }
 
@@ -1977,7 +2234,11 @@ mod tests {
         let mut clock = RuntimeModuleGenerationClock::new();
         let seed = document["generation_before"].as_u64().unwrap_or(0);
         for _ in 0..seed {
-            clock.apply(&LoadedModuleReloadOutcome::Reloaded);
+            // Winding the clock to the fixture's starting generation. These
+            // witnesses are discarded, so the operation they are minted for
+            // is immaterial; the fixture's own request supplies the identity
+            // for the witness that actually gets projected.
+            clock.apply(&LoadedModuleReloadOutcome::Reloaded, 0);
         }
         Ok(clock)
     }
@@ -2104,9 +2365,14 @@ mod tests {
                 .unwrap_or_default();
             let remediation = document["oversized_remediation_input"].as_str();
             let operation_id = document["request"]["operationId"].as_u64().unwrap_or(1);
-            let response =
-                project_outcome(&outcome, operation_id, &mut clock, &reasons, remediation)
-                    .map_err(|refusal| format!("{name}: projection refused: {refusal:?}"))?;
+            let response = project_outcome(
+                &outcome,
+                operation_id,
+                clock.apply(&outcome, operation_id),
+                &reasons,
+                remediation,
+            )
+            .map_err(|refusal| format!("{name}: projection refused: {refusal:?}"))?;
             let wire = serde_json::to_value(&response)?;
 
             assert_eq!(wire["success"], expect["success"], "{name}: DAP success mismatch");

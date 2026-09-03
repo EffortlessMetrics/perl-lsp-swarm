@@ -70,34 +70,102 @@ impl GenerationEffect {
 }
 
 /// The result of applying one transaction outcome to the generation clock.
+///
+/// It carries both endpoints of the transition, not just the resulting
+/// value, so that whoever reports the advance does not have to re-apply the
+/// outcome — or hold the clock — to learn where the transaction started.
+/// That is what keeps the clock single-owner: the component that applies it
+/// hands this witness to the component that publishes it (#14550).
+///
+/// # Unforgeable by construction
+///
+/// The endpoints are private and there is no public constructor. The only
+/// way to obtain a witness is [`RuntimeModuleGenerationClock::apply`], so a
+/// caller cannot mint one describing a transition no clock performed — a
+/// decreasing pair, a skipped generation, or an advance that never
+/// happened. That matters because a publisher reports these endpoints
+/// verbatim to a client: an opaque witness keeps "what the transaction did"
+/// and "what the client is told" the same fact.
+///
+/// The witness also carries the operation identity as internal bookkeeping,
+/// but the serialized witness remains `{previous, current, advanced}`. The
+/// outcome and witness are kept together by [`ReloadExecution`], so an
+/// operation ID may be reused after admission eviction without allowing an
+/// earlier witness to be paired with the later outcome (#14670).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GenerationAdvance {
-    /// The generation advanced to the given value.
-    Advanced(RuntimeModuleGeneration),
-    /// The generation is unchanged at the given value.
-    Unchanged(RuntimeModuleGeneration),
+pub struct GenerationAdvance {
+    previous: RuntimeModuleGeneration,
+    current: RuntimeModuleGeneration,
+    advanced: bool,
+    operation: u64,
 }
 
 impl GenerationAdvance {
+    /// The operation identity of the transaction that produced this witness.
+    ///
+    /// The identity is retained by the transaction-owned execution for
+    /// correlation; the wire projector receives that execution as one value.
+    #[cfg(test)]
+    pub(crate) fn operation(self) -> u64 {
+        self.operation
+    }
+
     /// The generation after the advance attempt.
     pub fn generation(self) -> RuntimeModuleGeneration {
-        match self {
-            GenerationAdvance::Advanced(generation) => generation,
-            GenerationAdvance::Unchanged(generation) => generation,
-        }
+        self.current
+    }
+
+    /// The generation before the advance attempt.
+    ///
+    /// For an unchanged outcome this equals [`Self::generation`]; nothing
+    /// moved, so the transaction both started and ended there.
+    pub fn previous(self) -> RuntimeModuleGeneration {
+        self.previous
     }
 
     /// Whether the generation moved.
     pub fn advanced(self) -> bool {
-        matches!(self, GenerationAdvance::Advanced(_))
+        self.advanced
+    }
+
+    /// Whether the endpoints describe one contiguous step of the clock.
+    ///
+    /// An advance moves to exactly the successor of where it started, and
+    /// an unchanged outcome stays put. At the saturating ceiling the
+    /// successor of `u64::MAX` is itself, so an exhausted advance reports
+    /// equal endpoints and remains contiguous.
+    ///
+    /// [`RuntimeModuleGenerationClock::apply`] can only produce contiguous
+    /// witnesses. This predicate exists so a publisher can state that
+    /// invariant at its own boundary rather than assume it (#14550).
+    pub fn is_contiguous(self) -> bool {
+        if self.advanced {
+            self.previous.next() == self.current
+        } else {
+            self.previous == self.current
+        }
     }
 
     /// Stable closed-vocabulary code used by the `.spec` fixtures.
     pub fn code(self) -> &'static str {
-        match self {
-            GenerationAdvance::Advanced(_) => "advance",
-            GenerationAdvance::Unchanged(_) => "none",
-        }
+        if self.advanced { "advance" } else { "none" }
+    }
+
+    /// Build a witness with arbitrary endpoints and identity.
+    ///
+    /// Test seam only, and deliberately the single hole in the opacity
+    /// above: the fail-closed contiguity guard in the wire projector cannot
+    /// be tested without a way to construct the malformed witnesses it
+    /// exists to reject. Production code reaches a witness only through
+    /// [`RuntimeModuleGenerationClock::apply`].
+    #[cfg(test)]
+    pub(crate) const fn forged(
+        previous: RuntimeModuleGeneration,
+        current: RuntimeModuleGeneration,
+        advanced: bool,
+        operation: u64,
+    ) -> GenerationAdvance {
+        GenerationAdvance { previous, current, advanced, operation }
     }
 }
 
@@ -145,13 +213,23 @@ impl RuntimeModuleGenerationClock {
     /// Apply one transaction outcome, advancing only for the two terminal
     /// mutation outcomes. Returns the resulting generation and whether it
     /// advanced.
-    pub fn apply(&mut self, outcome: &LoadedModuleReloadOutcome) -> GenerationAdvance {
+    pub fn apply(
+        &mut self,
+        outcome: &LoadedModuleReloadOutcome,
+        operation: u64,
+    ) -> GenerationAdvance {
         match outcome.generation_effect() {
             GenerationEffect::Advance => {
+                let previous = self.current;
                 self.current = self.current.next();
-                GenerationAdvance::Advanced(self.current)
+                GenerationAdvance { previous, current: self.current, advanced: true, operation }
             }
-            GenerationEffect::None => GenerationAdvance::Unchanged(self.current),
+            GenerationEffect::None => GenerationAdvance {
+                previous: self.current,
+                current: self.current,
+                advanced: false,
+                operation,
+            },
         }
     }
 }
@@ -232,6 +310,13 @@ mod tests {
         IndeterminateCause, PreMutationFailureCause, ReloadTransactionPhase,
     };
 
+    /// Operation identity used by the clock tests in this module.
+    ///
+    /// These tests assert what the clock does to the counter, not how a
+    /// witness is paired with an outcome on the wire; the ownership guard
+    /// that consumes the identity is proven in `reload_family`.
+    const OP: u64 = 1;
+
     fn reloaded() -> LoadedModuleReloadOutcome {
         LoadedModuleReloadOutcome::Reloaded
     }
@@ -258,12 +343,12 @@ mod tests {
     fn generation_is_monotonic_under_both_advancement_kinds() {
         let mut clock = RuntimeModuleGenerationClock::new();
         assert_eq!(clock.current(), RuntimeModuleGeneration::INITIAL);
-        let reloaded_one = clock.apply(&reloaded());
+        let reloaded_one = clock.apply(&reloaded(), OP);
         assert!(reloaded_one.advanced());
-        let indeterminate_one = clock.apply(&indeterminate());
+        let indeterminate_one = clock.apply(&indeterminate(), OP);
         assert!(indeterminate_one.advanced());
-        let reloaded_two = clock.apply(&reloaded());
-        let indeterminate_two = clock.apply(&indeterminate());
+        let reloaded_two = clock.apply(&reloaded(), OP);
+        let indeterminate_two = clock.apply(&indeterminate(), OP);
         // Monotonic: each observed value is strictly greater than the last.
         let values = [
             RuntimeModuleGeneration::INITIAL,
@@ -278,13 +363,13 @@ mod tests {
     #[test]
     fn refusals_and_pre_mutation_failures_advance_nothing() {
         let mut clock = RuntimeModuleGenerationClock::new();
-        assert!(!clock.apply(&refused()).advanced());
-        assert!(!clock.apply(&failed_before_mutation()).advanced());
+        assert!(!clock.apply(&refused(), OP).advanced());
+        assert!(!clock.apply(&failed_before_mutation(), OP).advanced());
         assert_eq!(clock.current(), RuntimeModuleGeneration::INITIAL);
         // A post-boundary timeout after a success still advances.
-        assert!(clock.apply(&reloaded()).advanced());
-        assert!(!clock.apply(&refused()).advanced());
-        assert!(clock.apply(&indeterminate()).advanced());
+        assert!(clock.apply(&reloaded(), OP).advanced());
+        assert!(!clock.apply(&refused(), OP).advanced());
+        assert!(clock.apply(&indeterminate(), OP).advanced());
         assert_eq!(RuntimeModuleGeneration::INITIAL.distance_to(clock.current()), Some(2));
     }
 
@@ -292,9 +377,35 @@ mod tests {
     fn a_timeout_after_mutation_never_leaves_the_old_generation_current() {
         let mut clock = RuntimeModuleGenerationClock::new();
         let before = clock.current();
-        let advanced = clock.apply(&indeterminate());
+        let advanced = clock.apply(&indeterminate(), OP);
         assert_eq!(advanced.code(), "advance");
         assert!(before < clock.current());
+    }
+
+    /// The advance witness is self-describing: whoever publishes it can
+    /// name both endpoints without re-applying the outcome or holding the
+    /// clock. That is what lets the transaction stay the only applier
+    /// (#14550).
+    #[test]
+    fn the_advance_witness_carries_both_endpoints() {
+        let mut clock = RuntimeModuleGenerationClock::new();
+
+        let advanced = clock.apply(&reloaded(), OP);
+        assert!(advanced.advanced());
+        assert_eq!(advanced.previous(), RuntimeModuleGeneration::INITIAL);
+        assert_eq!(advanced.generation(), clock.current());
+        assert_eq!(
+            advanced.previous().distance_to(advanced.generation()),
+            Some(1),
+            "one outcome spends exactly one generation"
+        );
+
+        // Nothing moved: the transaction started and ended in the same
+        // generation, so both endpoints report it.
+        let unchanged = clock.apply(&refused(), OP);
+        assert!(!unchanged.advanced());
+        assert_eq!(unchanged.previous(), unchanged.generation());
+        assert_eq!(unchanged.generation(), clock.current());
     }
 
     #[test]
@@ -311,7 +422,7 @@ mod tests {
     fn retained_observations_are_bounded_and_fail_closed() {
         let mut retained = RetainedModuleObservations::new();
         let mut clock = RuntimeModuleGenerationClock::new();
-        clock.apply(&reloaded());
+        clock.apply(&reloaded(), OP);
         retained.record(RetainedModuleObservation {
             generation: clock.current(),
             inc_key: "App/Core.pm".to_string(),
@@ -321,7 +432,7 @@ mod tests {
         assert!(!retained.is_current("App/Core.pm", RuntimeModuleGeneration::INITIAL));
         assert!(!retained.is_current("Other.pm", clock.current()));
         // Any advance invalidates every earlier observation.
-        clock.apply(&indeterminate());
+        clock.apply(&indeterminate(), OP);
         assert!(!retained.is_current("App/Core.pm", clock.current()));
         // Bound: recording beyond the cap evicts the oldest.
         for index in 0..(MAX_RETAINED_OBSERVATIONS + 8) {

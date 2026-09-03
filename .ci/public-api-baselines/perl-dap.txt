@@ -2517,15 +2517,6 @@ pub fn perl_dap::reload::DapObjectKind::eq(&self, other: &perl_dap::reload::DapO
 pub fn perl_dap::reload::DapObjectKind::partial_cmp(&self, other: &perl_dap::reload::DapObjectKind) -> core::option::Option<core::cmp::Ordering>
 pub fn perl_dap::reload::DapObjectKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::reload::DapObjectKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
-pub enum perl_dap::reload::GenerationAdvance
-pub perl_dap::reload::GenerationAdvance::Advanced(perl_dap::reload::RuntimeModuleGeneration)
-pub perl_dap::reload::GenerationAdvance::Unchanged(perl_dap::reload::RuntimeModuleGeneration)
-pub fn perl_dap::reload::GenerationAdvance::advanced(self) -> bool
-pub fn perl_dap::reload::GenerationAdvance::code(self) -> &'static str
-pub fn perl_dap::reload::GenerationAdvance::generation(self) -> perl_dap::reload::RuntimeModuleGeneration
-pub fn perl_dap::reload::GenerationAdvance::clone(&self) -> perl_dap::reload::GenerationAdvance
-pub fn perl_dap::reload::GenerationAdvance::eq(&self, other: &perl_dap::reload::GenerationAdvance) -> bool
-pub fn perl_dap::reload::GenerationAdvance::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_dap::reload::GenerationEffect
 pub perl_dap::reload::GenerationEffect::Advance
 pub perl_dap::reload::GenerationEffect::None
@@ -2779,6 +2770,15 @@ pub perl_dap::reload::DapReferenceBinding::stopped_generation: u64
 pub fn perl_dap::reload::DapReferenceBinding::clone(&self) -> perl_dap::reload::DapReferenceBinding
 pub fn perl_dap::reload::DapReferenceBinding::eq(&self, other: &perl_dap::reload::DapReferenceBinding) -> bool
 pub fn perl_dap::reload::DapReferenceBinding::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::reload::GenerationAdvance
+pub fn perl_dap::reload::GenerationAdvance::advanced(self) -> bool
+pub fn perl_dap::reload::GenerationAdvance::code(self) -> &'static str
+pub fn perl_dap::reload::GenerationAdvance::generation(self) -> perl_dap::reload::RuntimeModuleGeneration
+pub fn perl_dap::reload::GenerationAdvance::is_contiguous(self) -> bool
+pub fn perl_dap::reload::GenerationAdvance::previous(self) -> perl_dap::reload::RuntimeModuleGeneration
+pub fn perl_dap::reload::GenerationAdvance::clone(&self) -> perl_dap::reload::GenerationAdvance
+pub fn perl_dap::reload::GenerationAdvance::eq(&self, other: &perl_dap::reload::GenerationAdvance) -> bool
+pub fn perl_dap::reload::GenerationAdvance::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::reload::LoadedModuleReloadPlan
 pub fn perl_dap::reload::LoadedModuleReloadPlan::admitted_session_generation(&self) -> u64
 pub fn perl_dap::reload::LoadedModuleReloadPlan::admitted_suspension_generation(&self) -> u64
@@ -2841,11 +2841,6 @@ pub fn perl_dap::reload::ReloadCommandPlan::clone(&self) -> perl_dap::reload::Re
 pub fn perl_dap::reload::ReloadCommandPlan::eq(&self, other: &perl_dap::reload::ReloadCommandPlan) -> bool
 pub fn perl_dap::reload::ReloadCommandPlan::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::reload::ReloadExecution
-pub perl_dap::reload::ReloadExecution::generation: perl_dap::reload::GenerationAdvance
-pub perl_dap::reload::ReloadExecution::mechanism: perl_dap::reload::ReloadMechanism
-pub perl_dap::reload::ReloadExecution::mutation_issued: bool
-pub perl_dap::reload::ReloadExecution::outcome: perl_dap::reload::LoadedModuleReloadOutcome
-pub perl_dap::reload::ReloadExecution::phase_reached: perl_dap::reload::ReloadTransactionPhase
 pub fn perl_dap::reload::ReloadExecution::projects_as_clean(&self) -> bool
 pub fn perl_dap::reload::ReloadExecution::clone(&self) -> perl_dap::reload::ReloadExecution
 pub fn perl_dap::reload::ReloadExecution::eq(&self, other: &perl_dap::reload::ReloadExecution) -> bool
@@ -2900,7 +2895,7 @@ pub fn perl_dap::reload::RuntimeModuleGeneration::default() -> perl_dap::reload:
 pub fn perl_dap::reload::RuntimeModuleGeneration::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::reload::RuntimeModuleGeneration::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub struct perl_dap::reload::RuntimeModuleGenerationClock
-pub fn perl_dap::reload::RuntimeModuleGenerationClock::apply(&mut self, outcome: &perl_dap::reload::LoadedModuleReloadOutcome) -> perl_dap::reload::GenerationAdvance
+pub fn perl_dap::reload::RuntimeModuleGenerationClock::apply(&mut self, outcome: &perl_dap::reload::LoadedModuleReloadOutcome, operation: u64) -> perl_dap::reload::GenerationAdvance
 pub const fn perl_dap::reload::RuntimeModuleGenerationClock::current(&self) -> perl_dap::reload::RuntimeModuleGeneration
 pub const fn perl_dap::reload::RuntimeModuleGenerationClock::new() -> perl_dap::reload::RuntimeModuleGenerationClock
 pub fn perl_dap::reload::RuntimeModuleGenerationClock::clone(&self) -> perl_dap::reload::RuntimeModuleGenerationClock
@@ -3039,6 +3034,7 @@ pub fn perl_dap::reload_family::WirePhase::fmt(&self, f: &mut core::fmt::Formatt
 pub fn perl_dap::reload_family::WirePhase::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::reload_family::WirePhase::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub enum perl_dap::reload_family::WireProjectionRefusal
+pub perl_dap::reload_family::WireProjectionRefusal::GenerationAdvanceMismatch
 pub perl_dap::reload_family::WireProjectionRefusal::OutcomePhaseKindMismatch
 pub fn perl_dap::reload_family::WireProjectionRefusal::clone(&self) -> perl_dap::reload_family::WireProjectionRefusal
 pub fn perl_dap::reload_family::WireProjectionRefusal::eq(&self, other: &perl_dap::reload_family::WireProjectionRefusal) -> bool
@@ -3189,7 +3185,7 @@ pub const perl_dap::reload_family::MAX_RETAINED_OPERATIONS: usize
 pub const perl_dap::reload_family::MIN_DEADLINE_MS: u64
 pub const perl_dap::reload_family::REASONS_TRUNCATED_MARKER: &str
 pub fn perl_dap::reload_family::classify_wire_terminal(kind: &str, possibly_applied: bool) -> perl_dap::reload_family::WireTerminalClassification
-pub fn perl_dap::reload_family::project_outcome(outcome: &perl_dap::reload::LoadedModuleReloadOutcome, operation_id: u64, clock: &mut perl_dap::reload::RuntimeModuleGenerationClock, reasons: &[alloc::string::String], remediation: core::option::Option<&str>) -> core::result::Result<perl_dap::reload_family::LoadedModuleReloadWireResponse, perl_dap::reload_family::WireProjectionRefusal>
+pub fn perl_dap::reload_family::project_execution(execution: &perl_dap::reload::ReloadExecution, reasons: &[alloc::string::String], remediation: core::option::Option<&str>) -> core::result::Result<perl_dap::reload_family::LoadedModuleReloadWireResponse, perl_dap::reload_family::WireProjectionRefusal>
 pub mod perl_dap::security
 pub enum perl_dap::security::SecurityError
 pub perl_dap::security::SecurityError::ExcessiveTimeout(u32)
