@@ -767,7 +767,12 @@ impl std::fmt::Display for ClassifiedInputId {
 ///
 /// The raw value never appears here: only a class, an authority, a stable
 /// source identifier, and an optional value fingerprint.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// [`Self::id`] is *derived* from the other fields, so deserialization
+/// recomputes it and rejects a mismatch: a transported record cannot keep an
+/// already-approved identity while swapping its risk class, authority, or
+/// disposition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClassifiedInput {
     /// Stable identity derived from the classification evidence.
@@ -785,6 +790,39 @@ pub struct ClassifiedInput {
     pub value_fingerprint: Option<Digest>,
     /// Stable explanation code for the disposition.
     pub explanation_code: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClassifiedInputWire {
+    id: ClassifiedInputId,
+    semantic_key: String,
+    risk_class: InputRiskClass,
+    authority: EnvironmentInputAuthority,
+    disposition: InputDisposition,
+    #[serde(default)]
+    value_fingerprint: Option<Digest>,
+    explanation_code: String,
+}
+
+impl<'de> Deserialize<'de> for ClassifiedInput {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = ClassifiedInputWire::deserialize(deserializer)?;
+        let rebuilt = Self::new(
+            wire.semantic_key,
+            wire.risk_class,
+            wire.authority,
+            wire.disposition,
+            wire.value_fingerprint,
+            wire.explanation_code,
+        );
+        if rebuilt.id != wire.id {
+            return Err(serde::de::Error::custom(AuthorizationError::ForgedInputIdentity {
+                input_id: wire.id,
+            }));
+        }
+        Ok(rebuilt)
+    }
 }
 
 impl ClassifiedInput {
@@ -1744,6 +1782,11 @@ pub enum AuthorizationError {
         /// Scope kind that rejected it.
         scope: TrustScopeKind,
     },
+    /// A classified input's identity does not match its own fields.
+    ForgedInputIdentity {
+        /// Advertised identity.
+        input_id: ClassifiedInputId,
+    },
     /// A classified input has an empty required field.
     EmptyInputField {
         /// Input identity.
@@ -1799,6 +1842,12 @@ impl std::fmt::Display for AuthorizationError {
                     formatter,
                     "actor {actor} cannot supply authority in scope {}",
                     scope.identity_tag()
+                )
+            }
+            Self::ForgedInputIdentity { input_id } => {
+                write!(
+                    formatter,
+                    "classified input {input_id} does not match the identity its own fields derive"
                 )
             }
             Self::EmptyInputField { input_id } => {
@@ -2234,8 +2283,19 @@ fn evaluate_capability(
         return base;
     }
 
-    // A scoped, unexpired override may supply what the base facts withheld.
-    // It can never supply a policy-denied capability: that returned above.
+    // A denial is an active refusal grounded in a classified input — a
+    // project-supplied executable, an ambient Perl environment, a path that
+    // escapes the root. An override grants authority that was merely missing;
+    // it does not overrule a refusal. This is the same law that stops an
+    // explicit user action from upgrading those inputs, and it keeps a scoped
+    // grant from becoming a way to click past every input classification.
+    if base == CapabilityFinding::Denied {
+        return base;
+    }
+
+    // A scoped, unexpired override may supply what the base facts left
+    // unestablished. It can never supply a policy-denied capability: that
+    // returned above.
     if let Some(session_override) = &evidence.session_override
         && session_override.capabilities.contains(capability)
     {

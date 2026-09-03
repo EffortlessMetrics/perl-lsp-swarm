@@ -2287,3 +2287,114 @@ fn unresolved_evidence_limitation_is_not_proven() -> Result<(), Box<dyn Error>> 
     require(has_reason(&decision, "evidence_limitation"), "the outcome must name the limitation")?;
     Ok(())
 }
+
+/// A scoped override supplies missing authority; it does not overrule a denial.
+///
+/// Found by an independent review lens. An override that could convert a denied
+/// input into a grant would be a way to click past every input classification —
+/// project-supplied executables, ambient Perl environments, escaping paths.
+#[test]
+fn session_override_cannot_cure_a_denied_input() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 5)?;
+    let wrapper = ClassifiedInput::new(
+        "tool.wrapper_script",
+        InputRiskClass::ProjectExecutableOrCommand,
+        EnvironmentInputAuthority::TrustedProjectConfiguration,
+        InputDisposition::RequiresSeparateAuthority,
+        None,
+        "project_supplied_wrapper",
+    );
+    let mut facts = evidence(
+        &scope,
+        WorkspaceTrust::Trusted,
+        AuthorizationActor::ExplicitUserAction { action_id: "format".to_string() },
+        &bound,
+        vec![wrapper.clone()],
+    );
+    facts.session_override = Some(SessionOverride {
+        override_id: "session.grant.1".to_string(),
+        scope: scope.clone(),
+        granted_policy_generation: 0,
+        expires_after_policy_generation: u64::MAX,
+        capabilities: CapabilitySet::new([ExecutionCapability::ExecutableTool]),
+    });
+
+    let decision = authorize(
+        &intent(
+            OperationProfile::ExternalFormatter,
+            ExecutionReasonClass::ExternalTool,
+            &scope,
+            &bound,
+            vec![wrapper.id.clone()],
+        ),
+        &facts,
+    );
+
+    require(
+        decision.outcome() == AuthorizationOutcome::Denied,
+        "a current override must not convert a denied input into a grant",
+    )?;
+    require(
+        !has_reason(&decision, "granted_by_session_override"),
+        "the override must not be recorded as supplying a denied capability",
+    )?;
+
+    // Control: the same override still supplies a merely-unestablished
+    // capability, so the rule narrows overrides rather than disabling them.
+    let ambient = path_only_tool();
+    let mut curable = evidence(
+        &scope,
+        WorkspaceTrust::Trusted,
+        AuthorizationActor::ExplicitUserAction { action_id: "format".to_string() },
+        &bound,
+        vec![ambient.clone()],
+    );
+    curable.session_override = facts.session_override.clone();
+    let allowed = authorize(
+        &intent(
+            OperationProfile::ExternalFormatter,
+            ExecutionReasonClass::ExternalTool,
+            &scope,
+            &bound,
+            vec![ambient.id.clone()],
+        ),
+        &curable,
+    );
+    require(
+        allowed.outcome() == AuthorizationOutcome::Allowed,
+        "an override must still supply a capability that was only unestablished",
+    )?;
+    Ok(())
+}
+
+/// A classified input cannot keep an approved identity while changing content.
+#[test]
+fn forged_classified_input_identity_is_rejected() -> Result<(), Box<dyn Error>> {
+    let approved = verified_tool();
+    let encoded = serde_json::to_string(&approved)?;
+    require(
+        serde_json::from_str::<ClassifiedInput>(&encoded).is_ok(),
+        "an untampered input must round-trip",
+    )?;
+
+    // Keep the approved id, swap the risk class to a dangerous one.
+    let forged = encoded.replace(
+        "\"risk_class\":\"selected_verified_tool\"",
+        "\"risk_class\":\"project_executable_or_command\"",
+    );
+    require(forged != encoded, "the tamper rewrite must actually apply")?;
+    require(
+        serde_json::from_str::<ClassifiedInput>(&forged).is_err(),
+        "an id that does not match its own fields must be rejected",
+    )?;
+
+    // Same for a disposition swap.
+    let relabelled = encoded.replace("\"disposition\":\"accepted\"", "\"disposition\":\"denied\"");
+    require(relabelled != encoded, "the disposition rewrite must actually apply")?;
+    require(
+        serde_json::from_str::<ClassifiedInput>(&relabelled).is_err(),
+        "a relabelled disposition must be rejected",
+    )?;
+    Ok(())
+}
