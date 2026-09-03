@@ -15,7 +15,8 @@ use perl_workspace_core::{
     EXECUTION_AUTHORIZATION_SCHEMA_VERSION, EnvironmentFingerprint, EnvironmentInputAuthority,
     ExecutionCapability, ExecutionIntent, ExecutionReasonClass, InputDisposition, InputRiskClass,
     OperationProfile, OperationTrustRequirement, PolicyDenial, ProjectEnvironmentSnapshotBuilder,
-    SessionOverride, TrustScope, TrustScopeKind, WorkspaceTrust, authorize, operation_registry,
+    RequiredScope, SessionOverride, TrustScope, TrustScopeKind, WorkspaceTrust, authorize,
+    operation_registry,
 };
 
 fn require(condition: bool, message: &str) -> Result<(), Box<dyn Error>> {
@@ -1430,18 +1431,42 @@ fn operation_registry_is_complete_and_versioned() -> Result<(), Box<dyn Error>> 
         "every reviewed profile must have exactly one registry row",
     )?;
 
-    // Two profiles must never share one requirement identity, or a caller
-    // could present the weaker profile's authorization for the stronger one.
-    let mut identities: Vec<String> = OperationProfile::ALL
-        .iter()
-        .map(|profile| OperationTrustRequirement::for_profile(*profile).identity())
-        .collect();
+    // Two rows must never share one requirement identity, or a caller could
+    // present the weaker row's authorization for the stronger one.
+    //
+    // Comparing whole profiles would be vacuous: `identity()` folds in
+    // `profile.identity_tag()`, which is injective by construction, so distinct
+    // profiles have distinct identities no matter what capabilities they carry.
+    // Hold the profile fixed instead and vary only the capability set and scope,
+    // which is the collision that would actually matter.
+    let base = OperationTrustRequirement::for_profile(OperationProfile::ExternalFormatter);
+    let mut configs: Vec<(Vec<&str>, RequiredScope)> = Vec::new();
+    let mut identities: Vec<String> = Vec::new();
+    for extra in ExecutionCapability::ALL {
+        for scope in [
+            RequiredScope::EditorWorkspaceOnly,
+            RequiredScope::CiHermeticOnly,
+            RequiredScope::EitherScope,
+        ] {
+            let mut row = base.clone();
+            row.required = CapabilitySet::new(base.required.iter().chain([extra]));
+            row.scope = scope;
+            configs.push((row.required.tags(), scope));
+            identities.push(row.identity());
+        }
+    }
+
+    // Distinct capability-set/scope configurations must have distinct
+    // identities. Counting distinct configs rather than rows keeps the
+    // assertion honest: adding a capability the base already requires, or
+    // re-selecting its own scope, legitimately reproduces an earlier row.
+    configs.sort();
+    configs.dedup();
     identities.sort();
-    let distinct = identities.len();
     identities.dedup();
     require(
-        identities.len() == distinct,
-        "each profile must have a distinct requirement identity",
+        identities.len() == configs.len(),
+        "requirement identity must distinguish every capability set and scope",
     )?;
 
     for profile in OperationProfile::ALL {
@@ -1677,5 +1702,364 @@ fn omitting_traversal_path_does_not_grant_outside_root_authority() -> Result<(),
         has_reason(&undeclared_decision, "path_escapes_root"),
         "the undeclared case must still name the escaping path",
     )?;
+    Ok(())
+}
+
+/// A verified interpreter must not mask a project-supplied executable declared
+/// alongside it.
+///
+/// Found by an independent security lens. `ExecutableTool` covers every tool an
+/// operation invokes, so the evaluator has to look for a disqualifying input
+/// before an enabling one. This needs no dishonest intent: both inputs are
+/// declared truthfully.
+#[test]
+fn verified_tool_does_not_mask_a_project_supplied_executable() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let interpreter = verified_tool();
+    let wrapper = ClassifiedInput::new(
+        "tool.wrapper_script",
+        InputRiskClass::ProjectExecutableOrCommand,
+        EnvironmentInputAuthority::TrustedProjectConfiguration,
+        InputDisposition::RequiresSeparateAuthority,
+        None,
+        "project_supplied_wrapper",
+    );
+
+    let decision = authorize(
+        &intent(
+            OperationProfile::RunCurrentSavedFile,
+            ExecutionReasonClass::ExplicitUserAction,
+            &scope,
+            &bound,
+            vec![interpreter.id.clone(), wrapper.id.clone()],
+        ),
+        &evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "run".to_string() },
+            &bound,
+            vec![interpreter, wrapper],
+        ),
+    );
+
+    require(
+        decision.outcome() == AuthorizationOutcome::Denied,
+        "a project-supplied wrapper must deny even beside a verified interpreter",
+    )?;
+    require(
+        has_reason(&decision, "project_supplied_executable"),
+        "the denial must name the project-supplied executable",
+    )?;
+    require(
+        !decision.permits(ExecutionCapability::ExecutableTool),
+        "tool authority must not be granted",
+    )?;
+    Ok(())
+}
+
+/// An ambient PATH tool is not masked by a verified tool either.
+#[test]
+fn verified_tool_does_not_mask_an_ambient_path_tool() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let interpreter = verified_tool();
+    let ambient = path_only_tool();
+
+    let decision = authorize(
+        &intent(
+            OperationProfile::RunCurrentSavedFile,
+            ExecutionReasonClass::ExplicitUserAction,
+            &scope,
+            &bound,
+            vec![interpreter.id.clone(), ambient.id.clone()],
+        ),
+        &evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "run".to_string() },
+            &bound,
+            vec![interpreter, ambient],
+        ),
+    );
+
+    require(
+        decision.outcome() == AuthorizationOutcome::ConfirmationRequired,
+        "an ambient PATH tool beside a verified one still needs confirmation",
+    )?;
+    require(
+        has_reason(&decision, "ambient_tool_selection"),
+        "the outcome must name the ambient selection",
+    )?;
+    Ok(())
+}
+
+/// A properly confirmed external absolute path is granted.
+///
+/// Positive control for the outside-root branch: without it, collapsing every
+/// external path to `ConfirmationRequired` would pass unnoticed.
+#[test]
+fn confirmed_external_absolute_path_is_granted() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let confirmed = ClassifiedInput::new(
+        "include.root",
+        InputRiskClass::ExternalAbsolutePath,
+        EnvironmentInputAuthority::UserConfiguration,
+        InputDisposition::Accepted,
+        None,
+        "user_selected_external_root",
+    );
+
+    let mut request = intent(
+        OperationProfile::ModuleResolutionExternalRead,
+        ExecutionReasonClass::Probe,
+        &scope,
+        &bound,
+        vec![confirmed.id.clone()],
+    );
+    request.requested = CapabilitySet::new([
+        ExecutionCapability::SourceAnalysis,
+        ExecutionCapability::ExternalRead,
+        ExecutionCapability::OutsideRootPath,
+    ]);
+
+    let decision = authorize(
+        &request,
+        &evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "resolve".to_string() },
+            &bound,
+            vec![confirmed],
+        ),
+    );
+
+    require(
+        decision.outcome() == AuthorizationOutcome::Allowed,
+        "an explicitly selected external root is allowed",
+    )?;
+    require(
+        decision.permits(ExecutionCapability::OutsideRootPath),
+        "outside-root authority must actually be granted here",
+    )?;
+    Ok(())
+}
+
+/// Every generation is load-bearing for staleness, not just the policy one.
+#[test]
+fn each_generation_independently_stales_evidence() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let tool = verified_tool();
+    let base = generations("ws", 1)?;
+
+    let moved = [
+        BoundGenerations::new(
+            base.configuration_generation + 1,
+            base.policy_generation,
+            base.source_generation,
+            base.environment_fingerprint.clone(),
+        ),
+        BoundGenerations::new(
+            base.configuration_generation,
+            base.policy_generation + 1,
+            base.source_generation,
+            base.environment_fingerprint.clone(),
+        ),
+        BoundGenerations::new(
+            base.configuration_generation,
+            base.policy_generation,
+            base.source_generation + 1,
+            base.environment_fingerprint.clone(),
+        ),
+        // A different environment snapshot identity, from a real snapshot.
+        BoundGenerations::new(
+            base.configuration_generation,
+            base.policy_generation,
+            base.source_generation,
+            environment_fingerprint("other-workspace", 7)?,
+        ),
+    ];
+
+    for observed in moved {
+        require(observed != base, "each fixture must actually move one generation")?;
+        let decision = authorize(
+            &intent(
+                OperationProfile::RunCurrentSavedFile,
+                ExecutionReasonClass::ExplicitUserAction,
+                &scope,
+                &base,
+                vec![tool.id.clone()],
+            ),
+            &evidence(
+                &scope,
+                WorkspaceTrust::Trusted,
+                AuthorizationActor::ExplicitUserAction { action_id: "run".to_string() },
+                &observed,
+                vec![tool.clone()],
+            ),
+        );
+        require(
+            decision.outcome() == AuthorizationOutcome::Stale,
+            "moving any single generation must stale the evidence",
+        )?;
+    }
+    Ok(())
+}
+
+/// Evidence carrying one input identity twice cannot be evaluated.
+#[test]
+fn duplicate_input_identity_is_rejected() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let tool = verified_tool();
+    let mut facts = evidence(
+        &scope,
+        WorkspaceTrust::Trusted,
+        AuthorizationActor::ExplicitUserAction { action_id: "run".to_string() },
+        &bound,
+        vec![tool.clone(), tool.clone()],
+    );
+
+    require(facts.validate().is_err(), "duplicate input identities must fail validation")?;
+
+    let decision = authorize(
+        &intent(
+            OperationProfile::RunCurrentSavedFile,
+            ExecutionReasonClass::ExplicitUserAction,
+            &scope,
+            &bound,
+            vec![tool.id.clone()],
+        ),
+        &facts,
+    );
+    require(
+        decision.outcome() == AuthorizationOutcome::NotProven,
+        "unevaluable evidence must never produce an allow",
+    )?;
+
+    facts.inputs.truncate(1);
+    require(facts.validate().is_ok(), "the same evidence without the duplicate is valid")?;
+    Ok(())
+}
+
+/// The decision fingerprint covers the generations it is bound to.
+#[test]
+fn tampering_bound_generations_fails_revalidation() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let tool = verified_tool();
+    let decision = authorize(
+        &intent(
+            OperationProfile::RunCurrentSavedFile,
+            ExecutionReasonClass::ExplicitUserAction,
+            &scope,
+            &bound,
+            vec![tool.id.clone()],
+        ),
+        &evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "run".to_string() },
+            &bound,
+            vec![tool],
+        ),
+    );
+
+    let encoded = serde_json::to_string(&decision)?;
+    // Re-date the decision to a later policy generation without re-deriving it.
+    let tampered = encoded.replace("\"policy_generation\":1", "\"policy_generation\":99");
+    require(tampered != encoded, "the tamper rewrite must actually apply")?;
+    let forged: Result<perl_workspace_core::ExecutionAuthorizationDecision, _> =
+        serde_json::from_str(&tampered);
+    require(forged.is_err(), "a decision re-dated to another generation must fail revalidation")?;
+    Ok(())
+}
+
+/// A limited allow cannot be widened into the capability it withheld.
+#[test]
+fn tampering_allowed_limited_split_fails_revalidation() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let external = ClassifiedInput::new(
+        "include.root",
+        InputRiskClass::ExternalAbsolutePath,
+        EnvironmentInputAuthority::WorkspaceConvention,
+        InputDisposition::ConfirmationRequired,
+        None,
+        "external_include_root",
+    );
+    let mut request = intent(
+        OperationProfile::ModuleResolutionExternalRead,
+        ExecutionReasonClass::Probe,
+        &scope,
+        &bound,
+        vec![external.id.clone()],
+    );
+    request.requested = CapabilitySet::new([
+        ExecutionCapability::SourceAnalysis,
+        ExecutionCapability::ExternalRead,
+        ExecutionCapability::OutsideRootPath,
+    ]);
+    let decision = authorize(
+        &request,
+        &evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::None,
+            &bound,
+            vec![external],
+        ),
+    );
+    require(
+        decision.outcome() == AuthorizationOutcome::AllowedLimited,
+        "this fixture must produce a limited allow",
+    )?;
+
+    let encoded = serde_json::to_string(&decision)?;
+    // Move the withheld capability out of `omitted` and into `granted`.
+    let tampered = encoded
+        .replace("\"omitted\":[\"outside_root_path\"]", "\"omitted\":[]")
+        .replace("\"external_read\"]", "\"external_read\",\"outside_root_path\"]");
+    require(tampered != encoded, "the widening rewrite must actually apply")?;
+    let forged: Result<perl_workspace_core::ExecutionAuthorizationDecision, _> =
+        serde_json::from_str(&tampered);
+    require(forged.is_err(), "widening a limited allow must fail revalidation")?;
+    Ok(())
+}
+
+/// A decision from another schema version is rejected, not reinterpreted.
+#[test]
+fn foreign_schema_version_is_rejected() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let tool = verified_tool();
+    let decision = authorize(
+        &intent(
+            OperationProfile::RunCurrentSavedFile,
+            ExecutionReasonClass::ExplicitUserAction,
+            &scope,
+            &bound,
+            vec![tool.id.clone()],
+        ),
+        &evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "run".to_string() },
+            &bound,
+            vec![tool],
+        ),
+    );
+
+    let encoded = serde_json::to_string(&decision)?;
+    let next_version = EXECUTION_AUTHORIZATION_SCHEMA_VERSION + 1;
+    let bumped = encoded.replace(
+        &format!("\"schema_version\":{EXECUTION_AUTHORIZATION_SCHEMA_VERSION}"),
+        &format!("\"schema_version\":{next_version}"),
+    );
+    require(bumped != encoded, "the version rewrite must actually apply")?;
+    let foreign: Result<perl_workspace_core::ExecutionAuthorizationDecision, _> =
+        serde_json::from_str(&bumped);
+    require(foreign.is_err(), "a foreign schema version must be rejected")?;
     Ok(())
 }

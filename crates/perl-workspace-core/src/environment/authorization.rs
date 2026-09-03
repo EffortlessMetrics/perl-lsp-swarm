@@ -1565,9 +1565,19 @@ impl ExecutionAuthorizationDecision {
 
     /// Redacted public explanation.
     ///
-    /// Carries stable classes, digests, generations, and reason codes only. It
-    /// never carries an executable path, an environment value, a secret,
-    /// source text, configuration prose, or `Debug` output.
+    /// Every value derived from an *input* is a stable class, digest,
+    /// generation, or reason code. No executable path, environment value,
+    /// secret, source text, configuration prose, caller explanation code,
+    /// semantic key, or `Debug` output crosses this boundary.
+    ///
+    /// The one caller-authored string carried through is
+    /// [`TrustScope::workspace_id`], deliberately, so an explanation can be
+    /// attributed to its workspace. It is the caller's own scope identity
+    /// rather than anything derived from project inputs, and producers are
+    /// required to keep it an opaque identifier — the same obligation
+    /// [`super::PublicProjectEnvironmentReceipt`] already places on it. This
+    /// projection cannot enforce that, so a producer that puts a filesystem
+    /// path in `workspace_id` leaks it here.
     #[must_use]
     pub fn public_explanation(&self) -> PublicAuthorizationExplanation {
         let blocked: Vec<&'static str> = self
@@ -2315,14 +2325,15 @@ fn evaluate_executable_tool(
 ) -> CapabilityFinding {
     let capability = ExecutionCapability::ExecutableTool;
 
-    if inputs.iter().any(|&input| {
-        input.risk_class == InputRiskClass::SelectedVerifiedTool && input.disposition.is_accepted()
-    }) {
-        return CapabilityFinding::Granted;
-    }
+    // Most restrictive wins. An operation may invoke several tool-shaped
+    // inputs, and the capability covers all of them, so a disqualifying input
+    // must be found before an enabling one — otherwise a legitimately selected
+    // interpreter would mask a project-supplied wrapper script declared
+    // alongside it.
 
-    // A project-supplied executable is project-controlled authority. An
-    // explicit user action does not upgrade it.
+    // A project-supplied executable is project-controlled authority. Neither an
+    // explicit user action nor a verified tool elsewhere in the operation
+    // upgrades it.
     if let Some(input) = inputs
         .iter()
         .copied()
@@ -2347,6 +2358,12 @@ fn evaluate_executable_tool(
             ActionableAuthority::UserConfiguration,
         ));
         return CapabilityFinding::ConfirmationRequired;
+    }
+
+    if inputs.iter().any(|&input| {
+        input.risk_class == InputRiskClass::SelectedVerifiedTool && input.disposition.is_accepted()
+    }) {
+        return CapabilityFinding::Granted;
     }
 
     reasons.push(reason(
