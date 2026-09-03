@@ -572,14 +572,38 @@ fn rename_replacement_name_is_well_formed(name: &str) -> bool {
         None => None,
     };
 
-    first.is_some_and(|character| character == '_' || character.is_ascii_alphabetic())
-        && chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
+    first.is_some_and(|character| character == '_' || character.is_alphabetic())
+        && chars.all(|character| character == '_' || character.is_alphanumeric())
 }
 
-fn rename_is_null(resp: &Value) -> bool {
+/// Verify that an LSP position addresses an actual non-whitespace source
+/// character.  This is deliberately a small request-shape check, not a Perl
+/// parser: it prevents an InvalidParams response for an out-of-range request
+/// from masquerading as a semantic RenameNull result.
+fn rename_position_is_well_formed(source: &str, line: u32, character: u32) -> bool {
+    let Some(source_line) = source.lines().nth(line as usize) else {
+        return false;
+    };
+
+    let mut offset = 0u32;
+    for source_character in source_line.chars() {
+        let width = source_character.len_utf16() as u32;
+        if character >= offset && character < offset.saturating_add(width) {
+            return !source_character.is_whitespace();
+        }
+        offset = offset.saturating_add(width);
+    }
+    false
+}
+
+fn rename_is_null(resp: &Value, source: &str, line: u32, character: u32) -> bool {
     match (resp.get("result"), resp.get("error")) {
         (Some(Value::Null), None) => true,
-        (None, Some(_)) => rename_has_structured_error(resp) && rename_protocol_rejection(resp),
+        (None, Some(_)) => {
+            rename_position_is_well_formed(source, line, character)
+                && rename_has_structured_error(resp)
+                && rename_protocol_rejection(resp)
+        }
         _ => false,
     }
 }
@@ -685,37 +709,57 @@ fn rename_edit_count_at_least_passes(
     expected_uri: &str,
     min: usize,
     expected: Option<&[RenameExpectedEdit]>,
+    source: &str,
+    line: u32,
+    character: u32,
 ) -> bool {
     // The schema requires min >= 1. Keep the helper defensive so a direct
     // caller cannot turn a successful-rename assertion into a shape-only
     // zero-edit check.
     min > 0
-        && !rename_is_null(resp)
+        && !rename_is_null(resp, source, line, character)
         && observed_rename_edits(resp).is_some()
         && rename_total_edit_count(resp) >= min
         && rename_expected_edits_match(resp, expected_uri, expected)
 }
 
-fn rename_assertion_passes(assertion: &RenameAssertion, resp: &Value, uri: &str) -> bool {
+fn rename_assertion_passes(
+    assertion: &RenameAssertion,
+    resp: &Value,
+    uri: &str,
+    source: &str,
+) -> bool {
     let expected_edits_ok =
         rename_expected_edits_match(resp, uri, assertion.expected_edits.as_deref());
-    let response_edits_are_well_formed =
-        rename_is_null(resp) || observed_rename_edits(resp).is_some();
+    let response_edits_are_well_formed = rename_is_null(
+        resp,
+        source,
+        assertion.line,
+        assertion.character,
+    ) || observed_rename_edits(resp).is_some();
 
     match &assertion.kind {
         RenameAssertionKind::RenameSucceeds => {
-            !rename_is_null(resp)
+            !rename_is_null(resp, source, assertion.line, assertion.character)
                 && rename_total_edit_count(resp) >= 1
                 && response_edits_are_well_formed
                 && expected_edits_ok
         }
         RenameAssertionKind::RenameNull => {
             rename_replacement_name_is_well_formed(&assertion.new_name)
-                && rename_is_null(resp)
+                && rename_is_null(resp, source, assertion.line, assertion.character)
                 && assertion.expected_edits.is_none()
         }
         RenameAssertionKind::RenameEditCountAtLeast { min } => {
-            rename_edit_count_at_least_passes(resp, uri, *min, assertion.expected_edits.as_deref())
+            rename_edit_count_at_least_passes(
+                resp,
+                uri,
+                *min,
+                assertion.expected_edits.as_deref(),
+                source,
+                assertion.line,
+                assertion.character,
+            )
         }
     }
 }
@@ -751,7 +795,7 @@ fn test_rename_gold_corpus() -> TestResult {
             let resp =
                 server.get_rename(&uri, assertion.line, assertion.character, &assertion.new_name);
 
-            let ok = rename_assertion_passes(assertion, &resp, &uri);
+            let ok = rename_assertion_passes(assertion, &resp, &uri, &code);
 
             if ok {
                 passed += 1;
@@ -795,6 +839,8 @@ fn test_rename_gold_corpus() -> TestResult {
 mod rename_oracle_tests {
     use super::*;
     use serde_json::json;
+
+    const VALID_RENAME_SOURCE: &str = "sub unused { return 1; }\n";
 
     fn expected() -> Vec<RenameExpectedEdit> {
         vec![RenameExpectedEdit {
@@ -1136,6 +1182,9 @@ mod rename_oracle_tests {
             "file:///gold/rename_subroutine.pl",
             0,
             None,
+            VALID_RENAME_SOURCE,
+            0,
+            0,
         ) {
             return Err("null rename response passed a zero-minimum count assertion".into());
         }
@@ -1148,6 +1197,9 @@ mod rename_oracle_tests {
             "file:///gold/rename_subroutine.pl",
             0,
             None,
+            VALID_RENAME_SOURCE,
+            0,
+            0,
         ) {
             return Err("error rename response passed a zero-minimum count assertion".into());
         }
@@ -1163,6 +1215,9 @@ mod rename_oracle_tests {
             "file:///gold/rename_subroutine.pl",
             0,
             None,
+            VALID_RENAME_SOURCE,
+            0,
+            0,
         ) {
             return Err(
                 "empty successful WorkspaceEdit passed a zero-minimum rename assertion".into()
@@ -1181,7 +1236,7 @@ mod rename_oracle_tests {
             json!({"result": null}),
             json!({"error": {"code": -32602, "message": "not renamable"}}),
         ] {
-            if !rename_assertion_passes(&assertion, &passing, uri) {
+            if !rename_assertion_passes(&assertion, &passing, uri, VALID_RENAME_SOURCE) {
                 return Err(format!("valid rename-null outcome was rejected: {passing}").into());
             }
         }
@@ -1204,7 +1259,7 @@ mod rename_oracle_tests {
             json!({"error": {"code": -32603, "message": "internal error"}}),
             json!({"error": {"code": -32800, "message": "request cancelled"}}),
         ] {
-            if rename_assertion_passes(&assertion, &malformed, uri) {
+            if rename_assertion_passes(&assertion, &malformed, uri, VALID_RENAME_SOURCE) {
                 return Err(
                     format!("malformed rename response passed RenameNull: {malformed}").into()
                 );
@@ -1217,12 +1272,50 @@ mod rename_oracle_tests {
             let invalid_params = json!({
                 "error": {"code": -32602, "message": "invalid replacement name"}
             });
-            if rename_assertion_passes(&invalid_request, &invalid_params, uri) {
+            if rename_assertion_passes(&invalid_request, &invalid_params, uri, VALID_RENAME_SOURCE) {
                 return Err(format!(
                     "invalid replacement name was accepted as RenameNull: {invalid_name:?}"
                 )
                 .into());
             }
+        }
+
+        for unicode_name in ["Δelta", "$名前"] {
+            let unicode_request = RenameAssertion {
+                new_name: unicode_name.to_string(),
+                ..assertion.clone()
+            };
+            let invalid_params = json!({
+                "error": {"code": -32602, "message": "not renamable"}
+            });
+            if !rename_assertion_passes(
+                &unicode_request,
+                &invalid_params,
+                uri,
+                VALID_RENAME_SOURCE,
+            ) {
+                return Err(format!(
+                    "valid Unicode replacement name was rejected: {unicode_name:?}"
+                )
+                .into());
+            }
+        }
+
+        let invalid_position = RenameAssertion {
+            line: 99,
+            character: 0,
+            ..assertion.clone()
+        };
+        let invalid_params = json!({
+            "error": {"code": -32602, "message": "invalid source position"}
+        });
+        if rename_assertion_passes(
+            &invalid_position,
+            &invalid_params,
+            uri,
+            VALID_RENAME_SOURCE,
+        ) {
+            return Err("InvalidParams at an out-of-range position passed RenameNull".into());
         }
 
         Ok(())
@@ -1241,7 +1334,7 @@ mod rename_oracle_tests {
             rename_success_assertion(RenameAssertionKind::RenameSucceeds),
             rename_success_assertion(RenameAssertionKind::RenameEditCountAtLeast { min: 1 }),
         ] {
-            if rename_assertion_passes(&assertion, &contradictory, uri) {
+            if rename_assertion_passes(&assertion, &contradictory, uri, VALID_RENAME_SOURCE) {
                 return Err(format!(
                     "result-plus-error response passed successful rename mode: {:?}",
                     assertion.kind
