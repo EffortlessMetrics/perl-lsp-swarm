@@ -305,9 +305,12 @@ describe('extension-owned resource measurements', () => {
     expect(empty.value).toBe(0);
   });
 
-  test('a reload that fails to release is detectable; a clean reload is not', async () => {
+  test('a shutdown that fails to release is detectable; a clean shutdown is not', async () => {
     // Residue is derived from the real cleanup path, never hand-injected: the
     // only difference between the two cycles is whether one dispose() throws.
+    // Scope note: this is one attempt's own shutdown. The census is
+    // attempt-scoped, so it cannot see resources a *previous* attempt failed to
+    // release — see the accessor's doc comment in extension.ts.
     async function residueAfterCycle(failRelease: boolean): Promise<ClientResourceMeasurement> {
       const suffix = failRelease ? 'leak' : 'clean';
       const transaction = new ActivationTransaction(`attempt-cycle-${suffix}`);
