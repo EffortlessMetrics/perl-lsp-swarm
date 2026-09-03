@@ -145,6 +145,7 @@ import {
   syncPerlCriticConfiguration as syncPerlCriticConfigurationFromConfig,
 } from './languageClientConfiguration';
 export { buildDisabledFeaturesFromConfig } from './languageClientConfiguration';
+import { perlConfigurationMiddleware } from './configurationPull';
 import {
   classifyStartupError,
   formatStartupFailureDialog,
@@ -592,6 +593,15 @@ export async function setPerlCriticSeverity(
 
   const severity = Number(selection.label);
   const config = vscode.workspace.getConfiguration('perl-lsp', resourceUri);
+  // `critic.severity` is declared `resource`, but the server keeps one
+  // session-global Critic state and only learns it through the unscoped
+  // `didChangeConfiguration` push (#8253; see CRITIC_SESSION_STATE_DEFECT in
+  // configurationOwnership.ts). Startup calls syncLanguageClientConfiguration
+  // with no scope, and an unscoped read cannot see a workspaceFolderValue — so
+  // writing the owning folder here would make the chosen severity work for the
+  // current session and then silently vanish on restart. Keep the write at a
+  // scope the session-global push can actually read until Critic becomes
+  // folder-owned server-side.
   const target =
     vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0
       ? vscode.ConfigurationTarget.Workspace
@@ -2008,7 +2018,11 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
   }
 }
 
-function createLanguageClient(serverPath: string): LanguageClient {
+/**
+ * Exported so the configuration-transport wiring contract can execute the real
+ * client options rather than asserting on source text (#14447).
+ */
+export function createLanguageClient(serverPath: string): LanguageClient {
   const generation = activeDocumentReadiness.beginGeneration();
   healthWidget?.seedIndexReadinessState('building');
   const serverOptions: ServerOptions = {
@@ -2040,6 +2054,13 @@ function createLanguageClient(serverPath: string): LanguageClient {
     outputChannel,
     traceOutputChannel: outputChannel,
     middleware: {
+      // The server pulls `section: "perl"` once unscoped and once per workspace
+      // folder. Without this adapter the language client would resolve those
+      // against the `perl.*` namespace, which this extension does not
+      // contribute, and every folder item would come back null (#14447).
+      workspace: {
+        configuration: perlConfigurationMiddleware(),
+      },
       provideCompletionItem: async (document, position, context, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return null;
