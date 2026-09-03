@@ -477,6 +477,54 @@ impl DebugAdapter {
         let begin_marker = format!("DAP_BEGIN_{marker_id}");
         let end_marker = format!("DAP_END_{marker_id}");
 
+        self.write_framed_debugger_commands(stdin, commands, &begin_marker, &end_marker)?;
+        Ok((begin_marker, end_marker))
+    }
+
+    /// Register a framed query before writing its markers and command.
+    ///
+    /// Registration must precede transport I/O: an EOF or replacement between
+    /// the write and the old post-write registration point must settle this
+    /// operation rather than allowing it to bind to the replacement session.
+    fn send_framed_debugger_query(
+        &self,
+        stdin: &mut impl Write,
+        commands: &[String],
+        timeout_ms: u64,
+    ) -> Result<(operation_broker::BrokerOperation, String, String), String> {
+        self.debugger_query_count.fetch_add(1, Ordering::Relaxed);
+        let marker_id = self.next_debugger_marker_id();
+        let begin_marker = format!("DAP_BEGIN_{marker_id}");
+        let end_marker = format!("DAP_END_{marker_id}");
+        let spec = operation_broker::BrokerOperationSpec {
+            class: operation_broker::OperationClass::Query,
+            session_generation: self.operation_broker.current_session_generation(),
+            suspension_generation: None,
+            timeout: Duration::from_millis(Self::debugger_timeout_budget_ms(timeout_ms)),
+            cancellation: None,
+        };
+        let operation = self
+            .operation_broker
+            .submit(spec)
+            .map_err(|terminal| format!("framed query not submitted: {}", terminal.as_str()))?;
+
+        if let Err(error) =
+            self.write_framed_debugger_commands(stdin, commands, &begin_marker, &end_marker)
+        {
+            self.operation_broker.retire(operation.id);
+            return Err(error);
+        }
+
+        Ok((operation, begin_marker, end_marker))
+    }
+
+    fn write_framed_debugger_commands(
+        &self,
+        stdin: &mut impl Write,
+        commands: &[String],
+        begin_marker: &str,
+        end_marker: &str,
+    ) -> Result<(), String> {
         Self::write_debugger_command(stdin, &format!("p \"{begin_marker}\"\n"))?;
         for command in commands {
             if command.ends_with('\n') {
@@ -487,7 +535,7 @@ impl DebugAdapter {
         }
         Self::write_debugger_command(stdin, &format!("p \"{end_marker}\"\n"))?;
 
-        Ok((begin_marker, end_marker))
+        Ok(())
     }
 
     /// Capture debugger output lines between begin/end markers.
@@ -520,6 +568,15 @@ impl DebugAdapter {
             }
         };
 
+        self.capture_framed_debugger_output_for_operation(&operation, begin_marker, end_marker)
+    }
+
+    fn capture_framed_debugger_output_for_operation(
+        &self,
+        operation: &operation_broker::BrokerOperation,
+        begin_marker: &str,
+        end_marker: &str,
+    ) -> Option<Vec<String>> {
         match self.operation_broker.await_framed_payload(
             &operation,
             begin_marker,

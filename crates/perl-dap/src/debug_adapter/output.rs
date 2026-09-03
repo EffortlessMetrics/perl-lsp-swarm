@@ -169,7 +169,8 @@ impl DebugAdapter {
                 if let Some(ref mut session) = *session_guard {
                     if let Some(stdin) = session.process.stdin.as_mut() {
                         let commands = vec![cmd];
-                        self.send_framed_debugger_commands(stdin, &commands).ok()
+                        self.send_framed_debugger_query(stdin, &commands, DEBUGGER_QUERY_WAIT_MS)
+                            .ok()
                     } else {
                         None
                     }
@@ -178,8 +179,8 @@ impl DebugAdapter {
                 }
             };
 
-            let result = output_frame_markers.and_then(|(begin, end)| {
-                self.capture_framed_debugger_output(&begin, &end, DEBUGGER_QUERY_WAIT_MS)
+            let result = output_frame_markers.and_then(|(operation, begin, end)| {
+                self.capture_framed_debugger_output_for_operation(&operation, &begin, &end)
             });
 
             if let Some(lines) = result {
@@ -321,7 +322,8 @@ impl DebugAdapter {
             if let Some(ref mut session) = *session_guard {
                 if let Some(stdin) = session.process.stdin.as_mut() {
                     let commands = vec!["x \\%INC".to_string()];
-                    self.send_framed_debugger_commands(stdin, &commands).ok()
+                    self.send_framed_debugger_query(stdin, &commands, DEBUGGER_QUERY_WAIT_MS * 8)
+                        .ok()
                 } else {
                     None
                 }
@@ -331,8 +333,8 @@ impl DebugAdapter {
         };
         // Session guard dropped — safe to read output.
         let lines = match output_frame_markers {
-            Some((begin, end)) => self
-                .capture_framed_debugger_output(&begin, &end, DEBUGGER_QUERY_WAIT_MS * 8)
+            Some((operation, begin, end)) => self
+                .capture_framed_debugger_output_for_operation(&operation, &begin, &end)
                 .unwrap_or_default(),
             None => return Vec::new(),
         };

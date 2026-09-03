@@ -302,7 +302,7 @@ impl OperationBroker {
     }
 
     /// Retire one operation from the table (cancellation, timeout).
-    fn retire(&self, id: OperationId) {
+    pub(crate) fn retire(&self, id: OperationId) {
         let mut table = lock_or_recover(&self.pending, "operation_broker.pending");
         table.fifo.retain(|entry| entry.operation.id != id);
     }
@@ -653,6 +653,43 @@ mod tests {
             terminal,
             BrokerTerminal::Completed(payload(&["ok".to_string()])),
             "cancellation of one operation must not touch the other pending operation"
+        );
+    }
+
+    #[test]
+    fn timeout_retires_only_the_intended_operation() {
+        let broker = OperationBroker::new();
+        let timed_out =
+            broker.submit(query_spec(&broker, NEGATIVE_WAIT)).expect("timed-out submit");
+        let survivor =
+            broker.submit(query_spec(&broker, Duration::from_secs(1))).expect("survivor submit");
+
+        let (timed_out_begin, timed_out_end) = markers(&timed_out);
+        let empty = Arc::new(Mutex::new(RecentOutputBuffer::new()));
+        let terminal = broker.await_framed_payload(
+            &timed_out,
+            &timed_out_begin,
+            &timed_out_end,
+            &empty,
+            &Default::default(),
+        );
+        assert_eq!(terminal, BrokerTerminal::TimedOut);
+
+        // Retiring the expired operation must leave its sibling registered,
+        // so a frame arriving afterwards still resolves the survivor.
+        let (survivor_begin, survivor_end) = markers(&survivor);
+        let output = buffer_with(&[&survivor_begin, "ok", &survivor_end]);
+        let terminal = broker.await_framed_payload(
+            &survivor,
+            &survivor_begin,
+            &survivor_end,
+            &output,
+            &Default::default(),
+        );
+        assert_eq!(
+            terminal,
+            BrokerTerminal::Completed(payload(&["ok".to_string()])),
+            "timeout of one operation must not touch the other pending operation"
         );
     }
 
