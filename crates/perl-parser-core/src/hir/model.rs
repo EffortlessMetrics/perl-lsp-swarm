@@ -2785,6 +2785,8 @@ pub enum HirKind {
     LoopShell(LoopShell),
     /// Control-transfer shell (`return`, `next`/`last`/`redo`, `goto`).
     ControlTransfer(ControlTransfer),
+    /// `__DATA__`/`__END__` data-section marker shell.
+    DataSectionDecl(DataSectionDecl),
     /// Statement-modifier shell (postfix `if`/`unless`/`while`/`until`/`for`).
     StatementModifierShell(StatementModifierShell),
     /// Unsupported or intentionally dynamic Perl boundary.
@@ -2823,6 +2825,7 @@ impl HirKind {
         "CallExpr",
         "ClassDecl",
         "ControlTransfer",
+        "DataSectionDecl",
         "DeferExpr",
         "DerefExpr",
         "DynamicBoundary",
@@ -2858,6 +2861,48 @@ pub struct PackageDecl {
     pub name_range: SourceLocation,
     /// Whether this declaration owns an inline block.
     pub has_block: bool,
+}
+
+/// `__DATA__`/`__END__` marker HIR payload.
+///
+/// The payload text following the marker is an opaque source region and is
+/// never lowered as Perl; only the marker identity and the exact marker and
+/// payload source ranges are modeled.
+///
+/// # Range coverage
+///
+/// [`marker_range`] and [`payload_range`] are each exact, but they are not
+/// contiguous and their union is not the whole construct.  The separator
+/// between them — any trailing horizontal whitespace on the marker line plus
+/// the line terminator — is deliberately covered by neither, because it is
+/// layout that belongs to neither the marker word nor the payload bytes.
+///
+/// Use the enclosing [`HirItem::range`] when full coverage of the construct is
+/// required; it spans the marker through the end of the payload.
+///
+/// [`marker_range`]: DataSectionDecl::marker_range
+/// [`payload_range`]: DataSectionDecl::payload_range
+/// [`HirItem::range`]: crate::hir::HirItem::range
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DataSectionDecl {
+    /// Which marker introduced the data section.
+    pub marker: DataSectionMarker,
+    /// Precise source range of the marker token itself.
+    pub marker_range: SourceLocation,
+    /// Precise source range of the opaque payload text, absent when the
+    /// marker has no trailing payload.
+    pub payload_range: Option<SourceLocation>,
+}
+
+/// Marker that introduces a [`DataSectionDecl`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum DataSectionMarker {
+    /// `__DATA__`.
+    Data,
+    /// `__END__`.
+    End,
 }
 
 /// Subroutine declaration HIR payload.

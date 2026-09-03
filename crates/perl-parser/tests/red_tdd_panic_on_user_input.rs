@@ -29,14 +29,6 @@ fn red_test_regex_hash_delimiter_no_panic() {
     });
 
     assert!(result.is_ok(), "Parser panicked on regex with hash delimiter m#pattern#");
-
-    // If parse succeeds, we should have a valid result
-    if let Ok(parse_result) = result {
-        assert!(
-            parse_result.is_ok() || parse_result.is_err(),
-            "Parse result should be Ok or Err, not panic"
-        );
-    }
 }
 
 /// Test that parser doesn't panic on regex with exclamation delimiter.

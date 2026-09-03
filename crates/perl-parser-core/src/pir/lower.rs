@@ -817,6 +817,9 @@ fn hir_kind_name(kind: &HirKind) -> &'static str {
         HirKind::HeredocMigrationAdapter(_) => "HeredocMigrationAdapter",
         HirKind::ReadlineMigrationAdapter(_) => "ReadlineMigrationAdapter",
         HirKind::GlobMigrationAdapter(_) => "GlobMigrationAdapter",
+        // Not yet lowered by PIR v0; falls through to the `other =>`
+        // unsupported-count fallback in `lower_item`, keyed by this name.
+        HirKind::DataSectionDecl(_) => "DataSectionDecl",
     }
 }
 
@@ -2117,6 +2120,29 @@ mod tests {
             graph.receipt.unsupported_construct_counts.get("StatementModifierShell"),
             Some(&1)
         );
+    }
+
+    #[test]
+    fn data_section_counted_in_receipt_under_its_own_key() {
+        // PIR v0 does not lower `__DATA__`/`__END__`, so the HIR shell must
+        // stay visible in the receipt under its own name rather than vanishing
+        // or being absorbed into another construct's count.  This pins the
+        // fallback key, which is public receipt surface.
+        let graph = lower("1;\n__DATA__\npayload\n");
+        assert_eq!(
+            graph.receipt.unsupported_construct_counts.get("DataSectionDecl"),
+            Some(&1),
+            "a lowered data section must be counted once under DataSectionDecl"
+        );
+    }
+
+    #[test]
+    fn end_marker_shares_the_data_section_receipt_key() {
+        // `__END__` and `__DATA__` are distinct HIR markers but one PIR
+        // construct, so they must not split the receipt into two keys.
+        let graph = lower("1;\n__END__\npayload\n");
+        assert_eq!(graph.receipt.unsupported_construct_counts.get("DataSectionDecl"), Some(&1));
+        assert_eq!(graph.receipt.unsupported_construct_counts.get("DataSectionMarker"), None);
     }
 
     #[test]
