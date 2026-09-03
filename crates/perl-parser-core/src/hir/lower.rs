@@ -218,11 +218,17 @@ impl Lowerer {
                 body,
                 ..
             } => {
-                let sub_scope = self.enter_scope(
-                    ScopeKind::Subroutine,
-                    node.location,
-                    self.package_context.clone(),
-                );
+                // `sub { ... }` closes over its enclosing pad; `sub foo { ... }`
+                // is a package-level declaration compiled once. Perl treats the
+                // two differently for capture, so the frames are named
+                // differently (#13817).
+                let sub_scope_kind = if name.is_none() {
+                    ScopeKind::AnonymousSubroutine
+                } else {
+                    ScopeKind::Subroutine
+                };
+                let sub_scope =
+                    self.enter_scope(sub_scope_kind, node.location, self.package_context.clone());
                 let item_id = self.push_item(
                     node,
                     *name_span,
@@ -2480,10 +2486,12 @@ fn resolve_binding_in_scope_graph<'graph>(
     reference_start: Option<usize>,
 ) -> Option<&'graph Binding> {
     let mut cursor = Some(scope_id);
-    // The innermost callable the reference sits in, if any. Only the innermost
-    // matters: an enclosing `method` does not lend its field access to a `sub`
-    // nested inside it, because that sub is still not a method.
-    let mut innermost_callable: Option<ScopeKind> = None;
+    // Whether the walk has left a *named* `sub` on its way out. Any one of
+    // them blocks: a named sub gets no field access, and neither does anything
+    // written inside it, however many methods enclose it. Anonymous frames are
+    // transparent here — a closure created inside a method captures the field
+    // the same way it captures a lexical.
+    let mut crossed_named_subroutine = false;
     // Whether a class frame has already been passed. A field belongs to one
     // class, so once the walk leaves a class, a further-out class's field is
     // not in view even though its frame is still an ancestor.
@@ -2497,7 +2505,7 @@ fn resolve_binding_in_scope_graph<'graph>(
             if binding.storage == StorageClass::ClassField
                 && !class_field_is_visible(
                     binding,
-                    innermost_callable,
+                    crossed_named_subroutine,
                     left_a_class,
                     reference_start,
                 )
@@ -2510,9 +2518,7 @@ fn resolve_binding_in_scope_graph<'graph>(
             return Some(binding);
         }
         match scope.map(|scope| scope.kind) {
-            Some(kind @ (ScopeKind::Subroutine | ScopeKind::Method)) => {
-                innermost_callable.get_or_insert(kind);
-            }
+            Some(ScopeKind::Subroutine) => crossed_named_subroutine = true,
             Some(ScopeKind::Class) => left_a_class = true,
             _ => {}
         }
@@ -2531,26 +2537,25 @@ fn resolve_binding_in_scope_graph<'graph>(
 /// `class` creates, where the outer class's frame *is* still an ancestor.
 ///
 /// It is visible inside that class's methods and inside the class body itself
-/// (a field initializer may name an earlier field), but not inside an ordinary
-/// `sub`. `innermost_callable` of `None` is the class body; `Method` is in
-/// view; `Subroutine` is not — including a named `sub` written inside a method,
-/// which is still not a method.
+/// (a field initializer may name an earlier field), but not inside a named
+/// `sub`. `in_named_sub` says a named `sub` frame lies between the reference
+/// and the class — one anywhere on that path is enough, since a named sub gets
+/// no field access and neither does anything written inside it, however many
+/// methods enclose it. An anonymous `sub` is transparent: `sub { ... }` closes
+/// over its enclosing pad, so a closure created in a method captures the field
+/// the way it captures a lexical, while a closure created in a named sub still
+/// sees nothing, because the named frame is on the path either way.
 ///
 /// It is visible only after its own declaration, which the offset comparison
 /// carries. `reference_start` of `None` means the caller has no position to
 /// compare and skips only that condition.
-///
-/// An anonymous `sub` inside a method opens a `Subroutine` frame too, so a
-/// closure over a field is refused here. That is deliberately conservative:
-/// the reference then resolves what it resolved before class fields were
-/// modeled at all, rather than gaining a new answer that may be wrong.
 fn class_field_is_visible(
     binding: &Binding,
-    innermost_callable: Option<ScopeKind>,
+    in_named_sub: bool,
     outside_its_class: bool,
     reference_start: Option<usize>,
 ) -> bool {
-    if outside_its_class || matches!(innermost_callable, Some(ScopeKind::Subroutine)) {
+    if outside_its_class || in_named_sub {
         return false;
     }
     match reference_start {

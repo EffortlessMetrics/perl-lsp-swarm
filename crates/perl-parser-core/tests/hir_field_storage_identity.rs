@@ -26,17 +26,23 @@
 //! [`VariableKind::Field`], and PIR carries it as `FieldRead`/`FieldWrite`, so
 //! `extract_lexical_facts` never publishes a field as a `LexicalBindingFact`.
 //! "Visible" is Perl's rule, decided in the single scope walk both HIR views
-//! share: a field belongs to its own class (a sibling's frame is not an
-//! ancestor of it), is seen by that class's methods but not by an ordinary
-//! `sub`, and only after its own declaration. Each of those three has a
-//! discriminating control below, and each has a same-shape positive case so a
-//! resolver that simply never resolved fields would fail.
+//! share: a field belongs to its own class, is seen by that class's methods but
+//! not by a named `sub`, and only after its own declaration.
+//!
+//! Two of those need more than the obvious check. Class ownership is structural
+//! for siblings, whose frames are not ancestors of each other, but a *nested*
+//! class's frame really is inside the outer one, so the walk has to stop
+//! claiming fields once it leaves a class. And a named `sub` blocks from
+//! anywhere on the path, not just innermost — a sub written inside a method
+//! still gets no field access, and neither does anything inside it — while an
+//! anonymous `sub` is transparent, because `sub { ... }` closes over its
+//! enclosing pad the way any closure does.
+//!
+//! Each condition has a discriminating control below and a same-shape positive
+//! case, so a resolver that simply never resolved fields would fail.
 //!
 //! Scope note: this names *storage and visibility*. Construction order,
-//! `ADJUST`, invocant rules, MRO and dispatch remain unmodeled (#6672). A named
-//! `sub` nested *inside* a method is also unmodeled: it is treated as inside
-//! the method for visibility, which is not Perl's closure behavior for named
-//! subs, and no test claims otherwise.
+//! `ADJUST`, invocant rules, MRO and dispatch remain unmodeled (#6672).
 //!
 //! The implementation lives in `src/hir/lower.rs`
 //! (`storage_class_for_declarator`, `resolve_binding_in_scope_graph`,
@@ -241,6 +247,71 @@ fn a_named_sub_inside_a_method_does_not_inherit_the_method_s_fields() -> TestRes
         variable_kind(body, "x")?,
         VariableKind::Package,
         "a named sub inside a method must not resolve the class's field"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_anonymous_closure_in_a_method_captures_the_field() -> TestResult {
+    // `sub { ... }` closes over its enclosing pad, so a closure built inside a
+    // method captures the field the way it captures a lexical. This is the
+    // positive case that keeps the named-sub rule from being "any sub frame
+    // blocks", which would refuse a legitimate capture.
+    let file = lower_source(
+        "use feature 'class';\nclass C {\n    field $x;\n    method m { return sub { $x } }\n}\n",
+    );
+    let body = file
+        .bodies
+        .iter()
+        .find(|b| matches!(&b.owner, BodyOwnerKind::Subroutine { name: None }))
+        .ok_or_else(|| "no lowered body for the anonymous sub".to_string())?;
+    assert_eq!(
+        variable_kind(body, "x")?,
+        VariableKind::Field,
+        "an anonymous closure inside a method must capture the field"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_anonymous_closure_inside_an_ordinary_sub_still_sees_nothing() -> TestResult {
+    // Anonymous frames are transparent, not permissive. The closure is built
+    // inside an ordinary `sub`, which has no field access to lend it, so the
+    // named frame on the path still blocks. A rule that looked only at the
+    // innermost callable would wrongly allow this.
+    let file = lower_source(
+        "use feature 'class';\nclass C {\n    field $x;\n    sub f { return sub { $x } }\n}\n",
+    );
+    let body = file
+        .bodies
+        .iter()
+        .find(|b| matches!(&b.owner, BodyOwnerKind::Subroutine { name: None }))
+        .ok_or_else(|| "no lowered body for the anonymous sub".to_string())?;
+    assert_eq!(
+        variable_kind(body, "x")?,
+        VariableKind::Package,
+        "a closure built inside an ordinary sub must not reach the field"
+    );
+    Ok(())
+}
+
+#[test]
+fn only_an_anonymous_sub_opens_an_anonymous_frame() -> TestResult {
+    // Negative control for the frame split: a named declaration keeps
+    // `Subroutine`, so the two are actually distinguished in the scope graph
+    // rather than every sub becoming anonymous.
+    let file = lower_source("sub named { 1 }\nmy $anon = sub { 2 };\n");
+    let kinds: Vec<_> = file
+        .scope_graph
+        .scopes
+        .iter()
+        .map(|scope| scope.kind)
+        .filter(|kind| matches!(kind, ScopeKind::Subroutine | ScopeKind::AnonymousSubroutine))
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![ScopeKind::Subroutine, ScopeKind::AnonymousSubroutine],
+        "the named sub keeps `Subroutine` and only the anonymous one is `AnonymousSubroutine`"
     );
     Ok(())
 }

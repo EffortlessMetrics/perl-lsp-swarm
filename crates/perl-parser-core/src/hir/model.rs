@@ -946,8 +946,15 @@ pub enum ScopeKind {
     /// access. A sibling class's frame is never an ancestor of this one, so
     /// class isolation follows from the frame rather than from a name check.
     Class,
-    /// Subroutine pad scope.
+    /// Named subroutine pad scope (`sub foo { ... }`).
     Subroutine,
+    /// Anonymous subroutine pad scope (`sub { ... }`).
+    ///
+    /// Named separately because Perl treats the two differently for capture: a
+    /// named sub is a package-level declaration compiled once, while an
+    /// anonymous sub is a closure over its enclosing pad. That difference is
+    /// what decides whether a `field` of the enclosing class is in view.
+    AnonymousSubroutine,
     /// Method pad scope.
     Method,
     /// Signature parameter scope.
@@ -958,6 +965,21 @@ pub enum ScopeKind {
     EvalString,
     /// Compile-time phase block scope, such as `BEGIN`.
     PhaseBlock,
+}
+
+impl ScopeKind {
+    /// Whether this frame is a callable body's pad.
+    ///
+    /// Named and anonymous subs and methods all answer `true`. Splitting
+    /// [`Subroutine`](Self::Subroutine) from
+    /// [`AnonymousSubroutine`](Self::AnonymousSubroutine) gave callers a way to
+    /// enumerate callable frames and miss one, so ask here instead of matching:
+    /// a consumer that wants "am I inside a callable" almost never wants the
+    /// named/anonymous distinction, which exists for field capture.
+    #[must_use]
+    pub const fn is_callable(self) -> bool {
+        matches!(self, Self::Subroutine | Self::AnonymousSubroutine | Self::Method)
+    }
 }
 
 /// Compiler binding produced from a HIR declaration.

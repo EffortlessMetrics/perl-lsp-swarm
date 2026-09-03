@@ -54,7 +54,7 @@
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
     BodyOwnerKind, DynamicBoundaryKind as HirDynamicBoundaryKind, HirBody, HirExpr, HirExprId,
-    HirFile, HirItem, HirKind, HirScopeId, ScopeKind, lower_ast,
+    HirFile, HirItem, HirKind, HirScopeId, lower_ast,
 };
 use perl_parser_core::pir::{PirNode, PirOperation, lower_single_body};
 use perl_semantic_facts::interprocedural::{
@@ -301,7 +301,9 @@ fn owning_callable_scope(file: &HirFile, start: HirScopeId) -> Option<HirScopeId
         }
         remaining -= 1;
         let frame = file.scope_graph.scopes.iter().find(|scope| scope.id == id)?;
-        if matches!(frame.kind, ScopeKind::Subroutine | ScopeKind::Method) {
+        // Anonymous subs are callable frames too; `is_callable` keeps this
+        // from having to enumerate them (#13817).
+        if frame.kind.is_callable() {
             return Some(id);
         }
         current = frame.parent;
