@@ -2556,6 +2556,123 @@
       "selector_identity": "invocation:1aac1e1f5375c917:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "enclosing_test_or_function": "load_manifest",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|error| panic!(\"read {}: {error}\", path.display()));",
+      "selector_identity": "invocation:d50ea4fd6c3a8f17:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "enclosing_test_or_function": "load_manifest",
+      "macro_family": "panic!",
+      "normalized_snippet": "parse_manifest(&text).unwrap_or_else(|error| panic!(\"decode {}: {error}\", path.display()))",
+      "selector_identity": "invocation:17a96b6578c79337:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "enclosing_test_or_function": "materialize_inputs",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|error| panic!(\"create {}: {error}\", parent.display()));",
+      "selector_identity": "invocation:d9ea9768cdd91ad2:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "enclosing_test_or_function": "materialize_inputs",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|error| panic!(\"write {}: {error}\", destination.display()));",
+      "selector_identity": "invocation:cb1472b2ea3e8d07:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "enclosing_test_or_function": "read_artifact",
+      "macro_family": "panic!",
+      "normalized_snippet": "fs::read_to_string(&path).unwrap_or_else(|error| panic!(\"read {}: {error}\", path.display()))",
+      "selector_identity": "invocation:e7618b5f1b234c63:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "enclosing_test_or_function": "pinned_reader_and_migration_reference_are_part_of_the_authority",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|error| panic!(\"read {}: {error}\", legacy_input_path.display()));",
+      "selector_identity": "invocation:e8fd3b66a108aa14:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "enclosing_test_or_function": "pinned_reader_and_migration_reference_are_part_of_the_authority",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|error| panic!(\"decode legacy receipt: {error}\"));",
+      "selector_identity": "invocation:455a69556351bc24:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "enclosing_test_or_function": "pinned_reader_and_migration_reference_are_part_of_the_authority",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|error| panic!(\"render migration reference: {error}\"));",
+      "selector_identity": "invocation:8f4176a74b72366c:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "enclosing_test_or_function": "golden_statuses",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"{case_id} case is part of the frozen matrix\"));",
+      "selector_identity": "invocation:fd317c0a9220f6c3:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "enclosing_test_or_function": "golden_statuses",
+      "macro_family": "panic!",
+      "normalized_snippet": "serde_json::from_str(&expected).unwrap_or_else(|error| panic!(\"decode golden: {error}\"));",
+      "selector_identity": "invocation:a7cb05908c7198b9:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "enclosing_test_or_function": "supplied_external_results_and_dist_path_forward_into_the_receipt",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|error| panic!(\"create {}: {error}\", dist_dir.display()));",
+      "selector_identity": "invocation:927e3a1043a290fe:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "enclosing_test_or_function": "supplied_external_results_and_dist_path_forward_into_the_receipt",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|error| panic!(\"write {}: {error}\", dist_artifact.display()));",
+      "selector_identity": "invocation:d7498f193b2477fa:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-kwalitee/tests/legacy_parity.rs",
+      "enclosing_test_or_function": "supplied_external_results_and_dist_path_forward_into_the_receipt",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"{id} row is part of the frozen catalog\"));",
+      "selector_identity": "invocation:9ebd7a41c6a7ba56:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
