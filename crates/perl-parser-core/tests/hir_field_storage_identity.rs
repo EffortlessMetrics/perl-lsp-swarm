@@ -179,6 +179,66 @@ fn a_field_read_produces_no_lexical_binding_fact() -> TestResult {
 }
 
 #[test]
+fn an_aggregate_field_resolves_when_referenced_whole() -> TestResult {
+    // `field @items` and `field %data` are ordinary field declarations, and a
+    // whole-aggregate reference to either resolves as a field. Nothing else
+    // here covers a non-scalar sigil.
+    for (declaration, reference, name) in
+        [("field @items;", "@items", "items"), ("field %data;", "%data", "data")]
+    {
+        let source = format!(
+            "use feature 'class';\nclass C {{\n    {declaration}\n    method m {{ {reference} }}\n}}\n"
+        );
+        let file = lower_source(&source);
+        let body = method_body(&file, "m")?;
+        assert_eq!(
+            variable_kind(body, name)?,
+            VariableKind::Field,
+            "a whole-aggregate field reference must resolve as a field in {source:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn an_aggregate_element_reference_resolves_the_same_for_field_and_my() -> TestResult {
+    // Boundary, pinned rather than left implicit. `$items[0]` carries the
+    // scalar sigil while the binding records `@items`, and the scope graph
+    // matches sigils exactly — so an element reference does not reach its
+    // declaration. That is a pre-existing property of the scope graph, not
+    // something field storage introduced: `my @items` behaves identically, and
+    // this test fails if the two ever diverge.
+    //
+    // The point is the *equality*. If element resolution is later repaired
+    // (#14682), both sides move together and this test fails, which is the
+    // signal to update it rather than a regression.
+    let field_file = lower_source(
+        "use feature 'class';\nclass C {\n    field @items;\n    method m { $items[0] }\n}\n",
+    );
+    let field_kind = variable_kind(method_body(&field_file, "m")?, "items")?;
+
+    let my_file = lower_source("sub f { my @items; my $x = $items[0]; }");
+    let my_body = my_file
+        .bodies
+        .iter()
+        .find(|b| matches!(&b.owner, BodyOwnerKind::Subroutine { name: Some(n) } if n == "f"))
+        .ok_or_else(|| "no lowered body for sub `f`".to_string())?;
+    let my_kind = variable_kind(my_body, "items")?;
+
+    assert_eq!(
+        field_kind, my_kind,
+        "an aggregate element reference must resolve the same for `field` and `my`; \
+         field gave {field_kind:?}, my gave {my_kind:?}"
+    );
+    assert_eq!(
+        field_kind,
+        VariableKind::Package,
+        "both are currently unresolved element references (#14682)"
+    );
+    Ok(())
+}
+
+#[test]
 fn an_initialized_field_declaration_emits_no_lexical_operation() -> TestResult {
     // `field $y = 1` looks like a declaration with an initializer, which is
     // the shape that would ordinarily lower to a `LexicalWrite` and become a
