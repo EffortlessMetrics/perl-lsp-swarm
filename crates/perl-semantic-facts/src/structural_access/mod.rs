@@ -1045,18 +1045,31 @@ pub(super) fn shape_is_decisive(shape: &ValueShape) -> bool {
 ///
 /// `Unknown` asserts nothing, so nothing can disagree with it.
 pub(super) fn shapes_may_describe_one_value(left: &ValueShape, right: &ValueShape) -> bool {
-    left == right
-        || matches!(
-            (left, right),
-            (ValueShape::Unknown, _)
-                | (_, ValueShape::Unknown)
-                | (
-                    ValueShape::Object { .. },
-                    ValueShape::HashRef | ValueShape::ArrayRef | ValueShape::CodeRef,
-                )
-                | (
-                    ValueShape::HashRef | ValueShape::ArrayRef | ValueShape::CodeRef,
-                    ValueShape::Object { .. },
-                )
+    match (left, right) {
+        // Two observations of the same class agree however sure each producer
+        // was. `confidence` is documented as "confidence in the inferred
+        // package" — it records how well the claim is known, not what the
+        // value is — so comparing whole values here would let an epistemic
+        // field decide a question about identity. Different packages remain a
+        // contradiction, because one value has one class.
+        (
+            ValueShape::Object { package: left_package, .. },
+            ValueShape::Object { package: right_package, .. },
+        ) => left_package == right_package,
+        // `Unknown` asserts nothing, so nothing can disagree with it.
+        (ValueShape::Unknown, _) | (_, ValueShape::Unknown) => true,
+        // A blessed reference carries both a class and an underlying reference
+        // kind, symmetrically.
+        (
+            ValueShape::Object { .. },
+            ValueShape::HashRef | ValueShape::ArrayRef | ValueShape::CodeRef,
         )
+        | (
+            ValueShape::HashRef | ValueShape::ArrayRef | ValueShape::CodeRef,
+            ValueShape::Object { .. },
+        ) => true,
+        // Every remaining shape carries only value-identifying content, so
+        // equality is the right question for those.
+        _ => left == right,
+    }
 }

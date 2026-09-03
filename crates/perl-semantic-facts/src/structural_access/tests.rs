@@ -3040,3 +3040,36 @@ fn a_blessed_value_is_never_a_plain_scalar_or_a_package_name() -> Result<(), Box
     }
     Ok(())
 }
+
+// ── Confidence is not part of what a value is (found by Devin review) ─────
+
+#[test]
+fn the_same_class_agrees_with_itself_at_any_confidence() -> Result<(), Box<dyn Error>> {
+    // `confidence` records how well the package was inferred, not what the
+    // value is. Two producers seeing the same class with different certainty
+    // describe one value, so comparing whole `ValueShape`s let an epistemic
+    // field decide a question about identity.
+    let staff = |confidence| ValueShape::Object { package: "Staff".to_string(), confidence };
+    mismatch_after(staff(Confidence::High), staff(Confidence::Medium))?;
+    mismatch_after(staff(Confidence::Low), staff(Confidence::High))?;
+    Ok(())
+}
+
+#[test]
+fn confidence_does_not_rescue_a_different_class() -> Result<(), Box<dyn Error>> {
+    // The control: ignoring confidence must not weaken the class check. Two
+    // different packages stay a contradiction whatever confidence each claims,
+    // including when both claim the same one.
+    for (left, right) in [(Confidence::High, Confidence::High), (Confidence::High, Confidence::Low)]
+    {
+        let error = contract_error(mismatch_after(
+            ValueShape::Object { package: "Staff".to_string(), confidence: left },
+            ValueShape::Object { package: "Payroll".to_string(), confidence: right },
+        ))?;
+        assert!(
+            matches!(error, StructuralAccessContractError::ContradictoryStatus(_)),
+            "two different classes cannot describe one value, got {error:?}"
+        );
+    }
+    Ok(())
+}
