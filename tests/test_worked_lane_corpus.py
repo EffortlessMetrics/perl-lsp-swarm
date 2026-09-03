@@ -191,7 +191,9 @@ PROVISIONAL_WORDS = frozenset(
 #
 # Matched whole, not per word: `MERGE` and `BLOCKED` are unobjectionable
 # elsewhere, and `BLOCKED_BY_PREREQUISITE` is a review outcome that stays valid.
-INTEGRATION_STATES = frozenset({"MERGE_BLOCKED", "PR_IN_FLIGHT"})
+# `NOT_PROVEN` is deliberately absent: it is the one token on the integration
+# line that is also a review outcome, so it stays a valid ruling.
+INTEGRATION_STATES = frozenset({"INTEGRATION_READY", "MERGE_BLOCKED", "PR_IN_FLIGHT"})
 
 
 def ruling_defect(ruling: str) -> str | None:
@@ -571,6 +573,7 @@ class WorkedLaneLedgerTests(unittest.TestCase):
             # so a transient red check could otherwise carry a COVERED row.
             "an integration blocker": "#13788 — `MERGE_BLOCKED` on the required shard",
             "a run still in flight": "#13788 — `PR_IN_FLIGHT` while checks finish",
+            "readiness to integrate": "#13788 — `INTEGRATION_READY` on the current head",
         }
         for label, ruling in rejected.items():
             with self.subTest(rejected=label):
