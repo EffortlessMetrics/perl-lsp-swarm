@@ -2407,6 +2407,7 @@ fn test_command_exists_ignores_planted_cwd_binary() {
     if std::env::var_os(CHILD).is_some() {
         let provider = ExecuteCommandProvider::new();
         assert!(!provider.command_exists("definitely_not_real_3028.bat"));
+        println!("PERL_LSP_CWD_RCE_EXISTS_CHILD_RAN");
         return;
     }
 
@@ -2425,18 +2426,26 @@ fn test_command_exists_ignores_planted_cwd_binary() {
         writeln!(f, "echo PWNED").expect("write bat");
     }
 
-    let status =
+    let output =
         std::process::Command::new(std::env::current_exe().expect("resolve test executable"))
-            .arg("test_command_exists_ignores_planted_cwd_binary")
+            .arg("execute_command::tests::test_command_exists_ignores_planted_cwd_binary")
             .arg("--exact")
             .arg("--nocapture")
             .env(CHILD, "1")
             .current_dir(&workspace)
-            .status()
+            .output()
             .expect("run isolated CWD child");
     let _ = std::fs::remove_dir_all(&workspace);
 
-    assert!(status.success(), "isolated CWD child failed: {status}");
+    assert!(output.status.success(), "isolated CWD child failed: {output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("PERL_LSP_CWD_RCE_EXISTS_CHILD_RAN"),
+        "fully qualified child selector must execute exactly the intended test; output: {output:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "child harness must report one executed test, not an empty exact-filter selection; output: {output:?}"
+    );
 }
 
 /// `run_test_command` must fail closed (return `Err`) when the named tool is not
@@ -2455,6 +2464,7 @@ fn test_run_test_command_does_not_execute_planted_cwd_binary() {
         let provider = ExecuteCommandProvider::with_workspace_roots(vec![workspace]);
         let result = provider.run_test_command("pwned_3028.bat", &dummy_t);
         assert!(result.is_err(), "child must fail closed: {result:?}");
+        println!("PERL_LSP_CWD_RCE_RUN_CHILD_RAN");
         return;
     }
 
@@ -2477,19 +2487,29 @@ fn test_run_test_command_does_not_execute_planted_cwd_binary() {
     let dummy_t = workspace.join("dummy.t");
     std::fs::write(&dummy_t, "use Test::More;\ndone_testing;\n").expect("create dummy test");
 
-    let status =
+    let output =
         std::process::Command::new(std::env::current_exe().expect("resolve test executable"))
-            .arg("test_run_test_command_does_not_execute_planted_cwd_binary")
+            .arg(
+                "execute_command::tests::test_run_test_command_does_not_execute_planted_cwd_binary",
+            )
             .arg("--exact")
             .arg("--nocapture")
             .env(CHILD, "1")
             .current_dir(&workspace)
-            .status()
+            .output()
             .expect("run isolated CWD child");
     let marker_exists = marker.exists();
     let _ = std::fs::remove_dir_all(&workspace);
 
-    assert!(status.success(), "isolated CWD child failed: {status}");
+    assert!(output.status.success(), "isolated CWD child failed: {output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("PERL_LSP_CWD_RCE_RUN_CHILD_RAN"),
+        "fully qualified child selector must execute exactly the intended test; output: {output:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "child harness must report one executed test, not an empty exact-filter selection; output: {output:?}"
+    );
     assert!(
         !marker_exists,
         "SECURITY: planted CWD batch file was EXECUTED via run_test_command — the RCE is live (#3028)"
