@@ -209,11 +209,21 @@ impl DapPeerBridge {
     ///
     /// This is the editor-facing entry point on the external-peer surface. The
     /// #9581 secondary-capability floor is resolved *here* — outside the
-    /// canonical route match in [`Self::dispatch`], whose body the
+    /// canonical route match in [`Self::dispatch_unchecked`], whose body the
     /// protocol-authority gate pins to the table-owned shape — so a floored
     /// request is refused before any AST-oracle source read, peer/backend I/O,
     /// or queued-event drain can happen. Non-floored requests route exactly
-    /// as [`Self::dispatch`] always has.
+    /// as [`Self::dispatch_unchecked`] always has.
+    pub fn dispatch(
+        &mut self,
+        request_seq: i64,
+        command: &str,
+        arguments: Option<Value>,
+    ) -> Vec<DapMessage> {
+        self.dispatch_with_capability_floor(request_seq, command, arguments)
+    }
+
+    /// Dispatch a request after the capability floor has been applied.
     pub fn dispatch_with_capability_floor(
         &mut self,
         request_seq: i64,
@@ -225,7 +235,7 @@ impl DapPeerBridge {
         {
             return vec![response];
         }
-        self.dispatch(request_seq, command, arguments)
+        self.dispatch_unchecked(request_seq, command, arguments)
     }
 
     /// Dispatch a single DAP request. Returns the response message followed by
@@ -236,7 +246,7 @@ impl DapPeerBridge {
     /// [`Self::dispatch_with_capability_floor`], which applies the #9581
     /// floor ahead of this route match; this body stays the fixed,
     /// table-owned shape the protocol-authority gate pins.
-    fn dispatch(
+    fn dispatch_unchecked(
         &mut self,
         request_seq: i64,
         command: &str,
