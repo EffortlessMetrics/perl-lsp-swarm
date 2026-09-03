@@ -4237,7 +4237,7 @@ fn storage_class_for_decl(declarator: &str) -> DeclStorageClass {
         "our" => DeclStorageClass::Our,
         "local" => DeclStorageClass::Local,
         "state" => DeclStorageClass::State,
-        _ => DeclStorageClass::My,
+        _ => DeclStorageClass::Unknown,
     }
 }
 

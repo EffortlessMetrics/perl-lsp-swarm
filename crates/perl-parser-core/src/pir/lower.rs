@@ -978,20 +978,27 @@ impl BodyLowerer {
                         // `our` binds a package/stash symbol; `local` dynamically
                         // scopes a package/global slot. Both are stash writes.
                         DeclStorageClass::Our | DeclStorageClass::Local => {
-                            PirOperation::StashWrite {
+                            Some(PirOperation::StashWrite {
                                 symbol: SymbolName {
                                     sigil: sigil_str(sigil),
                                     name: name.clone(),
                                     package: None, // package context not yet threaded into body arena
                                 },
-                            }
+                            })
                         }
-                        // my / state / any other declarator → lexical write
-                        _ => PirOperation::LexicalWrite {
-                            name: LexicalName { sigil: sigil_str(sigil), name: name.clone() },
-                        },
+                        // `my` and `state` are lexical writes. An unknown
+                        // parser-shaped declarator is a legacy call, not a
+                        // declaration, and must not publish a binding.
+                        DeclStorageClass::My | DeclStorageClass::State => {
+                            Some(PirOperation::LexicalWrite {
+                                name: LexicalName { sigil: sigil_str(sigil), name: name.clone() },
+                            })
+                        }
+                        DeclStorageClass::Unknown => None,
                     };
-                    self.push_body_node(anchor, op, PirContext::Lvalue, None, file);
+                    if let Some(op) = op {
+                        self.push_body_node(anchor, op, PirContext::Lvalue, None, file);
+                    }
                 }
                 // Lower the RHS of the initialiser. The init expr in the HIR body
                 // is an HirExpr::Assign { lhs: Variable(Write), rhs, mode: Simple }.

@@ -1,0 +1,54 @@
+//! Legacy subroutine names must not become variable declarations in body PIR.
+
+use std::error::Error;
+
+use perl_parser_core::Parser;
+use perl_parser_core::hir::{HirBodyId, StorageClass, lower_ast};
+use perl_parser_core::pir::{PirOperation, lower_single_body};
+
+type TestResult = Result<(), Box<dyn Error>>;
+
+#[test]
+fn field_call_does_not_publish_a_lexical_binding() -> TestResult {
+    let source = "sub field { 1 }\nour $x;\nfield $x = 1;\nsub show { $x }\n";
+    let mut parser = Parser::new(source);
+    let parsed = parser.parse_with_recovery();
+    let file = lower_ast(&parsed.ast);
+    assert!(
+        file.scope_graph.bindings.iter().any(|binding| {
+            binding.name == "x" && matches!(binding.storage, StorageClass::PackageGlobal)
+        }),
+        "the legacy field target must remain a package-global observation"
+    );
+    assert!(
+        file.scope_graph.bindings.iter().all(|binding| {
+            binding.name != "x"
+                || !matches!(binding.storage, StorageClass::LexicalMy | StorageClass::LexicalState)
+        }),
+        "the legacy field target must not gain a lexical scope binding"
+    );
+    let body = file.bodies.first().ok_or("program body is required")?;
+    let nodes = lower_single_body(body, HirBodyId(0), &file);
+
+    assert!(
+        nodes.iter().all(|node| !matches!(node.operation, PirOperation::LexicalWrite { .. })),
+        "legacy field call must not publish a lexical write: {nodes:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn real_my_declaration_still_publishes_a_lexical_binding() -> TestResult {
+    let source = "my $x = 1;\n";
+    let mut parser = Parser::new(source);
+    let parsed = parser.parse_with_recovery();
+    let file = lower_ast(&parsed.ast);
+    let body = file.bodies.first().ok_or("program body is required")?;
+    let nodes = lower_single_body(body, HirBodyId(0), &file);
+
+    assert!(
+        nodes.iter().any(|node| matches!(node.operation, PirOperation::LexicalWrite { .. })),
+        "a real my declaration must publish a lexical write: {nodes:?}"
+    );
+    Ok(())
+}

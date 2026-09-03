@@ -493,6 +493,13 @@ pub enum DeclStorageClass {
     Local,
     /// `state` — persistent lexical.
     State,
+    /// An AST declaration-shaped node whose keyword is not a declaration.
+    ///
+    /// The parser can represent a legacy subroutine call such as
+    /// `field $x = 1` with the same shape as a variable declaration. Keeping
+    /// that distinction explicit prevents body PIR from inventing a lexical
+    /// binding for the call.
+    Unknown,
 }
 
 impl DeclStorageClass {
@@ -502,7 +509,7 @@ impl DeclStorageClass {
             "our" => DeclStorageClass::Our,
             "local" => DeclStorageClass::Local,
             "state" => DeclStorageClass::State,
-            _ => DeclStorageClass::My,
+            _ => DeclStorageClass::Unknown,
         }
     }
 }
