@@ -732,36 +732,6 @@ impl LspServer {
     ///
     /// Called during initialization (after project config is loaded) and on every
     /// `didChangeConfiguration` notification that touches the `aiCompletion` section.
-    /// Translate the workspace AI configuration into the provider's own config.
-    ///
-    /// Split out of [`Self::refresh_ai_backend`] so the field-by-field
-    /// translation is directly testable. The live-concurrency ceiling (`#8300`)
-    /// is the reason: it is a single assignment, and dropping it would silently
-    /// restore the original defect — the provider would fall back to
-    /// [`OpenAiConfig::new`](perl_lsp_rs_core::providers::ai::OpenAiConfig::new)'s
-    /// default of 1 while the configured value still reached only the rate
-    /// limiter. Nothing observable at the LSP boundary would change, because
-    /// the backend is installed behind a trait object with no way to read the
-    /// gate back, so the omission would not fail a test.
-    pub(crate) fn ai_provider_config(
-        ai_config: &perl_lsp_rs_core::config::AiCompletionConfig,
-        api_key: String,
-    ) -> perl_lsp_rs_core::providers::ai::OpenAiConfig {
-        let mut provider_config = perl_lsp_rs_core::providers::ai::OpenAiConfig::new(
-            ai_config.endpoint.clone(),
-            ai_config.model.clone(),
-            api_key,
-            ai_config.timeout_ms,
-        );
-        provider_config.api_key_header = ai_config.api_key_header.clone();
-        provider_config.api_key_prefix = ai_config.api_key_prefix.clone();
-        provider_config.local_model_mode = ai_config.local_model_mode;
-        // Live concurrency ceiling. The provider builds its gate from this, so
-        // the gate's lifetime is this backend generation's (#8300).
-        provider_config.max_inflight = ai_config.max_inflight;
-        provider_config
-    }
-
     pub(crate) fn refresh_ai_backend(&self) {
         let ai_config = self.config.lock().ai_completion.clone();
 
@@ -801,6 +771,41 @@ impl LspServer {
         *self.ai_inline_backend.lock() = Some(Arc::new(provider));
 
         tracing::info!(endpoint = %ai_config.endpoint, model = %ai_config.model, "AI inline completion backend configured");
+    }
+
+    /// Translate the workspace AI configuration into the provider's own config.
+    ///
+    /// Split out of [`Self::refresh_ai_backend`] so the field-by-field
+    /// translation is directly testable. The live-concurrency ceiling (`#8300`)
+    /// is the reason: it is a single assignment, and dropping it would silently
+    /// restore the original defect — the provider would fall back to
+    /// `OpenAiConfig::new`'s default of 1 while the configured value still
+    /// reached only the rate limiter. Nothing observable at the LSP boundary
+    /// would change, because the backend is installed behind a trait object
+    /// with no way to read the gate back, so the omission would not fail a
+    /// test.
+    ///
+    /// Activation authority, credential resolution, and backend lifetime are
+    /// not this function's concern — see [`Self::refresh_ai_backend`], which
+    /// decides whether a provider may be constructed at all before calling
+    /// this.
+    pub(crate) fn ai_provider_config(
+        ai_config: &perl_lsp_rs_core::config::AiCompletionConfig,
+        api_key: String,
+    ) -> perl_lsp_rs_core::providers::ai::OpenAiConfig {
+        let mut provider_config = perl_lsp_rs_core::providers::ai::OpenAiConfig::new(
+            ai_config.endpoint.clone(),
+            ai_config.model.clone(),
+            api_key,
+            ai_config.timeout_ms,
+        );
+        provider_config.api_key_header = ai_config.api_key_header.clone();
+        provider_config.api_key_prefix = ai_config.api_key_prefix.clone();
+        provider_config.local_model_mode = ai_config.local_model_mode;
+        // Live concurrency ceiling. The provider builds its gate from this, so
+        // the gate's lifetime is this backend generation's (#8300).
+        provider_config.max_inflight = ai_config.max_inflight;
+        provider_config
     }
 
     /// Get the subprocess runtime for external tool execution (perltidy, perlcritic).

@@ -159,7 +159,7 @@ impl Drop for InflightPermit<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::{Arc, Barrier};
     use std::time::{Duration, Instant};
 
@@ -278,46 +278,80 @@ mod tests {
     fn barrier_proves_capacity_n_never_exceeds_n() {
         const N: u32 = 3;
         let gate = Arc::new(InflightGate::new(N));
-        let start = Arc::new(Barrier::new((N + 1) as usize));
         let concurrent = Arc::new(AtomicU32::new(0));
         let max_seen = Arc::new(AtomicU32::new(0));
-        let refused = Arc::new(AtomicU32::new(0));
+        let contender_done = Arc::new(AtomicBool::new(false));
 
-        let handles: Vec<_> = (0..=N)
-            .map(|_| {
+        // Roles are separated deliberately. An earlier shape spawned N+1 equal
+        // threads and let them race: whether the extra caller met a full gate
+        // depended on it arriving before any holder released, which a fixed
+        // sleep only made *likely*. Here the holders provably still hold when
+        // the contender tries, so the refusal is a property of capacity rather
+        // than of timing.
+        let holders: Vec<_> = (0..N)
+            .map(|index| {
                 let gate = Arc::clone(&gate);
-                let start = Arc::clone(&start);
                 let concurrent = Arc::clone(&concurrent);
                 let max_seen = Arc::clone(&max_seen);
-                let refused = Arc::clone(&refused);
+                let contender_done = Arc::clone(&contender_done);
                 std::thread::spawn(move || {
-                    start.wait();
-                    match gate.try_acquire() {
-                        Some(permit) => {
-                            let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
-                            max_seen.fetch_max(now, Ordering::SeqCst);
-                            std::thread::sleep(Duration::from_millis(40));
-                            concurrent.fetch_sub(1, Ordering::SeqCst);
-                            drop(permit);
-                        }
-                        None => {
-                            refused.fetch_add(1, Ordering::SeqCst);
-                        }
+                    // Bind the permit: a temporary would drop immediately and
+                    // the occupancy below would read zero.
+                    let permit = gate.try_acquire();
+                    assert!(permit.is_some(), "holder {index} must be admitted at capacity {N}");
+                    let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_seen.fetch_max(now, Ordering::SeqCst);
+
+                    // Hold until the contender has had its turn. Bounded, so a
+                    // gate that wrongly refuses a holder fails the assertions
+                    // below instead of hanging the suite.
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    while !contender_done.load(Ordering::SeqCst) && Instant::now() < deadline {
+                        std::thread::yield_now();
                     }
+
+                    concurrent.fetch_sub(1, Ordering::SeqCst);
+                    drop(permit);
                 })
             })
             .collect();
 
-        for handle in handles {
+        // The (N+1)th caller, on this thread: wait until every permit is held,
+        // then attempt admission against a provably full gate.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while concurrent.load(Ordering::SeqCst) < N && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            concurrent.load(Ordering::SeqCst),
+            N,
+            "all {N} holders must be inside before the contender tries"
+        );
+        let refused = u32::from(gate.try_acquire().is_none());
+        contender_done.store(true, Ordering::SeqCst);
+
+        for handle in holders {
             let _ = handle.join();
         }
 
-        assert!(
-            max_seen.load(Ordering::SeqCst) <= N,
-            "capacity {N} must never be exceeded, saw {}",
-            max_seen.load(Ordering::SeqCst)
+        // The ceiling, in both directions. `max_seen <= N` alone is vacuous:
+        // a gate that refused every caller would report 0 and pass. The
+        // equality below, plus the admission/refusal counts, pin the behavior
+        // from both sides — an always-refuse gate fails `admitted`, an
+        // always-admit gate fails `saturated_rejections` and `peak_active`.
+        let observed = max_seen.load(Ordering::SeqCst);
+        assert_eq!(observed, N, "capacity {N} must be reached and never exceeded, saw {observed}");
+        assert_eq!(refused, 1, "the (N+1)th caller must be refused by a full gate");
+
+        let counters = gate.counters();
+        assert_eq!(counters.admitted, u64::from(N), "exactly N callers must be admitted");
+        assert_eq!(
+            counters.saturated_rejections, 1,
+            "the gate must record the single saturated refusal"
         );
-        assert_eq!(gate.counters().active, 0);
+        assert_eq!(counters.released, u64::from(N), "every admitted permit must be released");
+        assert_eq!(counters.peak_active, N, "the gate's own peak must equal capacity");
+        assert_eq!(counters.active, 0);
     }
 
     /// A panicking request must not strand its slot: `Drop` runs during unwind.

@@ -21,6 +21,24 @@ use ureq::unversioned::resolver::{ResolvedSocketAddrs, Resolver};
 use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 
 /// Configuration for the OpenAI-compatible provider.
+///
+/// # Supported construction, and the 0.18.0 field addition
+///
+/// Build this with [`OpenAiConfig::new`] and assign the optional fields
+/// afterwards. That is the supported strategy and it survives field additions.
+///
+/// The fields are public, so an exhaustive struct literal also compiles — but
+/// it is *not* a supported construction path, because every new field breaks
+/// it. `max_inflight` (`#8300`) is such an addition: a downstream literal that
+/// enumerated every field of the 0.17.0 struct no longer compiles.
+///
+/// This crate is published and pre-1.0. Under Cargo's 0.x rules the minor
+/// component is the breaking-change vehicle, and this change lands in the
+/// 0.18.0 release (`docs/releases/v0.18-release-topology.md`), whose AI
+/// security umbrella (#4955) is this work's parent. So the break is carried by
+/// a version bump that already signals it, rather than slipped into a patch.
+///
+/// Callers using `new` plus field assignment need no change.
 #[derive(Debug, Clone)]
 pub struct OpenAiConfig {
     /// The API endpoint URL (e.g. `https://api.openai.com/v1/chat/completions`).
