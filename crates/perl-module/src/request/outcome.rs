@@ -63,6 +63,43 @@ impl ExactResolutionEvidence {
 /// let _ = ModuleResolutionOutcome::Resolved("file:///does-not-exist.pm".to_owned());
 /// let _ = ModuleResolutionOutcome::NotFound;
 /// ```
+///
+/// That case pins the *shape*: it fails because the variants no longer take a
+/// `String` or a unit. It would keep passing even if
+/// [`ExactResolutionEvidence`] were fully public, so on its own it does not
+/// prove the guarantee. This one does — it assembles the evidence the current
+/// shape actually asks for, and fails only because the fields are private:
+///
+/// ```compile_fail
+/// use perl_module::{ExactResolutionEvidence, ModuleRequest, ModuleResolutionOutcome};
+///
+/// let Ok(request) = ModuleRequest::bareword("Foo::Bar") else { return };
+/// let forged = ExactResolutionEvidence { request, selected_uri: None };
+/// let _ = ModuleResolutionOutcome::NotFound(forged);
+/// ```
+///
+/// Nor can a consumer reach the crate-private constructors:
+///
+/// ```compile_fail
+/// use perl_module::{ExactResolutionEvidence, ModuleRequest};
+///
+/// let Ok(request) = ModuleRequest::bareword("Foo::Bar") else { return };
+/// let _ = ExactResolutionEvidence::not_found(request);
+/// ```
+///
+/// Reading one is unaffected — a consumer still matches and navigates:
+///
+/// ```
+/// use perl_module::{ModuleUriResolution, outcome_from_uri_resolution};
+///
+/// let outcome = outcome_from_uri_resolution(&ModuleUriResolution::Resolved(
+///     "file:///w/Foo.pm".to_string(),
+/// ));
+/// assert_eq!(outcome.resolved_uri(), Some("file:///w/Foo.pm"));
+/// assert!(outcome.is_resolved());
+/// // ...but the adapter cannot establish exactness, so it does not claim it.
+/// assert!(!outcome.has_complete_denominator());
+/// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModuleResolutionOutcome {
@@ -119,6 +156,18 @@ impl ModuleResolutionOutcome {
     /// Create an exact resolved outcome from resolver-owned evidence.
     ///
     /// This remains crate-private until the M02 resolver owns this boundary.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the M02 seam (#8521): the resolver does not yet consume `ModuleRequest`, so \
+                      nothing mints exact evidence on a production path. Kept private and \
+                      unused rather than shipping an exact outcome no search established. \
+                      `expect` rather than `allow` so it warns and is removed the moment \
+                      #8521 calls it; scoped to non-test builds because the in-crate tests \
+                      do exercise it."
+        )
+    )]
     pub(crate) fn resolved(request: ModuleRequest, uri: String) -> Self {
         Self::Resolved(ExactResolutionEvidence::resolved(request, uri))
     }
@@ -126,6 +175,18 @@ impl ModuleResolutionOutcome {
     /// Create an exact absence outcome from resolver-owned evidence.
     ///
     /// This remains crate-private until the M02 resolver owns this boundary.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the M02 seam (#8521): the resolver does not yet consume `ModuleRequest`, so \
+                      nothing mints exact evidence on a production path. Kept private and \
+                      unused rather than shipping an exact outcome no search established. \
+                      `expect` rather than `allow` so it warns and is removed the moment \
+                      #8521 calls it; scoped to non-test builds because the in-crate tests \
+                      do exercise it."
+        )
+    )]
     pub(crate) fn not_found(request: ModuleRequest) -> Self {
         Self::NotFound(ExactResolutionEvidence::not_found(request))
     }
@@ -340,6 +401,24 @@ mod tests {
         uri_resolution_from_outcome,
     };
     use crate::request::ModuleRequest;
+
+    /// The exact states are unforgeable outside this crate, so the in-crate
+    /// tests mint them here. This also keeps `expect()` out of the tests, which
+    /// the repository's Clippy configuration denies.
+    fn probe_request() -> ModuleRequest {
+        match ModuleRequest::bareword("Foo") {
+            Ok(request) => request,
+            Err(error) => unreachable!("`Foo` is a valid bareword module: {error}"),
+        }
+    }
+
+    fn exact_resolution(uri: &str) -> ModuleResolutionOutcome {
+        ModuleResolutionOutcome::resolved(probe_request(), uri.to_string())
+    }
+
+    fn exact_absence() -> ModuleResolutionOutcome {
+        ModuleResolutionOutcome::not_found(probe_request())
+    }
     use crate::request::{ModuleName, ModuleRequestError, RequestBoundary};
 
     #[test]
@@ -470,16 +549,11 @@ mod tests {
         assert_eq!(dynamic.cause_boundary_id(), Some("request_boundary.computed_expression"));
 
         for causeless in [
-            ModuleResolutionOutcome::not_found(
-                ModuleRequest::bareword("Foo").expect("test request is valid"),
-            ),
+            exact_absence(),
             ModuleResolutionOutcome::NotProvenAbsent,
             ModuleResolutionOutcome::TimedOut,
             ModuleResolutionOutcome::Ambiguous,
-            ModuleResolutionOutcome::resolved(
-                ModuleRequest::bareword("Foo").expect("test request is valid"),
-                "file:///w/Foo.pm".to_string(),
-            ),
+            exact_resolution("file:///w/Foo.pm"),
         ] {
             assert_eq!(
                 causeless.cause_boundary_id(),
