@@ -504,21 +504,24 @@ fn quote_like_option_key(span: &str) -> Option<&'static str> {
     TRANSFORM_OPTIONS.iter().copied().find(|option| inner.trim() == *option)
 }
 
-/// Perl word operators that take a match as their next argument, so a `/`
-/// after one opens a pattern rather than dividing the word's value.
-const MATCH_TAKING_WORD_OPERATORS: [&str; 24] = [
-    "grep", "map", "split", "join", "push", "unshift", "return", "print", "say", "sort", "scalar",
-    "defined", "not", "and", "or", "xor", "if", "elsif", "unless", "while", "until", "for",
-    "foreach", "do",
-];
-
 /// Whether a `/` at the end of `before` opens a bare match rather than
 /// dividing what precedes it.
 ///
-/// Perl resolves this from parse state. Inside an import list the practical
-/// discriminator is whether a term can start here, which needs the preceding
-/// *token*, not just its last character: `grep /.../` opens a match even though
-/// `grep` ends in a letter, while `$count /` divides.
+/// Perl resolves this from parse state. Inside an import list the workable
+/// discriminator is the preceding *token*, not just its last character, and the
+/// decisive property is the sigil rather than the spelling:
+///
+/// * a sigilled variable (`$count /`, `$? /`) is a complete value, so `/`
+///   divides it;
+/// * a closer or quote likewise ends a term (`f(1) /`, `'Foo' /`);
+/// * a bare word is a function or operator call (`grep /.../`, `abs /.../`),
+///   so `/` opens its first argument.
+///
+/// The bare-word case deliberately does *not* consult a list of known
+/// operators. Perl has no fixed set here — any sub name can appear — and an
+/// allowlist silently misreads every name it omits, dropping that statement's
+/// imports. Dividing a bare word is the rare shape (`PI / 2` with a constant);
+/// calling one is the ordinary shape, so calling is the right default.
 fn bare_match_can_start(before: &str) -> bool {
     let trimmed = before.trim_end();
     let Some(last) = trimmed.chars().next_back() else {
@@ -534,21 +537,15 @@ fn bare_match_can_start(before: &str) -> bool {
     }
 
     if last.is_alphanumeric() || last == '_' {
-        // A trailing word is either an operator expecting a pattern, or a value
-        // being divided. Only the operator spelling admits a match.
         let word_start = trimmed
             .char_indices()
             .rev()
             .take_while(|(_, c)| c.is_alphanumeric() || *c == '_')
             .last()
             .map_or(trimmed.len(), |(offset, _)| offset);
-        let word = &trimmed[word_start..];
-        // A sigil makes it a variable (`$grep /`), never an operator.
+        // A sigil makes it a variable (`$grep /`); anything else is a call.
         let sigil = trimmed[..word_start].chars().next_back();
-        if matches!(sigil, Some('$' | '@' | '%' | '&')) {
-            return false;
-        }
-        return MATCH_TAKING_WORD_OPERATORS.contains(&word);
+        return !matches!(sigil, Some('$' | '@' | '%' | '&'));
     }
 
     // Closers and quotes end a term, so a following `/` divides it.

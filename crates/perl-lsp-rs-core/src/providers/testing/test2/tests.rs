@@ -897,12 +897,16 @@ fn test2_word_operator_prefixed_match_is_still_data() {
         );
     }
 
-    // The token, not its last character, decides.
+    // The sigil, not the spelling, decides. A bare word is a call whatever it
+    // is named, so no allowlist of operator names is consulted — an omitted
+    // name would silently drop that statement's imports.
     assert!(bare_match_can_start("scalar(grep "), "grep takes a pattern");
     assert!(bare_match_can_start("return "), "return takes a pattern");
-    assert!(!bare_match_can_start("$grep "), "a sigil makes it a variable, not the operator");
-    assert!(!bare_match_can_start("mygrep "), "a longer identifier is not the operator");
-    assert!(!bare_match_can_start("count "), "an ordinary identifier divides");
+    assert!(bare_match_can_start("abs "), "an unlisted builtin is still a call");
+    assert!(bare_match_can_start("warn "), "an unlisted builtin is still a call");
+    assert!(bare_match_can_start("my_helper "), "a user sub is still a call");
+    assert!(!bare_match_can_start("$grep "), "a sigil makes it a variable");
+    assert!(!bare_match_can_start("@list "), "a sigil makes it a variable");
 }
 
 #[test]
@@ -946,5 +950,33 @@ fn test2_punctuation_named_variable_divides() {
 
     let divided = resolve_with_analysis("Test2::V0", "-target => scalar($? / 2 + 3 / 4), ok");
     assert!(!divided.analysis_limited, "division must not be masked as a match");
+    assert!(divided.resolved.symbols.contains("ok"));
+}
+
+#[test]
+fn test2_unlisted_operator_prefixed_match_is_still_data() {
+    // Review finding (@devin-ai-integration on #14651). The discriminator used
+    // an allowlist of pattern-taking operators, so any name outside it — `abs`,
+    // `warn`, a user sub — read as division, left the payload visible, and
+    // dropped the statement's imports. Perl has no fixed set here, so the rule
+    // is now structural: a bare word is a call, a sigilled name is a value.
+    for args in [
+        "-target => scalar(abs /-as => Foo/), ok",
+        "-target => scalar(warn /-prefix => Foo/), ok",
+        "-target => scalar(my_helper /-postfix => Foo/), ok",
+    ] {
+        let resolved = resolve_with_analysis("Test2::V0", args);
+        assert!(!resolved.analysis_limited, "{args}: a match payload is data");
+        assert!(
+            resolved.resolved.symbols.contains("ok"),
+            "{args}: the explicit import must survive, got {:?}",
+            resolved.resolved.symbols
+        );
+    }
+
+    // The sigilled counterpart still divides, so a division slash is never a
+    // masking start.
+    let divided = resolve_with_analysis("Test2::V0", "-target => scalar($abs / 2 + 3 / 4), ok");
+    assert!(!divided.analysis_limited);
     assert!(divided.resolved.symbols.contains("ok"));
 }
