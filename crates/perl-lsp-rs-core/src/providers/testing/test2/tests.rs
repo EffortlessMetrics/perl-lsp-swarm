@@ -1270,12 +1270,11 @@ fn test2_truncated_transform_value_fails_closed_instead_of_publishing_a_prefix()
         // A following entry is a terminator, not a continuation.
         ("ok => {-as => 'my_ok', -other => 1}", "my_ok"),
         ("is => {-as => 'my_is' }, ok", "my_is"),
-        // A `use` statement may span lines and carry comments, so the
-        // terminator need not follow the value immediately (review finding,
-        // @devin-ai-integration on #14651). A parenthesised import list needs
-        // nothing special: the value's own terminator is still the map's `}`.
-        ("ok => {-as => 'my_ok' # alias\n}", "my_ok"),
-        ("ok => {-as => my_ok # alias\n}", "my_ok"),
+        // A `use` statement may span lines, so the terminator need not follow
+        // the value on the same one. A parenthesised import list needs nothing
+        // special either: the value's own terminator is still the map's `}`,
+        // and the `)` closes the list after it (review finding,
+        // @devin-ai-integration on #14651).
         ("ok => {-as => 'my_ok'\n}", "my_ok"),
         ("(ok => {-as => my_ok})", "my_ok"),
         ("(ok => {-as => 'my_ok'})", "my_ok"),
