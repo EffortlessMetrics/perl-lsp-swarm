@@ -142,12 +142,19 @@ impl ModuleFilePath {
             return Err(ModuleFilePathError::DriveQualified);
         }
 
+        // A `.` component counts. `require "."` is a well-formed request that
+        // does not resolve, not a malformed one: `perl -e 'require ".";'` reports
+        // *Can't locate . in @INC* — the same class of failure as
+        // `require "NoSuchFile.pm"` — rather than a syntax error. Refusing it
+        // here would report "this was never a module request" for something Perl
+        // accepts and merely fails to find, which is the exact distinction this
+        // vocabulary exists to keep.
         let mut has_component = false;
         for component in text.split(['/', '\\']) {
             if component == ".." {
                 return Err(ModuleFilePathError::Traversal);
             }
-            if !component.is_empty() && component != "." {
+            if !component.is_empty() {
                 has_component = true;
             }
         }
@@ -205,6 +212,15 @@ impl ModuleFilePath {
     /// this crate. A partial second copy of that grammar would stop failing
     /// closed and start minting filenames Perl never opens, so the coarse rule
     /// refuses instead of guessing.
+    ///
+    /// Quote *operators* are refused for the same reason and by the same rule.
+    /// `q{Foo.pm}`, `qq(Foo.pm)`, `q[Foo.pm]` and the rest do not open with `'`
+    /// or `"`, so they yield [`ModuleFilePathError::UnquotedToken`]. Supporting
+    /// them means implementing Perl's quote-operator grammar — every delimiter
+    /// pair, bracket nesting, and the `q`/`qq` interpolation difference — which
+    /// is again `perl-parser-core`'s to own. A caller holding such a token
+    /// decodes it with the parser and passes the operand to [`Self::parse`],
+    /// which places no restriction on how the operand was spelled in source.
     ///
     /// Nothing becomes unreachable: the refusal applies only to the raw-token
     /// shortcut. `@` is an ordinary filename byte, so a caller that decodes with
@@ -360,7 +376,12 @@ mod tests {
     fn rejections_are_classified_not_collapsed() {
         let cases = [
             ("", ModuleFilePathError::Empty),
-            ("./", ModuleFilePathError::Empty),
+            // `"./"` used to sit here as `Empty`. It was moved out rather than
+            // relaxed away: `perl -e 'require ".";'` reports *Can't locate . in
+            // @INC*, so Perl treats it as a filename it cannot find, not as a
+            // malformed operand. Pinned in the accepting direction by
+            // `a_dot_only_operand_is_a_request_that_will_not_resolve`.
+            ("/", ModuleFilePathError::Absolute),
             ("Foo\0.pm", ModuleFilePathError::InteriorNul),
             ("Foo\n.pm", ModuleFilePathError::ControlCharacter { character: '\n' }),
             ("/etc/passwd", ModuleFilePathError::Absolute),
@@ -540,6 +561,31 @@ mod tests {
     fn curdir_component_is_not_traversal() -> Result<(), ModuleFilePathError> {
         let path = ModuleFilePath::parse("./Foo/Bar.pm")?;
         assert_eq!(path.literal(), "./Foo/Bar.pm");
+        Ok(())
+    }
+
+    /// A dot-only operand is a request that does not resolve, not a non-request.
+    ///
+    /// Verified against the interpreter: `perl -e 'require ".";'` reports
+    /// *Can't locate . in @INC*, the same failure class as
+    /// `require "NoSuchFile.pm"`. Perl parses it as a filename and fails to find
+    /// it, so classifying it `Empty` would claim it was never a valid lookup
+    /// subject — an overclaim of exactly the kind this type exists to avoid.
+    #[test]
+    fn a_dot_only_operand_is_a_request_that_will_not_resolve() -> Result<(), ModuleFilePathError> {
+        for text in [".", "./", ".\\", "./."] {
+            let path = ModuleFilePath::parse(text)?;
+            assert_eq!(path.literal(), text, "the literal spelling is preserved exactly");
+        }
+
+        // Genuinely empty operands are still refused, so this did not widen into
+        // accepting nothing at all.
+        for empty in ["", "/", "\\"] {
+            assert!(
+                ModuleFilePath::parse(empty).is_err(),
+                "`{empty}` names no file and must still be refused"
+            );
+        }
         Ok(())
     }
 
