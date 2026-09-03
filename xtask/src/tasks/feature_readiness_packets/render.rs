@@ -449,24 +449,29 @@ pub fn compact(doc: &Value) -> String {
                 .trim_matches('"')
                 .to_owned()
         };
+        for (field, value) in [
+            ("review_id", clean("/review_id")),
+            ("node", clean("/subject/node_id")),
+            ("role", clean("/subject/role")),
+            ("profile", clean("/subject/profile")),
+            ("builder", clean("/builder_ref/packet_id")),
+            ("digest", clean("/builder_ref/digest")),
+        ] {
+            out.push_str(&format!("REVIEW[0] {field}={value}\n"));
+        }
         out.push_str(&format!(
-            "REVIEW rv={} node={} role={} profile={} issues={} builder={} digest={}\n",
-            clean("/review_id"),
-            clean("/subject/node_id"),
-            clean("/subject/role"),
-            clean("/subject/profile"),
+            "SUBJECT[0] issues={}\nSUBJECT[0] claim_ceiling={}\n",
             compact_json(doc.pointer("/subject/issues")),
-            clean("/builder_ref/packet_id"),
-            clean("/builder_ref/digest"),
+            clean("/subject/claim_ceiling_sentence"),
         ));
-        out.push_str(&format!("CEILING: {}\n", clean("/subject/claim_ceiling_sentence")));
-        out.push_str(&format!(
-            "CURRENTNESS: base={} state={} invalidators={} stale_rule={}\n",
-            clean("/currentness/base_head"),
-            clean("/currentness/live_state"),
-            compact_json(doc.pointer("/currentness/invalidators")),
-            clean("/currentness/stale_rule"),
-        ));
+        for (field, value) in [
+            ("base_head", clean("/currentness/base_head")),
+            ("live_state", clean("/currentness/live_state")),
+            ("invalidators", compact_json(doc.pointer("/currentness/invalidators"))),
+            ("stale_rule", clean("/currentness/stale_rule")),
+        ] {
+            out.push_str(&format!("CURRENTNESS[0] {field}={value}\n"));
+        }
         out.push_str("LENSES:\n");
         for (index, lens) in objects(doc, "/lenses").iter().enumerate() {
             let applicable = lens.get("applicable").and_then(Value::as_bool).unwrap_or(false);
@@ -510,9 +515,10 @@ pub fn compact(doc: &Value) -> String {
                 row.get("terminal_disposition").and_then(Value::as_str).unwrap_or("?"),
             ));
         }
-        out.push_str("\nMUST-NOT: ");
-        out.push_str(&strings(doc.pointer("/stop/reviewer_must_not")).join(" / "));
         out.push('\n');
+        for (index, value) in strings(doc.pointer("/stop/reviewer_must_not")).iter().enumerate() {
+            out.push_str(&format!("STOP[{index}] must_not={value}\n"));
+        }
     }
     out
 }
@@ -683,30 +689,32 @@ pub fn validate_compact_lossless(builder: &Value, compact_text: &str) -> Vec<Vio
 /// Validate every load-bearing reviewer field in the compact projection.
 pub fn validate_reviewer_compact_lossless(reviewer: &Value, compact_text: &str) -> Vec<Violation> {
     let mut violations = Vec::new();
-    for (label, pointer) in [
-        ("review id", "/review_id"),
-        ("node", "/subject/node_id"),
-        ("issues", "/subject/issues"),
-        ("role", "/subject/role"),
-        ("profile", "/subject/profile"),
-        ("claim ceiling", "/subject/claim_ceiling_sentence"),
-        ("builder id", "/builder_ref/packet_id"),
-        ("builder digest", "/builder_ref/digest"),
-        ("base head", "/currentness/base_head"),
-        ("live state", "/currentness/live_state"),
-        ("invalidators", "/currentness/invalidators"),
-        ("stale rule", "/currentness/stale_rule"),
-        ("must-not", "/stop/reviewer_must_not"),
+    for (label, section, index, field, pointer) in [
+        ("review id", "REVIEW", 0, "review_id", "/review_id"),
+        ("node", "REVIEW", 0, "node", "/subject/node_id"),
+        ("issues", "SUBJECT", 0, "issues", "/subject/issues"),
+        ("role", "REVIEW", 0, "role", "/subject/role"),
+        ("profile", "REVIEW", 0, "profile", "/subject/profile"),
+        ("claim ceiling", "SUBJECT", 0, "claim_ceiling", "/subject/claim_ceiling_sentence"),
+        ("builder id", "REVIEW", 0, "builder", "/builder_ref/packet_id"),
+        ("builder digest", "REVIEW", 0, "digest", "/builder_ref/digest"),
+        ("base head", "CURRENTNESS", 0, "base_head", "/currentness/base_head"),
+        ("live state", "CURRENTNESS", 0, "live_state", "/currentness/live_state"),
+        ("invalidators", "CURRENTNESS", 0, "invalidators", "/currentness/invalidators"),
+        ("stale rule", "CURRENTNESS", 0, "stale_rule", "/currentness/stale_rule"),
     ] {
         let Some(value) = reviewer.pointer(pointer) else { continue };
-        let present = compact_value_present(value, compact_text);
+        let encoded =
+            value.as_str().map(str::to_owned).unwrap_or_else(|| compact_json(Some(value)));
+        let present = indexed_field_present(compact_text, section, index, field, &encoded);
         if !present {
             violations
                 .push(Violation::new("compact_loss", format!("compact reviewer dropped {label}")));
         }
     }
-    for token in strings_of(reviewer.pointer("/stop/reviewer_must_not")) {
-        if !compact_text.contains(token) {
+    for (index, token) in strings_of(reviewer.pointer("/stop/reviewer_must_not")).iter().enumerate()
+    {
+        if !indexed_field_present(compact_text, "STOP", index, "must_not", token) {
             violations.push(Violation::new(
                 "compact_loss",
                 "compact reviewer dropped a must-not constraint",
@@ -792,12 +800,15 @@ fn compact_json(value: Option<&Value>) -> String {
     value.map(|value| serde_json::to_string(value).unwrap_or_default()).unwrap_or_default()
 }
 
-fn compact_value_present(value: &Value, compact_text: &str) -> bool {
-    if value.is_array() && strings_of(Some(value)).len() == value.as_array().map_or(0, Vec::len) {
-        return strings_of(Some(value)).iter().all(|token| compact_text.contains(token));
-    }
-    let encoded = value.as_str().map(str::to_owned).unwrap_or_else(|| compact_json(Some(value)));
-    !encoded.is_empty() && compact_text.contains(&encoded)
+fn indexed_field_present(
+    compact_text: &str,
+    section: &str,
+    index: usize,
+    field: &str,
+    expected: &str,
+) -> bool {
+    let prefix = format!("{section}[{index}] {field}=");
+    compact_text.lines().any(|line| line.strip_prefix(&prefix) == Some(expected))
 }
 
 fn delimited_block<'a>(compact_text: &'a str, marker: &str, index: usize) -> Option<&'a str> {

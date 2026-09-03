@@ -1536,9 +1536,11 @@ pub fn validate_pair(builder: &Value, reviewer: &Value) -> Vec<Violation> {
             ));
         }
     }
-    if builder_base != reviewer_base
-        && !(valid_main_head(&builder_base) && valid_main_head(&reviewer_base))
-    {
+    // Packet identity deliberately normalizes conflict-free movement of main,
+    // but a builder/reviewer pair must still describe the same observed
+    // subject.  Treating two valid main heads as interchangeable would allow
+    // a reviewer for a different concrete head to pass pairing.
+    if builder_base != reviewer_base {
         violations.push(Violation::new(
             "stale_head",
             "reviewer base/head differs from the builder packet; the review is stale for affected dimensions",

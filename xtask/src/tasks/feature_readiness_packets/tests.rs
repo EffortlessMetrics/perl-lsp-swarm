@@ -712,6 +712,32 @@ fn pair_rejects_unbound_or_malformed_main_heads() {
 }
 
 #[test]
+fn pair_rejects_every_valid_foreign_head_combination() {
+    let (builder, _) = builder_of("fr_8305_import_containment_leaf");
+    let reviewer = reviewer_of("fr_8305_import_containment_leaf");
+    let concrete_a = "main@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let concrete_b = "main@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let offline = "unknown-until-read-only-writer-preflight";
+
+    for (builder_head, reviewer_head) in [
+        (concrete_a, concrete_b),
+        (concrete_b, concrete_a),
+        (concrete_a, offline),
+        (offline, concrete_a),
+    ] {
+        let mut changed_builder = builder.clone();
+        changed_builder["delivery"]["base_head"] = Value::String(builder_head.to_owned());
+        let mut changed_reviewer = reviewer.clone();
+        changed_reviewer["currentness"]["base_head"] = Value::String(reviewer_head.to_owned());
+        assert!(
+            codes(&validate::validate_pair(&changed_builder, &changed_reviewer))
+                .contains(&"stale_head"),
+            "valid foreign pair was accepted: {builder_head} vs {reviewer_head}"
+        );
+    }
+}
+
+#[test]
 fn differing_snapshot_source_changes_packet_identity() {
     let node = node("fr_8305_import_containment_leaf");
     let snapshot = |digest: &str| build::LiveSnapshot {
@@ -785,6 +811,33 @@ fn reviewer_compact_rejects_cross_lens_satisfaction() {
     let without_first_reason = compact_text.replacen(&format!(" reason={reason}"), "", 1);
     let loss = render::validate_reviewer_compact_lossless(&reviewer, &without_first_reason);
     assert!(codes(&loss).contains(&"compact_loss"));
+}
+
+#[test]
+fn reviewer_compact_rejects_duplicate_identity_and_currentness_cells() {
+    let reviewer = reviewer_of("fr_8305_import_containment_leaf");
+    let compact_text = render::compact(&reviewer);
+    for (section, index, field, pointer) in [
+        ("REVIEW", 0, "role", "/subject/role"),
+        ("REVIEW", 0, "profile", "/subject/profile"),
+        ("CURRENTNESS", 0, "base_head", "/currentness/base_head"),
+        ("CURRENTNESS", 0, "live_state", "/currentness/live_state"),
+        ("CURRENTNESS", 0, "stale_rule", "/currentness/stale_rule"),
+    ] {
+        let value = reviewer.pointer(pointer).and_then(Value::as_str).unwrap_or_default();
+        let line = format!("{section}[{index}] {field}={value}");
+        assert!(compact_text.contains(&line), "fixture lacks indexed cell {line}");
+        let stripped = compact_text
+            .lines()
+            .filter(|candidate| *candidate != line)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let loss = render::validate_reviewer_compact_lossless(&reviewer, &stripped);
+        assert!(
+            codes(&loss).contains(&"compact_loss"),
+            "duplicate-value deletion for {line} was not detected"
+        );
+    }
 }
 
 // Dropped stop conditions are a rendering regression, not a style choice.
