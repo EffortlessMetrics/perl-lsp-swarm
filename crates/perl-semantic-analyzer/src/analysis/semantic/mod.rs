@@ -352,7 +352,9 @@ impl SemanticAnalyzer {
             // no ancestry declaration and therefore leaves the prior value
             // intact.
             if model.parents_explicit {
-                if model.parents_additive {
+                if model.parents_replaces_prior {
+                    existing.parents = model.parents.clone();
+                } else if model.parents_additive {
                     existing.parents.extend(model.parents.iter().cloned());
                 } else {
                     existing.parents = model.parents.clone();
@@ -3057,6 +3059,26 @@ my %config = (key => "value");
         let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
         let chain = analyzer.resolve_parent_chain("Child").ok_or("parent chain")?;
         assert_eq!(chain, vec!["First", "Second"]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_reopened_package_replacement_then_push_drops_old_ancestors()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = concat!(
+            "package Old; use Moo; sub save { 1 }\n",
+            "package New; use Moo; sub save { 2 }\n",
+            "package Extra; use Moo; sub save { 3 }\n",
+            "package Child; use Moo; use parent 'Old';\n",
+            "package Child; use Moo; @ISA = ('New'); push @ISA, 'Extra';\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let chain = analyzer.resolve_parent_chain("Child").ok_or("parent chain")?;
+        assert_eq!(chain, vec!["New", "Extra"]);
+        assert!(!chain.contains(&"Old".to_string()));
         Ok(())
     }
 

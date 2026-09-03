@@ -254,6 +254,10 @@ pub struct ClassModel {
     /// Whether this segment's ancestry declarations are additive (`use parent`,
     /// `use base`, or `push @ISA`) rather than replacing prior package state.
     pub(crate) parents_additive: bool,
+    /// Whether this segment contains an assignment that replaces prior package
+    /// ancestry. A later `push @ISA` can make the final segment additive while
+    /// the segment as a whole still replaces the earlier package state.
+    pub(crate) parents_replaces_prior: bool,
     /// Roles consumed via `with 'Role'`
     pub roles: Vec<String>,
     /// Method modifiers (before/after/around/override/augment)
@@ -316,6 +320,7 @@ pub struct ClassModelBuilder {
     current_mro_explicit: bool,
     current_parents_explicit: bool,
     current_parents_additive: bool,
+    current_parents_replaces_prior: bool,
     current_roles: Vec<String>,
     current_modifiers: Vec<MethodModifier>,
     current_exports: Vec<String>,
@@ -350,6 +355,7 @@ impl ClassModelBuilder {
             current_mro_explicit: false,
             current_parents_explicit: false,
             current_parents_additive: false,
+            current_parents_replaces_prior: false,
             current_roles: Vec::new(),
             current_modifiers: Vec::new(),
             current_exports: Vec::new(),
@@ -400,6 +406,7 @@ impl ClassModelBuilder {
                 mro_explicit: self.current_mro_explicit,
                 parents_explicit: self.current_parents_explicit,
                 parents_additive: self.current_parents_additive,
+                parents_replaces_prior: self.current_parents_replaces_prior,
                 roles: std::mem::take(&mut self.current_roles),
                 modifiers: std::mem::take(&mut self.current_modifiers),
                 exports: std::mem::take(&mut self.current_exports),
@@ -419,6 +426,7 @@ impl ClassModelBuilder {
             self.current_mro_explicit = false;
             self.current_parents_explicit = false;
             self.current_parents_additive = false;
+            self.current_parents_replaces_prior = false;
             self.current_roles.clear();
             self.current_modifiers.clear();
             self.current_exports.clear();
@@ -446,6 +454,7 @@ impl ClassModelBuilder {
                 self.current_mro_explicit = false;
                 self.current_parents_explicit = false;
                 self.current_parents_additive = false;
+                self.current_parents_replaces_prior = false;
                 self.current_uses_exporter = false;
 
                 if let Some(block) = block {
@@ -489,6 +498,7 @@ impl ClassModelBuilder {
                             "ISA" => {
                                 self.current_parents_explicit = true;
                                 self.current_parents_additive = false;
+                                self.current_parents_replaces_prior = true;
                                 self.current_parents = collect_symbol_names(init);
                                 self.note_parent_framework();
                             }
@@ -519,6 +529,7 @@ impl ClassModelBuilder {
                         "ISA" => {
                             self.current_parents_explicit = true;
                             self.current_parents_additive = false;
+                            self.current_parents_replaces_prior = true;
                             self.current_parents = collect_symbol_names(rhs);
                             self.note_parent_framework();
                         }
@@ -1131,6 +1142,7 @@ impl ClassModelBuilder {
                 if name == "extends" {
                     self.current_parents_explicit = true;
                     self.current_parents_additive = false;
+                    self.current_parents_replaces_prior = true;
                     self.current_parents.clear();
                     self.current_parents.extend(names);
                 } else {
@@ -1170,6 +1182,7 @@ impl ClassModelBuilder {
         if keyword == "extends" {
             self.current_parents_explicit = true;
             self.current_parents_additive = false;
+            self.current_parents_replaces_prior = true;
             self.current_parents.clear();
             self.current_parents.extend(names);
         } else {
@@ -2423,6 +2436,7 @@ has [qw(first_name last_name)] => (is => 'ro');
             mro_explicit: false,
             parents_explicit: false,
             parents_additive: false,
+            parents_replaces_prior: false,
             roles: Vec::new(),
             modifiers: Vec::new(),
             exports: Vec::new(),
