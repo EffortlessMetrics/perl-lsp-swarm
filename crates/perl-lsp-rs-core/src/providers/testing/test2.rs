@@ -293,19 +293,138 @@ pub struct ResolvedImport {
     pub symbols: BTreeSet<String>,
     /// Pragma effect, present only for bundle imports.
     pub pragmas: Option<Test2Pragmas>,
+    /// Whether import analysis was cut short by unrecognized transform syntax.
+    ///
+    /// When this is `true`, `symbols` is a fail-closed *floor*, not a proven
+    /// set: the statement declared `-as`/`-prefix`/`-postfix` syntax that the
+    /// transform recognizer could not interpret, so no symbol could be proven
+    /// and none were guessed. Completeness-sensitive consumers must not treat
+    /// the resulting empty set as a proven "imports nothing".
+    pub analysis_limited: bool,
 }
 
 /// Match `name => { ... -as => 'alias' ... }` renames in an import list.
-static RENAME_AS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(\w+)\s*=>\s*\{[^}]*?-as\s*=>\s*['"]?(\w+)['"]?[^}]*?\}"#)
-        .unwrap_or_else(|_| unreachable!("static Test2 -as rename pattern is valid"))
-});
+///
+/// `None` when the pattern cannot be compiled. Recognition is a bounded
+/// compatibility bridge, not an invariant: a recognizer that fails to build
+/// must degrade the affected statement, never abort the language server.
+static RENAME_AS: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r#"(\w+)\s*=>\s*\{[^}]*?-as\s*=>\s*['"]?(\w+)['"]?[^}]*?\}"#).ok());
 
 /// Match `name => { ... -prefix => 'p' ... }` / `-postfix` renames.
-static RENAME_FIX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(\w+)\s*=>\s*\{[^}]*?-(prefix|postfix)\s*=>\s*['"]?(\w+)['"]?[^}]*?\}"#)
-        .unwrap_or_else(|_| unreachable!("static Test2 -prefix/-postfix pattern is valid"))
+///
+/// `None` when the pattern cannot be compiled; see [`RENAME_AS`].
+static RENAME_FIX: LazyLock<Option<Regex>> = LazyLock::new(|| {
+    Regex::new(r#"(\w+)\s*=>\s*\{[^}]*?-(prefix|postfix)\s*=>\s*['"]?(\w+)['"]?[^}]*?\}"#).ok()
 });
+
+/// The transform-option names Importer consumes inside a `name => { ... }`
+/// rename map. These are recognized by *role* (an option token immediately
+/// followed by `=>`), never as a bareword blacklist: a legitimate exported
+/// symbol may share the spelling elsewhere in the import list.
+const TRANSFORM_OPTIONS: [&str; 3] = ["-as", "-prefix", "-postfix"];
+
+/// Whether `text` still contains Test2 transform-option syntax.
+///
+/// This is a deliberately conservative, regex-free detector used only to
+/// decide whether to *fail closed*. Over-detection costs a statement its
+/// symbols; under-detection would let transform bytes reach the bareword
+/// scanner and fabricate imports from syntax atoms. The safe bias is therefore
+/// to over-detect.
+fn contains_transform_syntax(text: &str) -> bool {
+    for option in TRANSFORM_OPTIONS {
+        let mut rest = text;
+        while let Some(offset) = rest.find(option) {
+            let before = &rest[..offset];
+            let after = &rest[offset + option.len()..];
+            // The token must not be the tail of a longer word (`-no_as`, an
+            // exported `-aside`) and must sit in option position — followed by
+            // a fat comma, optionally through a closing quote so the quoted
+            // spelling (`{'-as' => ...}`) is recognized too.
+            let boundary_ok = before
+                .chars()
+                .next_back()
+                .is_none_or(|previous| !previous.is_alphanumeric() && previous != '_');
+            let tail = after.strip_prefix(['\'', '"']).unwrap_or(after);
+            if boundary_ok
+                && !after.starts_with(|next: char| next.is_alphanumeric() || next == '_')
+                && tail.trim_start().starts_with("=>")
+            {
+                return true;
+            }
+            rest = &rest[offset + option.len()..];
+        }
+    }
+    false
+}
+
+/// Outcome of scanning one import list for transform syntax.
+enum TransformScan {
+    /// No transform syntax observed; the ordinary bareword scan may run over
+    /// the import text unchanged.
+    None,
+    /// Transform syntax recognized and fully consumed. `stripped` is the
+    /// import text with every recognized transform span removed.
+    Recognized { renames: Vec<(String, String)>, stripped: String },
+    /// Transform syntax is present but was not fully recognized — either the
+    /// recognizer could not be constructed, or it left transform bytes behind
+    /// (malformed or unsupported form). The affected statement must fail
+    /// closed rather than resume bareword scanning over those bytes.
+    Unresolved,
+}
+
+/// Extract `-as`/`-prefix`/`-postfix` renames and strip their spans.
+///
+/// Passing `None` for either recognizer models that recognizer being
+/// unavailable; this is the seam the fail-closed regressions drive.
+fn scan_import_transforms(
+    raw_args: &str,
+    rename_as: Option<&Regex>,
+    rename_fix: Option<&Regex>,
+) -> TransformScan {
+    if !contains_transform_syntax(raw_args) {
+        return TransformScan::None;
+    }
+
+    // Transform syntax is present, so both recognizers are load-bearing for
+    // this statement. An unavailable recognizer is instrument failure, not
+    // evidence that the syntax is absent.
+    let (Some(rename_as), Some(rename_fix)) = (rename_as, rename_fix) else {
+        return TransformScan::Unresolved;
+    };
+
+    let mut renames: Vec<(String, String)> = Vec::new();
+    for caps in rename_as.captures_iter(raw_args) {
+        if let (Some(name), Some(alias)) = (caps.get(1), caps.get(2)) {
+            renames.push((name.as_str().to_string(), alias.as_str().to_string()));
+        }
+    }
+    for caps in rename_fix.captures_iter(raw_args) {
+        if let (Some(name), Some(kind), Some(fix)) = (caps.get(1), caps.get(2), caps.get(3)) {
+            let base = name.as_str();
+            let alias = if kind.as_str() == "prefix" {
+                format!("{}{}", fix.as_str(), base)
+            } else {
+                format!("{}{}", base, fix.as_str())
+            };
+            renames.push((base.to_string(), alias));
+        }
+    }
+
+    // Remove matched rename spans so the remaining scan does not see the raw
+    // `name => { ... }` text.
+    let mut stripped = rename_as.replace_all(raw_args, " ").into_owned();
+    stripped = rename_fix.replace_all(&stripped, " ").into_owned();
+
+    // Residual transform syntax means the recognizers did not consume every
+    // transform span (malformed, truncated, or an unsupported form). Those
+    // leftover bytes are exactly what would otherwise be scanned as barewords.
+    if contains_transform_syntax(&stripped) {
+        return TransformScan::Unresolved;
+    }
+
+    TransformScan::Recognized { renames, stripped }
+}
 
 /// Resolve the imported symbols and pragma effect of a single Test2 `use`
 /// statement, given the module name and the raw import-argument text (whatever
@@ -313,6 +432,19 @@ static RENAME_FIX: LazyLock<Regex> = LazyLock::new(|| {
 ///
 /// Returns `None` if `module` is not a recognized Test2 module.
 pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
+    resolve_import_with(module, raw_args, RENAME_AS.as_ref(), RENAME_FIX.as_ref())
+}
+
+/// [`resolve_import`] with the transform recognizers injected.
+///
+/// Production always passes the compiled statics. Tests pass `None` to force
+/// an unavailable recognizer without process-global resettable state.
+fn resolve_import_with(
+    module: &str,
+    raw_args: &str,
+    rename_as: Option<&Regex>,
+    rename_fix: Option<&Regex>,
+) -> Option<ResolvedImport> {
     if !is_test2_module(module) {
         return None;
     }
@@ -326,7 +458,11 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
         && trimmed_args.ends_with(')')
         && trimmed_args[1..trimmed_args.len() - 1].trim().is_empty()
     {
-        return Some(ResolvedImport { symbols: BTreeSet::new(), pragmas: None });
+        return Some(ResolvedImport {
+            symbols: BTreeSet::new(),
+            pragmas: None,
+            analysis_limited: false,
+        });
     }
 
     let bundle = is_test2_bundle(module);
@@ -367,28 +503,22 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
 
     // Extract renames first (and strip their spans so their bareword names are
     // not double-counted as positive imports).
-    let mut renames: Vec<(String, String)> = Vec::new();
-    let mut stripped = raw_args.to_string();
-    for caps in RENAME_AS.captures_iter(raw_args) {
-        if let (Some(name), Some(alias)) = (caps.get(1), caps.get(2)) {
-            renames.push((name.as_str().to_string(), alias.as_str().to_string()));
+    let (renames, stripped) = match scan_import_transforms(raw_args, rename_as, rename_fix) {
+        TransformScan::None => (Vec::new(), raw_args.to_string()),
+        TransformScan::Recognized { renames, stripped } => (renames, stripped),
+        TransformScan::Unresolved => {
+            // Transform syntax was declared but not interpreted. Resuming the
+            // bareword scan here would report `-as`, alias names, and mapping
+            // keys/values as imported symbols. Fail closed instead: prove no
+            // symbol rather than invent one. Pragma resolution is independent
+            // of the import list, so it stays exact.
+            return Some(ResolvedImport {
+                symbols: BTreeSet::new(),
+                pragmas,
+                analysis_limited: true,
+            });
         }
-    }
-    for caps in RENAME_FIX.captures_iter(raw_args) {
-        if let (Some(name), Some(kind), Some(fix)) = (caps.get(1), caps.get(2), caps.get(3)) {
-            let base = name.as_str();
-            let alias = if kind.as_str() == "prefix" {
-                format!("{}{}", fix.as_str(), base)
-            } else {
-                format!("{}{}", base, fix.as_str())
-            };
-            renames.push((base.to_string(), alias));
-        }
-    }
-    // Remove matched rename spans so the remaining scan does not see the raw
-    // `name => { ... }` text.
-    stripped = RENAME_AS.replace_all(&stripped, " ").into_owned();
-    stripped = RENAME_FIX.replace_all(&stripped, " ").into_owned();
+    };
 
     let atoms = tokenize_import_args(&stripped);
     let target_option_supported = matches!(module, "Test2::V0" | "Test2::V1");
@@ -611,7 +741,7 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
         symbols.insert(helper);
     }
 
-    Some(ResolvedImport { symbols, pragmas })
+    Some(ResolvedImport { symbols, pragmas, analysis_limited: false })
 }
 
 /// Aggregate Test2 facts for an entire source file.
@@ -625,6 +755,13 @@ pub struct Test2Facts {
     pub strict: bool,
     /// Whether some Test2 bundle turned on `warnings`.
     pub warnings: bool,
+    /// Whether any Test2 statement in this file failed closed on unrecognized
+    /// transform syntax.
+    ///
+    /// When `true`, `imported_symbols` is an incomplete floor. Consumers that
+    /// would report a symbol as *not* imported (rather than merely offering
+    /// fewer completions) must treat this file's import set as unproven.
+    pub analysis_limited: bool,
 }
 
 impl Test2Facts {
@@ -665,6 +802,7 @@ impl Test2Facts {
                 continue;
             };
             facts.modules.push(module);
+            facts.analysis_limited |= resolved.analysis_limited;
             for sym in resolved.symbols {
                 facts.imported_symbols.insert(sym);
             }

@@ -412,3 +412,215 @@ fn use_statements_survive_escaped_quotes() {
         facts.modules
     );
 }
+
+// ---------------------------------------------------------------------------
+// Transform-recognizer failure boundary (#13690)
+//
+// `-as`/`-prefix`/`-postfix` recognition is a bounded compatibility bridge.
+// These regressions pin two things its previous `unreachable!()` initializers
+// could not: recognizer failure must not abort the server, and it must not
+// degrade into bareword scanning that reports transform syntax as imports.
+// ---------------------------------------------------------------------------
+
+/// Resolve with both transform recognizers forced unavailable.
+fn resolve_without_recognizers(module: &str, raw_args: &str) -> ResolvedImport {
+    resolve_import_with(module, raw_args, None, None).expect("recognized module")
+}
+
+#[test]
+fn test2_unavailable_as_recognizer_leaks_no_alias_or_option_atoms() {
+    let resolved = resolve_without_recognizers("Test2::V0", "ok => {-as => 'my_ok'}");
+
+    for leaked in ["my_ok", "ok", "as", "-as"] {
+        assert!(
+            !resolved.symbols.contains(leaked),
+            "{leaked} must not be imported when the -as recognizer is unavailable, got {:?}",
+            resolved.symbols
+        );
+    }
+    assert!(resolved.symbols.is_empty(), "unresolved transform syntax proves no symbol");
+    assert!(resolved.analysis_limited, "degraded analysis is explicit");
+}
+
+#[test]
+fn test2_unavailable_prefix_recognizer_leaks_no_mapping_atoms() {
+    let resolved = resolve_without_recognizers("Test2::V0", "ok => {-prefix => 'my_'}");
+
+    for leaked in ["my_ok", "ok", "my_", "prefix", "-prefix"] {
+        assert!(
+            !resolved.symbols.contains(leaked),
+            "{leaked} must not be imported when the -prefix recognizer is unavailable"
+        );
+    }
+    assert!(resolved.analysis_limited);
+}
+
+#[test]
+fn test2_unavailable_postfix_recognizer_leaks_no_mapping_atoms() {
+    let resolved = resolve_without_recognizers("Test2::V0", "ok => {-postfix => '_mine'}");
+
+    for leaked in ["ok_mine", "ok", "_mine", "postfix", "-postfix"] {
+        assert!(
+            !resolved.symbols.contains(leaked),
+            "{leaked} must not be imported when the -postfix recognizer is unavailable"
+        );
+    }
+    assert!(resolved.analysis_limited);
+}
+
+#[test]
+fn test2_malformed_transform_does_not_fall_through_to_bareword_scan() {
+    // Unclosed rename map: the recognizer cannot match, so its bytes remain.
+    // The bareword scan must not run over them (it would report `ok` and
+    // `my_ok` as imported).
+    let resolved = resolve_import("Test2::V0", "ok => {-as => 'my_ok'").expect("recognized module");
+
+    assert!(!resolved.symbols.contains("ok"), "malformed transform must not import `ok`");
+    assert!(!resolved.symbols.contains("my_ok"), "malformed transform must not import `my_ok`");
+    assert!(resolved.symbols.is_empty());
+    assert!(resolved.analysis_limited, "malformed transform is a limited analysis");
+}
+
+#[test]
+fn test2_recognizers_available_preserve_transform_semantics() {
+    // Negative control for the fail-closed guard: with recognizers available,
+    // every currently supported transform form still resolves exactly. A
+    // guard that always failed closed would fail this test.
+    let as_form = resolve_import("Test2::V0", "ok => {-as => 'my_ok'}").expect("recognized");
+    assert!(as_form.symbols.contains("my_ok"));
+    assert!(!as_form.analysis_limited);
+
+    let prefix = resolve_import("Test2::V0", "ok => {-prefix => 'my_'}").expect("recognized");
+    assert!(prefix.symbols.contains("my_ok"));
+    assert!(!prefix.analysis_limited);
+
+    let postfix = resolve_import("Test2::V0", "ok => {-postfix => '_mine'}").expect("recognized");
+    assert!(postfix.symbols.contains("ok_mine"));
+    assert!(!postfix.analysis_limited);
+
+    let with_tag =
+        resolve_import("Test2::V0", "':DEFAULT', ok => {-as => 'my_ok'}").expect("recognized");
+    assert!(with_tag.symbols.contains("my_ok"));
+    assert!(with_tag.symbols.contains("is"));
+    assert!(!with_tag.analysis_limited);
+}
+
+#[test]
+fn test2_ordinary_imports_are_unaffected_by_the_transform_guard() {
+    // No transform syntax: the ordinary fallback still runs, and an
+    // unavailable recognizer is irrelevant to statements that never use it.
+    for (module, args) in
+        [("Test2::V0", ""), ("Test2::Tools::Compare", "qw/is like/"), ("Test2::V0", "':ALL'")]
+    {
+        let available = resolve_import(module, args).expect("recognized module");
+        let unavailable = resolve_without_recognizers(module, args);
+        assert_eq!(
+            available, unavailable,
+            "no-transform statement `use {module} {args};` must not depend on the recognizer"
+        );
+        assert!(!available.analysis_limited);
+    }
+
+    let ordinary = resolve_import("Test2::Tools::Compare", "qw/is like/").expect("recognized");
+    assert!(ordinary.symbols.contains("is"));
+    assert!(ordinary.symbols.contains("like"));
+}
+
+#[test]
+fn test2_option_shaped_symbol_is_retained_when_actually_imported() {
+    // The guard recognizes transform options by role (token followed by `=>`),
+    // not by a bareword blacklist. A legitimate export sharing the spelling
+    // must survive.
+    let bareword = resolve_import("Test2::V0", "qw/ok as prefix postfix/").expect("recognized");
+    for kept in ["ok", "as", "prefix", "postfix"] {
+        assert!(bareword.symbols.contains(kept), "{kept} is an ordinary import entry");
+    }
+    assert!(!bareword.analysis_limited, "no transform syntax is present");
+
+    // An option-looking atom that is not in option position (no `=>`) is not
+    // transform syntax either.
+    let not_option = resolve_import("Test2::V0", "qw/ok/, '-as'").expect("recognized");
+    assert!(!not_option.analysis_limited, "`-as` without `=>` is not transform syntax");
+    assert!(not_option.symbols.contains("ok"));
+}
+
+#[test]
+fn test2_transform_detection_requires_option_position() {
+    assert!(contains_transform_syntax("ok => {-as => 'my_ok'}"));
+    assert!(contains_transform_syntax("ok => {-prefix => 'my_'}"));
+    assert!(contains_transform_syntax("ok => {-postfix => '_x'}"));
+    // The quoted option spelling is the same syntax.
+    assert!(contains_transform_syntax("ok => {'-as' => 'my_ok'}"));
+    assert!(contains_transform_syntax("ok => {\"-prefix\" => 'my_'}"));
+    // Not in option position.
+    assert!(!contains_transform_syntax("qw/ok as/"));
+    assert!(!contains_transform_syntax("'-as'"));
+    // Longer words ending in an option spelling are not the option.
+    assert!(!contains_transform_syntax("-no_as => 1"));
+    assert!(!contains_transform_syntax("-aside => 1"));
+}
+
+#[test]
+fn test2_quoted_transform_option_fails_closed_instead_of_fabricating_imports() {
+    // `{'-as' => 'my_ok'}` is transform syntax the recognizer does not accept
+    // (its pattern requires the bare `-as` token). Before the transform
+    // boundary existed this fell through to the bareword scan and reported
+    // BOTH `ok` and `my_ok` as imported — the original is not even in scope
+    // after a rename, so that was a fabricated fact reported as clean.
+    let resolved = resolve_import("Test2::V0", "ok => {'-as' => 'my_ok'}").expect("recognized");
+
+    assert!(!resolved.symbols.contains("ok"), "renamed original must not be imported");
+    assert!(!resolved.symbols.contains("my_ok"), "unparsed alias must not be imported");
+    assert!(resolved.symbols.is_empty());
+    assert!(resolved.analysis_limited, "an uninterpreted transform is never reported as clean");
+}
+
+#[test]
+fn test2_limited_analysis_is_distinguishable_from_a_proven_empty_import() {
+    // `use Test2::V0 ();` genuinely imports nothing — that is a proven fact.
+    let proven_empty = resolve_import("Test2::V0", "()").expect("recognized module");
+    assert!(proven_empty.symbols.is_empty());
+    assert!(!proven_empty.analysis_limited, "an explicit empty import list is proven, not limited");
+
+    // A failed transform also yields no symbols, but must not be readable as
+    // the same proven fact.
+    let limited = resolve_import("Test2::V0", "ok => {-as => 'my_ok'").expect("recognized module");
+    assert!(limited.symbols.is_empty());
+    assert!(limited.analysis_limited);
+
+    assert_ne!(
+        proven_empty, limited,
+        "a completeness-sensitive consumer must be able to tell these apart"
+    );
+}
+
+#[test]
+fn test2_facts_propagate_limited_analysis_across_a_file() {
+    let facts = Test2Facts::from_source(
+        "use Test2::V0;\nuse Test2::Tools::Compare qw/is/, ok => {-as => 'my_ok';\n",
+    );
+    assert!(facts.uses_test2());
+    assert!(facts.analysis_limited, "one failed statement makes the file's import set unproven");
+    // The clean statement's facts survive; the failed one contributes nothing.
+    assert!(facts.is_imported("ok"), "the clean Test2::V0 bundle still resolves");
+
+    let clean = Test2Facts::from_source("use Test2::V0;\n");
+    assert!(!clean.analysis_limited);
+}
+
+#[test]
+fn test2_transform_resolution_is_deterministic_across_repeated_calls() {
+    // The recognizers are compiled once and hold no resettable state; repeated
+    // resolution of the same statement is byte-identical.
+    let first = resolve_import("Test2::V0", "ok => {-as => 'my_ok'}").expect("recognized");
+    for _ in 0..5 {
+        let again = resolve_import("Test2::V0", "ok => {-as => 'my_ok'}").expect("recognized");
+        assert_eq!(first, again);
+    }
+
+    let failed_first = resolve_without_recognizers("Test2::V0", "ok => {-as => 'my_ok'}");
+    for _ in 0..5 {
+        let failed_again = resolve_without_recognizers("Test2::V0", "ok => {-as => 'my_ok'}");
+        assert_eq!(failed_first, failed_again);
+    }
+}
