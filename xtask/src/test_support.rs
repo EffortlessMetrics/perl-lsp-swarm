@@ -111,9 +111,10 @@ impl FakeCargoChild {
         &self.output.stderr
     }
 
-    pub fn invocations(&self) -> Vec<String> {
-        let raw = fs::read_to_string(&self.files.log_path).unwrap_or_default();
-        raw.lines().map(str::to_string).collect()
+    pub fn invocations(&self) -> Result<Vec<String>> {
+        let raw = fs::read_to_string(&self.files.log_path)
+            .context("read fake cargo child invocation log")?;
+        Ok(raw.lines().map(str::to_string).collect())
     }
 }
 
