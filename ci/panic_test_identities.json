@@ -3015,6 +3015,60 @@
       "selector_identity": "invocation:b5463605ee1378d9:occurrence:2",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/gates/planning_types.rs",
+      "enclosing_test_or_function": "compile_input",
+      "macro_family": "panic!",
+      "normalized_snippet": "route_disposition_inputs(authority).unwrap_or_else(|error| panic!(\"{error}\"));",
+      "selector_identity": "invocation:d43eec1e0162210c:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/gates/planning_types.rs",
+      "enclosing_test_or_function": "current_quarantine_skipped_by_runner_stays_quarantined",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected quarantined outcome, got {other:?}\"),",
+      "selector_identity": "invocation:49198566f6e65666:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/gates/planning_types.rs",
+      "enclosing_test_or_function": "invalid_lifecycle_with_selector_noop_is_error_not_scoped_noop",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected error outcome, got {other:?}\"),",
+      "selector_identity": "invocation:e3e08719853d8dfc:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/gates/planning_types.rs",
+      "enclosing_test_or_function": "expired_quarantine_with_selector_noop_is_error",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected error outcome, got {other:?}\"),",
+      "selector_identity": "invocation:e3e08719853d8dfc:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/gates/planning_types.rs",
+      "enclosing_test_or_function": "fallback_fired_selection_never_becomes_a_proof_backed_run",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected typed error outcome, got {other:?}\"),",
+      "selector_identity": "invocation:6106d21e91ee92b0:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/gates/planning_types.rs",
+      "enclosing_test_or_function": "canonical_pipeline_input",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|error| panic!(\"authority projects: {error}\"));",
+      "selector_identity": "invocation:f4bc9b08eed82b48:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
