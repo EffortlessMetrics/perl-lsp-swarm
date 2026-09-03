@@ -1784,6 +1784,119 @@ fn verified_tool_does_not_mask_a_project_supplied_executable() -> Result<(), Box
     Ok(())
 }
 
+/// Most-restrictive-wins holds *within* the verified-tool class, not only
+/// across risk classes.
+///
+/// Two tools are selected for one operation by the same authority: one
+/// accepted, one explicitly denied. The denial is not about a different risk
+/// class, so the earlier project-executable and ambient-PATH guards never see
+/// it — only a fold over the verified tools' own dispositions does. Granting
+/// here would let an accepted interpreter carry a refused peer into execution.
+#[test]
+fn denied_verified_tool_is_not_masked_by_an_accepted_peer() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let interpreter = verified_tool();
+    let refused = ClassifiedInput::new(
+        "tool.refused_helper",
+        InputRiskClass::SelectedVerifiedTool,
+        EnvironmentInputAuthority::UserConfiguration,
+        InputDisposition::Denied,
+        None,
+        "user_refused_this_tool",
+    );
+
+    let decision = authorize(
+        &intent(
+            OperationProfile::RunCurrentSavedFile,
+            ExecutionReasonClass::ExplicitUserAction,
+            &scope,
+            &bound,
+            ids(&[interpreter.clone(), refused.clone()]),
+        ),
+        &evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "run".to_string() },
+            &bound,
+            vec![interpreter, refused],
+        ),
+    );
+
+    require(
+        decision.outcome() == AuthorizationOutcome::Denied,
+        "a denied verified tool must deny even beside an accepted one",
+    )?;
+    require(
+        !decision.permits(ExecutionCapability::ExecutableTool),
+        "tool authority must not be granted while a selected tool is refused",
+    )?;
+    require(
+        has_reason(&decision, "verified_tool_not_accepted"),
+        "the denial must name the refused tool rather than the accepted peer",
+    )?;
+    Ok(())
+}
+
+/// The same fold, for the cadence setting class.
+///
+/// A user who enables compile-on-save in one setting and disables it in
+/// another has not authorized a persistent cadence. Reading only for an
+/// enabling setting turns an explicit refusal into repeated execution.
+#[test]
+fn denied_cadence_setting_is_not_masked_by_an_accepted_peer() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let tool = verified_tool();
+    let enabled = ClassifiedInput::new(
+        "cadence.compile_on_save",
+        InputRiskClass::UserScopedSetting,
+        EnvironmentInputAuthority::UserConfiguration,
+        InputDisposition::Accepted,
+        None,
+        "user_enabled_on_save",
+    );
+    let disabled = ClassifiedInput::new(
+        "cadence.compile_on_save_for_this_language",
+        InputRiskClass::UserScopedSetting,
+        EnvironmentInputAuthority::UserConfiguration,
+        InputDisposition::Denied,
+        None,
+        "user_disabled_on_save",
+    );
+
+    let decision = authorize(
+        &intent(
+            OperationProfile::TrustedCompileOnSave,
+            ExecutionReasonClass::TrustedPostSave,
+            &scope,
+            &bound,
+            ids(&[tool.clone(), enabled.clone(), disabled.clone()]),
+        ),
+        &evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "save".to_string() },
+            &bound,
+            vec![tool, enabled, disabled],
+        ),
+    );
+
+    require(
+        decision.outcome() != AuthorizationOutcome::Allowed,
+        "a denied cadence setting must not be overridden by an enabling peer",
+    )?;
+    require(
+        !decision.permits(ExecutionCapability::PersistentCadence),
+        "the cadence capability must be withheld while a setting refuses it",
+    )?;
+    require(
+        has_reason(&decision, "cadence_setting_not_accepted"),
+        "the outcome must name the refusing setting",
+    )?;
+    Ok(())
+}
+
 /// An ambient PATH tool is not masked by a verified tool either.
 #[test]
 fn verified_tool_does_not_mask_an_ambient_path_tool() -> Result<(), Box<dyn Error>> {

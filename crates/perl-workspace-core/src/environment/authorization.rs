@@ -726,6 +726,20 @@ pub enum InputRiskClass {
     /// A workspace- or resource-scoped setting.
     WorkspaceScopedSetting,
     /// Ambient `PATH` or working directory.
+    ///
+    /// The two are deliberately one class. Both make the operation's
+    /// *resolution* ambient rather than selected — `PATH` decides which
+    /// executable a bare tool name reaches, and the working directory decides
+    /// where a relative script path, a relative `@INC` entry, and a `PATH`
+    /// entry of `.` resolve. Neither is authority the workspace or the user
+    /// chose for this operation, so both require confirmation rather than
+    /// being granted, and both are inescapable
+    /// ([`ClassifiedInput::applies_regardless_of_intent`]).
+    ///
+    /// Splitting them would let a consumer report the two facts separately,
+    /// but it would not change any decision: no rule grants one and withholds
+    /// the other. It is therefore left as a schema change for the first
+    /// consumer that needs the distinction, not made speculatively here.
     AmbientPathOrCwd,
     /// Ambient Perl environment such as `PERL5LIB`, `PERL5OPT`, `PERLLIB`,
     /// `local::lib`, `perlbrew`, or `plenv`.
@@ -2124,6 +2138,11 @@ pub const REASON_NO_VERIFIED_TOOL: &str = "no_verified_tool";
 pub const REASON_PROJECT_SUPPLIED_EXECUTABLE: &str = "project_supplied_executable";
 /// Reason: the only tool-bearing input comes from ambient `PATH` or cwd.
 pub const REASON_AMBIENT_TOOL_SELECTION: &str = "ambient_tool_selection";
+/// Reason: a verified tool selected for this operation was not accepted.
+///
+/// Distinct from [`REASON_NO_VERIFIED_TOOL`]: a tool was selected and its
+/// disposition refused it, rather than no tool being offered at all.
+pub const REASON_VERIFIED_TOOL_NOT_ACCEPTED: &str = "verified_tool_not_accepted";
 /// Reason: ambient Perl environment cannot supply code-loading authority.
 pub const REASON_AMBIENT_ENVIRONMENT_DENIED: &str = "ambient_environment_denied";
 /// Reason: a reviewed environment activation exists but was not accepted.
@@ -2143,6 +2162,11 @@ pub const REASON_WORKSPACE_SETTING_CANNOT_GRANT_USER_AUTHORITY: &str =
     "workspace_setting_cannot_grant_user_authority";
 /// Reason: a persistent cadence needs its own explicit user opt-in.
 pub const REASON_CADENCE_NOT_AUTHORIZED: &str = "cadence_not_authorized";
+/// Reason: a user-scoped cadence setting refused the cadence.
+///
+/// Distinct from [`REASON_CADENCE_NOT_AUTHORIZED`]: the user expressed a
+/// setting and it withholds the cadence, rather than never having opted in.
+pub const REASON_CADENCE_SETTING_NOT_ACCEPTED: &str = "cadence_setting_not_accepted";
 /// Reason: an interactive session needs an explicit user action.
 pub const REASON_INTERACTIVE_SESSION_NOT_AUTHORIZED: &str = "interactive_session_not_authorized";
 /// Reason: an input's provenance could not be established.
@@ -2748,10 +2772,28 @@ fn evaluate_executable_tool(
         return CapabilityFinding::ConfirmationRequired;
     }
 
-    if inputs.iter().any(|&input| {
-        input.risk_class == InputRiskClass::SelectedVerifiedTool && input.disposition.is_accepted()
-    }) {
-        return CapabilityFinding::Granted;
+    // A selected tool that is offered but refused is a different fact from no
+    // tool being offered, so the two are separated before either can answer.
+    let verified: Vec<&ClassifiedInput> = inputs
+        .iter()
+        .copied()
+        .filter(|&input| input.risk_class == InputRiskClass::SelectedVerifiedTool)
+        .collect();
+
+    if verified.iter().any(|&input| input.disposition.is_accepted()) {
+        // Most restrictive wins within the class too: an accepted interpreter
+        // does not carry a refused or unconfirmed tool selected alongside it.
+        let (worst, blocking) = most_restrictive_disposition(&verified);
+        if worst == CapabilityFinding::Granted {
+            return worst;
+        }
+        reasons.push(reason(
+            REASON_VERIFIED_TOOL_NOT_ACCEPTED,
+            Some(capability),
+            blocking,
+            ActionableAuthority::UserConfiguration,
+        ));
+        return worst;
     }
 
     reasons.push(reason(
@@ -2916,12 +2958,31 @@ fn evaluate_persistent_cadence(
 ) -> CapabilityFinding {
     let capability = ExecutionCapability::PersistentCadence;
 
-    if inputs.iter().any(|&input| {
-        input.risk_class == InputRiskClass::UserScopedSetting
-            && input.authority == EnvironmentInputAuthority::UserConfiguration
+    // Every user-scoped setting in play is folded, not just an enabling one.
+    // A user who enables a cadence in one setting and disables it in another
+    // has not authorized it; reading only for the enabling setting would turn
+    // an explicit refusal into repeated execution.
+    let settings: Vec<&ClassifiedInput> = inputs
+        .iter()
+        .copied()
+        .filter(|&input| input.risk_class == InputRiskClass::UserScopedSetting)
+        .collect();
+
+    if settings.iter().any(|&input| {
+        input.authority == EnvironmentInputAuthority::UserConfiguration
             && input.disposition.is_accepted()
     }) {
-        return CapabilityFinding::Granted;
+        let (worst, blocking) = most_restrictive_disposition(&settings);
+        if worst == CapabilityFinding::Granted {
+            return worst;
+        }
+        reasons.push(reason(
+            REASON_CADENCE_SETTING_NOT_ACCEPTED,
+            Some(capability),
+            blocking,
+            ActionableAuthority::UserConfiguration,
+        ));
+        return worst;
     }
 
     // A workspace- or resource-scoped setting cannot manufacture user or
@@ -2965,6 +3026,36 @@ const fn finding_for_disposition(disposition: InputDisposition) -> CapabilityFin
             CapabilityFinding::Denied
         }
     }
+}
+
+/// The most restrictive finding implied by a set of inputs' own dispositions,
+/// with the input that decided it.
+///
+/// Most-restrictive-wins has to hold *within* a risk class, not only across
+/// classes. Several inputs of the same class can back one capability — two
+/// selected interpreters, an enabling and a disabling cadence setting — and a
+/// capability is granted to the operation as a whole, not per input. Asking
+/// only whether some input is accepted therefore lets an accepted peer carry a
+/// refused one into execution, which is the same "is there a good input?"
+/// before "is there a bad one?" ordering error that the cross-class guards
+/// above already exist to prevent.
+///
+/// Returns [`CapabilityFinding::Granted`] with no blocking input when every
+/// input accepts, including when `inputs` is empty; callers decide separately
+/// whether an empty set may grant at all.
+fn most_restrictive_disposition(
+    inputs: &[&ClassifiedInput],
+) -> (CapabilityFinding, Option<ClassifiedInputId>) {
+    let mut worst = CapabilityFinding::Granted;
+    let mut blocking: Option<ClassifiedInputId> = None;
+    for input in inputs {
+        let finding = finding_for_disposition(input.disposition);
+        if finding.restriction_rank() > worst.restriction_rank() {
+            worst = finding;
+            blocking = Some(input.id.clone());
+        }
+    }
+    (worst, blocking)
 }
 
 /// Workspace identity substituted when a request's own scope is unusable.
