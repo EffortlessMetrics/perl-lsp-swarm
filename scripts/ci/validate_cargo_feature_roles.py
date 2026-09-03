@@ -292,8 +292,14 @@ def member_dirs(root: Path) -> list[Path]:
     workspace = data.get("workspace")
     if not isinstance(workspace, dict):
         raise ValidationError("root Cargo.toml declares no [workspace]")
+    # A root manifest carrying its own [package] is a member, and such a
+    # workspace may legitimately declare no `members` at all. Only a *virtual*
+    # manifest (no [package]) must name members to have any.
+    root_is_package = isinstance(data.get("package"), dict)
     members = workspace.get("members")
-    if not isinstance(members, list) or not members:
+    if not isinstance(members, list):
+        members = []
+    if not members and not root_is_package:
         raise ValidationError("root Cargo.toml declares no workspace members")
     # `[workspace].exclude` removes a directory from GLOB expansion. It does not
     # override a path listed literally in `members`: Cargo treats an explicit
@@ -322,8 +328,7 @@ def member_dirs(root: Path) -> list[Path]:
                 continue
             if (path / "Cargo.toml").is_file():
                 resolved.add(path)
-    # A root manifest carrying its own [package] is a member too.
-    if isinstance(data.get("package"), dict):
+    if root_is_package:
         resolved.add(root)
     if not resolved:
         raise ValidationError("no workspace member manifests resolved")
@@ -334,6 +339,11 @@ def member_dirs(root: Path) -> list[Path]:
     # entirely — a hole in the denominator, which is the property this registry
     # exists to hold. Traversed to a fixed point, offline, from manifests only.
     root_dir = root.resolve()
+    workspace_deps: dict[str, str] = {
+        name: spec["path"]
+        for name, spec in (workspace.get("dependencies") or {}).items()
+        if isinstance(spec, dict) and isinstance(spec.get("path"), str)
+    }
     queue = sorted(resolved)
     seen = {path.resolve() for path in resolved}
     while queue:
@@ -347,10 +357,22 @@ def member_dirs(root: Path) -> list[Path]:
         except tomllib.TOMLDecodeError as error:
             raise ValidationError(f"cannot parse {current}/Cargo.toml: {error}") from error
         for table in dependency_tables(member):
-            for spec in table.values():
-                if not isinstance(spec, dict) or not isinstance(spec.get("path"), str):
+            for name, spec in table.items():
+                if not isinstance(spec, dict):
                     continue
-                candidate = (current / spec["path"]).resolve()
+                if isinstance(spec.get("path"), str):
+                    candidate = (current / spec["path"]).resolve()
+                elif spec.get("workspace") is True:
+                    # `dep = { workspace = true }` inherits the root's
+                    # declaration, which is where this workspace states 41 of
+                    # its in-tree paths. Resolving only the literal form would
+                    # miss the way the repository actually declares them.
+                    inherited = workspace_deps.get(name)
+                    if not isinstance(inherited, str):
+                        continue
+                    candidate = (root / inherited).resolve()
+                else:
+                    continue
                 # Only in-tree, non-excluded directories are enrolled; a path
                 # dependency outside the workspace is not a member, and adding
                 # one would demand rows for a crate Cargo does not govern.

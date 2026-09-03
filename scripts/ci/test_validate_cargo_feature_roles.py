@@ -633,6 +633,55 @@ class DiscoveryUnitTests(unittest.TestCase):
             self.assertEqual(facts.cfg_uses, 0)
             self.assertEqual(facts.observed_signals(), ())
 
+    def test_inherited_workspace_path_dependency_is_a_member(self) -> None:
+        # `dep = { workspace = true }` inherits the root declaration. This
+        # workspace states 41 of its 41 in-tree paths that way, so resolving
+        # only the literal form would miss how paths are actually declared.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.write_workspace(
+                root,
+                {
+                    "listed": (
+                        '[package]\nname = "listed"\n'
+                        '[features]\nalpha = []\n'
+                        '[dependencies]\nhidden = { workspace = true }\n'
+                    ),
+                    "hidden": '[package]\nname = "hidden"\n[features]\nbeta = []\n',
+                },
+            )
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["crates/listed"]\n'
+                '[workspace.dependencies]\nhidden = { path = "crates/hidden" }\n',
+                encoding="utf-8",
+            )
+            discovered = validator.discover(root)
+            self.assertIn(("listed", "alpha"), discovered)
+            self.assertIn(("hidden", "beta"), discovered)
+
+    def test_root_only_workspace_without_members_is_classified(self) -> None:
+        # A root manifest with both [package] and [workspace] and no members
+        # is a valid one-crate workspace; rejecting it would fail instead of
+        # classifying its features.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "src").mkdir(parents=True)
+            (root / "src" / "lib.rs").write_text("", encoding="utf-8")
+            (root / "Cargo.toml").write_text(
+                '[package]\nname = "solo"\n[workspace]\n[features]\nalpha = []\n',
+                encoding="utf-8",
+            )
+            self.assertIn(("solo", "alpha"), validator.discover(root))
+
+    def test_virtual_workspace_without_members_still_fails(self) -> None:
+        # The existing error must survive: a virtual manifest naming no members
+        # governs nothing, and silently passing would be a denominator hole.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+            with self.assertRaises(validator.ValidationError):
+                validator.member_dirs(root)
+
     def test_unlisted_in_tree_path_dependency_is_a_member(self) -> None:
         # Cargo enrols a path dependency living inside the workspace directory
         # even when `members` never names it. If discovery missed it, its
