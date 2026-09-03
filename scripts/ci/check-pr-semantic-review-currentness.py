@@ -41,6 +41,14 @@ SUBSTANTIVE_REVIEW_RESULTS = (
     "SUPERSEDED_OR_CLOSE",
 )
 MARKER_RESULT = "REVIEW_CURRENT"
+# The conclusion is a declaration, not a mention: exactly one result section
+# carrying exactly one result. `##` is matched at line start so a heading inside
+# a fenced block or a deeper `###` cannot pose as the declaration.
+RESULT_SECTION_RE = re.compile(
+    r"^[ \t]*##[ \t]+Substantive review result[ \t]*$", re.MULTILINE
+)
+ANY_SECTION_RE = re.compile(r"^[ \t]*##[ \t]", re.MULTILINE)
+RESULT_ITEM_RE = re.compile(r"^[ \t]*[-*][ \t]*([A-Z_]+)\b", re.MULTILINE)
 
 
 class Review(NamedTuple):
@@ -161,15 +169,43 @@ def subject_digest(root: Path, merge_base: str, head: str) -> str:
     return hashlib.sha256(diff).hexdigest()
 
 
+def declared_review_result(body: str) -> Optional[str]:
+    """Return the one substantive result this body declares, else None.
+
+    None means absent *or ambiguous*, and ambiguity is the interesting case: a
+    body carrying two result sections, or one section listing several results —
+    an unedited template, say — declares no single conclusion. Searching for a
+    `REVIEW_CURRENT` token anywhere would accept both, letting a body whose real
+    conclusion is `CHANGES_REQUIRED` carry a current marker past the merge guard.
+
+    A result named in prose is a mention, not a declaration, so only list items
+    inside the single result section count. That keeps a review free to discuss
+    the other outcomes without disqualifying itself.
+    """
+    headings = RESULT_SECTION_RE.findall(body)
+    if len(headings) != 1:
+        return None
+    match = RESULT_SECTION_RE.search(body)
+    if match is None:
+        return None
+    following = ANY_SECTION_RE.search(body, match.end())
+    section = body[match.end() : following.start()] if following else body[match.end() :]
+    declared = [
+        item
+        for item in RESULT_ITEM_RE.findall(section)
+        if item in SUBSTANTIVE_REVIEW_RESULTS
+    ]
+    if len(declared) != 1:
+        return None
+    return declared[0]
+
+
 def parse_marker(body: str, expected_pr: int, review_commit: str) -> Optional[Marker]:
     if not all(section in body for section in REQUIRED_SECTIONS):
         return None
     if "## Findings" not in body and "## No material findings" not in body:
         return None
-    if not re.search(
-        r"## Substantive review result\s*\n\s*-\s*REVIEW_CURRENT\b",
-        body,
-    ):
+    if declared_review_result(body) != MARKER_RESULT:
         return None
 
     matches = MARKER_RE.findall(body)

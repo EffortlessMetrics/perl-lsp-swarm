@@ -576,6 +576,63 @@ class SemanticReviewCurrentnessTests(unittest.TestCase):
                 )
                 self.assertEqual("NOT_PROVEN", result["classification"])
 
+    def test_ambiguous_result_declarations_are_rejected(self) -> None:
+        """An ambiguous conclusion is not a current one.
+
+        Searching for a `REVIEW_CURRENT` token anywhere after the heading accepts
+        a body that also declares something else — two result sections, or one
+        section listing several results, such as an unedited template. Each shape
+        below carries a well-formed marker, so only the declaration check can
+        reject it.
+        """
+        tmp, root, base, head = setup_repo()
+        self.addCleanup(tmp.cleanup)
+        marker = module.MARKER_RE.findall(body(42, root, base, head))[0]
+        prefix = REVIEW_SECTIONS.split("## Substantive review result")[0]
+
+        shapes = {
+            "two sections, the first not current": (
+                "## Substantive review result\n- CHANGES_REQUIRED\n\n"
+                "## Substantive review result\n- REVIEW_CURRENT\n"
+            ),
+            "two sections, current first": (
+                "## Substantive review result\n- REVIEW_CURRENT\n\n"
+                "## Substantive review result\n- NOT_PROVEN\n"
+            ),
+            "unedited template listing every option": (
+                "## Substantive review result\n- REVIEW_CURRENT\n- CHANGES_REQUIRED\n"
+                "- NOT_PROVEN\n- BLOCKED_BY_PREREQUISITE\n- SUPERSEDED_OR_CLOSE\n"
+            ),
+            "one section, two results": (
+                "## Substantive review result\n- REVIEW_CURRENT\n- CHANGES_REQUIRED\n"
+            ),
+        }
+        for name, section in shapes.items():
+            with self.subTest(shape=name):
+                ambiguous = f"{prefix}{section}\n<!-- semantic-review:v1 {marker} -->\n"
+                self.assertIn("semantic-review:v1", ambiguous)
+                self.assertIsNone(module.declared_review_result(ambiguous))
+                self.assertIsNone(module.parse_marker(ambiguous, 42, head))
+
+    def test_discussing_other_results_in_prose_still_carries_forward(self) -> None:
+        """The narrowing must not reject an honest review that names alternatives.
+
+        Reviews routinely explain why they are not NOT_PROVEN or CHANGES_REQUIRED.
+        A mention is not a declaration, so only list items in the one result
+        section count — otherwise this guard would fail closed on good bodies.
+        """
+        tmp, root, base, head = setup_repo()
+        self.addCleanup(tmp.cleanup)
+        discursive = body(42, root, base, head).replace(
+            "## Residual risk / not proved\n- external state",
+            "## Residual risk / not proved\n- external state\n"
+            "- Considered CHANGES_REQUIRED and NOT_PROVEN; neither applies here.",
+        )
+        self.assertEqual(
+            "REVIEW_CURRENT", module.declared_review_result(discursive)
+        )
+        self.assertIsNotNone(module.parse_marker(discursive, 42, head))
+
     def test_malformed_utf8_in_a_reviewed_prose_file_fails_closed(self) -> None:
         """Undecodable reviewed content is NOT_PROVEN, never a silent carry-forward.
 
