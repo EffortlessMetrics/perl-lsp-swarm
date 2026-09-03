@@ -1,0 +1,9 @@
+project: product
+component: Project environment
+kind: Added
+body: "`perl-workspace-core` gained `test_command`: deterministic, non-executing test-command planning (#13638). `plan_test_commands` turns one accepted `ProjectEnvironmentSnapshot` plus caller-supplied `GeneratedStateEvidence` into independent typed candidates for `prove -l`, `prove -b`, `make test`, and `Build test`, each carrying exact argv, working directory, environment-snapshot identity, trust, provenance, and the generated artifacts it requires. Missing, stale, and unobserved generated state stay distinct admission states and an unobserved artifact never reads as ready, so a runner is reported with a reason rather than silently lost or silently offered. Planning performs no filesystem access, no process execution, and no repair of stale build state."
+time: 2026-09-03T11:45:00Z
+custom:
+  PR: "0000"
+  Slug: test-command-planning-13638
+  Breaking: "no"
