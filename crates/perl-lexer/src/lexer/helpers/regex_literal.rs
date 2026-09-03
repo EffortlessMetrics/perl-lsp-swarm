@@ -12,7 +12,7 @@ use crate::mode::LexerMode;
 use crate::quote_handler;
 use crate::token::{Token, TokenType};
 
-use super::truncate_preview;
+use super::{empty_arc, truncate_preview};
 
 impl PerlLexer<'_> {
     /// Consume every alphanumeric character after a regex closer.
@@ -64,11 +64,7 @@ impl PerlLexer<'_> {
                 self.position = self.input.len();
                 return Token {
                     token_type: TokenType::UnknownRest,
-                    // The token payload must cover its span: the parser-side
-                    // checked token constructor rejects geometry-only tokens,
-                    // and their conversion fallback would silently synthesize
-                    // `Eof`, erasing the typed lexer-budget stop cause (#14158).
-                    text: Arc::from(&self.input[start..self.position]),
+                    text: empty_arc(),
                     start,
                     end: self.position,
                 };
