@@ -819,3 +819,40 @@ fn an_unresolvable_ref_is_not_swallowed_by_a_combinator() -> Result<()> {
     assert!(error.contains("unresolved"), "the failure must name the unresolved ref, got: {error}");
     Ok(())
 }
+
+/// A sibling of `$ref` is a real constraint, not decoration.
+///
+/// These schemas declare draft 2020-12, where `$ref` composes with its siblings
+/// rather than replacing them. Treating `$ref` as terminal would silently skip
+/// any sibling assertion — the same fail-open shape the keyword guard exists to
+/// prevent. Raised by review; no envelope this suite validates pairs them
+/// today, but `agent_review_packet.v1` already pairs `$ref` with `minItems`
+/// elsewhere in `schemas/`, so the shape is live in the repository.
+#[test]
+fn a_sibling_of_a_ref_is_still_enforced() -> Result<()> {
+    let schema = json!({
+        "$defs": {"list": {"type": "array"}},
+        "$ref": "#/$defs/list",
+        "minItems": 2
+    });
+
+    // The referenced target and the sibling must both hold.
+    schema_check::validate(&schema, &json!(["a", "b"]))
+        .map_err(|error| eyre!("an instance satisfying ref and sibling must pass: {error}"))?;
+    assert!(
+        schema_check::validate(&schema, &json!(["a"])).is_err(),
+        "the sibling constraint alongside $ref must be enforced, not skipped"
+    );
+    assert!(
+        schema_check::validate(&schema, &json!("not-an-array")).is_err(),
+        "the referenced target must still be enforced"
+    );
+
+    // A schema error inside the referenced target still propagates.
+    let broken = json!({"$defs": {"bad": {"futureKeyword": true}}, "$ref": "#/$defs/bad"});
+    let error = schema_check::validate(&broken, &json!("anything"))
+        .err()
+        .ok_or_else(|| eyre!("an unimplemented keyword behind a $ref must not be swallowed"))?;
+    assert!(error.contains("futureKeyword"), "the failure must name the keyword, got: {error}");
+    Ok(())
+}

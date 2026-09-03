@@ -128,12 +128,18 @@ fn check(schema: &Value, root: &Value, instance: &Value) -> Result<(), CheckErro
             }
         }
     }
+    // Under draft 2020-12 — the draft these schemas declare — `$ref` is an
+    // applicator that composes with its siblings rather than replacing them.
+    // Returning here instead would silently skip any sibling assertion, which
+    // is the same fail-open shape `KNOWN_KEYWORDS` exists to prevent: the
+    // schema would appear checked while a constraint it declares went
+    // unevaluated. So the target is checked and evaluation continues.
     if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
         let pointer = reference.strip_prefix('#').unwrap_or(reference);
         let target = root
             .pointer(pointer)
             .ok_or_else(|| CheckError::schema(format!("schema $ref {reference} unresolved")))?;
-        return check(target, root, instance);
+        check(target, root, instance)?;
     }
     if let Some(expected) = schema.get("type") {
         let satisfied = match expected {
