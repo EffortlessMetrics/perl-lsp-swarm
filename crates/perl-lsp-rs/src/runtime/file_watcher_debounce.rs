@@ -667,6 +667,17 @@ impl FileWatcherDebouncer {
         snapshot
     }
 
+    /// Whether both worker threads have actually exited. Non-blocking, so a
+    /// settlement observer can distinguish "stop requested" from "stopped"
+    /// without joining (#10024). `true` once [`Self::shutdown_now`] has taken
+    /// and joined the handles, and also when neither thread ever spawned.
+    pub(crate) fn has_exited(&self) -> bool {
+        self.workers
+            .lock()
+            .as_ref()
+            .is_none_or(|handles| handles.intake.is_finished() && handles.dispatcher.is_finished())
+    }
+
     /// Stop intake and join both workers. Idempotent; invoked from `Drop`.
     ///
     /// Actual teardown policy: intake stops first; whatever is still pending
@@ -686,25 +697,46 @@ impl FileWatcherDebouncer {
             let Some(handles) = workers.take() else {
                 return;
             };
-            let shared = &self.shared;
-            {
-                let mut guard = shared.state.lock();
-                guard.shutting_down = true;
-                let mut remaining: Vec<String> = guard.subjects.keys().cloned().collect();
-                remaining.sort_unstable();
-                for chunk in remaining.chunks(shared.max_batch_subjects) {
-                    guard.outbox.push_back(chunk.to_vec());
-                }
-                guard.subjects.clear();
-                guard.heap.clear();
-                shared.stats.pending_subjects.store(0, Ordering::SeqCst);
-                shared.intake_cv.notify_all();
-                shared.handoff_cv.notify_all();
-            }
+            self.signal_shutdown();
             handles
         };
         join_worker(handles.intake);
         join_worker(handles.dispatcher);
+    }
+
+    /// The signalling half of [`Self::shutdown_now`], WITHOUT joining.
+    ///
+    /// Stops intake, flushes whatever is pending into the outbox under the
+    /// teardown policy documented on `shutdown_now`, and wakes both workers --
+    /// then returns immediately, leaving the handles in place for
+    /// [`Self::has_exited`] to observe and for `Drop`/`shutdown_now` to join.
+    ///
+    /// This exists so an application shutdown can request a stop without
+    /// blocking: `shutdown_now` joins the dispatcher, and a dispatcher stuck
+    /// in a blocked callback never returns, which would strand a
+    /// deadline-bounded settlement loop before it could record
+    /// `TimedOut` (#10024).
+    ///
+    /// Idempotent: a second call after `shutting_down` is already set returns
+    /// without re-flushing. Nothing can accumulate in between, because
+    /// `try_schedule` refuses admissions once `shutting_down` is set.
+    pub(crate) fn signal_shutdown(&self) {
+        let shared = &self.shared;
+        let mut guard = shared.state.lock();
+        if guard.shutting_down {
+            return;
+        }
+        guard.shutting_down = true;
+        let mut remaining: Vec<String> = guard.subjects.keys().cloned().collect();
+        remaining.sort_unstable();
+        for chunk in remaining.chunks(shared.max_batch_subjects) {
+            guard.outbox.push_back(chunk.to_vec());
+        }
+        guard.subjects.clear();
+        guard.heap.clear();
+        shared.stats.pending_subjects.store(0, Ordering::SeqCst);
+        shared.intake_cv.notify_all();
+        shared.handoff_cv.notify_all();
     }
 }
 
