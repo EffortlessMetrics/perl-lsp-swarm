@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 13501,
-  "reason": "Reconciles the exact candidate VSIX inventory after current-main Rust 1.95, packaging compatibility, DAP resolution, and published-smoke proof repairs. The candidate changes package metadata and the bundled extension output; the measured 29-file package remains size-only with no file additions, removals, or permission loosening.",
-  "base_baseline_file_sha256": "bbedb2f0d07c89240638a3e1323b4c57e75e64ac3f36e8b70223754dbe43417d",
-  "candidate_baseline_file_sha256": "d6f01dad2c5a8b18a75dab8bdd0c55a50d168f042b7a3aaa7ed57af7af5d63d2",
-  "base_inventory_sha256": "47560cea1d8fa4da6af0bd27939daba70e14f4d8415f82177081f7ca71af8e33",
-  "candidate_inventory_sha256": "af077116d6be5400315a98d2e0f1aa05197c930ac7521fea3f6b72a319d56975"
+  "owner_issue": 14678,
+  "reason": "Closes the orphaned-schema gap in #14678. The candidate wires an extension-owned resource census from the activation ownership registry into src/extensionOwnedResourceCensus.ts and the activate() extension API, growing the bundled out/extension.js from 1626479 to 1636125 bytes. The measured 29-file package remains size-only: no file additions, removals, or permission loosening.",
+  "base_baseline_file_sha256": "6bb74251f37db9dc496d6e9d9a69e949c12499a208187adf4a3cfb4102bad707",
+  "candidate_baseline_file_sha256": "ead549f99a68d55a78f83a3b94d6e95cfc860be529d79813b6bc6ff13e070a75",
+  "base_inventory_sha256": "59427c5d2cd28808b9f35d31979e2419d488c844143695357245732a88356679",
+  "candidate_inventory_sha256": "a526f424818662c8ec573c84cd9360eccfff0e3ee7a56d7123c4df047fdc02df"
 }

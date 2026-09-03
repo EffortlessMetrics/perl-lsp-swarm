@@ -1134,6 +1134,9 @@ fn test_feature_catalog_has_feature_known() {
 
 #[test]
 fn test_feature_catalog_all_dap_features_registered() {
+    // #9091: `dap.watchpoints` is deliberately excluded — the row remains in
+    // features.toml with full maturity metadata, but it is no longer advertised
+    // until watchpoint identity/install/hit proof exists.
     let all_ids = [
         "dap.core",
         "dap.breakpoints.basic",
@@ -1144,7 +1147,6 @@ fn test_feature_catalog_all_dap_features_registered() {
         "dap.exceptions.warn",
         "dap.inline_values",
         "dap.modules",
-        "dap.watchpoints",
     ];
     for id in all_ids {
         assert!(
@@ -1152,6 +1154,16 @@ fn test_feature_catalog_all_dap_features_registered() {
             "feature `{id}` should be registered in the DAP catalog"
         );
     }
+}
+
+/// #9091: watchpoints stay unadvertised while the re-enable gate
+/// (identity/install/hit proof) is unmet.
+#[test]
+fn test_feature_catalog_watchpoints_not_advertised() {
+    assert!(
+        !perl_dap::feature_catalog::has_feature("dap.watchpoints"),
+        "dap.watchpoints must not be advertised while the #9091 re-enable gate (watchpoint identity/install/hit proof) is unmet"
+    );
 }
 
 #[test]

@@ -293,15 +293,17 @@ impl UxHarness {
     }
 
     /// Apply a full-document text replacement and send `textDocument/didChange`.
+    ///
+    /// The version-ownership lock is held across the notification so legacy and
+    /// buffer-only lifecycle sends share one serialization boundary and cannot
+    /// interleave out of version order.
     pub fn change_file_full(&self, relative_path: &str, updated_content: &str) -> Result<()> {
         self.workspace.write(relative_path, updated_content)?;
         let uri = self.workspace.uri(relative_path);
-        let version = {
-            let mut versions = self.document_versions.lock().unwrap_or_else(|e| e.into_inner());
-            let entry = versions.entry(uri.clone()).or_insert(1);
-            *entry += 1;
-            *entry
-        };
+        let mut versions = self.document_versions.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = versions.entry(uri.clone()).or_insert(1);
+        *entry += 1;
+        let version = *entry;
         self.client.did_change_full(&uri, version, updated_content)
     }
 
@@ -309,6 +311,9 @@ impl UxHarness {
     ///
     /// Useful for UX regressions where the editor mode intentionally differs
     /// from the file extension (for example, opening `*.html.ep` as HTML).
+    ///
+    /// The opened document joins the version-ownership map on success, so the
+    /// buffer-only lifecycle helpers see it exactly like [`Self::open_file`].
     pub fn open_file_with_language_id(
         &self,
         relative_path: &str,
@@ -317,7 +322,9 @@ impl UxHarness {
     ) -> Result<()> {
         self.workspace.write(relative_path, content)?;
         let uri = self.workspace.uri(relative_path);
-        self.client.did_open_with_language_id(&uri, content, language_id)
+        self.client.did_open_with_language_id(&uri, content, language_id)?;
+        self.document_versions.lock().unwrap_or_else(|e| e.into_inner()).insert(uri, 1);
+        Ok(())
     }
 
     /// Request hover information at `(line, character)` (0-indexed UTF-16).
@@ -325,6 +332,22 @@ impl UxHarness {
     /// Returns `None` if the server returned a null/empty result (degraded mode is OK).
     /// Returns `Err` only if the server returned a JSON-RPC error or timed out.
     pub fn hover(&self, relative_path: &str, line: u32, character: u32) -> Result<Option<Value>> {
+        self.hover_with_timeout(relative_path, line, character, self.config.timeout)
+    }
+
+    /// Request hover information with an explicit per-request timeout.
+    ///
+    /// Deadline-polling callers pass the remaining wall-clock budget so one
+    /// blocking request cannot outrun the caller's own deadline (the default
+    /// `ScenarioConfig::timeout` is 30 s and is independent of any local
+    /// polling deadline).
+    pub fn hover_with_timeout(
+        &self,
+        relative_path: &str,
+        line: u32,
+        character: u32,
+        timeout: Duration,
+    ) -> Result<Option<Value>> {
         let uri = self.workspace.uri(relative_path);
         let resp = self.client.request(
             "textDocument/hover",
@@ -332,7 +355,7 @@ impl UxHarness {
                 "textDocument": { "uri": uri },
                 "position": { "line": line, "character": character }
             }),
-            self.config.timeout,
+            timeout,
         )?;
         if resp["result"].is_null() {
             return Ok(None);
@@ -342,6 +365,22 @@ impl UxHarness {
 
     /// Request completion at `(line, character)`.
     pub fn completion(&self, relative_path: &str, line: u32, character: u32) -> Result<Vec<Value>> {
+        self.completion_with_timeout(relative_path, line, character, self.config.timeout)
+    }
+
+    /// Request completion with an explicit per-request timeout.
+    ///
+    /// Deadline-polling callers pass the remaining wall-clock budget so one
+    /// blocking request cannot outrun the caller's own deadline (the default
+    /// `ScenarioConfig::timeout` is 30 s and is independent of any local
+    /// polling deadline).
+    pub fn completion_with_timeout(
+        &self,
+        relative_path: &str,
+        line: u32,
+        character: u32,
+        timeout: Duration,
+    ) -> Result<Vec<Value>> {
         let uri = self.workspace.uri(relative_path);
         let resp = self.client.request(
             "textDocument/completion",
@@ -350,7 +389,7 @@ impl UxHarness {
                 "position": { "line": line, "character": character },
                 "context": { "triggerKind": 1 }
             }),
-            self.config.timeout,
+            timeout,
         )?;
         if resp.get("error").is_some() {
             return Err(anyhow!("completion returned error: {}", resp["error"]));
@@ -1675,11 +1714,13 @@ mod strict_binary_guard_subprocess_tests {
     ///    `current_exe()`-walk fallback (it would otherwise find the real,
     ///    already-built `perl-lsp` sitting next to this same test binary in
     ///    a normal CI run).
-    /// 2. Clears `PERL_LSP_BIN`, `CARGO_TARGET_DIR`, and `CARGO_MANIFEST_DIR`
-    ///    in the CHILD's environment only (never the parent's — this crate
-    ///    denies `unsafe_code`, and `std::env::set_var` on the parent
-    ///    process is `unsafe`) so none of `resolve_binary()`'s other
-    ///    fallbacks can find a real binary either.
+    /// 2. Clears the CHILD's entire inherited environment before enabling
+    ///    strict mode (never the parent's — this crate denies `unsafe_code`,
+    ///    and `std::env::set_var` on the parent process is `unsafe`). This
+    ///    removes the explicit override, Cargo directory/profile hints, and
+    ///    `PATH`, so none of `resolve_binary()`'s ambient fallbacks can find a
+    ///    real binary. The child remains launchable because `isolated_exe` is
+    ///    an absolute path.
     ///
     /// Note: merely pointing `PERL_LSP_BIN` at a nonexistent path does NOT
     /// exercise this guard — `resolve_binary()`'s step 1 returns `Ok` for
@@ -1707,9 +1748,7 @@ mod strict_binary_guard_subprocess_tests {
                 "--exact",
                 "--nocapture",
             ])
-            .env_remove("PERL_LSP_BIN")
-            .env_remove("CARGO_TARGET_DIR")
-            .env_remove("CARGO_MANIFEST_DIR")
+            .env_clear()
             .env(REQUIRE_BINARY_ENV, "1")
             .output()?;
 

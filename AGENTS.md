@@ -236,12 +236,15 @@ Otherwise detect, explain, repair, and continue.
 
 ## Repository hygiene and local proof
 
-- use direct PowerShell, Git, GitHub, Cargo, and repository commands for local
-  work; do not require a token-saving command wrapper or wrapper initialization;
+- use direct PowerShell, Git, GitHub, Cargo, and repository commands for local work;
 - preserve the direct command and its relevant output in evidence and handoffs;
 - read nearest package-local owner guidance before modifying an owning crate;
 - production code must not use `unwrap`, `expect`, `panic!`, `todo!`,
   `unimplemented!`, `abort`, or `dbg!` outside documented narrow exceptions;
+- migrating a test's `.expect("…")` onto the `perl-test-must` helpers uses the
+  context-preserving `must_with`/`must_some_with`/`must_err_with`; the bare
+  `must`/`must_some`/`must_err` are only correct when the call site carried no
+  explanation (`cargo xtask ci-hygiene check-must-context` reports the drop);
 - never use `git stash` in worktrees; use scoped restore or a WIP commit;
 - stage intended paths explicitly;
 - use one worktree per genuine concurrent write claim, not per lifecycle pass;

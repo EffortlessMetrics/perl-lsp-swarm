@@ -47,6 +47,21 @@
       "boundedness": "focused"
     },
     {
+      "id": "parser.hir.postfix_modifiers",
+      "package": "perl-parser-core",
+      "target": "hir_statement_modifier_proof",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#6689",
+      "reason": "Execute exact flat- and body-HIR postfix statement-modifier topology, source geometry, access-mode, label-disposition, and prefix-control negative proof.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
       "id": "parser.pir.branch_body",
       "package": "perl-parser-core",
       "target": "pir_a_branch_body_test",
@@ -263,6 +278,21 @@
       ],
       "owner": "#11787",
       "reason": "Execute the full ripr seam-proof suite for the parser (seams 1-5): class version, builtin ternary, dollar-deref, substitution e-modifier, and related boundaries.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.command_line.oneliners",
+      "package": "perl-parser-core",
+      "target": "command_line_oneliners",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#13114",
+      "reason": "Keep representative source bodies used with Perl command-line switches executable as clean parser contracts.",
       "disposition": "execute",
       "boundedness": "focused"
     }
