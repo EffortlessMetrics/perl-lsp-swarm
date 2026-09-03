@@ -15,6 +15,49 @@ This flow may begin from reviewed proof, an existing branch, an existing candida
 
 Before creating another branch, check whether an equivalent current candidate already implements the same claim. Do not inspect sibling claim frames, touched-file overlap, or nearby symbols as a routine ownership check.
 
+## Mutation admission
+
+Before the accountable root edits the candidate directly or delegates any candidate
+mutation, retain one admission whose semantic and mechanical keys identify the same
+exact claim/candidate/writer boundary.
+
+### Semantic key
+
+Carry the current root-held acceptance-and-rollback claim and semantic owner; governing
+authority, current facts and contradictions, and production or observable seam;
+acceptance surface; cheapest first falsifier and realistic negative control; proof
+ceiling, explicit `NOT_PROVEN` boundary, and deferred broader proof; and the named next
+or backward route.
+
+### Mechanical key
+
+Carry repository, common-dir, and remote identity; issue and claim identity; candidate
+branch; expected head and base; worktree; one writer; intended mutation; required
+postcondition; and the canonical writer-preflight/admission decision when installed.
+Treat observed values as current evidence, not durable instructions.
+
+### Same-subject join
+
+Both keys must identify the same exact claim/candidate/writer boundary about to mutate.
+Semantic authority does not establish mechanical safety. Mechanical safety does not
+establish authority to implement another claim. Direct root edits and delegated writer
+edits use the same join, and entry midstream does not bypass admission.
+
+Read-only research may precede admission. Immediately before mutation, re-derive or
+revalidate volatile mechanical identity. Do not mutate when either key is missing,
+stale, contradictory, or cross-subject. Do not infer either key, silently substitute a
+nearby candidate, or mint a second candidate to avoid resolving admission.
+
+Changed claim, authority, or scope routes to `$prepare-issue`; weak or undiscriminating
+proof routes to `$prepare-proof`; missing or stale mechanical evidence routes to writer
+admission/preflight. A collision or unsafe subject returns `WRITER_COLLISION` /
+`UNSAFE_WORKTREE`; unresolved identity or instrumentation returns `BLOCKED` /
+`NOT_PROVEN`.
+
+Keep this runtime-local unless it changes durable claim, authority, or proof state. It
+is not a stage record or second work database, and does not create a lease, scheduler,
+or tracked frontier.
+
 ## Orchestration affordances
 
 ### Root decisions

@@ -21,6 +21,7 @@ on:
       - 'xtask/src/tasks/agent_flow.rs'
       - 'xtask/src/tasks/mod.rs'
       - 'xtask/tests/agent_merge_review_backstop.rs'
+      - 'xtask/tests/agent_shift_left_mutation_admission_contract.rs'
       - 'xtask/tests/pr_convergence_contract.rs'
       - 'policy/skill-provider-parity.toml'
       - 'scripts/tests/test-agent-flow-control-plane-trigger.sh'
@@ -42,6 +43,7 @@ on:
       - 'xtask/src/tasks/agent_flow.rs'
       - 'xtask/src/tasks/mod.rs'
       - 'xtask/tests/agent_merge_review_backstop.rs'
+      - 'xtask/tests/agent_shift_left_mutation_admission_contract.rs'
       - 'xtask/tests/pr_convergence_contract.rs'
       - 'policy/skill-provider-parity.toml'
       - 'scripts/tests/test-agent-flow-control-plane-trigger.sh'
@@ -76,6 +78,9 @@ jobs:
 
       - name: Check deterministic route scenarios
         run: cargo xtask agent-flow scenarios --format json
+
+      - name: Check shift-left mutation admission
+        run: cargo test -p xtask --test agent_shift_left_mutation_admission_contract --locked
 
       - name: Check merge review/integration backstop
         run: cargo test -p xtask --test agent_merge_review_backstop --locked
