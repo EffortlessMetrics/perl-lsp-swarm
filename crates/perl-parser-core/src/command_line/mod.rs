@@ -50,11 +50,16 @@
 //!   `perl -Mutf8 -MFooα` loads `Fooα.pm` while `perl -MFooα -Mutf8` dies, and
 //!   an arbitrary expression such as `-M'strict;use utf8'` flips it too. Those
 //!   are reported as undecidable rather than classified — see
-//!   [`AmbiguityKind::ModuleNameDependsOnSourceContext`]. Undecidable means the
-//!   pragma really would settle it: an argument that is not a plain name under
-//!   `utf8` either stays arbitrary code, so both `-M'strict;print "α"'` (which
-//!   breaks before the non-ASCII text) and `-M'Fooα;print 999'` (which breaks
-//!   after it, and prints `999` under `-Mutf8`) are reported as such;
+//!   [`AmbiguityKind::ModuleNameDependsOnSourceContext`], which is where the
+//!   exact meaning of that report lives. Two things it does *not* mean. It is
+//!   not a fallback for anything non-ASCII: an argument that is not a plain
+//!   name even when non-ASCII text counts is reported as arbitrary code, so
+//!   both `-M'strict;print "α"'` (breaking before the non-ASCII text) and
+//!   `-M'Fooα;print 999'` (breaking after it, and printing `999` under
+//!   `-Mutf8`) are classified as such. And it is not a claim that `utf8` would
+//!   make the argument a name — `perl -Mutf8 -MFoo€` still dies, because the
+//!   scan behind the report is deliberately wider than Perl's identifier rule;
+//!   a consumer must read it as *unknown*;
 //! - a value-taking switch consumes the rest of its cluster, so `-ine` is `-i`
 //!   with the extension `ne`, not `-i -n -e`;
 //! - `-l` and `-0` consume octal digits and then keep bundling, so `-lane` is
