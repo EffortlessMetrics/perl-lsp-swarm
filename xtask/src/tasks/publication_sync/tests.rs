@@ -56,9 +56,12 @@ fn fixture_input_bytes(path: &str) -> Option<Vec<u8>> {
 
 /// Paths a checkout of the prepared swarm tree contains as regular files,
 /// beyond the fixture's own rows.
-const FIXTURE_PRESENT_PATHS: [&str; 15] = [
+const FIXTURE_PRESENT_PATHS: [&str; 18] = [
     "Cargo.toml",
     "Cargo.lock",
+    ".cargo/config.toml",
+    "vendored/crate/.cargo/config.toml",
+    "deploy/config.toml",
     "crates/perl-parser/Cargo.toml",
     "crates/perl-parser/src/lexer.rs",
     "crates/perl-parser/src/lib.rs",
@@ -1499,6 +1502,59 @@ fn rust_build_manifests_cannot_be_displaced() -> Result<()> {
             let receipt = plan_displacing_row(path, action, "generated")?;
             assert_verdict(&receipt, Verdict::Blocked)?;
             assert_finding(&receipt, "row_product_bearing_exclusion")?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn cargo_configuration_cannot_be_displaced() -> Result<()> {
+    // `.cargo/config.toml` carries `[build] rustflags`, `[target.*]` linker
+    // selection and `[source]`/`[registries]` replacement, so displacing it
+    // changes what is built exactly as displacing `Cargo.toml` does. It hid
+    // from all three classifiers for three different reasons, so this control
+    // asserts the two cheap ones really are blind to it before trusting the
+    // rule it actually names.
+    for path in [".cargo/config.toml", "vendored/crate/.cargo/config.toml"] {
+        if is_product_or_test_path(path) {
+            bail!("{path} is already caught by the source heuristic; pick a sharper case");
+        }
+
+        // Unlike the rest of the Rust family, this path IS in the non-Rust
+        // ledger — and the ledger declines to protect it. `entry_is_protected`
+        // keeps a `config` entry only on a shipped surface, and the real
+        // `.cargo/**` entry declares `surface = "tooling"`, so the entry is
+        // filtered out before `classify` consults it. Reproduce that exact row
+        // shape and check the filter directly rather than through `classify`,
+        // which now answers from the rule under test before it ever reaches the
+        // ledger. If the ledger were what blocked this row, that rule would be
+        // untested and this control would prove nothing.
+        let ledger = ProductSurface::from_ledger_rows_for_test(vec![(path, "config", "tooling")]);
+        if !ledger.entries.is_empty() {
+            bail!("the ledger already protects {path}; this control proves nothing");
+        }
+
+        for action in ["drop_swarm_only", "preserve_release", "regenerate"] {
+            let receipt = plan_displacing_row(path, action, "generated")?;
+            assert_verdict(&receipt, Verdict::Blocked)?;
+            assert_finding(&receipt, "row_product_bearing_exclusion")?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn only_the_configuration_cargo_actually_reads_is_protected() -> Result<()> {
+    // The opposite direction, pinning both halves of the match. Widening it to
+    // the whole `.cargo/**` subtree the ledger entry covers would make the
+    // first two undroppable; dropping the parent-directory guard and matching
+    // the file name alone would protect the third, and `config.toml` is far too
+    // common a name for that. Either is the over-protection failure the `config`
+    // carve-out already had to repair once.
+    for path in [".cargo/mutants.toml", ".cargo/config.local.toml.example", "deploy/config.toml"] {
+        let receipt = plan_displacing_row(path, "drop_swarm_only", "generated")?;
+        if receipt.findings.iter().any(|f| f.code == "row_product_bearing_exclusion") {
+            bail!("{path} was protected as cargo build configuration: {:?}", receipt.findings);
         }
     }
     Ok(())

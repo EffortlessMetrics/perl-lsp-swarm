@@ -746,9 +746,10 @@ impl ProductSurface {
     ///    editor clients and packaging metadata;
     /// 3. Rust-family build manifests, which neither of the above can see —
     ///    the extension heuristic has no `toml` rule, and the non-Rust ledger
-    ///    structurally excludes Rust-family files. `Cargo.toml` and
-    ///    `Cargo.lock` define the product's crates and pinned dependencies, so
-    ///    displacing them from publication changes what is built.
+    ///    either excludes Rust-family files structurally or declines to protect
+    ///    them. `Cargo.toml` and `Cargo.lock` define the product's crates and
+    ///    pinned dependencies, so displacing them from publication changes what
+    ///    is built.
     fn classify(&self, path: &str, evaluated_at: Option<chrono::NaiveDate>) -> SurfaceVerdict {
         if is_product_or_test_path(path) || is_rust_build_manifest(path) {
             return SurfaceVerdict::ProductOrTest;
@@ -867,11 +868,40 @@ fn is_prose_document(path: &str) -> bool {
 }
 
 /// Rust-family build and toolchain manifests at any depth.
+///
+/// Cargo's own configuration belongs here for the same reason `Cargo.toml`
+/// does, and was missed for a different one. Its file name is `config.toml`, so
+/// the name match below cannot see it, and unlike the rest of the Rust family it
+/// *is* in the non-Rust ledger — as `non-rust-cargo-config`, `.cargo/**`,
+/// declaring `surface = "tooling"`. That surface is outside `SHIPPED_SURFACES`,
+/// so `entry_is_protected` drops the entry before `classify` consults the
+/// ledger. All three sources therefore missed a file carrying `[build]
+/// rustflags`, `[target.*]` linker selection and `[source]`/`[registries]`
+/// replacement: displacing it changes what is built exactly as displacing
+/// `Cargo.toml` does.
+///
+/// Only the two names Cargo actually reads, not everything under `.cargo/`. The
+/// `mutants.toml` and `config.local.toml.example` living beside it are
+/// development-only and stay droppable, which is what publication is for.
 fn is_rust_build_manifest(path: &str) -> bool {
-    matches!(
+    if matches!(
         path.rsplit('/').next().unwrap_or(path),
         "Cargo.toml" | "Cargo.lock" | "rust-toolchain.toml" | "rust-toolchain"
-    )
+    ) {
+        return true;
+    }
+    is_cargo_configuration(path)
+}
+
+/// A `.cargo/config.toml` or `.cargo/config`, at the repository root or nested.
+///
+/// Matched on the parent directory rather than the file name alone, because
+/// `config.toml` is far too common a name to protect wherever it appears.
+fn is_cargo_configuration(path: &str) -> bool {
+    let Some((parent, name)) = path.rsplit_once('/') else {
+        return false;
+    };
+    matches!(name, "config.toml" | "config") && (parent == ".cargo" || parent.ends_with("/.cargo"))
 }
 
 // ---------------------------------------------------------------------------
