@@ -74,6 +74,7 @@ pub use hop::StructuralAccessHop;
 
 use serde::{Deserialize, Serialize};
 
+use crate::interprocedural::NO_FILE;
 use crate::semantic_identity::SemanticIdentityFingerprint;
 use crate::{
     BoundaryDisposition, BoundaryKind, BoundaryLink, Confidence, FactId, FileId,
@@ -516,6 +517,22 @@ impl StructuralAccessSubject {
     /// Returns [`StructuralAccessContractError::EmptyIdentityField`] when the
     /// workspace root is present but blank.
     pub fn validate(&self) -> Result<(), StructuralAccessContractError> {
+        // `NO_FILE` is this crate's sentinel for "no file", documented as one
+        // that "must never survive validation in a contract subject". The
+        // sibling interprocedural contract rejects it for exactly that reason,
+        // and this contract needs it more, not less: chain law 5 requires every
+        // hop anchor to name the subject's document, so a sentinel document
+        // would satisfy that law while anchoring the whole access nowhere —
+        // hollowing out the source-backing this contract claims when it says a
+        // hop always carries real spelling and a real anchor.
+        //
+        // Rejecting it here closes the chain too, since that law forces every
+        // hop's file identity to equal this one.
+        if self.document == NO_FILE {
+            return Err(StructuralAccessContractError::EmptyIdentityField(
+                "StructuralAccessSubject.document",
+            ));
+        }
         if let Some(root) = self.workspace_root.as_ref()
             && root.trim().is_empty()
         {

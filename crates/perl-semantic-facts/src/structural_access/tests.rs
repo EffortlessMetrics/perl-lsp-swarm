@@ -3139,3 +3139,50 @@ fn a_contradictory_spelling_cannot_survive_the_transport_boundary() -> Result<()
     );
     Ok(())
 }
+
+// ── The no-file sentinel is not a document (found by Devin review) ────────
+
+#[test]
+fn the_no_file_sentinel_cannot_be_a_chain_subject() -> Result<(), Box<dyn Error>> {
+    // `NO_FILE` is documented in this crate as a sentinel that "must never
+    // survive validation in a contract subject", and the sibling
+    // interprocedural contract rejects it. A structural access needs the rule
+    // more, not less: chain law 5 makes every hop anchor name the subject's
+    // document, so a sentinel subject would satisfy that law while anchoring
+    // the access nowhere.
+    let error = contract_error(StructuralAccessSubject::new(
+        crate::interprocedural::NO_FILE,
+        SourceGeneration::known("g"),
+        None,
+        None,
+    ))?;
+    assert!(
+        matches!(error, StructuralAccessContractError::EmptyIdentityField(field)
+            if field == "StructuralAccessSubject.document"),
+        "the no-file sentinel must not name a document, got {error:?}"
+    );
+    // Negative control: an ordinary document still builds, including the
+    // largest identity that is not the sentinel.
+    StructuralAccessSubject::new(DOCUMENT, SourceGeneration::known("g"), None, None)?;
+    StructuralAccessSubject::new(FileId(u64::MAX - 1), SourceGeneration::known("g"), None, None)?;
+    Ok(())
+}
+
+#[test]
+fn a_source_free_chain_cannot_survive_the_transport_boundary() -> Result<(), Box<dyn Error>> {
+    // Serde reaches the subject without its constructor, so the law has to
+    // hold on the transport path. Every hop anchor is moved to the sentinel
+    // too, so chain law 5 still agrees and this law is what rejects it.
+    let mut value = serde_json::to_value(nested_chain()?)?;
+    let sentinel = serde_json::json!(u64::MAX);
+    value["subject"]["document"] = sentinel.clone();
+    for hop in value["hops"].as_array_mut().ok_or("hops must be an array")? {
+        hop["spelling"]["anchor"]["file_id"] = sentinel.clone();
+    }
+    let decoded: StructuralAccessChain = serde_json::from_value(value)?;
+    assert!(
+        decoded.validate().is_err(),
+        "a chain anchored at the no-file sentinel must not survive transport"
+    );
+    Ok(())
+}
