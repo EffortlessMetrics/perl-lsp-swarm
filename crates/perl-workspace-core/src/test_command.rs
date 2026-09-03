@@ -919,12 +919,21 @@ fn build_candidate(
 
     let (admission, reason_code) = admit(&required_generated_state);
 
+    // Provenance is part of identity, not decoration hung off it. Two build
+    // facts can justify the same command shape; if the tool and build-fact
+    // identities were excluded here the two candidates would share an id and
+    // one would be silently dropped by the dedup below, discarding a provenance
+    // chain a consumer needs to explain the offer. This follows the sibling
+    // model in `environment.rs`, where the same physical path may still be
+    // several materially distinct occurrences.
     let mut identity_fields: Vec<&str> = vec![
         kind.identity_tag(),
         include_mode.identity_tag(),
         program.normalized.as_str(),
         working_dir.normalized.as_str(),
         input_id.as_str(),
+        tool_candidate_id.as_deref().unwrap_or(""),
+        build_system_id.as_deref().unwrap_or(""),
     ];
     identity_fields.extend(argv.iter().map(String::as_str));
     let id = stable_id(TEST_COMMAND_ID_DOMAIN, &identity_fields);
@@ -965,21 +974,26 @@ fn bind_requirement_to_working_dir(
     working_dir: &EnvironmentPathRef,
     evidence_matches_snapshot: bool,
 ) -> GeneratedStateRequirement {
-    if requirement.state != GeneratedStateFreshness::Current {
-        return requirement;
-    }
-
     let artifact = requirement.artifact.identity_tag();
     let downgrade = |requirement: &mut GeneratedStateRequirement, suffix: &str| {
         requirement.state = GeneratedStateFreshness::NotProven;
         requirement.reason_code = format!("generated_state.{suffix}.{artifact}");
     };
 
-    // Evidence from another configuration generation describes inputs that may
-    // since have changed; it cannot establish that *this* snapshot's command is
-    // ready, whatever it said about the one it was gathered against.
+    // Checked before the state-specific paths below, because a mismatch
+    // invalidates every verdict, not only `Current`. A foreign `Stale` or
+    // `Missing` is not a weaker claim about this snapshot — it is a claim about
+    // a different one, and reporting it verbatim would attribute another
+    // generation's observation to this plan. The path goes with it: the
+    // Module::Build launcher is taken from this field, so leaving it would let
+    // an obsolete location shape a command built for the current snapshot.
     if !evidence_matches_snapshot {
         downgrade(&mut requirement, "snapshot_mismatch");
+        requirement.path = None;
+        return requirement;
+    }
+
+    if requirement.state != GeneratedStateFreshness::Current {
         return requirement;
     }
 

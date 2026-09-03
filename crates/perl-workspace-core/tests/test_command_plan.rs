@@ -421,6 +421,139 @@ fn evidence_from_another_snapshot_cannot_make_a_command_ready() -> Result<(), Fi
     Ok(())
 }
 
+/// A mismatch invalidates every verdict, not only `Current`. A foreign `Stale`
+/// is a claim about a different snapshot, and its path must not survive either:
+/// the Module::Build launcher is taken from that field. Rules out: reporting
+/// another generation's observation verbatim, or letting an obsolete location
+/// shape a command built for this snapshot.
+#[test]
+fn non_current_evidence_from_another_snapshot_does_not_survive() -> Result<(), FixtureError> {
+    let snapshot_for = |generation: u64| -> Result<ProjectEnvironmentSnapshot, FixtureError> {
+        let root_input = accepted_input("root.workspace");
+        let build_input = accepted_input("build.module_build");
+        Ok(ProjectEnvironmentSnapshotBuilder::new(
+            WORKSPACE_ID,
+            generation,
+            WorkspaceTrust::Trusted,
+        )
+        .with_input(root_input.clone())
+        .with_input(build_input.clone())
+        .with_project_root(ProjectRoot::new(
+            ProjectRootRole::Workspace,
+            path(WORKSPACE_PATH),
+            root_input.id.clone(),
+        ))
+        .with_build_system(build_fact(BuildSystemKind::ModuleBuild, build_input.id.clone()))
+        .build()?)
+    };
+
+    let observed_snapshot = snapshot_for(11)?;
+    let later_snapshot = snapshot_for(12)?;
+
+    for stale_state in [
+        GeneratedStateFreshness::Stale,
+        GeneratedStateFreshness::Missing,
+        GeneratedStateFreshness::NotProven,
+    ] {
+        let evidence = GeneratedStateEvidence::for_snapshot(&observed_snapshot).with_observation(
+            GeneratedArtifact::BuildScript,
+            observed(stale_state, Some("/ws/Build")),
+        );
+
+        let carried = plan_test_commands(&later_snapshot, &evidence)?;
+
+        // The obsolete path must not become this snapshot's launcher.
+        assert!(
+            candidates_of(&carried.candidates, TestRunnerKind::BuildTest).is_empty(),
+            "a {stale_state:?} observation from another snapshot supplied a launcher"
+        );
+        assert!(
+            carried
+                .limitations
+                .iter()
+                .any(|item| item.code == "test_command.build_script_location_unknown"),
+            "the unusable launcher is reported for {stale_state:?}"
+        );
+        assert!(
+            carried
+                .limitations
+                .iter()
+                .any(|item| item.code == "test_command.generated_state_from_another_snapshot"),
+            "the mismatch itself is reported for {stale_state:?}"
+        );
+    }
+    Ok(())
+}
+
+/// Two build facts can justify the same command shape. Identity must keep them
+/// apart so neither provenance chain is silently dropped by dedup. Rules out:
+/// collapsing distinct provenance into one candidate.
+#[test]
+fn two_build_facts_justifying_one_command_stay_distinct() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.make");
+    let build_input = accepted_input("build.eumm");
+    let snapshot = builder
+        .with_input(tool_input.clone())
+        .with_input(build_input.clone())
+        .with_tool_candidate(make_tool("make", tool_input.id.clone()))
+        .with_build_system(BuildSystemFactRef::new(
+            BuildSystemKind::ExtUtilsMakeMaker,
+            Digest::of("makefile-pl"),
+            build_input.id.clone(),
+        ))
+        .with_build_system(BuildSystemFactRef::new(
+            BuildSystemKind::ExtUtilsMakeMaker,
+            Digest::of("mymeta"),
+            build_input.id.clone(),
+        ))
+        .build()?;
+
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+    let make = candidates_of(&plan.candidates, TestRunnerKind::MakeTest);
+
+    assert_eq!(make.len(), 2, "both build facts keep their own candidate");
+    assert_ne!(make[0].id, make[1].id, "distinct provenance means distinct identity");
+    assert_ne!(
+        make[0].build_system_id, make[1].build_system_id,
+        "each candidate names the fact that justified it"
+    );
+    assert_eq!(make[0].argv, make[1].argv, "the command shape is genuinely the same");
+    Ok(())
+}
+
+/// `prove -b` needs blib on `@INC`, and a pure-Perl distribution has `blib/lib`
+/// with no `blib/arch` at all — arch only exists once something is compiled.
+/// Requiring both roles would exclude most distributions. Rules out: treating
+/// `BlibRoots` as demanding a complete lib+arch pair.
+#[test]
+fn a_pure_perl_blib_without_arch_still_offers_the_blib_form() -> Result<(), FixtureError> {
+    for role in [IncludeEntryRole::BlibLib, IncludeEntryRole::BlibArch] {
+        let (builder, _) = base_builder();
+        let tool_input = accepted_input("tool.prove");
+        let blib_input = accepted_input("include.blib");
+        let snapshot = builder
+            .with_input(tool_input.clone())
+            .with_input(blib_input.clone())
+            .with_tool_candidate(prove_tool(tool_input.id.clone()))
+            .with_include_entry(IncludeEntry::new(
+                role,
+                path("/ws/blib/lib"),
+                blib_input.id.clone(),
+                0,
+            ))
+            .build()?;
+
+        let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+        let blib = candidates_of(&plan.candidates, TestRunnerKind::Prove)
+            .into_iter()
+            .find(|candidate| candidate.include_mode == TestIncludeMode::BlibRoots);
+
+        assert!(blib.is_some(), "{role:?} alone must still offer the blib form");
+    }
+    Ok(())
+}
+
 /// A `make` binary on `PATH` is not evidence that this project uses MakeMaker.
 /// Rules out: deriving the runner from the tool alone.
 #[test]
