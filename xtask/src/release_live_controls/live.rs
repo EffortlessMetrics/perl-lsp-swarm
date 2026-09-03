@@ -70,7 +70,11 @@ fn run_gh(args: &[&str]) -> Result<String, ApiError> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(ApiError {
             status: parse_http_status(&stderr),
-            detail: stderr.trim().to_string(),
+            detail: stderr
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .map(|line| line.chars().take(200).collect())
+                .unwrap_or_else(|| "gh returned a non-success status".to_string()),
         });
     }
     String::from_utf8(output.stdout).map_err(|error| ApiError {
@@ -215,8 +219,39 @@ fn parse_classic_protection(value: &Value) -> ClassicProtection {
     let required_status_checks = match value.get("required_status_checks") {
         None | Some(Value::Null) => Observed::absent("required_status_checks not present"),
         Some(raw) => {
-            let strict = raw.get("strict").and_then(Value::as_bool).unwrap_or(false);
-            let checks = raw.get("checks").and_then(Value::as_array);
+            let Some(object) = raw.as_object() else {
+                return ClassicProtection {
+                    required_status_checks: Observed::not_proven(
+                        "required_status_checks was not an object",
+                    ),
+                    enforce_admins: Observed::not_proven("protection response was malformed"),
+                    required_pull_request_reviews: Observed::not_proven(
+                        "protection response was malformed",
+                    ),
+                    required_conversation_resolution: Observed::not_proven(
+                        "protection response was malformed",
+                    ),
+                    restrictions_present: Observed::not_proven("protection response was malformed"),
+                };
+            };
+            let Some(strict) = object.get("strict").and_then(Value::as_bool) else {
+                return ClassicProtection {
+                    required_status_checks: Observed::not_proven(
+                        "required_status_checks.strict was missing or not boolean",
+                    ),
+                    enforce_admins: Observed::not_proven("protection response was incomplete"),
+                    required_pull_request_reviews: Observed::not_proven(
+                        "protection response was incomplete",
+                    ),
+                    required_conversation_resolution: Observed::not_proven(
+                        "protection response was incomplete",
+                    ),
+                    restrictions_present: Observed::not_proven(
+                        "protection response was incomplete",
+                    ),
+                };
+            };
+            let checks = object.get("checks").and_then(Value::as_array);
             // An unreadable row is NOT "not a required check". Dropping it
             // would shrink the required set and let a malformed or newer
             // payload read as weaker enforcement than is actually in force —
@@ -236,7 +271,7 @@ fn parse_classic_protection(value: &Value) -> ClassicProtection {
                             .ok_or(index)
                     })
                     .collect(),
-                _ => match raw.get("contexts").and_then(Value::as_array) {
+                _ => match object.get("contexts").and_then(Value::as_array) {
                     Some(rows) => rows
                         .iter()
                         .enumerate()
@@ -473,8 +508,24 @@ fn parse_ruleset_rule(raw: &RawRulesetRule) -> Result<RulesetRule, String> {
     let mut required_review_thread_resolution = None;
     let mut dismiss_stale_reviews_on_push = None;
 
-    if let Some(parameters) = &raw.parameters {
-        if let Some(checks) = parameters.get("required_status_checks").and_then(Value::as_array) {
+    if raw.rule_type == "required_status_checks" {
+        let parameters = raw
+            .parameters
+            .as_ref()
+            .ok_or_else(|| "required_status_checks rule omitted parameters".to_string())?;
+        let parameters = parameters.as_object().ok_or_else(|| {
+            "required_status_checks rule parameters must be an object".to_string()
+        })?;
+        let checks = parameters
+            .get("required_status_checks")
+            .ok_or_else(|| {
+                "required_status_checks rule omitted required_status_checks".to_string()
+            })?
+            .as_array()
+            .ok_or_else(|| {
+                "required_status_checks rule required_status_checks must be an array".to_string()
+            })?;
+        {
             for (index, check) in checks.iter().enumerate() {
                 match check.get("context").and_then(Value::as_str) {
                     Some(context) => required_contexts.push(context.to_string()),
@@ -489,6 +540,15 @@ fn parse_ruleset_rule(raw: &RawRulesetRule) -> Result<RulesetRule, String> {
                 }
             }
         }
+        required_approving_review_count = parameters
+            .get("required_approving_review_count")
+            .and_then(Value::as_u64)
+            .map(|n| n as u32);
+        required_review_thread_resolution =
+            parameters.get("required_review_thread_resolution").and_then(Value::as_bool);
+        dismiss_stale_reviews_on_push =
+            parameters.get("dismiss_stale_reviews_on_push").and_then(Value::as_bool);
+    } else if let Some(parameters) = &raw.parameters {
         required_approving_review_count = parameters
             .get("required_approving_review_count")
             .and_then(Value::as_u64)

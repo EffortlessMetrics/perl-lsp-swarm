@@ -86,7 +86,6 @@ pub fn subjects_from_product_identity(
     let contract: ProductIdentityToml = toml::from_str(&raw)
         .wrap_err_with(|| format!("parsing product identity contract {}", path.display()))?;
 
-    let branch = branch_override.unwrap_or(DEFAULT_BRANCH);
     let development = contract
         .product
         .development_repository
@@ -96,13 +95,31 @@ pub fn subjects_from_product_identity(
         .public_repository
         .ok_or_else(|| eyre!("{} is missing product.public_repository", path.display()))?;
 
-    Ok(vec![parse_subject(&development, branch)?, parse_subject(&public, branch)?])
+    let (development_branch, public_branch) = match branch_override {
+        Some(branch) => (branch, branch),
+        None => {
+            let topology = crate::contributor_topology::build_projection(repo_root, None)
+                .map_err(|error| eyre!("loading contributor topology branch authority: {error}"))?;
+            (
+                topology.static_topology.development_default_branch.as_str(),
+                topology.static_topology.publication_branch.as_str(),
+            )
+        }
+    };
+
+    Ok(vec![
+        parse_subject(&development, development_branch)?,
+        parse_subject(&public, public_branch)?,
+    ])
 }
 
 fn parse_subject(full_name: &str, branch: &str) -> Result<RepositorySubject> {
     let (owner, name) = full_name
         .split_once('/')
         .ok_or_else(|| eyre!("{full_name:?} is not an owner/name repository identity"))?;
+    if owner.is_empty() || name.is_empty() || name.contains('/') {
+        bail!("{full_name:?} is not an owner/name repository identity");
+    }
     Ok(RepositorySubject {
         owner: owner.to_string(),
         name: name.to_string(),
