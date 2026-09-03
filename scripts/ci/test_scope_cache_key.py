@@ -17,6 +17,7 @@ import hashlib
 import importlib.util
 import io
 import os
+import re
 import unittest
 from pathlib import Path
 
@@ -203,6 +204,7 @@ class WorkflowContractTests(unittest.TestCase):
     """The consuming workflow step must stay aligned with the helper (#2908)."""
 
     WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
+    TOKMD_WORKFLOW = REPO_ROOT / ".github/workflows/tokmd.yml"
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -299,6 +301,71 @@ class WorkflowContractTests(unittest.TestCase):
             "only windows-platform-smoke may consume the scope-hash output",
         )
 
+    def test_tokmd_pr_cache_restores_without_candidate_writes(self) -> None:
+        if not self.TOKMD_WORKFLOW.is_file():
+            self.skipTest("tokmd.yml not present in this checkout")
+
+        text = self.TOKMD_WORKFLOW.read_text(encoding="utf-8")
+        cache_marker = "- name: Cache Cargo dependencies"
+        cache_start = text.index(cache_marker)
+        cache_end = text.index("\n      - name:", cache_start + len(cache_marker))
+        cache_segment = text[cache_start:cache_end]
+        save_if_lines = [
+            line.strip()
+            for line in cache_segment.splitlines()
+            if line.strip().startswith("save-if:")
+        ]
+
+        self.assertEqual(
+            1,
+            text.count("uses: Swatinem/rust-cache@"),
+            "tokmd analyze must declare exactly one rust-cache step",
+        )
+        self.assertIn(
+            "cache-on-failure: true",
+            cache_segment,
+            "tokmd cache should remain reusable after canonical failures",
+        )
+        self.assertIn(
+            "shared-key: tokmd-review-1.10.0",
+            cache_segment,
+            "tokmd cache namespace must remain version-scoped",
+        )
+        self.assertEqual(
+            1,
+            len(save_if_lines),
+            "tokmd cache must declare exactly one save boundary",
+        )
+        save_if = save_if_lines[0].removeprefix("save-if:").strip()
+        match = re.fullmatch(
+            r"\$\{\{\s*github\.ref\s*==\s*'([^']+)'\s*\|\|\s*"
+            r"github\.ref\s*==\s*'([^']+)'\s*\}\}",
+            save_if,
+        )
+        if match is None:
+            self.fail(
+                "tokmd cache save-if must be an exact two-ref canonical boundary"
+            )
+
+        self.assertEqual(
+            {"refs/heads/master", "refs/heads/main"},
+            set(match.groups()),
+            "tokmd cache writes must be limited to canonical branches",
+        )
+        allowed_refs = set(match.groups())
+        for event_ref, expected_write in (
+            ("refs/heads/main", True),
+            ("refs/heads/master", True),
+            ("refs/pull/13101/merge", False),
+            ("refs/heads/feature/cache", False),
+            ("refs/tags/v1.10.0", False),
+        ):
+            with self.subTest(event_ref=event_ref):
+                self.assertEqual(
+                    expected_write,
+                    event_ref in allowed_refs,
+                    "cache writes must be limited to canonical branch refs",
+        )
 
 if __name__ == "__main__":
     unittest.main()

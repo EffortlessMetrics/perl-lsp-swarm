@@ -1,0 +1,735 @@
+# Canonical repository/package ownership authority for the repository-split programme.
+#
+# Controller: #7370 (repository topology + boundary checker)
+# Programme:  #7369 (externalize parsers, prepare parser/LSP/corpus boundaries)
+# This file:  #7675 (schema + seeded current ownership state)
+#
+# SCOPE. This is the DATA authority only. Static Cargo/dependency/metadata enforcement
+# is #7683, package-isolation execution is #7688, and CI routing plus state promotion
+# is #7695. Nothing here moves source or changes a dependency.
+#
+# SINGLE OWNERSHIP AUTHORITY. Package rows below are the only place a package is bound
+# to a repository. Repository rows deliberately do NOT restate their owned packages, so
+# ownership cannot disagree with itself. The generated projection renders per-repository
+# ownership from these rows (see docs/architecture/repository-topology.md).
+#
+# CURRENT VS FUTURE. `current_owner` is a fact: every package listed here is still source
+# in this repository, because no package has been externalized yet. `future_owner` is
+# recorded only where a maintainer ruling exists. Everything still under review carries
+# placement = "pending" with the owning issue and the exact open question, rather than a
+# false final answer.
+#
+# CLOSED VS OPEN VOCABULARIES. Every classification field here is a closed set,
+# validated at parse time: `role`, `history_transfer`, `placement`,
+# `publish_disposition`, `metadata_authority`, and `excluded_trees.kind` are
+# rejected outright if the value is not a recognised member. Adding a role or a
+# transfer policy is therefore a code change in
+# `xtask/src/tasks/repository_topology.rs`, on purpose — a new repository role is
+# a governance decision that should be reviewed, not a string someone can coin in
+# passing. The two genuinely open fields are `migration_state` and
+# `current_integration_mode`, and neither is free text either: both are checked
+# against the `[[migration_states]]` vocabulary declared below in this file, so
+# they can be extended here without touching code.
+
+schema_version = "repository_topology.v1"
+
+# ---------------------------------------------------------------------------
+# Migration states and the integration modes each state permits.
+# ---------------------------------------------------------------------------
+
+[[migration_states]]
+state = "embedded"
+description = "Source lives in this repository and no extraction work has started."
+legal_integration_modes = ["workspace_path"]
+allows_embedded_workspace_source = true
+requires_immutable_consumption = false
+accepts_future_packages = true
+
+[[migration_states]]
+state = "preparing"
+description = "Extraction is being prepared. Source remains a workspace member and may stay a workspace path while isolation proof is red."
+legal_integration_modes = ["workspace_path"]
+allows_embedded_workspace_source = true
+requires_immutable_consumption = false
+accepts_future_packages = true
+
+[[migration_states]]
+state = "extracting"
+description = "History and source are being transferred. A temporary exact Git bridge is permitted alongside the workspace path."
+legal_integration_modes = ["workspace_path", "exact_git_bridge"]
+allows_embedded_workspace_source = true
+requires_immutable_consumption = false
+accepts_future_packages = true
+
+[[migration_states]]
+state = "externalizing"
+description = "Source ownership has moved out. Consumption is an immutable exact Git bridge or a released version; the bridge requires an owner and exit condition."
+legal_integration_modes = ["exact_git_bridge", "released_registry"]
+allows_embedded_workspace_source = false
+requires_immutable_consumption = true
+accepts_future_packages = true
+
+[[migration_states]]
+state = "external"
+description = "The repository owns its source independently and is consumed as an immutable dependency. Embedded workspace source is not permitted."
+legal_integration_modes = ["released_registry", "exact_git_bridge"]
+allows_embedded_workspace_source = false
+requires_immutable_consumption = true
+accepts_future_packages = true
+
+[[migration_states]]
+state = "retired"
+description = "No longer consumed by this repository."
+legal_integration_modes = ["none", "repository_local_only"]
+allows_embedded_workspace_source = false
+requires_immutable_consumption = false
+accepts_future_packages = false
+
+# ---------------------------------------------------------------------------
+# Repositories.
+# ---------------------------------------------------------------------------
+
+[[repositories]]
+repository_id = "swarm-product"
+target = "EffortlessMetrics/perl-lsp-swarm"
+migration_state = "embedded"
+role = "product_integration"
+allowed_dependencies = ["perl-parser", "lsp-framework", "perl-corpus", "perl-parser-pest", "tree-sitter-perl-c", "source-identity-lower"]
+forbidden_dependencies = []
+history_transfer = "not_applicable"
+controller = "#7369"
+move_issue = "#7370"
+blocking_prerequisites = []
+authority_refs = ["#7115", "#6957", "#6738"]
+notes = "The current monorepo and the product/integration repository after every split. Retains workspace/project services, module/environment/process services, native tooling, LSP/MCP/DAP adapters, editor packaging, and release/evidence orchestration."
+
+[[repositories]]
+repository_id = "perl-parser-pest"
+target = "EffortlessMetrics/perl-parser-pest"
+migration_state = "preparing"
+role = "experimental_parser"
+allowed_dependencies = []
+forbidden_dependencies = ["swarm-product"]
+history_transfer = "preserve_path_history"
+controller = "#7372"
+move_issue = "#7372"
+blocking_prerequisites = ["#7372"]
+authority_refs = ["#7369"]
+notes = "Experimental/learning/differential Pest parser. Maintainer ruling: becomes its own public repository; it is not the production parser. Still a workspace member, so the state is preparing, not external."
+
+[[repositories]]
+repository_id = "tree-sitter-perl-c"
+target = "EffortlessMetrics/tree-sitter-perl-c"
+migration_state = "preparing"
+role = "historical_comparison_subject"
+allowed_dependencies = []
+forbidden_dependencies = ["swarm-product"]
+history_transfer = "preserve_path_history"
+controller = "#7378"
+move_issue = "#7378"
+blocking_prerequisites = ["#7378", "#3111", "#7255", "#7256", "#2428"]
+authority_refs = ["#7369"]
+notes = "Historical/experimental generated C Tree-sitter subject. Externalization follows the current-upstream comparison cutover; the swarm stops vendoring the C parser implementation."
+
+[[repositories]]
+repository_id = "lsp-framework"
+target_decision_owner = "#9661"
+migration_state = "preparing"
+role = "generic_lsp_framework"
+allowed_dependencies = []
+forbidden_dependencies = ["swarm-product", "perl-parser", "perl-corpus", "source-identity-lower"]
+history_transfer = "undecided"
+controller = "#7384"
+move_issue = "#7384"
+blocking_prerequisites = ["#7384", "#9661"]
+authority_refs = ["#7611", "#7626", "#7397"]
+notes = "Language-neutral custom LSP framework, currently embedded in perl-lsp-rs/perl-lsp-rs-core. No package has been carved out yet, and the published name is undecided: `effortless-lsp` is a working identity only. The framework must reach zero perl-* dependencies before extraction."
+
+[[repositories]]
+repository_id = "perl-parser"
+target = "EffortlessMetrics/perl-parser"
+migration_state = "preparing"
+role = "native_parser_workspace"
+allowed_dependencies = ["source-identity-lower"]
+forbidden_dependencies = ["swarm-product", "lsp-framework"]
+history_transfer = "preserve_path_history"
+controller = "#7398"
+move_issue = "#7398"
+blocking_prerequisites = ["#7398", "#7400", "#2477", "#7399"]
+authority_refs = ["#7584", "#7590", "#7603", "#7613", "#7625"]
+notes = "Future native parser/compiler-front-end workspace. Preparation only: the physical split waits on the facade, incremental, position, and fact-authority gates. Package membership is frozen by #7400. Its first slice (#14259) accepted the nine front-end packages whose normal in-workspace dependency closure is already free of product-owned crates. The remaining parser-side rows stay placement-pending. This row's blocking_prerequisites and authority_refs carry the repository-level gates only. The per-package exits - parser-core utility baggage, the perl-symbol reduction, the Tree-sitter semantic overlay, the shared fact vocabulary - are held by #7400, which every pending row names as its migration_owner; they are deliberately not restated here, and the pending rows still carry #7400's generic seeded question rather than their individual exit, which #7400 owns refining."
+
+[[repositories]]
+repository_id = "perl-corpus"
+target = "EffortlessMetrics/perl-corpus"
+migration_state = "preparing"
+role = "corpus_assets"
+allowed_dependencies = []
+forbidden_dependencies = ["swarm-product", "perl-parser"]
+history_transfer = "preserve_path_history"
+controller = "#7405"
+move_issue = "#7405"
+blocking_prerequisites = ["#7405", "#7406", "#8841", "#6980", "#6696"]
+authority_refs = ["#7369"]
+notes = "Reusable Perl corpus assets, schemas, generators, and tooling. Must not own production parser implementation; parser execution stays an adapter."
+
+[[repositories]]
+repository_id = "source-identity-lower"
+target_decision_owner = "#7663"
+migration_state = "preparing"
+role = "lower_source_identity"
+allowed_dependencies = []
+forbidden_dependencies = ["swarm-product", "perl-parser", "lsp-framework"]
+history_transfer = "undecided"
+controller = "#7652"
+move_issue = "#7663"
+blocking_prerequisites = ["#7663"]
+authority_refs = ["#4851", "#7604"]
+notes = "#7652 selected `perl-source-identity` as the canonical lower source-identity owner and landed source_identity.v1. The repository destination is still unresolved: #7663 owns proving the package builds and is consumed outside this workspace before any target is chosen."
+
+# ---------------------------------------------------------------------------
+# Packages. Exactly one row per root-workspace member, ordered by name.
+# `publish_disposition` and `metadata_authority` are cross-checked against each
+# package manifest by `cargo xtask repo-topology check`.
+#
+# PARSER DEV-DEPENDENCY RESIDUAL (#14259, inherited by #7683 and #7688). The nine
+# packages accepted to `perl-parser` are closed under NORMAL in-workspace
+# dependencies, which is the rule their acceptance rests on. Their DEV
+# dependencies still leave that set, on seven edges:
+#
+#   perl-lexer             -> perl-tdd-support      (accepted: swarm-product)
+#   perl-lexer             -> perl-parser-core      (pending)
+#   perl-pod               -> perl-test-must        (accepted: swarm-product)
+#   perl-position-tracking -> perl-tdd-support      (accepted: swarm-product)
+#   perl-position-tracking -> perl-test-generators  (pending)
+#   perl-regex             -> perl-test-must        (accepted: swarm-product)
+#   perl-token             -> perl-parser-core      (pending)
+#
+# Whether `forbidden_dependencies` binds dev-only edges is unresolved here on
+# purpose: this file declares the edges, #7683 owns the rule and its
+# enforcement, and #7688 owns making these test dependencies actually resolve
+# once the workspace splits. Recorded so neither has to rediscover it, and so a
+# later reader does not mistake normal-graph closure for whole-graph closure.
+# ---------------------------------------------------------------------------
+
+[[packages]]
+name = "perl-ast"
+path = "crates/perl-ast"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "perl-parser"
+migration_owner = "#7398"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-ast-v2"
+path = "crates/perl-ast-v2"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "perl-parser"
+migration_owner = "#7398"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-ci-hygiene"
+path = "crates/perl-ci-hygiene"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "swarm-product"
+migration_owner = "#7369"
+publish_disposition = "private_workspace_member"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-core-harness"
+path = "crates/perl-core-harness"
+current_owner = "swarm-product"
+placement = "pending"
+migration_owner = "#7400"
+placement_question = "Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification."
+publish_disposition = "private_workspace_member"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-core-harness-types"
+path = "crates/perl-core-harness-types"
+current_owner = "swarm-product"
+placement = "pending"
+migration_owner = "#7400"
+placement_question = "Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification."
+publish_disposition = "private_workspace_member"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-core-test-runner"
+path = "crates/perl-core-test-runner"
+current_owner = "swarm-product"
+placement = "pending"
+migration_owner = "#7400"
+placement_question = "Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification."
+publish_disposition = "private_workspace_member"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-corpus"
+path = "crates/perl-corpus"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "perl-corpus"
+migration_owner = "#7405"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-dap"
+path = "crates/perl-dap"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "swarm-product"
+migration_owner = "#7369"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-diagnostics"
+path = "crates/perl-diagnostics"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "swarm-product"
+migration_owner = "#7369"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-incremental-parsing"
+path = "crates/perl-incremental-parsing"
+current_owner = "swarm-product"
+placement = "pending"
+migration_owner = "#7400"
+placement_question = "Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification."
+publish_disposition = "private_workspace_member"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-kwalitee"
+path = "crates/perl-kwalitee"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "swarm-product"
+migration_owner = "#7369"
+publish_disposition = "private_workspace_member"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-lexer"
+path = "crates/perl-lexer"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "perl-parser"
+migration_owner = "#7398"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-line-index"
+path = "crates/perl-line-index"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "perl-parser"
+migration_owner = "#7398"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-lsp-perltidy"
+path = "crates/perl-lsp-perltidy"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "swarm-product"
+migration_owner = "#7369"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-lsp-rs"
+path = "crates/perl-lsp-rs"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "swarm-product"
+migration_owner = "#7384"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-lsp-rs-core"
+path = "crates/perl-lsp-rs-core"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "swarm-product"
+migration_owner = "#7384"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-lsp-ux-tests"
+path = "crates/perl-lsp-ux-tests"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "swarm-product"
+migration_owner = "#7369"
+publish_disposition = "private_workspace_member"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-module"
+path = "crates/perl-module"
+current_owner = "swarm-product"
+placement = "pending"
+migration_owner = "#7400"
+placement_question = "Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification."
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-parser"
+path = "crates/perl-parser"
+current_owner = "swarm-product"
+placement = "pending"
+migration_owner = "#7400"
+placement_question = "Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification."
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-parser-bench"
+path = "crates/perl-parser-bench"
+current_owner = "swarm-product"
+placement = "pending"
+migration_owner = "#7400"
+placement_question = "Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification."
+publish_disposition = "private_workspace_member"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-parser-comparison"
+path = "crates/perl-parser-comparison"
+current_owner = "swarm-product"
+placement = "pending"
+migration_owner = "#7400"
+placement_question = "Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification."
+publish_disposition = "private_workspace_member"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-parser-core"
+path = "crates/perl-parser-core"
+current_owner = "swarm-product"
+placement = "pending"
+migration_owner = "#7400"
+placement_question = "Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification."
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "package_explicit"
+
+[[packages]]
+name = "perl-parser-pest"
+path = "crates/perl-parser-pest"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "perl-parser-pest"
+migration_owner = "#7372"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-pod"
+path = "crates/perl-pod"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "perl-parser"
+migration_owner = "#7398"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-position-tracking"
+path = "crates/perl-position-tracking"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "perl-parser"
+migration_owner = "#7398"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-pragma"
+path = "crates/perl-pragma"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "perl-parser"
+migration_owner = "#7398"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-regex"
+path = "crates/perl-regex"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "perl-parser"
+migration_owner = "#7398"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-ripr-facts"
+path = "crates/perl-ripr-facts"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "swarm-product"
+migration_owner = "#7369"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-semantic-analyzer"
+path = "crates/perl-semantic-analyzer"
+current_owner = "swarm-product"
+placement = "pending"
+migration_owner = "#7400"
+placement_question = "Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification."
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-semantic-facts"
+path = "crates/perl-semantic-facts"
+current_owner = "swarm-product"
+placement = "pending"
+migration_owner = "#7400"
+placement_question = "Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification."
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-source-identity"
+path = "crates/perl-source-identity"
+current_owner = "swarm-product"
+placement = "pending"
+migration_owner = "#7663"
+placement_question = "Repository destination for the canonical lower source-identity owner is unresolved; #7663 owns the standalone package proof."
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-subprocess-runtime"
+path = "crates/perl-subprocess-runtime"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "swarm-product"
+migration_owner = "#7369"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-symbol"
+path = "crates/perl-symbol"
+current_owner = "swarm-product"
+placement = "pending"
+migration_owner = "#7400"
+placement_question = "Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification."
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-tdd-support"
+path = "crates/perl-tdd-support"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "swarm-product"
+migration_owner = "#7369"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-test-facts"
+path = "crates/perl-test-facts"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "swarm-product"
+migration_owner = "#7369"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-test-generators"
+path = "crates/perl-test-generators"
+current_owner = "swarm-product"
+placement = "pending"
+migration_owner = "#7400"
+placement_question = "Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification."
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-test-must"
+path = "crates/perl-test-must"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "swarm-product"
+migration_owner = "#7369"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-token"
+path = "crates/perl-token"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "perl-parser"
+migration_owner = "#7398"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-tree-sitter-compat"
+path = "crates/perl-tree-sitter-compat"
+current_owner = "swarm-product"
+placement = "pending"
+migration_owner = "#7400"
+placement_question = "Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification."
+publish_disposition = "private_workspace_member"
+current_integration_mode = "workspace_path"
+metadata_authority = "package_explicit"
+
+[[packages]]
+name = "perl-uri"
+path = "crates/perl-uri"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "swarm-product"
+migration_owner = "#7369"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-workspace"
+path = "crates/perl-workspace"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "swarm-product"
+migration_owner = "#7369"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "perl-workspace-core"
+path = "crates/perl-workspace-core"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "swarm-product"
+migration_owner = "#7369"
+publish_disposition = "private_workspace_member"
+current_integration_mode = "workspace_path"
+metadata_authority = "package_explicit"
+
+[[packages]]
+name = "perllsp"
+path = "crates/perllsp"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "swarm-product"
+migration_owner = "#7369"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "tree-sitter-perl-c"
+path = "crates/tree-sitter-perl-c"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "tree-sitter-perl-c"
+migration_owner = "#7378"
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "tree-sitter-perl-rs"
+path = "crates/tree-sitter-perl-rs"
+current_owner = "swarm-product"
+placement = "pending"
+migration_owner = "#7400"
+placement_question = "Parser-repository membership and public/private disposition are unresolved; #7400 owns the classification."
+publish_disposition = "published"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+[[packages]]
+name = "xtask"
+path = "xtask"
+current_owner = "swarm-product"
+placement = "accepted"
+future_owner = "swarm-product"
+migration_owner = "#7369"
+publish_disposition = "private_workspace_member"
+current_integration_mode = "workspace_path"
+metadata_authority = "workspace_inherited"
+
+# ---------------------------------------------------------------------------
+# Source trees excluded from the root workspace that still carry topology meaning.
+# ---------------------------------------------------------------------------
+
+[[excluded_trees]]
+path = "tree-sitter-perl"
+kind = "vendored_upstream_source"
+owner = "#7378"
+notes = "Legacy vendored C Tree-sitter Perl grammar excluded from the root workspace. #7369 requires that no generated C Perl parser/scanner remain vendored in the product repository after externalization."
+
+[[excluded_trees]]
+path = "fuzz"
+kind = "separate_workspace"
+owner = "#7400"
+notes = "cargo-fuzz workspace holding perl-parser-fuzz. #7400 classifies parser-specific fuzz targets, so its repository destination follows the parser package set."
