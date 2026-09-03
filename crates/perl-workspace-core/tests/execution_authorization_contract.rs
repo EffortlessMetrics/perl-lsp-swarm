@@ -2507,3 +2507,144 @@ fn external_path_dispositions_are_preserved_and_most_restrictive_wins() -> Resul
     )?;
     Ok(())
 }
+
+/// A hermetic scope names the CI identity, not workspace trust, as the remedy.
+///
+/// Workspace trust is deliberately ignored under a CI scope, so advising an
+/// operator to grant it would leave the denial exactly where it was.
+#[test]
+fn ci_scope_denials_name_the_ci_identity_as_actionable() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::ci_hermetic("ws");
+    let bound = generations("ws", 1)?;
+    let tool = verified_tool();
+
+    // A hermetic scope with no CI identity: authority is absent.
+    let decision = authorize(
+        &intent(
+            OperationProfile::CiHermeticProcess,
+            ExecutionReasonClass::CiHermetic,
+            &scope,
+            &bound,
+            vec![tool.id.clone()],
+        ),
+        &evidence(&scope, WorkspaceTrust::Trusted, AuthorizationActor::None, &bound, vec![tool]),
+    );
+
+    require(
+        decision.outcome() == AuthorizationOutcome::Denied,
+        "a hermetic scope without a CI identity is denied",
+    )?;
+    require(
+        has_reason(&decision, "no_ci_identity"),
+        "the denial must name the missing CI identity",
+    )?;
+    require(
+        !has_reason(&decision, "workspace_untrusted"),
+        "workspace trust is ignored in a hermetic scope and must not be advised",
+    )?;
+    require(
+        decision
+            .reasons()
+            .iter()
+            .any(|reason| reason.actionable_authority == ActionableAuthority::CiIdentity),
+        "the actionable authority must be the CI identity",
+    )?;
+    let explanation = decision.public_explanation();
+    require(
+        explanation.actionable_authorities.iter().any(|tag| tag == "ci_identity"),
+        "the public explanation must point at the CI identity",
+    )?;
+    Ok(())
+}
+
+/// An accepted reviewed activation does not mask a denied one beside it.
+#[test]
+fn accepted_activation_does_not_mask_a_denied_peer() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let tool = verified_tool();
+    let accepted = ClassifiedInput::new(
+        "environment.perl5lib",
+        InputRiskClass::AmbientPerlEnvironment,
+        EnvironmentInputAuthority::ExplicitEnvironment,
+        InputDisposition::Accepted,
+        None,
+        "reviewed_activation_accepted",
+    );
+    let denied = ClassifiedInput::new(
+        "environment.perl5opt",
+        InputRiskClass::AmbientPerlEnvironment,
+        EnvironmentInputAuthority::ExplicitEnvironment,
+        InputDisposition::Denied,
+        None,
+        "reviewed_activation_denied",
+    );
+
+    let decision = authorize(
+        &intent(
+            OperationProfile::PerlCompileCurrentSavedFile,
+            ExecutionReasonClass::ExplicitUserAction,
+            &scope,
+            &bound,
+            vec![tool.id.clone(), accepted.id.clone(), denied.id.clone()],
+        ),
+        &evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "compile".to_string() },
+            &bound,
+            vec![tool, accepted, denied],
+        ),
+    );
+
+    require(
+        decision.outcome() == AuthorizationOutcome::Denied,
+        "a denied activation must not be masked by an accepted peer",
+    )?;
+    require(
+        !decision.permits(ExecutionCapability::EnvironmentCodeLoading),
+        "code-loading authority must be withheld",
+    )?;
+    Ok(())
+}
+
+/// An input relabelled in place cannot keep its approved identity.
+#[test]
+fn relabelled_input_fails_evidence_validation() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let mut tool = verified_tool();
+    require(tool.identity_matches_fields(), "a freshly built input matches its own fields")?;
+
+    // Relabel in place, keeping the approved identity.
+    tool.risk_class = InputRiskClass::ProjectExecutableOrCommand;
+    require(
+        !tool.identity_matches_fields(),
+        "a relabelled input must no longer match its identity",
+    )?;
+
+    let facts = evidence(
+        &scope,
+        WorkspaceTrust::Trusted,
+        AuthorizationActor::ExplicitUserAction { action_id: "run".to_string() },
+        &bound,
+        vec![tool.clone()],
+    );
+    require(facts.validate().is_err(), "evidence carrying a relabelled input is invalid")?;
+
+    let decision = authorize(
+        &intent(
+            OperationProfile::RunCurrentSavedFile,
+            ExecutionReasonClass::ExplicitUserAction,
+            &scope,
+            &bound,
+            vec![tool.id.clone()],
+        ),
+        &facts,
+    );
+    require(
+        decision.outcome() == AuthorizationOutcome::NotProven,
+        "a relabelled input must never reach an allow",
+    )?;
+    Ok(())
+}

@@ -715,7 +715,13 @@ pub enum InputDisposition {
     RequiresSeparateAuthority,
     /// The input needs an explicit confirmation before it counts.
     ConfirmationRequired,
-    /// The input is accepted with named capabilities withheld.
+    /// The input is accepted, with capabilities withheld.
+    ///
+    /// The withheld capabilities are named by [`EvidenceLimitation`] entries on
+    /// the surrounding [`AuthorizationEvidence`], one per capability this input
+    /// cannot support. This disposition on its own says only "accepted, but not
+    /// for everything"; without the matching limitation rows it is
+    /// indistinguishable from [`Self::Accepted`] and grants just as much.
     AcceptedLimited,
     /// The input is denied.
     Denied,
@@ -859,6 +865,23 @@ impl ClassifiedInput {
             value_fingerprint,
             explanation_code,
         }
+    }
+
+    /// Whether this input's identity still matches the fields it derives from.
+    ///
+    /// The fields are public for ergonomics, so this is the check that keeps a
+    /// relabelled input from carrying an identity it no longer earns.
+    #[must_use]
+    pub fn identity_matches_fields(&self) -> bool {
+        let rebuilt = Self::new(
+            self.semantic_key.clone(),
+            self.risk_class,
+            self.authority,
+            self.disposition,
+            self.value_fingerprint.clone(),
+            self.explanation_code.clone(),
+        );
+        rebuilt.id == self.id
     }
 
     /// Whether this input is evaluated even when an intent does not name it.
@@ -1187,6 +1210,13 @@ impl AuthorizationEvidence {
             if input.semantic_key.is_empty() || input.explanation_code.is_empty() {
                 return Err(AuthorizationError::EmptyInputField { input_id: input.id.clone() });
             }
+            // The fields are public, so a caller can relabel an input in place
+            // after construction and keep its already-approved identity.
+            // Recomputing here catches that before any capability is evaluated,
+            // not only on the deserialization path.
+            if !input.identity_matches_fields() {
+                return Err(AuthorizationError::ForgedInputIdentity { input_id: input.id.clone() });
+            }
             if !seen.insert(&input.id) {
                 return Err(AuthorizationError::DuplicateInputId { input_id: input.id.clone() });
             }
@@ -1282,6 +1312,12 @@ pub struct ExecutionIntent {
     /// Reviewed operation profile.
     pub profile: OperationProfile,
     /// Why the operation was requested.
+    ///
+    /// Descriptive only. The evaluator never derives authority from it and
+    /// never cross-checks it against the profile, the actor, or the scope, so a
+    /// consumer must not treat it as a verified fact — the authority-bearing
+    /// inputs are the profile, the scope, the actor, and the classified inputs.
+    /// It is carried for provenance and is part of the intent's identity.
     pub reason_class: ExecutionReasonClass,
     /// Scope the operation runs in.
     pub scope: TrustScope,
@@ -1921,6 +1957,8 @@ pub const REASON_INVALID_REQUEST: &str = "invalid_request";
 pub const REASON_POLICY_DENIED: &str = "policy_denied";
 /// Reason: workspace trust has not been granted.
 pub const REASON_WORKSPACE_UNTRUSTED: &str = "workspace_untrusted";
+/// Reason: a hermetic scope carries no CI identity.
+pub const REASON_NO_CI_IDENTITY: &str = "no_ci_identity";
 /// Reason: workspace trust has not been decided.
 pub const REASON_WORKSPACE_TRUST_UNKNOWN: &str = "workspace_trust_unknown";
 /// Reason: the operation needs an explicit actor and has none.
@@ -2369,12 +2407,8 @@ fn evaluate_capability_from_facts(
                 if evidence.actor.is_explicit_user_action() {
                     CapabilityFinding::Granted
                 } else {
-                    reasons.push(reason(
-                        REASON_WORKSPACE_UNTRUSTED,
-                        Some(capability),
-                        None,
-                        ActionableAuthority::WorkspaceTrust,
-                    ));
+                    let (code, actionable) = absent_authority_reason(evidence);
+                    reasons.push(reason(code, Some(capability), None, actionable));
                     CapabilityFinding::Denied
                 }
             }
@@ -2394,12 +2428,8 @@ fn evaluate_capability_from_facts(
         ExecutionCapability::ProjectConfiguration => match execution_authority(evidence) {
             ExecutionAuthority::Established => CapabilityFinding::Granted,
             ExecutionAuthority::Absent => {
-                reasons.push(reason(
-                    REASON_WORKSPACE_UNTRUSTED,
-                    Some(capability),
-                    None,
-                    ActionableAuthority::WorkspaceTrust,
-                ));
+                let (code, actionable) = absent_authority_reason(evidence);
+                reasons.push(reason(code, Some(capability), None, actionable));
                 CapabilityFinding::Denied
             }
             ExecutionAuthority::Undecided => {
@@ -2436,12 +2466,8 @@ fn evaluate_capability_from_facts(
                 }
             }
             ExecutionAuthority::Absent => {
-                reasons.push(reason(
-                    REASON_WORKSPACE_UNTRUSTED,
-                    Some(capability),
-                    None,
-                    ActionableAuthority::WorkspaceTrust,
-                ));
+                let (code, actionable) = absent_authority_reason(evidence);
+                reasons.push(reason(code, Some(capability), None, actionable));
                 CapabilityFinding::Denied
             }
             ExecutionAuthority::Undecided => {
@@ -2486,6 +2512,23 @@ enum ExecutionAuthority {
     Established,
     Absent,
     Undecided,
+}
+
+/// The reason and remedy for absent authority, named for the scope that is
+/// actually consulted.
+///
+/// Telling an operator to grant workspace trust in a hermetic scope is
+/// misleading: trust is deliberately ignored there, so following the advice
+/// would leave the denial in place. The missing authority is a CI identity.
+fn absent_authority_reason(
+    evidence: &AuthorizationEvidence,
+) -> (&'static str, ActionableAuthority) {
+    match evidence.scope.kind {
+        TrustScopeKind::EditorWorkspace => {
+            (REASON_WORKSPACE_UNTRUSTED, ActionableAuthority::WorkspaceTrust)
+        }
+        TrustScopeKind::CiHermetic => (REASON_NO_CI_IDENTITY, ActionableAuthority::CiIdentity),
+    }
 }
 
 fn execution_authority(evidence: &AuthorizationEvidence) -> ExecutionAuthority {
@@ -2588,20 +2631,33 @@ fn evaluate_environment_code_loading(
     // answer: falling through to the no-environment branch below would grant
     // code loading from workspace trust alone, which is the very thing the
     // producer declined to accept.
-    if let Some(input) = inputs.iter().copied().find(|&input| {
+    // Several reviewed activations may be in play. The most restrictive
+    // decides: accepting the first match would let an accepted activation mask
+    // a denied peer and load exactly the environment that was refused.
+    let mut worst = CapabilityFinding::Granted;
+    let mut blocking: Option<ClassifiedInputId> = None;
+    let mut saw_explicit = false;
+    for input in inputs.iter().copied().filter(|&input| {
         input.risk_class == InputRiskClass::AmbientPerlEnvironment
             && input.authority == EnvironmentInputAuthority::ExplicitEnvironment
     }) {
-        if input.disposition.is_accepted() {
-            return CapabilityFinding::Granted;
+        saw_explicit = true;
+        let finding = finding_for_disposition(input.disposition);
+        if finding.restriction_rank() > worst.restriction_rank() {
+            worst = finding;
+            blocking = Some(input.id.clone());
         }
-        reasons.push(reason(
-            REASON_ENVIRONMENT_NOT_ACCEPTED,
-            Some(capability),
-            Some(input.id.clone()),
-            ActionableAuthority::UserConfiguration,
-        ));
-        return finding_for_disposition(input.disposition);
+    }
+    if saw_explicit {
+        if worst != CapabilityFinding::Granted {
+            reasons.push(reason(
+                REASON_ENVIRONMENT_NOT_ACCEPTED,
+                Some(capability),
+                blocking,
+                ActionableAuthority::UserConfiguration,
+            ));
+        }
+        return worst;
     }
 
     // No environment input at all: loading uses the verified interpreter's own
@@ -2609,12 +2665,8 @@ fn evaluate_environment_code_loading(
     match execution_authority(evidence) {
         ExecutionAuthority::Established => CapabilityFinding::Granted,
         ExecutionAuthority::Absent => {
-            reasons.push(reason(
-                REASON_WORKSPACE_UNTRUSTED,
-                Some(capability),
-                None,
-                ActionableAuthority::WorkspaceTrust,
-            ));
+            let (code, actionable) = absent_authority_reason(evidence);
+            reasons.push(reason(code, Some(capability), None, actionable));
             CapabilityFinding::Denied
         }
         ExecutionAuthority::Undecided => {
