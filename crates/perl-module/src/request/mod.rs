@@ -52,7 +52,8 @@ use std::fmt;
 pub use file_path::{ModuleFilePath, ModuleFilePathError};
 pub use name::{LegacySeparatorProfile, ModuleName, ModuleNameError, PackageSeparatorForm};
 pub use outcome::{
-    ModuleResolutionOutcome, outcome_from_uri_resolution, uri_resolution_from_outcome,
+    ExactResolutionEvidence, ModuleResolutionOutcome, outcome_from_uri_resolution,
+    uri_resolution_from_outcome,
 };
 
 use crate::token_core::ModuleTokenSpan;

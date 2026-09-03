@@ -267,7 +267,7 @@ fn an_invalid_request_never_reaches_the_resolver() {
     let outcome = classified
         .err()
         .map(ModuleResolutionOutcome::InvalidRequest)
-        .unwrap_or(ModuleResolutionOutcome::NotFound);
+        .unwrap_or(ModuleResolutionOutcome::NotProvenAbsent);
     assert!(
         !outcome.has_complete_denominator(),
         "an invalid request has no denominator to be complete about"
