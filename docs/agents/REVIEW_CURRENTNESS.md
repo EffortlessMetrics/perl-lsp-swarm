@@ -145,7 +145,7 @@ submitted review body:
 Generate it only after the useful review record is complete:
 
 ```bash
-python3 scripts/ci/check-pr-semantic-review-currentness.py   <pr> <owner/repo> --emit-marker
+python3 scripts/ci/check-pr-semantic-review-currentness.py   <pr> <owner/repo> --emit-marker --result REVIEW_CURRENT
 ```
 
 The digest covers `git diff --binary --full-index <merge-base> <reviewed-head>`. The
