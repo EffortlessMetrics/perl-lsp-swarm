@@ -164,3 +164,10 @@ Two mechanics that are easy to get wrong:
   may reference more than the row does. `ci-instrument-failure` cites only #5717 while
   its lane also names #4588, #4589 and #5713 — the row is a focused claim about one
   transition, not a bibliography.
+- **A `COVERED` row's `Terminal ruling` names where the decision was recorded and what
+  it was**: an `#NNNN` reference plus a backticked disposition, as in
+  ``[#4192](…) — `PROMOTE` for …``. A ruling still being taken (`` `PENDING` ``,
+  `` `DRAFT` ``, `TBD`) is rejected — `COVERED` claims the transition was demonstrated
+  *and* ruled on, so a provisional ruling is the soft third status this ledger refuses,
+  moved into a field. Unlike a receipt, the ruling need not appear in the lane document;
+  deliberation often lives on its own issue, as #4192 does. Findable, not local.

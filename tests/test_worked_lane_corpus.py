@@ -128,6 +128,71 @@ COMMIT_REF = re.compile(r"\b([0-9a-f]{7,40})\b")
 # comparison git itself uses.
 MIN_ABBREV = 7
 
+# A `COVERED` row's terminal ruling asserts that a deliberated transition was
+# ruled on. `!= "none"` does not assert that: it accepts "pending", "TBD", or
+# any sentence a writer likes, which is the soft vocabulary this ledger refuses
+# everywhere else -- `ALLOWED_STATUSES` rejects a third status for the same
+# reason. Three structural floors, each independently motivated:
+#
+#   * the ruling names where it was made, so a reader can reach it. That is the
+#     argument the receipts floor already makes, and a ruling is the one field
+#     whose entire content is a decision recorded somewhere else.
+#   * it carries a backticked disposition token, which is how this repository
+#     spells a recorded ruling (`PROMOTE`, `NOT_PROVEN`, `SUPERSEDED`) and how
+#     the one `COVERED` row already reads.
+#   * that token is not an explicitly provisional one, so a row cannot claim
+#     coverage on a decision still being taken.
+#
+# Unlike `Source receipts`, a ruling is not required to appear in the lane
+# document: the deliberation it points at often lives on a separate issue, as
+# `ci-instrument-failure` does on #4192. Findable is the requirement, not local.
+#
+# This stays structural, like every other check here. It cannot judge whether
+# `PROMOTE` was the right call on #4192; review owns that.
+RULING_TOKEN = re.compile(r"`([A-Z][A-Z_]{2,})`")
+PROVISIONAL_RULINGS = frozenset(
+    {
+        "PENDING",
+        "TBD",
+        "WIP",
+        "DRAFT",
+        "PROPOSED",
+        "ONGOING",
+        "IN_PROGRESS",
+        "UNDECIDED",
+        "UNKNOWN",
+        "DEFERRED",
+        "BLOCKED",
+    }
+)
+
+
+def ruling_defect(ruling: str) -> str | None:
+    """Say why `ruling` is not a terminal ruling, or `None` if it is.
+
+    Split out so the controls can drive the rule directly on text no ledger
+    contains -- the same reason `parse_ledger` takes an optional body. A rule
+    only ever exercised by a ledger that already obeys it is not tested.
+    """
+    stripped = ruling.strip()
+    if not stripped or stripped.lower() == NONE:
+        return "records no ruling"
+    if not ISSUE_REF.search(stripped):
+        return (
+            "cites no issue or PR as `#NNNN`, so the deliberation it rests on "
+            "cannot be found"
+        )
+    tokens = set(RULING_TOKEN.findall(stripped))
+    if not tokens:
+        return (
+            "names no disposition; a terminal ruling carries a backticked "
+            "token such as `PROMOTE`"
+        )
+    provisional = sorted(tokens & PROVISIONAL_RULINGS)
+    if provisional:
+        return f"is still provisional ({', '.join(provisional)})"
+    return None
+
 # The front door states how many categories are open. A hard-coded count there
 # goes stale silently the moment a row is promoted, and it is the first thing a
 # reader sees, so it is derived and checked rather than trusted.
@@ -429,12 +494,60 @@ class WorkedLaneLedgerTests(unittest.TestCase):
                 f"but the bare number is what is matched), got {receipts!r}",
             )
             ruling = fields.get("Terminal ruling", "")
-            self.assertNotEqual(
-                ruling.lower(),
-                NONE,
+            defect = ruling_defect(ruling)
+            self.assertIsNone(
+                defect,
                 f"{category}: COVERED must record the terminal ruling the "
-                f"coverage rests on, or say why none applies",
+                f"coverage rests on; {ruling!r} {defect}",
             )
+
+    def test_a_covered_ruling_must_be_terminal_and_findable(self) -> None:
+        """The ruling floor used to be `!= "none"`.
+
+        That accepted any text at all, so the one field whose whole job is to
+        point at a decision someone else recorded could carry a pending state,
+        a fabricated disposition, or a sentence with nothing behind it -- while
+        a reader saw a ruling and every check passed. It is the same shape as
+        the parser defects: a claim rendered to a reader that no check saw.
+
+        The `pending` case is the one that matters. `COVERED` means the
+        transition was demonstrated *and ruled on*; a row resting on a decision
+        still being taken is the soft third state this ledger exists to refuse,
+        smuggled into a field instead of into `Status`.
+        """
+        rejected = {
+            "a pending disposition": "#4192 — `PENDING` until the review lands",
+            "arbitrary prose": "#4192 — we agreed this one was fine",
+            "a disposition with no anchor": "`PROMOTE` for the integration proof",
+            "a bare placeholder": "TBD",
+            "the ABSENT marker": "none",
+            "nothing at all": "",
+            "whitespace": "   ",
+        }
+        for label, ruling in rejected.items():
+            with self.subTest(rejected=label):
+                self.assertIsNotNone(
+                    ruling_defect(ruling),
+                    f"{ruling!r} must not satisfy the terminal-ruling floor",
+                )
+
+        # False-positive controls: an oracle that rejects a correct ruling costs
+        # as much trust as one that accepts a wrong one.
+        accepted = {
+            "the landed row": (
+                "[#4192](https://github.com/EffortlessMetrics/perl-lsp-swarm/"
+                "issues/4192) — `PROMOTE` for the review-forward synthetic "
+                "integration proof"
+            ),
+            "a bare reference": "#4192 — `NOT_PROVEN` for cross-provider calibration",
+            "an underscored token": "#5713 — `SUPERSEDED_OR_CLOSE` on the umbrella",
+        }
+        for label, ruling in accepted.items():
+            with self.subTest(accepted=label):
+                self.assertIsNone(
+                    ruling_defect(ruling),
+                    f"{ruling!r} is a findable terminal ruling and must pass",
+                )
 
     def test_covered_rows_state_a_defining_transition_and_a_boundary(self) -> None:
         for category, fields in self.rows:
