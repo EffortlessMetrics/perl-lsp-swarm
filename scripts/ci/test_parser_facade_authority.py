@@ -672,13 +672,18 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
             '#[cfg(test)]\nmod test_support;\n',
         )
         self.write(
-            "crates/perl-parser/src/test_support.rs",
-            '#[cfg(feature = "test-only-gate")]\nfn gated() {}\n',
+            "crates/perl-parser/src/test_support/mod.rs",
+            '#[cfg(feature = "test-only-gate")]\nmod helper;\n',
+        )
+        self.write(
+            "crates/perl-parser/src/test_support/helper.rs",
+            '#[cfg(feature = "nested-test-only-gate")]\nfn gated() {}\n',
         )
         gates = feature_source_gates(
             self.root / "crates/perl-parser", ("src",), skip_test_modules=True
         )
         self.assertNotIn("test-only-gate", gates)
+        self.assertNotIn("nested-test-only-gate", gates)
 
     def test_review_row_target_owner_must_be_actionable(self) -> None:
         row = next(r for r in self.ledger["features"] if r["disposition"] == "review")
