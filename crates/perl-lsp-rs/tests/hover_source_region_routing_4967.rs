@@ -365,3 +365,102 @@ fn hover_unaffected_by_unicode_earlier_on_line() -> TestResult {
     );
     Ok(())
 }
+
+/// Hover on the method name of a `Receiver->method` needle: positions the
+/// cursor at the first character of the method name. The needles below are
+/// ASCII-only, so the byte shift equals the UTF-16 shift.
+fn hover_method_of_arrow(
+    harness: &mut LspHarness,
+    doc: &str,
+    needle: &str,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let arrow = needle.find("->").ok_or("needle must contain `->`")? + 2;
+    let params = position_of(doc, needle).map_err(Box::<dyn std::error::Error>::from)?;
+    let line = params["position"]["line"].as_u64().unwrap_or(0);
+    let character = params["position"]["character"].as_u64().unwrap_or(0) + arrow as u64;
+    let params = serde_json::json!({
+        "textDocument": { "uri": URI },
+        "position": { "line": line, "character": character }
+    });
+    harness
+        .request("textDocument/hover", params)
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })
+}
+
+/// Negative: `Package->method` prose inside a comment gets no inherited-method
+/// card. The class-model/workspace-index path is an analyzer claim and must be
+/// gated on proven code like the other semantic lookups (#4967; PR #14160
+/// review finding: `extract_arrow_receiver` is text-scanned and otherwise
+/// answers for arrow text inside comments and strings).
+#[test]
+fn hover_suppresses_inherited_method_card_inside_comment() -> TestResult {
+    let doc = concat!(
+        "package RouteBase;\n",
+        "sub inherited_helper { 1 }\n",
+        "\n",
+        "package RouteChild;\n",
+        "use parent -norequire => 'RouteBase';\n",
+        "\n",
+        "# see RouteChild->inherited_helper for details\n",
+        "my $x = 1;\n",
+    );
+    let mut harness = LspHarness::new();
+    harness.initialize(None).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    harness.open_document(URI, doc).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
+    let result = hover_method_of_arrow(&mut harness, doc, "RouteChild->inherited_helper")?;
+    assert!(
+        result.is_null(),
+        "inherited-method path must fail closed inside a comment, got: {result}"
+    );
+    Ok(())
+}
+
+/// Negative: `Package->method` text inside a string gets no inherited-method
+/// card either.
+#[test]
+fn hover_suppresses_inherited_method_card_inside_string() -> TestResult {
+    let doc = concat!(
+        "package RouteBase;\n",
+        "sub inherited_helper { 1 }\n",
+        "\n",
+        "package RouteChild;\n",
+        "use parent -norequire => 'RouteBase';\n",
+        "\n",
+        "my $note = \"call RouteChild->inherited_helper later\";\n",
+    );
+    let mut harness = LspHarness::new();
+    harness.initialize(None).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    harness.open_document(URI, doc).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
+    let result = hover_method_of_arrow(&mut harness, doc, "RouteChild->inherited_helper")?;
+    assert!(
+        result.is_null(),
+        "inherited-method path must fail closed inside a string, got: {result}"
+    );
+    Ok(())
+}
+
+/// Positive control: a `Package->method` call in proven code keeps its hover —
+/// the inherited-method gate must not suppress real call sites.
+#[test]
+fn hover_keeps_method_call_hover_in_proven_code() -> TestResult {
+    let doc = concat!(
+        "package RouteBase;\n",
+        "sub inherited_helper { 1 }\n",
+        "\n",
+        "package RouteChild;\n",
+        "use parent -norequire => 'RouteBase';\n",
+        "\n",
+        "sub caller {\n",
+        "    RouteChild->inherited_helper;\n",
+        "}\n",
+    );
+    let mut harness = LspHarness::new();
+    harness.initialize(None).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    harness.open_document(URI, doc).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
+    let result = hover_method_of_arrow(&mut harness, doc, "RouteChild->inherited_helper")?;
+    assert!(!result.is_null(), "method call in proven code must keep its hover, got null");
+    Ok(())
+}

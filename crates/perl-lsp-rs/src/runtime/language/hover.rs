@@ -457,17 +457,18 @@ impl LspServer {
             return HoverExtracted::None;
         };
 
-        // Containment-based analyzer claims are gated on proven code (#4967):
-        // `symbol_at` and `find_definition`'s `symbol_at` fallback return the
-        // smallest declaration *containing* the offset, so a `sub` symbol also
-        // contains the comments, strings, and heredocs inside its body.
-        // Answering from containment in non-code leaked the enclosing sub's
-        // generic card (review 5062479350). Span-exact islands above are
-        // reachable regardless.
-        let containment_claims_proven =
+        // Analyzer claims are gated on proven code (#4967): `symbol_at` and
+        // `find_definition`'s `symbol_at` fallback return the smallest
+        // declaration *containing* the offset, so a `sub` symbol also contains
+        // the comments, strings, and heredocs inside its body. Answering from
+        // containment in non-code leaked the enclosing sub's generic card
+        // (review 5062479350). The inherited-method path below is text-scanned
+        // (`extract_arrow_receiver` has no region awareness), so it is gated on
+        // the same predicate. Span-exact islands above are reachable regardless.
+        let token_candidate_is_proven =
             Self::token_fallback_is_proven_code(source_region, text, offset);
 
-        if containment_claims_proven
+        if token_candidate_is_proven
             && let Some(symbol_info) =
                 analyzer.symbol_at(crate::SourceLocation { start: offset, end: offset })
             && let Some(modifier_kind) =
@@ -487,7 +488,7 @@ impl LspServer {
         // is surfaced at call sites instead of the generic subroutine card.
         // Only discard when find_definition returned the enclosing sub (token
         // mismatch) or when the class model has modifier metadata for the callee.
-        let symbol_at_cursor = if containment_claims_proven {
+        let symbol_at_cursor = if token_candidate_is_proven {
             analyzer.find_definition(offset).filter(|sym| {
                 let token = Self::get_token_at_position_static(text, offset);
                 #[cfg(feature = "workspace")]
@@ -711,10 +712,15 @@ impl LspServer {
         // Inherited method hover: cursor is on a `->method()` call but find_definition
         // found nothing in the current file.  Try the in-file class model first
         // (resolve_inherited_method_hover handles same-file parent/role chains), then
-        // emit InheritedMethod for Phase 2 (workspace index BFS).
+        // emit InheritedMethod for Phase 2 (workspace index BFS). This is an
+        // analyzer/index claim, so it runs only in proven code (#4967): the arrow
+        // receiver scan is text-based and would otherwise answer for `Pkg->method`
+        // text inside comments and strings.
         #[cfg(feature = "workspace")]
         {
-            if let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset) {
+            if token_candidate_is_proven
+                && let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset)
+            {
                 // Extract the method name token at the cursor
                 let method_name = Self::get_token_at_position_static(text, offset);
                 if !method_name.is_empty() && !method_name.starts_with(['$', '@', '%']) {
