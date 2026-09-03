@@ -375,7 +375,22 @@ def cargo_targets(manifest: dict[str, Any], package_root: Path | None = None) ->
     """
     result: set[CargoTarget] = set()
     explicit_paths: set[Path] = set()
-    package_name = manifest.get("package", {}).get("name")
+    package = manifest.get("package", {})
+    if not isinstance(package, dict):
+        raise ValueError("perl-parser [package] table is invalid")
+    package_name = package.get("name")
+    if not isinstance(package_name, str) or not package_name:
+        raise ValueError("perl-parser package name is invalid")
+
+    # Cargo's default target path is not just the flat `<root>/<name>.rs` form.
+    # Keep every conventional spelling suppressed when an explicit target has the
+    # same name; otherwise the inventory can report a duplicate target that Cargo
+    # treats as one explicit declaration.
+    def default_paths(kind: str, name: str) -> tuple[Path, ...]:
+        root = {"bin": "src/bin", "bench": "benches", "example": "examples", "test": "tests"}[kind]
+        if kind == "bin" and name == package_name:
+            return (Path("src/main.rs"), Path(root) / f"{name}.rs", Path(root) / name / "main.rs")
+        return (Path(root) / f"{name}.rs", Path(root) / name / "main.rs")
     for key in ("bin", "bench", "example", "test"):
         values = manifest.get(key, [])
         if not isinstance(values, list):
@@ -388,32 +403,36 @@ def cargo_targets(manifest: dict[str, Any], package_root: Path | None = None) ->
                 raise ValueError(f"perl-parser [[{key}]] required-features are invalid")
             result.add(CargoTarget(key, value["name"], tuple(required)))
             if package_root is not None:
-                default_path = {
-                    "bin": Path("src/main.rs") if value["name"] == package_name else Path("src/bin") / f"{value['name']}.rs",
-                    "bench": Path("benches") / f"{value['name']}.rs",
-                    "example": Path("examples") / f"{value['name']}.rs",
-                    "test": Path("tests") / f"{value['name']}.rs",
-                }[key]
-                explicit_paths.add(Path(value.get("path", default_path)))
+                explicit = value.get("path")
+                if explicit is not None and (not isinstance(explicit, str) or not explicit):
+                    raise ValueError(f"perl-parser [[{key}]].path is invalid")
+                paths = (Path(explicit),) if explicit is not None else default_paths(key, value["name"])
+                explicit_paths.update(paths)
     if package_root is None:
         return result
 
-    auto_enabled = {
-        "bin": manifest.get("package", {}).get("autobins", True),
-        "bench": manifest.get("package", {}).get("autobenches", True),
-        "example": manifest.get("package", {}).get("autoexamples", True),
-        "test": manifest.get("package", {}).get("autotests", True),
-    }
+    auto_enabled: dict[str, bool] = {}
+    for kind, option in (("bin", "autobins"), ("bench", "autobenches"),
+                         ("example", "autoexamples"), ("test", "autotests")):
+        value = package.get(option, True)
+        if not isinstance(value, bool):
+            raise ValueError(f"perl-parser package {option} must be a boolean")
+        auto_enabled[kind] = value
     roots = {"bench": "benches", "example": "examples", "test": "tests"}
     if auto_enabled["bin"]:
         candidates = []
         main = package_root / "src/main.rs"
         if main.is_file():
-            candidates.append((Path("src/main.rs"), manifest.get("package", {}).get("name")))
+            candidates.append((Path("src/main.rs"), package_name))
         candidates.extend(
             (path.relative_to(package_root), path.stem)
-            for path in (package_root / "src/bin").rglob("*.rs")
-            if path.is_file() and path.name != "main.rs"
+            for path in (package_root / "src/bin").glob("*.rs")
+            if path.is_file()
+        )
+        candidates.extend(
+            (path.relative_to(package_root), path.parent.name)
+            for path in (package_root / "src/bin").glob("*/main.rs")
+            if path.is_file()
         )
     else:
         candidates = []
@@ -426,16 +445,21 @@ def cargo_targets(manifest: dict[str, Any], package_root: Path | None = None) ->
         root = package_root / directory
         if not root.is_dir():
             continue
-        for path in root.rglob("*.rs"):
-            if not path.is_file():
-                continue
-            relative = path.relative_to(package_root)
-            relative_name = relative.relative_to(directory)
-            name = relative_name.with_suffix("").as_posix()
-            if relative_name.name == "main.rs":
-                name = relative_name.parent.as_posix()
-            if name and relative not in explicit_paths:
-                result.add(CargoTarget(kind, name, ()))
+        # Cargo discovers only `<root>/*.rs` and `<root>/*/main.rs`.  A recursive
+        # walk would mistake Rust modules nested below a conventional target for
+        # independent targets (for example examples/foo/helpers.rs).
+        for path in root.glob("*.rs"):
+            if path.is_file():
+                relative = path.relative_to(package_root)
+                name = path.stem
+                if relative not in explicit_paths:
+                    result.add(CargoTarget(kind, name, ()))
+        for path in root.glob("*/main.rs"):
+            if path.is_file():
+                relative = path.relative_to(package_root)
+                name = path.parent.name
+                if relative not in explicit_paths:
+                    result.add(CargoTarget(kind, name, ()))
     return result
 
 
