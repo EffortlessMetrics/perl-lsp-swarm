@@ -3744,6 +3744,33 @@
       "selector_identity": "invocation:baba6dcc97d7f0e3:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_eglot_adapter_contract.rs",
+      "enclosing_test_or_function": "rejection_of",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a typed rejection, got an instrument failure: {message}\")",
+      "selector_identity": "invocation:0c10d8383270f93d:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_eglot_adapter_contract.rs",
+      "enclosing_test_or_function": "same_version_wrong_file_is_refused_before_the_plan",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected IdentityMismatch, got {other:?}\"),",
+      "selector_identity": "invocation:4b5a34120181d004:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/lsp_318_changelog_totality.rs",
+      "enclosing_test_or_function": "read",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|error| panic!(\"failed to read {}: {error}\", path.display()))",
+      "selector_identity": "invocation:01c45dbcd690ea0c:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
