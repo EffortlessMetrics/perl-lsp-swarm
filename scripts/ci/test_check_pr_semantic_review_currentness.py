@@ -544,6 +544,78 @@ class SemanticReviewCurrentnessTests(unittest.TestCase):
         )
         self.assertEqual("NOT_PROVEN", result["classification"])
 
+    def test_contradictory_body_is_rejected_despite_a_valid_marker(self) -> None:
+        """A REVIEW_CURRENT marker cannot carry a body that concluded otherwise.
+
+        The emitter takes the caller's word for `--result` — it never sees the
+        review body, which does not exist when the marker is generated. The
+        verifier is what makes the pair honest, so the contradictory case is
+        pinned here rather than left to the emitter's claim boundary.
+        """
+        tmp, root, base, head = setup_repo()
+        self.addCleanup(tmp.cleanup)
+        for contradiction in ("CHANGES_REQUIRED", "NOT_PROVEN", "BLOCKED_BY_PREREQUISITE"):
+            with self.subTest(result=contradiction):
+                contradicted = body(42, root, base, head).replace(
+                    "## Substantive review result\n- REVIEW_CURRENT",
+                    f"## Substantive review result\n- {contradiction}",
+                )
+                # The marker itself is untouched and still well-formed.
+                self.assertIn("semantic-review:v1", contradicted)
+                self.assertIsNone(module.parse_marker(contradicted, 42, head))
+                result = module.evaluate(
+                    root,
+                    pr=42,
+                    current_head=head,
+                    reviews=[
+                        module.Review(
+                            "reviewer", "User", "COMMENTED", contradicted, head,
+                            "2026-08-12T00:00:00Z",
+                        )
+                    ],
+                )
+                self.assertEqual("NOT_PROVEN", result["classification"])
+
+    def test_malformed_utf8_in_a_reviewed_prose_file_fails_closed(self) -> None:
+        """Undecodable reviewed content is NOT_PROVEN, never a silent carry-forward.
+
+        Replacement decoding would collapse distinct malformed sequences to the
+        same U+FFFD, letting a real fenced-command change compare equal.
+        """
+        tmp, root, base, _reviewed = setup_repo()
+        self.addCleanup(tmp.cleanup)
+        (root / "docs/runbook.md").write_bytes(
+            b"# Runbook\n\n```bash\nrm -rf ./build/\xff\xfe\n```\n"
+        )
+        reviewed = commit(root, "add runbook with malformed bytes")
+        review_row = review(42, root, base, reviewed)
+        (root / "docs/runbook.md").write_bytes(
+            b"# Runbook\n\n```bash\nrm -rf ./build/\xfe\xff\n```\n"
+        )
+        current = commit(root, "different malformed bytes in the same fence")
+
+        # Undecodable content is an instrument failure, not a verdict, so it
+        # surfaces the module's typed error rather than a silent comparison.
+        with self.assertRaises(module.CurrentnessError):
+            module.evaluate(root, pr=42, current_head=current, reviews=[review_row])
+
+        # Through the CLI that failure must land as NOT_PROVEN, never as a
+        # carried-forward review. This is the user-visible contract.
+        fixture = Path(self.enterContext(tempfile.TemporaryDirectory())) / "f.json"
+        fixture.write_text(
+            json.dumps({"head": current, "reviews": [review_row._asdict()]}),
+            encoding="utf-8",
+        )
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = module.main(
+                ["42", "o/r", "--root", str(root), "--fixture", str(fixture)]
+            )
+        self.assertEqual(2, code)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual("NOT_PROVEN", payload["classification"])
+        self.assertEqual("instrument_failure", payload["reason"])
+
     def test_marker_head_must_equal_review_commit(self) -> None:
         tmp, root, base, head = setup_repo()
         self.addCleanup(tmp.cleanup)

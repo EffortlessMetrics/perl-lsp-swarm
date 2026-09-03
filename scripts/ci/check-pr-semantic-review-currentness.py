@@ -251,8 +251,23 @@ def fenced_blocks(text: str) -> list[str]:
 
 
 def blob_text(root: Path, rev: str, path: str) -> str:
+    """Decode one blob as UTF-8, failing closed on malformed bytes.
+
+    The result feeds `fenced_blocks`, whose equality decides whether a review
+    carries forward. Replacement decoding is unsafe for that comparison: two
+    different malformed byte sequences both collapse to U+FFFD, so a real change
+    inside an executable fence could compare equal and silently carry a stale
+    review over it. Refusing to decode surfaces as NOT_PROVEN, which is the
+    correct answer for evidence this instrument cannot read.
+    """
     raw = _run(["git", "show", f"{rev}:{path}"], cwd=root, text=False).stdout
-    return raw.decode("utf-8", errors="replace")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise CurrentnessError(
+            f"{path} at {rev} is not valid UTF-8, so its reviewed content "
+            f"cannot be compared: {error}"
+        ) from error
 
 
 def neutral_followup(root: Path, reviewed_head: str, current_head: str) -> tuple[bool, str]:
