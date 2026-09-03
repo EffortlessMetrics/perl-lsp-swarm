@@ -128,6 +128,20 @@ coverage_filters = [
 ]
 
 [[pack]]
+id = "patch-coverage-tautology-check"
+files = [
+  "xtask/src/tasks/check_tautology.rs",
+  "xtask/src/tasks/check_tautology/",
+  "policy/tautology-dispositions.toml",
+]
+commands = [
+  "cargo llvm-cov test --no-report -p xtask --bin xtask --profile agent --locked check_tautology -- --nocapture",
+]
+coverage_filters = [
+  "check_tautology",
+]
+
+[[pack]]
 id = "patch-coverage-completion-core"
 files = [
   "crates/perl-lsp-rs-core/src/providers/completion/",
