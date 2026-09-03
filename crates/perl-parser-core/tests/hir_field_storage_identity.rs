@@ -179,6 +179,46 @@ fn a_field_read_produces_no_lexical_binding_fact() -> TestResult {
 }
 
 #[test]
+fn an_initialized_field_declaration_emits_no_lexical_operation() -> TestResult {
+    // `field $y = 1` looks like a declaration with an initializer, which is
+    // the shape that would ordinarily lower to a `LexicalWrite` and become a
+    // write-role `LexicalBindingFact`. It must not, since a field is not a
+    // lexical.
+    //
+    // It currently cannot, for a structural reason worth pinning rather than
+    // relying on: a `class` body is not lowered into a HIR body arena at all
+    // (#13844), so no class-level statement — field, `my`, or otherwise —
+    // reaches the body-arena declarator table. Only method bodies are lowered.
+    // If that changes, the declarator table has to learn about fields, and
+    // this test is what says so.
+    let source = "use feature 'class';\nclass C {\n    field $y = 1;\n    method m { $y }\n}\n";
+    let mut parser = Parser::new(source);
+    let output = parser.parse_with_recovery();
+    let hir = lower_ast(&output.ast);
+
+    for node in lower_hir_bodies(&hir).nodes.iter() {
+        match &node.operation {
+            PirOperation::LexicalRead { name }
+            | PirOperation::LexicalWrite { name }
+            | PirOperation::Modify { name, .. }
+                if name.name == "y" =>
+            {
+                return Err(format!(
+                    "an initialized field must not lower to a lexical operation, got {:?}",
+                    node.operation
+                ));
+            }
+            _ => {}
+        }
+    }
+    let receipt = extract_lexical_facts(&hir);
+    if receipt.bodies.iter().any(|body| body.facts.iter().any(|fact| fact.name.name == "y")) {
+        return Err("an initialized field must not become a lexical binding fact".to_string());
+    }
+    Ok(())
+}
+
+#[test]
 fn a_field_is_not_visible_before_its_own_declaration() -> TestResult {
     // Declaration-order visibility. A method written above the field it names
     // does not see it, so the reference falls back exactly as if no field had
