@@ -176,6 +176,13 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         }
         self.assertEqual(feature_names(manifest), {"explicit", "parser-alias"})
 
+    def test_dep_alias_feature_suppresses_implicit_feature(self) -> None:
+        manifest = {
+            "features": {"feature-x": ["dep:parser-alias"]},
+            "dependencies": {"parser-alias": {"package": "perl-parser", "optional": True}},
+        }
+        self.assertEqual(feature_names(manifest), {"feature-x"})
+
     def test_workspace_dependency_alias_resolves_to_package_consumer(self) -> None:
         self.write(
             "Cargo.toml",
