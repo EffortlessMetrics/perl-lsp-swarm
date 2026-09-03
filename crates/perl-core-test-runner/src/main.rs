@@ -3812,7 +3812,9 @@ mod tests {
         let Some(mut effect) = effects.pop() else {
             bail!("fixture produced no PhaseBlock effect");
         };
-        let start = source.find(slice).expect("slice must exist in source");
+        let Some(start) = source.find(slice) else {
+            bail!("slice must exist in source");
+        };
         effect.range = SourceLocation { start, end: start + slice.len() };
         Ok(effect)
     }
