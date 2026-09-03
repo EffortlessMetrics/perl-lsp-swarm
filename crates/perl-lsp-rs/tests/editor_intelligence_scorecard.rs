@@ -557,6 +557,25 @@ fn rename_protocol_rejection(resp: &Value) -> bool {
         == Some(-32602)
 }
 
+/// Return whether a replacement name is sufficiently well formed for the
+/// rename oracle to interpret a `-32602` response as a semantic refusal.
+///
+/// The scorecard deliberately does not implement Perl name resolution.  It
+/// does, however, reject empty, whitespace-containing, and punctuation-only
+/// requests so that an invalid request cannot masquerade as a symbol that the
+/// server refused to rename.
+fn rename_replacement_name_is_well_formed(name: &str) -> bool {
+    let mut chars = name.chars();
+    let first = match chars.next() {
+        Some('$' | '@' | '%') => chars.next(),
+        Some(character) => Some(character),
+        None => None,
+    };
+
+    first.is_some_and(|character| character == '_' || character.is_ascii_alphabetic())
+        && chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
 fn rename_is_null(resp: &Value) -> bool {
     match (resp.get("result"), resp.get("error")) {
         (Some(Value::Null), None) => true,
@@ -691,7 +710,9 @@ fn rename_assertion_passes(assertion: &RenameAssertion, resp: &Value, uri: &str)
                 && expected_edits_ok
         }
         RenameAssertionKind::RenameNull => {
-            rename_is_null(resp) && assertion.expected_edits.is_none()
+            rename_replacement_name_is_well_formed(&assertion.new_name)
+                && rename_is_null(resp)
+                && assertion.expected_edits.is_none()
         }
         RenameAssertionKind::RenameEditCountAtLeast { min } => {
             rename_edit_count_at_least_passes(resp, uri, *min, assertion.expected_edits.as_deref())
@@ -1187,6 +1208,20 @@ mod rename_oracle_tests {
                 return Err(
                     format!("malformed rename response passed RenameNull: {malformed}").into()
                 );
+            }
+        }
+
+        for invalid_name in ["", "not a name", "!"] {
+            let invalid_request =
+                RenameAssertion { new_name: invalid_name.to_string(), ..assertion.clone() };
+            let invalid_params = json!({
+                "error": {"code": -32602, "message": "invalid replacement name"}
+            });
+            if rename_assertion_passes(&invalid_request, &invalid_params, uri) {
+                return Err(format!(
+                    "invalid replacement name was accepted as RenameNull: {invalid_name:?}"
+                )
+                .into());
             }
         }
 
