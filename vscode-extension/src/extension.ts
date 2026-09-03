@@ -2186,10 +2186,7 @@ export function createLanguageClient(serverPath: string): LanguageClient {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return null;
         }
-        return settleFormattingProviderCall(
-          async () => next(document, options, token),
-          null,
-        );
+        return settleFormattingProviderCall(async () => next(document, options, token), null);
       },
       provideDocumentRangeFormattingEdits: async (document, range, options, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
