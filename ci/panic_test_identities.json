@@ -2745,6 +2745,51 @@
       "selector_identity": "invocation:9ebd7a41c6a7ba56:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/reload/measurement.rs",
+      "enclosing_test_or_function": "unwritable_scratch_root_is_an_instrument_error_not_a_skip",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"perl is available; the harness must not report the mechanism unmeasured\");",
+      "selector_identity": "invocation:a77a95500e29f1d8:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/reload/measurement.rs",
+      "enclosing_test_or_function": "live_perl_measurement_matches_the_frozen_record",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"perl is available but the harness declined to run for {mechanism:?}\");",
+      "selector_identity": "invocation:820e1114d211a7d4:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/reload/measurement.rs",
+      "enclosing_test_or_function": "live_perl_measurement_matches_the_frozen_record",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"live measurement failed for {mechanism:?}: {error}\")",
+      "selector_identity": "invocation:5d15a5f52460f06e:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/reload/measurement.rs",
+      "enclosing_test_or_function": "live_perl_measurement_matches_the_frozen_record",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!( \"live measurement disagrees with the frozen record for {mechanism:?}: {error:?}\" )",
+      "selector_identity": "invocation:e5ccb119bd100307:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/reload/measurement.rs",
+      "enclosing_test_or_function": "live_perl_observes_the_shared_state_limits_or_fails",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"perl is available but the harness declined to run\");",
+      "selector_identity": "invocation:db0a0003aa5e59c1:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
