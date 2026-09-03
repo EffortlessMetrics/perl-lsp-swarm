@@ -29,6 +29,22 @@ const FIXTURE_MANIFEST_SCHEMA_VERSION: &str = "first_ten_minutes_fixtures.v1";
 /// manifest's declared recipe is bound to this canonical string instead of
 /// accepting any nonblank description.
 const FIXTURE_HASH_RECIPE: &str = "sha256 over all regular files of the fixture directory sorted by relative POSIX path; each file contributes its path bytes, LF, its decimal byte length, LF, then its file bytes";
+/// Canonical identity of the checked-in representative set: exactly these
+/// fixture ids bound to exactly these content digests. Verified-child artifact
+/// emission requires the verified set to match this identity, so a synthetic
+/// self-consistent five-family set can never emit an indistinguishable
+/// trusted artifact. The unit tests pin this table to the checked-in
+/// manifest.json, so any fixture refresh must update both together.
+const CANONICAL_FIXTURE_SET: [(&str, &str); FIXTURE_FAMILY_COUNT] = [
+    ("conventional-modules-v1", "0dc6672278fcac9248381a50ce483203772633abdb2a7d280cb6eac0125a6246"),
+    ("test-heavy-v1", "c851ad7fd74133ee0f14e95a17592dcb0dc3e90640eff4d5181242d205268ac8"),
+    ("framework-shaped-v1", "02264e9564e2ae7830ceabdb7d0337c0e32788334456d42e1443bd98ec460f7f"),
+    (
+        "environment-sensitive-v1",
+        "7684d6cf700fbbef9723c838758d51b32726a048de32ece93f0c647a496c8664",
+    ),
+    ("dynamic-boundary-v1", "d72fc32c859eb6dc11f5ed73cbbdee9c437cc47fc891a60631f703f10a8c5c46"),
+];
 const OWNER_ISSUE: &str = "#5902";
 const FIXTURE_FAMILY_COUNT: usize = 5;
 const REQUIRED_STEPS: [JourneyStepId; 4] = [
@@ -554,6 +570,15 @@ fn collect_fixture_files(root: &Path, relative: &Path, files: &mut Vec<PathBuf>)
         let entry = entry.with_context(|| format!("enumerating {}", directory.display()))?;
         let child = relative.join(entry.file_name());
         let entry_path = entry.path();
+        // The recipe hashes the UTF-8 path bytes, so a non-UTF-8 name would
+        // lose information in the preimage; reject it instead of lossily
+        // hashing an identity that cannot be reconstructed.
+        if entry.file_name().to_str().is_none() {
+            bail!(
+                "fixture entry {} has a non-UTF-8 name; fixture sets must contain only UTF-8 names",
+                entry_path.display()
+            );
+        }
         // symlink_metadata never follows links, so a symbolic link inside a
         // fixture directory is rejected instead of being traversed or read:
         // the digest must only ever cover bytes inside the declared fixture.
@@ -616,10 +641,19 @@ fn safe_fixture_relative_path(path: &str) -> Result<()> {
 }
 
 fn verify_fixture_set(root: &Path) -> Result<FixtureManifest> {
+    let root_metadata = fs::symlink_metadata(root)
+        .with_context(|| format!("stating fixture-set root {}", root.display()))?;
+    if root_metadata.file_type().is_symlink() {
+        bail!(
+            "fixture-set root {} is a symbolic link; the representative set must have a real root directory",
+            root.display()
+        );
+    }
     let mut manifest = load_fixture_manifest(root)?;
     let mut families = BTreeSet::new();
     let mut ids = BTreeSet::new();
     let mut paths = BTreeSet::new();
+    let mut canonical_dirs = BTreeSet::new();
     for entry in &mut manifest.fixtures {
         non_empty(&entry.fixture_id, "fixtures[].fixture_id")?;
         non_empty(&entry.exercises, "fixtures[].exercises")?;
@@ -648,6 +682,17 @@ fn verify_fixture_set(root: &Path) -> Result<FixtureManifest> {
         }
         if !fixture_dir.is_dir() {
             bail!("fixture directory {} is missing", fixture_dir.display());
+        }
+        // Manifest path strings can still alias on case-insensitive
+        // filesystems (proj-a vs PROJ-A), so deduplicate by canonical
+        // filesystem identity after the symlink rejection.
+        let canonical_dir = fs::canonicalize(&fixture_dir)
+            .with_context(|| format!("canonicalizing {}", fixture_dir.display()))?;
+        if !canonical_dirs.insert(canonical_dir) {
+            bail!(
+                "fixtures[].path {} resolves to an already-registered fixture directory; distinct families must bind distinct directories",
+                entry.path
+            );
         }
         // Digests are lowercase hex; the schema accepts A-F, so normalize the
         // validated manifest value once and compare case-insensitively.
@@ -744,6 +789,28 @@ fn assert_receipt_binds_fixture_set(
     Ok(())
 }
 
+/// Verified-child artifact emission is trusted, so the verified set must be
+/// the canonical checked-in representative set itself — not merely a
+/// self-consistent synthetic set. Standalone verification of synthetic sets
+/// stays available; only artifact emission is gated here.
+fn assert_canonical_fixture_set(manifest: &FixtureManifest) -> Result<()> {
+    for (fixture_id, content_sha256) in &CANONICAL_FIXTURE_SET {
+        let entry = manifest.fixtures.iter().find(|entry| entry.fixture_id == *fixture_id);
+        let Some(entry) = entry else {
+            bail!(
+                "fixture {fixture_id} from the canonical checked-in set is missing; verified child artifacts may only be emitted from the checked-in representative set"
+            );
+        };
+        if !entry.content_sha256.eq_ignore_ascii_case(content_sha256) {
+            bail!(
+                "fixture {fixture_id} content digest {} does not match the canonical checked-in set digest {content_sha256}; verified child artifacts may only be emitted from the checked-in representative set",
+                entry.content_sha256
+            );
+        }
+    }
+    Ok(())
+}
+
 fn write_verified_child_artifact(
     receipt: &Receipt,
     receipt_sha256: &str,
@@ -818,6 +885,14 @@ fn main() -> Result<()> {
     let mut fixture_manifest = None;
     if let Some(root) = &args.verify_fixture_set {
         let manifest = verify_fixture_set(root)?;
+        if args.verified_output.is_some() {
+            assert_canonical_fixture_set(&manifest).with_context(|| {
+                format!(
+                    "binding fixture set {} to the canonical checked-in representative identity",
+                    root.display()
+                )
+            })?;
+        }
         println!(
             "first-ten-minutes: fixture set {} verified ({} families, content current)",
             root.display(),
@@ -853,11 +928,11 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        FIXTURE_HASH_RECIPE, FixtureEntry, FixtureManifest, OWNER_ISSUE, Receipt, ReceiptStatus,
-        StepStatus, assert_receipt_binds_fixture_set, fixture_content_digest, load,
-        load_fixture_manifest, reject_unmanifested_fixture_directories,
-        require_artifact_preconditions, sha256_hex, validate, validate_raw_shape,
-        verify_fixture_set, write_verified_child_artifact,
+        CANONICAL_FIXTURE_SET, FIXTURE_HASH_RECIPE, FixtureEntry, FixtureManifest, OWNER_ISSUE,
+        Receipt, ReceiptStatus, StepStatus, assert_canonical_fixture_set,
+        assert_receipt_binds_fixture_set, fixture_content_digest, load, load_fixture_manifest,
+        reject_unmanifested_fixture_directories, require_artifact_preconditions, sha256_hex,
+        validate, validate_raw_shape, verify_fixture_set, write_verified_child_artifact,
     };
     use color_eyre::eyre::Result;
     use serde::Deserialize;
@@ -1471,5 +1546,131 @@ mod tests {
         require_artifact_preconditions(Some(receipt), Some(fixture_set), None)?;
         require_artifact_preconditions(None, Some(fixture_set), None)?;
         Ok(())
+    }
+
+    /// The canonical identity table and the checked-in manifest must stay in
+    /// lockstep: any fixture refresh updates both, or this proof fails.
+    #[test]
+    fn checked_in_manifest_matches_canonical_identity() -> Result<()> {
+        let manifest = checked_in_manifest()?;
+        assert_canonical_fixture_set(&manifest)?;
+        assert_eq!(CANONICAL_FIXTURE_SET.len(), manifest.fixtures.len());
+        Ok(())
+    }
+
+    /// A synthetic self-consistent set stays verifiable standalone but can
+    /// never claim the canonical identity required for artifact emission.
+    #[test]
+    fn synthetic_set_cannot_claim_canonical_identity() -> Result<()> {
+        let directory = tempdir()?;
+        let root = directory.path();
+        let fixture_dir = root.join("proj-a");
+        std::fs::create_dir(&fixture_dir)?;
+        std::fs::write(fixture_dir.join("main.pl"), "print 1;\n")?;
+        let mut manifest = serde_json::json!({
+            "schema_version": "first_ten_minutes_fixtures.v1",
+            "owner_issue": OWNER_ISSUE,
+            "hash_recipe": FIXTURE_HASH_RECIPE,
+            "fixtures": [{
+                "fixture_id": "proj-a",
+                "family": "conventional_modules",
+                "path": "proj-a",
+                "content_sha256": fixture_content_digest(&fixture_dir)?,
+                "exercises": "synthetic coverage"
+            }]
+        });
+        let parsed: FixtureManifest = serde_json::from_value(manifest)?;
+        let outcome = match assert_canonical_fixture_set(&parsed) {
+            Ok(()) => "unexpectedly passed".to_string(),
+            Err(error) => format!("{error}"),
+        };
+        expect_error_contains(
+            &outcome,
+            "from the canonical checked-in set is missing",
+            "a synthetic set claimed canonical identity",
+        )
+    }
+
+    /// A symbolic-link fixture-set root must be rejected before the manifest
+    /// is even read, so the whole verification flow cannot be redirected.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_fixture_set_root_is_rejected() -> Result<()> {
+        let directory = tempdir()?;
+        let root = directory.path().join("real-set");
+        std::fs::create_dir(&root)?;
+        std::fs::write(root.join("manifest.json"), "{}")?;
+        let link = directory.path().join("link-to-set");
+        std::os::unix::fs::symlink(&root, &link)?;
+        let outcome = match verify_fixture_set(&link) {
+            Ok(_) => "unexpectedly passed".to_string(),
+            Err(error) => format!("{error}"),
+        };
+        expect_error_contains(
+            &outcome,
+            "is a symbolic link",
+            "a symlinked fixture-set root was not rejected",
+        )
+    }
+
+    /// The recipe hashes UTF-8 path bytes, so a non-UTF-8 fixture name must
+    /// be rejected instead of being lossily collapsed into the preimage.
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_fixture_names_are_rejected() -> Result<()> {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let directory = tempdir()?;
+        let fixture_dir = directory.path().join("proj-a");
+        std::fs::create_dir(&fixture_dir)?;
+        let bad_name = OsStr::from_bytes(b"bad\xff.pl");
+        std::fs::write(fixture_dir.join(bad_name), "print 1;\n")?;
+        let outcome = match fixture_content_digest(&fixture_dir) {
+            Ok(_) => "unexpectedly passed".to_string(),
+            Err(error) => format!("{error}"),
+        };
+        expect_error_contains(
+            &outcome,
+            "non-UTF-8 name",
+            "a non-UTF-8 fixture name was not rejected",
+        )
+    }
+
+    /// On case-insensitive filesystems, manifest path strings can alias one
+    /// directory (proj-a vs PROJ-A); canonical-identity dedup must reject it.
+    #[cfg(windows)]
+    #[test]
+    fn case_insensitive_path_aliasing_is_rejected() -> Result<()> {
+        let directory = tempdir()?;
+        let root = directory.path();
+        let fixture_dir = root.join("proj-a");
+        std::fs::create_dir(&fixture_dir)?;
+        std::fs::write(fixture_dir.join("main.pl"), "print 1;\n")?;
+        let digest = fixture_content_digest(&fixture_dir)?;
+        write_synth_manifest(
+            root,
+            serde_json::json!([
+                {
+                    "fixture_id": "proj-a",
+                    "family": "conventional_modules",
+                    "path": "proj-a",
+                    "content_sha256": digest,
+                    "exercises": "synthetic coverage"
+                },
+                {
+                    "fixture_id": "proj-b",
+                    "family": "test_heavy",
+                    "path": "PROJ-A",
+                    "content_sha256": digest,
+                    "exercises": "aliased directory"
+                }
+            ]),
+        )?;
+        let outcome = verification_error(root);
+        expect_error_contains(
+            &outcome,
+            "resolves to an already-registered fixture directory",
+            "case-insensitive aliasing was not rejected",
+        )
     }
 }

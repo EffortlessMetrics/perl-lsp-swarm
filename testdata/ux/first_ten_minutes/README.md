@@ -37,17 +37,22 @@ The `first_ten_minutes` xtask example verifies the set and rejects:
 - byte drift in any fixture without a manifest refresh;
 - a missing or extra family;
 - duplicate fixture ids; duplicate, nested, or otherwise unsafe fixture
-  paths; project directories under the set root that `manifest.json` does
-  not register; symbolic links anywhere in a fixture directory or at the
-  set root; and a manifest whose `hash_recipe` differs from the canonical
-  recipe the verifier executes.
+  paths; distinct entries resolving to one directory; project directories
+  under the set root that `manifest.json` does not register; symbolic
+  links at the set root, on a fixture directory, or anywhere inside a
+  fixture; non-UTF-8 file names; and a manifest whose `hash_recipe`
+  differs from the canonical recipe the verifier executes.
 
 Receipt-to-fixture binding (`assert_receipt_binds_fixture_set`) runs
 whenever `--receipt` and `--verify-fixture-set` are provided together, and
 `--verified-output` requires both, so a verified child artifact can never
 be written from a receipt that is not bound to this checked-in set.
-Binding of every checked-in receipt is enforced continuously by
-`cargo test -p xtask --locked`
+Artifact emission additionally requires the verified set to match the
+canonical representative identity — exactly the five checked-in fixture
+ids and their pinned `content_sha256` values — so a synthetic
+self-consistent set remains verifiable standalone but can never emit an
+indistinguishable trusted artifact. Binding of every checked-in receipt is
+enforced continuously by `cargo test -p xtask --locked`
 (`checked_in_receipts_bind_checked_in_fixtures`).
 
 ```bash
