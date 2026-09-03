@@ -136,6 +136,19 @@ def initialize_base(root: Path, files: dict[Path, str] | None = None) -> str:
     ).stdout.strip()
 
 
+def commit_fixture(root: Path, message: str) -> str:
+    """Commit the current fixture tree and return its commit id."""
+    subprocess.run(["git", "add", "--all"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", message], cwd=root, check=True)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
 class CandidateMetaSelfTestContract(unittest.TestCase):
     maxDiff = None
 
@@ -146,10 +159,25 @@ class CandidateMetaSelfTestContract(unittest.TestCase):
         base_files: dict[Path, str] | None = None,
         include_pr_base: bool = True,
         pr_base_override: str | None = None,
+        diverged_main_files: dict[Path, str] | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], str]:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             base_sha = initialize_base(root, base_files)
+            pr_base_sha = base_sha
+            if diverged_main_files is not None:
+                for relative, source in diverged_main_files.items():
+                    path = root / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(source, encoding="utf-8")
+                pr_base_sha = commit_fixture(root, "main-only fixture")
+                subprocess.run(
+                    ["git", "switch", "-c", "candidate", base_sha],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
 
             for relative in SELF_TESTS:
                 path = root / relative
@@ -170,7 +198,7 @@ class CandidateMetaSelfTestContract(unittest.TestCase):
             environment["PR_BASE_SHA"] = (
                 pr_base_override
                 if pr_base_override is not None
-                else base_sha if include_pr_base else ""
+                else pr_base_sha if include_pr_base else ""
             )
             result = subprocess.run(
                 [bash_executable(), "-c", executable_workflow_script()],
@@ -208,8 +236,25 @@ class CandidateMetaSelfTestContract(unittest.TestCase):
         )
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("exists in PR base", result.stdout)
+        self.assertIn("exists in historical PR base", result.stdout)
         self.assertNotIn(f"`{scope_test.as_posix()}`", summary)
+
+    def test_main_added_path_is_not_candidate_deletion_on_diverged_history(self) -> None:
+        scope_test = Path("scripts/ci/test_scope_cache_key.py")
+        candidate_files = {path: passing_test() for path in SELF_TESTS}
+        candidate_files.pop(scope_test)
+
+        result, summary = self.run_workflow_script(
+            candidate_files,
+            diverged_main_files={scope_test: passing_test()},
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            f"STALE_HEAD_SCOPED_NOOP: candidate path {scope_test.as_posix()} is absent",
+            result.stdout,
+        )
+        self.assertIn(f"`{scope_test.as_posix()}`", summary)
 
     def test_absent_test_without_pr_base_stays_red(self) -> None:
         result, summary = self.run_workflow_script(include_pr_base=False)
@@ -351,7 +396,8 @@ class CandidateMetaSelfTestContract(unittest.TestCase):
         self.assertIn("        shell: bash", step)
         assert_pr_base_binding(step)
         self.assertIn('git cat-file -e "${PR_BASE_SHA}^{commit}"', script)
-        self.assertIn('git cat-file -e "${PR_BASE_SHA}:${self_test}"', script)
+        self.assertIn('historical_base_sha="$(git merge-base HEAD "$PR_BASE_SHA")"', script)
+        self.assertIn('git cat-file -e "${historical_base_sha}:${self_test}"', script)
         self.assertIn('checkout_root="$(realpath -e -- .)"', script)
         self.assertIn('resolved_self_test="$(realpath -e -- "$self_test")"', script)
         for forbidden in (
