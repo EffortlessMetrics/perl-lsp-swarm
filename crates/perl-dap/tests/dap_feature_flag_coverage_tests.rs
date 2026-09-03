@@ -1109,16 +1109,19 @@ fn test_functional_dap_exceptions_warn_set_filter() -> TestResult {
 // AC9: dap.watchpoints
 // ---------------------------------------------------------------------------
 
-/// Feature gate: dap.watchpoints is registered in the catalog.
+/// Feature gate: native data breakpoints are fail-closed (#9091), so the
+/// dap.watchpoints row is retired from the advertised set.
 #[test]
 fn test_feature_gate_dap_watchpoints() {
     assert!(
-        has_feature("dap.watchpoints"),
-        "dap.watchpoints must be registered in the feature catalog"
+        !has_feature("dap.watchpoints"),
+        "dap.watchpoints must not be advertised while native watchpoint identity/install/hit proof is absent (#9091)"
     );
 }
 
-/// Capability test: initialize advertises supportsDataBreakpoints when feature is enabled.
+/// Capability test: native data breakpoints are fail-closed (#9091), so the
+/// catalog row stays registered in features.toml but is no longer advertised,
+/// and initialize must not claim supportsDataBreakpoints.
 #[test]
 fn test_capability_dap_watchpoints_initialize_response() -> TestResult {
     let body = get_initialize_body()?;
@@ -1126,38 +1129,41 @@ fn test_capability_dap_watchpoints_initialize_response() -> TestResult {
     let supports_data_breakpoints =
         body.get("supportsDataBreakpoints").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    if has_feature("dap.watchpoints") {
-        assert!(
-            supports_data_breakpoints,
-            "supportsDataBreakpoints must be true when dap.watchpoints is enabled"
-        );
-    } else {
-        assert!(
-            !supports_data_breakpoints,
-            "supportsDataBreakpoints must be false when dap.watchpoints is disabled"
-        );
-    }
+    assert!(
+        !supports_data_breakpoints,
+        "supportsDataBreakpoints must be false while watchpoint identity/install/hit proof is absent (#9091)"
+    );
+    assert!(
+        !has_feature("dap.watchpoints"),
+        "dap.watchpoints must be unadvertised while native data breakpoints are unsupported (#9091)"
+    );
     Ok(())
 }
 
-/// Functional test: dataBreakpointInfo and setDataBreakpoints work when watchpoints are enabled.
+/// Functional test: the data-breakpoint surface answers honestly without any
+/// debugger mutation while native watchpoints are unsupported (#9091).
 #[test]
 fn test_functional_dap_watchpoints_data_breakpoint_roundtrip() -> TestResult {
     let mut adapter = initialize_adapter();
 
-    // dataBreakpointInfo must succeed for a valid variable name
+    // dataBreakpointInfo stays a successful DAP response but must not mint a dataId
     let info_response =
         adapter.handle_request(2, "dataBreakpointInfo", Some(json!({ "name": "$x" })));
 
     match info_response {
-        DapMessage::Response { success, command, .. } => {
-            assert!(success, "dataBreakpointInfo must succeed");
+        DapMessage::Response { success, command, body: Some(body), .. } => {
+            assert!(success, "dataBreakpointInfo must respond");
             assert_eq!(command, "dataBreakpointInfo");
+            assert!(
+                body.get("dataId").is_some_and(|value| value.is_null()),
+                "no persistent native dataId may be minted (#9091)"
+            );
         }
         _ => return Err("Expected dataBreakpointInfo response".into()),
     }
 
-    // setDataBreakpoints with a valid breakpoint must succeed and return a breakpoints array
+    // setDataBreakpoints must succeed at the protocol layer with one
+    // unverified entry per input and zero debugger mutation (#9091)
     let set_response = adapter.handle_request(
         3,
         "setDataBreakpoints",
@@ -1166,15 +1172,15 @@ fn test_functional_dap_watchpoints_data_breakpoint_roundtrip() -> TestResult {
 
     match set_response {
         DapMessage::Response { success, command, body: Some(body), .. } => {
-            assert!(success, "setDataBreakpoints must succeed");
+            assert!(success, "setDataBreakpoints must respond");
             assert_eq!(command, "setDataBreakpoints");
             let bps = body
                 .get("breakpoints")
                 .and_then(|v| v.as_array())
                 .ok_or("missing breakpoints array")?;
-            assert_eq!(bps.len(), 1, "setDataBreakpoints must return one record");
-            let verified = bps[0].get("verified").and_then(|v| v.as_bool()).unwrap_or(false);
-            assert!(verified, "returned breakpoint must be verified");
+            assert_eq!(bps.len(), 1, "setDataBreakpoints must return one record per input");
+            let verified = bps[0].get("verified").and_then(|v| v.as_bool()).unwrap_or(true);
+            assert!(!verified, "returned watchpoint must be unverified while unsupported (#9091)");
         }
         _ => return Err("Expected setDataBreakpoints response with body".into()),
     }
@@ -1185,7 +1191,11 @@ fn test_functional_dap_watchpoints_data_breakpoint_roundtrip() -> TestResult {
 // Cross-feature: feature catalog completeness
 // ---------------------------------------------------------------------------
 
-/// All 10 DAP features must be registered in the feature catalog.
+/// Advertised DAP features must be registered in the feature catalog.
+///
+/// #9091: `dap.watchpoints` is deliberately excluded — the row remains in
+/// features.toml with full maturity metadata, but it is no longer advertised
+/// until watchpoint identity/install/hit proof exists.
 #[test]
 fn test_all_dap_features_registered_in_catalog() {
     let dap_features = [
@@ -1198,7 +1208,6 @@ fn test_all_dap_features_registered_in_catalog() {
         "dap.exceptions.warn",
         "dap.inline_values",
         "dap.modules",
-        "dap.watchpoints",
     ];
 
     let missing: Vec<&str> = dap_features.iter().filter(|&&f| !has_feature(f)).copied().collect();

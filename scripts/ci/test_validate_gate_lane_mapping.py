@@ -16,7 +16,7 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-from validate_gate_lane_mapping import main  # noqa: E402
+from validate_gate_lane_mapping import GATE_TO_LANE_MAP, main  # noqa: E402
 
 
 class ValidateGateLaneMappingTests(unittest.TestCase):
@@ -98,6 +98,33 @@ gates:
         self.assertEqual(2, report["gate_count"])
         self.assertEqual([], report["unmapped_gates"])
         self.assertEqual([], report["missing_lanes"])
+
+    def test_must_context_check_maps_to_merge_gate_shards(self) -> None:
+        status, output, report = self.run_validator(
+            """
+gates:
+  - name: must_context_check
+    tier: merge_gate
+    required: false
+""",
+            """
+[lane.merge_gate_shards]
+""",
+            strict=True,
+            json_out=True,
+        )
+
+        self.assertEqual(0, status)
+        self.assertIn("Unmapped gates: 0", output)
+        assert report is not None
+        self.assertEqual([], report["unmapped_gates"])
+        self.assertEqual(
+            [{"gate": "must_context_check", "lanes": ["merge_gate_shards"]}],
+            report["mapped"],
+        )
+        self.assertEqual(
+            ["merge_gate_shards"], GATE_TO_LANE_MAP["must_context_check"]["lanes"]
+        )
 
     def test_strict_fails_when_required_gate_has_no_workflow_path(self) -> None:
         status, output, report = self.run_validator(
