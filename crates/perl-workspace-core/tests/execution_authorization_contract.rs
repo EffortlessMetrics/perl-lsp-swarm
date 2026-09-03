@@ -2398,3 +2398,112 @@ fn forged_classified_input_identity_is_rejected() -> Result<(), Box<dyn Error>> 
     )?;
     Ok(())
 }
+
+/// Each external path carries its own disposition, and the most restrictive wins.
+///
+/// Found by an independent review lens: collapsing every unaccepted external
+/// path into `ConfirmationRequired` turned an explicit refusal into a
+/// misleading actionable prompt, and made unknown provenance read as merely
+/// unconfirmed.
+#[test]
+fn external_path_dispositions_are_preserved_and_most_restrictive_wins() -> Result<(), Box<dyn Error>>
+{
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+
+    let external = |name: &str, authority, disposition| {
+        ClassifiedInput::new(
+            name,
+            InputRiskClass::ExternalAbsolutePath,
+            authority,
+            disposition,
+            None,
+            "external_include_root",
+        )
+    };
+
+    let decide = |inputs: Vec<ClassifiedInput>| {
+        let mut request = intent(
+            OperationProfile::ModuleResolutionExternalRead,
+            ExecutionReasonClass::Probe,
+            &scope,
+            &bound,
+            inputs.iter().map(|input| input.id.clone()).collect(),
+        );
+        request.requested = CapabilitySet::new([
+            ExecutionCapability::SourceAnalysis,
+            ExecutionCapability::ExternalRead,
+            ExecutionCapability::OutsideRootPath,
+        ]);
+        authorize(
+            &request,
+            &evidence(
+                &scope,
+                WorkspaceTrust::Trusted,
+                AuthorizationActor::ExplicitUserAction { action_id: "resolve".to_string() },
+                &bound,
+                inputs,
+            ),
+        )
+    };
+
+    // A refusal stays a refusal, not a prompt.
+    let denied = decide(vec![external(
+        "include.denied",
+        EnvironmentInputAuthority::UserConfiguration,
+        InputDisposition::Denied,
+    )]);
+    require(
+        has_reason(&denied, "external_path_denied"),
+        "a denied external path must be reported as denied, not unconfirmed",
+    )?;
+    require(
+        !denied.permits(ExecutionCapability::OutsideRootPath),
+        "a denied external path grants nothing",
+    )?;
+
+    // Unknown provenance stays unproven rather than becoming a prompt.
+    let unknown = decide(vec![external(
+        "include.unknown",
+        EnvironmentInputAuthority::UserConfiguration,
+        InputDisposition::UnknownNotProven,
+    )]);
+    require(
+        !unknown.permits(ExecutionCapability::OutsideRootPath),
+        "an unproven external path grants nothing",
+    )?;
+
+    // Mixed inputs: an accepted path beside a denied one must not soften it.
+    let mixed = decide(vec![
+        external(
+            "include.ok",
+            EnvironmentInputAuthority::UserConfiguration,
+            InputDisposition::Accepted,
+        ),
+        external(
+            "include.denied",
+            EnvironmentInputAuthority::UserConfiguration,
+            InputDisposition::Denied,
+        ),
+    ]);
+    require(
+        has_reason(&mixed, "external_path_denied"),
+        "the most restrictive external path must decide",
+    )?;
+    require(
+        !mixed.permits(ExecutionCapability::OutsideRootPath),
+        "an accepted path must not rescue a denied one",
+    )?;
+
+    // Control: all accepted under explicit user authority is still granted.
+    let accepted = decide(vec![external(
+        "include.ok",
+        EnvironmentInputAuthority::UserConfiguration,
+        InputDisposition::Accepted,
+    )]);
+    require(
+        accepted.permits(ExecutionCapability::OutsideRootPath),
+        "an explicitly selected external root is still granted",
+    )?;
+    Ok(())
+}

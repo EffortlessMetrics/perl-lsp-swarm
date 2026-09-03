@@ -1943,6 +1943,8 @@ pub const REASON_EVIDENCE_LIMITATION: &str = "evidence_limitation";
 pub const REASON_PATH_ESCAPES_ROOT: &str = "path_escapes_root";
 /// Reason: an external absolute path needs explicit confirmation.
 pub const REASON_EXTERNAL_PATH_UNCONFIRMED: &str = "external_path_unconfirmed";
+/// Reason: an external absolute path was refused outright.
+pub const REASON_EXTERNAL_PATH_DENIED: &str = "external_path_denied";
 /// Reason: a workspace-scoped setting cannot supply user or machine authority.
 pub const REASON_WORKSPACE_SETTING_CANNOT_GRANT_USER_AUTHORITY: &str =
     "workspace_setting_cannot_grant_user_authority";
@@ -1981,6 +1983,20 @@ enum CapabilityFinding {
     Denied,
     ConfirmationRequired,
     NotProven,
+}
+
+impl CapabilityFinding {
+    /// How restrictive this finding is; higher wins when several inputs back
+    /// one capability. A denial outranks an unproven fact, which outranks a
+    /// prompt, which outranks a grant.
+    const fn restriction_rank(self) -> u8 {
+        match self {
+            Self::Granted => 0,
+            Self::ConfirmationRequired => 1,
+            Self::NotProven => 2,
+            Self::Denied => 3,
+        }
+    }
 }
 
 /// Compile an [`ExecutionAuthorizationDecision`] from an intent and evidence.
@@ -2642,27 +2658,39 @@ fn evaluate_outside_root_path(
         // Nothing outside the root is in play.
         return CapabilityFinding::Granted;
     }
-    if external.iter().all(|&input| {
-        input.authority == EnvironmentInputAuthority::UserConfiguration
-            && input.disposition.is_accepted()
-    }) {
-        return CapabilityFinding::Granted;
+
+    // The most restrictive external path decides. Collapsing every unaccepted
+    // path into a prompt would turn an explicit denial into a misleading
+    // actionable confirmation, and would let unknown provenance read as merely
+    // unconfirmed.
+    let mut worst = CapabilityFinding::Granted;
+    let mut blocking: Option<ClassifiedInputId> = None;
+    for input in external {
+        let finding = if input.authority == EnvironmentInputAuthority::UserConfiguration {
+            finding_for_disposition(input.disposition)
+        } else if input.disposition.is_accepted() {
+            // Accepted, but by an authority weaker than an explicit user or
+            // machine selection: leaving the root still needs confirmation.
+            CapabilityFinding::ConfirmationRequired
+        } else {
+            finding_for_disposition(input.disposition)
+        };
+        if finding.restriction_rank() > worst.restriction_rank() {
+            worst = finding;
+            blocking = Some(input.id.clone());
+        }
     }
 
-    let blocking = external
-        .iter()
-        .find(|&input| {
-            input.authority != EnvironmentInputAuthority::UserConfiguration
-                || !input.disposition.is_accepted()
-        })
-        .map(|input| input.id.clone());
-    reasons.push(reason(
-        REASON_EXTERNAL_PATH_UNCONFIRMED,
-        Some(capability),
-        blocking,
-        ActionableAuthority::UserConfiguration,
-    ));
-    CapabilityFinding::ConfirmationRequired
+    if worst == CapabilityFinding::Granted {
+        return worst;
+    }
+    let code = if worst == CapabilityFinding::Denied {
+        REASON_EXTERNAL_PATH_DENIED
+    } else {
+        REASON_EXTERNAL_PATH_UNCONFIRMED
+    };
+    reasons.push(reason(code, Some(capability), blocking, ActionableAuthority::UserConfiguration));
+    worst
 }
 
 fn evaluate_persistent_cadence(
