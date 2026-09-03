@@ -231,7 +231,17 @@ impl LspServer {
     ) -> Result<Option<Value>, JsonRpcError> {
         let disposition = decision.outcome.disposition;
         let edit_count = decision.document.edits.len();
-        self.maybe_notify_unsupported_syntax(snapshot, &decision, disposition, edit_count);
+        // Defer presentation until after the receipt is recorded and the
+        // snapshot has passed the final freshness check. A didChange/didClose
+        // can interleave after the handler's earlier admission check; in that
+        // case neither an obsolete warning nor an unsupported-syntax receipt
+        // may survive the stale-response path.
+        let notify_unsupported = self.should_notify_unsupported_syntax(
+            snapshot,
+            decision.outcome.reason,
+            disposition,
+            edit_count,
+        );
         let outcome = sanitized_outcome(&decision);
         let actual_engine = super::actual_engine_for_decision(&decision);
         let reason = outcome.get("reason").cloned().unwrap_or_else(|| json!("unknown"));
@@ -250,6 +260,10 @@ impl LspServer {
             edit_count,
             Some(outcome),
         );
+        self.ensure_current_with_engine(snapshot, Some(actual_engine))?;
+        if notify_unsupported {
+            self.show_message_or_log(MessageType::Warning, UNSUPPORTED_NATIVE_FORMATTING_MESSAGE);
+        }
 
         match disposition {
             FormatDisposition::Applied if edit_count > 0 => {
@@ -623,6 +637,59 @@ mod tests {
         verify(
             show_message_count(&messages) == 2,
             format!("a new source generation did not re-enable the warning: {messages:?}"),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn stale_projection_does_not_warn_or_retain_unsupported_receipt() -> TestResult {
+        let (server, output) = server_with_output();
+        let uri = "file:///stale-native-formatting.pl";
+        server.test_apply_did_open(uri, "sub f {\nreturn 1;\n}\n", 1)?;
+
+        let params = document_formatting_params(uri, 1);
+        let snapshot = server.admit(Surface::Document, &params)?;
+        let formatter = CodeFormatter::with_config_and_mode(
+            snapshot.config.perltidy.clone(),
+            snapshot.config.mode,
+        );
+        let context = FormatContext::new(Some(snapshot.uri.clone()), Some(snapshot.generation));
+        let decision =
+            formatter.format_document_decision(&snapshot.text, &snapshot.options, &context)?;
+        verify(
+            decision.outcome.reason == FormatReasonCode::UnsupportedSyntax,
+            "freshness regression did not start with an unsupported-syntax decision",
+        )?;
+
+        // This is the deterministic didChange interleaving that can occur
+        // after admission and before the projection handler commits its
+        // presentation state.
+        server.test_apply_did_change(uri, "my $x = 1;\n", 2)?;
+        let error = server
+            .project(&snapshot, decision)
+            .err()
+            .ok_or_else(|| io::Error::other("stale projection unexpectedly succeeded"))?;
+        verify(
+            error.code == CONTENT_MODIFIED,
+            format!("stale projection returned the wrong error: {error:?}"),
+        )?;
+
+        let receipt = server
+            .provider_decision_traces
+            .lock()
+            .get(PROVIDER)
+            .cloned()
+            .ok_or_else(|| io::Error::other("stale projection did not record a receipt"))?;
+        verify(
+            receipt.get("reason").and_then(Value::as_str) == Some("stale_source"),
+            format!("stale projection retained the unsupported receipt: {receipt:?}"),
+        )?;
+        drop(server);
+
+        let messages = outbound_messages(&output.lock())?;
+        verify(
+            show_message_count(&messages) == 0,
+            format!("stale projection emitted an obsolete warning: {messages:?}"),
         )?;
         Ok(())
     }
