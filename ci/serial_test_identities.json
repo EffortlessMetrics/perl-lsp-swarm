@@ -6,8 +6,8 @@
       "test_function": "probe_workspace_cleanup_covers_each_child_exit_path",
       "signals": "env_remove,env_set",
       "accepted_reason": "Tracked #1269 audit long tail: parent-process environment mutation remains; migrate this row to configured child-process execution before retiring it.",
-      "state": "active",
-      "remediation": "pending"
+      "state": "retired",
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-lsp-rs-core/src/config/mod.rs",
