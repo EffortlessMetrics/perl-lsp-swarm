@@ -3375,6 +3375,33 @@
       "selector_identity": "invocation:5a5d4c479a2cd580:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/native_neovim_train/tests.rs",
+      "enclosing_test_or_function": "load",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|error| panic!(\"failed to read {rel}: {error}\"));",
+      "selector_identity": "invocation:7af66160d02dcdd8:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/native_neovim_train/tests.rs",
+      "enclosing_test_or_function": "load",
+      "macro_family": "panic!",
+      "normalized_snippet": "serde_json::from_str(&bytes).unwrap_or_else(|error| panic!(\"invalid JSON in {rel}: {error}\"))",
+      "selector_identity": "invocation:15c5f0f1f1598787:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/native_neovim_train/tests.rs",
+      "enclosing_test_or_function": "unknown_profile_member_fails",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"core profile present\");",
+      "selector_identity": "invocation:d3c1f0b3252c2b36:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
