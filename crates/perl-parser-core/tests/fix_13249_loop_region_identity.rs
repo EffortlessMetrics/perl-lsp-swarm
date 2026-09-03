@@ -52,7 +52,7 @@ fn first_expr<'a>(body: &'a HirBody) -> Result<&'a HirExpr, Box<dyn Error>> {
 
 /// Collect every `HirStmt::LoopControl` in `body` in body-source order.
 fn collect_loop_controls(body: &HirBody) -> Vec<&HirStmt> {
-    body.stmts.iter().filter(|s| matches!(s, HirStmt::LoopControl { .. })).collect()
+    body.stmts.iter().filter(|&s| matches!(s, HirStmt::LoopControl { .. })).collect()
 }
 
 /// Collect every `HirExpr::Loop` in `body`.
@@ -62,7 +62,7 @@ fn collect_loop_controls(body: &HirBody) -> Vec<&HirStmt> {
 /// outer-to-inner source order, use [`loops_by_region_id`] instead — region
 /// IDs are allocated in source order as loops are lowered.
 fn collect_loops(body: &HirBody) -> Vec<&HirExpr> {
-    body.exprs.iter().filter(|e| matches!(e, HirExpr::Loop { .. })).collect()
+    body.exprs.iter().filter(|&e| matches!(e, HirExpr::Loop { .. })).collect()
 }
 
 /// Loops sorted by their stable region ID (which is allocated in body
