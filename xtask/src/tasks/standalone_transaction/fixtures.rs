@@ -381,6 +381,9 @@ fn latest_requested_never_resolves_probe() -> ContractResult<()> {
 fn fallback_branch_probe() -> ContractResult<()> {
     let mut intent = base_intent(InstallMode::ReleaseArchive, InstallOperation::Install);
     intent.fallback_policy = FallbackPolicy::ArchiveToSourceAllowed;
+    // The fallback subject below is server-only, so the intent must request
+    // that unit: a fallback branch stays bound to the requested product.
+    intent.requested_product_unit = ProductUnit::ServerOnly;
     let failed_digest = "ee".repeat(32);
     let new_subject =
         ResolvedStandaloneInstallSubject::ExactRegistrySource(ExactRegistrySourceSubject {

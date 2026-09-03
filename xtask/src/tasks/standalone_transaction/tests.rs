@@ -350,6 +350,17 @@ fn glibc_never_applies_to_windows_or_macos_targets() {
         libc: LibcDisposition::Musl,
     };
     expect_code(intent.validate(), ContractViolation::IncoherentTargetIdentity);
+
+    // NoneLibc is the macOS disposition only; Linux and Windows targets must
+    // name their libc.
+    for platform in [Platform::Linux, Platform::Windows] {
+        intent.target = TargetIdentity {
+            platform,
+            triple: "x86_64-unknown-none".into(),
+            libc: LibcDisposition::NoneLibc,
+        };
+        expect_code(intent.validate(), ContractViolation::IncoherentTargetIdentity);
+    }
 }
 
 #[test]
@@ -567,6 +578,9 @@ fn fallback_requires_explicit_admission_and_creates_a_new_branch() {
 
     let mut admitted = base_intent();
     admitted.fallback_policy = FallbackPolicy::ArchiveToSourceAllowed;
+    // The registry fallback candidate is server-only; the intent must request
+    // that unit because a fallback branch stays bound to the trusted intent.
+    admitted.requested_product_unit = ProductUnit::ServerOnly;
     expect_code(
         fallback_branch(&admitted, &failed_digest, "attempt-1", new_subject).map(|_| ()),
         ContractViolation::AttemptMismatch,
@@ -597,6 +611,67 @@ fn fallback_requires_explicit_admission_and_creates_a_new_branch() {
         )
         .map(|_| ()),
         ContractViolation::FallbackNotAllowed,
+    );
+}
+
+/// A fallback branch admits only the archive→registry-source mode
+/// transition: product unit, destination, and target identity stay bound to
+/// the trusted intent, or a fallback would install different software in a
+/// different place.
+#[test]
+fn fallback_branch_cannot_drift_from_the_intent() {
+    let mut intent = base_intent();
+    intent.fallback_policy = FallbackPolicy::ArchiveToSourceAllowed;
+    intent.requested_product_unit = ProductUnit::ServerOnly;
+    let failed_digest = "ee".repeat(32);
+
+    // Positive control: the coherent branch is admitted.
+    must(
+        fallback_branch(&intent, &failed_digest, "attempt-2", registry_candidate(&intent)),
+        "coherent fallback branch",
+    );
+
+    // Product-unit drift.
+    let widened = match registry_candidate(&intent) {
+        ResolvedStandaloneInstallSubject::ExactRegistrySource(mut subject) => {
+            subject.product_unit = ProductUnit::ServerDapPair;
+            ResolvedStandaloneInstallSubject::ExactRegistrySource(subject)
+        }
+        other => other,
+    };
+    expect_code(
+        fallback_branch(&intent, &failed_digest, "attempt-2", widened).map(|_| ()),
+        ContractViolation::OutcomeConflict,
+    );
+
+    // Destination drift.
+    let moved = match registry_candidate(&intent) {
+        ResolvedStandaloneInstallSubject::ExactRegistrySource(mut subject) => {
+            subject.destination_role = DestinationRole::SystemShared;
+            ResolvedStandaloneInstallSubject::ExactRegistrySource(subject)
+        }
+        other => other,
+    };
+    expect_code(
+        fallback_branch(&intent, &failed_digest, "attempt-2", moved).map(|_| ()),
+        ContractViolation::OutcomeConflict,
+    );
+
+    // Target drift.
+    let retargeted = match registry_candidate(&intent) {
+        ResolvedStandaloneInstallSubject::ExactRegistrySource(mut subject) => {
+            subject.target = TargetIdentity {
+                platform: Platform::Windows,
+                triple: "x86_64-pc-windows-msvc".into(),
+                libc: LibcDisposition::Msvc,
+            };
+            ResolvedStandaloneInstallSubject::ExactRegistrySource(subject)
+        }
+        other => other,
+    };
+    expect_code(
+        fallback_branch(&intent, &failed_digest, "attempt-2", retargeted).map(|_| ()),
+        ContractViolation::OutcomeConflict,
     );
 }
 
@@ -749,73 +824,46 @@ fn dag_structure_falsifiers() {
     unknown_predecessor.nodes[1].predecessors.push(Uninstall);
     expect_code(unknown_predecessor.validate(), ContractViolation::UnknownPredecessor);
 
-    // Reversed DAG: promotion declared before its predecessor.
-    let reversed = StageDag {
-        schema_version: DAG_SCHEMA_VERSION.to_string(),
-        mode: InstallMode::ReleaseArchive,
-        product_unit: ProductUnit::ServerOnly,
-        nodes: vec![
-            node(ResolveSubject, Applicability::Required, &[]),
-            node(Promotion, Applicability::Required, &[Transport]),
-            node(Transport, Applicability::Required, &[ResolveSubject]),
-        ],
-    };
+    // Reversed DAG: the complete canonical floor declared in reverse order,
+    // so promotion is cited before it appears.
+    let mut reversed = archive_dag(ProductUnit::ServerOnly);
+    reversed.nodes.reverse();
     expect_code(reversed.validate(), ContractViolation::CyclicStageGraph);
 
-    // Direct cycle.
-    let cyclic = StageDag {
-        schema_version: DAG_SCHEMA_VERSION.to_string(),
-        mode: InstallMode::ReleaseArchive,
-        product_unit: ProductUnit::ServerOnly,
-        nodes: vec![
-            node(ResolveSubject, Applicability::Required, &[]),
-            node(Transport, Applicability::Required, &[ChecksumIntegrity]),
-            node(ChecksumIntegrity, Applicability::Required, &[Transport]),
-        ],
-    };
+    // Direct cycle on top of the complete floor: transport and checksum cite
+    // each other.
+    let mut cyclic = archive_dag(ProductUnit::ServerOnly);
+    cyclic.nodes[1].predecessors.push(ChecksumIntegrity);
     expect_code(cyclic.validate(), ContractViolation::CyclicStageGraph);
 
     // Source builds are forbidden outright in archive mode: the stage cannot
     // even be declared, in either applicability.
-    let source_build_in_archive_mode = StageDag {
-        schema_version: DAG_SCHEMA_VERSION.to_string(),
-        mode: InstallMode::ReleaseArchive,
-        product_unit: ProductUnit::ServerOnly,
-        nodes: vec![
-            node(ResolveSubject, Applicability::Required, &[]),
-            node(SourceBuild, Applicability::NotApplicable, &[ResolveSubject]),
-        ],
-    };
+    let mut source_build_in_archive_mode = archive_dag(ProductUnit::ServerOnly);
+    source_build_in_archive_mode.nodes.push(node(
+        SourceBuild,
+        Applicability::NotApplicable,
+        &[ResolveSubject],
+    ));
     expect_code(
         source_build_in_archive_mode.validate(),
         ContractViolation::UnauthorizedStageApplicability,
     );
 
     // Archive staging cannot appear in exact-source mode at all.
-    let archive_stage_in_source_mode = StageDag {
-        schema_version: DAG_SCHEMA_VERSION.to_string(),
-        mode: InstallMode::ExactRegistrySource,
-        product_unit: ProductUnit::ServerOnly,
-        nodes: vec![
-            node(ResolveSubject, Applicability::Required, &[]),
-            node(ArchiveManifestAndStaging, Applicability::Required, &[ResolveSubject]),
-        ],
-    };
+    let mut archive_stage_in_source_mode = source_dag(ProductUnit::ServerOnly);
+    archive_stage_in_source_mode.nodes.push(node(
+        ArchiveManifestAndStaging,
+        Applicability::Required,
+        &[ResolveSubject],
+    ));
     expect_code(
         archive_stage_in_source_mode.validate(),
         ContractViolation::UnauthorizedStageApplicability,
     );
 
     // Local development cannot declare promotion stages at all.
-    let local_with_promotion = StageDag {
-        schema_version: DAG_SCHEMA_VERSION.to_string(),
-        mode: InstallMode::ExplicitLocalDevelopment,
-        product_unit: ProductUnit::ServerOnly,
-        nodes: vec![
-            node(ResolveSubject, Applicability::Required, &[]),
-            node(Promotion, Applicability::Required, &[ResolveSubject]),
-        ],
-    };
+    let mut local_with_promotion = local_dag();
+    local_with_promotion.nodes.push(node(Promotion, Applicability::Required, &[ResolveSubject]));
     expect_code(local_with_promotion.validate(), ContractViolation::UnauthorizedStageApplicability);
 
     let mut wrong_schema = source_dag(ProductUnit::ServerOnly);
@@ -966,8 +1014,11 @@ fn duplicate_stage_results_are_rejected() {
     let dag = archive_dag(intent.requested_product_unit);
     expect_violation(
         folded(&intent, &dag, &subject, &subject_digest, |receipts| {
+            // Insert the duplicate adjacent to its original: appending it to
+            // the tail would trip the out-of-order rule first and stop
+            // discriminating the duplicate-result rule under test.
             let clone = receipts[3].clone();
-            receipts.push(clone);
+            receipts.insert(4, clone);
         }),
         ContractViolation::DuplicateStageResult,
     );
@@ -1010,6 +1061,61 @@ fn missing_required_stage_evidence_fails_closed() {
             receipts.retain(|receipt| receipt.stage_id != StageId::Promotion);
         }),
         ContractViolation::PredecessorMismatch,
+    );
+}
+
+/// The fold composes evidence for exactly one installation shape: the settled
+/// subject's mode and product unit must equal the DAG's, or evidence gathered
+/// for one installation could certify another.
+#[test]
+fn fold_rejects_subject_dag_shape_mismatch() {
+    let intent = base_intent();
+    let (subject, subject_digest) = resolved_archive(&intent);
+
+    // Product mismatch: a server+ DAP pair subject folded against a
+    // server-only DAG.
+    let wrong_unit_dag = archive_dag(ProductUnit::ServerOnly);
+    expect_violation(
+        folded(&intent, &wrong_unit_dag, &subject, &subject_digest, |_| {}),
+        ContractViolation::OutcomeConflict,
+    );
+
+    // Mode mismatch: a registry-source subject folded against an archive DAG.
+    let mut source_intent = base_intent();
+    source_intent.mode = InstallMode::ExactRegistrySource;
+    source_intent.selector = ReleaseSelector::not_applicable();
+    source_intent.requested_product_unit = ProductUnit::ServerOnly;
+    let source_subject = must(
+        resolve_subject(&source_intent, registry_candidate(&source_intent)),
+        "registry subject resolves",
+    );
+    let source_digest = must(source_subject.validate(), "registry subject validates");
+    let archive_dag = archive_dag(ProductUnit::ServerOnly);
+    expect_violation(
+        folded(&intent, &archive_dag, &source_subject, &source_digest, |_| {}),
+        ContractViolation::ModeMismatch,
+    );
+}
+
+/// A stage the settled subject binds policy-mandated evidence to can never
+/// fold as not_applicable: DAG authorization alone cannot waive mandated
+/// evidence (negative control: missing mandatory stage as skip).
+#[test]
+fn subject_mandated_evidence_cannot_be_skipped() {
+    let intent = base_intent();
+    let mut mandated = release_archive_subject(&intent);
+    mandated.provenance_policy_id = Some("provenance-v1".into());
+    let subject = must(
+        resolve_subject(&intent, ResolvedStandaloneInstallSubject::ReleaseArchive(mandated)),
+        "provenance-mandated subject resolves",
+    );
+    let subject_digest = must(subject.validate(), "subject validates");
+    // The canonical DAG marks provenance skippable; the settled subject
+    // mandates provenance evidence, so the skip can no longer fold green.
+    let dag = archive_dag(intent.requested_product_unit);
+    expect_violation(
+        folded(&intent, &dag, &subject, &subject_digest, |_| {}),
+        ContractViolation::MissingRequiredStage,
     );
 }
 
@@ -1177,6 +1283,23 @@ fn green_local_development_still_cannot_claim_installed() {
         .unwrap_or_else(|error| fail(&format!("green local dev folds: {error}")));
     assert_eq!(outcome.result, TerminalResult::NotProven);
     assert_eq!(outcome.reason, ReasonFamily::LocalDevelopmentNonAuthoritative);
+}
+
+/// Local development declares no product-unit identity, but its destination
+/// role is real and stays bound to the intent like every other mode's.
+#[test]
+fn local_development_subject_cannot_drift_destination() {
+    let mut intent = base_intent();
+    intent.mode = InstallMode::ExplicitLocalDevelopment;
+    intent.selector = ReleaseSelector::not_applicable();
+    let subject =
+        ResolvedStandaloneInstallSubject::ExplicitLocalDevelopment(LocalDevelopmentSubject {
+            schema_version: SUBJECT_SCHEMA_VERSION.to_string(),
+            subject_id: "subject-localdev-drift".into(),
+            description: "developer checkout".into(),
+            destination_role: DestinationRole::SystemShared,
+        });
+    expect_code(resolve_subject(&intent, subject).map(|_| ()), ContractViolation::OutcomeConflict);
 }
 
 #[test]

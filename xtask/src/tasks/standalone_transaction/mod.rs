@@ -653,7 +653,7 @@ impl TargetIdentity {
         let coherent = match self.libc {
             LibcDisposition::Gnu | LibcDisposition::Musl => self.platform == Platform::Linux,
             LibcDisposition::Msvc => self.platform == Platform::Windows,
-            LibcDisposition::NoneLibc => true,
+            LibcDisposition::NoneLibc => self.platform == Platform::Macos,
         };
         if coherent {
             Ok(())
@@ -1065,34 +1065,44 @@ pub fn resolve_subject(
     // release tag); product-unit and destination-role coherence binds every
     // resolvable mode, so a registry-source subject cannot drift from the
     // requested unit or install root either.
-    if let ResolvedStandaloneInstallSubject::ReleaseArchive(subject) = &candidate {
-        if subject.tag != intent.selector.tag.as_deref().unwrap_or_default() {
-            return violation(
-                ContractViolation::SelectorSubjectMismatch,
-                format!(
-                    "resolved tag {} does not match the exact intent selector",
-                    head(&subject.tag)
-                ),
-            );
-        }
-    }
-    if candidate.mode() != InstallMode::ExplicitLocalDevelopment {
-        // Local development declares no product-unit identity; the accessor's
-        // server-only default is not an authorization surface there.
-        if candidate.destination_role() != intent.destination_role {
-            return violation(
-                ContractViolation::OutcomeConflict,
-                "resolved destination role disagrees with the intent",
-            );
-        }
-        if candidate.product_unit() != intent.requested_product_unit {
-            return violation(
-                ContractViolation::OutcomeConflict,
-                "resolved product unit disagrees with the intent",
-            );
-        }
+    if let ResolvedStandaloneInstallSubject::ReleaseArchive(subject) = &candidate
+        && subject.tag != intent.selector.tag.as_deref().unwrap_or_default()
+    {
+        return violation(
+            ContractViolation::SelectorSubjectMismatch,
+            format!("resolved tag {} does not match the exact intent selector", head(&subject.tag)),
+        );
     }
     candidate.validate()?;
+    enforce_intent_subject_coherence(intent, &candidate)?;
+    Ok(candidate)
+}
+
+/// Coherence every resolved subject owes the immutable intent (#11099):
+/// destination role, product unit, and target identity cannot drift between
+/// the trusted input and the resolved subject — on the initial resolution and
+/// on an admitted fallback branch alike. Local development declares no
+/// product-unit identity (the accessor's server-only default is not an
+/// authorization surface there), so only its destination and the target
+/// override boundary bind it.
+fn enforce_intent_subject_coherence(
+    intent: &StandaloneInstallIntent,
+    candidate: &ResolvedStandaloneInstallSubject,
+) -> ContractResult<()> {
+    if candidate.destination_role() != intent.destination_role {
+        return violation(
+            ContractViolation::OutcomeConflict,
+            "resolved destination role disagrees with the intent",
+        );
+    }
+    if candidate.mode() != InstallMode::ExplicitLocalDevelopment
+        && candidate.product_unit() != intent.requested_product_unit
+    {
+        return violation(
+            ContractViolation::OutcomeConflict,
+            "resolved product unit disagrees with the intent",
+        );
+    }
     if let Some(subject_target) = candidate.target() {
         if subject_target.platform != intent.target.platform
             || subject_target.libc != intent.target.libc
@@ -1119,7 +1129,7 @@ pub fn resolve_subject(
             "a local-development subject cannot consume a target override",
         );
     }
-    Ok(candidate)
+    Ok(())
 }
 
 /// An explicit fallback branch: a NEW resolved subject under a NEW attempt,
@@ -1166,6 +1176,10 @@ pub fn fallback_branch(
             "a fallback branch is a new attempt, never a continuation of the failed one",
         );
     }
+    // The fallback branch stays bound to the trusted intent: only the
+    // archive→registry-source mode transition is admitted, so the new subject
+    // must preserve the requested unit, destination, and target identity.
+    enforce_intent_subject_coherence(intent, &new_subject)?;
     let new_digest = new_subject.validate()?;
     if new_digest == failed_subject_digest {
         return violation(
@@ -1734,6 +1748,25 @@ pub fn fold_terminal_outcome(
     if input.dag.mode != input.mode {
         return violation(ContractViolation::ModeMismatch, "fold mode disagrees with the DAG mode");
     }
+    // The settled subject must describe the same installation the DAG
+    // composes: mode and product unit bind both, or evidence gathered for
+    // one installation shape could certify another.
+    if input.subject.mode() != input.mode {
+        return violation(
+            ContractViolation::ModeMismatch,
+            "fold mode disagrees with the settled subject's mode",
+        );
+    }
+    if input.mode != InstallMode::ExplicitLocalDevelopment
+        && input.subject.product_unit() != input.dag.product_unit
+    {
+        // Local development declares no product-unit identity; the accessor's
+        // server-only default is not an authorization surface there.
+        return violation(
+            ContractViolation::OutcomeConflict,
+            "settled subject product unit disagrees with the DAG's declared unit",
+        );
+    }
     bounded_id(input.transaction_id, "transaction_id")?;
     bounded_id(input.attempt_id, "attempt_id")?;
     hex_sha256(input.subject_digest, "subject_digest")?;
@@ -1855,6 +1888,22 @@ pub fn fold_terminal_outcome(
                     ContractViolation::UnauthorizedStageApplicability,
                     format!(
                         "stage {} is required by the DAG and cannot be skipped as not_applicable",
+                        receipt.stage_id.as_str()
+                    ),
+                );
+            }
+            // DAG authorization is necessary but not sufficient: a stage the
+            // settled subject binds policy-mandated evidence to can never
+            // fold as skipped, or mandated evidence becomes optional.
+            if expected_policies.0.is_some()
+                || expected_policies.1.is_some()
+                || expected_policies.2.is_some()
+            {
+                return violation(
+                    ContractViolation::MissingRequiredStage,
+                    format!(
+                        "the settled subject mandates policy-bound evidence for stage {}; \
+                         a not_applicable result cannot satisfy it",
                         receipt.stage_id.as_str()
                     ),
                 );
