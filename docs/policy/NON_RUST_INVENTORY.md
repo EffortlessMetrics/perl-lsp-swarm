@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12682 |
-| Rust-family files | 3944 |
-| Non-Rust files | 8738 |
-| Allowlisted | 6499 |
+| Total tracked files | 12684 |
+| Rust-family files | 3945 |
+| Non-Rust files | 8739 |
+| Allowlisted | 6500 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -20,7 +20,7 @@
 | documentation | 2852 |
 | generated | 2 |
 | production | 356 |
-| test | 2108 |
+| test | 2109 |
 | tooling | 680 |
 | unclassified | 2239 |
 
@@ -7133,6 +7133,7 @@
 | `test_corpus/package_production_enhanced.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/packages_versions.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/parser_stress_cases.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `test_corpus/postfix_dereference_matrix.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/prototypes_only.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/readline_diamond_operator_comprehensive.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/real_projects/catalyst_skeleton/lib/Catalyst.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
