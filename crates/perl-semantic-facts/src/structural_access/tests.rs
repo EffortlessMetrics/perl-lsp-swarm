@@ -1584,22 +1584,21 @@ fn a_recorded_shape_mismatch_must_be_a_real_one() -> Result<(), Box<dyn Error>> 
     )?;
 
     // A mismatch claimed for an operator the shape does carry did not happen.
-    let error = contract_error(StructuralAccessChain::new(
-        subject()?,
-        vec![
-            head(ValueShape::HashRef)?,
-            mismatch(
-                StructuralAccessOperator::HashSlot,
-                StructuralAccessSelector::StaticKey("c".to_string()),
-                "{c}",
-                ValueShape::HashRef,
-            )?,
-        ],
+    // Law 13 now rejects this at the hop itself, before a chain exists, so the
+    // assertion is against the hop constructor rather than the chain.
+    let error = contract_error(mismatch(
+        StructuralAccessOperator::HashSlot,
+        StructuralAccessSelector::StaticKey("c".to_string()),
+        "{c}",
+        ValueShape::HashRef,
     ))?;
     assert!(matches!(error, StructuralAccessContractError::ContradictoryStatus(_)));
 
     // A mismatch observing a shape the predecessor did not select describes a
-    // different aggregate.
+    // different aggregate. The observed shape here is `Scalar`, which is
+    // permissive and so passes law 13 untouched — this leaves the chain's own
+    // clause as the only thing that can reject it, which is the point of the
+    // case.
     let error = contract_error(StructuralAccessChain::new(
         subject()?,
         vec![
@@ -1608,7 +1607,7 @@ fn a_recorded_shape_mismatch_must_be_a_real_one() -> Result<(), Box<dyn Error>> 
                 StructuralAccessOperator::ArrayIndex,
                 StructuralAccessSelector::StaticIndex(0),
                 "[0]",
-                ValueShape::ArrayRef,
+                ValueShape::Scalar,
             )?,
         ],
     ))?;
@@ -2791,6 +2790,100 @@ fn a_dynamic_limitation_on_a_static_key_cannot_survive_transport() -> Result<(),
     assert!(
         decoded.validate().is_err(),
         "a dynamic-selector limitation over a static key must not survive transport"
+    );
+    Ok(())
+}
+
+// ── A first-hop mismatch must be a real one (found by Devin review) ───────
+
+#[test]
+fn a_first_hop_mismatch_cannot_name_a_shape_that_carries_the_operator() -> Result<(), Box<dyn Error>>
+{
+    // Hop zero has no predecessor, so the chain's mismatch law cannot reach
+    // it. A hash reference does carry `->{}`, so this records a conflict that
+    // did not happen.
+    let error = contract_error(mismatching_hop(
+        base_variable(),
+        StructuralAccessOperator::HashRefSlot,
+        StructuralAccessSelector::StaticKey("k".to_string()),
+        "->{k}",
+        ValueShape::HashRef,
+    ))?;
+    assert!(
+        matches!(error, StructuralAccessContractError::ContradictoryStatus(_)),
+        "a hash reference does carry an arrow hash slot, got {error:?}"
+    );
+
+    // The array mirror.
+    let error = contract_error(mismatching_hop(
+        base_variable(),
+        StructuralAccessOperator::ArrayRefIndex,
+        StructuralAccessSelector::StaticIndex(0),
+        "->[0]",
+        ValueShape::ArrayRef,
+    ))?;
+    assert!(
+        matches!(error, StructuralAccessContractError::ContradictoryStatus(_)),
+        "an array reference does carry an arrow array index, got {error:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_first_hop_mismatch_over_a_genuinely_wrong_shape_still_validates() -> Result<(), Box<dyn Error>>
+{
+    // The discriminating controls. A hash reference does not carry an indexed
+    // operator, so this mismatch is honest; and the permissive shapes assert
+    // too little to contradict any operator, so a mismatch against one must
+    // not be rejected either.
+    mismatching_hop(
+        base_variable(),
+        StructuralAccessOperator::ArrayRefIndex,
+        StructuralAccessSelector::StaticIndex(0),
+        "->[0]",
+        ValueShape::HashRef,
+    )?;
+    for permissive in [
+        ValueShape::Scalar,
+        ValueShape::Unknown,
+        ValueShape::Object { package: "Staff".to_string(), confidence: Confidence::High },
+    ] {
+        mismatching_hop(
+            base_variable(),
+            StructuralAccessOperator::HashRefSlot,
+            StructuralAccessSelector::StaticKey("k".to_string()),
+            "->{k}",
+            permissive,
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn an_invented_first_hop_mismatch_cannot_survive_transport() -> Result<(), Box<dyn Error>> {
+    // A *single-hop* chain, deliberately. The hop is both first and last, so
+    // the chain's own mismatch law has no window to run on and the "only the
+    // final hop may fail to select" law is satisfied — law 13 is the only rule
+    // that can reject the mutation. Mutating a middle hop of `nested_chain`
+    // instead would trip the non-selecting-hop law and pass for the wrong
+    // reason.
+    let honest = StructuralAccessChain::new(
+        subject()?,
+        vec![mismatching_hop(
+            base_variable(),
+            StructuralAccessOperator::ArrayRefIndex,
+            StructuralAccessSelector::StaticIndex(0),
+            "->[0]",
+            ValueShape::HashRef,
+        )?],
+    )?;
+    let mut value = serde_json::to_value(&honest)?;
+    value["hops"][0]["outcome"] =
+        serde_json::json!({ "ShapeMismatch": { "observed": "ArrayRef" } });
+    let decoded: StructuralAccessChain = serde_json::from_value(value)?;
+    assert!(
+        decoded.validate().is_err(),
+        "an invented mismatch must not survive transport on a single-hop chain"
     );
     Ok(())
 }

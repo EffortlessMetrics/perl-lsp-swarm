@@ -6,7 +6,8 @@ use super::{
     STRUCTURAL_ACCESS_SCHEMA_TAG, StructuralAccessAggregate, StructuralAccessBudget,
     StructuralAccessContractError, StructuralAccessLimitation, StructuralAccessOperator,
     StructuralAccessSelector, StructuralAccessSpelling, StructuralAggregateCompleteness,
-    StructuralAggregateDisposition, StructuralHopCertainty, StructuralHopOutcome,
+    StructuralAggregateDisposition, StructuralHopCertainty, StructuralHopOutcome, shape_carries,
+    shape_is_decisive,
 };
 use crate::semantic_identity::SemanticIdentityFingerprint;
 use crate::{
@@ -241,6 +242,11 @@ impl StructuralAccessHop {
     ///     omitting a limitation asserts nothing — and covers only those
     ///     four; the remaining limitations either restate no field or are
     ///     deliberately weaker than the outcome that shares their name.
+    /// 13. A recorded [`StructuralHopOutcome::ShapeMismatch`] must be a real
+    ///     mismatch: if the observed shape is decisive and carries this hop's
+    ///     operator, no conflict occurred. The chain states the same law
+    ///     across a hop boundary, but cannot reach a chain's first hop, which
+    ///     has no predecessor to compare against.
     /// 12. A plain subscript on a named variable cannot report
     ///     [`StructuralHopOutcome::ShapeMismatch`]. Law 9 has already bound
     ///     the operator to the variable's own sigil, so the shape is fixed in
@@ -396,6 +402,31 @@ impl StructuralAccessHop {
             | StructuralHopOutcome::StaleGeneration
             | StructuralHopOutcome::BudgetExhausted
             | StructuralHopOutcome::Boundary(_) => {}
+        }
+
+        // Law 13: a recorded mismatch must be a mismatch. If the observed shape
+        // is decisive about what it carries and it *does* carry this hop's
+        // operator, no conflict occurred and the record invents one — a
+        // `HashRef` observed under `->{}`, or an `ArrayRef` under `->[]`.
+        //
+        // The chain states the same law across a hop boundary, but only where
+        // a predecessor selected a shape, so it cannot reach the first hop of a
+        // chain, whose observed shape has no predecessor to compare against.
+        // This is the same law applied to the record's own two fields, which is
+        // where it holds for every hop including the first. The two share
+        // `shape_carries` and `shape_is_decisive` rather than restating the
+        // compatibility table twice.
+        //
+        // Permissive shapes stay permissive: `Scalar`, `Object` and `Unknown`
+        // assert too little to carry an operator *or* to conflict with one, so
+        // a mismatch recorded against them is not contradicted here.
+        if let StructuralHopOutcome::ShapeMismatch { observed } = &self.outcome
+            && shape_is_decisive(observed)
+            && shape_carries(observed, self.operator.is_keyed())
+        {
+            return Err(StructuralAccessContractError::ContradictoryStatus(
+                "a shape mismatch cannot be recorded for an operator the observed shape carries",
+            ));
         }
 
         // A static key is deliberately *not* checked for emptiness. `$h{""}`

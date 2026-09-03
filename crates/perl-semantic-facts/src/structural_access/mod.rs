@@ -971,3 +971,51 @@ fn confidence_tag(confidence: Confidence) -> &'static str {
         Confidence::Low => "low",
     }
 }
+
+/// Whether a known value shape can carry the next hop's operator class.
+///
+/// A hash reference carries keyed operators, an array reference indexed ones.
+///
+/// A code reference and a package name carry neither, and both are decisive
+/// about it: each is a defined value that cannot become something else, so
+/// subscripting one is an error rather than an access. Verified against the
+/// interpreter — `$coderef->{k}` is `Not a HASH reference`, and `$str->{k}`
+/// for a defined string is `Can't use string ("Foo") as a HASH ref while
+/// "strict refs" in use`. A symbolic dereference belongs at this contract's
+/// own symbolic-reference boundary rather than in a plain selection.
+///
+/// `Scalar`, `Object` and `Unknown` carry everything, and each does so because
+/// it asserts too little to contradict anything — never because every operator
+/// truly applies:
+///
+/// - `Scalar` does not distinguish `undef` from a defined non-reference, and
+///   `undef` *is* subscriptable: Perl autovivifies it. `my $x; $x->{k} = 1`
+///   leaves `$x` a hash reference, and even the rvalue `$z->{k}` on an undef
+///   `$z` succeeds and autovivifies. Treating every `Scalar` as decisively
+///   non-subscriptable rejected that honest chain.
+/// - `Object` is a blessed reference that may be a blessed hash or a blessed
+///   array.
+/// - `Unknown` asserts nothing at all.
+pub(super) fn shape_carries(shape: &ValueShape, next_is_keyed: bool) -> bool {
+    match shape {
+        ValueShape::HashRef => next_is_keyed,
+        ValueShape::ArrayRef => !next_is_keyed,
+        ValueShape::CodeRef | ValueShape::PackageName { .. } => false,
+        ValueShape::Scalar | ValueShape::Object { .. } | ValueShape::Unknown => true,
+    }
+}
+
+/// Whether a shape says enough to decide what an operator may do with it.
+///
+/// The permissive shapes in [`shape_carries`] return `true` for every operator
+/// because they assert too little, not because they carry everything — so a
+/// mismatch recorded against one of them cannot be contradicted either.
+pub(super) fn shape_is_decisive(shape: &ValueShape) -> bool {
+    matches!(
+        shape,
+        ValueShape::HashRef
+            | ValueShape::ArrayRef
+            | ValueShape::CodeRef
+            | ValueShape::PackageName { .. }
+    )
+}
