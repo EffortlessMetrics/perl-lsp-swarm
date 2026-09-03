@@ -3,9 +3,9 @@
 use super::{
     DEBUGGER_QUERY_WAIT_MS, DapMessage, DebugAdapter, ExceptionDetails, ExceptionInfoArguments,
     ExceptionInfoResponseBody, HashMap, InlineValuesArguments, InlineValuesResponseBody,
-    LoadedSourcesResponseBody, Module, ModulesArguments, ModulesResponseBody, Ordering,
-    SourceArguments, SourceResponseBody, Value, collect_inline_values_with_runtime,
-    extract_variable_names, inc_re, lock_or_recover, module_path_to_name,
+    LoadedSourcesResponseBody, Module, ModulesArguments, ModulesResponseBody, SourceArguments,
+    SourceResponseBody, Value, collect_inline_values_with_runtime, extract_variable_names, inc_re,
+    lock_or_recover, module_path_to_name,
 };
 
 impl DebugAdapter {
@@ -97,8 +97,17 @@ impl DebugAdapter {
             }
         };
 
-        // Query runtime variable values from the debugger
-        let runtime_values = self.query_inline_variable_values(&content, start_line, end_line);
+        // Query runtime variable values from the debugger. The query is the
+        // cancellable operation mapped to this request's sequence (#9074).
+        let operation = self.cancel_registry.register(request_seq, "inlineValues");
+        let runtime_values =
+            self.query_inline_variable_values(&content, start_line, end_line, operation.token());
+        let cancelled = operation.is_cancelled();
+        operation.settle(if cancelled {
+            crate::debug_adapter::cancel_registry::OperationOutcome::Cancelled
+        } else {
+            crate::debug_adapter::cancel_registry::OperationOutcome::Completed
+        });
 
         let inline_values = collect_inline_values_with_runtime(
             &content,
@@ -131,12 +140,16 @@ impl DebugAdapter {
     /// Query runtime variable values for inline display.
     ///
     /// Extracts variable names from source, then queries the Perl debugger
-    /// for each variable's current value.
+    /// for each variable's current value. The `cancel` token belongs to the
+    /// operation registered for this exact request (#9074): a retired token
+    /// stops the per-variable loop, and the partially collected values are
+    /// returned without consuming anything from a later request.
     fn query_inline_variable_values(
         &self,
         source: &str,
         start_line: i64,
         end_line: i64,
+        cancel: &crate::debug_adapter::cancel_registry::CancellationToken,
     ) -> Option<HashMap<String, String>> {
         let var_names = extract_variable_names(source, start_line, end_line);
         if var_names.is_empty() {
@@ -152,8 +165,7 @@ impl DebugAdapter {
         let mut values = HashMap::new();
 
         for var_name in &var_names {
-            if self.cancel_requested.load(Ordering::Acquire) {
-                self.cancel_requested.store(false, Ordering::Release);
+            if cancel.is_cancelled() {
                 return Some(values);
             }
 
@@ -179,7 +191,12 @@ impl DebugAdapter {
             };
 
             let result = output_frame_markers.and_then(|(begin, end)| {
-                self.capture_framed_debugger_output(&begin, &end, DEBUGGER_QUERY_WAIT_MS)
+                self.capture_framed_debugger_output(
+                    &begin,
+                    &end,
+                    DEBUGGER_QUERY_WAIT_MS,
+                    Some(cancel),
+                )
             });
 
             if let Some(lines) = result {
@@ -315,7 +332,16 @@ impl DebugAdapter {
     }
 
     /// Query `%INC` from the debugger and return parsed (module_key, abs_path) pairs.
-    pub(super) fn query_inc_entries(&self) -> Vec<(String, String)> {
+    ///
+    /// `cancel` binds the wait and the result scan to exactly one
+    /// registered operation (#9074); `None` marks a non-cancellable query.
+    /// A retired token quarantines the captured frame and empties the
+    /// result — the late output of a cancelled query can never satisfy a
+    /// later request.
+    pub(super) fn query_inc_entries(
+        &self,
+        cancel: Option<&crate::debug_adapter::cancel_registry::CancellationToken>,
+    ) -> Vec<(String, String)> {
         let output_frame_markers = {
             let mut session_guard = lock_or_recover(&self.session, "debug_adapter.session");
             if let Some(ref mut session) = *session_guard {
@@ -332,7 +358,7 @@ impl DebugAdapter {
         // Session guard dropped — safe to read output.
         let lines = match output_frame_markers {
             Some((begin, end)) => self
-                .capture_framed_debugger_output(&begin, &end, DEBUGGER_QUERY_WAIT_MS * 8)
+                .capture_framed_debugger_output(&begin, &end, DEBUGGER_QUERY_WAIT_MS * 8, cancel)
                 .unwrap_or_default(),
             None => return Vec::new(),
         };
@@ -344,8 +370,7 @@ impl DebugAdapter {
 
         let mut entries = Vec::new();
         for line in &lines {
-            if self.cancel_requested.load(Ordering::Acquire) {
-                self.cancel_requested.store(false, Ordering::Release);
+            if cancel.is_some_and(|token| token.is_cancelled()) {
                 return Vec::new();
             }
             if let Some(caps) = re.captures(line)
@@ -367,7 +392,17 @@ impl DebugAdapter {
         let has_session = lock_or_recover(&self.session, "debug_adapter.session").is_some();
 
         let sources = if has_session {
-            self.query_inc_entries()
+            // The %INC query is the cancellable operation mapped to this
+            // request's sequence (#9074).
+            let operation = self.cancel_registry.register(request_seq, "loadedSources");
+            let entries = self.query_inc_entries(Some(operation.token()));
+            let cancelled = operation.is_cancelled();
+            operation.settle(if cancelled {
+                crate::debug_adapter::cancel_registry::OperationOutcome::Cancelled
+            } else {
+                crate::debug_adapter::cancel_registry::OperationOutcome::Completed
+            });
+            entries
                 .into_iter()
                 .map(|(key, path)| crate::protocol::Source { name: Some(key), path: Some(path) })
                 .collect()
@@ -400,7 +435,21 @@ impl DebugAdapter {
 
         let has_session = lock_or_recover(&self.session, "debug_adapter.session").is_some();
 
-        let all_entries = if has_session { self.query_inc_entries() } else { Vec::new() };
+        // The %INC query is the cancellable operation mapped to this
+        // request's sequence (#9074).
+        let all_entries = if has_session {
+            let operation = self.cancel_registry.register(request_seq, "modules");
+            let entries = self.query_inc_entries(Some(operation.token()));
+            let cancelled = operation.is_cancelled();
+            operation.settle(if cancelled {
+                crate::debug_adapter::cancel_registry::OperationOutcome::Cancelled
+            } else {
+                crate::debug_adapter::cancel_registry::OperationOutcome::Completed
+            });
+            entries
+        } else {
+            Vec::new()
+        };
 
         let total = all_entries.len() as i64;
         let all_modules = modules_from_inc_entries(all_entries);

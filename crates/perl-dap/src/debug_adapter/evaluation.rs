@@ -235,7 +235,9 @@ impl DebugAdapter {
         };
 
         let framed_lines = output_frame_markers.as_ref().and_then(|(begin, end)| {
-            self.capture_framed_debugger_output(begin, end, u64::from(timeout_ms))
+            // Evaluate is not a cancellable request family (#9074): the
+            // wait is bound to no cancel token at all.
+            self.capture_framed_debugger_output(begin, end, u64::from(timeout_ms), None)
         });
 
         if let Some(lines) = framed_lines.as_ref()
@@ -473,7 +475,8 @@ impl DebugAdapter {
         let parsed = output_frame_markers
             .as_ref()
             .and_then(|(begin, end)| {
-                self.capture_framed_debugger_output(begin, end, DEBUGGER_QUERY_WAIT_MS * 8)
+                // setExpression is not a cancellable request family (#9074).
+                self.capture_framed_debugger_output(begin, end, DEBUGGER_QUERY_WAIT_MS * 8, None)
             })
             .and_then(|lines| {
                 Self::parse_evaluate_result_from_lines(
@@ -602,8 +605,10 @@ impl DebugAdapter {
                 }
             }
 
-            // Add loaded module names from %INC.
-            let modules = self.query_inc_entries();
+            // Add loaded module names from %INC. Completions are not a
+            // cancellable request family (#9074): the query is bound to no
+            // cancel token at all.
+            let modules = self.query_inc_entries(None);
             for (key, _path) in &modules {
                 let name = module_path_to_name(key);
                 if stem.is_empty() || name.starts_with(stem) {

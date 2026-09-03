@@ -368,12 +368,9 @@ impl StdioSession {
         else {
             return Err("initialize over framed stdio failed".into());
         };
-        for capability in [
-            "supportsValueFormattingOptions",
-            "supportsSetVariable",
-            "supportsSetExpression",
-            "supportsCancelRequest",
-        ] {
+        for capability in
+            ["supportsValueFormattingOptions", "supportsSetVariable", "supportsSetExpression"]
+        {
             if body.get(capability).and_then(Value::as_bool) != Some(true) {
                 return Err(format!(
                     "capability-set identity: `{capability}` must be advertised true in the \
@@ -381,6 +378,16 @@ impl StdioSession {
                 )
                 .into());
             }
+        }
+        // #9074 selected capability rule: request-scoped cancellation stays
+        // advertised false until the #7568 exact-binary positive/negative
+        // cancel rows pass. A deliberate flip must update this proof.
+        if body.get("supportsCancelRequest").and_then(Value::as_bool) != Some(false) {
+            return Err(
+                "capability-set identity: `supportsCancelRequest` must stay advertised false \
+                 until the #7568 exact-binary cancel rows pass"
+                    .into(),
+            );
         }
         session.wait_event("initialized")?;
 
@@ -805,7 +812,9 @@ fn write_receipt_to(
                 "supportsValueFormattingOptions": true,
                 "supportsSetVariable": true,
                 "supportsSetExpression": true,
-                "supportsCancelRequest": true,
+                // #9074: request-scoped cancellation stays unadvertised
+                // until the #7568 exact-binary cancel rows pass.
+                "supportsCancelRequest": false,
             },
         },
         "rows": matrix.rows,

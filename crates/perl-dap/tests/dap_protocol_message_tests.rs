@@ -142,7 +142,8 @@ fn test_breakpoint_locations_path_traversal_does_not_panic()
 
 #[test]
 fn test_cancel_succeeds_without_session() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — cancel must succeed and set the cancel flag
+    // AC:2783 — cancel must succeed protocol-safely without a session;
+    // there is no shared cancel flag anymore (#9074).
     let mut adapter = DebugAdapter::new();
     let msg = adapter.handle_request(1, "cancel", None);
     assert_success_response(msg, "cancel")?;
@@ -151,7 +152,12 @@ fn test_cancel_succeeds_without_session() -> Result<(), Box<dyn std::error::Erro
 
 #[test]
 fn test_cancel_with_arguments_succeeds() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — cancel accepts optional progressId / requestId arguments
+    // AC:2783 — cancel accepts optional progressId / requestId arguments and
+    // an unknown requestId gets a well-formed success response. This seam
+    // owns the wire shape only: the no-op property (an unknown id retires no
+    // operation) is proven at the registry seam
+    // (`cancel_registry::unknown_target_cannot_cancel_current_operation`)
+    // and at the adapter seam (#9074 review).
     let mut adapter = DebugAdapter::new();
     let args = json!({ "requestId": 42 });
     let msg = adapter.handle_request(2, "cancel", Some(args));

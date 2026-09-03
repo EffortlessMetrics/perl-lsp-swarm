@@ -308,10 +308,14 @@ impl DebugAdapter {
                             let commands = vec![cmd];
                             match self.send_framed_debugger_commands(stdin, &commands) {
                                 Ok((begin, end)) => {
+                                    // Scope inspection is not a cancellable
+                                    // request family (#9074): the wait is
+                                    // bound to no cancel token at all.
                                     framed_scope_lines = self.capture_framed_debugger_output(
                                         &begin,
                                         &end,
                                         DEBUGGER_QUERY_WAIT_MS * 8,
+                                        None,
                                     );
                                 }
                                 Err(error) => {
@@ -711,7 +715,8 @@ impl DebugAdapter {
         let parsed = output_frame_markers
             .as_ref()
             .and_then(|(begin, end)| {
-                self.capture_framed_debugger_output(begin, end, DEBUGGER_QUERY_WAIT_MS * 8)
+                // setVariable is not a cancellable request family (#9074).
+                self.capture_framed_debugger_output(begin, end, DEBUGGER_QUERY_WAIT_MS * 8, None)
             })
             .and_then(|lines| {
                 Self::parse_evaluate_result_from_lines(

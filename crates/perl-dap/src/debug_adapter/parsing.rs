@@ -352,6 +352,7 @@ impl DebugAdapter {
 mod tests {
     use super::super::*;
     use crate::parse_origin::{DebuggerOutputOrigin, OriginatedParseInput, ParseIdentity};
+    use std::sync::Arc;
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -447,7 +448,7 @@ mod tests {
         adapter.push_recent_output_line_for_test(r#""DAP_END_200""#);
 
         let lines = adapter
-            .capture_framed_debugger_output("DAP_BEGIN_200", "DAP_END_200", 200)
+            .capture_framed_debugger_output("DAP_BEGIN_200", "DAP_END_200", 200, None)
             .ok_or("expected framed output for marker 200")?;
         assert_eq!(lines, vec!["$b = 2".to_string()]);
         Ok(())
@@ -468,7 +469,7 @@ mod tests {
         });
 
         let lines = adapter
-            .capture_framed_debugger_output("DAP_BEGIN_300", "DAP_END_300", 500)
+            .capture_framed_debugger_output("DAP_BEGIN_300", "DAP_END_300", 500, None)
             .ok_or("expected framed output for delayed markers")?;
         producer.join().map_err(|_| "producer thread panicked")?;
         assert_eq!(lines, vec!["interleaved noise".to_string(), "$captured = 42".to_string()]);
@@ -478,11 +479,49 @@ mod tests {
     #[test]
     pub(super) fn test_capture_framed_debugger_output_respects_cancellation() {
         let adapter = DebugAdapter::new();
-        adapter.cancel_requested.store(true, Ordering::Release);
+        let registry = Arc::clone(&adapter.cancel_registry);
+        // One operation registered for this capture, one unrelated live
+        // operation (#9074).
+        let operation = registry.register(400, "evaluate");
+        let unrelated = registry.register(401, "stackTrace");
+        assert!(registry.cancel_request(400).is_accepted());
 
-        let capture = adapter.capture_framed_debugger_output("DAP_BEGIN_400", "DAP_END_400", 200);
-        assert!(capture.is_none(), "capture should stop when request is cancelled");
-        assert!(!adapter.cancel_requested.load(Ordering::Acquire));
+        let capture = adapter.capture_framed_debugger_output(
+            "DAP_BEGIN_400",
+            "DAP_END_400",
+            200,
+            Some(operation.token()),
+        );
+        assert!(capture.is_none(), "cancelled operation's capture must stop");
+        assert!(operation.is_cancelled());
+        assert!(
+            !unrelated.is_cancelled(),
+            "cancel of one operation must never retire an unrelated one"
+        );
+    }
+
+    #[test]
+    pub(super) fn test_capture_framed_debugger_output_ignores_unrelated_cancellation() {
+        let adapter = DebugAdapter::new();
+        adapter.push_recent_output_line_for_test(r#""DAP_BEGIN_402""#);
+        adapter.push_recent_output_line_for_test("$kept = 7");
+        adapter.push_recent_output_line_for_test(r#""DAP_END_402""#);
+
+        let registry = Arc::clone(&adapter.cancel_registry);
+        // A different request is cancelled; this capture has no token bound
+        // to it and must complete undisturbed (#9074 cross-request
+        // isolation).
+        let other = registry.register(403, "gotoTargets");
+        assert!(registry.cancel_request(403).is_accepted());
+
+        let capture =
+            adapter.capture_framed_debugger_output("DAP_BEGIN_402", "DAP_END_402", 200, None);
+        assert_eq!(
+            capture,
+            Some(vec!["$kept = 7".to_string()]),
+            "a cancelled sibling request must not truncate an unrelated capture"
+        );
+        drop(other);
     }
 
     #[test]
@@ -492,7 +531,8 @@ mod tests {
         adapter.push_recent_output_line_for_test("$value = 1");
 
         let start = Instant::now();
-        let capture = adapter.capture_framed_debugger_output("DAP_BEGIN_500", "DAP_END_500", 1);
+        let capture =
+            adapter.capture_framed_debugger_output("DAP_BEGIN_500", "DAP_END_500", 1, None);
         assert!(capture.is_none(), "capture should timeout without end marker");
         assert!(start.elapsed() >= Duration::from_millis(DEBUGGER_QUERY_WAIT_MS));
     }
