@@ -304,7 +304,15 @@ fn render_scalar(value: SourceValue<'_>, _depth: usize, cursor: &mut BudgetCurso
         };
     }
 
-    let text = value.scalar_text.unwrap_or_default();
+    let Some(text) = value.scalar_text else {
+        return SnapshotNode {
+            name: value.name.to_string(),
+            kind_label: value.kind_label.to_string(),
+            rendered: None,
+            children: Vec::new(),
+            outcome: NodeOutcome::Unavailable(UnavailableReason::InspectionFailed),
+        };
+    };
     if text.len() > cursor.budget.max_scalar_bytes {
         cursor.record_truncation(TruncationReason::ScalarByteLimit);
         return SnapshotNode {
@@ -566,5 +574,23 @@ mod tests {
             NodeOutcome::Truncated(TruncationReason::ContainerItemLimit)
         );
         assert!(snapshot.root.children.is_empty());
+    }
+
+    #[test]
+    fn missing_scalar_evidence_is_unavailable_not_complete_empty() {
+        let value = SourceValue {
+            name: "missing",
+            kind_label: "scalar",
+            scalar_text: None,
+            children: None,
+            flags: SourceFlags::PLAIN,
+        };
+        let snapshot = capture_snapshot(value, SnapshotBudget::defaults());
+
+        assert_eq!(
+            snapshot.root.outcome,
+            NodeOutcome::Unavailable(UnavailableReason::InspectionFailed)
+        );
+        assert_eq!(snapshot.root.rendered, None);
     }
 }
