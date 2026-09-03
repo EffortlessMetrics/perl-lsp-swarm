@@ -1169,3 +1169,98 @@ fn test2_combined_transform_options_fail_closed_instead_of_installing_both() {
     assert!(twice.resolved.symbols.contains("my_ok"));
     assert!(twice.resolved.symbols.contains("x_ok"));
 }
+
+#[test]
+fn test2_escaped_option_key_fails_closed_instead_of_scanning_the_map() {
+    // Review finding (@devin-ai-integration on #14651). Perl evaluates escapes
+    // and interpolation before the hash key exists, so `"\x2das"` *is* the key
+    // `-as`. Neither instrument could see that: the recognizers do not accept
+    // the escaped spelling, and the detector compares payloads as written. With
+    // no disagreement the bareword scan ran over a real rename map:
+    //
+    //   ok => {"\x2das" => 'my_ok'}     ->  symbols {"my_ok", "ok"}, limited=false
+    //   ok => {"\x2dprefix" => 'x_'}    ->  symbols {"ok", "x_"},    limited=false
+    //
+    // Every one of those is invented: `my_ok` was never parsed, `x_` is a
+    // prefix rather than a symbol, and `ok` is the original a rename removes.
+    for args in [
+        r#"ok => {"\x2das" => 'my_ok'}"#,
+        r#"ok => {"\x2dprefix" => 'x_'}"#,
+        r#"ok => {"\x2dpostfix" => '_z'}"#,
+        r#"ok => {qq{\x2das} => 'my_ok'}"#,
+        r#"ok => {"${sigil}as" => 'my_ok'}"#,
+    ] {
+        let resolved = resolve_with_analysis("Test2::V0", args);
+        assert!(resolved.analysis_limited, "{args}: an unevaluable key is never a clean result");
+        assert!(
+            resolved.resolved.symbols.is_empty(),
+            "{args}: no symbol may be reported, got {:?}",
+            resolved.resolved.symbols
+        );
+    }
+
+    // The guard is scoped to key position, so an escape or interpolation in a
+    // value — where it is opaque data this module never compares — still
+    // resolves. Without that scoping every `-target` string would cost the
+    // statement its imports.
+    for args in [r#"-target => "Foo\::Bar", ok"#, r#"-target => "Some$thing", ok"#] {
+        let resolved = resolve_with_analysis("Test2::V0", args);
+        assert!(!resolved.analysis_limited, "{args}: an opaque value is not an undecidable key");
+        assert!(
+            resolved.resolved.symbols.contains("ok"),
+            "{args}: the genuine import survives, got {:?}",
+            resolved.resolved.symbols
+        );
+    }
+}
+
+#[test]
+fn test2_truncated_transform_value_fails_closed_instead_of_publishing_a_prefix() {
+    // Review finding (@devin-ai-integration on #14651). Both recognizers read a
+    // value as `['"]?(\w+)['"]?`, which matches a prefix of anything longer,
+    // and the trailing `[^}]*?` swallowed the rest — so a name that does not
+    // exist was published as a clean result:
+    //
+    //   ok => {-as => "my_\x6fk"}  ->  symbols {"my_"}, limited=false
+    //   ok => {-as => 'my ok'}     ->  symbols {"my"},  limited=false
+    //
+    // Perl's own values there are `my_ok` and `my ok`; neither is `my_` or
+    // `my`. This is not specific to escapes — any value the capture cannot
+    // consume whole has the same shape.
+    for (args, truncated) in [
+        (r#"ok => {-as => "my_\x6fk"}"#, "my_"),
+        (r#"ok => {-as => 'my ok'}"#, "my"),
+        (r#"ok => {-prefix => "x\x5f"}"#, "x"),
+        (r#"ok => {-postfix => '_z z'}"#, "_z"),
+    ] {
+        let resolved = resolve_with_analysis("Test2::V0", args);
+        assert!(resolved.analysis_limited, "{args}: a partly-read value is never a clean result");
+        assert!(
+            !resolved.resolved.symbols.contains(truncated),
+            "{args}: {truncated} must not be imported, got {:?}",
+            resolved.resolved.symbols
+        );
+        assert!(
+            resolved.resolved.symbols.is_empty(),
+            "{args}: no symbol may be reported, got {:?}",
+            resolved.resolved.symbols
+        );
+    }
+
+    // Values the capture does consume whole still resolve, quoted or bare, so
+    // this is not a blanket refusal of every transform.
+    for (args, expected) in [
+        (r#"ok => {-as => "my_ok"}"#, "my_ok"),
+        ("ok => {-as => 'my_ok'}", "my_ok"),
+        ("ok => {-as => my_ok}", "my_ok"),
+        ("ok => {-prefix => 'x_'}", "x_ok"),
+    ] {
+        let resolved = resolve_with_analysis("Test2::V0", args);
+        assert!(!resolved.analysis_limited, "{args}: a fully-read value resolves");
+        assert!(
+            resolved.resolved.symbols.contains(expected),
+            "{args}: expected {expected}, got {:?}",
+            resolved.resolved.symbols
+        );
+    }
+}

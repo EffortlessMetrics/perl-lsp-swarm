@@ -350,7 +350,7 @@ fn contains_transform_syntax(text: &str) -> bool {
 /// Shares one role predicate with [`contains_transform_syntax`] so the
 /// presence test and the arity test cannot drift apart.
 fn count_transform_options(text: &str) -> usize {
-    let masked = mask_data_values(text);
+    let masked = mask_data_values(text).masked;
     let mut total = 0;
 
     for option in TRANSFORM_OPTIONS {
@@ -416,8 +416,9 @@ fn entry_carries_one_transform_option(span: &str) -> bool {
 ///
 /// An unterminated string is left visible, so malformed text still reaches the
 /// conservative detector rather than being silently swallowed.
-fn mask_data_values(text: &str) -> String {
+fn mask_data_values(text: &str) -> MaskedArgs {
     let mut masked = String::with_capacity(text.len());
+    let mut undecidable_key = false;
     let mut index = 0usize;
 
     while index < text.len() {
@@ -432,7 +433,15 @@ fn mask_data_values(text: &str) -> String {
                         masked.push(' ');
                     }
                 }
-                None => blank_into(&mut masked, span),
+                None => {
+                    if let Some((operator, payload)) = string_quote_payload(span)
+                        && !quoted_payload_is_literal(payload, operator == "qq")
+                        && is_key_position(text, end)
+                    {
+                        undecidable_key = true;
+                    }
+                    blank_into(&mut masked, span);
+                }
             }
             index = end;
             continue;
@@ -498,12 +507,28 @@ fn mask_data_values(text: &str) -> String {
         if current != '`' && TRANSFORM_OPTIONS.iter().any(|option| inner.trim() == *option) {
             masked.push_str(&text[index..end]);
         } else {
+            if current != '`'
+                && !quoted_payload_is_literal(inner, current == '"')
+                && is_key_position(text, end)
+            {
+                undecidable_key = true;
+            }
             blank_into(&mut masked, &text[index..end]);
         }
         index = end;
     }
 
-    masked
+    MaskedArgs { masked, undecidable_key }
+}
+
+/// The result of masking one statement's import arguments.
+struct MaskedArgs {
+    /// The text with data payloads blanked, for the option-role predicate.
+    masked: String,
+    /// A quoted key sat in option position but could not be compared as
+    /// written, so whether it names a transform option is unknown. Resolution
+    /// must fail closed rather than pick a reading.
+    undecidable_key: bool,
 }
 
 /// The quote-like operators that evaluate to their literal payload text, and
@@ -523,8 +548,17 @@ const STRING_QUOTE_OPERATORS: [&str; 3] = ["qq", "qw", "q"];
 /// `s///`-style two-segment expressions never trim to one option name, and the
 /// non-string operators are rejected by [`STRING_QUOTE_OPERATORS`].
 fn quote_like_option_key(span: &str) -> Option<&'static str> {
-    let operator = STRING_QUOTE_OPERATORS.iter().find(|operator| {
-        span.strip_prefix(**operator)
+    let (_, inner) = string_quote_payload(span)?;
+    TRANSFORM_OPTIONS.iter().copied().find(|option| inner.trim() == *option)
+}
+
+/// The operator and literal payload of a string-producing quote-like span.
+///
+/// `None` for anything else — a non-string operator, or text that is not a
+/// quote-like expression at all.
+fn string_quote_payload(span: &str) -> Option<(&'static str, &str)> {
+    let operator = STRING_QUOTE_OPERATORS.iter().copied().find(|operator| {
+        span.strip_prefix(*operator)
             .is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
     })?;
     let after_operator = span[operator.len()..].trim_start();
@@ -538,7 +572,26 @@ fn quote_like_option_key(span: &str) -> Option<&'static str> {
         other => other,
     };
     let inner = chars.as_str().strip_suffix(close)?;
-    TRANSFORM_OPTIONS.iter().copied().find(|option| inner.trim() == *option)
+    Some((operator, inner))
+}
+
+/// Whether a quoted payload can be compared against an option name as written.
+///
+/// Perl evaluates escapes, and (in an interpolating quote) variables, before
+/// the hash key exists: `"\x2das"` *is* the key `-as`, and `"${sigil}as"` may
+/// be. This module evaluates neither, so a payload carrying either construct
+/// cannot be classified as data or as syntax — only guessed at.
+///
+/// `qw` is listed as interpolating-safe because it never interpolates, and `q`
+/// and `'` only honor `\\` and `\'`; a backslash still makes them undecidable
+/// here rather than worth a second escape model.
+fn quoted_payload_is_literal(payload: &str, interpolating: bool) -> bool {
+    !payload.contains('\\') && !(interpolating && (payload.contains('$') || payload.contains('@')))
+}
+
+/// Whether the text after a quoted span puts it in option-key position.
+fn is_key_position(text: &str, end: usize) -> bool {
+    text.get(end..).is_some_and(|rest| rest.trim_start().starts_with("=>"))
 }
 
 /// Whether a `/` at the end of `before` opens a bare match rather than
@@ -676,6 +729,14 @@ fn scan_import_transforms(
     rename_as: Option<&Regex>,
     rename_fix: Option<&Regex>,
 ) -> TransformScan {
+    // An option key whose evaluated text is unknown is invisible to both
+    // instruments: the recognizers never match its spelling, and the detector
+    // compares it literally. Neither disagrees, so the bareword scan would run
+    // over a real rename map and report the original and the alias as imports.
+    if mask_data_values(raw_args).undecidable_key {
+        return TransformScan::Unresolved;
+    }
+
     if !contains_transform_syntax(raw_args) {
         // The detector masks option-shaped text inside ordinary quoted values,
         // but the regex bridge does not: it can still match across a quoted
@@ -705,6 +766,9 @@ fn scan_import_transforms(
             return TransformScan::Unresolved;
         }
         if let (Some(name), Some(alias)) = (caps.get(1), caps.get(2)) {
+            if !capture_covers_whole_value(raw_args, alias.start(), alias.end()) {
+                return TransformScan::Unresolved;
+            }
             renames.push((name.as_str().to_string(), alias.as_str().to_string()));
         }
     }
@@ -713,6 +777,9 @@ fn scan_import_transforms(
             return TransformScan::Unresolved;
         }
         if let (Some(name), Some(kind), Some(fix)) = (caps.get(1), caps.get(2), caps.get(3)) {
+            if !capture_covers_whole_value(raw_args, fix.start(), fix.end()) {
+                return TransformScan::Unresolved;
+            }
             let base = name.as_str();
             let alias = if kind.as_str() == "prefix" {
                 format!("{}{}", fix.as_str(), base)
@@ -736,6 +803,26 @@ fn scan_import_transforms(
     }
 
     TransformScan::Recognized { renames, stripped }
+}
+
+/// Whether a recognizer's captured transform value covers the whole Perl value
+/// it was taken from.
+///
+/// Both patterns read a value as `['"]?(\w+)['"]?`, which happily matches a
+/// *prefix* of anything longer, and the trailing `[^}]*?` then swallows the
+/// rest: `-as => "my_\x6fk"` captured `my_`, and `-as => 'my ok'` captured
+/// `my`. Either published a name that does not exist, as a clean result.
+///
+/// A quoted value must therefore end at its closing quote, and a bare one at a
+/// value terminator — `\w+` is greedy, so anything else following it is more
+/// of the value that the capture did not take.
+fn capture_covers_whole_value(raw_args: &str, start: usize, end: usize) -> bool {
+    let opened_with = raw_args[..start].chars().next_back();
+    let follows = raw_args[end..].chars().next();
+    match opened_with {
+        Some(quote @ ('\'' | '"')) => follows == Some(quote),
+        _ => follows.is_none_or(|next| next.is_whitespace() || matches!(next, ',' | '}' | ')')),
+    }
 }
 
 /// Resolve the imported symbols and pragma effect of a single Test2 `use`
