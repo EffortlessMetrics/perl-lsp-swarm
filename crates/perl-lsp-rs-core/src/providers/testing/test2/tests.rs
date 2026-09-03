@@ -627,16 +627,16 @@ fn test2_quoted_option_shaped_value_never_imports_container_atoms() {
     // scope; neither is an imported symbol under any reading. Reporting them —
     // and reporting them as a clean result — is a fabricated fact.
     for args in ["ok => {target => '-as => my_ok'}", "ok => {target => \"-prefix => my_\"}"] {
-        let resolved = resolve_import("Test2::V0", args).expect("recognized module");
+        let resolved = resolve_with_analysis("Test2::V0", args);
         assert!(
-            !resolved.symbols.contains("target"),
+            !resolved.resolved.symbols.contains("target"),
             "{args}: container key must never be an imported symbol, got {:?}",
-            resolved.symbols
+            resolved.resolved.symbols
         );
         assert!(
-            !resolved.symbols.contains("ok"),
+            !resolved.resolved.symbols.contains("ok"),
             "{args}: rename original must not be imported, got {:?}",
-            resolved.symbols
+            resolved.resolved.symbols
         );
         assert!(resolved.analysis_limited, "{args}: an unresolved span is never a clean result");
     }
