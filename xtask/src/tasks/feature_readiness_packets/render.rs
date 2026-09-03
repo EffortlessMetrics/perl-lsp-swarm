@@ -470,15 +470,13 @@ pub fn compact(doc: &Value) -> String {
         out.push_str("LENSES: ");
         for (index, lens) in objects(doc, "/lenses").iter().enumerate() {
             let applicable = lens.get("applicable").and_then(Value::as_bool).unwrap_or(false);
-            if !applicable {
-                continue;
-            }
             if index > 0 {
                 out.push_str("; ");
             }
             out.push_str(lens.get("name").and_then(Value::as_str).unwrap_or("?"));
             out.push_str(&format!(
-                " reason={}",
+                " applicable={} reason={}",
+                applicable,
                 lens.get("reason").and_then(Value::as_str).unwrap_or("?")
             ));
             for question in strings(lens.get("questions")) {
@@ -700,12 +698,7 @@ pub fn validate_reviewer_compact_lossless(reviewer: &Value, compact_text: &str) 
         ("must-not", "/stop/reviewer_must_not"),
     ] {
         let Some(value) = reviewer.pointer(pointer) else { continue };
-        let present = value
-            .as_str()
-            .map(|token| !token.is_empty() && compact_text.contains(token))
-            .unwrap_or_else(|| {
-                strings_of(Some(value)).iter().all(|token| compact_text.contains(token))
-            });
+        let present = compact_value_present(value, compact_text);
         if !present {
             violations
                 .push(Violation::new("compact_loss", format!("compact reviewer dropped {label}")));
@@ -719,17 +712,57 @@ pub fn validate_reviewer_compact_lossless(reviewer: &Value, compact_text: &str) 
             ));
         }
     }
-    for lens in objects(reviewer, "/lenses") {
-        if lens.get("applicable").and_then(Value::as_bool) == Some(true) {
-            for field in ["name", "reason"] {
-                let value = lens.get(field).and_then(Value::as_str).unwrap_or("");
+    for (index, lens) in objects(reviewer, "/lenses").iter().enumerate() {
+        for field in ["name", "reason"] {
+            let value = lens.get(field).and_then(Value::as_str).unwrap_or("");
+            if !value.is_empty() && !compact_text.contains(value) {
+                violations.push(Violation::new(
+                    "compact_loss",
+                    format!("compact reviewer dropped lens {index} {field}"),
+                ));
+            }
+        }
+        let applicable = lens.get("applicable").and_then(Value::as_bool);
+        if let Some(applicable) = applicable {
+            let marker = format!("applicable={applicable}");
+            if !compact_text.contains(&marker) {
+                violations.push(Violation::new(
+                    "compact_loss",
+                    format!("compact reviewer dropped lens {index} applicability"),
+                ));
+            }
+        }
+        for (question_index, question) in strings_of(lens.get("questions")).iter().enumerate() {
+            if !question.is_empty() && !compact_text.contains(question) {
+                violations.push(Violation::new(
+                    "compact_loss",
+                    format!("compact reviewer dropped lens {index} question {question_index}"),
+                ));
+            }
+        }
+    }
+    for (label, pointer, fields) in [
+        ("stage falsification", "/stage_falsification_examples", &["stage", "question"] as &[&str]),
+        ("negative-control audit", "/negative_control_audit", &["subject", "requirement"]),
+        ("old-path audit", "/old_path_audit", &["seam", "terminal_disposition"]),
+    ] {
+        for (index, row) in objects(reviewer, pointer).iter().enumerate() {
+            for field in fields {
+                let value = row.get(*field).and_then(Value::as_str).unwrap_or("");
                 if !value.is_empty() && !compact_text.contains(value) {
                     violations.push(Violation::new(
                         "compact_loss",
-                        format!("compact reviewer dropped lens {field}"),
+                        format!("compact reviewer dropped {label} {index} {field}"),
                     ));
                 }
             }
+        }
+    }
+    if let Some(issues) = reviewer.pointer("/subject/issues") {
+        let encoded = compact_json(Some(issues));
+        if encoded.is_empty() || !compact_text.contains(&encoded) {
+            violations
+                .push(Violation::new("compact_loss", "compact reviewer dropped subject issues"));
         }
     }
     violations
@@ -737,6 +770,14 @@ pub fn validate_reviewer_compact_lossless(reviewer: &Value, compact_text: &str) 
 
 fn compact_json(value: Option<&Value>) -> String {
     value.map(|value| serde_json::to_string(value).unwrap_or_default()).unwrap_or_default()
+}
+
+fn compact_value_present(value: &Value, compact_text: &str) -> bool {
+    if value.is_array() && strings_of(Some(value)).len() == value.as_array().map_or(0, Vec::len) {
+        return strings_of(Some(value)).iter().all(|token| compact_text.contains(token));
+    }
+    let encoded = value.as_str().map(str::to_owned).unwrap_or_else(|| compact_json(Some(value)));
+    !encoded.is_empty() && compact_text.contains(&encoded)
 }
 
 fn strings_of(value: Option<&Value>) -> Vec<&str> {

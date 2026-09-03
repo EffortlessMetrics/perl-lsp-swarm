@@ -655,9 +655,10 @@ pub fn content_digest(doc: &Value) -> String {
         object.remove("review_id");
     }
     // A conflict-free movement of main is observational, not a change to the
-    // candidate subject. Keep the observed semantic live cells in the digest,
-    // but canonicalize the moving main identity so equivalent refreshes do not
-    // invalidate an otherwise current review.
+    // candidate subject. Keep the observed semantic live cells and exact source
+    // snapshot digest in the identity. The digest binds the relevant source/
+    // head contents, while the displayed main head remains observational:
+    // equivalent conflict-free main movement does not churn the packet.
     if let Some(delivery) = stripped.pointer_mut("/delivery").and_then(Value::as_object_mut) {
         delivery.insert("base_head".to_owned(), Value::String("main@equivalent".to_owned()));
     }
@@ -666,7 +667,6 @@ pub fn content_digest(doc: &Value) -> String {
     }
     if let Some(live) = stripped.pointer_mut("/planes/live").and_then(Value::as_object_mut) {
         live.insert("head_sha".to_owned(), Value::Null);
-        live.insert("snapshot_digest".to_owned(), Value::Null);
     }
     let canonical = render::canonical_json(&stripped);
     crate::tasks::emacs_train_context::digest::sha256_hex(canonical.as_bytes())

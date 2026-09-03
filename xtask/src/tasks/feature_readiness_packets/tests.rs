@@ -571,6 +571,54 @@ fn compact_projections_stay_lossless_for_every_node() {
 }
 
 #[test]
+fn reviewer_compact_mutations_are_non_vacuous_for_every_audit_cell() {
+    let reviewer = reviewer_of("fr_8305_import_containment_leaf");
+    let compact = render::compact(&reviewer);
+
+    let assert_missing = |path: String, value: Value| {
+        let mutated = mutate(&reviewer, &|doc| {
+            if let Some(slot) = doc.pointer_mut(&path) {
+                *slot = value.clone();
+            }
+        });
+        assert!(
+            codes(&render::validate_reviewer_compact_lossless(&mutated, &compact))
+                .contains(&"compact_loss"),
+            "reviewer compact loss was not detected at {path}"
+        );
+    };
+
+    assert_missing("/subject/issues".to_owned(), serde_json::json!([424242]));
+    for (index, lens) in reviewer["lenses"].as_array().into_iter().flatten().enumerate() {
+        for field in ["reason", "questions/0"] {
+            let Some(original) = lens.pointer(&format!("/{field}")) else { continue };
+            let Some(original) = original.as_str() else { continue };
+            assert_missing(
+                format!("/lenses/{index}/{field}"),
+                Value::String(format!("unique reviewer mutation {index} {field} {original}")),
+            );
+        }
+    }
+    for (section, fields) in [
+        ("stage_falsification_examples", ["question"].as_slice()),
+        ("negative_control_audit", ["subject", "requirement"].as_slice()),
+        ("old_path_audit", ["seam", "terminal_disposition"].as_slice()),
+    ] {
+        for (index, row) in reviewer[section].as_array().into_iter().flatten().enumerate() {
+            for field in fields {
+                let Some(original) = row.get(*field).and_then(Value::as_str) else { continue };
+                assert_missing(
+                    format!("/{section}/{index}/{field}"),
+                    Value::String(format!(
+                        "unique reviewer mutation {section} {index} {field} {original}"
+                    )),
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn generated_packets_validate_against_both_checked_schemas() {
     for node_id in ALL_NODE_IDS {
         let (builder, _) = builder_of(node_id);
@@ -625,6 +673,22 @@ fn equivalent_main_movement_preserves_packet_identity() {
     semantic.writer_active = true;
     let changed = build::builder_document(node, Some(&semantic));
     assert_ne!(first.0["packet_id"], changed.0["packet_id"]);
+}
+
+#[test]
+fn differing_snapshot_source_changes_packet_identity() {
+    let node = node("fr_8305_import_containment_leaf");
+    let snapshot = |digest: &str| build::LiveSnapshot {
+        head_sha: "a".repeat(40),
+        candidate_branch: None,
+        writer_active: false,
+        required_action: super::model::LiveAction::None,
+        source_digest: digest.to_owned(),
+    };
+    let first = build::builder_document(node, Some(&snapshot(&"b".repeat(64))));
+    let second = build::builder_document(node, Some(&snapshot(&"c".repeat(64))));
+    assert_ne!(first.0["packet_id"], second.0["packet_id"]);
+    assert_ne!(first.1, second.1);
 }
 
 // Every documented artifact cell must survive the dense projection: an
