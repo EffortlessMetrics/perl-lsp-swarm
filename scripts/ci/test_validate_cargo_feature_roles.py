@@ -673,6 +673,20 @@ class DiscoveryUnitTests(unittest.TestCase):
             )
             self.assertIn(("solo", "alpha"), validator.discover(root))
 
+    def test_malformed_members_value_is_an_instrument_failure(self) -> None:
+        # Coercing a non-list `members` to "no members" would silently scan only
+        # the root package and let every intended member escape classification.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "src").mkdir(parents=True)
+            (root / "src" / "lib.rs").write_text("", encoding="utf-8")
+            (root / "Cargo.toml").write_text(
+                '[package]\nname = "solo"\n[workspace]\nmembers = "crates/listed"\n',
+                encoding="utf-8",
+            )
+            with self.assertRaises(validator.ValidationError):
+                validator.member_dirs(root)
+
     def test_virtual_workspace_without_members_still_fails(self) -> None:
         # The existing error must survive: a virtual manifest naming no members
         # governs nothing, and silently passing would be a denominator hole.
