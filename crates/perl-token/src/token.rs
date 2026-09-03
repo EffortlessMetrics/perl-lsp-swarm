@@ -131,12 +131,14 @@ impl<'src> TokenRef<'src> {
 
     /// Convert this borrowed token view into an owned [`Token`].
     ///
-    /// A payload-free `UnknownRest` view (or any wrong-width `UnknownRest`
-    /// replacement) round-trips as the geometry-only recovery representation
-    /// instead of being rejected: collapsing it to `Eof` would erase the typed
-    /// `lexer_budget_exhausted` stop cause downstream (#14158).
+    /// A payload-free `UnknownRest` view round-trips as the geometry-only
+    /// recovery representation instead of being rejected: collapsing it to
+    /// `Eof` would erase the typed `lexer_budget_exhausted` stop cause
+    /// downstream (#14158). A payload-carrying `UnknownRest` view (the bounded
+    /// unterminated-heredoc recovery shape) round-trips its text losslessly
+    /// instead of being silently emptied.
     pub fn to_owned_token(self) -> Token {
-        if self.kind == TokenKind::UnknownRest {
+        if self.kind == TokenKind::UnknownRest && self.text.is_empty() {
             return match Token::unknown_rest_at(self.start, self.end) {
                 Ok(token) => token,
                 Err(_) => Token::eof_at(self.start),

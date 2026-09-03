@@ -298,6 +298,26 @@ mod tests {
     }
 
     #[test]
+    fn token_ref_to_owned_token_preserves_payload_unknown_rest_text() {
+        // The bounded EOF-inside-budget heredoc arm is the only
+        // payload-carrying `UnknownRest` the lexer emits (crate-level
+        // budget-stop recovery contract); its text must survive the
+        // borrowed-to-owned round trip.
+        let view =
+            TokenRef::new_checked(TokenKind::UnknownRest, "body\n", 12, 17).expect("legal view");
+        assert!(!view.is_geometry_only());
+        let owned: Token = view.into();
+        assert_eq!(owned.kind(), TokenKind::UnknownRest);
+        assert_eq!(&*owned.text, "body\n");
+        assert_eq!(owned.start(), 12);
+        assert_eq!(owned.end(), 17);
+        assert!(!owned.is_geometry_only());
+
+        let rebuilt = owned.as_ref_token().to_owned_token();
+        assert_eq!(rebuilt, owned);
+    }
+
+    #[test]
     fn token_try_new_rejects_empty_non_eof() {
         assert_eq!(
             Token::try_new(TokenKind::Identifier, "", 5, 5),
