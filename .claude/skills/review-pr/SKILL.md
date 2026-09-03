@@ -173,7 +173,7 @@ from different ones.
    append one subject-bound marker generated from the current PR diff:
 
    ```bash
-   python3 scripts/ci/check-pr-semantic-review-currentness.py      <pr> <owner/repo> --emit-marker
+   python3 scripts/ci/check-pr-semantic-review-currentness.py      <pr> <owner/repo> --emit-marker --result REVIEW_CURRENT
    ```
 
    Put the emitted `<!-- semantic-review:v1 ... -->` marker in the same review body
@@ -238,7 +238,8 @@ certification cannot create `REVIEW_CURRENT`.
 <!-- Or: ## No material findings -->
 
 ## Prior finding dispositions
-- fixed | refuted | superseded | follow-up, with evidence
+- terminal: fixed | refuted | superseded | post-merge-follow-up, with evidence
+- non-terminal: current-blocker | blocked-by-prerequisite | not-proven, with evidence (thread stays open)
 
 ## What this establishes
 - Conclusions supported by the review

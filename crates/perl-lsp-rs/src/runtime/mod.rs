@@ -370,6 +370,12 @@ pub struct LspServer {
     /// Serializes the active/pending indexing handoff at scan completion.
     #[cfg(feature = "workspace")]
     indexing_transition_lock: Arc<Mutex<()>>,
+    /// Test-only gate fired inside the startup scan's per-file commit
+    /// critical section, after `indexing_transition_lock` is acquired
+    /// (#13308).
+    #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+    indexing_commit_gate:
+        Arc<std::sync::Mutex<Option<crate::runtime::readiness::WorkspaceIndexingStartGate>>>,
     /// One-time guard for the `window/showMessage` permission-denied warning.
     ///
     /// Set to `true` after the first permission-denied file is encountered during
@@ -802,7 +808,7 @@ impl LspServer {
         &self.stream_session_manager
     }
 
-    pub(crate) fn uri_key_variants(&self, uri: &str) -> Vec<String> {
+    pub(crate) fn uri_key_variants(uri: &str) -> Vec<String> {
         fn push_unique(keys: &mut Vec<String>, key: String) {
             if !keys.iter().any(|existing| existing == &key) {
                 keys.push(key);
@@ -836,14 +842,14 @@ impl LspServer {
 
         let mut uri_keys = Vec::new();
         push_unique(&mut uri_keys, uri.to_string());
-        push_unique(&mut uri_keys, self.normalize_uri_key(uri));
+        push_unique(&mut uri_keys, perl_uri::uri_key(uri));
 
         if let Some(path) = source_path_from_uri(uri)
             && let Ok(file_url) = url::Url::from_file_path(&path)
         {
             let file_uri = file_url.to_string();
             push_unique(&mut uri_keys, file_uri.clone());
-            push_unique(&mut uri_keys, self.normalize_uri_key(&file_uri));
+            push_unique(&mut uri_keys, perl_uri::uri_key(&file_uri));
         }
 
         for key in uri_keys.clone() {
@@ -851,6 +857,17 @@ impl LspServer {
         }
 
         uri_keys
+    }
+
+    /// Whether any URI spelling variant of `uri` is present in a raw open
+    /// documents map.
+    ///
+    /// Shared by `document_is_open` and contexts that hold the `documents`
+    /// handle without an `LspServer` — the indexing thread's reclassification
+    /// authority must apply the same open-buffer denominator as the watcher
+    /// seams (#14186).
+    pub(crate) fn documents_open_in(documents: &HashMap<String, DocumentState>, uri: &str) -> bool {
+        Self::uri_key_variants(uri).iter().any(|key| documents.contains_key(key))
     }
 
     /// Whether a document is currently open for `uri`.
@@ -861,9 +878,8 @@ impl LspServer {
     /// (`uri_to_fs_path` identity) must observe the open document even though
     /// `DocumentStore::uri_key` preserves percent-encoded path triplets.
     pub(crate) fn document_is_open(&self, uri: &str) -> bool {
-        let uri_keys = self.uri_key_variants(uri);
         let documents = self.documents.lock();
-        uri_keys.iter().any(|key| documents.contains_key(key))
+        Self::documents_open_in(&documents, uri)
     }
 
     /// Record (or overwrite) the backing-file transition for an open
@@ -881,7 +897,7 @@ impl LspServer {
         transition: BackingFileTransition,
     ) {
         let mut transitions = self.backing_file_transitions.lock();
-        for key in self.uri_key_variants(uri) {
+        for key in Self::uri_key_variants(uri) {
             transitions.insert(key, transition.clone());
         }
     }
@@ -893,7 +909,7 @@ impl LspServer {
     /// session. All filesystem-equivalent keys are swept together so one
     /// consume cannot leave alias-spelled duplicates behind.
     pub(crate) fn take_backing_file_transition(&self, uri: &str) -> Option<BackingFileTransition> {
-        let keys = self.uri_key_variants(uri);
+        let keys = Self::uri_key_variants(uri);
         let mut transitions = self.backing_file_transitions.lock();
         let taken = keys.iter().find_map(|key| transitions.remove(key));
         for key in &keys {
@@ -910,7 +926,7 @@ impl LspServer {
     /// normalized keys so URI spelling differences do not retain per-document
     /// caches after close.
     pub(crate) fn evict_open_document_session_state(&self, uri: &str) {
-        let uri_keys = self.uri_key_variants(uri);
+        let uri_keys = Self::uri_key_variants(uri);
         self.evict_use_lib_hir_cache(uri);
 
         for key in &uri_keys {
@@ -965,12 +981,18 @@ impl LspServer {
     /// session caches stay untouched — a watched disk deletion must not evict
     /// unsaved editor source.
     pub(crate) fn evict_deleted_file_state(&self, uri: &str) {
-        let uri_keys = self.uri_key_variants(uri);
+        let uri_keys = Self::uri_key_variants(uri);
         #[cfg(feature = "workspace")]
         if let Some(coordinator) = self.coordinator() {
             for key in &uri_keys {
                 coordinator.index().remove_file(key);
             }
+            // Catch-all watcher/file-operation contract (#13308, #14186
+            // review): a deleted directory URI must also evict every indexed
+            // descendant; the exact-URI eviction above cannot reach them.
+            // Open descendants record the same Deleted backing handoff as
+            // this exact-URI seam (#14074 review).
+            self.evict_index_descendants(uri, None);
         }
 
         if self.document_is_open(uri) {
@@ -995,7 +1017,7 @@ impl LspServer {
 
     /// Evict open-document state and workspace index state for a removed folder.
     pub(crate) fn evict_workspace_folder_state(&self, folder_uri: &str) {
-        let folder_keys = self.uri_key_variants(folder_uri);
+        let folder_keys = Self::uri_key_variants(folder_uri);
         let docs_to_evict = {
             let documents = self.documents.lock();
             documents
