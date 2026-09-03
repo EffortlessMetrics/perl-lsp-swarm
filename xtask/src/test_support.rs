@@ -94,6 +94,12 @@ pub struct FakeCargoChild {
 #[cfg(unix)]
 impl FakeCargoChild {
     pub fn run(test_name: &str) -> Result<Self> {
+        // `child_command` snapshots the parent PATH to preserve the host's
+        // command lookup after prepending the fake Cargo directory.  Keep the
+        // environment lock through that snapshot and the spawn: a concurrent
+        // `FakeCargo::install` must not replace PATH between those operations.
+        let _environment_guard =
+            ENV_LOCK.lock().map_err(|_| eyre!("fake cargo environment lock poisoned"))?;
         let files = FakeCargoFiles::create()?;
         let output = files
             .child_command(test_name)
@@ -212,7 +218,7 @@ fn restore_env<E: EnvironmentRestorer>(environment: &mut E, key: &str, value: Op
 mod tests {
     use super::{EnvironmentRestorer, FakeCargo, restore_env};
     use color_eyre::eyre::{Context, Result};
-    use std::{ffi::OsString, process::Command};
+    use std::{env, ffi::OsString, process::Command};
 
     #[test]
     fn fake_cargo_records_invocations_through_log_path() -> Result<()> {
@@ -255,6 +261,41 @@ mod tests {
             "restore_env(None) should request removal without mutating process state",
         );
         assert!(environment.assignments.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn process_environment_removes_an_absent_original_in_a_fresh_child() -> Result<()> {
+        const TEST_NAME: &str =
+            "test_support::tests::process_environment_removes_an_absent_original_in_a_fresh_child";
+        const CHILD_MARKER: &str = "XTASK_FAKE_CARGO_RESTORE_NONE_CHILD";
+
+        if env::var_os(CHILD_MARKER).is_some() {
+            let fake_cargo = FakeCargo::install()?;
+            drop(fake_cargo);
+            if env::var_os("XTASK_FAKE_CARGO_LOG").is_some()
+                || env::var_os("XTASK_FAKE_CARGO_METADATA").is_some()
+            {
+                return Err(color_eyre::eyre::eyre!(
+                    "FakeCargo drop did not remove originally absent variables"
+                ));
+            }
+            return Ok(());
+        }
+
+        let output = Command::new(env::current_exe().context("locate test executable")?)
+            .args(["--exact", TEST_NAME, "--nocapture"])
+            .env(CHILD_MARKER, "1")
+            .env_remove("XTASK_FAKE_CARGO_LOG")
+            .env_remove("XTASK_FAKE_CARGO_METADATA")
+            .output()
+            .context("run real environment restoration child")?;
+        if !output.status.success() {
+            return Err(color_eyre::eyre::eyre!(
+                "environment restoration child failed: {}",
+                String::from_utf8_lossy(&output.stderr),
+            ));
+        }
         Ok(())
     }
 }
