@@ -21,7 +21,11 @@ fn continued_read_failure_is_counted_and_reported() -> Result<(), Box<dyn std::e
         .arg(&valid_after)
         .output()?;
 
-    assert!(!output.status.success(), "continued read failure must keep a nonzero exit status");
+    assert!(
+        !output.status.success(),
+        "continued read failure must keep a nonzero exit status; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let stderr = String::from_utf8(output.stderr)?;
     assert!(
