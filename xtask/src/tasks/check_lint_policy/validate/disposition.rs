@@ -20,6 +20,12 @@ const REQUIRED_DISPOSITIONS: &[(&str, Option<&str>, Option<&str>)] = &[
     ("clippy::manual_ilog2", Some("deny"), Some("active")),
     ("clippy::manual_take", None, None),
     ("clippy::manual_pop_if", None, None),
+    // The lock-guard invariant is split across two tools with non-overlapping
+    // coverage (#14444), so both rows are pinned. Pinning only one would let a
+    // rollback silently uncover either the standard-library guards or the
+    // `parking_lot` guards while the surviving row still looks like coverage.
+    ("rust::let_underscore_lock", Some("deny"), Some("active")),
+    ("clippy::let_underscore_lock", Some("deny"), Some("active")),
 ];
 
 pub(crate) fn validate_workspace_lints(
