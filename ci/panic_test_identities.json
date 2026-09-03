@@ -2862,6 +2862,78 @@
       "selector_identity": "invocation:b94ecf242c8a01c3:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/oneliner_capability_matrix.rs",
+      "enclosing_test_or_function": "expect_rejected",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(()) => panic!(\"expected validation to reject rows mentioning {fragment}\"),",
+      "selector_identity": "invocation:2614f3a9ca651465:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/oneliner_capability_matrix.rs",
+      "enclosing_test_or_function": "suppressed_module_stops_extraction",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(()) => panic!(\"a suppressed module was accepted\"),",
+      "selector_identity": "invocation:5dc0bec4bb6ab684:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/oneliner_capability_matrix.rs",
+      "enclosing_test_or_function": "brand_new_proof_target",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(()) => panic!(\"an uncited proof target was accepted\"),",
+      "selector_identity": "invocation:8927299b300a9b6b:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/oneliner_capability_matrix.rs",
+      "enclosing_test_or_function": "parked",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(()) => panic!(\"whitespace hid the suppressed module in {form:?}\"),",
+      "selector_identity": "invocation:fdd1084ef79db4a2:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/oneliner_capability_matrix.rs",
+      "enclosing_test_or_function": "modify",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|error| panic!(\"`mod` matched inside a word in {form:?}: {error}\"));",
+      "selector_identity": "invocation:2bbfa7d606f2388a:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/oneliner_capability_matrix.rs",
+      "enclosing_test_or_function": "x)]\\nfn",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(()) => panic!(\"a comment hid the suppressed module\"),",
+      "selector_identity": "invocation:acb295792adf721d:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/oneliner_capability_matrix.rs",
+      "enclosing_test_or_function": "modify",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|error| panic!(\"`mod` matched inside a word: {error}\"));",
+      "selector_identity": "invocation:f772ed09ad692934:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/oneliner_capability_matrix.rs",
+      "enclosing_test_or_function": "citing_a_commented_out_fixture_is_rejected",
+      "macro_family": "panic!",
+      "normalized_snippet": "Ok(()) => panic!(\"a commented-out fixture earned support\"),",
+      "selector_identity": "invocation:5f17dd077ce6f948:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
