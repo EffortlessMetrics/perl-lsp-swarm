@@ -58,7 +58,11 @@ fn agreement_row(row_id: &str, series_id: &str) -> CaseInputRow {
         compiler_subject: "compiler:product-tree".to_string(),
         instrument_identity: "instrument:differential-compare".to_string(),
         upstream_case: UpstreamCaseRef {
-            snapshot_ref: "upstream:v5.38.0".to_string(),
+            snapshot_ref: match series_id {
+                "perl-5.40" => "upstream:v5.40.0",
+                _ => "upstream:v5.38.0",
+            }
+            .to_string(),
             case_path: original.clone(),
             case_name: row_id.to_string(),
         },
@@ -107,7 +111,7 @@ fn write_inputs(root: &Path, manifest: &StatusInputsManifest, rows: &[CaseInputR
 
 fn project_from(root: &Path) -> anyhow::Result<ConformanceStatusPacket> {
     let (manifest, rows) = load_inputs(root)?;
-    let packet = project_packet(manifest, rows);
+    let packet = project_packet(manifest, rows)?;
     validate_packet(&packet)?;
     Ok(packet)
 }
@@ -463,6 +467,21 @@ fn compiler_upstream_conformance_status_multi_series_projection_is_exact() -> Te
     assert!(rendered.contains("no provider/editor behavior claim"));
     assert!(rendered.contains("(no accepted current upstream snapshot)"));
     assert!(rendered.contains("compiler_profile_generation_identity_informational_only"));
+    Ok(())
+}
+
+#[test]
+fn compiler_upstream_conformance_status_rejects_row_from_different_valid_snapshot() -> TestResult {
+    let dir = TempDir::new()?;
+    let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+    let mut row = agreement_row("op-wrong-snapshot", "perl-5.38");
+    row.upstream_case.snapshot_ref = "upstream:v5.40.0".to_string();
+    write_inputs(dir.path(), &manifest, &[row])?;
+
+    let message = error_message(project_from(dir.path()));
+    assert!(message.contains("does not match selected snapshot"));
+    assert!(message.contains("upstream:v5.40.0"));
+    assert!(message.contains("upstream:v5.38.0"));
     Ok(())
 }
 

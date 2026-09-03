@@ -977,7 +977,9 @@ pub fn load_inputs(root: &Path) -> Result<(StatusInputsManifest, Vec<CaseInputRo
 pub fn project_packet(
     manifest: StatusInputsManifest,
     rows: Vec<CaseInputRow>,
-) -> ConformanceStatusPacket {
+) -> Result<ConformanceStatusPacket> {
+    validate_row_snapshot_bindings(&manifest, &rows)?;
+
     let mut selectors = manifest.maintained_series.clone();
     selectors.sort_by(|left, right| left.series_id.cmp(&right.series_id));
 
@@ -1007,7 +1009,7 @@ pub fn project_packet(
 
     let descriptive_counts = compute_counts(&published_rows);
 
-    ConformanceStatusPacket {
+    Ok(ConformanceStatusPacket {
         schema_version: PACKET_SCHEMA_VERSION.to_string(),
         status_id: manifest.status_id,
         generator_identity: GENERATOR_IDENTITY.to_string(),
@@ -1034,6 +1036,41 @@ pub fn project_packet(
         structural_constants: structural_constants(),
         rows: published_rows,
         descriptive_counts,
+    })
+}
+
+fn validate_row_snapshot_bindings(
+    manifest: &StatusInputsManifest,
+    rows: &[CaseInputRow],
+) -> Result<()> {
+    let selected_snapshots = manifest
+        .maintained_series
+        .iter()
+        .map(|series| (series.series_id.as_str(), series.snapshot_identity.as_deref()))
+        .collect::<BTreeMap<_, _>>();
+    let mut violations = Vec::new();
+
+    for row in rows {
+        if let Some(Some(selected_snapshot)) = selected_snapshots.get(row.series_id.as_str()) {
+            if row.upstream_case.snapshot_ref != *selected_snapshot {
+                violations.push(format!(
+                    "row `{}` upstream snapshot_ref `{}` does not match selected snapshot `{}` for series `{}`",
+                    row.row_id,
+                    row.upstream_case.snapshot_ref,
+                    selected_snapshot,
+                    row.series_id
+                ));
+            }
+        }
+    }
+
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        bail!(
+            "status input rows failed snapshot binding validation:\n{}",
+            bounded_report(violations).join("\n")
+        )
     }
 }
 
@@ -1045,7 +1082,7 @@ fn load_packet(path: &Path) -> Result<ConformanceStatusPacket> {
 
 pub fn run_build(inputs: &Path, output: &Path) -> Result<String> {
     let (manifest, rows) = load_inputs(inputs)?;
-    let packet = project_packet(manifest, rows);
+    let packet = project_packet(manifest, rows)?;
     validate_packet(&packet)?;
     let bytes = canonical_bytes(&packet)?;
     if let Some(parent) = output.parent() {
