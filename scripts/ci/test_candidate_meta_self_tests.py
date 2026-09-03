@@ -149,6 +149,58 @@ def commit_fixture(root: Path, message: str) -> str:
     ).stdout.strip()
 
 
+def initialize_criss_cross(root: Path) -> str:
+    """Create two branch tips with two equally good merge bases."""
+    base_sha = initialize_base(root)
+    subprocess.run(
+        ["git", "switch", "-c", "candidate", base_sha],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (root / "candidate.txt").write_text("candidate\n", encoding="utf-8")
+    candidate_sha = commit_fixture(root, "candidate side")
+    subprocess.run(
+        ["git", "switch", "-c", "main-side", base_sha],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (root / "main.txt").write_text("main\n", encoding="utf-8")
+    main_sha = commit_fixture(root, "main side")
+    subprocess.run(
+        ["git", "merge", "--no-ff", "--no-edit", candidate_sha],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    main_tip = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "switch", "candidate"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "merge", "--no-ff", "--no-edit", main_sha],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return main_tip
+
+
 class CandidateMetaSelfTestContract(unittest.TestCase):
     maxDiff = None
 
@@ -255,6 +307,30 @@ class CandidateMetaSelfTestContract(unittest.TestCase):
             result.stdout,
         )
         self.assertIn(f"`{scope_test.as_posix()}`", summary)
+
+    def test_ambiguous_criss_cross_history_stays_red(self) -> None:
+        scope_test = Path("scripts/ci/test_scope_cache_key.py")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pr_base_sha = initialize_criss_cross(root)
+            for relative in SELF_TESTS:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+            environment = os.environ.copy()
+            environment["GITHUB_STEP_SUMMARY"] = str(root / "summary.md")
+            environment["PR_BASE_SHA"] = pr_base_sha
+            result = subprocess.run(
+                [bash_executable(), "-c", executable_workflow_script()],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ambiguous or unavailable", result.stdout)
+        self.assertNotIn(f"STALE_HEAD_SCOPED_NOOP: candidate path {scope_test.as_posix()}", result.stdout)
 
     def test_absent_test_without_pr_base_stays_red(self) -> None:
         result, summary = self.run_workflow_script(include_pr_base=False)
@@ -396,7 +472,9 @@ class CandidateMetaSelfTestContract(unittest.TestCase):
         self.assertIn("        shell: bash", step)
         assert_pr_base_binding(step)
         self.assertIn('git cat-file -e "${PR_BASE_SHA}^{commit}"', script)
-        self.assertIn('historical_base_sha="$(git merge-base HEAD "$PR_BASE_SHA")"', script)
+        self.assertIn('mapfile -t historical_base_shas < <(git merge-base --all HEAD "$PR_BASE_SHA")', script)
+        self.assertIn('[[ "${#historical_base_shas[@]}" -ne 1 ]]', script)
+        self.assertIn('historical_base_sha="${historical_base_shas[0]}"', script)
         self.assertIn('git cat-file -e "${historical_base_sha}:${self_test}"', script)
         self.assertIn('checkout_root="$(realpath -e -- .)"', script)
         self.assertIn('resolved_self_test="$(realpath -e -- "$self_test")"', script)

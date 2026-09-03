@@ -1068,10 +1068,12 @@ jobs:
                 echo "::error title=Unclassifiable missing candidate meta self-test::PR base $PR_BASE_SHA is unavailable; refusing to classify $self_test as stale"
                 exit 1
               fi
-              historical_base_sha="$(git merge-base HEAD "$PR_BASE_SHA")" || {
-                echo "::error title=Unclassifiable missing candidate meta self-test::Unable to derive the historical merge base of HEAD and PR base $PR_BASE_SHA"
+              mapfile -t historical_base_shas < <(git merge-base --all HEAD "$PR_BASE_SHA")
+              if [[ "${#historical_base_shas[@]}" -ne 1 ]]; then
+                echo "::error title=Unclassifiable missing candidate meta self-test::Historical merge-base decision is ambiguous or unavailable for HEAD and PR base $PR_BASE_SHA"
                 exit 1
-              }
+              fi
+              historical_base_sha="${historical_base_shas[0]}"
               if git cat-file -e "${historical_base_sha}:${self_test}" 2>/dev/null; then
                 echo "::error title=Candidate meta self-test removed::$self_test exists in historical PR base $historical_base_sha but is absent from the candidate"
                 exit 1
