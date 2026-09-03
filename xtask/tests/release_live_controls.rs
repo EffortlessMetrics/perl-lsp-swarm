@@ -791,6 +791,51 @@ fn well_formed_legacy_contexts_array_still_reaches_observed() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn malformed_present_classic_status_fields_are_not_observed_as_empty() -> TestResult {
+    let observe_protection = |protection: &str| {
+        FakeCommands::default()
+            .on(&format!("repos/{OWNER}/{NAME}/branches/{BRANCH}"), r#"{"protected":true}"#)
+            .on(&format!("repos/{OWNER}/{NAME}/branches/{BRANCH}/protection"), protection)
+    };
+
+    let fixtures = [
+        (
+            "checks",
+            r#"{"required_status_checks":{"strict":true,"checks":{}},"enforce_admins":{"enabled":true},"required_pull_request_reviews":null,"required_conversation_resolution":{"enabled":true},"restrictions":null}"#,
+            "required_status_checks",
+        ),
+        (
+            "contexts",
+            r#"{"required_status_checks":{"strict":true,"contexts":{}},"enforce_admins":{"enabled":true},"required_pull_request_reviews":null,"required_conversation_resolution":{"enabled":true},"restrictions":null}"#,
+            "required_status_checks",
+        ),
+        (
+            "required_pull_request_reviews",
+            r#"{"required_status_checks":null,"enforce_admins":{"enabled":true},"required_pull_request_reviews":[],"required_conversation_resolution":{"enabled":true},"restrictions":null}"#,
+            "required_pull_request_reviews",
+        ),
+        (
+            "restrictions",
+            r#"{"required_status_checks":null,"enforce_admins":{"enabled":true},"required_pull_request_reviews":null,"required_conversation_resolution":{"enabled":true},"restrictions":[]}"#,
+            "restrictions_present",
+        ),
+    ];
+    for (label, protection, malformed_field) in fixtures {
+        let observed =
+            collect_classic_protection(&observe_protection(protection), OWNER, NAME, BRANCH);
+        let value =
+            observed.value().ok_or("malformed response should retain a diagnostic value")?;
+        let state = match malformed_field {
+            "required_status_checks" => value.required_status_checks.state,
+            "required_pull_request_reviews" => value.required_pull_request_reviews.state,
+            _ => value.restrictions_present.state,
+        };
+        assert_eq!(state, ObservationState::NotProven, "{label}");
+    }
+    Ok(())
+}
+
 /// A ruleset `required_status_checks` entry with no readable context name
 /// must take that ruleset's whole `rules` observation to `NOT_PROVEN`.
 ///

@@ -251,14 +251,24 @@ fn parse_classic_protection(value: &Value) -> ClassicProtection {
                     ),
                 };
             };
-            let checks = object.get("checks").and_then(Value::as_array);
-            // An unreadable row is NOT "not a required check". Dropping it
-            // would shrink the required set and let a malformed or newer
-            // payload read as weaker enforcement than is actually in force —
-            // the same permissive read this module refuses for an
-            // unclassifiable ruleset target.
-            let contexts: Result<Vec<RequiredContextRow>, usize> = match checks {
-                Some(rows) if !rows.is_empty() => rows
+            let contexts = match object.get("checks") {
+                None => match object.get("contexts") {
+                    None => Ok(Vec::new()),
+                    Some(Value::Array(rows)) => rows
+                        .iter()
+                        .enumerate()
+                        .map(|(index, row)| {
+                            row.as_str()
+                                .map(|context| RequiredContextRow {
+                                    context: context.to_string(),
+                                    app_id: None,
+                                })
+                                .ok_or(index)
+                        })
+                        .collect(),
+                    Some(_) => Err(usize::MAX),
+                },
+                Some(Value::Array(rows)) => rows
                     .iter()
                     .enumerate()
                     .map(|(index, row)| {
@@ -271,22 +281,13 @@ fn parse_classic_protection(value: &Value) -> ClassicProtection {
                             .ok_or(index)
                     })
                     .collect(),
-                _ => match object.get("contexts").and_then(Value::as_array) {
-                    Some(rows) => rows
-                        .iter()
-                        .enumerate()
-                        .map(|(index, row)| {
-                            row.as_str()
-                                .map(|context| RequiredContextRow {
-                                    context: context.to_string(),
-                                    app_id: None,
-                                })
-                                .ok_or(index)
-                        })
-                        .collect(),
-                    None => Ok(Vec::new()),
-                },
+                Some(_) => Err(usize::MAX),
             };
+            // An unreadable row is NOT "not a required check". Dropping it
+            // would shrink the required set and let a malformed or newer
+            // payload read as weaker enforcement than is actually in force —
+            // the same permissive read this module refuses for an
+            // unclassifiable ruleset target.
             match contexts {
                 Ok(contexts) => Observed::observed(RequiredStatusChecks { strict, contexts }),
                 Err(index) => Observed::not_proven(format!(
@@ -308,19 +309,44 @@ fn parse_classic_protection(value: &Value) -> ClassicProtection {
 
     let required_pull_request_reviews = match value.get("required_pull_request_reviews") {
         None | Some(Value::Null) => Observed::absent("required_pull_request_reviews not present"),
-        Some(raw) => Observed::observed(PullRequestReviewRule {
-            required_approving_review_count: raw
-                .get("required_approving_review_count")
-                .and_then(Value::as_u64)
-                .map(|n| n as u32),
-            dismiss_stale_reviews: raw.get("dismiss_stale_reviews").and_then(Value::as_bool),
-            require_code_owner_reviews: raw
-                .get("require_code_owner_reviews")
-                .and_then(Value::as_bool),
-            require_last_push_approval: raw
-                .get("require_last_push_approval")
-                .and_then(Value::as_bool),
-        }),
+        Some(Value::Object(raw)) => {
+            let Some(required_approving_review_count) =
+                optional_u32_field(raw, "required_approving_review_count")
+            else {
+                return malformed_classic_protection(
+                    "required_pull_request_reviews.required_approving_review_count was malformed",
+                );
+            };
+            let Some(dismiss_stale_reviews) = optional_bool_field(raw, "dismiss_stale_reviews")
+            else {
+                return malformed_classic_protection(
+                    "required_pull_request_reviews.dismiss_stale_reviews was malformed",
+                );
+            };
+            let Some(require_code_owner_reviews) =
+                optional_bool_field(raw, "require_code_owner_reviews")
+            else {
+                return malformed_classic_protection(
+                    "required_pull_request_reviews.require_code_owner_reviews was malformed",
+                );
+            };
+            let Some(require_last_push_approval) =
+                optional_bool_field(raw, "require_last_push_approval")
+            else {
+                return malformed_classic_protection(
+                    "required_pull_request_reviews.require_last_push_approval was malformed",
+                );
+            };
+            Observed::observed(PullRequestReviewRule {
+                required_approving_review_count,
+                dismiss_stale_reviews,
+                require_code_owner_reviews,
+                require_last_push_approval,
+            })
+        }
+        Some(_) => {
+            return malformed_classic_protection("required_pull_request_reviews was not an object");
+        }
     };
 
     let required_conversation_resolution = match value
@@ -334,8 +360,13 @@ fn parse_classic_protection(value: &Value) -> ClassicProtection {
         ),
     };
 
-    let restrictions_present =
-        Observed::observed(!matches!(value.get("restrictions"), None | Some(Value::Null)));
+    let restrictions_present = match value.get("restrictions") {
+        None | Some(Value::Null) => Observed::observed(false),
+        Some(Value::Object(_)) => Observed::observed(true),
+        Some(_) => {
+            return malformed_classic_protection("restrictions was not an object or null");
+        }
+    };
 
     ClassicProtection {
         required_status_checks,
@@ -343,6 +374,34 @@ fn parse_classic_protection(value: &Value) -> ClassicProtection {
         required_pull_request_reviews,
         required_conversation_resolution,
         restrictions_present,
+    }
+}
+
+fn optional_u32_field(object: &serde_json::Map<String, Value>, key: &str) -> Option<Option<u32>> {
+    match object.get(key) {
+        None | Some(Value::Null) => Some(None),
+        Some(Value::Number(value)) => {
+            value.as_u64().and_then(|value| u32::try_from(value).ok()).map(Some)
+        }
+        Some(_) => None,
+    }
+}
+
+fn optional_bool_field(object: &serde_json::Map<String, Value>, key: &str) -> Option<Option<bool>> {
+    match object.get(key) {
+        None | Some(Value::Null) => Some(None),
+        Some(Value::Bool(value)) => Some(Some(*value)),
+        Some(_) => None,
+    }
+}
+
+fn malformed_classic_protection(message: &str) -> ClassicProtection {
+    ClassicProtection {
+        required_status_checks: Observed::not_proven(message),
+        enforce_admins: Observed::not_proven(message),
+        required_pull_request_reviews: Observed::not_proven(message),
+        required_conversation_resolution: Observed::not_proven(message),
+        restrictions_present: Observed::not_proven(message),
     }
 }
 
