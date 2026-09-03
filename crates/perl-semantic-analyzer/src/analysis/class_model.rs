@@ -336,7 +336,9 @@ impl ClassModelBuilder {
     fn flush_current_package(&mut self) {
         self.finalize_field_writers();
         let framework = self.current_framework;
-        // Produce a ClassModel if the package uses a framework, has attributes, or has parents
+        // Preserve explicit MRO-only segments so reopened-package merging can
+        // observe a deliberate `use mro 'dfs'` reset even when the segment has
+        // no framework, methods, parents, or roles of its own.
         let has_oo_indicator = framework != Framework::None
             || !self.current_attributes.is_empty()
             || !self.current_fields.is_empty()
@@ -344,7 +346,8 @@ impl ClassModelBuilder {
             || !self.current_adjusts.is_empty()
             || !self.current_exports.is_empty()
             || !self.current_export_ok.is_empty()
-            || !self.current_export_tags.is_empty();
+            || !self.current_export_tags.is_empty()
+            || self.current_mro_explicit;
         if has_oo_indicator {
             let exporter_metadata = self.build_exporter_metadata_for_current_package();
             let model = ClassModel {
@@ -2167,6 +2170,27 @@ sub greet { }
         let sibling =
             find_model(&models, "Example::Sibling").expect("expected ClassModel for Sibling");
         assert_eq!(sibling.mro, MethodResolutionOrder::Dfs);
+    }
+
+    #[test]
+    fn standalone_reopened_mro_directive_is_retained() {
+        let models = build_models(
+            r#"
+package Example::Child;
+use mro 'c3';
+
+package Example::Child;
+use mro 'dfs';
+"#,
+        );
+
+        let child = models
+            .iter()
+            .rev()
+            .find(|model| model.name == "Example::Child")
+            .expect("expected retained reopened Child MRO model");
+        assert_eq!(child.mro, MethodResolutionOrder::Dfs);
+        assert!(child.mro_explicit);
     }
 
     #[test]
