@@ -2790,6 +2790,78 @@
       "selector_identity": "invocation:db0a0003aa5e59c1:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/debug_adapter/execution.rs",
+      "enclosing_test_or_function": "replacement_session",
+      "macro_family": "panic!",
+      "normalized_snippet": "DebugAdapter::spawn_noop_child_for_test().unwrap_or_else(|_| panic!(\"noop child\"));",
+      "selector_identity": "invocation:b41332dea0a5b539:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/debug_adapter/execution.rs",
+      "enclosing_test_or_function": "response_of",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected {command} response, got {other:?}\"),",
+      "selector_identity": "invocation:e86f56164976e06e:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/debug_adapter/execution.rs",
+      "enclosing_test_or_function": "attached_pid_context_identity_is_strict",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected threads response, got {other:?}\"),",
+      "selector_identity": "invocation:ec39d73fe997724e:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/debug_adapter/execution.rs",
+      "enclosing_test_or_function": "attached_pid_context_identity_is_strict",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"foreign id must be rejected while a pid context is live\"));",
+      "selector_identity": "invocation:c7ac2cad1ed37d5e:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/debug_adapter/execution.rs",
+      "enclosing_test_or_function": "attached_pid_context_identity_is_strict",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected typed rejection, got {other:?}\"),",
+      "selector_identity": "invocation:8bb61724dd2707c9:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/debug_adapter/execution.rs",
+      "enclosing_test_or_function": "tcp_context_identity_matches_threads_response",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected threads response, got {other:?}\"),",
+      "selector_identity": "invocation:ec39d73fe997724e:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/debug_adapter/execution.rs",
+      "enclosing_test_or_function": "continued_event_carries_live_context_id",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected continued event, got {other:?}\"),",
+      "selector_identity": "invocation:2acb8fa7b06a714d:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-dap/src/debug_adapter/execution.rs",
+      "enclosing_test_or_function": "initialize_capabilities_stay_identity_honest",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected initialize response, got {other:?}\"),",
+      "selector_identity": "invocation:b94ecf242c8a01c3:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
