@@ -314,8 +314,9 @@ def strip_cfg_test_modules(source: str) -> str:
 
     parts: list[str] = []
     index = 0
+    masked = mask_rust_non_code(source)
     while True:
-        match = CFG_TEST_MODULE_PATTERN.search(source, index)
+        match = CFG_TEST_MODULE_PATTERN.search(masked, index)
         if match is None:
             parts.append(source[index:])
             return "".join(parts)
@@ -408,8 +409,18 @@ def cfg_test_module_paths(path: Path, source: str) -> set[Path]:
     paths: set[Path] = set()
     for match in CFG_TEST_OUT_OF_LINE_PATTERN.finditer(masked):
         name = match.group(1)
-        paths.add(path.parent / f"{name}.rs")
-        paths.add(path.parent / name / "mod.rs")
+        # `#[path = "..."]` changes the module file location. Recover the
+        # literal from the original source using the masked match position;
+        # the window is limited to adjacent attributes to avoid comments.
+        window = source[max(0, match.start() - 300) : match.start()]
+        path_match = re.findall(r"#\[\s*path\s*=\s*\"([^\"]+)\"\s*\]", window)
+        if path_match:
+            module = path.parent / path_match[-1]
+            paths.add(module)
+            paths.add(module.parent / module.stem / "mod.rs")
+        else:
+            paths.add(path.parent / f"{name}.rs")
+            paths.add(path.parent / name / "mod.rs")
     return paths
 
 
