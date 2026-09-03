@@ -119,8 +119,8 @@ fn cache_harness_wiring(workflow: &str) -> Result<(), &'static str> {
 }
 
 #[test]
-fn required_cache_harness_wiring_is_independently_enforced(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn required_cache_harness_wiring_is_independently_enforced()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
     let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))?.replace("\r\n", "\n");
     assert_eq!(cache_harness_wiring(&ci), Ok(()));
@@ -341,8 +341,8 @@ fn compile_all_targets_budget_envelope_stays_witnessed() -> Result<(), Box<dyn s
 /// therefore retains its library execution and adds a narrow compile-only
 /// command for this integration target.
 #[test]
-fn windows_platform_smoke_compiles_integration_targets_without_running_them(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn windows_platform_smoke_compiles_integration_targets_without_running_them()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
     let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))?.replace("\r\n", "\n");
     let workflow: Value = serde_yaml_ng::from_str(&ci)?;
