@@ -3546,6 +3546,24 @@
       "selector_identity": "invocation:8a6a062823aa5710:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/e2e_validate.rs",
+      "enclosing_test_or_function": "liveness_smoke_reports_nonzero_exit",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected ExitedEarly, got {other:?}\"),",
+      "selector_identity": "invocation:2ea2fbf45ef15246:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/src/tasks/e2e_validate.rs",
+      "enclosing_test_or_function": "liveness_smoke_rejects_early_clean_exit",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected ExitedEarly, got {other:?}\"),",
+      "selector_identity": "invocation:2ea2fbf45ef15246:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
