@@ -424,6 +424,7 @@ def feature_source_gates(
     """
     gates: set[str] = set()
     excluded: set[Path] = set()
+    excluded_roots: set[Path] = set()
     if skip_test_modules:
         for directory in directories:
             base = crate_root / directory
@@ -431,12 +432,23 @@ def feature_source_gates(
                 for path in base.rglob("*.rs"):
                     source = path.read_text(encoding="utf-8", errors="replace")
                     excluded.update(cfg_test_module_paths(path, source))
+        # An out-of-line module owns a complete filesystem subtree. Excluding
+        # only `tests.rs`/`tests/mod.rs` still lets `tests/helper.rs` leak into
+        # the production denominator.
+        for module_path in excluded:
+            excluded_roots.add(
+                module_path.parent
+                if module_path.name == "mod.rs"
+                else module_path.with_suffix("")
+            )
     for directory in directories:
         base = crate_root / directory
         if not base.is_dir():
             continue
         for path in sorted(base.rglob("*.rs")):
-            if path in excluded:
+            if path in excluded or any(
+                path == root or root in path.parents for root in excluded_roots
+            ):
                 continue
             source = path.read_text(encoding="utf-8", errors="replace")
             if skip_test_modules:
