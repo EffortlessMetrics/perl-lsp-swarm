@@ -652,8 +652,17 @@ impl MetamorphicSafeRegistry {
                 detail: "required comparison planes are empty".to_owned(),
             });
         }
+        // Structural anchor usability is a universal invariant: a retained
+        // dispositioned declaration still pins an exact, resolvable anchor,
+        // and drift in it must fail construction and the integrity consult
+        // just like an admitted one. Only admission-specific invariants (the
+        // newline-insensitive requirement) stay admission-only, so an
+        // unsupported proposition may retain a region that is deliberately
+        // NOT newline-insensitive — that detail is why it is unsupported
+        // (e.g. the BOM case).
+        self.validate_anchor_structure(&case)?;
         if case.applicability.state == Applicability::Admitted {
-            self.validate_admitted_anchor(&case)?;
+            self.validate_admission_anchor(&case)?;
         }
         let case_id = case.case_id.to_owned();
         if self.cases.insert(case.case_id, case).is_some() {
@@ -662,7 +671,9 @@ impl MetamorphicSafeRegistry {
         Ok(())
     }
 
-    fn validate_admitted_anchor(&self, case: &CaseDeclaration) -> Result<(), RegistryError> {
+    /// Structural anchor validity, required for EVERY declaration: admitted
+    /// or dispositioned, a case must pin an exact, resolvable anchor.
+    fn validate_anchor_structure(&self, case: &CaseDeclaration) -> Result<(), RegistryError> {
         let fixture_len =
             self.fixtures.get(case.fixture_id).map_or(0, |fixture| fixture.bytes.len());
         match case.anchor {
@@ -688,7 +699,7 @@ impl MetamorphicSafeRegistry {
                     });
                 }
             }
-            AuthoredAnchor::Region { region_id, byte_range, conversion, newline_insensitive } => {
+            AuthoredAnchor::Region { region_id, byte_range, conversion, .. } => {
                 if region_id.is_empty() {
                     return Err(RegistryError::InvalidAnchor {
                         case_id: case.case_id.to_owned(),
@@ -704,13 +715,6 @@ impl MetamorphicSafeRegistry {
                         ),
                     });
                 }
-                if !newline_insensitive {
-                    return Err(RegistryError::InvalidAnchor {
-                        case_id: case.case_id.to_owned(),
-                        detail: "region conversion without a newline-insensitive declaration"
-                            .to_owned(),
-                    });
-                }
                 if conversion_sites(
                     fixture_bytes_of(self.fixtures.get(case.fixture_id)),
                     byte_range,
@@ -724,6 +728,20 @@ impl MetamorphicSafeRegistry {
                     });
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Admission-only anchor invariants: a proposition is only admitted for
+    /// generation when its region is explicitly declared newline-insensitive.
+    /// A dispositioned case may retain a region without that declaration —
+    /// that missing declaration is often exactly why it is unsupported.
+    fn validate_admission_anchor(&self, case: &CaseDeclaration) -> Result<(), RegistryError> {
+        if let AuthoredAnchor::Region { newline_insensitive: false, .. } = case.anchor {
+            return Err(RegistryError::InvalidAnchor {
+                case_id: case.case_id.to_owned(),
+                detail: "region conversion without a newline-insensitive declaration".to_owned(),
+            });
         }
         Ok(())
     }
@@ -1904,6 +1922,54 @@ mod tests {
         assert!(
             matches!(&error, RegistryError::InvalidDeclaration { detail, .. }
                 if detail.contains("review owner")),
+            "unexpected error: {error}"
+        );
+        Ok(())
+    }
+
+    /// Structural anchor validity is universal: a retained dispositioned
+    /// declaration with an unusable anchor (empty identifier or an
+    /// out-of-bounds point) must fail construction exactly like an admitted
+    /// one (#13659 review).
+    #[test]
+    fn malformed_dispositioned_anchor_is_rejected_at_construction() -> TestResult {
+        let quote_case = AUTHORED_CASES
+            .iter()
+            .find(|case| case.case_id == "registry-quote-payload.trailing-hw.q-body.v1")
+            .cloned()
+            .ok_or("the dispositioned quote case must stay authored")?;
+
+        let mut blank_id = quote_case.clone();
+        blank_id.anchor = match blank_id.anchor {
+            AuthoredAnchor::Point { offset, payload, .. } => {
+                AuthoredAnchor::Point { anchor_id: "", offset, payload }
+            }
+            _ => return Err("expected the quote case to be a point anchor".into()),
+        };
+        let Err(error) = MetamorphicSafeRegistry::from_declarations(vec![blank_id]) else {
+            return Err("an empty dispositioned anchor id must fail construction".into());
+        };
+        assert!(
+            matches!(&error, RegistryError::InvalidAnchor { detail, .. }
+                if detail.contains("anchor id is empty")),
+            "unexpected error: {error}"
+        );
+
+        let mut out_of_bounds = quote_case;
+        out_of_bounds.anchor = match out_of_bounds.anchor {
+            AuthoredAnchor::Point { anchor_id, payload, .. } => AuthoredAnchor::Point {
+                anchor_id,
+                offset: FIXTURE_QUOTE_PAYLOAD.len() + 1,
+                payload,
+            },
+            _ => return Err("expected the quote case to be a point anchor".into()),
+        };
+        let Err(error) = MetamorphicSafeRegistry::from_declarations(vec![out_of_bounds]) else {
+            return Err("an out-of-bounds dispositioned anchor must fail construction".into());
+        };
+        assert!(
+            matches!(&error, RegistryError::InvalidAnchor { detail, .. }
+                if detail.contains("exceeds fixture length")),
             "unexpected error: {error}"
         );
         Ok(())

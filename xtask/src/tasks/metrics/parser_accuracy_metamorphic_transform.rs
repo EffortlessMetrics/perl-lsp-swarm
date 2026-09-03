@@ -13,9 +13,20 @@ use perl_position_tracking::{LineRecordTable, SOURCE_LINE_POLICY_ID, SourceLineE
 use serde::Serialize;
 
 /// Schema identity for a fully validated transformation receipt.
+///
+/// Compatibility contract: `transformation_identity` is defined by the exact
+/// serialized form of [`TransformationIdentityMaterial`] (serde_json). Any
+/// change to that form — field set, names, serde representation, or included
+/// values — MUST bump this version, so receipts derived under different
+/// contracts are never compared or interpreted as compatible even when the
+/// underlying bytes are identical.
 pub const TRANSFORMATION_SCHEMA_VERSION: u32 = 1;
 
 /// Schema identity for canonical coordinate-map material.
+///
+/// Same compatibility contract as [`TRANSFORMATION_SCHEMA_VERSION`]: the
+/// coordinate-map identity is defined by the exact serialized form of
+/// [`MapIdentityMaterial`]; changes to that form MUST bump this version.
 pub const COORDINATE_MAP_SCHEMA_VERSION: u32 = 1;
 
 /// One half-open byte range.
@@ -686,6 +697,8 @@ impl Error for TransformError {
     }
 }
 
+/// Identity material serialized to define [`CoordinateMap::identity`]; its
+/// form is version-gated by [`COORDINATE_MAP_SCHEMA_VERSION`].
 #[derive(Serialize)]
 struct MapIdentityMaterial<'a> {
     schema_version: u32,
@@ -696,6 +709,9 @@ struct MapIdentityMaterial<'a> {
     segments: &'a [CoordinateSegment],
 }
 
+/// Identity material serialized to define
+/// [`ValidatedTransformation::transformation_identity`]; its form is
+/// version-gated by [`TRANSFORMATION_SCHEMA_VERSION`].
 #[derive(Serialize)]
 struct TransformationIdentityMaterial<'a> {
     schema_version: u32,
