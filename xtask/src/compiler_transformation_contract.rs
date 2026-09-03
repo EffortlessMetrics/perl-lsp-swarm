@@ -607,6 +607,33 @@ impl ClaimCeiling {
     pub fn permits(self, claimed: Self) -> bool {
         claimed == self || claimed == Self::InternalFactOnly
     }
+
+    /// Consumers a plan claiming this ceiling may serve.
+    ///
+    /// The ceiling and the consumer set have to agree, or a plan could drop to
+    /// `InternalFactOnly` while still naming diagnostic, execution or edit
+    /// consumers -- claiming less and serving the same.
+    /// [`ConsumerClass::NoConsumer`] claims nothing, so every ceiling admits it.
+    pub fn permitted_consumers(self) -> BTreeSet<ConsumerClass> {
+        let permitted: &[ConsumerClass] = match self {
+            Self::InternalFactOnly => {
+                &[ConsumerClass::InternalStageRewrite, ConsumerClass::FactStore]
+            }
+            Self::AnalysisAndDiagnostic => &[
+                ConsumerClass::InternalStageRewrite,
+                ConsumerClass::FactStore,
+                ConsumerClass::Analysis,
+                ConsumerClass::Diagnostic,
+            ],
+            Self::BoundedExecution => &[
+                ConsumerClass::InternalStageRewrite,
+                ConsumerClass::FactStore,
+                ConsumerClass::BoundedExecution,
+            ],
+            Self::AuthorizedSourceEdit => &[ConsumerClass::SourceEdit],
+        };
+        permitted.iter().copied().chain([ConsumerClass::NoConsumer]).collect()
+    }
 }
 
 /// Truth state of one precondition against one exact subject.
@@ -1572,6 +1599,17 @@ impl TransformationPlan {
                 );
             }
         }
+        let ceiling_consumers = self.claim_ceiling.permitted_consumers();
+        for consumer in &self.consumers {
+            if !ceiling_consumers.contains(consumer) {
+                bail!(
+                    "plan {:?} claims {} but names the consumer {}, which that ceiling does not license",
+                    self.id.as_str(),
+                    self.claim_ceiling.tag(),
+                    consumer.tag()
+                );
+            }
+        }
         let names_source_edit = self.consumers.contains(&ConsumerClass::SourceEdit)
             || self.claim_ceiling == ClaimCeiling::AuthorizedSourceEdit
             || self.intended_changes.contains(&ChangedProposition::SourceText);
@@ -1834,7 +1872,10 @@ impl TransformationPlan {
     /// preconditions are ranked by kind and then by identity, so reordering a
     /// plan's precondition vector cannot change the reported refusal.
     pub fn evaluate(&self, observation: &ApplicationObservation) -> Result<TransformationResult> {
-        if let Err(error) = self.validate() {
+        // `semantic_fingerprint` subsumes `validate` and additionally requires
+        // the canonical text to stay within its bound. A plan with no
+        // computable identity cannot produce an applied result.
+        if let Err(error) = self.semantic_fingerprint() {
             return Ok(TransformationResult::InvalidPlan { reason: truncate_reason(&error) });
         }
         if !self.subject.matches_ignoring_generation(&observation.observed_subject) {
@@ -3547,7 +3588,6 @@ mod tests {
         // Order-independence is not blindness: any semantic field change must
         // move the fingerprint.
         let mutations: Vec<fn(&mut TransformationPlan)> = vec![
-            |plan| plan.claim_ceiling = ClaimCeiling::InternalFactOnly,
             |plan| {
                 plan.intended_changes.remove(&ChangedProposition::RedundantOperationCount);
             },
@@ -3630,6 +3670,17 @@ mod tests {
             reclassified.semantic_fingerprint()?,
             narrowed_digest,
             "the transformation class must be part of plan identity"
+        );
+
+        // The claim ceiling is in the digest too, and it likewise cannot be
+        // varied in isolation on the unnarrowed plan: a ceiling licenses a
+        // consumer set, so the two move together.
+        let mut lowered = narrowed.clone();
+        lowered.claim_ceiling = ClaimCeiling::InternalFactOnly;
+        assert_ne!(
+            lowered.semantic_fingerprint()?,
+            narrowed_digest,
+            "the claim ceiling must be part of plan identity"
         );
 
         assert!(plan.canonical_semantic_text()?.len() <= super::MAX_CANONICAL_TEXT_BYTES);
@@ -3905,6 +3956,7 @@ mod tests {
 
         let mut ceiling_climb = shape_fixtures::branch_pruning_plan()?;
         ceiling_climb.claim_ceiling = ClaimCeiling::BoundedExecution;
+        ceiling_climb.consumers = [ConsumerClass::InternalStageRewrite].into_iter().collect();
         let law = shape_fixtures::branch_pruning_law()?;
         let error = match ceiling_climb.verify_law_conformance(&law) {
             Err(error) => format!("{error:#}"),
@@ -3935,7 +3987,18 @@ mod tests {
         // Dropping to internal facts is accepted.
         let mut modest = shape_fixtures::branch_pruning_plan()?;
         modest.claim_ceiling = ClaimCeiling::InternalFactOnly;
+        modest.consumers = [ConsumerClass::InternalStageRewrite].into_iter().collect();
         modest.verify_law_conformance(&law)?;
+
+        // Dropping the ceiling without dropping the consumers it licensed is
+        // claiming less while serving the same, and is rejected.
+        let mut modest_in_name_only = shape_fixtures::branch_pruning_plan()?;
+        modest_in_name_only.claim_ceiling = ClaimCeiling::InternalFactOnly;
+        assert_invalid(
+            &modest_in_name_only,
+            "which that ceiling does not license",
+            "a lower ceiling cannot retain stronger consumers",
+        );
         Ok(())
     }
 
@@ -4914,6 +4977,85 @@ mod tests {
             binding.operations = [operation_id("eir:block:0002")].into_iter().collect();
         }
         assert_invalid(&shrunk, "more than one subplan", "shrinking must not overlap");
+        Ok(())
+    }
+
+    // Review claim: "unsupported laws can be uninstantiable -- no plan can
+    // instantiate a law with no required preconditions, because unsupported
+    // plans require an unproven one." That is incorrect, and this shows why: a
+    // plan may carry preconditions the law does not require (the strengthening
+    // asymmetry), so it supplies the unproven precondition itself.
+    #[test]
+    fn an_unsupported_law_without_required_preconditions_is_instantiable() -> Result<()> {
+        let (_, folding_plan) = folding();
+
+        let mut law = shape_fixtures::exact_value_folding_law()?;
+        law.id = LawId::new("hir.overload-not-applicable")?;
+        law.class = TransformationClass::UnsupportedOrNotApplicable;
+        law.consumers = [ConsumerClass::NoConsumer].into_iter().collect();
+        law.permitted_changes = BTreeSet::new();
+        law.required_preconditions = BTreeSet::new();
+        law.claim_ceiling = ClaimCeiling::InternalFactOnly;
+        law.validate()?;
+        assert!(law.required_preconditions.is_empty(), "the law requires no precondition");
+
+        let mut plan = folding_plan.clone();
+        plan.id = text_id("plan.hir.overload-not-applicable");
+        plan.law = law.binding()?;
+        plan.class = law.class;
+        plan.consumers = law.consumers.clone();
+        plan.claim_ceiling = ClaimCeiling::InternalFactOnly;
+        plan.intended_changes = BTreeSet::new();
+        plan.expected_output = plan.input.clone();
+        plan.preconditions[0].truth =
+            PreconditionTruth::DynamicOrUnsupported(DynamicConcept::Overload);
+        plan.verify_law_conformance(&law)?;
+
+        let mut observed = shape_fixtures::conforming_observation(&plan, &law)?;
+        observed.applied_operations = BTreeSet::new();
+        observed.work = WorkReceipt { useful_operations: 0, elapsed_micros: 1 };
+        match plan.evaluate(&observed)? {
+            TransformationResult::RefusedDynamicOrUnsupported { concept, .. } => {
+                assert_eq!(concept, DynamicConcept::Overload);
+            }
+            other => unreachable!("the plan instantiates and refuses, got {}", other.tag()),
+        }
+        Ok(())
+    }
+
+    // Review finding: a plan whose canonical text overruns its bound has no
+    // computable identity, yet evaluation only checked structural validity.
+    #[test]
+    fn a_plan_without_a_computable_identity_never_applies() -> Result<()> {
+        let (law, plan) = folding();
+
+        let mut oversized = plan.clone();
+        oversized.locations = (0..256usize)
+            .map(|index| {
+                let padded = format!("hir:op:{index:08}:{}", "p".repeat(MAX_TEXT_LEN - 32));
+                Ok(LocationSelector::CanonicalOperation {
+                    stage: CompilerStage::Hir,
+                    operation_id: OperationId::new(&padded)?,
+                    source_provenance: None,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        // Structurally valid, but with no computable fingerprint.
+        oversized.validate()?;
+        assert!(oversized.semantic_fingerprint().is_err());
+
+        let mut observed = shape_fixtures::conforming_observation(&oversized, &law)?;
+        observed.work =
+            WorkReceipt { useful_operations: oversized.locations.len() as u64, elapsed_micros: 1 };
+        match oversized.evaluate(&observed)? {
+            TransformationResult::InvalidPlan { reason } => {
+                assert!(reason.contains("above the bound of"), "got {reason}");
+            }
+            other => unreachable!(
+                "a plan with no computable identity must not apply, got {}",
+                other.tag()
+            ),
+        }
         Ok(())
     }
 }
