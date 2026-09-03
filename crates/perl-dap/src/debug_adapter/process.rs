@@ -1480,6 +1480,7 @@ impl DebugAdapter {
         let termination_state = self.termination_state.clone();
         let operation_broker = self.operation_broker.clone();
         let session_generation = self.current_session_generation();
+        let broker_session_generation = operation_broker.current_session_generation();
         let timeout = Duration::from_secs(timeout_secs);
 
         thread::spawn(move || {
@@ -1549,7 +1550,15 @@ impl DebugAdapter {
             // partial frame; broker waiters must not remain pending until that
             // path drains. The reservation above proves this is still the
             // current session, so settling cannot affect a replacement.
-            operation_broker.settle_all("debuggee_timeout");
+            if !operation_broker
+                .settle_all_if_current("debuggee_timeout", broker_session_generation)
+            {
+                tracing::debug!(
+                    session_generation,
+                    "Debuggee watchdog: session replaced before broker settlement, skipping kill"
+                );
+                return;
+            }
 
             // Kill the debuggee process.  The output reader will see EOF and
             // clean up session state via clear_active_session_state_for_generation.
@@ -3425,7 +3434,9 @@ mod tests {
                 timeout: Duration::from_secs(2),
                 cancellation: None,
             })
-            .map_err(|error| format!("watchdog regression operation must be admitted: {error:?}"))?;
+            .map_err(|error| {
+                format!("watchdog regression operation must be admitted: {error:?}")
+            })?;
 
         let session = DebugSession {
             process: child,
