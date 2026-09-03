@@ -547,6 +547,58 @@ mod tests {
     }
 
     #[test]
+    fn a_worker_proven_exited_past_the_deadline_reports_its_real_terminal_not_timed_out() {
+        // `deadline` bounds how long shutdown WAITS; it is not a predicate on
+        // when the worker settled. A class whose exit is observable only on
+        // the iteration after the bound has still settled, and reporting
+        // `TimedOut` for it would fabricate a failure -- the mirror image of
+        // the laundering this component exists to prevent. Pins that choice
+        // so it cannot be reordered away by accident.
+        let (debouncer, release) = DiagnosticDebouncer::dead_channel_live_worker_for_test();
+        let services = RuntimeServices::new();
+        services.install_diagnostic_debouncer(debouncer);
+        // Install saw an operational worker, so the class is pending.
+        assert!(services.settlement_snapshot().settled.is_empty());
+
+        // Drive the worker to a PROVEN exit before shutdown runs, so the
+        // assertion below cannot depend on millisecond timing.
+        drop(release);
+        let exited = (0..500).any(|_| {
+            if services.diagnostic_debouncer_has_exited() {
+                true
+            } else {
+                std::thread::sleep(Duration::from_millis(10));
+                false
+            }
+        });
+        assert!(exited, "the released worker must reach an observable exit");
+        assert_eq!(
+            services.settlement_snapshot().pending,
+            vec![ApplicationTaskClass::DiagnosticDebounce],
+            "the exited worker must still be pending: nothing recorded a terminal for it"
+        );
+
+        // The bound is already spent at the moment shutdown begins.
+        let outcome =
+            services.begin_application_shutdown(ShutdownReason::ServerDrop, Instant::now());
+
+        assert_eq!(
+            outcome,
+            ApplicationShutdown::Complete,
+            "a worker proven to have exited must not be reported as still running"
+        );
+        assert_ne!(outcome, ApplicationShutdown::TimedOut);
+        assert_eq!(
+            services.settlement_snapshot().settled,
+            vec![(
+                ApplicationTaskClass::DiagnosticDebounce,
+                TaskTerminal::Cancelled { reason: ShutdownReason::ServerDrop }
+            )],
+            "the promoted terminal is the outcome that actually happened"
+        );
+    }
+
+    #[test]
     fn a_worker_that_died_settles_as_failed_not_as_an_orderly_stop() {
         // Exit is not the same as orderly exit. A debouncer whose callback
         // panicked has also "exited", and treating that as `Cancelled` would

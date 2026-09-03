@@ -472,6 +472,18 @@ impl RuntimeServices {
     /// resolves the aggregate to [`ApplicationShutdown::TimedOut`] rather
     /// than [`ApplicationShutdown::Complete`]: a missing terminal can never
     /// be read as success.
+    ///
+    /// `deadline` bounds how long this call **waits**; it is not a predicate
+    /// on the instant a worker settled. A class whose exit only becomes
+    /// observable on the polling iteration that follows the bound is still
+    /// promoted to its real terminal, so the aggregate can report `Complete`
+    /// marginally past `deadline`. That is deliberate: `TimedOut` asserts a
+    /// worker did not settle, and returning it for one proven to have exited
+    /// would fabricate a failure -- the mirror image of the laundering this
+    /// component exists to prevent. The overrun is bounded by one polling
+    /// iteration because `observed_exit` never blocks. `TimedOut` is still
+    /// returned, and persisted, for anything genuinely pending when the
+    /// clock is read past the bound.
     #[allow(dead_code)] // Called once the #9508 shutdown-request wiring lands.
     pub(crate) fn begin_application_shutdown(
         &self,
@@ -594,6 +606,15 @@ impl RuntimeServices {
     #[cfg(test)]
     pub(crate) fn diagnostic_debouncer_is_installed(&self) -> bool {
         self.diagnostic_debouncer.lock().is_some()
+    }
+
+    /// Whether the installed diagnostic debouncer's worker has reached an
+    /// observable exit. Test-only, and `false` when no debouncer is
+    /// installed. Lets a falsifier drive a worker to a *proven* exit before
+    /// asserting on settlement, instead of racing a millisecond sleep.
+    #[cfg(test)]
+    pub(crate) fn diagnostic_debouncer_has_exited(&self) -> bool {
+        self.diagnostic_debouncer.lock().as_ref().is_some_and(DiagnosticDebouncer::has_exited)
     }
 
     #[allow(dead_code)] // Read by test/debug runtime pressure snapshots.
