@@ -94,7 +94,7 @@ entrypoints:
 
 | Surface | Path | Role |
 | --- | --- | --- |
-| Parser | `crates/perl-parser/` | Native Perl parser and recovery behavior |
+| Parser | `crates/perl-parser/` | Public parser facade; see `docs/reference/ARCHITECTURE.md` for syntax, parsing, and recovery ownership |
 | Compiler and semantic facts | `crates/perl-semantic-analyzer/`, `crates/perl-semantic-facts/` | Semantic analysis and compiler-facing facts |
 | LSP core | `crates/perl-lsp-rs-core/` | Protocol, runtime, workspace, and provider implementation |
 | LSP integration | `crates/perl-lsp-rs/` | Server integration and higher-level behavior |
@@ -145,6 +145,13 @@ answer.
 Production code must not introduce `unwrap`, `expect`, `panic!`, `todo!`,
 `unimplemented!`, `abort`, or `dbg!` outside a documented narrow exception. Prefer
 `Result`, `Option`, explicit invariants, and actionable errors.
+
+When a test's `.expect("…")` moves onto the `perl-test-must` helpers, use the
+context-preserving variant — `must_with`, `must_some_with`, `must_err_with` — so the
+explanation still reaches the panic diagnostic. The bare `must`, `must_some`, and
+`must_err` are only correct when the call site carried no explanation to begin with.
+`cargo xtask ci-hygiene check-must-context` reports a change that removes an
+`.expect("…")` and adds a bare helper in its place.
 
 ### 4. Run focused proof first
 
@@ -267,6 +274,33 @@ just public-api-update
 Review the generated `.ci/public-api-baselines/` changes and include only intentional
 surface movement. A focused compile or unit test does not prove downstream compatibility;
 document migration impact and the exact baseline change.
+
+### Dependency updates
+
+Dependabot opens weekly Cargo, GitHub Actions, and VS Code extension candidates. The
+repository explicitly disables Dependabot labels with `labels: []`; omitting that option
+restores GitHub's default dependency labels. Discover candidates by bot author instead:
+
+```bash
+gh pr list --author "app/dependabot"
+```
+
+Author and CI status are discovery fields, not update-risk classifiers. Inspect each
+candidate's version table, changelog, diff, and checks. For a grouped PR, use the highest
+semver impact in the group. Enable auto-merge only for one reviewed patch or security
+update; minor and major updates follow the stronger review paths in the canonical guide.
+
+```bash
+gh pr view <pr-number>
+gh pr checks <pr-number>
+gh pr merge <pr-number> --auto --squash
+```
+
+Do not pipe an `app/dependabot` plus `status:success` query into `gh pr merge`; it also
+selects passing minor and major updates. See the
+[Dependency Management Guide](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/DEPENDENCY_MANAGEMENT.md)
+and
+[Dependency Update Quick Reference](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/DEPENDENCY_QUICK_REFERENCE.md).
 
 ### New crates, manifests, and publish topology
 

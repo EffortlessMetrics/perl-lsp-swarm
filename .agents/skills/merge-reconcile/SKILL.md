@@ -33,7 +33,7 @@ Read:
 
 - cumulative submitted reviews and useful clean conclusions;
 - localized inline findings;
-- evidence-backed `fixed`, `refuted`, `superseded`, or `follow-up` dispositions;
+- evidence-backed `fixed`, `refuted`, `superseded`, or `post-merge-follow-up` dispositions (terminal), plus non-terminal `current-blocker` / `blocked-by-prerequisite` / `not-proven` dispositions whose threads stay open;
 - current candidate claim, production route, proof, limitations, and material changes;
 - whether later commits changed a reviewed semantic dimension.
 

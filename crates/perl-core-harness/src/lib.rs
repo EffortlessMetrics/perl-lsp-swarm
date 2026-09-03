@@ -26,6 +26,18 @@ pub mod target_contracts {
 #[path = "target_contracts/tests.rs"]
 mod target_contract_tests;
 
+// One shared minimal JSON Schema validator for every contract suite, so
+// "Rust decoding and the registered schema agree" is a claim about one
+// instrument rather than about per-suite copies that can drift apart (#7729).
+#[cfg(test)]
+pub(crate) mod schema_check;
+
+/// Closed-world proof for the target and runner evidence contracts (#7729):
+/// every exact object rejects unknown fields at every nesting level, in both
+/// serde and the registered schema, while declared extension maps stay open.
+#[cfg(test)]
+mod contract_closure_tests;
+
 mod normalization;
 pub mod public_evidence;
 mod run_authority;
@@ -50,6 +62,13 @@ pub(crate) mod normalize;
 #[allow(dead_code)]
 #[path = "runner_plan/model.rs"]
 pub(crate) mod runner_model;
+// Included so the closed-world contract proof can build its parity payload
+// through the production comparator instead of hand-assembling a receipt. Only
+// that proof needs it in this unit, so it stays out of the non-test build.
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "runner_plan/compare.rs"]
+pub(crate) mod compare;
 
 /// Strict immutable observed upstream-discovery receipts
 /// (`upstream_runner_discovery.v1`, #12281): byte-exact raw envelopes, typed
@@ -200,7 +219,7 @@ use perl_core_harness_types::{
     CompatibilitySeriesIdentity, CompatibilityTransition, CompatibilityTransitionCandidate,
     CompileBaseline, CompileBaselineV2, CompilerCompatibilitySeries, CompilerCompatibilityState,
     CurrentAuthorityEntry, CurrentAuthorityIndex, CurrentAuthorityStatus, DISCOVERY_SCHEMA_VERSION,
-    DiscoveredTest, DiscoveryReport, FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION,
+    DiscoveredTest, DiscoveryReport, ExecutionMechanism, FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION,
     FAILURE_CLUSTER_SCHEMA_VERSION, FailureCluster, FailureClusterHistory,
     FailureClusterHistoryEntry, FailureClusterHistoryPresence, FailureClusterHistoryStatus,
     FailureClusterIdentityQuality, FailureClusterReport, FailureClusterSignature,
@@ -211,7 +230,8 @@ use perl_core_harness_types::{
     SemanticBoundaryConfidence, SemanticBoundaryDisposition, SemanticBoundaryLockScope,
     SemanticBoundaryRegistry, SemanticBoundaryRegistryEntry, SemanticBoundaryRegistryState,
     SemanticBoundaryReplacementStrategy, SeriesManifest, SmokeFailureKind, SmokeReport,
-    SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, workstream_for_bucket,
+    SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, validate_execution_mechanism,
+    validate_file_result_mechanisms, workstream_for_bucket,
 };
 pub use perl_core_harness_types::{HarnessMode, HarnessProfile, HarnessRunner};
 use run_authority::{
@@ -613,10 +633,12 @@ pub fn boundaries(config: BoundaryRegistryConfig) -> Result<()> {
 pub fn triage(config: TriageConfig) -> Result<()> {
     let bundle = read_boundary_bundle(&config.bundle)?;
     let compile_path = bundle_artifact_path(&bundle, "compile_report")?;
-    let raw = fs::read_to_string(&compile_path)
-        .with_context(|| format!("reading compile report {}", compile_path.display()))?;
-    let report: RunReport = serde_json::from_str(&raw)
-        .with_context(|| format!("decoding compile report {}", compile_path.display()))?;
+    // Decode through the shared reader rather than inline: it is the only place
+    // the mechanism contract is applied to this JSON shape, and clustering a
+    // report that over-claims its execution evidence would carry that claim
+    // into the durable failure-cluster and history artifacts (#14363).
+    let report = read_run_report(&compile_path)
+        .with_context(|| format!("compile report {}", compile_path.display()))?;
     validate_bundle_report_identity(&bundle, &report)?;
     ensure_valid_report_shape(&report)?;
     let cluster_report = build_failure_cluster_report(&bundle, &report)?;
@@ -4065,7 +4087,32 @@ fn write_run_report(path: &Path, report: &RunReport) -> Result<()> {
 fn read_run_report(path: &Path) -> Result<RunReport> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("reading run report {}", path.display()))?;
-    serde_json::from_str(&raw).with_context(|| format!("decoding run report {}", path.display()))
+    let report: RunReport = serde_json::from_str(&raw)
+        .with_context(|| format!("decoding run report {}", path.display()))?;
+    reject_inadmissible_report_mechanisms(&report)
+        .with_context(|| format!("run report {}", path.display()))?;
+    Ok(report)
+}
+
+/// Refuse a run report whose per-file execution-mechanism claims are not
+/// admissible for its mode.
+///
+/// A report is what becomes a checked-in baseline and what the ratchet compares
+/// against, so the mechanism contract has to hold wherever a report is decoded
+/// or accepted — not only where a runner-record line is (#14363).
+fn reject_inadmissible_report_mechanisms(report: &RunReport) -> Result<()> {
+    validate_file_result_mechanisms(report.mode, &report.file_results)
+        .map_err(|violation| color_eyre::eyre::eyre!("{violation}"))
+}
+
+/// Refuse a checked-in baseline whose per-file execution-mechanism claims are
+/// not admissible for its mode.
+fn reject_inadmissible_baseline_mechanisms(
+    mode: HarnessMode,
+    file_results: &[RunFileResult],
+) -> Result<()> {
+    validate_file_result_mechanisms(mode, file_results)
+        .map_err(|violation| color_eyre::eyre::eyre!("{violation}"))
 }
 
 fn write_direct_diagnostics_receipt(path: &Path, receipt: &DirectDiagnosticReceipt) -> Result<()> {
@@ -4081,7 +4128,11 @@ fn write_direct_diagnostics_receipt(path: &Path, receipt: &DirectDiagnosticRecei
 fn read_compile_baseline(path: &Path) -> Result<CompileBaseline> {
     let raw =
         fs::read_to_string(path).with_context(|| format!("reading baseline {}", path.display()))?;
-    serde_json::from_str(&raw).with_context(|| format!("decoding baseline {}", path.display()))
+    let baseline: CompileBaseline = serde_json::from_str(&raw)
+        .with_context(|| format!("decoding baseline {}", path.display()))?;
+    reject_inadmissible_baseline_mechanisms(baseline.mode, &baseline.file_results)
+        .with_context(|| format!("baseline {}", path.display()))?;
+    Ok(baseline)
 }
 
 fn write_compile_baseline(path: &Path, baseline: &CompileBaseline) -> Result<()> {
@@ -4125,6 +4176,9 @@ fn write_gap_map(path: &Path, gap_map: &GapMap) -> Result<()> {
 }
 
 fn baseline_from_report(report: &RunReport) -> Result<CompileBaseline> {
+    // Acceptance copies file results verbatim into the durable artifact, so an
+    // inadmissible claim must be refused here and not only at report decode.
+    reject_inadmissible_report_mechanisms(report)?;
     let mut baseline = CompileBaseline {
         schema_version: COMPILE_BASELINE_SCHEMA_VERSION.to_string(),
         report_schema_version: report.schema_version.clone(),
@@ -4164,6 +4218,7 @@ fn baseline_v2_from_report(
     previous: Option<&CompileBaselineV2>,
     retirements: &[BoundaryRetirement],
 ) -> Result<CompileBaselineV2> {
+    reject_inadmissible_report_mechanisms(report)?;
     let identities = required_v2_identities(config)?;
     validate_report_against_series(report, series, config.mode)?;
     validate_v2_identities_against_series(&identities, series)?;
@@ -4770,6 +4825,8 @@ fn parse_compile_baseline_v2(value: serde_json::Value, label: &str) -> Result<Co
     }
     let baseline: CompileBaselineV2 =
         serde_json::from_value(value).with_context(|| format!("decoding v2 baseline {label}"))?;
+    reject_inadmissible_baseline_mechanisms(baseline.mode, &baseline.file_results)
+        .with_context(|| format!("v2 baseline {label}"))?;
     let mut violations = validate_persisted_boundary_retirements(&baseline, None);
     violations.extend(validate_accepted_semantic_boundary_inventory(&baseline.semantic_boundaries));
     if !violations.is_empty() {
@@ -5583,15 +5640,41 @@ fn read_runner_records(path: &Path) -> Result<Vec<RunnerRecord>> {
         if trimmed.is_empty() {
             continue;
         }
-        let record = serde_json::from_str(trimmed).with_context(|| {
+        let record: RunnerRecord = serde_json::from_str(trimmed).with_context(|| {
             format!("decoding runner record {} in {}", index + 1, path.display())
         })?;
+        reject_inadmissible_mechanism(&record)
+            .with_context(|| format!("runner record {} in {}", index + 1, path.display()))?;
         records.push(record);
     }
     if records.is_empty() {
         bail!("runner context contained no records: {}", path.display());
     }
     Ok(records)
+}
+
+/// Refuse a runner record whose execution-mechanism claim is not admissible.
+///
+/// Ingestion is the point where an edited or hand-written receipt would
+/// otherwise enter the report as though the runner had produced it, so the
+/// mechanism contract is enforced here as well as at write time (#8254).
+fn reject_inadmissible_mechanism(record: &RunnerRecord) -> Result<()> {
+    validate_execution_mechanism(&record.mode, record.mechanism)
+        .map_err(|violation| color_eyre::eyre::eyre!("{violation}"))
+}
+
+/// The rail a run's configured mode can currently produce.
+///
+/// Used only where a discovered test yielded no runner record at all: there is
+/// no receipt to read a mechanism from, and the failure still belongs to the
+/// rail the run selected. The only executor wired to `execute` is the
+/// selected-fixture replay scaffold; a future EIR rail names its own mechanism
+/// on the receipt and does not reach this fallback.
+fn mode_mechanism(mode: HarnessMode) -> Option<ExecutionMechanism> {
+    match mode {
+        HarnessMode::Parse | HarnessMode::Compile => None,
+        HarnessMode::Execute => Some(ExecutionMechanism::FixtureReplay),
+    }
 }
 
 fn read_runner_records_or_empty(path: &Path) -> Result<Vec<RunnerRecord>> {
@@ -5635,6 +5718,9 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
                     status: record.status,
                     assertions_passed: record.assertions_passed,
                     assertions_total: record.assertions_total,
+                    // Read from the receipt, never inferred from the run's
+                    // mode: the receipt is what actually names its rail.
+                    mechanism: record.mechanism,
                 });
                 if record.status == RunnerStatus::Fail {
                     let bucket = record.bucket.clone().unwrap_or_else(|| "unknown".to_string());
@@ -5665,6 +5751,9 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
                     status: RunnerStatus::Fail,
                     assertions_passed: 0,
                     assertions_total: 1,
+                    // No receipt exists to read, and the failure still belongs
+                    // to the rail this run selected.
+                    mechanism: mode_mechanism(input.config.mode),
                 });
                 let bucket = "harness_prepare".to_string();
                 *buckets.entry(bucket.clone()).or_insert(0) += 1;
@@ -6215,6 +6304,7 @@ mod tests {
         ];
         let records = vec![
             RunnerRecord {
+                mechanism: None,
                 schema_version: "perl_core_harness.runner_record.v1".into(),
                 mode: "parse".into(),
                 path: "base/ok.t".into(),
@@ -6238,6 +6328,7 @@ mod tests {
                 }],
             },
             RunnerRecord {
+                mechanism: None,
                 schema_version: "perl_core_harness.runner_record.v1".into(),
                 mode: "parse".into(),
                 path: "base/bad.t".into(),
@@ -6308,6 +6399,7 @@ mod tests {
             supporting_test: "base/ok.t".into(),
         };
         let record = |path: &str| RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "compile".into(),
             path: path.into(),
@@ -6338,6 +6430,7 @@ mod tests {
     fn duplicate_upstream_records_fail_closed_instead_of_silently_collapsing() -> TestResult {
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let record = |path: &str| RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "compile".into(),
             path: path.into(),
@@ -6396,6 +6489,7 @@ mod tests {
     fn malformed_upstream_record_paths_fail_closed_before_report_assembly() -> TestResult {
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let record = RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "not-a-normalized-test.txt".into(),
@@ -6443,6 +6537,7 @@ mod tests {
             DiscoveredTest { path: "base/gap.t".into(), root: "base".into() },
         ];
         let upstream_only = RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "base/ok.t".into(),
@@ -6497,6 +6592,7 @@ mod tests {
     fn equal_payload_upstream_and_probe_rows_stay_distinct_authority_rows() -> TestResult {
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let payload = RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "base/ok.t".into(),
@@ -6548,6 +6644,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let record = |path: &str| RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: path.into(),
@@ -6592,6 +6689,7 @@ mod tests {
         // A leftover passing row for this subject from a previous run, still
         // present because stale-context removal failed.
         let stale_row = RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "base/gap.t".into(),
@@ -6632,6 +6730,7 @@ mod tests {
         let discovered = vec![DiscoveredTest { path: "base/gap.t".into(), root: "base".into() }];
         let observation = settle_test_observation(HarnessMode::Parse, &discovered, &[], Some(0))?;
         let record = |path: &str| RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: path.into(),
@@ -6745,6 +6844,7 @@ mod tests {
             },
             buckets: BTreeMap::new(),
             file_results: vec![RunFileResult {
+                mechanism: None,
                 path: "base/ok.t".into(),
                 status: RunnerStatus::Pass,
                 assertions_passed: 1,
@@ -7170,6 +7270,50 @@ mod tests {
         Ok(())
     }
 
+    /// The V2 decode gate guards `baseline --series … --check` and
+    /// `validate-current-authority`. A hand-edited V2 artifact is exactly how a
+    /// forged claim would arrive, so the gate needs its own control (#14363).
+    #[test]
+    fn compile_baseline_v2_decode_rejects_an_inadmissible_mechanism() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let config = sample_baseline_v2_config();
+        let baseline =
+            baseline_v2_from_report(&sample_compile_report(), &series, &config, None, &[])?;
+
+        // Honest control first: the real artifact decodes.
+        let honest = serde_json::to_value(&baseline)?;
+        parse_compile_baseline_v2(honest, "honest")?;
+
+        // A compile baseline executes nothing, so any mechanism is a claim its
+        // rail never made.
+        let mut tampered = baseline.clone();
+        for result in &mut tampered.file_results {
+            result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+        }
+        let Err(error) = parse_compile_baseline_v2(serde_json::to_value(&tampered)?, "tampered")
+        else {
+            bail!("a compile V2 baseline claiming execution evidence must not decode");
+        };
+        if !format!("{error:?}").contains("only execution receipts may carry") {
+            bail!("unexpected mislabelling error: {error:?}");
+        }
+
+        // An execute-mode baseline claiming a rail nothing backs.
+        let mut forged = baseline;
+        forged.mode = HarnessMode::Execute;
+        for result in &mut forged.file_results {
+            result.mechanism = Some(ExecutionMechanism::EirExecution);
+        }
+        let Err(error) = parse_compile_baseline_v2(serde_json::to_value(&forged)?, "forged") else {
+            bail!("a V2 baseline claiming an unsupported rail must not decode");
+        };
+        if !format!("{error:?}").contains("no current rail can supply") {
+            bail!("unexpected forgery error: {error:?}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn compile_baseline_v2_rejects_an_extra_passing_file() -> TestResult {
         let discovery = sample_discovery_report();
@@ -7179,6 +7323,7 @@ mod tests {
             baseline_v2_from_report(&sample_compile_report(), &series, &config, None, &[])?;
         let mut report = sample_compile_report();
         report.file_results.push(RunFileResult {
+            mechanism: None,
             path: "base/new.t".into(),
             status: RunnerStatus::Pass,
             assertions_passed: 1,
@@ -7895,6 +8040,7 @@ mod tests {
         let mut report = sample_compile_report();
         let baseline = baseline_from_report(&report)?;
         report.file_results.push(RunFileResult {
+            mechanism: None,
             path: "base/new.t".into(),
             status: RunnerStatus::Fail,
             assertions_passed: 0,
@@ -7953,6 +8099,7 @@ mod tests {
         let baseline = baseline_from_report(&baseline_report)?;
         let mut current_report = baseline_report.clone();
         current_report.file_results.push(RunFileResult {
+            mechanism: None,
             path: "base/new.t".into(),
             status: RunnerStatus::Fail,
             assertions_passed: 0,
@@ -8069,6 +8216,11 @@ mod tests {
             let report_path = temp.path().join(name);
             let mut report = sample_compile_report();
             report.mode = mode;
+            // Keep the fixture consistent with the mode under test: the
+            // subject here is the terminal status, not the mechanism.
+            for result in &mut report.file_results {
+                result.mechanism = mode_mechanism(mode);
+            }
             report.harness_status = status;
             write_run_report(&report_path, &report)?;
 
@@ -8365,6 +8517,7 @@ mod tests {
         };
         let discovered = vec![DiscoveredTest { path: "base/if.t".into(), root: "base".into() }];
         let records = vec![RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "base/if.t".into(),
@@ -8412,12 +8565,14 @@ mod tests {
             buckets: BTreeMap::new(),
             file_results: vec![
                 RunFileResult {
+                    mechanism: None,
                     path: "base/lex.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 1,
                     assertions_total: 1,
                 },
                 RunFileResult {
+                    mechanism: None,
                     path: "base/ok.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 1,
@@ -9164,36 +9319,42 @@ mod tests {
             buckets: BTreeMap::new(),
             file_results: vec![
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/cond.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 4,
                     assertions_total: 4,
                 },
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/if.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 2,
                     assertions_total: 2,
                 },
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/num.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 56,
                     assertions_total: 56,
                 },
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/pat.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 2,
                     assertions_total: 2,
                 },
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/translate.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 257,
                     assertions_total: 257,
                 },
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/while.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 4,
@@ -9495,7 +9656,214 @@ mod tests {
         assert_eq!(report.summary.tap_assertions_passed, 2);
         assert_eq!(report.file_results[0].path, "base/if.t");
         assert_eq!(report.file_results[0].assertions_total, 2);
+        assert_eq!(
+            report.file_results[0].mechanism,
+            Some(ExecutionMechanism::FixtureReplay),
+            "the report must say which rail produced these assertions"
+        );
+        assert!(
+            raw.contains(r#""mechanism": "fixture_replay""#),
+            "the published report must name the mechanism on the wire: {raw}"
+        );
         assert!(!perl_tree.join("t").join("perl").exists(), "source Perl tree must not be mutated");
+        Ok(())
+    }
+
+    #[test]
+    fn reading_a_report_that_relabels_its_mechanism_fails_closed() -> TestResult {
+        // The report — not the runner-record JSONL — is what becomes a
+        // checked-in baseline and what the ratchet compares against. Editing
+        // one field of it must not upgrade a scaffold claim.
+        let temp = tempfile::tempdir()?;
+        for mechanism in [ExecutionMechanism::EirExecution, ExecutionMechanism::RealPerlOracle] {
+            let mut forged = sample_execute_report();
+            for result in &mut forged.file_results {
+                result.mechanism = Some(mechanism);
+            }
+            let path = temp.path().join(format!("{mechanism}-report.json"));
+            write_run_report(&path, &forged)?;
+
+            let Err(error) = read_run_report(&path) else {
+                bail!("a report claiming {mechanism} must not be readable");
+            };
+            let text = format!("{error:?}");
+            if !text.contains("no current rail can supply") {
+                bail!("unexpected report-read error for {mechanism}: {text}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reading_a_report_that_drops_its_mechanism_fails_closed() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let mut stripped = sample_execute_report();
+        for result in &mut stripped.file_results {
+            result.mechanism = None;
+        }
+        let path = temp.path().join("stripped-report.json");
+        write_run_report(&path, &stripped)?;
+
+        let Err(error) = read_run_report(&path) else {
+            bail!("an execute report with no mechanism must not be readable");
+        };
+        let text = format!("{error:?}");
+        if !text.contains("does not declare an execution mechanism") {
+            bail!("unexpected report-read error: {text}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_execute_report_is_refused_at_decode_and_acceptance() -> TestResult {
+        // Every per-row rule passes vacuously on an empty collection, so an
+        // empty execute artifact would otherwise be admitted while naming no
+        // rail for anything (#14363, reported in review on #14364).
+        let temp = tempfile::tempdir()?;
+        let mut empty = sample_execute_report();
+        empty.file_results.clear();
+        empty.summary = RunSummary {
+            files_total: 0,
+            files_passed: 0,
+            files_failed: 0,
+            tap_assertions_total: 0,
+            tap_assertions_passed: 0,
+        };
+        let path = temp.path().join("empty-execute-report.json");
+        write_run_report(&path, &empty)?;
+
+        let Err(decode_error) = read_run_report(&path) else {
+            bail!("an empty execute report must not decode");
+        };
+        if !format!("{decode_error:?}").contains("names no execution mechanism for anything") {
+            bail!("unexpected decode error: {decode_error:?}");
+        }
+
+        let Err(accept_error) = baseline_from_report(&empty) else {
+            bail!("an empty execute report must not be acceptable as a baseline");
+        };
+        if !format!("{accept_error:?}").contains("names no execution mechanism for anything") {
+            bail!("unexpected acceptance error: {accept_error:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_compile_report_stays_admissible() -> TestResult {
+        // Scope boundary: whether an empty observation of any mode is evidence
+        // is a separate pre-existing question (#14375). This contract refuses
+        // only the execute case, where emptiness means no rail is named.
+        let temp = tempfile::tempdir()?;
+        let mut empty = sample_compile_report();
+        empty.file_results.clear();
+        empty.summary = RunSummary {
+            files_total: 0,
+            files_passed: 0,
+            files_failed: 0,
+            tap_assertions_total: 0,
+            tap_assertions_passed: 0,
+        };
+        let path = temp.path().join("empty-compile-report.json");
+        write_run_report(&path, &empty)?;
+
+        read_run_report(&path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn accepting_a_baseline_from_a_relabelled_report_fails_closed() -> TestResult {
+        // `baseline --accept` copies file_results straight into the baseline,
+        // so an unvalidated report would mint a forged checked-in artifact.
+        let mut forged = sample_execute_report();
+        for result in &mut forged.file_results {
+            result.mechanism = Some(ExecutionMechanism::EirExecution);
+        }
+
+        let Err(error) = baseline_from_report(&forged) else {
+            bail!("a forged report must not be acceptable as a baseline");
+        };
+        if !error.to_string().contains("no current rail can supply") {
+            bail!("unexpected baseline-accept error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reading_a_hand_edited_baseline_fails_closed() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let mut baseline = baseline_from_report(&sample_execute_report())?;
+        for result in &mut baseline.file_results {
+            result.mechanism = Some(ExecutionMechanism::EirExecution);
+        }
+        let path = temp.path().join("forged-baseline.json");
+        write_compile_baseline(&path, &baseline)?;
+
+        let Err(error) = read_compile_baseline(&path) else {
+            bail!("a hand-edited baseline must not be readable");
+        };
+        let text = format!("{error:?}");
+        if !text.contains("no current rail can supply") {
+            bail!("unexpected baseline-read error: {text}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_checked_in_execute_baseline_declares_fixture_replay() -> TestResult {
+        // The durable artifact this PR stamps must itself satisfy the contract.
+        let root = project_root()?;
+        let baseline = read_compile_baseline(
+            &root.join(".ci").join("perl-core-harness").join("base-execute-baseline.json"),
+        )?;
+
+        if baseline.file_results.is_empty() {
+            bail!("checked-in execute baseline has no file results");
+        }
+        for result in &baseline.file_results {
+            if result.mechanism != Some(ExecutionMechanism::FixtureReplay) {
+                bail!(
+                    "checked-in execute baseline does not classify {}: {:?}",
+                    result.path,
+                    result.mechanism
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_mode_execute_refuses_a_runner_that_hides_its_mechanism() -> TestResult {
+        // A runner that emits execute receipts without naming its rail fails
+        // the run rather than producing a report whose 2 assertions read as
+        // evaluated work (#8254).
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree_with_base_if_test(temp.path())?;
+        let runner = write_fake_unclassified_execute_runner(temp.path())?;
+        let output = temp.path().join("execute-report.json");
+
+        let error = match run_mode(RunConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Execute,
+            profile: HarnessProfile::Base,
+            tests: vec!["base/if.t".into()],
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+            diagnostic_probes: true,
+        }) {
+            Err(error) => error,
+            Ok(()) => bail!("an unclassified execute receipt must not produce a report"),
+        };
+
+        let text = format!("{error:?}");
+        if !text.contains("does not declare an execution mechanism") {
+            bail!("unexpected run error: {text}");
+        }
+        if output.exists() {
+            bail!("no report should be published from inadmissible receipts");
+        }
         Ok(())
     }
 
@@ -10393,6 +10761,11 @@ fi
 set -eu
 script="${1:-unknown.t}"
 mode="${PERL_LSP_HARNESS_MODE:-execute}"
+# Mirror the real runner: only execution receipts name their rail.
+mechanism=''
+if [ "$mode" = "execute" ]; then
+  mechanism=',"mechanism":"fixture_replay"'
+fi
 mkdir -p "$(dirname "$PERL_LSP_HARNESS_CONTEXT")"
 case "$script" in
   *base/cond.t)
@@ -10401,7 +10774,7 @@ case "$script" in
     printf 'ok 2 - operator ne\n'
     printf 'ok 3 - operator ==\n'
     printf 'ok 4 - operator !=\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":4,"assertions_total":4,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":4,"assertions_total":4,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
   *base/while.t)
     printf '1..4\n'
@@ -10409,7 +10782,7 @@ case "$script" in
     printf 'ok 2\n'
     printf 'ok 3\n'
     printf 'ok 4\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":4,"assertions_total":4,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":4,"assertions_total":4,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
   *base/num.t)
     printf '1..56\n'
@@ -10418,13 +10791,13 @@ case "$script" in
       printf 'ok %s\n' "$i"
       i=$((i + 1))
     done
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":56,"assertions_total":56,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":56,"assertions_total":56,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
   *base/pat.t)
     printf '1..2\n'
     printf 'ok 1 - match regex\n'
     printf 'ok 2 - match regex\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
   *base/translate.t)
     printf '1..257\n'
@@ -10436,15 +10809,92 @@ case "$script" in
       assertion=$((assertion + 1))
     done
     printf 'ok 257 - native_to_unicode of large number\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":257,"assertions_total":257,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":257,"assertions_total":257,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
   *)
     printf '1..2\n'
     printf 'ok 1 - if eq\n'
     printf 'ok 2 - if ne\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
 esac
+"#;
+        fs::write(&runner, body)?;
+        set_executable(&runner)?;
+        Ok(runner)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_mode_execute_refuses_a_runner_that_declares_the_wrong_mode() -> TestResult {
+        // A record's mechanism is checked against the mode the *record*
+        // declares, while the published report takes its mode from the run
+        // config. A stale runner declaring `compile` during an execute run
+        // would otherwise pass ingestion with no mechanism and be published as
+        // execute evidence — a report this crate's own reader would then
+        // refuse to reopen (#14363, reported in review on #14364).
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree_with_base_if_test(temp.path())?;
+        let runner = write_fake_wrong_mode_execute_runner(temp.path())?;
+        let output = temp.path().join("execute-report.json");
+
+        let error = match run_mode(RunConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Execute,
+            profile: HarnessProfile::Base,
+            tests: vec!["base/if.t".into()],
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+            diagnostic_probes: true,
+        }) {
+            Err(error) => error,
+            Ok(()) => bail!("a wrong-mode runner record must not produce a report"),
+        };
+
+        let text = format!("{error:?}");
+        if !text.contains("declares compile mode during a execute run") {
+            bail!("unexpected wrong-mode error: {text}");
+        }
+        if output.exists() {
+            bail!("no report should be published from a wrong-mode observation");
+        }
+        Ok(())
+    }
+
+    /// An execute runner whose record declares `compile` — the mode the run did
+    /// not select — and therefore carries no mechanism.
+    #[cfg(unix)]
+    fn write_fake_wrong_mode_execute_runner(root: &Path) -> TestResult<PathBuf> {
+        let runner = root.join("fake-runner-execute-wrong-mode.sh");
+        let body = r#"#!/bin/sh
+set -eu
+script="${1:-unknown.t}"
+mkdir -p "$(dirname "$PERL_LSP_HARNESS_CONTEXT")"
+printf '1..2\n'
+printf 'ok 1 - if eq\n'
+printf 'ok 2 - if ne\n'
+printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"compile","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null}\n' "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+"#;
+        fs::write(&runner, body)?;
+        set_executable(&runner)?;
+        Ok(runner)
+    }
+
+    /// An execute runner that produces TAP but hides which rail produced it.
+    #[cfg(unix)]
+    fn write_fake_unclassified_execute_runner(root: &Path) -> TestResult<PathBuf> {
+        let runner = root.join("fake-runner-execute-unclassified.sh");
+        let body = r#"#!/bin/sh
+set -eu
+script="${1:-unknown.t}"
+mode="${PERL_LSP_HARNESS_MODE:-execute}"
+mkdir -p "$(dirname "$PERL_LSP_HARNESS_CONTEXT")"
+printf '1..2\n'
+printf 'ok 1 - if eq\n'
+printf 'ok 2 - if ne\n'
+printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
 "#;
         fs::write(&runner, body)?;
         set_executable(&runner)?;
@@ -10899,6 +11349,35 @@ exit 1
 
     fn triage_config(bundle: PathBuf, output: PathBuf) -> TriageConfig {
         TriageConfig { bundle, output, history: None, write_history: false, check_history: false }
+    }
+
+    #[test]
+    fn triage_refuses_a_bundle_whose_report_over_claims_its_evidence() -> TestResult {
+        // Triage decodes the bundle's compile report and clusters it into
+        // durable failure-cluster and history artifacts. A report claiming
+        // execution evidence its rail never produced must not reach them.
+        let temp = tempfile::tempdir()?;
+        let mut report = two_file_parse_failure_report();
+        report.mode = HarnessMode::Compile;
+        for result in &mut report.file_results {
+            result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+        }
+        let bundle = write_triage_bundle(temp.path(), &report)?;
+        let output = temp.path().join("triage");
+
+        let error = match triage(triage_config(bundle, output.clone())) {
+            Err(error) => error,
+            Ok(()) => bail!("a compile report claiming execution evidence must not be clustered"),
+        };
+
+        let text = format!("{error:?}");
+        if !text.contains("only execution receipts may carry") {
+            bail!("unexpected triage error: {text}");
+        }
+        if output.join("failure-clusters.json").exists() {
+            bail!("no cluster artifact should be written from an inadmissible report");
+        }
+        Ok(())
     }
 
     #[test]
