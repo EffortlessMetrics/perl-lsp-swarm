@@ -3483,6 +3483,33 @@
       "selector_identity": "invocation:1b9f3f2f758cdec6:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/semantic_construction.rs",
+      "enclosing_test_or_function": "envelope_refusal_is_typed_and_fail_closed",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected a typed envelope refusal, got {other:?}\"),",
+      "selector_identity": "invocation:69bb931d7d8dfe5f:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/semantic_construction.rs",
+      "enclosing_test_or_function": "build_fresh_full",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"producer exploded\");",
+      "selector_identity": "invocation:415b492ec0cc39cc:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/semantic_construction.rs",
+      "enclosing_test_or_function": "poisoned_cell_lock_recovers_for_builders_and_waiters",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"poison the cell lock\");",
+      "selector_identity": "invocation:8c9fac5a821d6681:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
