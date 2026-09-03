@@ -504,8 +504,15 @@ impl OperationTrustRequirement {
             OperationProfile::ModuleResolutionExternalRead => {
                 (&[Cap::SourceAnalysis, Cap::ExternalRead], RequiredScope::EitherScope)
             }
+            // Running a file is at least as much execution as compile-checking
+            // one, so it carries the same environment authority.
             OperationProfile::RunCurrentSavedFile => (
-                &[Cap::SourceAnalysis, Cap::ExecutableTool, Cap::ProjectCodeExecution],
+                &[
+                    Cap::SourceAnalysis,
+                    Cap::ExecutableTool,
+                    Cap::EnvironmentCodeLoading,
+                    Cap::ProjectCodeExecution,
+                ],
                 RequiredScope::EditorWorkspaceOnly,
             ),
             OperationProfile::RunTests => (
@@ -513,12 +520,18 @@ impl OperationTrustRequirement {
                     Cap::SourceAnalysis,
                     Cap::ProjectConfiguration,
                     Cap::ExecutableTool,
+                    Cap::EnvironmentCodeLoading,
                     Cap::ProjectCodeExecution,
                 ],
                 RequiredScope::EitherScope,
             ),
             OperationProfile::RunProjectCommand => (
-                &[Cap::ProjectConfiguration, Cap::ExecutableTool, Cap::ProjectCodeExecution],
+                &[
+                    Cap::ProjectConfiguration,
+                    Cap::ExecutableTool,
+                    Cap::EnvironmentCodeLoading,
+                    Cap::ProjectCodeExecution,
+                ],
                 RequiredScope::EitherScope,
             ),
             // Prelaunch validation inspects a configuration and the tool it
@@ -566,15 +579,30 @@ impl OperationTrustRequirement {
                 (&[Cap::ExecutableTool, Cap::EnvironmentCodeLoading], RequiredScope::EitherScope)
             }
             OperationProfile::OracleOrCorpusHarness => (
-                &[Cap::ExternalRead, Cap::ExecutableTool, Cap::ProjectCodeExecution],
+                &[
+                    Cap::ExternalRead,
+                    Cap::ExecutableTool,
+                    Cap::EnvironmentCodeLoading,
+                    Cap::ProjectCodeExecution,
+                ],
                 RequiredScope::EitherScope,
             ),
             OperationProfile::CiHermeticProcess => (
-                &[Cap::ProjectConfiguration, Cap::ExecutableTool, Cap::ProjectCodeExecution],
+                &[
+                    Cap::ProjectConfiguration,
+                    Cap::ExecutableTool,
+                    Cap::EnvironmentCodeLoading,
+                    Cap::ProjectCodeExecution,
+                ],
                 RequiredScope::CiHermeticOnly,
             ),
             OperationProfile::InteractiveExternalSession => (
-                &[Cap::ExecutableTool, Cap::ProjectCodeExecution, Cap::InteractiveSession],
+                &[
+                    Cap::ExecutableTool,
+                    Cap::EnvironmentCodeLoading,
+                    Cap::ProjectCodeExecution,
+                    Cap::InteractiveSession,
+                ],
                 RequiredScope::EditorWorkspaceOnly,
             ),
         };
@@ -999,8 +1027,31 @@ pub struct AuthorizationEvidence {
     pub session_override: Option<SessionOverride>,
     /// Policy denials in force.
     pub policy_denials: Vec<PolicyDenial>,
-    /// Stable codes for what this evidence cannot establish.
-    pub limitation_codes: Vec<String>,
+    /// Authority facts this evidence could not establish.
+    pub limitations: Vec<EvidenceLimitation>,
+}
+
+/// One authority fact a producer could not establish.
+///
+/// A limitation is load-bearing, not cosmetic: it names the capability it
+/// prevents establishing, and [`authorize`] fails closed on it rather than
+/// letting otherwise-trusted evidence grant that capability. A producer that
+/// cannot verify a tool's identity says so here instead of staying silent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceLimitation {
+    /// Stable machine-readable code.
+    pub code: String,
+    /// The capability this limitation prevents establishing.
+    pub capability: ExecutionCapability,
+}
+
+impl EvidenceLimitation {
+    /// Record one unestablished authority fact.
+    #[must_use]
+    pub fn new(code: impl Into<String>, capability: ExecutionCapability) -> Self {
+        Self { code: code.into(), capability }
+    }
 }
 
 impl AuthorizationEvidence {
@@ -1030,17 +1081,31 @@ impl AuthorizationEvidence {
 
         let mut denials: Vec<&PolicyDenial> = self.policy_denials.iter().collect();
         denials.sort_by(|left, right| {
-            (left.policy_id.as_str(), left.reason_code.as_str())
-                .cmp(&(right.policy_id.as_str(), right.reason_code.as_str()))
+            // The denied capability set is part of a denial's identity: two
+            // rows sharing a policy id and reason code but denying different
+            // capabilities are different facts, and leaving them out here made
+            // identity depend on the order they were supplied in.
+            (left.policy_id.as_str(), left.reason_code.as_str(), left.denied.tags()).cmp(&(
+                right.policy_id.as_str(),
+                right.reason_code.as_str(),
+                right.denied.tags(),
+            ))
         });
         for denial in denials {
             denial.push_identity(&mut material);
         }
 
-        let mut codes: Vec<&String> = self.limitation_codes.iter().collect();
-        codes.sort();
-        for code in codes {
-            push_field(&mut material, "limitation", code.as_str());
+        let mut limitations: Vec<&EvidenceLimitation> = self.limitations.iter().collect();
+        limitations.sort_by(|left, right| {
+            (left.code.as_str(), left.capability).cmp(&(right.code.as_str(), right.capability))
+        });
+        for limitation in limitations {
+            push_field(&mut material, "limitation.code", limitation.code.as_str());
+            push_field(
+                &mut material,
+                "limitation.capability",
+                limitation.capability.identity_tag(),
+            );
         }
         AuthorizationEvidenceId(stable_id(EVIDENCE_ID_DOMAIN, &[material.as_str()]))
     }
@@ -1819,6 +1884,12 @@ pub const REASON_PROJECT_SUPPLIED_EXECUTABLE: &str = "project_supplied_executabl
 pub const REASON_AMBIENT_TOOL_SELECTION: &str = "ambient_tool_selection";
 /// Reason: ambient Perl environment cannot supply code-loading authority.
 pub const REASON_AMBIENT_ENVIRONMENT_DENIED: &str = "ambient_environment_denied";
+/// Reason: a reviewed environment activation exists but was not accepted.
+pub const REASON_ENVIRONMENT_NOT_ACCEPTED: &str = "environment_not_accepted";
+/// Reason: an intent named an input the supplied evidence does not carry.
+pub const REASON_UNRESOLVED_INTENT_INPUT: &str = "unresolved_intent_input";
+/// Reason: the evidence could not establish this authority fact.
+pub const REASON_EVIDENCE_LIMITATION: &str = "evidence_limitation";
 /// Reason: a symlink or traversal path escapes the workspace root.
 pub const REASON_PATH_ESCAPES_ROOT: &str = "path_escapes_root";
 /// Reason: an external absolute path needs explicit confirmation.
@@ -1962,6 +2033,32 @@ pub fn authorize(
             CapabilitySet::empty(),
             CapabilitySet::empty(),
             vec![reason(code, None, None, actionable)],
+            &intent_id,
+            &requirement,
+            &evidence_id,
+            intent,
+            evidence,
+        );
+    }
+
+    // Every input the intent declares must resolve in this evidence. An
+    // unresolved id means the intent was formed against different or older
+    // evidence, and silently dropping it would evaluate a strict subset of what
+    // the operation actually consumes — the decision claims to cover the
+    // intent's exact inputs.
+    let present: BTreeSet<&ClassifiedInputId> =
+        evidence.inputs.iter().map(|input| &input.id).collect();
+    if let Some(missing) = intent.input_ids.iter().find(|id| !present.contains(id)) {
+        return finish(
+            AuthorizationOutcome::NotProven,
+            CapabilitySet::empty(),
+            CapabilitySet::empty(),
+            vec![reason(
+                REASON_UNRESOLVED_INTENT_INPUT,
+                None,
+                Some(missing.clone()),
+                ActionableAuthority::InputProvenance,
+            )],
             &intent_id,
             &requirement,
             &evidence_id,
@@ -2117,6 +2214,19 @@ fn evaluate_capability(
             ));
             return CapabilityFinding::Denied;
         }
+    }
+
+    // A declared limitation means the producer could not establish this fact.
+    // Unestablished is not-proven, and no override cures it: an override grants
+    // authority, it does not supply the missing observation.
+    if evidence.limitations.iter().any(|limitation| limitation.capability == capability) {
+        reasons.push(reason(
+            REASON_EVIDENCE_LIMITATION,
+            Some(capability),
+            None,
+            ActionableAuthority::InputProvenance,
+        ));
+        return CapabilityFinding::NotProven;
     }
 
     let base = evaluate_capability_from_facts(capability, evidence, inputs, reasons);
@@ -2397,12 +2507,25 @@ fn evaluate_environment_code_loading(
         return CapabilityFinding::Denied;
     }
 
-    if inputs.iter().any(|&input| {
+    // An explicitly reviewed activation supplies the authority when it is
+    // accepted. When it exists but was NOT accepted, its own disposition is the
+    // answer: falling through to the no-environment branch below would grant
+    // code loading from workspace trust alone, which is the very thing the
+    // producer declined to accept.
+    if let Some(input) = inputs.iter().copied().find(|&input| {
         input.risk_class == InputRiskClass::AmbientPerlEnvironment
             && input.authority == EnvironmentInputAuthority::ExplicitEnvironment
-            && input.disposition.is_accepted()
     }) {
-        return CapabilityFinding::Granted;
+        if input.disposition.is_accepted() {
+            return CapabilityFinding::Granted;
+        }
+        reasons.push(reason(
+            REASON_ENVIRONMENT_NOT_ACCEPTED,
+            Some(capability),
+            Some(input.id.clone()),
+            ActionableAuthority::UserConfiguration,
+        ));
+        return finding_for_disposition(input.disposition);
     }
 
     // No environment input at all: loading uses the verified interpreter's own
@@ -2519,6 +2642,24 @@ fn evaluate_persistent_cadence(
         ActionableAuthority::UserConfiguration,
     ));
     CapabilityFinding::ConfirmationRequired
+}
+
+/// The finding a non-accepting disposition implies.
+///
+/// Fail closed: anything that is not an acceptance withholds the capability,
+/// and the disposition decides whether that is a denial, a prompt, or simply
+/// unestablished.
+const fn finding_for_disposition(disposition: InputDisposition) -> CapabilityFinding {
+    match disposition {
+        InputDisposition::Accepted | InputDisposition::AcceptedLimited => {
+            CapabilityFinding::Granted
+        }
+        InputDisposition::ConfirmationRequired => CapabilityFinding::ConfirmationRequired,
+        InputDisposition::UnknownNotProven => CapabilityFinding::NotProven,
+        InputDisposition::Denied | InputDisposition::RequiresSeparateAuthority => {
+            CapabilityFinding::Denied
+        }
+    }
 }
 
 fn reason(

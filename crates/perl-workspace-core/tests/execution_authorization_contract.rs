@@ -13,10 +13,10 @@ use perl_workspace_core::{
     ActionableAuthority, AuthorizationActor, AuthorizationEvidence, AuthorizationOutcome,
     BoundGenerations, CapabilitySet, ClassifiedInput, ClassifiedInputId,
     EXECUTION_AUTHORIZATION_SCHEMA_VERSION, EnvironmentFingerprint, EnvironmentInputAuthority,
-    ExecutionCapability, ExecutionIntent, ExecutionReasonClass, InputDisposition, InputRiskClass,
-    OperationProfile, OperationTrustRequirement, PolicyDenial, ProjectEnvironmentSnapshotBuilder,
-    RequiredScope, SessionOverride, TrustScope, TrustScopeKind, WorkspaceTrust, authorize,
-    operation_registry,
+    EvidenceLimitation, ExecutionCapability, ExecutionIntent, ExecutionReasonClass,
+    InputDisposition, InputRiskClass, OperationProfile, OperationTrustRequirement, PolicyDenial,
+    ProjectEnvironmentSnapshotBuilder, RequiredScope, SessionOverride, TrustScope, TrustScopeKind,
+    WorkspaceTrust, authorize, operation_registry,
 };
 
 fn require(condition: bool, message: &str) -> Result<(), Box<dyn Error>> {
@@ -87,7 +87,7 @@ fn evidence(
         inputs,
         session_override: None,
         policy_denials: Vec::new(),
-        limitation_codes: Vec::new(),
+        limitations: Vec::new(),
     }
 }
 
@@ -1411,10 +1411,14 @@ fn transported_decision_is_revalidated() -> Result<(), Box<dyn Error>> {
     require(round_tripped == decision, "a decision must survive an exact round trip")?;
 
     // Widen the granted set in transit; the fingerprint no longer matches.
-    let widened = encoded.replace(
-        "\"granted\":[\"source_analysis\",\"executable_tool\",\"project_code_execution\"]",
-        "\"granted\":[\"source_analysis\",\"executable_tool\",\"project_code_execution\",\"persistent_cadence\"]",
-    );
+    // Insert a capability the decision does not grant, without hard-coding the
+    // rest of the set — the registry decides what a profile grants, and this
+    // control must not need editing when that changes.
+    require(
+        !decision.permits(ExecutionCapability::PersistentCadence),
+        "the fixture must not already grant the capability being forged in",
+    )?;
+    let widened = encoded.replace("\"granted\":[", "\"granted\":[\"persistent_cadence\",");
     require(widened != encoded, "the widening rewrite must actually apply")?;
     let forged: Result<perl_workspace_core::ExecutionAuthorizationDecision, _> =
         serde_json::from_str(&widened);
@@ -2061,5 +2065,225 @@ fn foreign_schema_version_is_rejected() -> Result<(), Box<dyn Error>> {
     let foreign: Result<perl_workspace_core::ExecutionAuthorizationDecision, _> =
         serde_json::from_str(&bumped);
     require(foreign.is_err(), "a foreign schema version must be rejected")?;
+    Ok(())
+}
+
+/// Running a Perl file is at least as much execution as compiling one, so it
+/// must require the same environment authority.
+#[test]
+fn perl_launching_profiles_require_environment_authority() -> Result<(), Box<dyn Error>> {
+    // Registry invariant: executing project code means the ambient environment
+    // influences what that code loads.
+    for profile in OperationProfile::ALL {
+        let required = OperationTrustRequirement::for_profile(profile).required;
+        if required.contains(ExecutionCapability::ProjectCodeExecution) {
+            require(
+                required.contains(ExecutionCapability::EnvironmentCodeLoading),
+                "a profile that executes project code must require environment authority",
+            )?;
+        }
+    }
+
+    // Behavioral control: a denied ambient PERL5LIB must block running a file.
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let tool = verified_tool();
+    let ambient_env = ClassifiedInput::new(
+        "environment.perl5lib",
+        InputRiskClass::AmbientPerlEnvironment,
+        EnvironmentInputAuthority::Ambient,
+        InputDisposition::Denied,
+        None,
+        "ambient_perl5lib",
+    );
+    let decision = authorize(
+        &intent(
+            OperationProfile::RunCurrentSavedFile,
+            ExecutionReasonClass::ExplicitUserAction,
+            &scope,
+            &bound,
+            vec![tool.id.clone(), ambient_env.id.clone()],
+        ),
+        &evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "run".to_string() },
+            &bound,
+            vec![tool, ambient_env],
+        ),
+    );
+    require(
+        decision.outcome() == AuthorizationOutcome::Denied,
+        "a denied ambient PERL5LIB must block running a Perl file",
+    )?;
+    Ok(())
+}
+
+/// An explicit environment that was not accepted must not fall through to the
+/// no-environment-present branch.
+#[test]
+fn unaccepted_explicit_environment_does_not_reach_the_fallback() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let tool = verified_tool();
+
+    for (disposition, expected) in [
+        (InputDisposition::Denied, AuthorizationOutcome::Denied),
+        (InputDisposition::ConfirmationRequired, AuthorizationOutcome::ConfirmationRequired),
+        (InputDisposition::UnknownNotProven, AuthorizationOutcome::NotProven),
+        (InputDisposition::RequiresSeparateAuthority, AuthorizationOutcome::Denied),
+    ] {
+        let explicit_env = ClassifiedInput::new(
+            "environment.perl5lib",
+            InputRiskClass::AmbientPerlEnvironment,
+            EnvironmentInputAuthority::ExplicitEnvironment,
+            disposition,
+            None,
+            "reviewed_activation_not_accepted",
+        );
+        let decision = authorize(
+            &intent(
+                OperationProfile::PerlCompileCurrentSavedFile,
+                ExecutionReasonClass::ExplicitUserAction,
+                &scope,
+                &bound,
+                vec![tool.id.clone(), explicit_env.id.clone()],
+            ),
+            &evidence(
+                &scope,
+                WorkspaceTrust::Trusted,
+                AuthorizationActor::ExplicitUserAction { action_id: "compile".to_string() },
+                &bound,
+                vec![tool.clone(), explicit_env],
+            ),
+        );
+        require(
+            decision.outcome() == expected,
+            "an unaccepted explicit environment must carry its disposition, not the fallback",
+        )?;
+        require(
+            !decision.permits(ExecutionCapability::EnvironmentCodeLoading),
+            "code-loading authority must not be granted from an unaccepted environment",
+        )?;
+    }
+    Ok(())
+}
+
+/// An intent naming an input the evidence does not carry cannot be evaluated.
+#[test]
+fn intent_input_absent_from_evidence_is_not_proven() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let interpreter = verified_tool();
+    // Declared by the intent, but belonging to different evidence.
+    let foreign_wrapper = ClassifiedInput::new(
+        "tool.wrapper_script",
+        InputRiskClass::ProjectExecutableOrCommand,
+        EnvironmentInputAuthority::TrustedProjectConfiguration,
+        InputDisposition::RequiresSeparateAuthority,
+        None,
+        "wrapper_from_other_evidence",
+    );
+
+    let decision = authorize(
+        &intent(
+            OperationProfile::RunCurrentSavedFile,
+            ExecutionReasonClass::ExplicitUserAction,
+            &scope,
+            &bound,
+            vec![interpreter.id.clone(), foreign_wrapper.id.clone()],
+        ),
+        // Evidence carries only the interpreter.
+        &evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "run".to_string() },
+            &bound,
+            vec![interpreter],
+        ),
+    );
+
+    require(
+        decision.outcome() == AuthorizationOutcome::NotProven,
+        "an unresolved declared input must not be silently dropped",
+    )?;
+    require(decision.granted().is_empty(), "nothing is granted on unresolved evidence")?;
+    Ok(())
+}
+
+/// Policy denials that differ only in the capabilities they deny still yield a
+/// stable evidence identity regardless of order.
+#[test]
+fn policy_denial_ordering_does_not_change_identity() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let tool = verified_tool();
+    // Same policy_id and reason_code, different denied capability sets.
+    let first = PolicyDenial::new(
+        "org.policy.shared",
+        CapabilitySet::new([ExecutionCapability::ExecutableTool]),
+        "administrator_denied",
+    );
+    let second = PolicyDenial::new(
+        "org.policy.shared",
+        CapabilitySet::new([ExecutionCapability::InteractiveSession]),
+        "administrator_denied",
+    );
+
+    let build = |denials: Vec<PolicyDenial>| {
+        let mut facts = evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "run".to_string() },
+            &bound,
+            vec![tool.clone()],
+        );
+        facts.policy_denials = denials;
+        facts
+    };
+
+    let forward = build(vec![first.clone(), second.clone()]);
+    let reversed = build(vec![second, first]);
+    require(
+        forward.identity() == reversed.identity(),
+        "policy-denial ordering must not change evidence identity",
+    )?;
+    Ok(())
+}
+
+/// Evidence that could not establish an authority fact fails closed.
+#[test]
+fn unresolved_evidence_limitation_is_not_proven() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let tool = verified_tool();
+    let mut facts = evidence(
+        &scope,
+        WorkspaceTrust::Trusted,
+        AuthorizationActor::ExplicitUserAction { action_id: "run".to_string() },
+        &bound,
+        vec![tool.clone()],
+    );
+    facts.limitations = vec![EvidenceLimitation::new(
+        "tool_identity_unverified",
+        ExecutionCapability::ExecutableTool,
+    )];
+
+    let decision = authorize(
+        &intent(
+            OperationProfile::RunCurrentSavedFile,
+            ExecutionReasonClass::ExplicitUserAction,
+            &scope,
+            &bound,
+            vec![tool.id.clone()],
+        ),
+        &facts,
+    );
+
+    require(
+        decision.outcome() == AuthorizationOutcome::NotProven,
+        "an unresolved limitation on a required capability must fail closed",
+    )?;
+    require(has_reason(&decision, "evidence_limitation"), "the outcome must name the limitation")?;
     Ok(())
 }
