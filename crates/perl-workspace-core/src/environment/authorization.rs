@@ -2156,6 +2156,13 @@ pub const REASON_NO_VERIFIED_TOOL: &str = "no_verified_tool";
 pub const REASON_PROJECT_SUPPLIED_EXECUTABLE: &str = "project_supplied_executable";
 /// Reason: the only tool-bearing input comes from ambient `PATH` or cwd.
 pub const REASON_AMBIENT_TOOL_SELECTION: &str = "ambient_tool_selection";
+/// Reason: an ambient `PATH`/cwd tool was refused by its own disposition.
+///
+/// Distinct from [`REASON_AMBIENT_TOOL_SELECTION`]: that one says the selection
+/// is merely ambient and can be confirmed, this one says it was refused.
+pub const REASON_AMBIENT_TOOL_NOT_ACCEPTED: &str = "ambient_tool_not_accepted";
+/// Reason: the operation requires leaving the root but classified no path.
+pub const REASON_NO_CLASSIFIED_EXTERNAL_PATH: &str = "no_classified_external_path";
 /// Reason: a verified tool selected for this operation was not accepted.
 ///
 /// Distinct from [`REASON_NO_VERIFIED_TOOL`]: a tool was selected and its
@@ -2781,13 +2788,39 @@ fn evaluate_executable_tool(
     if let Some(input) =
         inputs.iter().copied().find(|&input| input.risk_class == InputRiskClass::AmbientPathOrCwd)
     {
+        // Being ambient caps this at a prompt, and only a disposition that
+        // actually refuses may push past that cap. Answering
+        // `ConfirmationRequired` for a *refused* ambient tool would turn a
+        // denial into something a session override is allowed to satisfy,
+        // quietly undoing the rule that an override can never cure a denial.
+        //
+        // `RequiresSeparateAuthority` deliberately stays a prompt rather than
+        // routing through `finding_for_disposition`, which maps it to `Denied`
+        // for external paths. On an ambient tool it means what it says — this
+        // needs a stronger authority before it counts — and the confirmation or
+        // scoped override *is* that authority. Treating it as a refusal would
+        // make every ambient tool unusable rather than confirmable.
+        let (finding, code) = match input.disposition {
+            InputDisposition::Denied => {
+                (CapabilityFinding::Denied, REASON_AMBIENT_TOOL_NOT_ACCEPTED)
+            }
+            InputDisposition::UnknownNotProven => {
+                (CapabilityFinding::NotProven, REASON_AMBIENT_TOOL_NOT_ACCEPTED)
+            }
+            InputDisposition::Accepted
+            | InputDisposition::AcceptedLimited
+            | InputDisposition::ConfirmationRequired
+            | InputDisposition::RequiresSeparateAuthority => {
+                (CapabilityFinding::ConfirmationRequired, REASON_AMBIENT_TOOL_SELECTION)
+            }
+        };
         reasons.push(reason(
-            REASON_AMBIENT_TOOL_SELECTION,
+            code,
             Some(capability),
             Some(input.id.clone()),
             ActionableAuthority::UserConfiguration,
         ));
-        return CapabilityFinding::ConfirmationRequired;
+        return finding;
     }
 
     // A selected tool that is offered but refused is a different fact from no
@@ -2926,8 +2959,18 @@ fn evaluate_outside_root_path(
         .filter(|&input| input.risk_class == InputRiskClass::ExternalAbsolutePath)
         .collect();
     if external.is_empty() {
-        // Nothing outside the root is in play.
-        return CapabilityFinding::Granted;
+        // This capability is only evaluated because the profile requires it,
+        // and it is blanket authority to leave the root. With no external path
+        // classified there is nothing to judge, so granting would hand a
+        // consumer that blanket authority on an empty evidence set — the same
+        // vacuous-truth shape `covers_inputs` already had to close.
+        reasons.push(reason(
+            REASON_NO_CLASSIFIED_EXTERNAL_PATH,
+            Some(capability),
+            None,
+            ActionableAuthority::InputProvenance,
+        ));
+        return CapabilityFinding::NotProven;
     }
 
     // The most restrictive external path decides. Collapsing every unaccepted

@@ -3415,3 +3415,149 @@ fn rejected_scope_does_not_reach_the_public_explanation() -> Result<(), Box<dyn 
     require(decision.validate().is_ok(), "the sanitized decision is itself valid")?;
     Ok(())
 }
+
+/// A *denied* ambient tool must not soften into a prompt an override can satisfy.
+///
+/// `evaluate_executable_tool` answers `ConfirmationRequired` for any
+/// `AmbientPathOrCwd` input without consulting that input's own disposition.
+/// That is the right answer for an unreviewed ambient tool, and the wrong one
+/// for a refused one: `session_override_cannot_cure_a_denied_input` holds that
+/// an override cannot revive a denial, but a denial softened to a prompt is no
+/// longer a denial, so the override revives it after all.
+#[test]
+fn a_denied_ambient_tool_is_not_revived_by_an_override() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 5)?;
+    let refused_ambient = ClassifiedInput::new(
+        "tool.formatter",
+        InputRiskClass::AmbientPathOrCwd,
+        EnvironmentInputAuthority::Ambient,
+        InputDisposition::Denied,
+        None,
+        "user_refused_this_path_tool",
+    );
+
+    let mut facts = evidence(
+        &scope,
+        WorkspaceTrust::Trusted,
+        AuthorizationActor::ExplicitUserAction { action_id: "format".to_string() },
+        &bound,
+        vec![refused_ambient.clone()],
+    );
+    facts.session_override = Some(SessionOverride {
+        override_id: "session.grant.1".to_string(),
+        scope: scope.clone(),
+        granted_policy_generation: 5,
+        expires_after_policy_generation: 6,
+        capabilities: CapabilitySet::new([ExecutionCapability::ExecutableTool]),
+        bound_input_ids: Vec::new(),
+    });
+
+    let decision = authorize(
+        &intent(
+            OperationProfile::ExternalFormatter,
+            ExecutionReasonClass::ExternalTool,
+            &scope,
+            &bound,
+            vec![refused_ambient.id.clone()],
+        ),
+        &facts,
+    );
+
+    require(
+        decision.outcome() != AuthorizationOutcome::Allowed,
+        "a refused ambient tool must not be authorized by a session override",
+    )?;
+    require(
+        !decision.permits(ExecutionCapability::ExecutableTool),
+        "the refused tool must not receive tool authority",
+    )?;
+    Ok(())
+}
+
+/// Blanket authority to leave the root is not granted on an empty evidence set.
+///
+/// `OutsideRootPath` is, in this module's own words, "blanket authority to
+/// leave the root". `module_resolution_external_read` exists to read an
+/// external root, so an intent for it that declares no external path at all
+/// has supplied no path for the decision to judge. Granting on the empty set
+/// is the vacuous-truth shape already fixed once in `covers_inputs`.
+#[test]
+fn outside_root_authority_is_not_granted_without_a_path() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+
+    let decision = authorize(
+        &intent(
+            OperationProfile::ModuleResolutionExternalRead,
+            ExecutionReasonClass::ExplicitUserAction,
+            &scope,
+            &bound,
+            Vec::new(),
+        ),
+        &evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "resolve".to_string() },
+            &bound,
+            Vec::new(),
+        ),
+    );
+
+    require(
+        !decision.permits(ExecutionCapability::OutsideRootPath),
+        "leaving the root must not be granted when no external path was classified",
+    )?;
+    Ok(())
+}
+
+/// A denied project configuration blocks an operation that reads configuration.
+///
+/// `ProjectConfiguration` is decided from workspace trust alone and never looks
+/// at inputs, so this only fails closed today because every profile that needs
+/// it also needs `ExecutableTool`, and a project config file classifies as
+/// `ProjectExecutableOrCommand`. That is a property of the registry rows rather
+/// than of the rule, which is the fragility this PR already named as its
+/// recurring root cause. Pinning the behaviour keeps a future row from quietly
+/// losing it.
+#[test]
+fn a_denied_project_configuration_blocks_the_operation() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 1)?;
+    let tool = verified_tool();
+    let refused_config = ClassifiedInput::new(
+        "configuration.project_runner",
+        InputRiskClass::ProjectExecutableOrCommand,
+        EnvironmentInputAuthority::TrustedProjectConfiguration,
+        InputDisposition::Denied,
+        None,
+        "user_refused_this_configuration",
+    );
+
+    let decision = authorize(
+        &intent(
+            OperationProfile::RunProjectCommand,
+            ExecutionReasonClass::ProjectRunner,
+            &scope,
+            &bound,
+            ids(&[tool.clone(), refused_config.clone()]),
+        ),
+        &evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "run".to_string() },
+            &bound,
+            vec![tool, refused_config],
+        ),
+    );
+
+    require(
+        decision.outcome() == AuthorizationOutcome::Denied,
+        "a refused project configuration must deny the operation",
+    )?;
+    require(
+        decision.granted().is_empty(),
+        "a denied outcome grants exactly nothing, configuration authority included",
+    )?;
+    Ok(())
+}
