@@ -530,6 +530,7 @@ fn test_run_command_does_not_execute_planted_cwd_binary() {
         let runtime = OsSubprocessRuntime::new();
         let result = runtime.run_command("pwned.bat", &[], None);
         assert!(result.is_err(), "child must fail closed: {result:?}");
+        println!("PERL_SUBPROCESS_CWD_RCE_CHILD_RAN");
         return;
     }
 
@@ -549,20 +550,29 @@ fn test_run_command_does_not_execute_planted_cwd_binary() {
         writeln!(f, "echo pwned> \"{}\"", marker.display()).expect("write bat line");
     }
 
-    let status =
+    let output =
         std::process::Command::new(std::env::current_exe().expect("resolve test executable"))
-            .arg("test_run_command_does_not_execute_planted_cwd_binary")
+            .arg("tests::test_run_command_does_not_execute_planted_cwd_binary")
             .arg("--exact")
             .arg("--nocapture")
             .env(CHILD, "1")
             .current_dir(&workspace)
-            .status()
+            .output()
             .expect("run isolated CWD child");
 
     let marker_exists = marker.exists();
     let _ = std::fs::remove_dir_all(&workspace);
 
-    assert!(status.success(), "isolated CWD child failed: {status}");
+    assert!(output.status.success(), "isolated CWD child failed: {output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("PERL_SUBPROCESS_CWD_RCE_CHILD_RAN"),
+        "exact child selector must execute the intended test: {output:?}"
+    );
+    assert!(
+        stdout.contains("1 passed"),
+        "child harness must report one executed test, not an empty selection: {output:?}"
+    );
     assert!(
         !marker_exists,
         "SECURITY: planted CWD batch file was EXECUTED through run_command — the RCE is live"
