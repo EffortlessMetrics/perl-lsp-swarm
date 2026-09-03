@@ -2648,3 +2648,52 @@ fn relabelled_input_fails_evidence_validation() -> Result<(), Box<dyn Error>> {
     )?;
     Ok(())
 }
+
+/// An absent scope component cannot alias a present-but-empty one.
+#[test]
+fn empty_scope_component_cannot_alias_the_absent_case() -> Result<(), Box<dyn Error>> {
+    let bound = generations("ws", 1)?;
+    let tool = verified_tool();
+    let absent = TrustScope::editor_workspace("ws");
+    let empty_root = TrustScope::editor_workspace("ws").with_root("");
+
+    let facts = |scope: &TrustScope| {
+        evidence(
+            scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "run".to_string() },
+            &bound,
+            vec![tool.clone()],
+        )
+    };
+
+    // The present-but-empty component is refused rather than silently aliasing.
+    require(facts(&absent).validate().is_ok(), "an absent root is valid")?;
+    require(
+        facts(&empty_root).validate().is_err(),
+        "a present-but-empty root must be rejected, not encoded as absent",
+    )?;
+
+    let decision = authorize(
+        &intent(
+            OperationProfile::RunCurrentSavedFile,
+            ExecutionReasonClass::ExplicitUserAction,
+            &empty_root,
+            &bound,
+            vec![tool.id.clone()],
+        ),
+        &facts(&empty_root),
+    );
+    require(
+        decision.outcome() == AuthorizationOutcome::NotProven,
+        "an unevaluable scope must never reach an allow",
+    )?;
+
+    // A real root remains distinguishable from an absent one.
+    let real_root = TrustScope::editor_workspace("ws").with_root("root-a");
+    require(
+        facts(&real_root).identity() != facts(&absent).identity(),
+        "a named root must not share the absent root's identity",
+    )?;
+    Ok(())
+}

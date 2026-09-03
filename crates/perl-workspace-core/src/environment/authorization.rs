@@ -240,9 +240,13 @@ pub struct TrustScope {
     pub workspace_id: String,
     /// Stable root identity within the workspace, when the operation is
     /// root-scoped. Distinct roots may carry distinct trust generations.
+    ///
+    /// `Some("")` is rejected by validation: an empty identifier would encode
+    /// identically to `None` and let two distinct scopes share one identity.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub root_id: Option<String>,
-    /// Stable client/session identity, when one exists.
+    /// Stable client/session identity, when one exists. `Some("")` is rejected
+    /// for the same reason as [`Self::root_id`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
 }
@@ -282,6 +286,25 @@ impl TrustScope {
     pub fn with_session(mut self, session_id: impl Into<String>) -> Self {
         self.session_id = Some(session_id.into());
         self
+    }
+
+    /// Check that no optional component is present-but-empty.
+    ///
+    /// The identity encoding writes an absent component as the empty string, so
+    /// `Some("")` would alias `None` and let two distinct scopes share one
+    /// intent, evidence, and decision identity. Rejecting the empty case keeps
+    /// the encoding injective without widening it.
+    fn validate(&self) -> Result<(), AuthorizationError> {
+        if self.workspace_id.is_empty() {
+            return Err(AuthorizationError::EmptyScopeWorkspaceId);
+        }
+        if self.root_id.as_deref().is_some_and(str::is_empty) {
+            return Err(AuthorizationError::EmptyScopeComponent { field: "root_id" });
+        }
+        if self.session_id.as_deref().is_some_and(str::is_empty) {
+            return Err(AuthorizationError::EmptyScopeComponent { field: "session_id" });
+        }
+        Ok(())
     }
 
     fn push_identity(&self, material: &mut String, prefix: &str) {
@@ -1177,9 +1200,7 @@ impl AuthorizationEvidence {
     /// evaluated at all. [`authorize`] converts a failure into
     /// [`AuthorizationOutcome::NotProven`] rather than an allow.
     pub fn validate(&self) -> Result<(), AuthorizationError> {
-        if self.scope.workspace_id.is_empty() {
-            return Err(AuthorizationError::EmptyScopeWorkspaceId);
-        }
+        self.scope.validate()?;
         match &self.actor {
             AuthorizationActor::None => {}
             AuthorizationActor::ExplicitUserAction { action_id } => {
@@ -1331,6 +1352,14 @@ pub struct ExecutionIntent {
     /// Identities of the execution-bearing inputs this operation will consume.
     pub input_ids: Vec<ClassifiedInputId>,
     /// Stable statement of what this request does and does not cover.
+    ///
+    /// Free-form provenance. The evaluator never reads it beyond requiring it
+    /// to be non-empty, so it carries no authority — but it *is* folded into
+    /// the intent identity, which binds a decision to the boundary its caller
+    /// declared. The trade is deliberate and worth knowing: two operations that
+    /// are identical in authority but worded differently get different
+    /// identities, so callers that correlate or cache on identity should keep
+    /// this text stable per operation rather than composing it per request.
     pub claim_boundary: String,
 }
 
@@ -1355,9 +1384,7 @@ impl ExecutionIntent {
 
     /// Check structural invariants that must hold before evaluation.
     pub fn validate(&self) -> Result<(), AuthorizationError> {
-        if self.scope.workspace_id.is_empty() {
-            return Err(AuthorizationError::EmptyScopeWorkspaceId);
-        }
+        self.scope.validate()?;
         if self.claim_boundary.is_empty() {
             return Err(AuthorizationError::EmptyClaimBoundary);
         }
@@ -1807,6 +1834,12 @@ pub struct PublicAuthorizationExplanation {
 pub enum AuthorizationError {
     /// A scope carries an empty workspace identity.
     EmptyScopeWorkspaceId,
+    /// An optional scope component is present but empty, which would alias the
+    /// absent case in the identity encoding.
+    EmptyScopeComponent {
+        /// Offending field name.
+        field: &'static str,
+    },
     /// An intent carries an empty claim boundary.
     EmptyClaimBoundary,
     /// An actor identity is empty.
@@ -1869,6 +1902,9 @@ impl std::fmt::Display for AuthorizationError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::EmptyScopeWorkspaceId => formatter.write_str("trust scope workspace ID is empty"),
+            Self::EmptyScopeComponent { field } => {
+                write!(formatter, "trust scope {field} is present but empty")
+            }
             Self::EmptyClaimBoundary => {
                 formatter.write_str("execution intent claim boundary is empty")
             }
