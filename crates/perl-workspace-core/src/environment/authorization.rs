@@ -1096,12 +1096,21 @@ impl SessionOverride {
     /// Whether this grant covers the inputs an operation actually consumes.
     ///
     /// An unbound grant covers everything in its scope. A bound grant covers an
-    /// operation only when every input it consumes was part of the grant, so
-    /// confirming one ambient executable cannot authorize another.
+    /// operation only when it consumes at least one input and every input it
+    /// consumes was part of the grant, so confirming one ambient executable
+    /// cannot authorize another.
+    ///
+    /// The non-empty requirement is load-bearing rather than defensive: `all`
+    /// over an empty slice is vacuously true, so without it a grant bound to
+    /// one specific input would authorize an operation that declares no inputs
+    /// at all — the opposite of what binding a grant is for.
     #[must_use]
     pub fn covers_inputs(&self, inputs: &[&ClassifiedInput]) -> bool {
         if self.bound_input_ids.is_empty() {
             return true;
+        }
+        if inputs.is_empty() {
+            return false;
         }
         let bound: BTreeSet<&ClassifiedInputId> = self.bound_input_ids.iter().collect();
         inputs.iter().all(|input| bound.contains(&input.id))
@@ -1790,6 +1799,9 @@ impl ExecutionAuthorizationDecision {
     /// Treat a failure as non-authoritative: do not consult [`Self::granted`]
     /// on an invalid value.
     pub fn validate(&self) -> Result<(), AuthorizationError> {
+        // A decision that carries an unusable scope can never be authoritative,
+        // and must not round-trip one into a public record.
+        self.scope.validate()?;
         if self.schema_version != EXECUTION_AUTHORIZATION_SCHEMA_VERSION {
             return Err(AuthorizationError::UnsupportedSchemaVersion {
                 schema_version: self.schema_version,
@@ -2955,6 +2967,27 @@ const fn finding_for_disposition(disposition: InputDisposition) -> CapabilityFin
     }
 }
 
+/// Workspace identity substituted when a request's own scope is unusable.
+///
+/// A structurally invalid request must still produce a decision, but it must
+/// not carry the caller's rejected material into a public record — otherwise
+/// the bound that rejected an oversized identifier is defeated by the very
+/// decision that rejects it.
+pub const UNEVALUABLE_WORKSPACE_ID: &str = "unevaluable";
+
+/// A scope safe to publish for a request that could not be evaluated.
+fn publishable_scope(scope: &TrustScope) -> TrustScope {
+    if scope.validate().is_ok() {
+        return scope.clone();
+    }
+    TrustScope {
+        kind: scope.kind,
+        workspace_id: UNEVALUABLE_WORKSPACE_ID.to_string(),
+        root_id: None,
+        session_id: None,
+    }
+}
+
 fn reason(
     code: &str,
     capability: Option<ExecutionCapability>,
@@ -3002,6 +3035,10 @@ fn finish(
         override_expires_after_policy_generation: override_expiry,
         revalidate_on,
     };
+    // Sanitize before fingerprinting, not after: the identity has to cover the
+    // scope the decision actually carries, or a rejected request produces a
+    // decision that cannot revalidate.
+    let scope = publishable_scope(&intent.scope);
     let requirement_id = requirement.identity();
     let non_claims = requirement.non_claims.clone();
     let fingerprint = compute_decision_fingerprint(
@@ -3012,7 +3049,7 @@ fn finish(
         intent_id,
         requirement_id.as_str(),
         evidence_id,
-        &intent.scope,
+        &scope,
         &revalidation,
         &non_claims,
     );
@@ -3026,7 +3063,7 @@ fn finish(
         intent_id: intent_id.clone(),
         requirement_id,
         evidence_id: evidence_id.clone(),
-        scope: intent.scope.clone(),
+        scope,
         revalidation,
         non_claims,
         fingerprint,

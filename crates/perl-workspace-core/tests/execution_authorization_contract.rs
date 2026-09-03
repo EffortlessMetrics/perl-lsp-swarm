@@ -3003,3 +3003,121 @@ fn bound_session_override_does_not_leak_to_another_input() -> Result<(), Box<dyn
     )?;
     Ok(())
 }
+
+/// A grant bound to an input does not authorize an operation that names none.
+///
+/// `all` over an empty slice is vacuously true, so this is the hole the
+/// input-binding fix left behind: without a non-empty requirement, a grant
+/// issued for one specific tool would cover an operation declaring no inputs.
+///
+/// The bound input here is a `SelectedVerifiedTool` on purpose — an ambient
+/// input would be pulled in by `applies_regardless_of_intent` and the relevant
+/// set would never actually be empty.
+#[test]
+fn bound_session_override_does_not_authorize_an_inputless_operation() -> Result<(), Box<dyn Error>>
+{
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 5)?;
+    let approved = verified_tool();
+
+    let mut facts = evidence(
+        &scope,
+        WorkspaceTrust::Trusted,
+        AuthorizationActor::ExplicitUserAction { action_id: "format".to_string() },
+        &bound,
+        vec![approved.clone()],
+    );
+    facts.session_override = Some(SessionOverride {
+        override_id: "session.grant.1".to_string(),
+        scope: scope.clone(),
+        granted_policy_generation: 0,
+        expires_after_policy_generation: u64::MAX,
+        capabilities: CapabilitySet::new([ExecutionCapability::ExecutableTool]),
+        bound_input_ids: vec![approved.id.clone()],
+    });
+
+    // The operation declares no inputs, so the grant covers nothing it consumes.
+    let inputless = authorize(
+        &intent(
+            OperationProfile::ExternalFormatter,
+            ExecutionReasonClass::ExternalTool,
+            &scope,
+            &bound,
+            Vec::new(),
+        ),
+        &facts,
+    );
+    require(
+        inputless.outcome() != AuthorizationOutcome::Allowed,
+        "a bound grant must not cover an operation that names no inputs",
+    )?;
+    require(
+        !has_reason(&inputless, "granted_by_session_override"),
+        "an inputless operation must not record an override grant",
+    )?;
+
+    // Control: declaring the bound input is still allowed.
+    let covered = authorize(
+        &intent(
+            OperationProfile::ExternalFormatter,
+            ExecutionReasonClass::ExternalTool,
+            &scope,
+            &bound,
+            vec![approved.id.clone()],
+        ),
+        &facts,
+    );
+    require(
+        covered.outcome() == AuthorizationOutcome::Allowed,
+        "the operation that consumes the bound input is still allowed",
+    )?;
+    Ok(())
+}
+
+/// A rejected request does not publish the material that got it rejected.
+#[test]
+fn rejected_scope_does_not_reach_the_public_explanation() -> Result<(), Box<dyn Error>> {
+    let bound = generations("ws", 1)?;
+    let tool = verified_tool();
+    let oversized = "x".repeat(MAX_IDENTIFIER_LEN + 1);
+    let wide_scope = TrustScope::editor_workspace(oversized.clone());
+
+    let decision = authorize(
+        &intent(
+            OperationProfile::RunCurrentSavedFile,
+            ExecutionReasonClass::ExplicitUserAction,
+            &wide_scope,
+            &bound,
+            vec![tool.id.clone()],
+        ),
+        &evidence(
+            &wide_scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "run".to_string() },
+            &bound,
+            vec![tool],
+        ),
+    );
+
+    require(
+        decision.outcome() == AuthorizationOutcome::NotProven,
+        "an unbounded identifier is unevaluable",
+    )?;
+
+    let rendered = serde_json::to_string(&decision.public_explanation())?;
+    require(
+        !rendered.contains(&oversized),
+        "the rejected identifier must not reach the public explanation",
+    )?;
+    require(
+        !rendered.contains(&"x".repeat(MAX_IDENTIFIER_LEN)),
+        "no run of the rejected identifier may survive into the public record",
+    )?;
+    require(
+        decision.scope().workspace_id.len() <= MAX_IDENTIFIER_LEN,
+        "the decision's own scope must stay within the published bound",
+    )?;
+    // And a decision carrying an unusable scope cannot round-trip.
+    require(decision.validate().is_ok(), "the sanitized decision is itself valid")?;
+    Ok(())
+}
