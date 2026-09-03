@@ -7,9 +7,9 @@
 //! `unavailable` until their owning trains land (#11280/#11281/#11283).
 
 use super::model::{
-    ArtifactMode, ArtifactRow, Authority, AuthorityGroup, ControlRow, Disposition, Domain,
-    DurableSpecDisposition, LensSpec, NodeSpec, OldPathRow, OperationRow, Profile, Role,
-    StageExample,
+    ArtifactMode, ArtifactRow, Authority, AuthorityGroup, ControlRow, DenominatorDisposition,
+    DenominatorEntry, Disposition, Domain, DurableSpecDisposition, LensSpec, NodeSpec, OldPathRow,
+    OperationRow, Profile, Role, StageExample,
 };
 
 /// Parent routing controller for feature-readiness (#10122).
@@ -1965,4 +1965,154 @@ pub fn all_nodes() -> Vec<NodeSpec> {
         node_fr_11267(),
         node_fr_11271(),
     ]
+}
+
+/// The packet denominator is derived from the controlling issue contracts,
+/// not from `all_nodes()`. Actionable rows are the 18 admitted packet leaves;
+/// #8301 remains represented as deferred governance, while the blocked DAP
+/// ruling, controller, and observational-plane rows are explicitly excluded
+/// from this bounded actionable surface. Duplicate issue/node identities are
+/// rejected by the validator.
+pub fn denominator() -> &'static [DenominatorEntry] {
+    const ENTRIES: &[DenominatorEntry] = &[
+        DenominatorEntry {
+            issue: 1850,
+            packet_node: Some("fr_1850_semantic_token_geometry"),
+            disposition: DenominatorDisposition::Actionable,
+            reason: "mandated product leaf",
+        },
+        DenominatorEntry {
+            issue: 5108,
+            packet_node: Some("fr_5108_navigation_truth_repair"),
+            disposition: DenominatorDisposition::Actionable,
+            reason: "mandated product leaf",
+        },
+        DenominatorEntry {
+            issue: 6992,
+            packet_node: Some("fr_6992_installed_critic_journey_proof"),
+            disposition: DenominatorDisposition::Actionable,
+            reason: "mandated installed proof row",
+        },
+        DenominatorEntry {
+            issue: 6997,
+            packet_node: Some("fr_6997_critic_product_child"),
+            disposition: DenominatorDisposition::Actionable,
+            reason: "mandated product child",
+        },
+        DenominatorEntry {
+            issue: 7122,
+            packet_node: Some("fr_7122_support_registry_governance_row"),
+            disposition: DenominatorDisposition::Actionable,
+            reason: "mandated governance mapping",
+        },
+        DenominatorEntry {
+            issue: 7278,
+            packet_node: Some("fr_7278_dap_release_ruling"),
+            disposition: DenominatorDisposition::Excluded,
+            reason: "external/manual ruling boundary cannot emit actionable coding work",
+        },
+        DenominatorEntry {
+            issue: 8277,
+            packet_node: Some("fr_8277_import_governed_operations_leaf"),
+            disposition: DenominatorDisposition::Actionable,
+            reason: "mandated controller-child implementation row",
+        },
+        DenominatorEntry {
+            issue: 8301,
+            packet_node: Some("fr_8301_deferred_npm_distribution"),
+            disposition: DenominatorDisposition::Deferred,
+            reason: "release-topology decision remains deferred",
+        },
+        DenominatorEntry {
+            issue: 8305,
+            packet_node: Some("fr_8305_import_containment_leaf"),
+            disposition: DenominatorDisposition::Actionable,
+            reason: "mandated containment leaf",
+        },
+        DenominatorEntry {
+            issue: 8336,
+            packet_node: Some("fr_8336_import_claim_proof_row"),
+            disposition: DenominatorDisposition::Actionable,
+            reason: "mandated proof-only row",
+        },
+        DenominatorEntry {
+            issue: 8944,
+            packet_node: Some("fr_8944_signature_semantic_cutover"),
+            disposition: DenominatorDisposition::Actionable,
+            reason: "mandated product leaf",
+        },
+        DenominatorEntry {
+            issue: 9349,
+            packet_node: Some("fr_9349_formatter_product_child"),
+            disposition: DenominatorDisposition::Actionable,
+            reason: "mandated product child",
+        },
+        DenominatorEntry {
+            issue: 9415,
+            packet_node: Some("fr_9415_dap_reliability_leaf"),
+            disposition: DenominatorDisposition::Actionable,
+            reason: "mandated product leaf",
+        },
+        DenominatorEntry {
+            issue: 10724,
+            packet_node: Some("fr_10724_formatting_currentness_proof"),
+            disposition: DenominatorDisposition::Actionable,
+            reason: "mandated exact-process proof row",
+        },
+        DenominatorEntry {
+            issue: 11250,
+            packet_node: Some("fr_11250_semantic_token_shadow"),
+            disposition: DenominatorDisposition::Actionable,
+            reason: "mandated shadow row",
+        },
+        DenominatorEntry {
+            issue: 11259,
+            packet_node: Some("fr_11259_semantic_token_live_cutover"),
+            disposition: DenominatorDisposition::Actionable,
+            reason: "mandated live cutover row",
+        },
+        DenominatorEntry {
+            issue: 11261,
+            packet_node: Some("fr_11261_object_facts_source_anchors"),
+            disposition: DenominatorDisposition::Actionable,
+            reason: "mandated optional framework row",
+        },
+        DenominatorEntry {
+            issue: 11263,
+            packet_node: Some("fr_11263_application_framework_projection"),
+            disposition: DenominatorDisposition::Actionable,
+            reason: "mandated optional framework row",
+        },
+        DenominatorEntry {
+            issue: 11267,
+            packet_node: Some("fr_11267_installed_vscode_proof"),
+            disposition: DenominatorDisposition::Actionable,
+            reason: "mandated installed proof row",
+        },
+        DenominatorEntry {
+            issue: 11271,
+            packet_node: Some("fr_11271_zydeco_research"),
+            disposition: DenominatorDisposition::Actionable,
+            reason: "mandated research/decision row",
+        },
+        DenominatorEntry {
+            issue: 10122,
+            packet_node: None,
+            disposition: DenominatorDisposition::Excluded,
+            reason: "routing controller, not a packet work item",
+        },
+        DenominatorEntry {
+            issue: 11280,
+            packet_node: None,
+            disposition: DenominatorDisposition::Excluded,
+            reason: "current-tree observational plane owned by its successor",
+        },
+        DenominatorEntry {
+            issue: 11281,
+            packet_node: None,
+            disposition: DenominatorDisposition::Excluded,
+            reason: "offline-readiness observational plane owned by its successor",
+        },
+    ];
+    ENTRIES
 }

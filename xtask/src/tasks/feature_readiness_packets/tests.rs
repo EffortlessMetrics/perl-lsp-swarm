@@ -70,6 +70,41 @@ fn registry_is_complete_against_the_mandated_fixture_list() {
     }
 }
 
+#[test]
+fn registry_matches_independent_actionable_denominator_and_dispositions() -> TestResult {
+    let violations = validate::validate_registry_denominator(registry());
+    assert!(violations.is_empty(), "denominator drift: {:?}", codes(&violations));
+    let actionable = nodes::denominator()
+        .iter()
+        .filter(|entry| entry.disposition == super::model::DenominatorDisposition::Actionable)
+        .count();
+    assert_eq!(actionable, 18);
+    assert_eq!(
+        nodes::denominator()
+            .iter()
+            .filter(|entry| entry.disposition == super::model::DenominatorDisposition::Deferred)
+            .count(),
+        1
+    );
+    assert_eq!(
+        nodes::denominator()
+            .iter()
+            .filter(|entry| entry.disposition == super::model::DenominatorDisposition::Excluded)
+            .count(),
+        4
+    );
+    Ok(())
+}
+
+#[test]
+fn denominator_rejects_duplicate_registry_identity() {
+    let mut duplicate = nodes::all_nodes();
+    duplicate.push(duplicate[0].clone());
+    let violations = validate::validate_registry_denominator(&duplicate);
+    assert!(codes(&violations).contains(&"duplicate_node_identity"));
+    assert!(codes(&violations).contains(&"duplicate_issue_identity"));
+}
+
 /// #11286's representative list pins exact issues; every one must appear.
 #[test]
 fn mandated_issue_numbers_are_represented() {

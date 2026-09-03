@@ -131,6 +131,11 @@ fn run_one(
     snapshot_path: Option<&Path>,
 ) -> Result<()> {
     let registry_nodes = nodes::all_nodes();
+    report_violations(
+        "denominator",
+        "registry",
+        &validate::validate_registry_denominator(&registry_nodes),
+    )?;
     let node = find_node(&registry_nodes, query)?;
     let live = load_snapshot(snapshot_path)?;
     let (builder_doc, builder_digest) = build::builder_document(node, live.as_ref());
@@ -157,9 +162,13 @@ fn run_one(
                 bail!("non-idempotent schema round-trip for {}", node.node_id);
             }
         }
-        if !reviewer {
-            let loss =
-                render::validate_compact_lossless(&builder_doc, &render::compact(&builder_doc));
+        let compact_text = render::compact(doc);
+        if reviewer {
+            if compact_text != render::compact(doc) {
+                bail!("non-deterministic reviewer compact rendering for {}", node.node_id);
+            }
+        } else {
+            let loss = render::validate_compact_lossless(doc, &compact_text);
             report_violations("compact", node.node_id, &loss)?;
         }
         // Both generated documents are bound to the receipt with labeled
@@ -201,10 +210,15 @@ fn run_all(snapshot_path: Option<&Path>) -> Result<()> {
     // here instead of silently degrading to an offline run.
     let live = load_snapshot(snapshot_path)?;
     let registry_nodes = nodes::all_nodes();
+    report_violations(
+        "denominator",
+        "registry",
+        &validate::validate_registry_denominator(&registry_nodes),
+    )?;
     let mut checked = 0usize;
     for node in &registry_nodes {
         let (builder_doc, builder_digest) = build::builder_document(node, live.as_ref());
-        let (reviewer_doc, _) = build::reviewer_document(node, live.as_ref());
+        let (reviewer_doc, _reviewer_digest) = build::reviewer_document(node, live.as_ref());
         report_violations("builder", node.node_id, &validate::validate_builder(&builder_doc))?;
         report_violations("reviewer", node.node_id, &validate::validate_reviewer(&reviewer_doc))?;
         report_violations(
@@ -218,12 +232,20 @@ fn run_all(snapshot_path: Option<&Path>) -> Result<()> {
         if render::canonical_json(&rebuilt.0) != render::canonical_json(&builder_doc) {
             bail!("non-deterministic builder generation for {}", node.node_id);
         }
+        let rebuilt_reviewer = build::reviewer_document(node, live.as_ref());
+        if render::canonical_json(&rebuilt_reviewer.0) != render::canonical_json(&reviewer_doc) {
+            bail!("non-deterministic reviewer generation for {}", node.node_id);
+        }
         let compact_text = render::compact(&builder_doc);
         report_violations(
             "compact",
             node.node_id,
             &render::validate_compact_lossless(&builder_doc, &compact_text),
         )?;
+        let reviewer_compact = render::compact(&reviewer_doc);
+        if reviewer_compact != render::compact(&reviewer_doc) {
+            bail!("non-deterministic reviewer compact rendering for {}", node.node_id);
+        }
         println!(
             "FR_PACKET node={} builder={} role={} status=ok",
             node.node_id,
@@ -232,7 +254,21 @@ fn run_all(snapshot_path: Option<&Path>) -> Result<()> {
         );
         checked += 1;
     }
-    println!("FR_PACKET_DENOMINATOR checked={checked} status=ok");
+    let actionable = nodes::denominator()
+        .iter()
+        .filter(|entry| entry.disposition == model::DenominatorDisposition::Actionable)
+        .count();
+    let deferred = nodes::denominator()
+        .iter()
+        .filter(|entry| entry.disposition == model::DenominatorDisposition::Deferred)
+        .count();
+    let excluded = nodes::denominator()
+        .iter()
+        .filter(|entry| entry.disposition == model::DenominatorDisposition::Excluded)
+        .count();
+    println!(
+        "FR_PACKET_DENOMINATOR actionable={actionable} deferred={deferred} excluded={excluded} duplicate=0 checked={checked} status=ok"
+    );
     Ok(())
 }
 

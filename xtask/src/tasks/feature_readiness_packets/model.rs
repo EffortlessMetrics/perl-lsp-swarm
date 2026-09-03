@@ -44,6 +44,26 @@ pub enum Disposition {
     BlockedExternalManual,
 }
 
+/// Independent denominator disposition from the controlling feature-readiness
+/// issues. This is intentionally separate from `NodeSpec`: the packet
+/// registry must be checked against a separately maintained accounting of what
+/// is actionable, deferred, or outside this bounded packet surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DenominatorDisposition {
+    Actionable,
+    Deferred,
+    Excluded,
+}
+
+/// One entry in the independently derived #11279/#11286 accounting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DenominatorEntry {
+    pub issue: u32,
+    pub packet_node: Option<&'static str>,
+    pub disposition: DenominatorDisposition,
+    pub reason: &'static str,
+}
+
 impl Disposition {
     pub const fn as_str(self) -> &'static str {
         match self {

@@ -7,11 +7,97 @@
 use serde_json::Value;
 
 use super::build;
+use super::model::{DenominatorDisposition, NodeSpec};
+use super::nodes;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Violation {
     pub code: String,
     pub detail: String,
+}
+
+/// Check the packet registry against the independently derived denominator
+/// from #11279/#11286. This catches silent fixture growth, omission, role or
+/// disposition drift, duplicate identities, and accidental inclusion of the
+/// controller/observational planes.
+pub fn validate_registry_denominator(registry: &[NodeSpec]) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    let expected = nodes::denominator();
+    let expected_nodes: std::collections::BTreeSet<&str> =
+        expected.iter().filter_map(|entry| entry.packet_node).collect();
+    let actual_nodes: std::collections::BTreeSet<&str> =
+        registry.iter().map(|node| node.node_id).collect();
+    for missing in expected_nodes.difference(&actual_nodes) {
+        violations.push(Violation::new(
+            "denominator_missing",
+            format!("expected packet node {missing} is absent"),
+        ));
+    }
+    for unexpected in actual_nodes.difference(&expected_nodes) {
+        violations.push(Violation::new(
+            "denominator_unexpected",
+            format!("packet node {unexpected} is outside the controlling denominator"),
+        ));
+    }
+    let mut seen_issues = std::collections::BTreeSet::new();
+    let mut seen_nodes = std::collections::BTreeSet::new();
+    for node in registry {
+        if !seen_nodes.insert(node.node_id) {
+            violations.push(Violation::new(
+                "duplicate_node_identity",
+                format!("packet node {} appears more than once", node.node_id),
+            ));
+        }
+        for issue in &node.issues {
+            if !seen_issues.insert(*issue) {
+                violations.push(Violation::new(
+                    "duplicate_issue_identity",
+                    format!("issue #{issue} is assigned to more than one packet node"),
+                ));
+            }
+        }
+        let Some(entry) = expected.iter().find(|entry| entry.packet_node == Some(node.node_id))
+        else {
+            continue;
+        };
+        if node.issues != vec![entry.issue] {
+            violations.push(Violation::new(
+                "denominator_issue_mismatch",
+                format!(
+                    "{} maps to issue {:?}, expected #{}",
+                    node.node_id, node.issues, entry.issue
+                ),
+            ));
+        }
+        let expected_disposition = match entry.disposition {
+            DenominatorDisposition::Actionable => "actionable",
+            DenominatorDisposition::Deferred => "deferred",
+            DenominatorDisposition::Excluded => "blocked_external_manual",
+        };
+        if node.disposition.as_str() != expected_disposition {
+            violations.push(Violation::new(
+                "denominator_disposition_mismatch",
+                format!(
+                    "{} is {}, expected {} ({})",
+                    node.node_id,
+                    node.disposition.as_str(),
+                    expected_disposition,
+                    entry.reason
+                ),
+            ));
+        }
+    }
+    for entry in expected.iter().filter(|entry| {
+        entry.disposition == DenominatorDisposition::Excluded && entry.packet_node.is_none()
+    }) {
+        if registry.iter().any(|node| node.issues.contains(&entry.issue)) {
+            violations.push(Violation::new(
+                "excluded_issue_present",
+                format!("excluded issue #{} is present in packet registry", entry.issue),
+            ));
+        }
+    }
+    violations
 }
 
 impl Violation {
