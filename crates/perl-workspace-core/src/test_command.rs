@@ -877,13 +877,20 @@ fn input_authority(
 fn workspace_working_dir(
     snapshot: &ProjectEnvironmentSnapshot,
 ) -> Result<EnvironmentPathRef, TestCommandPlanError> {
-    // Fold-based; taking the first two matches is enough to reject ambiguity
-    // without collecting every root. Zero → `MissingWorkspaceRoot`, one →
-    // that root's path, two-or-more → `AmbiguousWorkspaceRoots`.
+    // Ambiguity is about *directories*, not records. `ProjectRoot` identity
+    // includes its `input_id`, so one directory declared by two inputs — say
+    // workspace-configured and also detected by convention — is two records
+    // that both survive dedup while still naming a single working directory.
+    // Counting records would reject that plan outright.
+    //
+    // The whole `EnvironmentPathRef` is compared, not just `normalized`: the
+    // redacted half reaches the public receipt, so two records agreeing on the
+    // directory but disagreeing on its published identity would make the
+    // receipt depend on which record was picked. That is a real ambiguity.
     let mut workspace_roots =
         snapshot.active_project_roots().filter(|root| root.role == ProjectRootRole::Workspace);
     let first = workspace_roots.next().ok_or(TestCommandPlanError::MissingWorkspaceRoot)?;
-    if workspace_roots.next().is_some() {
+    if workspace_roots.any(|root| root.path != first.path) {
         return Err(TestCommandPlanError::AmbiguousWorkspaceRoots);
     }
     Ok(first.path.clone())

@@ -1048,6 +1048,42 @@ fn planning_with_ambiguous_workspace_roots_fails_closed() -> Result<(), FixtureE
     Ok(())
 }
 
+/// Two root *records* naming the same directory are not an ambiguity: there is
+/// still exactly one working directory. `ProjectRoot` identity includes its
+/// `input_id`, so the same path declared by two inputs — configured *and*
+/// detected by convention, say — is two records that survive dedup. Rules out:
+/// rejecting a plan that has one unambiguous working directory.
+#[test]
+fn duplicate_workspace_roots_naming_one_directory_still_plan() -> Result<(), FixtureError> {
+    let configured_input = accepted_input("root.workspace.configured");
+    let detected_input = accepted_input("root.workspace.detected");
+    let tool_input = accepted_input("tool.prove");
+    let snapshot = ProjectEnvironmentSnapshotBuilder::new(WORKSPACE_ID, 1, WorkspaceTrust::Trusted)
+        .with_input(configured_input.clone())
+        .with_input(detected_input.clone())
+        .with_input(tool_input.clone())
+        .with_project_root(ProjectRoot::new(
+            ProjectRootRole::Workspace,
+            path(WORKSPACE_PATH),
+            configured_input.id.clone(),
+        ))
+        .with_project_root(ProjectRoot::new(
+            ProjectRootRole::Workspace,
+            path(WORKSPACE_PATH),
+            detected_input.id.clone(),
+        ))
+        .with_tool_candidate(prove_tool(tool_input.id.clone()))
+        .build()?;
+
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+    let prove = candidates_of(&plan.candidates, TestRunnerKind::Prove);
+    let candidate = prove.first().ok_or(FixtureError::Missing("prove"))?;
+
+    assert_eq!(candidate.working_dir.normalized, WORKSPACE_PATH);
+    assert_eq!(candidate.admission, TestCommandAdmission::Ready);
+    Ok(())
+}
+
 /// Without a working directory a command is not reproducible, so planning fails
 /// rather than inventing one. Rules out: defaulting to the process CWD.
 #[test]
