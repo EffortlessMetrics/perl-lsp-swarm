@@ -353,11 +353,27 @@ impl SemanticAnalyzer {
             // graph no segment declared.
             let recovered_parents = std::mem::take(&mut existing.parents);
             let recovered_roles = std::mem::take(&mut existing.roles);
+            let recovered_methods = std::mem::take(&mut existing.methods);
+            let mut combined_methods = recovered_methods;
+            for method in &model.methods {
+                if let Some(current) =
+                    combined_methods.iter_mut().find(|current| current.name == method.name)
+                {
+                    *current = method.clone();
+                } else {
+                    combined_methods.push(method.clone());
+                }
+            }
             *existing = model.clone();
             if existing.parents.is_empty() && existing.roles.is_empty() {
                 existing.parents = recovered_parents;
                 existing.roles = recovered_roles;
             }
+
+            // Reopened package segments contribute to one method table. Keep
+            // methods declared by an earlier segment, while letting the later
+            // declaration replace a same-named method just as Perl does.
+            existing.methods = combined_methods;
         }
         merged
     }
@@ -473,8 +489,9 @@ impl SemanticAnalyzer {
         receiver_class: &str,
         method_name: &str,
     ) -> Option<HoverInfo> {
+        let merged = self.merged_class_models();
         let models_by_name: HashMap<&str, &ClassModel> =
-            self.class_models.iter().map(|model| (model.name.as_str(), model)).collect();
+            merged.iter().map(|model| (model.name.as_str(), model)).collect();
 
         let Some(receiver_model) = models_by_name.get(receiver_class).copied() else {
             return self.resolve_plain_package_method_hover(receiver_class, method_name);
@@ -2868,6 +2885,47 @@ my %config = (key => "value");
         let second_save = code.find("sub save { 2 }").ok_or("Second::save not found")?;
         let symbol = analyzer.find_definition(offset).ok_or("no modifier definition")?;
         assert_eq!(symbol.location.start, second_save);
+        Ok(())
+    }
+
+    #[test]
+    fn test_super_navigation_retains_methods_from_reopened_parent_segments()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Reopening Base with an unrelated method must not make the earlier
+        // `greet` implementation disappear from Child's SUPER::greet target.
+        // The parent list still follows the existing last-declaration-wins
+        // rule; only methods are accumulated by name across segments.
+        let code = concat!(
+            "package Base;\n",
+            "use Moo;\n",
+            "sub greet { 1 }\n",
+            "\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "extends 'Base';\n",
+            "sub greet { shift->SUPER::greet() }\n",
+            "\n",
+            "package Base;\n",
+            "use Moo;\n",
+            "sub helper { 2 }\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let greet = code.find("sub greet").ok_or("Base::greet not found")?;
+        assert_eq!(
+            analyzer
+                .resolve_inherited_method_location("Child", "greet")
+                .map(|location| location.start),
+            Some(greet),
+            "SUPER::greet must retain the method from the earlier reopened parent segment"
+        );
+
+        let hover = analyzer
+            .resolve_inherited_method_hover("Child", "helper")
+            .ok_or("reopened Base::helper hover not found")?;
+        assert_eq!(hover.signature, "sub Base::helper");
         Ok(())
     }
 
