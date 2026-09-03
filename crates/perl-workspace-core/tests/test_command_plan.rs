@@ -627,6 +627,41 @@ fn declared_test_roots_replace_the_assumed_default() -> Result<(), FixtureError>
     Ok(())
 }
 
+/// A test root at the workspace itself is a declared root, not a detached one.
+/// Rules out: mislabelling it "outside the working directory" and then
+/// substituting a different directory than the project declared.
+#[test]
+fn a_test_root_at_the_workspace_becomes_the_current_directory() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.prove");
+    let test_input = accepted_input("root.test");
+    let snapshot = builder
+        .with_input(tool_input.clone())
+        .with_input(test_input.clone())
+        .with_tool_candidate(prove_tool(tool_input.id.clone()))
+        .with_project_root(ProjectRoot::new(
+            ProjectRootRole::Test,
+            path(WORKSPACE_PATH),
+            test_input.id.clone(),
+        ))
+        .build()?;
+
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::new())?;
+    let prove = candidates_of(&plan.candidates, TestRunnerKind::Prove);
+
+    assert_eq!(prove[0].argv, vec!["-l".to_string(), ".".to_string()]);
+    for code in [
+        "test_command.test_root_outside_working_directory",
+        "test_command.assumed_default_test_directory",
+    ] {
+        assert!(
+            !plan.limitations.iter().any(|item| item.code == code),
+            "a root equal to the workspace is neither outside it nor an assumption: {code}"
+        );
+    }
+    Ok(())
+}
+
 /// An assumed default must be visible as an assumption. Rules out: silently
 /// guessing the test directory.
 #[test]

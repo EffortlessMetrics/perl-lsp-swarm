@@ -43,6 +43,9 @@ const TEST_COMMAND_ID_DOMAIN: &str = "project_environment.test_command.v1";
 /// Test directory used when the snapshot names no test root.
 const DEFAULT_TEST_DIRECTORY: &str = "t";
 
+/// Relative expression of a test root that is the working directory itself.
+const CURRENT_DIRECTORY: &str = ".";
+
 /// Runner family invoked by a candidate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -764,8 +767,8 @@ fn relative_test_directories(
             continue;
         }
         match relative_child(&working_dir.normalized, &root.path.normalized) {
-            Some(relative) if !relative.is_empty() => directories.push(relative),
-            _ => had_unrelatable_root = true,
+            Some(relative) => directories.push(relative),
+            None => had_unrelatable_root = true,
         }
     }
 
@@ -813,11 +816,19 @@ fn relative_test_directories(
 fn relative_child(parent: &str, child: &str) -> Option<String> {
     let trimmed_parent = parent.trim_end_matches(['/', '\\']);
     let remainder = child.strip_prefix(trimmed_parent)?;
+    let relative = remainder.trim_start_matches(['/', '\\']);
+
+    // The child *is* the parent. Relative to the working directory that is the
+    // current directory, which is a usable argument — reporting it as
+    // unrelatable would substitute a different directory than the one declared.
+    if relative.is_empty() {
+        return Some(CURRENT_DIRECTORY.to_string());
+    }
+
     if !trimmed_parent.is_empty() && !remainder.starts_with(['/', '\\']) {
         return None;
     }
-    let relative = remainder.trim_start_matches(['/', '\\']);
-    if relative.is_empty() || is_absolute_path(relative) || relative.starts_with('-') {
+    if is_absolute_path(relative) || relative.starts_with('-') {
         return None;
     }
     Some(relative.replace('\\', "/"))
@@ -1035,7 +1046,17 @@ mod tests {
         assert_eq!(relative_child("C:\\ws", "C:\\ws\\t").as_deref(), Some("t"));
 
         assert_eq!(relative_child("/ws", "/elsewhere/t"), None, "unrelated root");
-        assert_eq!(relative_child("/ws", "/ws"), None, "the parent itself is not a child");
+    }
+
+    /// A test root at the workspace itself is not unrelatable — relative to the
+    /// working directory it is the current directory, and saying so is more
+    /// honest than substituting a different directory.
+    #[test]
+    fn a_root_equal_to_the_parent_is_the_current_directory() {
+        assert_eq!(relative_child("/ws", "/ws").as_deref(), Some("."));
+        assert_eq!(relative_child("/ws/", "/ws").as_deref(), Some("."));
+        assert_eq!(relative_child("/ws", "/ws/").as_deref(), Some("."));
+        assert_eq!(relative_child("C:\\ws", "C:\\ws").as_deref(), Some("."));
     }
 
     /// A textual prefix is not containment. `/ws-other` is a sibling of `/ws`,
