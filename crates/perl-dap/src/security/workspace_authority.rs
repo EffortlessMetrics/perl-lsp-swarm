@@ -492,7 +492,18 @@ fn require_directory(
     resolved: PathBuf,
 ) -> Result<PathBuf, WorkspaceAuthorityError> {
     if resolved.is_dir() {
-        return Ok(resolved);
+        // Keep launch-derived boundaries in the same canonical spelling as
+        // startup roots. On Windows, `validate_path` may return a normal
+        // `C:\...` path while `Path::canonicalize` uses the `\\?\` form.
+        // Mixing the two representations makes an otherwise identical
+        // boundary compare differently and can make later containment checks
+        // depend on which authority path produced it.
+        return resolved.canonicalize().map_err(|error| {
+            WorkspaceAuthorityError::UnusableLaunchRoot {
+                launch_root: requested.display().to_string(),
+                detail: error.to_string(),
+            }
+        });
     }
     Err(WorkspaceAuthorityError::UnusableLaunchRoot {
         launch_root: requested.display().to_string(),
