@@ -188,6 +188,7 @@ pub mod train_edge_contract;
 pub mod unwired_scan;
 pub mod update_homebrew;
 pub mod update_status;
+pub mod ux_cases;
 pub mod ux_regression_receipt;
 pub mod ux_scorecard;
 pub mod validate_workspace_exclusions;

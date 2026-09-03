@@ -61,7 +61,7 @@ use tasks::{
     semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
     shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
     swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
-    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    unwired_scan, update_homebrew, update_status, ux_cases, ux_regression_receipt, ux_scorecard,
     validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
     workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
@@ -2222,6 +2222,12 @@ enum Commands {
     CompilerProfile {
         #[command(subcommand)]
         command: CompilerProfileCommand,
+    },
+
+    /// Editor-UX control-plane commands (#9879).
+    Ux {
+        #[command(subcommand)]
+        command: UxCommand,
     },
 
     /// Publish structured editor UX scorecard artifact/status from harness fixtures.
@@ -4831,6 +4837,45 @@ enum PrepCratesMode {
     All,
 }
 
+/// `xtask ux <command>`.
+#[derive(Subcommand)]
+enum UxCommand {
+    /// Executable case discovery for `perl-lsp-ux-tests`.
+    Cases {
+        #[command(subcommand)]
+        command: UxCasesCommand,
+    },
+}
+
+/// `xtask ux cases <command>`.
+#[derive(Subcommand)]
+enum UxCasesCommand {
+    /// Discover the exact executable case population and emit
+    /// `ux_case_inventory.v1` (#9890).
+    ///
+    /// Compiles the `perl-lsp-ux-tests` test targets for the declared profile,
+    /// asks each compiled executable for its exact libtest case list, and binds
+    /// repository, toolchain, package, target, executable, profile, feature and
+    /// case identities into one deterministic inventory. It selects nothing,
+    /// runs no test case, and reaches no verdict.
+    Discover {
+        /// Operational profile whose feature population to discover.
+        #[arg(long, default_value = "pr")]
+        profile: String,
+        /// Output path for the inventory JSON.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Retain the machine-local section (absolute paths, timestamp).
+        ///
+        /// Excluded from the durable projection and the inventory digest.
+        #[arg(long)]
+        local_execution: bool,
+        /// Print the inventory JSON to stdout instead of a summary.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 #[derive(ValueEnum, Clone)]
 enum UxScorecardOutputFormat {
     Human,
@@ -6361,6 +6406,13 @@ fn run_cli(cli: Cli) -> Result<()> {
                 metrics::ratchet::run_promote_baseline(&root, &subsystem, delta_pct)
             }
             MetricsCommand::SweepStats { input } => metrics::sweep_stats::run(input),
+        },
+        Commands::Ux { command } => match command {
+            UxCommand::Cases { command } => match command {
+                UxCasesCommand::Discover { profile, out, local_execution, json } => {
+                    ux_cases::run_discover(&profile, out, local_execution, json)
+                }
+            },
         },
         Commands::UxScorecard { format, input, output, status_md, ratchet_check } => {
             let format = match format {
