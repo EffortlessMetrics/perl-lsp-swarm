@@ -199,18 +199,27 @@ fn file_digest(path: &Path) -> Option<String> {
 /// compiler, so two otherwise identical toolchains with different wrappers are
 /// different build environments and must not share a subject digest.
 ///
-/// This reads the **environment only**. A wrapper declared as
-/// `build.rustc-wrapper` in a Cargo `config.toml` — which this repository
-/// documents in `.cargo/config.local.toml.example` — is not seen here, and two
-/// builds differing only by such a wrapper share a subject digest.
+/// Two boundaries, both declared rather than half-closed.
 ///
-/// That is deliberate rather than overlooked. Cargo resolves the setting across
-/// the workspace file, every parent directory, and `$CARGO_HOME`, with the
-/// environment taking precedence; reading just the workspace file would still
-/// miss `$CARGO_HOME/config.toml`, where a global `rustc-wrapper` usually
-/// lives, while making the subject look complete. The gap is therefore declared
-/// as the `cargo_config_wrapper_not_resolved` limitation instead of being
-/// half-closed. Full resolution is tracked separately.
+/// **Environment only.** A wrapper declared as `build.rustc-wrapper` in a Cargo
+/// `config.toml` — which this repository documents in
+/// `.cargo/config.local.toml.example` — is not seen here, so two builds
+/// differing only by such a wrapper share a subject digest. Cargo resolves the
+/// setting across the workspace file, every parent directory, and
+/// `$CARGO_HOME`, with the environment taking precedence; reading just the
+/// workspace file would still miss `$CARGO_HOME/config.toml`, where a global
+/// `rustc-wrapper` usually lives, while making the subject look complete.
+///
+/// **By name, not by content.** `RUSTC_WRAPPER=sccache` records the string
+/// `sccache`. Replacing that binary in place leaves this value — and so the
+/// subject digest — unchanged, even though the program between Cargo and the
+/// compiler is different. Digesting it means resolving a bare command name
+/// along `$PATH` the way the operating system does; a near-miss of that search
+/// would report a precise identity for a program that never ran.
+///
+/// Declared as `cargo_config_toolchain_not_resolved` and
+/// `compiler_wrapper_content_not_identified`. Full resolution is tracked
+/// separately.
 fn compiler_wrappers() -> Option<String> {
     let mut declared: Vec<String> = Vec::new();
     for key in ["RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"] {
@@ -315,6 +324,13 @@ fn build_request(root: &Path, tier: UxCiTier, include_local_execution: bool) -> 
 
     // Cargo compiles with `$RUSTC` when it is set, so probing the PATH `rustc`
     // would record a compiler that never touched these executables.
+    //
+    // `build.rustc` in a Cargo `config.toml` selects the compiler the same way
+    // and is *not* read here, for the reason `compiler_wrappers` documents: the
+    // configuration hierarchy cannot be resolved correctly without reproducing
+    // all of it. A configuration-selected compiler therefore leaves this probe
+    // naming the wrong one, which is declared as
+    // `cargo_config_toolchain_not_resolved` rather than presented as exact.
     let compiler = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
     let verbose = probe(root, &compiler, &["-vV"]).unwrap_or_default();
     // A wrapper sits between Cargo and rustc and can change what is built, so
