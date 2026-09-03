@@ -453,13 +453,28 @@ fn mask_data_values(text: &str) -> String {
     masked
 }
 
+/// The quote-like operators that evaluate to their literal payload text, and
+/// so can spell an option key. Longest first, so `qq`/`qw` are not read as `q`
+/// followed by a delimiter.
+///
+/// Deliberately excludes the operators that evaluate to something else:
+/// `qr` yields a compiled pattern, `qx` runs a command and yields its output,
+/// and `m`/`s`/`tr`/`y` yield a match or substitution result. None of them
+/// produces the literal option text, so none can be an option key.
+const STRING_QUOTE_OPERATORS: [&str; 3] = ["qq", "qw", "q"];
+
 /// The transform option a quote-like expression evaluates to, when its entire
 /// payload is exactly one option name (`q{-as}`, `qq[-prefix]`), else `None`.
 ///
-/// Only single-segment forms can produce a bare option key; `s///`-style
-/// two-segment expressions never trim to one option name and fall through.
+/// Only single-segment string-yielding forms can produce a bare option key;
+/// `s///`-style two-segment expressions never trim to one option name, and the
+/// non-string operators are rejected by [`STRING_QUOTE_OPERATORS`].
 fn quote_like_option_key(span: &str) -> Option<&'static str> {
-    let after_operator = span.trim_start_matches(|c: char| c.is_ascii_alphabetic()).trim_start();
+    let operator = STRING_QUOTE_OPERATORS.iter().find(|operator| {
+        span.strip_prefix(**operator)
+            .is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
+    })?;
+    let after_operator = span[operator.len()..].trim_start();
     let mut chars = after_operator.chars();
     let open = chars.next()?;
     let close = match open {

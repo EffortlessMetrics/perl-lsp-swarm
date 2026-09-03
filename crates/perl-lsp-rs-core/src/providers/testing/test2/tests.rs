@@ -804,3 +804,37 @@ fn test2_quote_like_option_key_is_syntax_not_data() {
     assert_eq!(quote_like_option_key("q{-as => Foo}"), None, "a payload is not a key");
     assert_eq!(quote_like_option_key("q{Foo}"), None);
 }
+
+#[test]
+fn test2_non_string_quote_operators_are_not_option_keys() {
+    // Review finding (@devin-ai-integration on #14651). The option-key rescue
+    // originally accepted any quote-like operator, but only the string-yielding
+    // ones evaluate to the literal option text. `qr{-as}` is a compiled
+    // pattern, `qx{-as}` runs a command and yields its output, `m{-as}` yields
+    // a match result — none of them is the key `-as`, so treating them as one
+    // failed the statement closed and dropped valid imports.
+    for operator in ["qr", "qx", "m"] {
+        assert_eq!(
+            quote_like_option_key(&format!("{operator}{{-as}}")),
+            None,
+            "{operator}{{-as}} does not evaluate to the option text"
+        );
+    }
+
+    // The string-yielding operators still are keys.
+    assert_eq!(quote_like_option_key("q{-as}"), Some("-as"));
+    assert_eq!(quote_like_option_key("qq{-as}"), Some("-as"));
+    assert_eq!(quote_like_option_key("qw{-as}"), Some("-as"));
+    assert_eq!(quote_like_option_key("qq[-prefix]"), Some("-prefix"));
+
+    // The operator must be the whole token: `qr`/`qx` must not be read as `q`
+    // plus a delimiter, which is what would silently readmit them.
+    assert_eq!(quote_like_option_key("qr[-as]"), None);
+    assert_eq!(quote_like_option_key("qx[-as]"), None);
+
+    // End to end: a non-string operator in key position is not a transform, so
+    // the statement is not failed closed on its account.
+    let regex_key = resolve_with_analysis("Test2::V0", "-target => qr{-as}, ok");
+    assert!(!regex_key.analysis_limited, "a qr// value is not an option key");
+    assert!(regex_key.resolved.symbols.contains("ok"), "the explicit import survives");
+}
