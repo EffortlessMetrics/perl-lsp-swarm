@@ -204,6 +204,20 @@ async function canonicalCoverage(
   }
 }
 
+async function hasConfiguredDescendant(
+  workspaceRoot: string,
+  configuredPaths: readonly string[],
+  candidateRealPath: string,
+): Promise<boolean> {
+  for (const configured of configuredPaths) {
+    const configuredRealPath = await realpathIfExists(path.resolve(workspaceRoot, configured));
+    if (configuredRealPath && isWithinBasePath(candidateRealPath, configuredRealPath)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** True when a current canonical configured root is equal to or an ancestor of the candidate. */
 export async function isIncludePathCandidateCovered(
   workspaceRoot: string,
@@ -335,6 +349,9 @@ export async function runDiscoveredIncludePathGuidance(
       const coverage = await canonicalCoverage(folder.uri.fsPath, includePaths, candidate);
       complete = complete && coverage.complete;
       if (coverage.covered) {
+        continue;
+      }
+      if (await hasConfiguredDescendant(folder.uri.fsPath, includePaths, candidateRealPath)) {
         continue;
       }
 
