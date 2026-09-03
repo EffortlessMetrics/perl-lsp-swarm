@@ -1611,10 +1611,6 @@ pub(crate) fn location_from_path(p: &Path) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
-    // Tests are permitted to use `.expect()` on Result/Option per the repo's
-    // coding standards (unlike production code, where it is banned).
-    #![allow(clippy::expect_used)]
-
     use super::*;
     use crate::features::formatting::FormatRange;
     use crate::runtime::types::workspace_folder_matches_doc_uri;
@@ -1702,17 +1698,20 @@ mod tests {
     /// `workspace_root_for_doc` in `runtime/lifecycle/module_resolution.rs`.
     #[test]
     fn nested_workspace_folders_select_most_specific_for_config_and_includes() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = crate::must_with(tempfile::tempdir(), "tempdir");
         let repo = temp.path().join("repo");
         let app = repo.join("app");
-        std::fs::create_dir_all(&app).expect("create nested dirs");
+        crate::must_with(std::fs::create_dir_all(&app), "create nested dirs");
 
-        let repo_uri = url::Url::from_file_path(&repo).expect("repo URI").to_string();
-        let app_uri = url::Url::from_file_path(&app).expect("app URI").to_string();
+        let repo_uri = crate::must_with(url::Url::from_file_path(&repo), "repo URI").to_string();
+        let app_uri = crate::must_with(url::Url::from_file_path(&app), "app URI").to_string();
         let doc_path = app.join("script").join("run.pl");
-        std::fs::create_dir_all(doc_path.parent().expect("doc parent")).expect("create doc parent");
-        std::fs::write(&doc_path, "use strict;\n").expect("write doc");
-        let doc_uri = url::Url::from_file_path(&doc_path).expect("doc URI").to_string();
+        crate::must_with(
+            std::fs::create_dir_all(crate::must_some_with(doc_path.parent(), "doc parent")),
+            "create doc parent",
+        );
+        crate::must_with(std::fs::write(&doc_path, "use strict;\n"), "write doc");
+        let doc_uri = crate::must_with(url::Url::from_file_path(&doc_path), "doc URI").to_string();
 
         // Distinct configs so we can verify we got the inner one.
         let mut outer_state = WorkspaceFolderState::new(repo_uri.clone());
@@ -1730,11 +1729,12 @@ mod tests {
         }
 
         // folder_for_doc_uri picks the deepest match.
-        let picked = server.folder_for_doc_uri(&doc_uri).expect("folder must match");
+        let picked =
+            crate::must_some_with(server.folder_for_doc_uri(&doc_uri), "folder must match");
         assert_eq!(picked.uri, app_uri, "expected inner folder for nested doc");
 
         // config_for_doc returns the inner folder's config.
-        let cfg = server.config_for_doc(&doc_uri).expect("config must resolve");
+        let cfg = crate::must_some_with(server.config_for_doc(&doc_uri), "config must resolve");
         assert_eq!(
             cfg.include_paths,
             vec!["inner_lib".to_string()],
@@ -1745,12 +1745,14 @@ mod tests {
         let resolved = server.include_paths_for_doc(&doc_uri);
         let inner_first = app.join("inner_lib");
         let outer_fallback = repo.join("outer_lib");
-        let inner_pos =
-            resolved.iter().position(|p| p == &inner_first).expect("inner_lib must be present");
-        let outer_pos = resolved
-            .iter()
-            .position(|p| p == &outer_fallback)
-            .expect("outer_lib must be present as fallback");
+        let inner_pos = crate::must_some_with(
+            resolved.iter().position(|p| p == &inner_first),
+            "inner_lib must be present",
+        );
+        let outer_pos = crate::must_some_with(
+            resolved.iter().position(|p| p == &outer_fallback),
+            "outer_lib must be present as fallback",
+        );
         assert!(
             inner_pos < outer_pos,
             "inner folder's includePaths must precede outer folder's; got {resolved:?}",
@@ -1767,15 +1769,16 @@ mod tests {
     /// behavior is exercised separately by `search_scopes_for_doc`.
     #[test]
     fn workspace_folder_outside_all_folders_returns_none() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = crate::must_with(tempfile::tempdir(), "tempdir");
         let inside = temp.path().join("inside");
         let outside = temp.path().join("outside");
-        std::fs::create_dir_all(&inside).expect("create inside");
-        std::fs::create_dir_all(&outside).expect("create outside");
+        crate::must_with(std::fs::create_dir_all(&inside), "create inside");
+        crate::must_with(std::fs::create_dir_all(&outside), "create outside");
 
-        let inside_uri = url::Url::from_file_path(&inside).expect("inside URI").to_string();
-        let doc_uri =
-            url::Url::from_file_path(outside.join("doc.pl")).expect("doc URI").to_string();
+        let inside_uri =
+            crate::must_with(url::Url::from_file_path(&inside), "inside URI").to_string();
+        let doc_uri = crate::must_with(url::Url::from_file_path(outside.join("doc.pl")), "doc URI")
+            .to_string();
 
         let server = LspServer::default();
         server.workspace_folders.lock().push(WorkspaceFolderState::new(inside_uri));
@@ -1879,8 +1882,8 @@ mod tests {
             },
         );
 
-        let snapshot = (0..50)
-            .find_map(|_| {
+        let snapshot = crate::must_some_with(
+            (0..50).find_map(|_| {
                 let snapshot = server.runtime_pressure_snapshot();
                 if snapshot.diagnostic_debounce_pending_uris == 1
                     && snapshot.file_watcher_pending_uris == 1
@@ -1890,8 +1893,9 @@ mod tests {
                     std::thread::sleep(Duration::from_millis(10));
                     None
                 }
-            })
-            .expect("debouncer workers should report pending URI pressure");
+            }),
+            "debouncer workers should report pending URI pressure",
+        );
 
         assert_eq!(snapshot.pending_index_tasks, 0);
         assert_eq!(snapshot.diagnostic_debounce_pending_uris, 1);
@@ -1990,9 +1994,9 @@ mod tests {
         }
 
         let documents = server.documents.lock();
-        let lf_doc = documents.get("file:///eof-lf.pl").expect("lf doc");
-        let crlf_doc = documents.get("file:///eof-crlf.pl").expect("crlf doc");
-        let cr_doc = documents.get("file:///eof-cr.pl").expect("cr doc");
+        let lf_doc = crate::must_some_with(documents.get("file:///eof-lf.pl"), "lf doc");
+        let crlf_doc = crate::must_some_with(documents.get("file:///eof-crlf.pl"), "crlf doc");
+        let cr_doc = crate::must_some_with(documents.get("file:///eof-cr.pl"), "cr doc");
 
         // A terminal separator ends the last content line, so true EOF sits on
         // the final empty line (#10220): byte length alone would report (0, N).
@@ -2019,7 +2023,7 @@ mod tests {
             ),
         );
         let documents = server.documents.lock();
-        let doc = documents.get("file:///eof-emoji.pl").expect("emoji doc");
+        let doc = crate::must_some_with(documents.get("file:///eof-emoji.pl"), "emoji doc");
         // The source is 19 bytes long; the wire position counts UTF-16 units.
         assert_eq!(server.offset_to_pos16(doc, text.len()), (0, 17));
     }
@@ -2044,7 +2048,7 @@ mod tests {
                 ),
             );
             let documents = server.documents.lock();
-            let doc = documents.get(&uri).expect("parity doc");
+            let doc = crate::must_some_with(documents.get(&uri), "parity doc");
             let projected = server.offset_to_pos16(doc, content.len());
             let range = FormatRange::whole_document(content);
             assert_eq!(
@@ -2069,11 +2073,12 @@ mod tests {
             DocumentState::from_parts(rope, text.to_string(), 1, Arc::new(AtomicU32::new(0))),
         );
 
-        let result = server
-            .handle_code_actions_pragmas(Some(json!({"textDocument": {"uri": uri}})))
-            .expect("pragma code action handler must succeed");
-        let result = result.expect("handler must return an action response");
-        let actions = result.as_array().expect("response must be an action array");
+        let result = crate::must_with(
+            server.handle_code_actions_pragmas(Some(json!({"textDocument": {"uri": uri}}))),
+            "pragma code action handler must succeed",
+        );
+        let result = crate::must_some_with(result, "handler must return an action response");
+        let actions = crate::must_some_with(result.as_array(), "response must be an action array");
         assert!(!actions.is_empty(), "missing pragma must yield an action");
         let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
         let expected_end = json!({"line": 0, "character": text.chars().count()});
@@ -2097,11 +2102,12 @@ mod tests {
             DocumentState::from_parts(rope, text.to_string(), 1, Arc::new(AtomicU32::new(0))),
         );
 
-        let result = server
-            .handle_code_actions_pragmas(Some(json!({"textDocument": {"uri": uri}})))
-            .expect("pragma code action handler must succeed");
-        let result = result.expect("handler must return an action response");
-        let actions = result.as_array().expect("response must be an action array");
+        let result = crate::must_with(
+            server.handle_code_actions_pragmas(Some(json!({"textDocument": {"uri": uri}}))),
+            "pragma code action handler must succeed",
+        );
+        let result = crate::must_some_with(result, "handler must return an action response");
+        let actions = crate::must_some_with(result.as_array(), "response must be an action array");
         assert!(!actions.is_empty(), "missing pragma must yield an action");
         let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
         // Byte columns would report character 19; true EOF is unit 17.
@@ -2125,11 +2131,12 @@ mod tests {
             DocumentState::from_parts(rope, text.to_string(), 1, Arc::new(AtomicU32::new(0))),
         );
 
-        let result = server
-            .handle_code_actions_pragmas(Some(json!({"textDocument": {"uri": uri}})))
-            .expect("pragma code action handler must succeed");
-        let result = result.expect("handler must return an action response");
-        let actions = result.as_array().expect("response must be an action array");
+        let result = crate::must_with(
+            server.handle_code_actions_pragmas(Some(json!({"textDocument": {"uri": uri}}))),
+            "pragma code action handler must succeed",
+        );
+        let result = crate::must_some_with(result, "handler must return an action response");
+        let actions = crate::must_some_with(result.as_array(), "response must be an action array");
         assert!(!actions.is_empty(), "missing pragma must yield an action");
         let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
         assert_eq!(edit["start"], json!({"line": 1, "character": 9}));

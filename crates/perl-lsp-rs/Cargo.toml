@@ -126,6 +126,8 @@ predicates = "3.1.3"
 serial_test = "4.0.1"
 tempfile.workspace = true
 proptest.workspace = true
+perl-tdd-support = { workspace = true }
+perl-test-must = { workspace = true }
 # Wave Final PR B: perl-content-length-framing absorbed into perl-lsp-rs-core::transport::framing
 parking_lot.workspace = true
 criterion.workspace = true

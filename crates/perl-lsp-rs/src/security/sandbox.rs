@@ -452,10 +452,6 @@ impl Default for SafeExecutor {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::unwrap_used,
-        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-    )]
     use super::*;
     use std::fs;
     use tempfile::TempDir;
@@ -635,7 +631,7 @@ mod tests {
         let result = sandbox.execute("echo", &["test"]);
 
         assert!(result.is_err(), "Expected fail-closed error when firejail is absent");
-        let err_msg = format!("{}", result.unwrap_err());
+        let err_msg = format!("{}", crate::must_err(result));
         assert!(
             err_msg.contains("firejail") || err_msg.contains("sandbox.enabled"),
             "Error should name firejail or sandbox.enabled, got: {}",
@@ -658,7 +654,7 @@ mod tests {
         let result = sandbox.execute("cmd", &["/C", "echo", "test"]);
 
         assert!(result.is_err(), "Expected fail-closed error on Windows with sandbox enabled");
-        let err_msg = format!("{}", result.unwrap_err());
+        let err_msg = format!("{}", crate::must_err(result));
         assert!(
             err_msg.contains("Windows job objects") || err_msg.contains("sandbox.enabled"),
             "Error should mention Windows job objects or sandbox.enabled, got: {}",

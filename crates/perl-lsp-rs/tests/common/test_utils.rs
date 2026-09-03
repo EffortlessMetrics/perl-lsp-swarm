@@ -1,9 +1,7 @@
 #![allow(dead_code)]
 // This is a utility module used by other tests
-// Integration tests print diagnostic output for CI troubleshooting, and tests
-// are permitted to use `.expect()`/`.expect_err()` on Result/Option per the
-// repo's coding standards; neither applies the way it does to production code.
-#![allow(clippy::print_stderr, clippy::expect_used)]
+// Integration tests print diagnostic output for CI troubleshooting.
+#![allow(clippy::print_stderr)]
 
 //! Test utilities and helpers for LSP testing
 //!

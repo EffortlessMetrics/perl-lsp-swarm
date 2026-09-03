@@ -22,11 +22,6 @@
 //! cargo's fingerprints decide whether anything needs rebuilding. Cargo is
 //! the freshness oracle; this file does not reinvent one from mtimes.
 
-#![expect(
-    clippy::expect_used,
-    reason = "test-only resolution barriers must fail loudly, not degrade into the cargo fallback"
-)]
-
 use perl_tdd_support::must;
 use std::path::Path;
 use std::process::Command;
@@ -424,11 +419,13 @@ mod tests {
         let root = planted_artifact_workspace("explicit-short-circuit");
         let explicit = plant_fake_perllsp(&root, "explicit");
 
-        let candidates = resolve_explicit_candidates(
-            Some(explicit.clone().into_os_string()),
-            Some(OsString::from("missing-cargo-candidate")),
-        )
-        .expect("valid explicit candidate must resolve");
+        let candidates = perl_test_must::must_some_with(
+            resolve_explicit_candidates(
+                Some(explicit.clone().into_os_string()),
+                Some(OsString::from("missing-cargo-candidate")),
+            ),
+            "valid explicit candidate must resolve",
+        );
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].get_program(), explicit.as_os_str());
@@ -444,11 +441,13 @@ mod tests {
         let root = planted_artifact_workspace("invalid-explicit-fallback");
         let fallback = plant_fake_perllsp(&root, "fallback");
 
-        let candidates = resolve_explicit_candidates(
-            Some(root.join("missing-explicit").into_os_string()),
-            Some(fallback.clone().into_os_string()),
-        )
-        .expect("valid lower-priority candidate must resolve");
+        let candidates = perl_test_must::must_some_with(
+            resolve_explicit_candidates(
+                Some(root.join("missing-explicit").into_os_string()),
+                Some(fallback.clone().into_os_string()),
+            ),
+            "valid lower-priority candidate must resolve",
+        );
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].get_program(), fallback.as_os_str());
@@ -466,9 +465,14 @@ mod tests {
 
         let root = planted_artifact_workspace("non-executable-explicit");
         let path = root.join("perllsp");
-        std::fs::write(&path, b"not executable").expect("write explicit candidate");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
-            .expect("make explicit candidate non-executable");
+        perl_test_must::must_with(
+            std::fs::write(&path, b"not executable"),
+            "write explicit candidate",
+        );
+        perl_test_must::must_with(
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)),
+            "make explicit candidate non-executable",
+        );
 
         assert!(resolve_explicit_candidates(Some(path.into_os_string()), None).is_none());
 
@@ -606,17 +610,25 @@ mod tests {
 
         let root = std::env::temp_dir()
             .join(format!("perl-lsp-rs-binary-resolution-{}", std::process::id()));
-        fs::create_dir_all(&root).expect("create binary-resolution test directory");
+        perl_test_must::must_with(
+            fs::create_dir_all(&root),
+            "create binary-resolution test directory",
+        );
         let directory = root.join("directory");
         let file = root.join("file");
-        fs::create_dir(&directory).expect("create directory candidate");
-        fs::write(&file, b"not executable").expect("create file candidate");
-        fs::set_permissions(&file, fs::Permissions::from_mode(0o644))
-            .expect("set non-executable permissions");
+        perl_test_must::must_with(fs::create_dir(&directory), "create directory candidate");
+        perl_test_must::must_with(fs::write(&file, b"not executable"), "create file candidate");
+        perl_test_must::must_with(
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o644)),
+            "set non-executable permissions",
+        );
 
         assert!(built_binary_or_refuse(directory).is_err());
         assert!(built_binary_or_refuse(file).is_err());
 
-        fs::remove_dir_all(root).expect("remove binary-resolution test directory");
+        perl_test_must::must_with(
+            fs::remove_dir_all(root),
+            "remove binary-resolution test directory",
+        );
     }
 }

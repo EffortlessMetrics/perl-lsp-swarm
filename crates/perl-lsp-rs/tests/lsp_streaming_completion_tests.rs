@@ -9,10 +9,6 @@
 //!     -- streaming --test-threads=2
 //! ```
 
-// Tests are permitted to use `.expect()` on Result/Option per the repo's
-// coding standards (unlike production code, where it is banned).
-#![allow(clippy::expect_used)]
-
 mod support;
 
 use serde_json::json;
@@ -884,7 +880,10 @@ mod mock_streaming_completion_tests {
         let mut last_sequence = None;
         for idx in 0..progress.len() {
             let value = &progress[idx]["params"]["value"];
-            let sequence = value["sequence"].as_u64().expect("progress should include sequence");
+            let sequence = perl_test_must::must_some_with(
+                value["sequence"].as_u64(),
+                "progress should include sequence",
+            );
             if let Some(previous) = last_sequence {
                 assert!(sequence > previous);
             } else {
@@ -989,7 +988,7 @@ mod mock_streaming_completion_tests {
         let new_result = request_streaming_completion(&server, uri, 19, "stream-cancel-new");
         assert!(new_result.is_null());
 
-        first.join().expect("first streaming request thread panicked");
+        perl_test_must::must_with(first.join(), "first streaming request thread panicked");
 
         thread::sleep(Duration::from_millis(250));
         let old_progress =
@@ -1064,8 +1063,10 @@ mod mock_streaming_completion_tests {
         };
         assert!(!progress.is_empty());
         assert_eq!(progress[0]["params"]["value"]["items"][0]["insertText"], "1");
-        let final_progress =
-            progress.last().expect("error path should emit at least one progress frame");
+        let final_progress = perl_test_must::must_some_with(
+            progress.last(),
+            "error path should emit at least one progress frame",
+        );
         assert!(
             final_progress
                 .pointer("/params/value/isFinal")

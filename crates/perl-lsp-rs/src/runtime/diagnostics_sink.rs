@@ -320,12 +320,6 @@ impl LspServer {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::unwrap_used,
-        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-    )]
-    #![allow(clippy::expect_used)]
-
     use super::{
         LspServer, PushDiagnosticIdentity, PushDiagnosticsCommitOutcome, PushDiagnosticsDisposition,
     };
@@ -356,19 +350,20 @@ mod tests {
     }
 
     fn open_document(server: &LspServer, uri: &str, text: &str) -> PushDiagnosticIdentity {
-        server
-            .test_handle_did_open(Some(json!({
+        crate::must_with(
+            server.test_handle_did_open(Some(json!({
                 "textDocument": {
                     "uri": uri,
                     "languageId": "perl",
                     "version": 1,
                     "text": text
                 }
-            })))
-            .expect("didOpen should succeed");
+            }))),
+            "didOpen should succeed",
+        );
         let key = server.normalize_uri_key(uri);
         let docs = server.documents.lock();
-        let doc = docs.get(&key).expect("document must be open");
+        let doc = crate::must_some_with(docs.get(&key), "document must be open");
         PushDiagnosticIdentity::for_document(
             &key,
             &doc.generation,
@@ -455,7 +450,7 @@ mod tests {
         // N+1 acceptance advances the live generation.
         let live_generation = {
             let docs = server.documents.lock();
-            StdArc::clone(&docs.get(&identity.normalized_uri).unwrap().generation)
+            StdArc::clone(&crate::must_some(docs.get(&identity.normalized_uri)).generation)
         };
         live_generation.store(identity.generation + 1, Ordering::SeqCst);
 

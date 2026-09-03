@@ -400,15 +400,6 @@ impl LspServer {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::unwrap_used,
-        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-    )]
-    #![expect(
-        clippy::expect_used,
-        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-    )]
-
     use super::*;
 
     #[test]
@@ -431,18 +422,18 @@ mod tests {
     #[test]
     fn check_perl_interpreter_valid_config_path_does_not_panic() {
         use std::fs;
-        let tempdir = tempfile::tempdir().expect("tempdir");
+        let tempdir = crate::must_with(tempfile::tempdir(), "tempdir");
         #[cfg(windows)]
         let fake_perl = tempdir.path().join("perl.exe");
         #[cfg(not(windows))]
         let fake_perl = tempdir.path().join("perl");
-        fs::write(&fake_perl, "").expect("write fake perl");
+        crate::must_with(fs::write(&fake_perl, ""), "write fake perl");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&fake_perl).expect("metadata").permissions();
+            let mut perms = crate::must_with(fs::metadata(&fake_perl), "metadata").permissions();
             perms.set_mode(0o755);
-            fs::set_permissions(&fake_perl, perms).expect("chmod");
+            crate::must_with(fs::set_permissions(&fake_perl, perms), "chmod");
         }
         let server = LspServer::new();
         server.workspace_config.lock().perl_path = Some(fake_perl.to_string_lossy().to_string());
@@ -689,39 +680,45 @@ mod tests {
     #[test]
     fn load_and_apply_project_config_loads_per_folder_config() {
         let server = LspServer::new();
-        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let temp = crate::must_with(tempfile::tempdir(), "failed to create temp dir");
         let folder1 = temp.path().join("folder1");
         let folder2 = temp.path().join("folder2");
-        std::fs::create_dir_all(&folder1).expect("failed to create folder1");
-        std::fs::create_dir_all(&folder2).expect("failed to create folder2");
+        crate::must_with(std::fs::create_dir_all(&folder1), "failed to create folder1");
+        crate::must_with(std::fs::create_dir_all(&folder2), "failed to create folder2");
 
         // Create .perl-lsp.toml in folder1
         let config1 = folder1.join(".perl-lsp.toml");
-        std::fs::write(
-            &config1,
-            r#"
+        crate::must_with(
+            std::fs::write(
+                &config1,
+                r#"
 [perl]
 include_paths = ["custom_lib"]
 "#,
-        )
-        .expect("failed to write config1");
+            ),
+            "failed to write config1",
+        );
 
         // Create .perl-lsp.toml in folder2
         let config2 = folder2.join(".perl-lsp.toml");
-        std::fs::write(
-            &config2,
-            r#"
+        crate::must_with(
+            std::fs::write(
+                &config2,
+                r#"
 [perl]
 include_paths = ["other_lib"]
 "#,
-        )
-        .expect("failed to write config2");
+            ),
+            "failed to write config2",
+        );
 
         // Add workspace folders
         let uri1 =
-            url::Url::from_directory_path(&folder1).expect("failed to create uri1").to_string();
+            crate::must_with(url::Url::from_directory_path(&folder1), "failed to create uri1")
+                .to_string();
         let uri2 =
-            url::Url::from_directory_path(&folder2).expect("failed to create uri2").to_string();
+            crate::must_with(url::Url::from_directory_path(&folder2), "failed to create uri2")
+                .to_string();
 
         server.workspace_folders.lock().push(
             crate::runtime::workspace_folder::WorkspaceFolderState::new(uri1.clone())
@@ -739,7 +736,7 @@ include_paths = ["other_lib"]
         let folders = server.workspace_folders.lock();
         assert_eq!(folders.len(), 2);
 
-        let folder1_state = folders.iter().find(|f| f.uri == uri1).unwrap();
+        let folder1_state = crate::must_some(folders.iter().find(|f| f.uri == uri1));
         assert!(folder1_state.project_config.is_some());
         assert!(
             folder1_state
@@ -748,7 +745,7 @@ include_paths = ["other_lib"]
                 .contains(&"custom_lib".to_string())
         );
 
-        let folder2_state = folders.iter().find(|f| f.uri == uri2).unwrap();
+        let folder2_state = crate::must_some(folders.iter().find(|f| f.uri == uri2));
         assert!(folder2_state.project_config.is_some());
         assert!(
             folder2_state
@@ -761,24 +758,30 @@ include_paths = ["other_lib"]
     #[test]
     fn load_and_apply_project_config_multi_root_first_folder_wins_on_conflict() {
         let server = LspServer::new();
-        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let temp = crate::must_with(tempfile::tempdir(), "failed to create temp dir");
         let folder1 = temp.path().join("folder1");
         let folder2 = temp.path().join("folder2");
-        std::fs::create_dir_all(&folder1).expect("failed to create folder1");
-        std::fs::create_dir_all(&folder2).expect("failed to create folder2");
+        crate::must_with(std::fs::create_dir_all(&folder1), "failed to create folder1");
+        crate::must_with(std::fs::create_dir_all(&folder2), "failed to create folder2");
 
         // folder1 enables perlcritic; folder2 disables it. Pre-fix, the loop
         // applied folder2 last and silently won server-wide. Post-fix, the first
         // folder wins and the conflict is surfaced instead of silently overwritten.
-        std::fs::write(folder1.join(".perl-lsp.toml"), "[diagnostics]\nperlcritic = true\n")
-            .expect("write config1");
-        std::fs::write(folder2.join(".perl-lsp.toml"), "[diagnostics]\nperlcritic = false\n")
-            .expect("write config2");
+        crate::must_with(
+            std::fs::write(folder1.join(".perl-lsp.toml"), "[diagnostics]\nperlcritic = true\n"),
+            "write config1",
+        );
+        crate::must_with(
+            std::fs::write(folder2.join(".perl-lsp.toml"), "[diagnostics]\nperlcritic = false\n"),
+            "write config2",
+        );
 
         let uri1 =
-            url::Url::from_directory_path(&folder1).expect("failed to create uri1").to_string();
+            crate::must_with(url::Url::from_directory_path(&folder1), "failed to create uri1")
+                .to_string();
         let uri2 =
-            url::Url::from_directory_path(&folder2).expect("failed to create uri2").to_string();
+            crate::must_with(url::Url::from_directory_path(&folder2), "failed to create uri2")
+                .to_string();
 
         server.workspace_folders.lock().push(
             crate::runtime::workspace_folder::WorkspaceFolderState::new(uri1.clone())
@@ -801,30 +804,44 @@ include_paths = ["other_lib"]
         // Both folders still have their own per-folder effective workspace config.
         let folders = server.workspace_folders.lock();
         assert_eq!(folders.len(), 2);
-        assert!(folders.iter().find(|f| f.uri == uri1).expect("folder1").project_config.is_some());
-        assert!(folders.iter().find(|f| f.uri == uri2).expect("folder2").project_config.is_some());
+        assert!(
+            crate::must_some_with(folders.iter().find(|f| f.uri == uri1), "folder1")
+                .project_config
+                .is_some()
+        );
+        assert!(
+            crate::must_some_with(folders.iter().find(|f| f.uri == uri2), "folder2")
+                .project_config
+                .is_some()
+        );
     }
 
     #[test]
     fn load_and_apply_project_config_multi_root_non_conflicting_fields_all_apply() {
         let server = LspServer::new();
-        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let temp = crate::must_with(tempfile::tempdir(), "failed to create temp dir");
         let folder1 = temp.path().join("folder1");
         let folder2 = temp.path().join("folder2");
-        std::fs::create_dir_all(&folder1).expect("failed to create folder1");
-        std::fs::create_dir_all(&folder2).expect("failed to create folder2");
+        crate::must_with(std::fs::create_dir_all(&folder1), "failed to create folder1");
+        crate::must_with(std::fs::create_dir_all(&folder2), "failed to create folder2");
 
         // folder1 sets [diagnostics].perlcritic; folder2 sets [features].inlay_hints.
         // Different keys -> both apply, no silent override.
-        std::fs::write(folder1.join(".perl-lsp.toml"), "[diagnostics]\nperlcritic = true\n")
-            .expect("write config1");
-        std::fs::write(folder2.join(".perl-lsp.toml"), "[features]\ninlay_hints = false\n")
-            .expect("write config2");
+        crate::must_with(
+            std::fs::write(folder1.join(".perl-lsp.toml"), "[diagnostics]\nperlcritic = true\n"),
+            "write config1",
+        );
+        crate::must_with(
+            std::fs::write(folder2.join(".perl-lsp.toml"), "[features]\ninlay_hints = false\n"),
+            "write config2",
+        );
 
         let uri1 =
-            url::Url::from_directory_path(&folder1).expect("failed to create uri1").to_string();
+            crate::must_with(url::Url::from_directory_path(&folder1), "failed to create uri1")
+                .to_string();
         let uri2 =
-            url::Url::from_directory_path(&folder2).expect("failed to create uri2").to_string();
+            crate::must_with(url::Url::from_directory_path(&folder2), "failed to create uri2")
+                .to_string();
 
         server.workspace_folders.lock().push(
             crate::runtime::workspace_folder::WorkspaceFolderState::new(uri1.clone())
@@ -850,23 +867,38 @@ include_paths = ["other_lib"]
         // Regression guard for #4633: three folders, last one sets a value that
         // must NOT silently win over the first.
         let server = LspServer::new();
-        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let temp = crate::must_with(tempfile::tempdir(), "failed to create temp dir");
         let folder1 = temp.path().join("folder1");
         let folder2 = temp.path().join("folder2");
         let folder3 = temp.path().join("folder3");
-        std::fs::create_dir_all(&folder1).expect("folder1");
-        std::fs::create_dir_all(&folder2).expect("folder2");
-        std::fs::create_dir_all(&folder3).expect("folder3");
+        crate::must_with(std::fs::create_dir_all(&folder1), "folder1");
+        crate::must_with(std::fs::create_dir_all(&folder2), "folder2");
+        crate::must_with(std::fs::create_dir_all(&folder3), "folder3");
 
-        std::fs::write(folder1.join(".perl-lsp.toml"), "[diagnostics]\nperlcritic_severity = 3\n")
-            .expect("write config1");
-        std::fs::write(folder2.join(".perl-lsp.toml"), "[diagnostics]\nperlcritic_severity = 1\n")
-            .expect("write config2");
-        std::fs::write(folder3.join(".perl-lsp.toml"), "[diagnostics]\nperlcritic_severity = 5\n")
-            .expect("write config3");
+        crate::must_with(
+            std::fs::write(
+                folder1.join(".perl-lsp.toml"),
+                "[diagnostics]\nperlcritic_severity = 3\n",
+            ),
+            "write config1",
+        );
+        crate::must_with(
+            std::fs::write(
+                folder2.join(".perl-lsp.toml"),
+                "[diagnostics]\nperlcritic_severity = 1\n",
+            ),
+            "write config2",
+        );
+        crate::must_with(
+            std::fs::write(
+                folder3.join(".perl-lsp.toml"),
+                "[diagnostics]\nperlcritic_severity = 5\n",
+            ),
+            "write config3",
+        );
 
         for folder in [&folder1, &folder2, &folder3] {
-            let uri = url::Url::from_directory_path(folder).expect("uri").to_string();
+            let uri = crate::must_with(url::Url::from_directory_path(folder), "uri").to_string();
             server.workspace_folders.lock().push(
                 crate::runtime::workspace_folder::WorkspaceFolderState::new(uri)
                     .with_path(folder.to_path_buf()),
@@ -886,12 +918,13 @@ include_paths = ["other_lib"]
     #[test]
     fn load_and_apply_project_config_handles_missing_config() {
         let server = LspServer::new();
-        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let temp = crate::must_with(tempfile::tempdir(), "failed to create temp dir");
         let folder = temp.path().join("folder");
-        std::fs::create_dir_all(&folder).expect("failed to create folder");
+        crate::must_with(std::fs::create_dir_all(&folder), "failed to create folder");
 
         // Add workspace folder without config
-        let uri = url::Url::from_directory_path(&folder).expect("failed to create uri").to_string();
+        let uri = crate::must_with(url::Url::from_directory_path(&folder), "failed to create uri")
+            .to_string();
 
         server.workspace_folders.lock().push(
             crate::runtime::workspace_folder::WorkspaceFolderState::new(uri.clone())
@@ -905,7 +938,7 @@ include_paths = ["other_lib"]
         let folders = server.workspace_folders.lock();
         assert_eq!(folders.len(), 1);
 
-        let folder_state = folders.iter().find(|f| f.uri == uri).unwrap();
+        let folder_state = crate::must_some(folders.iter().find(|f| f.uri == uri));
         assert!(folder_state.project_config.is_none());
         // Should have default include paths
         assert!(!folder_state.effective_workspace_config.include_paths.is_empty());
@@ -973,11 +1006,12 @@ include_paths = ["stale_lib"]
     #[test]
     fn handle_client_response_rejects_hostile_absolute_include_paths() {
         let server = LspServer::new();
-        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let temp = crate::must_with(tempfile::tempdir(), "failed to create temp dir");
         let folder = temp.path().join("folder");
-        std::fs::create_dir_all(&folder).expect("failed to create folder");
+        crate::must_with(std::fs::create_dir_all(&folder), "failed to create folder");
 
-        let uri = url::Url::from_directory_path(&folder).expect("failed to create uri").to_string();
+        let uri = crate::must_with(url::Url::from_directory_path(&folder), "failed to create uri")
+            .to_string();
         let absolute = if cfg!(windows) { "C:\\Windows" } else { "/etc" };
 
         server.workspace_folders.lock().push(
@@ -1002,7 +1036,8 @@ include_paths = ["stale_lib"]
         })));
 
         let folders = server.workspace_folders.lock();
-        let folder_state = folders.iter().find(|f| f.uri == uri).expect("missing folder");
+        let folder_state =
+            crate::must_some_with(folders.iter().find(|f| f.uri == uri), "missing folder");
         assert_eq!(folder_state.effective_workspace_config.include_paths, vec!["lib".to_string()]);
         assert!(folder_state.effective_workspace_config.external_include_paths.is_empty());
     }
@@ -1010,16 +1045,18 @@ include_paths = ["stale_lib"]
     #[test]
     fn handle_client_response_applies_per_folder_workspace_config() {
         let server = LspServer::new();
-        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let temp = crate::must_with(tempfile::tempdir(), "failed to create temp dir");
         let folder1 = temp.path().join("folder1");
         let folder2 = temp.path().join("folder2");
-        std::fs::create_dir_all(&folder1).expect("failed to create folder1");
-        std::fs::create_dir_all(&folder2).expect("failed to create folder2");
+        crate::must_with(std::fs::create_dir_all(&folder1), "failed to create folder1");
+        crate::must_with(std::fs::create_dir_all(&folder2), "failed to create folder2");
 
         let uri1 =
-            url::Url::from_directory_path(&folder1).expect("failed to create uri1").to_string();
+            crate::must_with(url::Url::from_directory_path(&folder1), "failed to create uri1")
+                .to_string();
         let uri2 =
-            url::Url::from_directory_path(&folder2).expect("failed to create uri2").to_string();
+            crate::must_with(url::Url::from_directory_path(&folder2), "failed to create uri2")
+                .to_string();
 
         server.workspace_folders.lock().push(
             crate::runtime::workspace_folder::WorkspaceFolderState::new(uri1.clone())
@@ -1049,8 +1086,10 @@ include_paths = ["stale_lib"]
         })));
 
         let folders = server.workspace_folders.lock();
-        let folder1_state = folders.iter().find(|f| f.uri == uri1).expect("missing folder1");
-        let folder2_state = folders.iter().find(|f| f.uri == uri2).expect("missing folder2");
+        let folder1_state =
+            crate::must_some_with(folders.iter().find(|f| f.uri == uri1), "missing folder1");
+        let folder2_state =
+            crate::must_some_with(folders.iter().find(|f| f.uri == uri2), "missing folder2");
 
         assert!(
             folder1_state.effective_workspace_config.include_paths.contains(&"api_lib".to_string())
@@ -1065,10 +1104,11 @@ include_paths = ["stale_lib"]
     #[test]
     fn handle_client_response_ignores_removed_test_runner_authority() {
         let server = LspServer::new();
-        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let temp = crate::must_with(tempfile::tempdir(), "failed to create temp dir");
         let folder = temp.path().join("folder");
-        std::fs::create_dir_all(&folder).expect("failed to create folder");
-        let uri = url::Url::from_directory_path(&folder).expect("failed to create uri").to_string();
+        crate::must_with(std::fs::create_dir_all(&folder), "failed to create folder");
+        let uri = crate::must_with(url::Url::from_directory_path(&folder), "failed to create uri")
+            .to_string();
 
         server.workspace_folders.lock().push(
             crate::runtime::workspace_folder::WorkspaceFolderState::new(uri.clone())
@@ -1092,9 +1132,13 @@ include_paths = ["stale_lib"]
         })));
 
         let folders = server.workspace_folders.lock();
-        let state = folders.iter().find(|folder| folder.uri == uri).expect("missing folder");
+        let state = crate::must_some_with(
+            folders.iter().find(|folder| folder.uri == uri),
+            "missing folder",
+        );
         assert_eq!(state.effective_workspace_config.resolution_timeout_ms, 321);
-        let serialized = serde_json::to_value(&*server.config.lock()).expect("serialize config");
+        let serialized =
+            crate::must_with(serde_json::to_value(&*server.config.lock()), "serialize config");
         assert!(serialized.get("testRunner").is_none());
         assert!(serialized.to_string().find("CANARY").is_none());
     }
@@ -1148,10 +1192,11 @@ include_paths = ["stale_lib"]
     #[test]
     fn handle_client_response_ignores_non_array_result() {
         let server = LspServer::new();
-        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let temp = crate::must_with(tempfile::tempdir(), "failed to create temp dir");
         let folder = temp.path().join("folder");
-        std::fs::create_dir_all(&folder).expect("failed to create folder");
-        let uri = url::Url::from_directory_path(&folder).expect("failed to create uri").to_string();
+        crate::must_with(std::fs::create_dir_all(&folder), "failed to create folder");
+        let uri = crate::must_with(url::Url::from_directory_path(&folder), "failed to create uri")
+            .to_string();
 
         server.workspace_folders.lock().push(
             crate::runtime::workspace_folder::WorkspaceFolderState::new(uri.clone())
@@ -1172,7 +1217,8 @@ include_paths = ["stale_lib"]
         })));
 
         let folders = server.workspace_folders.lock();
-        let folder_state = folders.iter().find(|f| f.uri == uri).expect("missing folder");
+        let folder_state =
+            crate::must_some_with(folders.iter().find(|f| f.uri == uri), "missing folder");
         assert!(
             !folder_state.effective_workspace_config.include_paths.contains(&"oops".to_string())
         );
@@ -1181,16 +1227,18 @@ include_paths = ["stale_lib"]
     #[test]
     fn did_change_configuration_updates_folder_effective_configs() {
         let server = LspServer::new();
-        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let temp = crate::must_with(tempfile::tempdir(), "failed to create temp dir");
         let folder1 = temp.path().join("folder1");
         let folder2 = temp.path().join("folder2");
-        std::fs::create_dir_all(&folder1).expect("failed to create folder1");
-        std::fs::create_dir_all(&folder2).expect("failed to create folder2");
+        crate::must_with(std::fs::create_dir_all(&folder1), "failed to create folder1");
+        crate::must_with(std::fs::create_dir_all(&folder2), "failed to create folder2");
 
         let uri1 =
-            url::Url::from_directory_path(&folder1).expect("failed to create uri1").to_string();
+            crate::must_with(url::Url::from_directory_path(&folder1), "failed to create uri1")
+                .to_string();
         let uri2 =
-            url::Url::from_directory_path(&folder2).expect("failed to create uri2").to_string();
+            crate::must_with(url::Url::from_directory_path(&folder2), "failed to create uri2")
+                .to_string();
 
         server.workspace_folders.lock().push(
             crate::runtime::workspace_folder::WorkspaceFolderState::new(uri1)
@@ -1235,10 +1283,11 @@ include_paths = ["stale_lib"]
         // rejected before initialization completes (#7708).
         server.initialized.store(true, Ordering::Release);
 
-        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let temp = crate::must_with(tempfile::tempdir(), "failed to create temp dir");
         let folder = temp.path().join("folder");
-        std::fs::create_dir_all(&folder).expect("failed to create folder");
-        let uri = url::Url::from_directory_path(&folder).expect("failed to create uri").to_string();
+        crate::must_with(std::fs::create_dir_all(&folder), "failed to create folder");
+        let uri = crate::must_with(url::Url::from_directory_path(&folder), "failed to create uri")
+            .to_string();
 
         server.workspace_folders.lock().push(
             crate::runtime::workspace_folder::WorkspaceFolderState::new(uri)
@@ -1259,7 +1308,8 @@ include_paths = ["stale_lib"]
 
         let pending = server.pending_workspace_configuration_requests.lock();
         assert_eq!(pending.len(), 1, "only latest request should remain pending");
-        let pending_request = pending.values().next().expect("missing pending request");
+        let pending_request =
+            crate::must_some_with(pending.values().next(), "missing pending request");
         assert_eq!(pending_request.folder_uris.len(), 1);
         assert_eq!(pending_request.folder_uris[0], expected_uri);
     }
@@ -1419,7 +1469,7 @@ include_paths = ["stale_lib"]
         })));
 
         let folders = server.workspace_folders.lock();
-        let state = folders.iter().find(|f| f.uri == uri).expect("missing folder");
+        let state = crate::must_some_with(folders.iter().find(|f| f.uri == uri), "missing folder");
         assert_eq!(
             state.effective_workspace_config.resolution_timeout_ms, 444,
             "folder-scoped item must beat every lower layer, including the global item's 222"
@@ -1463,7 +1513,7 @@ include_paths = ["stale_lib"]
         })));
 
         let folders = server.workspace_folders.lock();
-        let state = folders.iter().find(|f| f.uri == uri).expect("missing folder");
+        let state = crate::must_some_with(folders.iter().find(|f| f.uri == uri), "missing folder");
         assert_eq!(
             state.effective_workspace_config.resolution_timeout_ms, 222,
             "client settings layer must beat initializationOptions and project config"
@@ -1509,7 +1559,7 @@ include_paths = ["stale_lib"]
         })));
 
         let folders = server.workspace_folders.lock();
-        let state = folders.iter().find(|f| f.uri == uri).expect("missing folder");
+        let state = crate::must_some_with(folders.iter().find(|f| f.uri == uri), "missing folder");
         assert_eq!(
             state.effective_workspace_config.resolution_timeout_ms, 333,
             "duplicate delivery of a consumed id and an unknown id must be rejected"
@@ -1547,7 +1597,7 @@ include_paths = ["stale_lib"]
         })));
 
         let folders = server.workspace_folders.lock();
-        let state = folders.iter().find(|f| f.uri == uri).expect("missing folder");
+        let state = crate::must_some_with(folders.iter().find(|f| f.uri == uri), "missing folder");
         assert_eq!(state.effective_workspace_config.resolution_timeout_ms, 321);
         assert_eq!(
             state.effective_workspace_config.include_paths,
@@ -1584,7 +1634,7 @@ include_paths = ["stale_lib"]
         })));
 
         let folders = server.workspace_folders.lock();
-        let state = folders.iter().find(|f| f.uri == uri).expect("missing folder");
+        let state = crate::must_some_with(folders.iter().find(|f| f.uri == uri), "missing folder");
         assert_ne!(
             state.effective_workspace_config.resolution_timeout_ms, 777,
             "the rebuilt generation must not reuse the superseded folder-scoped value"
@@ -1695,7 +1745,7 @@ include_paths = ["stale_lib"]
         })));
 
         let folders = server.workspace_folders.lock();
-        let state = folders.iter().find(|f| f.uri == uri).expect("missing folder");
+        let state = crate::must_some_with(folders.iter().find(|f| f.uri == uri), "missing folder");
         assert_eq!(
             state.effective_workspace_config.resolution_timeout_ms, 111,
             "wrong-typed resolutionTimeout falls back to the initializationOptions layer, \

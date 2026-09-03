@@ -2147,10 +2147,6 @@ fn lexical_path_key(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    // Tests are permitted to use `.expect()` on Result/Option per the repo's
-    // coding standards (unlike production code, where it is banned).
-    #![allow(clippy::expect_used)]
-
     use super::{filter_workspace_root_from_inline_module_scan_roots, lexical_path_key};
     use crate::LspServer;
     use crate::state::ClientCapabilities;
@@ -2169,16 +2165,18 @@ mod tests {
 
     #[test]
     fn code_lens_resolve_invalid_params_name_method_and_shape() {
-        let err = LspServer::new()
-            .handle_code_lens_resolve(None)
-            .expect_err("missing code lens params must be rejected");
+        let err = crate::must_err_with(
+            LspServer::new().handle_code_lens_resolve(None),
+            "missing code lens params must be rejected",
+        );
 
         assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
         assert_eq!(err.message, "codeLens/resolve: missing required parameter 'params'");
 
-        let err = LspServer::new()
-            .handle_code_lens_resolve(Some(json!({})))
-            .expect_err("malformed code lens params must be rejected");
+        let err = crate::must_err_with(
+            LspServer::new().handle_code_lens_resolve(Some(json!({}))),
+            "malformed code lens params must be rejected",
+        );
 
         assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
         assert_eq!(err.message, "codeLens/resolve: parameter 'params' must be a code lens object");
@@ -2186,9 +2184,10 @@ mod tests {
 
     #[test]
     fn execute_command_missing_params_name_method_and_field() {
-        let err = LspServer::new()
-            .handle_execute_command(None)
-            .expect_err("missing execute command params must be rejected");
+        let err = crate::must_err_with(
+            LspServer::new().handle_execute_command(None),
+            "missing execute command params must be rejected",
+        );
 
         assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
         assert_eq!(err.message, "workspace/executeCommand: missing required parameter 'params'");
@@ -2505,10 +2504,11 @@ mod tests {
             "position": { "line": 0, "character": 0 },
             "data": { "uri": "file:///fake.pl" }
         });
-        let result = server_no_cap
-            .handle_inlay_hint_resolve(Some(hint.clone()))
-            .expect("resolve must not error");
-        let resolved = result.expect("must return Some");
+        let result = crate::must_with(
+            server_no_cap.handle_inlay_hint_resolve(Some(hint.clone())),
+            "resolve must not error",
+        );
+        let resolved = crate::must_some_with(result, "must return Some");
         assert!(
             resolved.get("labelDetails").is_none(),
             "labelDetails must be absent when client did not declare resolve support"
@@ -2521,10 +2521,11 @@ mod tests {
             inlay_hint_resolve_support: Some(other_props),
             ..ClientCapabilities::default()
         });
-        let result2 = server_other_prop
-            .handle_inlay_hint_resolve(Some(hint.clone()))
-            .expect("resolve must not error");
-        let resolved2 = result2.expect("must return Some");
+        let result2 = crate::must_with(
+            server_other_prop.handle_inlay_hint_resolve(Some(hint.clone())),
+            "resolve must not error",
+        );
+        let resolved2 = crate::must_some_with(result2, "must return Some");
         assert!(
             resolved2.get("labelDetails").is_none(),
             "labelDetails must be absent when client only declared 'tooltip' resolve support"
@@ -2539,10 +2540,11 @@ mod tests {
             inlay_hint_resolve_support: Some(location_props),
             ..ClientCapabilities::default()
         });
-        let result3 = server_with_cap
-            .handle_inlay_hint_resolve(Some(hint))
-            .expect("resolve must not error when client declares label.location");
-        let resolved3 = result3.expect("must return Some");
+        let result3 = crate::must_with(
+            server_with_cap.handle_inlay_hint_resolve(Some(hint)),
+            "resolve must not error when client declares label.location",
+        );
+        let resolved3 = crate::must_some_with(result3, "must return Some");
         // Document is not open so resolve_hint_label_location returns None — labelDetails absent
         assert!(
             resolved3.get("labelDetails").is_none(),
@@ -2573,13 +2575,13 @@ mod tests {
             }
         });
 
-        server.handle_initialize(Some(params)).expect("initialize must not error");
+        crate::must_with(server.handle_initialize(Some(params)), "initialize must not error");
 
         let caps = server.client_capabilities.lock();
-        let props = caps
-            .inlay_hint_resolve_support
-            .as_ref()
-            .expect("inlay_hint_resolve_support must be Some after initialize with resolveSupport");
+        let props = crate::must_some_with(
+            caps.inlay_hint_resolve_support.as_ref(),
+            "inlay_hint_resolve_support must be Some after initialize with resolveSupport",
+        );
         assert!(props.contains("label.location"), "must contain 'label.location'");
         assert!(props.contains("tooltip"), "must contain 'tooltip'");
     }
@@ -2598,7 +2600,7 @@ mod tests {
             }
         });
 
-        server.handle_initialize(Some(params)).expect("initialize must not error");
+        crate::must_with(server.handle_initialize(Some(params)), "initialize must not error");
 
         let caps = server.client_capabilities.lock();
         assert!(

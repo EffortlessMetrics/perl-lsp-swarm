@@ -1,7 +1,3 @@
-#![expect(
-    clippy::unwrap_used,
-    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-)]
 // Integration tests print diagnostic output for CI troubleshooting; this is
 // not the LSP server's stdio transport, so print_stdout/print_stderr don't
 // apply the way they do to production code.
@@ -1224,8 +1220,8 @@ fn test_completion_scope_distance_ranking() -> Result<(), Box<dyn std::error::Er
     assert!(inner_item.is_some(), "$scope_inner should appear in completions");
     assert!(outer_item.is_some(), "$scope_outer should appear in completions");
 
-    let inner_sort = inner_item.unwrap()["sortText"].as_str().unwrap_or("");
-    let outer_sort = outer_item.unwrap()["sortText"].as_str().unwrap_or("");
+    let inner_sort = perl_test_must::must_some(inner_item)["sortText"].as_str().unwrap_or("");
+    let outer_sort = perl_test_must::must_some(outer_item)["sortText"].as_str().unwrap_or("");
 
     // Immediate scope -> sort key 'a00' -> sort_text "1a00_scope_inner"
     // PackageLevel (file-scope `my`) -> sort key 'c00' -> sort_text "1c00_scope_outer"

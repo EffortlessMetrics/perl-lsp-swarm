@@ -1259,10 +1259,6 @@ pub(crate) fn render_inventory_projection() -> String {
 
 #[cfg(test)]
 mod parse_effect_sink_contract_tests {
-    #![expect(
-        clippy::expect_used,
-        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-    )]
 
     use super::*;
 
@@ -1654,8 +1650,10 @@ mod parse_effect_sink_contract_tests {
             if repo_rel == contract_file || is_test_source_file(file) {
                 continue;
             }
-            let content = std::fs::read_to_string(file)
-                .expect("ledger sweep must be able to read every walked runtime source file");
+            let content = crate::must_with(
+                std::fs::read_to_string(file),
+                "ledger sweep must be able to read every walked runtime source file",
+            );
             // Same comment-stripping contract as count_occurrences: prose
             // mentions are not call sites.
             let mut code = String::with_capacity(content.len());
@@ -1727,9 +1725,9 @@ mod parse_effect_sink_contract_tests {
             "committed projection missing at {} -- regenerate with PERL_EFFECT_SINK_DUMP=1",
             golden_path.display()
         );
-        let golden = std::fs::read_to_string(&golden_path)
-            .expect("read committed inventory.md")
-            .replace("\r\n", "\n");
+        let golden =
+            crate::must_with(std::fs::read_to_string(&golden_path), "read committed inventory.md")
+                .replace("\r\n", "\n");
         assert_eq!(
             first, golden,
             "committed .spec inventory.md drifted from the checked inventory"
@@ -1752,9 +1750,17 @@ mod parse_effect_sink_contract_tests {
                 .join(".spec")
                 .join("11672-parse-effect-sink-contract")
                 .join("inventory.md");
-            std::fs::create_dir_all(path.parent().expect("parent of inventory.md"))
-                .expect("create spec dir");
-            std::fs::write(&path, render_inventory_projection()).expect("write inventory.md");
+            crate::must_with(
+                std::fs::create_dir_all(crate::must_some_with(
+                    path.parent(),
+                    "parent of inventory.md",
+                )),
+                "create spec dir",
+            );
+            crate::must_with(
+                std::fs::write(&path, render_inventory_projection()),
+                "write inventory.md",
+            );
         }
     }
 

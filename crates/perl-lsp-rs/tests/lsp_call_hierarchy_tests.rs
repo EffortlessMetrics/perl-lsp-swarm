@@ -11,10 +11,6 @@
 //! - Cross-package calls
 //! - Method calls on objects
 //! - Edge cases: Unicode, nested calls, no calls found
-#![expect(
-    clippy::unwrap_used,
-    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-)]
 
 mod support;
 use serde_json::json;
@@ -1149,7 +1145,7 @@ process();
          — URI resolution cannot be tested if the call is absent; got: {:?}",
         callee_names
     );
-    let format_string_call = format_string_call.unwrap();
+    let format_string_call = perl_test_must::must_some(format_string_call);
 
     let target_uri = format_string_call["to"]["uri"].as_str().unwrap_or("");
     assert_eq!(

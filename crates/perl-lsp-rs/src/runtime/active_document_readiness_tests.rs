@@ -3,8 +3,6 @@
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
-
     use super::super::LspServer;
     use parking_lot::Mutex;
     use serde_json::json;
@@ -34,25 +32,27 @@ mod tests {
     }
 
     fn open(server: &LspServer, uri: &str, text: &str) {
-        server
-            .test_handle_did_open(Some(json!({
+        crate::must_with(
+            server.test_handle_did_open(Some(json!({
                 "textDocument": {
                     "uri": uri,
                     "languageId": "perl",
                     "version": 1,
                     "text": text
                 }
-            })))
-            .expect("didOpen should succeed");
+            }))),
+            "didOpen should succeed",
+        );
     }
 
     fn change(server: &LspServer, uri: &str, version: i32, text: &str) {
-        server
-            .test_handle_did_change(Some(json!({
+        crate::must_with(
+            server.test_handle_did_change(Some(json!({
                 "textDocument": { "uri": uri, "version": version },
                 "contentChanges": [{ "text": text }]
-            })))
-            .expect("didChange should succeed");
+            }))),
+            "didChange should succeed",
+        );
     }
 
     fn wait_for_frames(buf: &StdArc<Mutex<Vec<u8>>>, minimum: usize, needle: &str) -> bool {
@@ -102,9 +102,10 @@ mod tests {
             _ => unreachable!("ready_pos checked Some above"),
         }
         let key = server.normalize_uri_key(uri);
-        let (state, generation, _seq) = server
-            .test_active_document_readiness(&key)
-            .expect("open document must have a readiness entry");
+        let (state, generation, _seq) = crate::must_some_with(
+            server.test_active_document_readiness(&key),
+            "open document must have a readiness entry",
+        );
         assert_eq!(generation, 1);
         assert_eq!(state, "parser_core_ready", "clean open with committed effects is ready");
     }
@@ -123,7 +124,7 @@ mod tests {
         // Capture the generation-1 identity arc.
         let stale_instance = {
             let docs = server.documents.lock();
-            std::sync::Arc::clone(&docs.get(&key).expect("open").generation.clone())
+            std::sync::Arc::clone(&crate::must_some_with(docs.get(&key), "open").generation.clone())
         };
         change(&server, uri, 2, "sub gen_two {};\n");
 
@@ -135,13 +136,13 @@ mod tests {
             super::super::readiness::CoreEffectKind::ParserDiagnosticsPublication,
         );
         let (_, generation, _) =
-            server.test_active_document_readiness(&key).expect("entry survives");
+            crate::must_some_with(server.test_active_document_readiness(&key), "entry survives");
         assert_eq!(generation, 2, "entry tracks the newer generation");
 
         // The newer generation's own effects complete -> ready at gen 2.
         let live_instance = {
             let docs = server.documents.lock();
-            std::sync::Arc::clone(&docs.get(&key).expect("open").generation.clone())
+            std::sync::Arc::clone(&crate::must_some_with(docs.get(&key), "open").generation.clone())
         };
         server.attach_active_document_effect(
             &key,
@@ -156,7 +157,7 @@ mod tests {
             super::super::readiness::CoreEffectKind::DocumentSymbols,
         );
         let (state, generation, _) =
-            server.test_active_document_readiness(&key).expect("entry present");
+            crate::must_some_with(server.test_active_document_readiness(&key), "entry present");
         assert_eq!(state, "parser_core_ready");
         assert_eq!(generation, 2);
     }
@@ -174,7 +175,7 @@ mod tests {
         );
         let key = server.normalize_uri_key(uri);
         let (state_before, _, _) =
-            server.test_active_document_readiness(&key).expect("entry present");
+            crate::must_some_with(server.test_active_document_readiness(&key), "entry present");
         assert_eq!(state_before, "parser_core_ready");
         let ready_frames_before = count_ready_frames(&buf);
 
@@ -186,7 +187,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(50));
 
         let (state_after, generation_after, _) =
-            server.test_active_document_readiness(&key).expect("entry present");
+            crate::must_some_with(server.test_active_document_readiness(&key), "entry present");
         assert_eq!(state_after, "guarded", "guarded no-parse state supersedes readiness");
         assert_eq!(generation_after, 2);
         assert_eq!(
@@ -208,7 +209,8 @@ mod tests {
         let uri = "file:///readiness_pull_client.pl";
         open(&server, uri, "sub pull_profile {};\n");
         let key = server.normalize_uri_key(uri);
-        let (state, _, _) = server.test_active_document_readiness(&key).expect("entry present");
+        let (state, _, _) =
+            crate::must_some_with(server.test_active_document_readiness(&key), "entry present");
         assert_eq!(
             state, "parser_core_ready",
             "profile v1 marks push publication not_applicable for pull clients"
@@ -226,9 +228,10 @@ mod tests {
         open(&server, uri, "sub close_me {};\n");
         let key = server.normalize_uri_key(uri);
         assert!(server.test_active_document_readiness(&key).is_some());
-        server
-            .handle_did_close(Some(json!({ "textDocument": { "uri": uri } })))
-            .expect("didClose should succeed");
+        crate::must_with(
+            server.handle_did_close(Some(json!({ "textDocument": { "uri": uri } }))),
+            "didClose should succeed",
+        );
         assert!(server.test_active_document_readiness(&key).is_none());
     }
 

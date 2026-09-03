@@ -2,10 +2,6 @@
 //!
 //! These tests are structured as Given/When/Then scenarios to validate
 //! end-to-end user workflows using the real JSON-RPC harness.
-#![expect(
-    clippy::unwrap_used,
-    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-)]
 // Integration tests print diagnostic output for CI troubleshooting; this is
 // not the LSP server's stdio transport, so print_stderr doesn't apply the
 // way it does to production code.
@@ -1923,12 +1919,12 @@ print $x;
     let empty_vec = vec![];
     let locations = response_inner.as_array().unwrap_or(&empty_vec);
     assert_eq!(locations.len(), 1);
-    let inner_def_line = location_start_line(&locations[0]).unwrap();
+    let inner_def_line = perl_test_must::must_some(location_start_line(&locations[0]));
     assert_eq!(inner_def_line, 5, "Expected inner $x declaration at line 5 (0-indexed)");
 
     scenario.when("requesting definition on the outer variable usage");
     // find the *last* instance of "print $x;"
-    let last_print_idx = script.rfind("print $x;").unwrap();
+    let last_print_idx = perl_test_must::must_some(script.rfind("print $x;"));
     let prefix = &script[..last_print_idx];
     let line_outer = prefix.chars().filter(|&c| c == '\n').count() as u32;
     let col_outer = prefix.chars().rev().take_while(|&c| c != '\n').count() as u32 + 6; // offset for "print "
@@ -1946,7 +1942,7 @@ print $x;
     let empty_vec_outer = vec![];
     let locations_outer = response_outer.as_array().unwrap_or(&empty_vec_outer);
     assert_eq!(locations_outer.len(), 1);
-    let outer_def_line = location_start_line(&locations_outer[0]).unwrap();
+    let outer_def_line = perl_test_must::must_some(location_start_line(&locations_outer[0]));
     assert_eq!(outer_def_line, 3, "Expected outer $x declaration at line 3 (0-indexed)");
 
     Ok(())

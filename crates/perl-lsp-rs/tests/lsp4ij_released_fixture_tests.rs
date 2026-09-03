@@ -3,10 +3,6 @@
 //! These assert released upstream identity only. They do not establish actual IntelliJ
 //! behavior, managed installation, DAP behavior, or support promotion.
 
-// Tests are permitted to use `.expect()` and `panic!` on Result/Option per the repo's
-// coding standards (unlike production code, where they are banned).
-#![allow(clippy::expect_used, clippy::panic)]
-
 use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
@@ -73,7 +69,7 @@ const MATERIALIZED_FIXTURES: &[(&str, &[u8])] = &[
 ];
 
 fn parse(input: &str) -> Value {
-    serde_json::from_str(input).expect("checked LSP4IJ fixture must parse")
+    perl_test_must::must_with(serde_json::from_str(input), "checked LSP4IJ fixture must parse")
 }
 
 fn is_lower_hex_sha1(value: &str) -> bool {
@@ -82,30 +78,34 @@ fn is_lower_hex_sha1(value: &str) -> bool {
 }
 
 fn git_blob_sha1(bytes: &[u8]) -> String {
-    let mut child = Command::new("git")
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args(["hash-object", "--stdin"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("git must be available to verify released fixture identities");
-    child
-        .stdin
-        .take()
-        .expect("git hash-object stdin")
-        .write_all(bytes)
-        .expect("write fixture bytes to git hash-object");
-    let output = child.wait_with_output().expect("git hash-object must complete");
+    let mut child = perl_test_must::must_with(
+        Command::new("git")
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .args(["hash-object", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn(),
+        "git must be available to verify released fixture identities",
+    );
+    perl_test_must::must_with(
+        perl_test_must::must_some_with(child.stdin.take(), "git hash-object stdin")
+            .write_all(bytes),
+        "write fixture bytes to git hash-object",
+    );
+    let output =
+        perl_test_must::must_with(child.wait_with_output(), "git hash-object must complete");
     assert!(
         output.status.success(),
         "git hash-object failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    String::from_utf8(output.stdout)
-        .expect("git hash-object output must be UTF-8")
-        .trim()
-        .to_owned()
+    perl_test_must::must_with(
+        String::from_utf8(output.stdout),
+        "git hash-object output must be UTF-8",
+    )
+    .trim()
+    .to_owned()
 }
 
 #[test]
@@ -120,10 +120,10 @@ fn released_fixture_pins_one_exact_nonmoving_upstream_subject() {
     assert_eq!(manifest.pointer("/import_tool/version"), Some(&json!("1")));
 
     for pointer in ["/upstream/commit", "/upstream/lsp_tree_sha1", "/upstream/dap_tree_sha1"] {
-        let value = manifest
-            .pointer(pointer)
-            .and_then(Value::as_str)
-            .expect("upstream identity must be a string");
+        let value = perl_test_must::must_some_with(
+            manifest.pointer(pointer).and_then(Value::as_str),
+            "upstream identity must be a string",
+        );
         assert!(is_lower_hex_sha1(value), "{pointer} must pin a lowercase 40-byte Git object id");
         assert!(!matches!(value, "main" | "master" | "HEAD"));
     }
@@ -132,16 +132,24 @@ fn released_fixture_pins_one_exact_nonmoving_upstream_subject() {
 #[test]
 fn released_fixture_inventory_is_bounded_and_digest_addressed() {
     let manifest = parse(MANIFEST);
-    let sources =
-        manifest.get("sources").and_then(Value::as_array).expect("fixture manifest sources");
+    let sources = perl_test_must::must_some_with(
+        manifest.get("sources").and_then(Value::as_array),
+        "fixture manifest sources",
+    );
     assert_eq!(sources.len(), 17, "bounded Perl fixture source set drifted");
 
     let mut namespaces = BTreeSet::new();
     let mut materialized = 0usize;
     for source in sources {
-        let namespace = source.get("namespace").and_then(Value::as_str).expect("source namespace");
+        let namespace = perl_test_must::must_some_with(
+            source.get("namespace").and_then(Value::as_str),
+            "source namespace",
+        );
         namespaces.insert(namespace);
-        let path = source.get("path").and_then(Value::as_str).expect("source path");
+        let path = perl_test_must::must_some_with(
+            source.get("path").and_then(Value::as_str),
+            "source path",
+        );
         assert!(
             !path.starts_with('/') && !path.contains(".."),
             "upstream fixture path must be bounded: {path}"
@@ -153,18 +161,20 @@ fn released_fixture_inventory_is_bounded_and_digest_addressed() {
                 || path == "docs/dap/user-defined-dap/perl-dap.md",
             "unrelated upstream path entered the Perl fixture: {path}"
         );
-        let blob = source
-            .get("git_blob_sha1")
-            .and_then(Value::as_str)
-            .expect("raw upstream blob identity");
+        let blob = perl_test_must::must_some_with(
+            source.get("git_blob_sha1").and_then(Value::as_str),
+            "raw upstream blob identity",
+        );
         assert!(is_lower_hex_sha1(blob), "invalid raw upstream blob identity for {path}");
         assert!(
             source.get("size").and_then(Value::as_u64).is_some(),
             "source byte size missing: {path}"
         );
 
-        let is_materialized =
-            source.get("materialized").and_then(Value::as_bool).expect("materialized disposition");
+        let is_materialized = perl_test_must::must_some_with(
+            source.get("materialized").and_then(Value::as_bool),
+            "materialized disposition",
+        );
         if is_materialized {
             materialized += 1;
             assert!(
@@ -186,27 +196,32 @@ fn released_fixture_inventory_is_bounded_and_digest_addressed() {
 #[test]
 fn materialized_fixture_bytes_match_manifest_git_blobs_and_sizes() {
     let manifest = parse(MANIFEST);
-    let sources =
-        manifest.get("sources").and_then(Value::as_array).expect("fixture manifest sources");
+    let sources = perl_test_must::must_some_with(
+        manifest.get("sources").and_then(Value::as_array),
+        "fixture manifest sources",
+    );
     let mut matched = BTreeSet::new();
 
     for source in sources {
-        if !source.get("materialized").and_then(Value::as_bool).expect("materialized disposition") {
+        if !perl_test_must::must_some_with(
+            source.get("materialized").and_then(Value::as_bool),
+            "materialized disposition",
+        ) {
             continue;
         }
-        let fixture_path = source
-            .get("fixture_path")
-            .and_then(Value::as_str)
-            .expect("materialized source fixture path");
+        let fixture_path = perl_test_must::must_some_with(
+            source.get("fixture_path").and_then(Value::as_str),
+            "materialized source fixture path",
+        );
         assert!(matched.insert(fixture_path), "duplicate materialized fixture: {fixture_path}");
-        let (_, bytes) = MATERIALIZED_FIXTURES
-            .iter()
-            .find(|(path, _)| *path == fixture_path)
-            .unwrap_or_else(|| panic!("manifest fixture path is not included: {fixture_path}"));
-        let expected_blob = source
-            .get("git_blob_sha1")
-            .and_then(Value::as_str)
-            .expect("materialized source blob identity");
+        let (_, bytes) = perl_test_must::must_some_with(
+            MATERIALIZED_FIXTURES.iter().find(|(path, _)| *path == fixture_path),
+            format!("manifest fixture path is not included: {fixture_path}"),
+        );
+        let expected_blob = perl_test_must::must_some_with(
+            source.get("git_blob_sha1").and_then(Value::as_str),
+            "materialized source blob identity",
+        );
         assert_eq!(git_blob_sha1(bytes), expected_blob, "fixture bytes drifted: {fixture_path}");
         assert_eq!(
             source.get("size").and_then(Value::as_u64),
@@ -224,25 +239,32 @@ fn materialized_fixture_bytes_match_manifest_git_blobs_and_sizes() {
 #[test]
 fn changed_materialized_bytes_do_not_reuse_released_identity() {
     let manifest = parse(MANIFEST);
-    let expected_blob = manifest
-        .get("sources")
-        .and_then(Value::as_array)
-        .and_then(|sources| {
-            sources.iter().find(|source| {
-                source.get("path").and_then(Value::as_str)
-                    == Some("src/main/resources/templates/lsp/perl-lsp/template.json")
+    let expected_blob = perl_test_must::must_some_with(
+        manifest
+            .get("sources")
+            .and_then(Value::as_array)
+            .and_then(|sources| {
+                sources.iter().find(|source| {
+                    source.get("path").and_then(Value::as_str)
+                        == Some("src/main/resources/templates/lsp/perl-lsp/template.json")
+                })
             })
-        })
-        .and_then(|source| source.get("git_blob_sha1"))
-        .and_then(Value::as_str)
-        .expect("LSP template blob identity");
-    let original = MATERIALIZED_FIXTURES
-        .iter()
-        .find(|(path, _)| *path == "lsp/template.json")
-        .map(|(_, bytes)| *bytes)
-        .expect("LSP template fixture");
+            .and_then(|source| source.get("git_blob_sha1"))
+            .and_then(Value::as_str),
+        "LSP template blob identity",
+    );
+    let original = perl_test_must::must_some_with(
+        MATERIALIZED_FIXTURES
+            .iter()
+            .find(|(path, _)| *path == "lsp/template.json")
+            .map(|(_, bytes)| *bytes),
+        "LSP template fixture",
+    );
     let mut changed = original.to_vec();
-    let first = changed.first_mut().expect("LSP template fixture must not be empty");
+    let first = perl_test_must::must_some_with(
+        changed.first_mut(),
+        "LSP template fixture must not be empty",
+    );
     *first ^= 1;
 
     assert_eq!(git_blob_sha1(original), expected_blob);
@@ -254,21 +276,23 @@ fn released_lsp_bytes_preserve_the_upstream_behavior_and_known_drift() {
     let template = parse(LSP_TEMPLATE);
     assert_eq!(template.get("id"), Some(&json!("perl-lsp")));
     assert_eq!(template.get("expandConfiguration"), Some(&json!(true)));
-    let program_args =
-        template.get("programArgs").and_then(Value::as_object).expect("released programArgs");
+    let program_args = perl_test_must::must_some_with(
+        template.get("programArgs").and_then(Value::as_object),
+        "released programArgs",
+    );
     assert!(program_args.values().all(|value| {
         value
             .as_str()
             .is_some_and(|command| command.contains("perllsp") && command.contains("--stdio"))
     }));
 
-    let patterns: BTreeSet<_> = template
-        .pointer("/fileTypeMappings/0/fileType/patterns")
-        .and_then(Value::as_array)
-        .expect("released Perl mappings")
-        .iter()
-        .filter_map(Value::as_str)
-        .collect();
+    let patterns: BTreeSet<_> = perl_test_must::must_some_with(
+        template.pointer("/fileTypeMappings/0/fileType/patterns").and_then(Value::as_array),
+        "released Perl mappings",
+    )
+    .iter()
+    .filter_map(Value::as_str)
+    .collect();
     for released_extra in ["*.PL", "*.cgi", "*.fcgi", "*.xs", "*.pod", "*.psgi", "*.tt2"] {
         assert!(
             patterns.contains(released_extra),
@@ -308,13 +332,13 @@ fn released_dap_bytes_remain_independent_from_lsp_desired_state() {
         template.pointer("/launch/default"),
         Some(&json!("<<insert base directory>>/perl-dap"))
     );
-    let patterns: BTreeSet<_> = template
-        .pointer("/fileTypeMappings/0/fileType/patterns")
-        .and_then(Value::as_array)
-        .expect("released DAP Perl mappings")
-        .iter()
-        .filter_map(Value::as_str)
-        .collect();
+    let patterns: BTreeSet<_> = perl_test_must::must_some_with(
+        template.pointer("/fileTypeMappings/0/fileType/patterns").and_then(Value::as_array),
+        "released DAP Perl mappings",
+    )
+    .iter()
+    .filter_map(Value::as_str)
+    .collect();
     assert!(patterns.contains("*.pod") && patterns.contains("*.xs") && patterns.contains("*.psgi"));
     assert!(DAP_INSTALLER.contains("releases/download/v0.15.0/"));
     assert!(DAP_INSTALLER.contains("perl-dap"));
@@ -325,18 +349,21 @@ fn released_dap_bytes_remain_independent_from_lsp_desired_state() {
 }
 
 fn collect_evidence_files(root: &Path, dir: &Path, found: &mut BTreeSet<String>) {
-    let entries = fs::read_dir(dir)
-        .unwrap_or_else(|error| panic!("read evidence directory {}: {error}", dir.display()));
+    let entries = perl_test_must::must_with(
+        fs::read_dir(dir),
+        format!("read evidence directory {}", dir.display()),
+    );
     for entry in entries {
-        let path = entry.expect("evidence directory entry").path();
+        let path = perl_test_must::must_with(entry, "evidence directory entry").path();
         if path.is_dir() {
             collect_evidence_files(root, &path, found);
         } else {
-            let relative = path
-                .strip_prefix(root)
-                .expect("evidence file must live under the fixture root")
-                .to_string_lossy()
-                .replace('\\', "/");
+            let relative = perl_test_must::must_with(
+                path.strip_prefix(root),
+                "evidence file must live under the fixture root",
+            )
+            .to_string_lossy()
+            .replace('\\', "/");
             found.insert(relative);
         }
     }

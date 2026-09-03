@@ -7,8 +7,6 @@
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
-
     use super::super::parse_worker::DocumentsHandle;
     use super::super::{DocumentState, LspServer};
     use crate::state::FIRST_ACCEPTED_DOCUMENT_GENERATION;
@@ -54,6 +52,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "didOpen dispatch must fail the test loudly when the fallback path cannot run"
+    )]
     fn unavailable_diagnostic_debouncer_falls_back_to_immediate_publish() {
         let (server, buf) = make_server_with_capture();
         let uri = "file:///diagnostic-debounce-fallback.pl";
@@ -141,16 +143,17 @@ mod tests {
         let (server, buf) = make_server_with_capture();
         let uri = "file:///full_aba_test.pl";
         let uri_key = server.normalize_uri_key(uri);
-        server
-            .test_handle_did_open(Some(json!({
+        crate::must_with(
+            server.test_handle_did_open(Some(json!({
                 "textDocument": {
                     "uri": uri,
                     "languageId": "perl",
                     "version": 1,
                     "text": "my $aba = 1;\n"
                 }
-            })))
-            .expect("didOpen should succeed");
+            }))),
+            "didOpen should succeed",
+        );
         assert!(wait_for_frames(&buf, 1), "initial open should publish before the falsifier runs");
         buf.lock().clear();
 
@@ -182,16 +185,17 @@ mod tests {
         let (server, buf) = make_server_with_capture();
         let uri = "file:///fast_stale_test.pl";
         let uri_key = server.normalize_uri_key(uri);
-        server
-            .test_handle_did_open(Some(json!({
+        crate::must_with(
+            server.test_handle_did_open(Some(json!({
                 "textDocument": {
                     "uri": uri,
                     "languageId": "perl",
                     "version": 1,
                     "text": "sub { SYNTAX ERROR HERE }\n"
                 }
-            })))
-            .expect("didOpen should succeed");
+            }))),
+            "didOpen should succeed",
+        );
         assert!(wait_for_frames(&buf, 1), "initial open should publish before the falsifier runs");
         buf.lock().clear();
 

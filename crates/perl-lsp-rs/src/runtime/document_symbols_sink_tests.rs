@@ -3,11 +3,10 @@
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
-
     use super::super::LspServer;
     use crate::runtime::document_symbols_sink::DocumentSymbolIdentity;
     use crate::runtime::parse_effect_contract::ParseEffectCommitOutcomeV1;
+    use crate::{must_some_with, must_with};
     use serde_json::json;
 
     fn make_server() -> LspServer {
@@ -18,25 +17,27 @@ mod tests {
     }
 
     fn open(server: &LspServer, uri: &str, text: &str) {
-        server
-            .test_handle_did_open(Some(json!({
+        crate::must_with(
+            server.test_handle_did_open(Some(json!({
                 "textDocument": {
                     "uri": uri,
                     "languageId": "perl",
                     "version": 1,
                     "text": text
                 }
-            })))
-            .expect("didOpen should succeed");
+            }))),
+            "didOpen should succeed",
+        );
     }
 
     fn change(server: &LspServer, uri: &str, version: i32, text: &str) {
-        server
-            .test_handle_did_change(Some(json!({
+        crate::must_with(
+            server.test_handle_did_change(Some(json!({
                 "textDocument": { "uri": uri, "version": version },
                 "contentChanges": [{ "text": text }]
-            })))
-            .expect("didChange should succeed");
+            }))),
+            "didChange should succeed",
+        );
     }
 
     fn has_symbol(server: &LspServer, prefix: &str) -> bool {
@@ -46,7 +47,7 @@ mod tests {
     fn identity_for_current(server: &LspServer, uri: &str) -> DocumentSymbolIdentity {
         let key = server.normalize_uri_key(uri);
         let docs = server.documents.lock();
-        let doc = docs.get(&key).expect("document must be open");
+        let doc = crate::must_some_with(docs.get(&key), "document must be open");
         DocumentSymbolIdentity::for_document(&key, &doc.generation, doc.current_generation())
     }
 
@@ -84,8 +85,10 @@ mod tests {
         }));
 
         // The stale N=1 replacement now attempts to commit.
-        let ast =
-            perl_parser::Parser::new("sub alpha_stale {};").parse().expect("parse should succeed");
+        let ast = crate::must_with(
+            perl_parser::Parser::new("sub alpha_stale {};").parse(),
+            "parse should succeed",
+        );
         let outcome =
             server.commit_document_symbols_from_ast(&stale_identity, &ast, "sub alpha_stale {};");
 
@@ -151,9 +154,10 @@ mod tests {
         open(&server, uri, "sub alpha_old {};\n");
         assert!(has_symbol(&server, "alpha_old"));
 
-        server
-            .handle_did_close(Some(json!({ "textDocument": { "uri": uri } })))
-            .expect("didClose should succeed");
+        crate::must_with(
+            server.handle_did_close(Some(json!({ "textDocument": { "uri": uri } }))),
+            "didClose should succeed",
+        );
         assert!(
             !has_symbol(&server, "alpha_old"),
             "lifecycle eviction must clear the closed document's row"
@@ -172,13 +176,16 @@ mod tests {
         let uri = "file:///sym_ledger_test.pl";
         open(&server, uri, "sub ledger_one {};\n");
         let key = server.normalize_uri_key(uri);
-        let baseline =
-            server.test_last_committed_document_symbols(&key).expect("didOpen must record");
+        let baseline = crate::must_some_with(
+            server.test_last_committed_document_symbols(&key),
+            "didOpen must record",
+        );
 
         change(&server, uri, 2, "sub ledger_two {};\n");
-        let after_edit = server
-            .test_last_committed_document_symbols(&key)
-            .expect("edit commit must be recorded");
+        let after_edit = crate::must_some_with(
+            server.test_last_committed_document_symbols(&key),
+            "edit commit must be recorded",
+        );
         assert!(
             after_edit.0 > baseline.0 || (after_edit.0 == baseline.0 && after_edit.1 > baseline.1),
             "ledger must advance in (generation, sequence): {baseline:?} -> {after_edit:?}"
@@ -199,8 +206,10 @@ mod tests {
 
         let identity = identity_for_current(&server, uri);
         let key = server.normalize_uri_key(uri);
-        let ledger_before_install =
-            server.test_last_committed_document_symbols(&key).expect("didOpen must have recorded");
+        let ledger_before_install = must_some_with(
+            server.test_last_committed_document_symbols(&key),
+            "didOpen must have recorded",
+        );
 
         // Interpose exactly between boundary validation and the serialized
         // install, then run the lifecycle-owned eviction: remove the document
@@ -216,9 +225,10 @@ mod tests {
 
         // The pre-validated candidate now attempts its commit against a
         // document the lifecycle already evicted.
-        let ast = perl_parser::Parser::new("sub alpha_barrier {};")
-            .parse()
-            .expect("parse should succeed");
+        let ast = must_with(
+            perl_parser::Parser::new("sub alpha_barrier {};").parse(),
+            "parse should succeed",
+        );
         let outcome =
             server.commit_document_symbols_from_ast(&identity, &ast, "sub alpha_barrier {};");
 

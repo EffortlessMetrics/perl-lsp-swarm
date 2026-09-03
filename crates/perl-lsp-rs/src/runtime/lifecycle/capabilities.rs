@@ -967,10 +967,6 @@ mod init_options_tests {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::unwrap_used,
-        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-    )]
     use super::{apply_disabled_feature_id, is_jetbrains_client, is_opencode_client};
     use crate::LspServer;
     use crate::protocol::capabilities::BuildFlags;
@@ -1130,8 +1126,8 @@ mod tests {
             let primary = Path::new("C:\\tmp\\primary");
             let secondary = Path::new("C:\\tmp\\secondary");
             (
-                url::Url::from_file_path(primary).unwrap().to_string(),
-                url::Url::from_file_path(secondary).unwrap().to_string(),
+                crate::must(url::Url::from_file_path(primary)).to_string(),
+                crate::must(url::Url::from_file_path(secondary)).to_string(),
             )
         };
 
@@ -1140,8 +1136,8 @@ mod tests {
             let primary_path = Path::new("/tmp/primary");
             let secondary_path = Path::new("/tmp/secondary");
             (
-                url::Url::from_file_path(primary_path).unwrap().to_string(),
-                url::Url::from_file_path(secondary_path).unwrap().to_string(),
+                crate::must(url::Url::from_file_path(primary_path)).to_string(),
+                crate::must(url::Url::from_file_path(secondary_path)).to_string(),
             )
         };
 
@@ -1982,8 +1978,8 @@ mod tests {
             let primary = Path::new("C:\\tmp\\init-opts-primary");
             let secondary = Path::new("C:\\tmp\\init-opts-secondary");
             (
-                url::Url::from_file_path(primary).unwrap().to_string(),
-                url::Url::from_file_path(secondary).unwrap().to_string(),
+                crate::must(url::Url::from_file_path(primary)).to_string(),
+                crate::must(url::Url::from_file_path(secondary)).to_string(),
             )
         };
         #[cfg(not(windows))]
@@ -1991,8 +1987,8 @@ mod tests {
             let primary = Path::new("/tmp/init-opts-primary");
             let secondary = Path::new("/tmp/init-opts-secondary");
             (
-                url::Url::from_file_path(primary).unwrap().to_string(),
-                url::Url::from_file_path(secondary).unwrap().to_string(),
+                crate::must(url::Url::from_file_path(primary)).to_string(),
+                crate::must(url::Url::from_file_path(secondary)).to_string(),
             )
         };
 

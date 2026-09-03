@@ -630,8 +630,6 @@ pub(super) fn handle(
 #[cfg(test)]
 mod tests {
     // Test helpers favor `expect()` with a descriptive message over silent
-    // unwraps; the workspace-wide deny is a production-code rule.
-    #![allow(clippy::expect_used)]
     use super::*;
     use crate::features::formatting::{FormatPosition, FormatRange};
 
@@ -650,7 +648,7 @@ mod tests {
     }
 
     fn compose_plan(source: &str, ranges: &[Value]) -> RangePlan {
-        build_plan(source, ranges).expect("test range plan must be valid")
+        crate::must_with(build_plan(source, ranges), "test range plan must be valid")
     }
 
     #[test]

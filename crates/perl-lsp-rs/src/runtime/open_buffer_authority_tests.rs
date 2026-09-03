@@ -5,27 +5,21 @@
 //! filesystem events must not evict it or re-derive workspace facts from
 //! contradicting disk bytes, and `didSave`/`didClose` complete the handoff
 //! deterministically.
-#![expect(
-    clippy::expect_used,
-    reason = "test-only policy proof: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-)]
-#![expect(
-    clippy::panic,
-    reason = "test-only barrier failure is a hard test error, not a production path"
-)]
 
 use super::{BackingFileTransition, LspServer};
 use serde_json::json;
 use tempfile::TempDir;
 
 fn file_uri(dir: &TempDir, name: &str) -> String {
-    url::Url::from_file_path(dir.path().join(name))
-        .expect("temp path must convert to file URI")
-        .to_string()
+    crate::must_with(
+        url::Url::from_file_path(dir.path().join(name)),
+        "temp path must convert to file URI",
+    )
+    .to_string()
 }
 
 fn write_file(dir: &TempDir, name: &str, content: &str) {
-    std::fs::write(dir.path().join(name), content).expect("write temp workspace file");
+    crate::must_with(std::fs::write(dir.path().join(name), content), "write temp workspace file");
 }
 
 fn delete_file(dir: &TempDir, name: &str) {
@@ -33,11 +27,12 @@ fn delete_file(dir: &TempDir, name: &str) {
 }
 
 fn watched_changes(server: &LspServer, uri: &str, change_type: i32) {
-    server
-        .handle_did_change_watched_files(Some(json!({
+    crate::must_with(
+        server.handle_did_change_watched_files(Some(json!({
             "changes": [{ "uri": uri, "type": change_type }]
-        })))
-        .expect("watched-files notification must parse");
+        }))),
+        "watched-files notification must parse",
+    );
 }
 
 /// Wait until the synchronous-fallback index tasks have settled.
@@ -48,7 +43,11 @@ fn wait_for_index_tasks(server: &LspServer) {
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    panic!("background index tasks did not drain");
+    assert_eq!(
+        server.pending_index_task_count.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "background index tasks did not drain"
+    );
 }
 
 fn index_symbols(server: &LspServer, query: &str) -> Vec<(String, String)> {
@@ -71,50 +70,54 @@ fn document_text(server: &LspServer, uri: &str) -> Option<String> {
 }
 
 fn did_open(server: &LspServer, uri: &str, text: &str) {
-    server
-        .handle_did_open(Some(json!({
+    crate::must_with(
+        server.handle_did_open(Some(json!({
             "textDocument": {
                 "uri": uri,
                 "languageId": "perl",
                 "version": 1,
                 "text": text
             }
-        })))
-        .expect("didOpen params are valid");
+        }))),
+        "didOpen params are valid",
+    );
     wait_for_index_tasks(server);
 }
 
 fn did_change_full(server: &LspServer, uri: &str, version: i32, text: &str) {
-    server
-        .handle_did_change(Some(json!({
+    crate::must_with(
+        server.handle_did_change(Some(json!({
             "textDocument": { "uri": uri, "version": version },
             "contentChanges": [{ "text": text }]
-        })))
-        .expect("didChange params are valid");
+        }))),
+        "didChange params are valid",
+    );
     wait_for_index_tasks(server);
 }
 
 fn did_close(server: &LspServer, uri: &str) {
-    server
-        .handle_did_close(Some(json!({
+    crate::must_with(
+        server.handle_did_close(Some(json!({
             "textDocument": { "uri": uri }
-        })))
-        .expect("didClose params are valid");
+        }))),
+        "didClose params are valid",
+    );
     wait_for_index_tasks(server);
 }
 
 fn did_create(server: &LspServer, uri: &str) {
-    server
-        .handle_did_create_files(Some(json!({
+    crate::must_with(
+        server.handle_did_create_files(Some(json!({
             "files": [{ "uri": uri }]
-        })))
-        .expect("didCreateFiles params are valid");
+        }))),
+        "didCreateFiles params are valid",
+    );
     wait_for_index_tasks(server);
 }
 
 #[test]
 fn watched_change_on_open_document_never_indexes_disk_over_buffer() {
-    let dir = TempDir::new().expect("tempdir");
+    let dir = crate::must_with(TempDir::new(), "tempdir");
     let uri = file_uri(&dir, "diverged.pl");
 
     write_file(&dir, "diverged.pl", "package Diverged;\nsub v1_only { }\n1;\n");
@@ -158,7 +161,7 @@ fn watched_change_on_open_document_never_indexes_disk_over_buffer() {
 
 #[test]
 fn did_create_over_open_document_never_indexes_disk_over_buffer() {
-    let dir = TempDir::new().expect("tempdir");
+    let dir = crate::must_with(TempDir::new(), "tempdir");
     let uri = file_uri(&dir, "recreated.pl");
 
     write_file(&dir, "recreated.pl", "package Recreated;\nsub v1_only { }\n1;\n");
@@ -201,7 +204,7 @@ fn did_create_over_open_document_never_indexes_disk_over_buffer() {
 
 #[test]
 fn did_create_via_percent_encoded_alias_never_indexes_disk_over_buffer() {
-    let dir = TempDir::new().expect("tempdir");
+    let dir = crate::must_with(TempDir::new(), "tempdir");
     let uri = file_uri(&dir, "aliased.pl");
 
     // The client reports the create through an equivalent but textually
@@ -210,9 +213,10 @@ fn did_create_via_percent_encoded_alias_never_indexes_disk_over_buffer() {
     // percent-decodes it to the same physical file, so openness must be
     // resolved through filesystem identity, not raw URI-key equality.
     let alias_uri = {
-        let (prefix, name) = uri.rsplit_once('/').expect("file URIs contain path separators");
+        let (prefix, name) =
+            crate::must_some_with(uri.rsplit_once('/'), "file URIs contain path separators");
         let mut chars = name.chars();
-        let first = chars.next().expect("created file name is non-empty");
+        let first = crate::must_some_with(chars.next(), "created file name is non-empty");
         let rest: String = chars.collect();
         format!("{prefix}/%{:02X}{rest}", u32::from(first))
     };
@@ -260,7 +264,7 @@ fn did_create_via_percent_encoded_alias_never_indexes_disk_over_buffer() {
 
 #[test]
 fn did_create_of_closed_file_still_indexes_disk_truth() {
-    let dir = TempDir::new().expect("tempdir");
+    let dir = crate::must_with(TempDir::new(), "tempdir");
     let uri = file_uri(&dir, "fresh_created.pl");
 
     write_file(&dir, "fresh_created.pl", "package FreshCreated;\nsub created_on_disk { }\n1;\n");
@@ -277,7 +281,7 @@ fn did_create_of_closed_file_still_indexes_disk_truth() {
 
 #[test]
 fn watched_delete_preserves_open_unsaved_document_and_generation() {
-    let dir = TempDir::new().expect("tempdir");
+    let dir = crate::must_with(TempDir::new(), "tempdir");
     let uri = file_uri(&dir, "doomed.pl");
     let v2 = "package Doomed;\nsub unsaved_work { }\n1;\n";
 
@@ -286,7 +290,7 @@ fn watched_delete_preserves_open_unsaved_document_and_generation() {
     did_open(&server, &uri, "package Doomed;\nsub original { }\n1;\n");
     did_change_full(&server, &uri, 2, v2);
 
-    let generation_arc = server.document_freshness(&uri).expect("open document").2;
+    let generation_arc = crate::must_some_with(server.document_freshness(&uri), "open document").2;
 
     delete_file(&dir, "doomed.pl");
     watched_changes(&server, &uri, 3);
@@ -310,7 +314,7 @@ fn watched_delete_preserves_open_unsaved_document_and_generation() {
 
 #[test]
 fn close_after_external_delete_removes_subject_without_resurrection() {
-    let dir = TempDir::new().expect("tempdir");
+    let dir = crate::must_with(TempDir::new(), "tempdir");
     let uri = file_uri(&dir, "gone_on_close.pl");
 
     write_file(&dir, "gone_on_close.pl", "package GoneOnClose;\nsub pre_delete { }\n1;\n");
@@ -341,7 +345,7 @@ fn close_after_external_delete_removes_subject_without_resurrection() {
 
 #[test]
 fn close_after_external_divergence_reloads_current_disk_bytes() {
-    let dir = TempDir::new().expect("tempdir");
+    let dir = crate::must_with(TempDir::new(), "tempdir");
     let uri = file_uri(&dir, "reload_on_close.pl");
 
     write_file(&dir, "reload_on_close.pl", "package ReloadOnClose;\nsub v1_only { }\n1;\n");
@@ -371,7 +375,7 @@ fn close_after_external_divergence_reloads_current_disk_bytes() {
 
 #[test]
 fn save_after_external_delete_recoheres_index_from_authoritative_buffer() {
-    let dir = TempDir::new().expect("tempdir");
+    let dir = crate::must_with(TempDir::new(), "tempdir");
     let uri = file_uri(&dir, "saved_back.pl");
     let saved = "package SavedBack;\nsub recreated_by_save { }\n1;\n";
 
@@ -385,10 +389,11 @@ fn save_after_external_delete_recoheres_index_from_authoritative_buffer() {
     watched_changes(&server, &uri, 3);
 
     write_file(&dir, "saved_back.pl", saved);
-    let doc_generation = server.document_generation(&uri).expect("still open");
-    server
-        .handle_did_save(Some(json!({ "textDocument": { "uri": uri } })))
-        .expect("didSave params are valid");
+    let doc_generation = crate::must_some_with(server.document_generation(&uri), "still open");
+    crate::must_with(
+        server.handle_did_save(Some(json!({ "textDocument": { "uri": uri } }))),
+        "didSave params are valid",
+    );
     wait_for_index_tasks(&server);
 
     let indexed = server.coordinator().and_then(|c| c.index().indexed_generation(&uri));
@@ -411,7 +416,7 @@ fn save_after_external_delete_recoheres_index_from_authoritative_buffer() {
 
 #[test]
 fn rename_of_open_document_keeps_instance_and_prevents_duplicate_facts() {
-    let dir = TempDir::new().expect("tempdir");
+    let dir = crate::must_with(TempDir::new(), "tempdir");
     let old_uri = file_uri(&dir, "renamed_clean.pm");
     let new_uri = file_uri(&dir, "renamed_new.pm");
 
@@ -420,11 +425,12 @@ fn rename_of_open_document_keeps_instance_and_prevents_duplicate_facts() {
     let server = LspServer::new();
     did_open(&server, &old_uri, "package RenamedClean;\nsub clean_body { }\n1;\n");
 
-    server
-        .handle_did_rename_files(Some(json!({
+    crate::must_with(
+        server.handle_did_rename_files(Some(json!({
             "files": [{ "oldUri": old_uri, "newUri": new_uri }]
-        })))
-        .expect("didRenameFiles params are valid");
+        }))),
+        "didRenameFiles params are valid",
+    );
     wait_for_index_tasks(&server);
 
     assert!(
@@ -456,7 +462,7 @@ fn normalize_like_index(uri: &str) -> String {
 
 #[test]
 fn rename_of_open_unsaved_document_indexes_disk_not_buffer() {
-    let dir = TempDir::new().expect("tempdir");
+    let dir = crate::must_with(TempDir::new(), "tempdir");
     let old_uri = file_uri(&dir, "dirty_old.pm");
     let new_uri = file_uri(&dir, "dirty_new.pm");
 
@@ -466,11 +472,12 @@ fn rename_of_open_unsaved_document_indexes_disk_not_buffer() {
     did_open(&server, &old_uri, "package DirtyOld;\nsub old_disk_leaf { }\n1;\n");
     did_change_full(&server, &old_uri, 2, "package DirtyOld;\nsub buffer_only_leaf { }\n1;\n");
 
-    server
-        .handle_did_rename_files(Some(json!({
+    crate::must_with(
+        server.handle_did_rename_files(Some(json!({
             "files": [{ "oldUri": old_uri, "newUri": new_uri }]
-        })))
-        .expect("didRenameFiles params are valid");
+        }))),
+        "didRenameFiles params are valid",
+    );
     wait_for_index_tasks(&server);
 
     assert_eq!(
@@ -495,7 +502,7 @@ fn rename_of_open_unsaved_document_indexes_disk_not_buffer() {
 
 #[test]
 fn save_after_rename_restores_original_path_facts_from_authoritative_buffer() {
-    let dir = TempDir::new().expect("tempdir");
+    let dir = crate::must_with(TempDir::new(), "tempdir");
     let old_uri = file_uri(&dir, "saveback_old.pm");
     let new_uri = file_uri(&dir, "saveback_new.pm");
     let buffer_text = "package SaveBack;\nsub recreated_by_save { }\n1;\n";
@@ -505,11 +512,12 @@ fn save_after_rename_restores_original_path_facts_from_authoritative_buffer() {
     let server = LspServer::new();
     did_open(&server, &old_uri, buffer_text);
 
-    server
-        .handle_did_rename_files(Some(json!({
+    crate::must_with(
+        server.handle_did_rename_files(Some(json!({
             "files": [{ "oldUri": old_uri, "newUri": new_uri }]
-        })))
-        .expect("didRenameFiles params are valid");
+        }))),
+        "didRenameFiles params are valid",
+    );
     wait_for_index_tasks(&server);
 
     let facts_at = |query: &str, uri_key: String| {
@@ -533,10 +541,11 @@ fn save_after_rename_restores_original_path_facts_from_authoritative_buffer() {
     // the file there; the save must restore that subject's facts from the
     // authoritative buffer (#8041 review: RenamedOrMoved handoff).
     write_file(&dir, "saveback_old.pm", buffer_text);
-    let doc_generation = server.document_generation(&old_uri).expect("still open");
-    server
-        .handle_did_save(Some(json!({ "textDocument": { "uri": old_uri } })))
-        .expect("didSave params are valid");
+    let doc_generation = crate::must_some_with(server.document_generation(&old_uri), "still open");
+    crate::must_with(
+        server.handle_did_save(Some(json!({ "textDocument": { "uri": old_uri } }))),
+        "didSave params are valid",
+    );
     wait_for_index_tasks(&server);
 
     assert_eq!(
@@ -554,7 +563,7 @@ fn save_after_rename_restores_original_path_facts_from_authoritative_buffer() {
 
 #[test]
 fn watcher_observed_rename_pair_preserves_open_buffer() {
-    let dir = TempDir::new().expect("tempdir");
+    let dir = crate::must_with(TempDir::new(), "tempdir");
     let old_uri = file_uri(&dir, "watch_renamed.pm");
     let new_uri = file_uri(&dir, "watch_renamed_new.pm");
 
@@ -586,7 +595,7 @@ fn watcher_observed_rename_pair_preserves_open_buffer() {
 
 #[test]
 fn late_watcher_batch_resolves_authority_at_execution_time() {
-    let dir = TempDir::new().expect("tempdir");
+    let dir = crate::must_with(TempDir::new(), "tempdir");
     let uri = file_uri(&dir, "late_batch.pl");
 
     write_file(&dir, "late_batch.pl", "package LateBatch;\nsub on_disk_late { }\n1;\n");

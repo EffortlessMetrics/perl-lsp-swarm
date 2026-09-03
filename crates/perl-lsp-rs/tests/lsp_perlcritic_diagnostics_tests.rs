@@ -16,9 +16,6 @@
 //! Issue: #2018
 
 #![cfg(all(not(target_arch = "wasm32"), feature = "expose_lsp_test_api"))]
-// Tests are permitted to use `.expect()`/`.expect_err()` on Result/Option per
-// the repo's coding standards (unlike production code, where they are banned).
-#![allow(clippy::expect_used)]
 
 use perl_lsp::LspServer;
 use perl_lsp_rs_core::config::CriticEngine;
@@ -80,7 +77,7 @@ fn test_a_violations_appear_in_pull_diagnostics_when_enabled() {
     server.test_install_mock_critic_runtime(runtime.clone());
     server.test_bypass_perlcritic_command_check();
 
-    let tempdir = tempfile::tempdir().expect("create test fixture directory");
+    let tempdir = perl_test_must::must_with(tempfile::tempdir(), "create test fixture directory");
     let uri = fixture_uri(&tempdir, "test.pl");
 
     let result = pull_diagnostics(
@@ -129,7 +126,7 @@ fn test_a1_severity_five_maps_to_error() {
     server.test_install_mock_critic_runtime(runtime.clone());
     server.test_bypass_perlcritic_command_check();
 
-    let tempdir = tempfile::tempdir().expect("create test fixture directory");
+    let tempdir = perl_test_must::must_with(tempfile::tempdir(), "create test fixture directory");
     let uri = fixture_uri(&tempdir, "test_sev5.pl");
 
     let result = pull_diagnostics(&server, runtime.as_ref(), &uri, "# line 1\nopen FH, $path;\n");
@@ -166,7 +163,7 @@ fn test_a_malformed_range_is_dropped_from_pull_diagnostics() {
     server.test_install_mock_critic_runtime(runtime.clone());
     server.test_bypass_perlcritic_command_check();
 
-    let tempdir = tempfile::tempdir().expect("create test fixture directory");
+    let tempdir = perl_test_must::must_with(tempfile::tempdir(), "create test fixture directory");
     let uri = fixture_uri(&tempdir, "test_malformed_range.pl");
 
     let result = pull_diagnostics(&server, runtime.as_ref(), &uri, "print 'hello';\n");
@@ -201,7 +198,7 @@ fn test_a2_severity_one_maps_to_hint() {
     server.test_install_mock_critic_runtime(runtime.clone());
     server.test_bypass_perlcritic_command_check();
 
-    let tempdir = tempfile::tempdir().expect("create test fixture directory");
+    let tempdir = perl_test_must::must_with(tempfile::tempdir(), "create test fixture directory");
     let uri = fixture_uri(&tempdir, "test_sev1.pl");
 
     let result = pull_diagnostics(&server, runtime.as_ref(), &uri, "# line 1\nopen FH, $path;\n");
@@ -232,7 +229,7 @@ fn test_b_no_subprocess_invocation_for_default_native_critic() {
     // The default critic engine is native, so the external Perl::Critic
     // subprocess path must not run.
 
-    let tempdir = tempfile::tempdir().expect("create test fixture directory");
+    let tempdir = perl_test_must::must_with(tempfile::tempdir(), "create test fixture directory");
     let uri = fixture_uri(&tempdir, "test_disabled.pl");
 
     pull_diagnostics(&server, runtime.as_ref(), &uri, "use strict;\nuse warnings;\n");
@@ -262,7 +259,7 @@ fn test_c_graceful_skip_when_perlcritic_not_installed() {
     runtime.add_response(MockResponse::success(b"".to_vec()));
     server.test_install_mock_critic_runtime(runtime.clone());
 
-    let tempdir = tempfile::tempdir().expect("create test fixture directory");
+    let tempdir = perl_test_must::must_with(tempfile::tempdir(), "create test fixture directory");
     let uri = fixture_uri(&tempdir, "test_not_installed.pl");
 
     pull_diagnostics(&server, runtime.as_ref(), &uri, "use strict;\n");
@@ -289,16 +286,19 @@ fn test_d_perlcriticrc_walkup_finds_workspace_root_config() {
     use std::fs;
     use tempfile::TempDir;
 
-    let tmp = TempDir::new().expect("tempdir");
+    let tmp = perl_test_must::must_with(TempDir::new(), "tempdir");
     let root = tmp.path().to_path_buf();
     let lib_dir = root.join("lib");
-    fs::create_dir_all(&lib_dir).expect("create lib/");
+    perl_test_must::must_with(fs::create_dir_all(&lib_dir), "create lib/");
 
     let rc_path = root.join(".perlcriticrc");
-    fs::write(&rc_path, "severity = 3\n").expect("write .perlcriticrc");
+    perl_test_must::must_with(fs::write(&rc_path, "severity = 3\n"), "write .perlcriticrc");
 
     let module_path = lib_dir.join("MyModule.pm");
-    fs::write(&module_path, "package MyModule;\n1;\n").expect("write MyModule.pm");
+    perl_test_must::must_with(
+        fs::write(&module_path, "package MyModule;\n1;\n"),
+        "write MyModule.pm",
+    );
 
     let server = LspServer::new();
     server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
@@ -313,7 +313,8 @@ fn test_d_perlcriticrc_walkup_finds_workspace_root_config() {
     server.test_install_mock_critic_runtime(runtime.clone());
     server.test_bypass_perlcritic_command_check();
 
-    let uri = url::Url::from_file_path(&module_path).expect("file url").to_string();
+    let uri =
+        perl_test_must::must_with(url::Url::from_file_path(&module_path), "file url").to_string();
 
     pull_diagnostics(&server, runtime.as_ref(), &uri, "package MyModule;\n1;\n");
 
@@ -335,16 +336,19 @@ fn test_e_empty_profile_falls_back_to_walkup_config() {
     use std::fs;
     use tempfile::TempDir;
 
-    let tmp = TempDir::new().expect("tempdir");
+    let tmp = perl_test_must::must_with(TempDir::new(), "tempdir");
     let root = tmp.path().to_path_buf();
     let lib_dir = root.join("lib");
-    fs::create_dir_all(&lib_dir).expect("create lib/");
+    perl_test_must::must_with(fs::create_dir_all(&lib_dir), "create lib/");
 
     let rc_path = root.join(".perlcriticrc");
-    fs::write(&rc_path, "severity = 3\n").expect("write .perlcriticrc");
+    perl_test_must::must_with(fs::write(&rc_path, "severity = 3\n"), "write .perlcriticrc");
 
     let module_path = lib_dir.join("MyModule.pm");
-    fs::write(&module_path, "package MyModule;\n1;\n").expect("write MyModule.pm");
+    perl_test_must::must_with(
+        fs::write(&module_path, "package MyModule;\n1;\n"),
+        "write MyModule.pm",
+    );
 
     let server = LspServer::new();
     server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
@@ -356,7 +360,8 @@ fn test_e_empty_profile_falls_back_to_walkup_config() {
     server.test_install_mock_critic_runtime(runtime.clone());
     server.test_bypass_perlcritic_command_check();
 
-    let uri = url::Url::from_file_path(&module_path).expect("file url").to_string();
+    let uri =
+        perl_test_must::must_with(url::Url::from_file_path(&module_path), "file url").to_string();
 
     pull_diagnostics(&server, runtime.as_ref(), &uri, "package MyModule;\n1;\n");
 
@@ -376,11 +381,14 @@ fn test_e_empty_profile_falls_back_to_walkup_config() {
 fn test_f_missing_configured_profile_skips_subprocess_and_diagnostics() {
     use tempfile::TempDir;
 
-    let tmp = TempDir::new().expect("tempdir");
+    let tmp = perl_test_must::must_with(TempDir::new(), "tempdir");
     let root = tmp.path().to_path_buf();
     let missing_profile = root.join("missing.perlcriticrc");
     let module_path = root.join("NoProfile.pm");
-    std::fs::write(&module_path, "package NoProfile;\n1;\n").expect("write module");
+    perl_test_must::must_with(
+        std::fs::write(&module_path, "package NoProfile;\n1;\n"),
+        "write module",
+    );
 
     let server = LspServer::new();
     server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
@@ -392,7 +400,8 @@ fn test_f_missing_configured_profile_skips_subprocess_and_diagnostics() {
     server.test_install_mock_critic_runtime(runtime.clone());
     server.test_bypass_perlcritic_command_check();
 
-    let uri = url::Url::from_file_path(&module_path).expect("file url").to_string();
+    let uri =
+        perl_test_must::must_with(url::Url::from_file_path(&module_path), "file url").to_string();
     pull_diagnostics(&server, runtime.as_ref(), &uri, "package NoProfile;\n1;\n");
 
     // Legacy mode may still emit built-in policy diagnostics. A missing
@@ -409,16 +418,19 @@ fn test_f2_relative_configured_profile_resolves_from_workspace_root() {
     use std::fs;
     use tempfile::TempDir;
 
-    let tmp = TempDir::new().expect("tempdir");
+    let tmp = perl_test_must::must_with(TempDir::new(), "tempdir");
     let root = tmp.path().to_path_buf();
     let cfg_dir = root.join("config");
-    fs::create_dir_all(&cfg_dir).expect("create config/");
+    perl_test_must::must_with(fs::create_dir_all(&cfg_dir), "create config/");
 
     let profile_path = cfg_dir.join("perlcriticrc");
-    fs::write(&profile_path, "severity = 3\n").expect("write profile");
+    perl_test_must::must_with(fs::write(&profile_path, "severity = 3\n"), "write profile");
 
     let module_path = root.join("RelativeProfile.pm");
-    fs::write(&module_path, "package RelativeProfile;\n1;\n").expect("write module");
+    perl_test_must::must_with(
+        fs::write(&module_path, "package RelativeProfile;\n1;\n"),
+        "write module",
+    );
 
     let server = LspServer::new();
     server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
@@ -430,7 +442,8 @@ fn test_f2_relative_configured_profile_resolves_from_workspace_root() {
     runtime.add_response(MockResponse::success(b"".to_vec()));
     server.test_install_mock_critic_runtime(runtime.clone());
 
-    let uri = url::Url::from_file_path(&module_path).expect("file url").to_string();
+    let uri =
+        perl_test_must::must_with(url::Url::from_file_path(&module_path), "file url").to_string();
     pull_diagnostics(&server, runtime.as_ref(), &uri, "package RelativeProfile;\n1;\n");
 
     let invocations = runtime.invocations();
@@ -454,16 +467,16 @@ fn test_f3_walkup_finds_perlcriticrc_without_dot_prefix() {
     use std::fs;
     use tempfile::TempDir;
 
-    let tmp = TempDir::new().expect("tempdir");
+    let tmp = perl_test_must::must_with(TempDir::new(), "tempdir");
     let root = tmp.path().to_path_buf();
     let lib_dir = root.join("lib");
-    fs::create_dir_all(&lib_dir).expect("create lib/");
+    perl_test_must::must_with(fs::create_dir_all(&lib_dir), "create lib/");
 
     let rc_path = root.join("perlcriticrc");
-    fs::write(&rc_path, "severity = 3\n").expect("write perlcriticrc");
+    perl_test_must::must_with(fs::write(&rc_path, "severity = 3\n"), "write perlcriticrc");
 
     let module_path = lib_dir.join("NoDotRc.pm");
-    fs::write(&module_path, "package NoDotRc;\n1;\n").expect("write module");
+    perl_test_must::must_with(fs::write(&module_path, "package NoDotRc;\n1;\n"), "write module");
 
     let server = LspServer::new();
     server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
@@ -475,7 +488,8 @@ fn test_f3_walkup_finds_perlcriticrc_without_dot_prefix() {
     runtime.add_response(MockResponse::success(b"".to_vec()));
     server.test_install_mock_critic_runtime(runtime.clone());
 
-    let uri = url::Url::from_file_path(&module_path).expect("file url").to_string();
+    let uri =
+        perl_test_must::must_with(url::Url::from_file_path(&module_path), "file url").to_string();
     pull_diagnostics(&server, runtime.as_ref(), &uri, "package NoDotRc;\n1;\n");
 
     let invocations = runtime.invocations();
@@ -498,15 +512,18 @@ fn test_g_did_change_configuration_resets_pull_perlcritic_analyzer() {
     use std::fs;
     use tempfile::TempDir;
 
-    let tmp = TempDir::new().expect("tempdir");
+    let tmp = perl_test_must::must_with(TempDir::new(), "tempdir");
     let root = tmp.path().to_path_buf();
     let profile_a = root.join("profile-a.perlcriticrc");
     let profile_b = root.join("profile-b.perlcriticrc");
-    fs::write(&profile_a, "severity = 3\n").expect("write profile-a");
-    fs::write(&profile_b, "severity = 3\n").expect("write profile-b");
+    perl_test_must::must_with(fs::write(&profile_a, "severity = 3\n"), "write profile-a");
+    perl_test_must::must_with(fs::write(&profile_b, "severity = 3\n"), "write profile-b");
 
     let module_path = root.join("ConfigSwitch.pm");
-    fs::write(&module_path, "package ConfigSwitch;\n1;\n").expect("write module");
+    perl_test_must::must_with(
+        fs::write(&module_path, "package ConfigSwitch;\n1;\n"),
+        "write module",
+    );
 
     let server = LspServer::new();
     server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
@@ -519,17 +536,19 @@ fn test_g_did_change_configuration_resets_pull_perlcritic_analyzer() {
     runtime.add_response(MockResponse::success(b"".to_vec()));
     server.test_install_mock_critic_runtime(runtime.clone());
 
-    let uri = url::Url::from_file_path(&module_path).expect("file url").to_string();
-    server
-        .test_handle_did_open(Some(json!({
+    let uri =
+        perl_test_must::must_with(url::Url::from_file_path(&module_path), "file url").to_string();
+    perl_test_must::must_with(
+        server.test_handle_did_open(Some(json!({
             "textDocument": {
                 "uri": uri,
                 "languageId": "perl",
                 "version": 1,
                 "text": "package ConfigSwitch;\n1;\n"
             }
-        })))
-        .expect("didOpen should succeed");
+        }))),
+        "didOpen should succeed",
+    );
 
     server.test_handle_did_change_configuration(Some(json!({
         "settings": {
@@ -573,7 +592,8 @@ fn test_g_did_change_configuration_resets_pull_perlcritic_analyzer() {
             .any(|call| call.args.contains(&format!("--profile={}", profile_a.to_string_lossy()))),
         "at least one invocation should use profile-a; invocations: {invocations:?}"
     );
-    let last = invocations.last().expect("at least one invocation recorded");
+    let last =
+        perl_test_must::must_some_with(invocations.last(), "at least one invocation recorded");
     assert!(
         last.args.contains(&format!("--profile={}", profile_b.to_string_lossy())),
         "last invocation should use profile-b after didChangeConfiguration; args: {:?}",
@@ -592,13 +612,16 @@ fn test_h_native_critic_severity_change_resets_analyzer() {
     use std::fs;
     use tempfile::TempDir;
 
-    let tmp = TempDir::new().expect("tempdir");
+    let tmp = perl_test_must::must_with(TempDir::new(), "tempdir");
     let root = tmp.path().to_path_buf();
     let profile = root.join("profile.perlcriticrc");
-    fs::write(&profile, "severity = 3\n").expect("write profile");
+    perl_test_must::must_with(fs::write(&profile, "severity = 3\n"), "write profile");
 
     let module_path = root.join("SeveritySwitch.pm");
-    fs::write(&module_path, "package SeveritySwitch;\n1;\n").expect("write module");
+    perl_test_must::must_with(
+        fs::write(&module_path, "package SeveritySwitch;\n1;\n"),
+        "write module",
+    );
 
     let server = LspServer::new();
     server.test_set_root_path(root);
@@ -609,17 +632,19 @@ fn test_h_native_critic_severity_change_resets_analyzer() {
     runtime.add_response(MockResponse::success(b"".to_vec()));
     server.test_install_mock_critic_runtime(runtime.clone());
 
-    let uri = url::Url::from_file_path(&module_path).expect("file url").to_string();
-    server
-        .test_handle_did_open(Some(json!({
+    let uri =
+        perl_test_must::must_with(url::Url::from_file_path(&module_path), "file url").to_string();
+    perl_test_must::must_with(
+        server.test_handle_did_open(Some(json!({
             "textDocument": {
                 "uri": uri,
                 "languageId": "perl",
                 "version": 1,
                 "text": "package SeveritySwitch;\n1;\n"
             }
-        })))
-        .expect("didOpen should succeed");
+        }))),
+        "didOpen should succeed",
+    );
 
     // Establish the analyzer at severity 3 via the legacy engine + profile.
     server.test_handle_did_change_configuration(Some(json!({

@@ -76,40 +76,37 @@ pub(crate) struct RecordingSink {
     pub messages: std::sync::Mutex<Vec<OutboundMessage>>,
 }
 
-// This RecordingSink test helper is `#[cfg(test)]`-only and uses `unwrap()`
-// on its own private mutex, which is never contended across a panic
-// boundary; the workspace-wide deny is a production-code rule.
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 impl RecordingSink {
     pub(crate) fn new() -> Self {
         Self { messages: std::sync::Mutex::new(Vec::new()) }
     }
 
+    fn locked_messages(&self) -> std::sync::MutexGuard<'_, Vec<OutboundMessage>> {
+        crate::must(self.messages.lock())
+    }
+
     /// Drain and return all recorded messages.
     pub(crate) fn drain(&self) -> Vec<OutboundMessage> {
-        std::mem::take(&mut *self.messages.lock().unwrap())
+        std::mem::take(&mut *self.locked_messages())
     }
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 impl OutboundSink for RecordingSink {
     fn send_response(&self, response: JsonRpcResponse) -> io::Result<()> {
-        self.messages.lock().unwrap().push(OutboundMessage::Response(response));
+        self.locked_messages().push(OutboundMessage::Response(response));
         Ok(())
     }
 
     fn send_notification(&self, method: &str, params: Value) -> io::Result<()> {
-        self.messages
-            .lock()
-            .unwrap()
+        self.locked_messages()
             .push(OutboundMessage::Notification { method: method.to_string(), params });
         Ok(())
     }
 
     fn send_request(&self, id: ServerRequestId, method: &str, params: Value) -> io::Result<()> {
-        self.messages.lock().unwrap().push(OutboundMessage::Request {
+        self.locked_messages().push(OutboundMessage::Request {
             id,
             method: method.to_string(),
             params,
@@ -456,9 +453,6 @@ fn serialize_message(msg: &OutboundMessage) -> Vec<u8> {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    // Test assertions favor `unwrap()`/`panic!` over propagating errors;
-    // the workspace-wide deny is a production-code rule.
-    #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use serde_json::json;
     use std::error::Error;
@@ -721,6 +715,7 @@ pub(crate) mod tests {
     /// `BrokenPipe`, and later producer observations (which only ever see the
     /// closed channel) cannot overwrite the recorded first cause.
     #[test]
+    #[expect(clippy::panic, reason = "the unexpected settlement arm must fail the test loudly")]
     fn writer_write_failure_preserves_first_cause_against_broken_pipe_observations()
     -> Result<(), Box<dyn Error>> {
         // Distinct from BrokenPipe so a masquerading channel error cannot pass.
@@ -779,6 +774,7 @@ pub(crate) mod tests {
     /// `FlushFailed` outcome — never misclassified as a write failure — with
     /// the written-but-unconfirmed batch represented conservatively.
     #[test]
+    #[expect(clippy::panic, reason = "the unexpected settlement arms must fail the test loudly")]
     fn writer_flush_failure_is_distinct_from_write_failure() -> Result<(), Box<dyn Error>> {
         let sink_kind = io::ErrorKind::BrokenPipe;
         let buffer = SharedBuffer::new();
@@ -825,6 +821,7 @@ pub(crate) mod tests {
     /// releases, those five must coalesce into exactly one failed batch
     /// (`queued == 0`), and the outcome must account for all five.
     #[test]
+    #[expect(clippy::panic, reason = "the unexpected settlement arm must fail the test loudly")]
     fn multi_message_failed_batch_counts_every_accepted_message() -> Result<(), Box<dyn Error>> {
         struct GatedThenFailingSink {
             warmup_entered: Arc<AtomicBool>,
@@ -1006,17 +1003,21 @@ pub(crate) mod tests {
         }
 
         let sink = RecordingSink::new();
-        send_diagnostics_notification(&sink, "file:///test.pl").unwrap();
+        crate::must(send_diagnostics_notification(&sink, "file:///test.pl"));
 
         let messages = sink.drain();
         assert_eq!(messages.len(), 1, "exactly one message should be recorded");
-        match &messages[0] {
-            OutboundMessage::Notification { method, params } => {
-                assert_eq!(method, "textDocument/publishDiagnostics");
-                assert_eq!(params["uri"], "file:///test.pl");
+        let (method, params) = match &messages[0] {
+            OutboundMessage::Notification { method, params } => (method, params),
+            OutboundMessage::Request { .. } => {
+                crate::must_some_with(None, "expected Notification, got Request")
             }
-            _ => panic!("expected Notification, got something else"),
-        }
+            OutboundMessage::Response(_) => {
+                crate::must_some_with(None, "expected Notification, got Response")
+            }
+        };
+        assert_eq!(method, "textDocument/publishDiagnostics");
+        assert_eq!(params["uri"], "file:///test.pl");
     }
 
     /// Verify that OutboundSender also satisfies the OutboundSink trait,
@@ -1029,7 +1030,7 @@ pub(crate) mod tests {
 
         let (sender, _handle) = spawn_writer(Box::new(std::io::sink()));
         // This compiles only if OutboundSender implements OutboundSink.
-        accept_sink(&sender).unwrap();
+        crate::must(accept_sink(&sender));
     }
 
     /// #8896 §3: the outbound seam refuses to emit frames whose method is

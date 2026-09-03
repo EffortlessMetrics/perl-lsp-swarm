@@ -1117,7 +1117,7 @@ fn process_job(
     // Never reachable outside `#[cfg(test)]` / `expose_lsp_test_api` builds,
     // and even then only when a test explicitly arms it.
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
-    #[allow(clippy::panic)]
+    #[expect(clippy::panic, reason = "deliberate panic/poison path is the test subject")]
     if panic_injector.should_panic(&job.normalized_uri, job.generation) {
         panic!("parse_worker test panic injection for {}:{}", job.normalized_uri, job.generation);
     }
@@ -1245,9 +1245,6 @@ fn process_job(
 
 #[cfg(test)]
 mod tests {
-    // Test assertions favor `expect()`/`panic!` with a descriptive message
-    // over silent unwraps; the workspace-wide deny is a production-code rule.
-    #![allow(clippy::expect_used, clippy::panic)]
     use super::*;
     use perl_tdd_support::must_some;
     use std::sync::atomic::AtomicUsize;
@@ -2161,7 +2158,7 @@ mod tests {
         let documents = Arc::new(Mutex::new(map));
 
         let (cb, _calls) = counting_callback();
-        #[allow(clippy::panic)]
+        #[expect(clippy::panic, reason = "deliberate panic/poison path is the test subject")]
         let worker = ParseWorker::spawn_with_pending_count_hooks(
             Arc::clone(&documents),
             cb,
@@ -2272,7 +2269,8 @@ mod tests {
         // thread that exits immediately. Spin-wait (deterministic) for the
         // thread to report is_finished() instead of a fragile hard-coded sleep
         // (graphite/kilo/factory-droid review on #5731).
-        let done_handle = std::thread::Builder::new().spawn(|| {}).expect("spawn dummy thread");
+        let done_handle =
+            crate::must_with(std::thread::Builder::new().spawn(|| {}), "spawn dummy thread");
         *worker.handles.lock() = vec![done_handle];
         // Spin-wait until the dummy thread reports finished (max 2s timeout).
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -2282,9 +2280,10 @@ mod tests {
                 break;
             }
             drop(handles);
-            if std::time::Instant::now() >= deadline {
-                panic!("dummy thread did not finish within 2s timeout");
-            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "dummy thread did not finish within 2s timeout"
+            );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         assert!(

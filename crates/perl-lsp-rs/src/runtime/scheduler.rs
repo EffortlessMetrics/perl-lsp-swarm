@@ -2376,7 +2376,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[allow(clippy::panic, reason = "the handler under test must actually panic")]
+    #[expect(clippy::panic, reason = "the handler under test must actually panic")]
     async fn panicked_request_handler_answers_with_internal_error() {
         let outcome = Scheduler::run_handler(
             || panic!("provider exploded"),
@@ -2414,7 +2414,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[allow(clippy::panic, reason = "the handler under test must actually panic")]
+    #[expect(clippy::panic, reason = "the handler under test must actually panic")]
     async fn panicked_notification_handler_sends_nothing() {
         // A notification has no id, so there is no reply to address and nothing
         // is left hanging. Answering anyway would be a protocol violation.
@@ -2428,7 +2428,7 @@ mod tests {
     }
 
     /// The `JoinError` a real panicking blocking task produces.
-    #[allow(clippy::panic, reason = "the task under test must actually panic")]
+    #[expect(clippy::panic, reason = "the task under test must actually panic")]
     async fn join_error_from<F>(work: F) -> tokio::task::JoinError
     where
         F: FnOnce() + Send + 'static,
@@ -2440,7 +2440,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[allow(clippy::panic, reason = "the task under test must actually panic")]
+    #[expect(clippy::panic, reason = "the task under test must actually panic")]
     async fn join_failure_detail_recovers_static_str_payload() {
         // A literal `panic!("...")` carries a `&'static str` payload.
         let detail =
@@ -2449,7 +2449,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[allow(clippy::panic, reason = "the task under test must actually panic")]
+    #[expect(clippy::panic, reason = "the task under test must actually panic")]
     async fn join_failure_detail_recovers_formatted_string_payload() {
         // `panic!("{}", x)` carries a `String` payload rather than a `&'static str`.
         // These are separate downcast arms, so both need covering — the log line

@@ -3093,14 +3093,6 @@ fn builtin_violation_to_diagnostic(
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::unwrap_used,
-        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-    )]
-    // Tests are permitted to use `.expect()` on Result/Option per the repo's
-    // coding standards (unlike production code, where it is banned).
-    #![allow(clippy::expect_used)]
-
     use super::*;
     use serde_json::json;
     use std::io::Write;
@@ -4013,21 +4005,23 @@ mod tests {
         server.test_install_mock_critic_runtime(runtime_for_server);
         server.test_bypass_perlcritic_command_check();
 
-        server
-            .test_handle_did_open(Some(json!({
+        crate::must_with(
+            server.test_handle_did_open(Some(json!({
                     "textDocument": {
                         "uri": uri,
                         "languageId": "perl",
                         "version": 1,
                         "text": "print 'hello';\n"
                     }
-            })))
-            .expect("didOpen should succeed");
+            }))),
+            "didOpen should succeed",
+        );
         let _initial_output =
             capture_until(&buffer, |output| output.contains("publishDiagnostics"));
-        server
-            .test_publish_parse_for_current_generation(uri)
-            .expect("test parse should publish the current snapshot");
+        crate::must_with(
+            server.test_publish_parse_for_current_generation(uri),
+            "test parse should publish the current snapshot",
+        );
         buffer.lock().clear();
         server.publish_diagnostics(uri);
         capture_until(&buffer, |output| output.contains("valid range"));
@@ -4050,11 +4044,9 @@ mod tests {
     fn stable_generation_publishes_diagnostics() {
         let (server, buf) = make_server_with_capture();
         let uri = "file:///stable_gen_test.pl";
-        server
-            .test_handle_did_open(Some(json!({
-                "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "my $x = 1;\n"}
-            })))
-            .unwrap();
+        crate::must(server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "my $x = 1;\n"}
+        }))));
 
         // No concurrent change: generation is stable throughout, publish must fire.
         server.publish_diagnostics(uri);
@@ -4078,16 +4070,14 @@ mod tests {
         let (server, buf) = make_server_with_capture();
         let uri = "file:///push_enrichment_test.pl";
         // Code that produces an UndefinedVariable (PL103) diagnostic under strict
-        server
-            .test_handle_did_open(Some(json!({
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "perl",
-                    "version": 1,
-                    "text": "use strict;\nprint $undeclared_var;\n"
-                }
-            })))
-            .unwrap();
+        crate::must(server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "use strict;\nprint $undeclared_var;\n"
+            }
+        }))));
 
         server.publish_diagnostics(uri);
         drop(server);
@@ -4295,7 +4285,7 @@ mod tests {
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
         server.test_configure_native_critic_profile("strict");
         let uri = "file:///native_critic_push_test.pl";
-        server
+        crate::must(server
             .test_handle_did_open(Some(json!({
                 "textDocument": {
                     "uri": uri,
@@ -4303,8 +4293,7 @@ mod tests {
                     "version": 1,
                     "text": "my $x = 1;\nmy $x = 2;\nmy $unused = 3;\nmy $shadow = 4;\nmy $outer_param = 0;\nmy $cond = 0;\nmy $path = 'file.txt';\nmy $eval_code = 'print 1';\nmy $cmd_out = `ls`;\nmy $qx_out = qx(date);\nmy $readpipe_out = readpipe($path);\nif ($cond = 1) { print $cond; }\nif ($path == undef) { print $path; }\neval { die $path; };\nif ($@) { warn $@; }\nopen(FH, '<', 'file.txt');\nopen(my $log_fh, $path);\nopen(my $pipe_fh, '-|', 'ls');\neval $eval_code;\nsystem($path);\nexec('ls', '-la');\nprint $log_fh;\nprint $pipe_fh;\n{ my $shadow = 5; print $shadow; }\nsub helper($used_param, $unused_param) { return $used_param; }\nsub duplicate_param($dup_param, $dup_param) { return $dup_param; }\nsub shadow_param($outer_param) { return $outer_param; }\nsub unreachable_helper { return 1; my $dead_after_return = 2; }\nprint $x + $shadow + $outer_param + $cond + $cmd_out + $qx_out + $readpipe_out;\n"
                 }
-            })))
-            .unwrap();
+            }))));
 
         server.publish_diagnostics(uri);
         drop(server);
@@ -4395,16 +4384,14 @@ mod tests {
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
         server.test_configure_native_critic_profile("recommended");
         let uri = "file:///native_critic_recommended_push_test.pl";
-        server
-            .test_handle_did_open(Some(json!({
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "perl",
-                    "version": 1,
-                    "text": "my $unused = 1;\nmy $cond = 0;\nif ($cond = 1) { print $cond; }\n"
-                }
-            })))
-            .unwrap();
+        crate::must(server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "my $unused = 1;\nmy $cond = 0;\nif ($cond = 1) { print $cond; }\n"
+            }
+        }))));
 
         server.publish_diagnostics(uri);
         drop(server);
@@ -4435,16 +4422,14 @@ mod tests {
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
         server.config.lock().native_critic_profile = " RECOMMENDED ".to_string();
         let uri = "file:///native_critic_legacy_profile_test.pl";
-        server
-            .test_handle_did_open(Some(json!({
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "perl",
-                    "version": 1,
-                    "text": "=pod\n=head1 NAME\n=cut\n"
-                }
-            })))
-            .unwrap();
+        crate::must(server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "=pod\n=head1 NAME\n=cut\n"
+            }
+        }))));
 
         server.publish_diagnostics(uri);
         drop(server);
@@ -4467,16 +4452,14 @@ mod tests {
             vec!["native.common.assignment_in_condition".to_string()],
         );
         let uri = "file:///native_critic_filtered_push_test.pl";
-        server
-            .test_handle_did_open(Some(json!({
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "perl",
-                    "version": 1,
-                    "text": "my $cond = 0;\nif ($cond = 1) { print $cond; }\n"
-                }
-            })))
-            .unwrap();
+        crate::must(server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "my $cond = 0;\nif ($cond = 1) { print $cond; }\n"
+            }
+        }))));
 
         server.publish_diagnostics(uri);
         drop(server);
@@ -4517,16 +4500,14 @@ mod tests {
         server.test_configure_native_critic_profile("strict");
         server.test_configure_native_critic_filters(Vec::new(), vec!["PL601".to_string()]);
         let uri = "file:///native_critic_alias_exclude_test.pl";
-        server
-            .test_handle_did_open(Some(json!({
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "perl",
-                    "version": 1,
-                    "text": "use strict;\nuse warnings;\nmy $out = `ls`;\nprint $out;\n"
-                }
-            })))
-            .unwrap();
+        crate::must(server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "use strict;\nuse warnings;\nmy $out = `ls`;\nprint $out;\n"
+            }
+        }))));
 
         server.publish_diagnostics(uri);
         drop(server);
@@ -4556,16 +4537,14 @@ mod tests {
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
         server.test_configure_native_critic_profile("strict");
         let uri = "file:///native_critic_alias_suppression_test.pl";
-        server
-            .test_handle_did_open(Some(json!({
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "perl",
-                    "version": 1,
-                    "text": "## no critic PL603\nuse strict;\nuse warnings;\nsystem('ls');\n"
-                }
-            })))
-            .unwrap();
+        crate::must(server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "## no critic PL603\nuse strict;\nuse warnings;\nsystem('ls');\n"
+            }
+        }))));
 
         server.publish_diagnostics(uri);
         drop(server);
@@ -4597,16 +4576,14 @@ mod tests {
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
         server.test_configure_native_critic_profile("strict");
         let uri = "file:///native_critic_overlap_merge_test.pl";
-        server
-            .test_handle_did_open(Some(json!({
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "perl",
-                    "version": 1,
-                    "text": "use strict;\nuse warnings;\nsystem('ls');\n"
-                }
-            })))
-            .unwrap();
+        crate::must(server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "use strict;\nuse warnings;\nsystem('ls');\n"
+            }
+        }))));
 
         server.publish_diagnostics(uri);
         drop(server);
@@ -4714,7 +4691,7 @@ mod tests {
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
         server.test_configure_native_critic_profile("strict");
         let uri = "file:///native_critic_overlap_shapes_test.pl";
-        server
+        crate::must(server
             .test_handle_did_open(Some(json!({
                 "textDocument": {
                     "uri": uri,
@@ -4722,8 +4699,7 @@ mod tests {
                     "version": 1,
                     "text": "use strict;\nuse warnings;\nmy $a = `ls`;\nmy $b = qx(date);\nmy $c = readpipe('id');\nprint $a . $b . $c;\n"
                 }
-            })))
-            .unwrap();
+            }))));
 
         server.publish_diagnostics(uri);
         drop(server);
@@ -4767,16 +4743,14 @@ mod tests {
         let (server, buf) = make_server_with_capture();
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
         let uri = "file:///legacy_critic_push_test.pl";
-        server
-            .test_handle_did_open(Some(json!({
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "perl",
-                    "version": 1,
-                    "text": "my $x = 1;\n"
-                }
-            })))
-            .unwrap();
+        crate::must(server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "my $x = 1;\n"
+            }
+        }))));
 
         server.publish_diagnostics(uri);
         drop(server);
@@ -5111,16 +5085,14 @@ mod tests {
         let (server, buf) = make_server_with_capture();
         let uri = "file:///fast_path_parse_err_test.pl";
         // Open a document with a deliberate syntax error.
-        server
-            .test_handle_did_open(Some(json!({
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "perl",
-                    "version": 1,
-                    "text": "sub { SYNTAX ERROR HERE }\n"
-                }
-            })))
-            .unwrap();
+        crate::must(server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "sub { SYNTAX ERROR HERE }\n"
+            }
+        }))));
 
         server.publish_parse_errors_fast(uri);
         // Drop server to flush the writer thread, then inspect the buffer.
@@ -5173,17 +5145,15 @@ mod tests {
         let uri = "file:///fast_path_pull_diags_test.pl";
         // Simulate a client that supports pull diagnostics by setting the flag.
         server.client_supports_pull_diags.store(true, Ordering::Relaxed);
-        server
-            .test_handle_did_open(Some(json!({
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "perl",
-                    "version": 1,
-                    // Intentional syntax error â€” fast path would fire if not guarded.
-                    "text": "sub { SYNTAX ERROR }\n"
-                }
-            })))
-            .unwrap();
+        crate::must(server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                // Intentional syntax error â€” fast path would fire if not guarded.
+                "text": "sub { SYNTAX ERROR }\n"
+            }
+        }))));
 
         // didOpen may enqueue active-document readiness asynchronously; drain it
         // and let the outbound writer thread flush before isolating fast-path behavior.
@@ -5514,7 +5484,7 @@ print \"unreachable\\n\";\n";
         let server = LspServer::new();
         let result = server.test_handle_document_diagnostic(None);
         assert!(result.is_err(), "None params must produce an error, not Ok(empty report)");
-        let err = result.unwrap_err();
+        let err = crate::must_err(result);
         assert_eq!(
             err.code,
             crate::protocol::INVALID_PARAMS,
@@ -5535,7 +5505,7 @@ print \"unreachable\\n\";\n";
         let server = LspServer::new();
         let result = server.test_handle_document_diagnostic(Some(json!({ "textDocument": {} })));
         assert!(result.is_err(), "missing textDocument.uri must produce an error");
-        let err = result.unwrap_err();
+        let err = crate::must_err(result);
         assert_eq!(
             err.code,
             crate::protocol::INVALID_PARAMS,
@@ -5557,7 +5527,7 @@ print \"unreachable\\n\";\n";
         let result =
             server.test_handle_document_diagnostic(Some(json!({ "textDocument": { "uri": "" } })));
         assert!(result.is_err(), "empty textDocument.uri must produce an error");
-        let err = result.unwrap_err();
+        let err = crate::must_err(result);
         assert_eq!(
             err.code,
             crate::protocol::INVALID_PARAMS,
@@ -5575,7 +5545,7 @@ print \"unreachable\\n\";\n";
             json!({ "textDocument": { "uri": ":::not a uri:::" } }),
         ));
         assert!(result.is_err(), "unparseable URI must produce an error");
-        let err = result.unwrap_err();
+        let err = crate::must_err(result);
         assert_eq!(
             err.code,
             crate::protocol::INVALID_PARAMS,
@@ -5782,21 +5752,23 @@ print \"unreachable\\n\";\n";
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
         server.test_configure_native_critic_profile("strict");
         let uri = "file:///native_critic_code_action.pl";
-        server
-            .test_handle_did_open(Some(json!({
+        crate::must_with(
+            server.test_handle_did_open(Some(json!({
                 "textDocument": {
                     "uri": uri,
                     "languageId": "perl",
                     "version": 1,
                     "text": "my $x = 1;\nprint $x;\n"
                 }
-            })))
-            .expect("did_open must succeed");
+            }))),
+            "did_open must succeed",
+        );
 
-        let result = server
-            .test_handle_code_action(Some(code_action_params(uri)))
-            .expect("code_action must succeed")
-            .unwrap_or_default();
+        let result = crate::must_with(
+            server.test_handle_code_action(Some(code_action_params(uri))),
+            "code_action must succeed",
+        )
+        .unwrap_or_default();
         let text = result.to_string();
 
         // The brand must never appear anywhere in the native response.
@@ -5834,21 +5806,23 @@ print \"unreachable\\n\";\n";
         let (server, _buf) = make_server_with_capture();
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Legacy);
         let uri = "file:///legacy_critic_code_action.pl";
-        server
-            .test_handle_did_open(Some(json!({
+        crate::must_with(
+            server.test_handle_did_open(Some(json!({
                 "textDocument": {
                     "uri": uri,
                     "languageId": "perl",
                     "version": 1,
                     "text": "my $x = 1;\nprint $x;\n"
                 }
-            })))
-            .expect("did_open must succeed");
+            }))),
+            "did_open must succeed",
+        );
 
-        let result = server
-            .test_handle_code_action(Some(code_action_params(uri)))
-            .expect("code_action must succeed")
-            .unwrap_or_default();
+        let result = crate::must_with(
+            server.test_handle_code_action(Some(code_action_params(uri))),
+            "code_action must succeed",
+        )
+        .unwrap_or_default();
         let text = result.to_string();
 
         assert!(
@@ -5878,16 +5852,17 @@ print \"unreachable\\n\";\n";
     fn open_native_critic_document(server: &LspServer, uri: &str, text: &str) {
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
         server.test_configure_native_critic_profile("strict");
-        server
-            .test_handle_did_open(Some(json!({
+        crate::must_with(
+            server.test_handle_did_open(Some(json!({
                 "textDocument": {
                     "uri": uri,
                     "languageId": "perl",
                     "version": 1,
                     "text": text,
                 }
-            })))
-            .expect("did_open must succeed");
+            }))),
+            "did_open must succeed",
+        );
     }
 
     #[test]
@@ -5897,10 +5872,11 @@ print \"unreachable\\n\";\n";
         let text = "use strict;\nuse warnings;\nmy $value = 1;\n{ my $value = 2; print $value; }\nprint $value;\n";
         open_native_critic_document(&server, uri, text);
 
-        let result = server
-            .test_handle_code_action(Some(code_action_params(uri)))
-            .expect("code_action must succeed")
-            .unwrap_or_default();
+        let result = crate::must_with(
+            server.test_handle_code_action(Some(code_action_params(uri))),
+            "code_action must succeed",
+        )
+        .unwrap_or_default();
         let actions = result.as_array().cloned().unwrap_or_default();
         let quickfixes =
             native_critic_quickfixes_for_code(&actions, "native.variables.shadowed_lexical");
@@ -5918,10 +5894,11 @@ print \"unreachable\\n\";\n";
         let text = "use strict;\nuse warnings;\nsub helper($arg, $arg) { return $arg; }\n";
         open_native_critic_document(&server, uri, text);
 
-        let result = server
-            .test_handle_code_action(Some(code_action_params(uri)))
-            .expect("code_action must succeed")
-            .unwrap_or_default();
+        let result = crate::must_with(
+            server.test_handle_code_action(Some(code_action_params(uri))),
+            "code_action must succeed",
+        )
+        .unwrap_or_default();
         let actions = result.as_array().cloned().unwrap_or_default();
         let quickfixes =
             native_critic_quickfixes_for_code(&actions, "native.variables.duplicate_parameter");
@@ -5939,10 +5916,11 @@ print \"unreachable\\n\";\n";
         let text = "my $x = 1;\nprint $x;\n";
         open_native_critic_document(&server, uri, text);
 
-        let result = server
-            .test_handle_code_action(Some(code_action_params(uri)))
-            .expect("code_action must succeed")
-            .unwrap_or_default();
+        let result = crate::must_with(
+            server.test_handle_code_action(Some(code_action_params(uri))),
+            "code_action must succeed",
+        )
+        .unwrap_or_default();
         let actions = result.as_array().cloned().unwrap_or_default();
         let quickfixes =
             native_critic_quickfixes_for_code(&actions, "native.testing.require_use_strict");
@@ -6250,6 +6228,10 @@ print \"unreachable\\n\";\n";
 
     const MESSAGE_UNION_PARSE_ERROR_DOCUMENT: &str = "sub broken {\n";
 
+    #[expect(
+        clippy::expect_used,
+        reason = "test harness setup must fail the test loudly on dispatch regressions"
+    )]
     fn message_union_server(
         tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning,
         markup_message_support: bool,
@@ -6276,6 +6258,10 @@ print \"unreachable\\n\";\n";
         if cfg!(windows) { format!("file:///C:/tmp/{name}") } else { format!("file:///tmp/{name}") }
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "test harness setup must fail the test loudly on dispatch regressions"
+    )]
     fn syntax_only_pull_items(markup_message_support: bool) -> Vec<Value> {
         let mut tuning = perl_lsp_rs_core::runtime::tuning::RuntimeTuning::normal_defaults();
         tuning.diagnostic_mode = perl_lsp_rs_core::runtime::tuning::DiagnosticMode::SyntaxOnly;
@@ -6297,6 +6283,10 @@ print \"unreachable\\n\";\n";
     }
 
     #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "pull results must fail the test loudly on message-union regressions"
+    )]
     fn syntax_only_pull_keeps_nonempty_string_message_without_markup() {
         let items = syntax_only_pull_items(false);
         assert_eq!(items.len(), 1, "exactly one parse error must be reported");
@@ -6310,6 +6300,10 @@ print \"unreachable\\n\";\n";
     }
 
     #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "pull results must fail the test loudly on message-union regressions"
+    )]
     fn syntax_only_pull_keeps_markupcontent_message_with_markup() {
         let string_items = syntax_only_pull_items(false);
         let markup_items = syntax_only_pull_items(true);
@@ -6340,6 +6334,10 @@ print \"unreachable\\n\";\n";
     }
 
     #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "pull serialization must fail the test loudly on message-union regressions"
+    )]
     fn merged_pull_internal_finding_keeps_message_union() {
         // `internal_diagnostic_to_json` is the merged document-pull
         // serializer for internal/native/external findings

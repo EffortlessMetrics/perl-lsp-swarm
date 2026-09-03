@@ -7,10 +7,6 @@
 //! - Capability advertisement in server initialization
 //! - WorkspaceEdit response structure validation
 
-// Tests are permitted to use `.expect()`/`.expect_err()` on Result/Option per
-// the repo's coding standards (unlike production code, where they are banned).
-#![allow(clippy::expect_used)]
-
 mod support;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -750,16 +746,17 @@ fn test_workspace_rename_blocks_ambiguous_symbol_identity() -> TestResult {
     // Bar calls process_data without qualification — ambiguous cross-package reference.
     harness.open(bar_uri, "package Bar;\nsub run { return process_data(); }\n1;\n")?;
 
-    let error = harness
-        .request(
+    let error = perl_test_must::must_err_with(
+        harness.request(
             "textDocument/rename",
             json!({
                 "textDocument": { "uri": foo_uri },
                 "position": { "line": 1, "character": 5 },
                 "newName": "process_records"
             }),
-        )
-        .expect_err("ambiguous workspace identity must be refused");
+        ),
+        "ambiguous workspace identity must be refused",
+    );
     assert!(
         error.contains("ambiguous symbol identity"),
         "ambiguous workspace identity error should explain the refusal: {error}"
