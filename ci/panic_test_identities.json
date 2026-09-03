@@ -3231,6 +3231,69 @@
       "selector_identity": "invocation:c51771d4dcdf6829:occurrence:1",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_subject_fan_in_contract.rs",
+      "enclosing_test_or_function": "rejection_of",
+      "macro_family": "panic!",
+      "normalized_snippet": "panic!(\"expected a typed rejection, got an instrument failure: {message}\")",
+      "selector_identity": "invocation:0c10d8383270f93d:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_subject_fan_in_contract.rs",
+      "enclosing_test_or_function": "partial_denominators_are_refused_slot_by_slot",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected MissingSubject, got {other:?}\"),",
+      "selector_identity": "invocation:779fe294b0a574ee:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_subject_fan_in_contract.rs",
+      "enclosing_test_or_function": "unbound_generation_rows_are_refused",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected UnboundGeneration, got {other:?}\"),",
+      "selector_identity": "invocation:14d09f04457dae89:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_subject_fan_in_contract.rs",
+      "enclosing_test_or_function": "duplicate_rows_under_a_bound_id_are_refused",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected DuplicateSubjectRow, got {other:?}\"),",
+      "selector_identity": "invocation:e9a61af6ff2fff1f:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_subject_fan_in_contract.rs",
+      "enclosing_test_or_function": "stale_generation_under_a_bound_id_is_refused",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected StaleSubjectRow, got {other:?}\"),",
+      "selector_identity": "invocation:e1d4a4ce70720383:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_subject_fan_in_contract.rs",
+      "enclosing_test_or_function": "stale_generation_under_a_bound_id_is_refused",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected StaleSubjectRow, got {other:?}\"),",
+      "selector_identity": "invocation:e1d4a4ce70720383:occurrence:2",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "xtask/tests/emacs_subject_fan_in_contract.rs",
+      "enclosing_test_or_function": "substituted_material_is_typed_rejected_across_families_and_generations",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected IdentityMismatch for {}, got {other:?}\", case.subject_id),",
+      "selector_identity": "invocation:28961938fa328de3:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
