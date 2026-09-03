@@ -1922,7 +1922,7 @@ impl TransformationPlan {
     /// Within the legality step the choice is order-independent: unproven
     /// preconditions are ranked by kind and then by identity, so reordering a
     /// plan's precondition vector cannot change the reported refusal.
-    pub fn evaluate(&self, observation: &ApplicationObservation) -> Result<TransformationResult> {
+    fn evaluate(&self, observation: &ApplicationObservation) -> Result<TransformationResult> {
         // `semantic_fingerprint` subsumes `validate` and additionally requires
         // the canonical text to stay within its bound. A plan with no
         // computable identity cannot produce an applied result.
