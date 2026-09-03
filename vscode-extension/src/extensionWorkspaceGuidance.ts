@@ -109,11 +109,8 @@ function scheduleGuidance(
  * active-document readiness behind optional filesystem guidance.
  */
 export function validateIncludePaths(context: vscode.ExtensionContext): Promise<void> {
-  return scheduleGuidance(
-    validationRuns,
-    context,
-    'include-path validation',
-    () => runIncludePathValidation(context),
+  return scheduleGuidance(validationRuns, context, 'include-path validation', () =>
+    runIncludePathValidation(context),
   );
 }
 
@@ -131,7 +128,10 @@ export async function runIncludePathValidation(context: vscode.ExtensionContext)
 
     const inspected =
       typeof config.inspect === 'function' ? config.inspect<string[]>('includePaths') : undefined;
-    const defaultPaths = new Set<string>(['.', ...(inspected?.defaultValue ?? DEFAULT_INCLUDE_PATHS)]);
+    const defaultPaths = new Set<string>([
+      '.',
+      ...(inspected?.defaultValue ?? DEFAULT_INCLUDE_PATHS),
+    ]);
     const missingPaths: string[] = [];
 
     for (const includePath of includePaths) {
@@ -229,14 +229,21 @@ async function directoryContainsPerlModule(
     const entries: fs.Dirent[] = [];
     try {
       const directory = await fs.promises.opendir(current);
-      for await (const entry of directory) {
+      try {
+        while (state.remaining > 0) {
+          const entry = await directory.read();
+          if (entry === null) {
+            break;
+          }
+          state.remaining -= 1;
+          state.visited += 1;
+          entries.push(entry);
+        }
+      } finally {
         if (state.remaining <= 0) {
           state.complete = false;
-          break;
         }
-        state.remaining -= 1;
-        state.visited += 1;
-        entries.push(entry);
+        await directory.close();
       }
     } catch {
       state.complete = false;
@@ -275,18 +282,11 @@ async function directoryContainsPerlModule(
 }
 
 /** Schedule discovery as advisory background work. */
-export function suggestDiscoveredIncludePaths(
-  context: vscode.ExtensionContext,
-): Promise<void> {
-  return scheduleGuidance(
-    discoveryRuns,
-    context,
-    'include-path discovery',
-    async () => {
-      await validationRuns.get(context);
-      await runDiscoveredIncludePathGuidance(context);
-    },
-  );
+export function suggestDiscoveredIncludePaths(context: vscode.ExtensionContext): Promise<void> {
+  return scheduleGuidance(discoveryRuns, context, 'include-path discovery', async () => {
+    await validationRuns.get(context);
+    await runDiscoveredIncludePathGuidance(context);
+  });
 }
 
 /** Execute the discovery pass to completion for tests and explicit callers. */

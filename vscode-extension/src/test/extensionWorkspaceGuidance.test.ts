@@ -82,7 +82,9 @@ test('does not prompt for absent built-in include paths', async () => {
   const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-default-'));
   mountWorkspace(workspaceDir, ['lib']);
 
-  await runIncludePathValidation({ globalState: makeState() } as unknown as vscode.ExtensionContext);
+  await runIncludePathValidation({
+    globalState: makeState(),
+  } as unknown as vscode.ExtensionContext);
 
   expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
 });
@@ -91,7 +93,9 @@ test('missing include-path validation no longer offers a filesystem mutation', a
   const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-missing-'));
   mountWorkspace(workspaceDir, ['generated/perl']);
 
-  await runIncludePathValidation({ globalState: makeState() } as unknown as vscode.ExtensionContext);
+  await runIncludePathValidation({
+    globalState: makeState(),
+  } as unknown as vscode.ExtensionContext);
 
   expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
     expect.stringContaining('configured include path "generated/perl"'),
@@ -104,15 +108,11 @@ test('configured canonical ancestors cover candidates but descendants do not', a
   const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-cover-'));
   fs.mkdirSync(path.join(workspaceDir, 'src', 'lib'), { recursive: true });
 
-  await expect(
-    isIncludePathCandidateCovered(workspaceDir, ['src'], 'src/lib'),
-  ).resolves.toBe(true);
-  await expect(
-    isIncludePathCandidateCovered(workspaceDir, ['src/lib'], 'src'),
-  ).resolves.toBe(false);
-  await expect(
-    isIncludePathCandidateCovered(workspaceDir, ['./src'], 'src'),
-  ).resolves.toBe(true);
+  await expect(isIncludePathCandidateCovered(workspaceDir, ['src'], 'src/lib')).resolves.toBe(true);
+  await expect(isIncludePathCandidateCovered(workspaceDir, ['src/lib'], 'src')).resolves.toBe(
+    false,
+  );
+  await expect(isIncludePathCandidateCovered(workspaceDir, ['./src'], 'src')).resolves.toBe(true);
 });
 
 test('a configured symlink alias covers its canonical candidate', async () => {
@@ -124,9 +124,7 @@ test('a configured symlink alias covers its canonical candidate', async () => {
     return;
   }
 
-  await expect(
-    isIncludePathCandidateCovered(workspaceDir, ['alias'], 'src'),
-  ).resolves.toBe(true);
+  await expect(isIncludePathCandidateCovered(workspaceDir, ['alias'], 'src')).resolves.toBe(true);
 });
 
 test('does not scan or suggest a candidate symlinked outside the workspace', async () => {
@@ -145,9 +143,7 @@ test('does not scan or suggest a candidate symlinked outside the workspace', asy
   } as unknown as vscode.ExtensionContext);
 
   expect(reports).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({ folder: 'workspace', discovered: [] }),
-    ]),
+    expect.arrayContaining([expect.objectContaining({ folder: 'workspace', discovered: [] })]),
   );
   expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
 });
