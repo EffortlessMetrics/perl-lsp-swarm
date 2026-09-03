@@ -85,6 +85,13 @@ rejects, so a failure names the law that broke.
   Perl autovivifies, so it constrains no operator. Four laws in the original
   PR were too strict for exactly this reason; check the "asserts too little"
   question before adding or tightening one.
+- `structural_access/` blank-identity checks split on source token versus
+  runtime value. Spelling text, sigils and variable names are *written*, so
+  they reject any whitespace-only string -- `my $  ;` is a syntax error. A
+  package in `ValueShape::Object`/`PackageName` is a runtime string reachable
+  through `bless $ref, $name`, and `bless {}, "  "` is a real class with
+  working dispatch, so only the empty string is rejected there. Verify the
+  interpreter before changing either side.
 
 ## Claim boundary
 

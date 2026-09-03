@@ -491,27 +491,40 @@ impl StructuralAccessHop {
 /// Whether a shape that names a package actually names one.
 ///
 /// [`ValueShape::PackageName`] and [`ValueShape::Object`] both carry a package
-/// string that identifies what was selected. A blank one identifies nothing,
-/// and no honest producer emits one:
+/// string that identifies what was selected. The *empty* string identifies
+/// nothing, in both directions, and no honest producer emits one:
 ///
-/// - `package ;` is a syntax error, so a blank [`ValueShape::PackageName`]
-///   cannot describe real source at all.
 /// - `bless $ref, ""` is accepted by the interpreter, but it warns
 ///   (`Explicit blessing to '' (assuming package main)`) and the resulting
 ///   class is `main`, not the empty string. The honest record for that case is
 ///   `Object { package: "main" }`.
+/// - `""->method` dies with `Can't call method "..." without a package or
+///   object reference`, so the empty string is not a usable class name either.
 ///
-/// Verified against the interpreter rather than assumed, because the sibling
-/// question — whether `$h{""}` is a real hash member — went the other way, and
-/// a static key is deliberately exempt from this law for exactly that reason.
+/// A *whitespace* package name is a different answer, and the law deliberately
+/// admits it. `bless {}, "  "` yields an object whose `ref` is `"  "`, and
+/// method dispatch through it resolves normally against the `"  "` symbol-table
+/// entry — as does `"  "->method` on the value side. It is perverse, but it is
+/// a real package, and a shape that cannot tell a real class from a blank one
+/// must not reject it. This mirrors `$h{""}`, which is a real hash member and
+/// is likewise exempt.
+///
+/// The distinction that decides this law is source token versus runtime value.
+/// A blank check on spelling text, a sigil or a variable name stays a
+/// whitespace check, because each records something *written*, and no Perl
+/// program writes a whitespace-only variable token — `my $  ;` is a syntax
+/// error. A package here is a runtime string, reachable through
+/// `bless $ref, $name`, so it carries no such guarantee.
+///
+/// Verified against the interpreter rather than assumed, in both directions.
 ///
 /// The remaining shapes carry no identity to check.
 fn validate_shape_identity(shape: &ValueShape) -> Result<(), StructuralAccessContractError> {
     match shape {
-        ValueShape::PackageName { package } if package.trim().is_empty() => Err(
+        ValueShape::PackageName { package } if package.is_empty() => Err(
             StructuralAccessContractError::EmptyIdentityField("ValueShape::PackageName.package"),
         ),
-        ValueShape::Object { package, .. } if package.trim().is_empty() => {
+        ValueShape::Object { package, .. } if package.is_empty() => {
             Err(StructuralAccessContractError::EmptyIdentityField("ValueShape::Object.package"))
         }
         ValueShape::PackageName { .. }

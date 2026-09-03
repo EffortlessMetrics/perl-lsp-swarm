@@ -319,7 +319,6 @@ fn every_limitation_round_trips_and_stays_canonical() -> Result<(), Box<dyn Erro
                 StructuralAccessLimitation::CompatibilityBridge,
                 StructuralAccessLimitation::StaleDependency,
                 StructuralAccessLimitation::BudgetExhausted,
-                StructuralAccessLimitation::GeneratedNoSource,
                 StructuralAccessLimitation::RecoveredSyntax,
                 StructuralAccessLimitation::MutatedAggregate,
                 StructuralAccessLimitation::EscapedAggregate,
@@ -331,7 +330,7 @@ fn every_limitation_round_trips_and_stays_canonical() -> Result<(), Box<dyn Erro
     )?;
 
     let limitations = chain.hops()[0].limitations();
-    assert_eq!(limitations.len(), 10, "the duplicate is removed, all ten kinds remain");
+    assert_eq!(limitations.len(), 9, "the duplicate is removed, all nine kinds remain");
     assert!(limitations.windows(2).all(|pair| pair[0] < pair[1]), "canonical order is ascending");
     assert_round_trips(&chain)?;
     Ok(())

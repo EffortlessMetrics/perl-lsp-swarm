@@ -844,6 +844,24 @@ fn fold_value_shape(label: &str, shape: &ValueShape, accumulator: Fingerprint) -
 }
 
 /// Context or source limitation retained by one hop.
+///
+/// Every limitation here narrows how far a *source-anchored* hop can be
+/// trusted. None of them removes the source: a hop always carries a
+/// [`StructuralAccessSpelling`] with non-blank text and an anchor in the
+/// chain subject's own document, because spelling is this contract's evidence
+/// that the access was written at all.
+///
+/// There is deliberately no source-free limitation. The repository's
+/// established meaning for that case is `GeneratedNoSource`, which
+/// PLSP-SPEC-0017 defines as a candidate *without a source declaration
+/// anchor*; the parser's `PirAnchorKind::GeneratedNoSource` reports
+/// `is_source_backed() == false` for the same reason. A hop cannot satisfy
+/// that definition and this contract's anchoring law at once, so offering the
+/// variant here would advertise a record no honest producer could build — it
+/// could only be built by fabricating a spelling and an anchor, which is
+/// exactly the substitution the module doc forbids. Recording a source-free
+/// structural access is a real capability, not an oversight, and needs an
+/// optional spelling plus a producer that requires it.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum StructuralAccessLimitation {
@@ -856,9 +874,12 @@ pub enum StructuralAccessLimitation {
     /// The aggregate was written after construction.
     MutatedAggregate,
     /// The hop was reconstructed from recovered syntax.
+    ///
+    /// Recovered syntax is still written syntax: the hop keeps its spelling and
+    /// anchor, and only the confidence in the reconstruction is reduced. A hop
+    /// with no source at all is outside this contract; see the type's own
+    /// documentation.
     RecoveredSyntax,
-    /// The hop was produced without source, e.g. by generation.
-    GeneratedNoSource,
     /// The work budget was exhausted.
     BudgetExhausted,
     /// A dependency generation is no longer current.
@@ -880,7 +901,6 @@ impl StructuralAccessLimitation {
             Self::EscapedAggregate => "escaped-aggregate",
             Self::MutatedAggregate => "mutated-aggregate",
             Self::RecoveredSyntax => "recovered-syntax",
-            Self::GeneratedNoSource => "generated-no-source",
             Self::BudgetExhausted => "budget-exhausted",
             Self::StaleDependency => "stale-dependency",
             Self::CompatibilityBridge => "compatibility-bridge",
