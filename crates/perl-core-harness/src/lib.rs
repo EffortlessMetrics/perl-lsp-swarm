@@ -7395,6 +7395,77 @@ mod tests {
         Ok(())
     }
 
+    // Parity anchor for the baseline authority (#5213).
+    //
+    // `report_digest` hashes a field-by-field `StableRunReportDigest` through serde,
+    // so the digest depends on that struct's field order and on which fields are
+    // included. Every other digest test here asserts only relational properties --
+    // that two reports agree, or that they differ -- and those all keep passing if a
+    // refactor silently reorders or drops a digest field. Pinning the value makes
+    // that class of change fail loudly.
+    #[test]
+    fn report_digest_is_pinned_for_a_fixed_fixture() -> TestResult {
+        let report = sample_compile_report();
+        let expected = "bbb3c20bd41372fcfe6211c790c574ecbb35842e1ab7bbcf1c882055aeb5cb2a";
+        if report_digest(&report)? != expected {
+            bail!(
+                "stable report digest framing changed: expected {expected}, observed {}",
+                report_digest(&report)?
+            );
+        }
+        Ok(())
+    }
+
+    // Negative control for the pin above: a semantic field must still move the digest,
+    // so the golden cannot be satisfied by a constant or a degenerate hash input.
+    #[test]
+    fn pinned_report_digest_still_responds_to_semantic_change() -> TestResult {
+        let report = sample_compile_report();
+        let mut regressed = report.clone();
+        regressed.summary.files_passed = 1;
+        regressed.summary.files_failed = 1;
+        if report_digest(&report)? == report_digest(&regressed)? {
+            bail!("a summary regression did not change the stable report digest");
+        }
+        Ok(())
+    }
+
+    // Parity anchor for baseline comparison ordering (#5213).
+    //
+    // `compare_baseline` appends violations in a fixed sequence -- scalar schema/mode/
+    // profile checks first, then bucket shape, boundary shape, file results, failure
+    // buckets, summary assertions, and semantic boundaries -- and
+    // `bail_baseline_comparison` joins them in that order into the operator-facing
+    // error. Existing tests only assert that some violation of a given kind is
+    // present, so reordering those `extend` calls during an extraction would change
+    // user-visible output while every test still passed.
+    #[test]
+    fn baseline_comparison_violation_order_is_pinned() -> TestResult {
+        let baseline = baseline_from_report(&sample_compile_report())?;
+        let mut report = sample_compile_report();
+        report.mode = HarnessMode::Execute;
+        report.profile = HarnessProfile::Comp;
+        report.summary.tap_assertions_passed = 0;
+        report.file_results[0].status = RunnerStatus::Fail;
+
+        let observed = compare_baseline(&baseline, &report)
+            .violations
+            .iter()
+            .map(|violation| format!("{:?}", violation.kind))
+            .collect::<Vec<_>>();
+        let expected = vec![
+            "ModeMismatch".to_string(),
+            "ProfileMismatch".to_string(),
+            "UnbucketedFailure".to_string(),
+            "PreviouslyPassingFileFailed".to_string(),
+            "AssertionRegression".to_string(),
+        ];
+        if observed != expected {
+            bail!("baseline violation order changed: expected {expected:?}, observed {observed:?}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn compile_baseline_v2_rejects_boundary_change_without_transition() -> TestResult {
         let discovery = sample_discovery_report();
