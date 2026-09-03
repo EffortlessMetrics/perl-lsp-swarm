@@ -610,14 +610,8 @@ fn compiled_target_files(
 
     let mut stack = vec![crate_root.join("src")];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries {
-            let entry = entry.map_err(|error| {
-                ActivationError::new(format!("crates/{crate_dir}: cannot read entry: {error}"))
-            })?;
-            let path = entry.path();
+        for entry in read_source_dir(&dir, crate_dir)? {
+            let path = entry;
             if path.is_dir() {
                 stack.push(path);
             } else if path.extension().is_some_and(|extension| extension == "rs") {
@@ -627,22 +621,120 @@ fn compiled_target_files(
     }
 
     for directory in ["tests", "benches"] {
-        let Ok(entries) = fs::read_dir(crate_root.join(directory)) else {
-            continue;
-        };
-        for entry in entries {
-            let entry = entry.map_err(|error| {
-                ActivationError::new(format!("crates/{crate_dir}: cannot read entry: {error}"))
-            })?;
-            let path = entry.path();
+        let target_dir = crate_root.join(directory);
+        for path in read_source_dir(&target_dir, crate_dir)? {
             if path.is_file() && path.extension().is_some_and(|extension| extension == "rs") {
+                // The target root itself, plus the module tree it declares.
+                // A nested file is evidence only when a target actually
+                // compiles it: `tests/support/mod.rs` reached by `mod support;`
+                // is code, while `tests/fixtures/**` is data a test reads.
+                // Following `mod` is what separates them — a path heuristic
+                // would have to guess, and guessing wrong in the permissive
+                // direction is how an unused feature became a claimed test API.
+                collect_declared_modules(&path, &mut files, crate_dir)?;
                 files.push(path);
             }
         }
     }
 
     files.sort();
+    files.dedup();
     Ok(files)
+}
+
+/// Directory entries, distinguishing "not there" from "there but unreadable".
+///
+/// An absent `benches/` is a legitimate absence and yields nothing. A
+/// directory that exists and cannot be read is a missing input: treating it
+/// as empty would drop production gates from the population and let the
+/// remaining test-side sites classify a feature test-only.
+fn read_source_dir(
+    dir: &Path,
+    crate_dir: &str,
+) -> Result<Vec<std::path::PathBuf>, ActivationError> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(ActivationError::new(format!(
+                "crates/{crate_dir}: cannot read `{}`: {error}",
+                dir.file_name().and_then(|name| name.to_str()).unwrap_or("<dir>")
+            )));
+        }
+    };
+    let mut paths = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            ActivationError::new(format!("crates/{crate_dir}: cannot read entry: {error}"))
+        })?;
+        paths.push(entry.path());
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+/// Files reached by `mod NAME;` declarations from a compiled target root.
+///
+/// Cargo compiles a test or bench target's whole module tree, so a feature
+/// gated only in `tests/support/mod.rs` is a real usage site. Resolution
+/// follows Rust's own lookup — `NAME.rs` then `NAME/mod.rs`, relative to the
+/// declaring file's directory — and recurses, bounded by a visited set.
+/// Inline `mod NAME { … }` blocks need no resolution: they are already in the
+/// file being scanned.
+fn collect_declared_modules(
+    file: &Path,
+    files: &mut Vec<std::path::PathBuf>,
+    crate_dir: &str,
+) -> Result<(), ActivationError> {
+    // `is_root` marks a file whose submodules live in its OWN directory
+    // rather than in a subdirectory named after it. That is true of a target
+    // root (`tests/root.rs` resolves `mod support;` to `tests/support/…`) and
+    // of any `mod.rs`; for an ordinary `foo.rs`, submodules live in `foo/`.
+    let mut pending = vec![(file.to_path_buf(), true)];
+    let mut seen: BTreeSet<std::path::PathBuf> = BTreeSet::new();
+    while let Some((current, is_root)) = pending.pop() {
+        if !seen.insert(current.clone()) {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(&current) else {
+            continue;
+        };
+        let Some(parent) = current.parent() else {
+            continue;
+        };
+        for line in text.lines() {
+            let trimmed = line.trim_start();
+            let declaration = trimmed
+                .strip_prefix("pub mod ")
+                .or_else(|| trimmed.strip_prefix("mod "))
+                .or_else(|| trimmed.strip_prefix("pub(crate) mod "));
+            let Some(rest) = declaration else {
+                continue;
+            };
+            let Some(name) = rest.strip_suffix(';').map(str::trim) else {
+                continue;
+            };
+            if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                continue;
+            }
+            let stem = current.file_stem().and_then(|stem| stem.to_str()).unwrap_or("");
+            let base =
+                if is_root || stem == "mod" { parent.to_path_buf() } else { parent.join(stem) };
+            for candidate in [base.join(format!("{name}.rs")), base.join(name).join("mod.rs")] {
+                if candidate.is_file() {
+                    let nested_root = candidate
+                        .file_name()
+                        .and_then(|file_name| file_name.to_str())
+                        .is_some_and(|file_name| file_name == "mod.rs");
+                    files.push(candidate.clone());
+                    pending.push((candidate, nested_root));
+                    break;
+                }
+            }
+        }
+    }
+    let _ = crate_dir;
+    Ok(())
 }
 
 /// Every feature name this file gates on.
@@ -1658,6 +1750,54 @@ mod tests {
         };
         let _ = fs::remove_dir_all(&root);
         assert!(message.contains("`bin` must be an array of [[bin]] targets"), "{message}");
+    }
+
+    #[test]
+    fn a_gate_in_a_declared_test_module_is_a_usage_site() {
+        // Cargo compiles a test target's whole module tree, so a feature
+        // gated only in `tests/support/mod.rs` — reached by `mod support;`
+        // from the target root — is a real usage site. The repository has
+        // exactly this shape in perl-parser.
+        let root = scratch_root("nested-module-gate");
+        assert!(write(
+            &root,
+            "crates/demo/Cargo.toml",
+            "[package]\nname = \"demo\"\n[features]\nquiet-feature = []\n"
+        ));
+        assert!(write(&root, "crates/demo/tests/root.rs", "mod support;\nfn t() {}\n"));
+        assert!(write(
+            &root,
+            "crates/demo/tests/support/mod.rs",
+            "#[cfg(feature = \"quiet-feature\")]\npub fn helper() {}\n"
+        ));
+        let ids = derive_test_features(&root)
+            .map(|output| output.rows.iter().map(|row| row.surface_id.clone()).collect::<Vec<_>>());
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(ids, Ok(vec!["cargo-feature:demo/quiet-feature".to_string()]));
+    }
+
+    #[test]
+    fn a_gate_in_an_undeclared_fixture_file_is_still_not_a_usage_site() {
+        // The control that keeps module-tree following from reopening the
+        // hole it replaced: `tests/fixtures/**` is data a test reads, and no
+        // `mod` declaration reaches it, so it must not count. This is the
+        // `perl-lexer/simd` shape that a path heuristic got wrong.
+        let root = scratch_root("nested-fixture-gate");
+        assert!(write(
+            &root,
+            "crates/demo/Cargo.toml",
+            "[package]\nname = \"demo\"\n[features]\nquiet-feature = []\n"
+        ));
+        assert!(write(&root, "crates/demo/tests/root.rs", "fn t() {}\n"));
+        assert!(write(
+            &root,
+            "crates/demo/tests/fixtures/sample.rs",
+            "#[cfg(feature = \"quiet-feature\")]\npub fn data() {}\n"
+        ));
+        let ids = derive_test_features(&root)
+            .map(|output| output.rows.iter().map(|row| row.surface_id.clone()).collect::<Vec<_>>());
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(ids, Ok(Vec::new()));
     }
 
     #[test]
