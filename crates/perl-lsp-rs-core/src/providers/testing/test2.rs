@@ -391,6 +391,9 @@ fn contains_transform_syntax(text: &str) -> bool {
 fn mask_data_values(text: &str) -> String {
     let mut masked = String::with_capacity(text.len());
     let mut index = 0usize;
+    // The last non-whitespace character consumed, used only to tell a bare
+    // match from division. A masked value counts as a completed term.
+    let mut previous: Option<char> = None;
 
     while index < text.len() {
         if let Some(end) = quote_like_expression_end(text, index)
@@ -406,6 +409,7 @@ fn mask_data_values(text: &str) -> String {
                 }
                 None => blank_into(&mut masked, span),
             }
+            previous = Some(')');
             index = end;
             continue;
         }
@@ -413,8 +417,26 @@ fn mask_data_values(text: &str) -> String {
         let Some(current) = text[index..].chars().next() else {
             break;
         };
+
+        // A bare `/.../` match carries no operator, so the quote-like scan above
+        // cannot see it, yet its payload is data exactly like `m{...}`. Perl
+        // resolves `/` by parse state; here the discriminator is whether a term
+        // can start, which keeps division (`$a / $b`) visible.
+        if current == '/'
+            && bare_match_can_start(previous)
+            && let Some(end) = bare_match_end(text, index)
+        {
+            blank_into(&mut masked, &text[index..end]);
+            previous = Some(')');
+            index = end;
+            continue;
+        }
+
         if current != '\'' && current != '"' {
             masked.push(current);
+            if !current.is_whitespace() {
+                previous = Some(current);
+            }
             index += current.len_utf8();
             continue;
         }
@@ -447,6 +469,7 @@ fn mask_data_values(text: &str) -> String {
         } else {
             blank_into(&mut masked, &text[index..end]);
         }
+        previous = Some(')');
         index = end;
     }
 
@@ -486,6 +509,49 @@ fn quote_like_option_key(span: &str) -> Option<&'static str> {
     };
     let inner = chars.as_str().strip_suffix(close)?;
     TRANSFORM_OPTIONS.iter().copied().find(|option| inner.trim() == *option)
+}
+
+/// Whether a `/` following `previous` opens a bare match rather than division.
+///
+/// Perl resolves this from parse state. Inside an import list the practical
+/// discriminator is whether a term can start here: after a value or an
+/// identifier a `/` is division, otherwise it opens a match.
+fn bare_match_can_start(previous: Option<char>) -> bool {
+    match previous {
+        None => true,
+        Some(character) => {
+            !(character.is_alphanumeric()
+                || character == '_'
+                || character == ')'
+                || character == ']'
+                || character == '}')
+        }
+    }
+}
+
+/// End offset just past a bare `/.../` match and any trailing flags, or `None`
+/// when the expression is unterminated (left visible for the conservative path).
+fn bare_match_end(text: &str, start: usize) -> Option<usize> {
+    let mut cursor = start + '/'.len_utf8();
+    let mut escaped = false;
+    while let Some(next) = text[cursor..].chars().next() {
+        if escaped {
+            escaped = false;
+        } else if next == '\\' {
+            escaped = true;
+        } else if next == '/' {
+            let mut end = cursor + next.len_utf8();
+            while let Some(flag) = text[end..].chars().next() {
+                if !flag.is_ascii_alphabetic() {
+                    break;
+                }
+                end += flag.len_utf8();
+            }
+            return Some(end);
+        }
+        cursor += next.len_utf8();
+    }
+    None
 }
 
 /// Append one space per character of `span`, keeping token boundaries intact

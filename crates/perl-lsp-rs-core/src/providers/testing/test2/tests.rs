@@ -838,3 +838,40 @@ fn test2_non_string_quote_operators_are_not_option_keys() {
     assert!(!regex_key.analysis_limited, "a qr// value is not an option key");
     assert!(regex_key.resolved.symbols.contains("ok"), "the explicit import survives");
 }
+
+#[test]
+fn test2_bare_match_payload_is_data_not_transform_syntax() {
+    // Review finding (@chatgpt-codex-connector on #14651). A bare `/.../` match
+    // carries no operator, so the quote-like scan cannot see it, yet its payload
+    // is data exactly like `m{...}`. An option-shaped pattern therefore tripped
+    // the role predicate and dropped the genuinely imported symbol:
+    //
+    //   -target => scalar(/-as => Foo/), ok  ->  limited=true, ok absent
+    for args in [
+        "-target => scalar(/-as => Foo/), ok",
+        "-target => scalar(/-prefix => Foo/), ok",
+        "-target => scalar(/-postfix => Foo/i), ok",
+    ] {
+        let resolved = resolve_with_analysis("Test2::V0", args);
+        assert!(!resolved.analysis_limited, "{args}: a match payload is data");
+        assert!(
+            resolved.resolved.symbols.contains("ok"),
+            "{args}: the explicit import must survive, got {:?}",
+            resolved.resolved.symbols
+        );
+    }
+
+    // Division must stay visible: masking from a `/` that follows a term would
+    // swallow real import text up to the next `/`.
+    assert!(!bare_match_can_start(Some('a')), "a `/` after an identifier is division");
+    assert!(!bare_match_can_start(Some(')')), "a `/` after a closing paren is division");
+    assert!(bare_match_can_start(Some('(')), "a `/` after an opener starts a match");
+    assert!(bare_match_can_start(Some('>')), "a `/` after a fat comma starts a match");
+    assert!(bare_match_can_start(None), "a leading `/` starts a match");
+
+    // The `qw//` list form is still consumed by the operator path, not by the
+    // bare-match path, so ordinary imports are untouched.
+    let list = resolve_with_analysis("Test2::Tools::Compare", "qw/is like/");
+    assert!(!list.analysis_limited);
+    assert!(list.resolved.symbols.contains("is") && list.resolved.symbols.contains("like"));
+}
