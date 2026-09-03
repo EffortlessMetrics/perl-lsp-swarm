@@ -2794,7 +2794,7 @@ impl<'a> PerlLexer<'a> {
                             if is_perl_identifier_start(ch)
                                 || (ch == ':' && self.peek_char(1) == Some(':')) =>
                         {
-                            self.consume_qualified_identifier_in_string();
+                            self.consume_qualified_identifier_in_string(Some('"'));
                             let part_text = &self.input[part_start..self.position];
                             parts.push(StringPart::Variable(Arc::from(part_text)));
                             // Array and hash slices interpolate with the
@@ -2834,7 +2834,7 @@ impl<'a> PerlLexer<'a> {
                             while self.current_char() == Some('$') {
                                 self.advance();
                             }
-                            self.consume_qualified_identifier_in_string();
+                            self.consume_qualified_identifier_in_string(Some('"'));
                             let part_text = &self.input[part_start..self.position];
                             parts.push(StringPart::Variable(Arc::from(part_text)));
                         }
@@ -2898,6 +2898,13 @@ impl<'a> PerlLexer<'a> {
                             }
 
                             if self.position > var_start {
+                                // Fold package-qualified segments (`::`,
+                                // old-style `'`) so `$Foo::bar` interpolates
+                                // as the one variable Perl interpolates.
+                                // Terminator precedence still applies: with
+                                // `:` or `'` as the quote delimiter the close
+                                // wins before a separator fold.
+                                self.consume_qualified_identifier_in_string(Some('"'));
                                 let var_name = &self.input[part_start..self.position];
                                 parts.push(StringPart::Variable(Arc::from(var_name)));
 
@@ -3039,7 +3046,7 @@ impl<'a> PerlLexer<'a> {
                                 while self.current_char() == Some('$') {
                                     self.advance();
                                 }
-                                self.consume_qualified_identifier_in_string();
+                                self.consume_qualified_identifier_in_string(Some('"'));
                             }
                             let part_text = &self.input[part_start..self.position];
                             parts.push(StringPart::Variable(Arc::from(part_text)));
@@ -3096,7 +3103,7 @@ impl<'a> PerlLexer<'a> {
                                 for _ in 0..dollar_run {
                                     self.advance();
                                 }
-                                self.consume_qualified_identifier_in_string();
+                                self.consume_qualified_identifier_in_string(Some('"'));
                                 let part_text = &self.input[part_start..self.position];
                                 parts.push(StringPart::Variable(Arc::from(part_text)));
 
@@ -3184,7 +3191,7 @@ impl<'a> PerlLexer<'a> {
                         // by the literal ":foo" -- which is exactly what the
                         // shared `::`-folding scan produces here.
                         Some(':') if self.peek_char(1) == Some(':') => {
-                            self.consume_qualified_identifier_in_string();
+                            self.consume_qualified_identifier_in_string(Some('"'));
                             let part_text = &self.input[part_start..self.position];
                             parts.push(StringPart::Variable(Arc::from(part_text)));
                         }

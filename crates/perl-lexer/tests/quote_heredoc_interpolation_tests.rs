@@ -156,6 +156,8 @@ fn qq_parts_match_the_ordinary_string_scanner_over_the_island_matrix() -> R {
         "$^W",
         "$!",
         "$main::x",
+        "$Foo::bar",
+        "$main::x",
         "@main::list",
         "$h->{k}",
         "$a->[0]",
@@ -235,6 +237,53 @@ fn array_and_hash_slices_interpolate_with_the_array() -> R {
     assert_eq!(
         quote_double_parts("qq{@h{key}}", true)?,
         vec![StringPart::Variable("@h".into()), StringPart::Expression("{key}".into()),]
+    );
+    Ok(())
+}
+
+#[test]
+fn package_qualified_scalars_interpolate_as_one_variable() -> R {
+    // Perl interpolates the whole package-qualified name:
+    // `$Foo::bar = 5; print qq{$Foo::bar}` prints `5`; the `::bar` tail is
+    // not literal text. Same policy on the ordinary and heredoc scanners.
+    assert_eq!(
+        quote_double_parts("qq{$Foo::bar}", true)?,
+        vec![StringPart::Variable("$Foo::bar".into())]
+    );
+    assert_eq!(
+        interpolated_string_parts("\"$Foo::bar\"")?,
+        vec![StringPart::Variable("$Foo::bar".into())]
+    );
+    let source = heredoc_source("v=$Foo::bar");
+    match heredoc_body_kind(&source, true)? {
+        TokenType::InterpolatedHeredocBody(parts) => assert_eq!(
+            parts,
+            vec![
+                StringPart::Literal("v=".into()),
+                StringPart::Variable("$Foo::bar".into()),
+                StringPart::Literal("\n".into()),
+            ]
+        ),
+        other => return Err(missing(format!("expected interpolated heredoc body, got {other:?}"))),
+    }
+    Ok(())
+}
+
+#[test]
+fn package_separator_folds_yield_to_the_active_terminator() -> R {
+    // With `:` or `'` as the qq delimiter, the close wins before a
+    // separator fold: `qq:$a::b:` closes at the first `:` after `$a` (the
+    // `::` fold must not swallow it), and `qq'$foo'bar'` closes at the
+    // first `'` instead of folding `foo'bar` and running past the close.
+    assert_eq!(quote_double_parts("qq:$a::b:", true)?, vec![StringPart::Variable("$a".into())]);
+    // The quote closes at the first `'`: parts stay `Variable("$foo")`
+    // (before the fix the fold swallowed the close into `"$foo'bar"` and
+    // the quote never terminated). The trailing `bar'` after the close is
+    // outside this token; its lone `'` recovering through `Error` is the
+    // ordinary lexer contract for unterminated input.
+    assert_eq!(
+        quote_double_parts("qq'$foo'bar'", true)?,
+        vec![StringPart::Variable("$foo".into())]
     );
     Ok(())
 }

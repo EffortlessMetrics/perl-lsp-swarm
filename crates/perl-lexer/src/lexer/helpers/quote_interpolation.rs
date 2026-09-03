@@ -156,7 +156,7 @@ impl PerlLexer<'_> {
                 if is_perl_identifier_start(ch)
                     || (ch == ':' && self.peek_char(1) == Some(':')) =>
             {
-                self.consume_qualified_identifier_in_string();
+                self.consume_qualified_identifier_in_string(terminator);
                 parts.push(StringPart::Variable(Arc::from(&self.input[part_start..self.position])));
                 // Array and hash slices interpolate with the array
                 // (`qq{@a[0]}` yields the slice element, `@h{key}` the hash
@@ -184,7 +184,7 @@ impl PerlLexer<'_> {
                 while self.current_char() == Some('$') {
                     self.advance();
                 }
-                self.consume_qualified_identifier_in_string();
+                self.consume_qualified_identifier_in_string(terminator);
                 parts.push(StringPart::Variable(Arc::from(&self.input[part_start..self.position])));
             }
             Some(ch @ ('+' | '-')) if terminator != Some(ch) => {
@@ -245,7 +245,7 @@ impl PerlLexer<'_> {
                     while self.current_char() == Some('$') {
                         self.advance();
                     }
-                    self.consume_qualified_identifier_in_string();
+                    self.consume_qualified_identifier_in_string(terminator);
                 }
                 parts.push(StringPart::Variable(Arc::from(&self.input[part_start..self.position])));
             }
@@ -268,7 +268,7 @@ impl PerlLexer<'_> {
                     for _ in 0..dollar_run {
                         self.advance();
                     }
-                    self.consume_qualified_identifier_in_string();
+                    self.consume_qualified_identifier_in_string(terminator);
                     parts.push(StringPart::Variable(Arc::from(
                         &self.input[part_start..self.position],
                     )));
@@ -327,7 +327,7 @@ impl PerlLexer<'_> {
                 }
             }
             Some(':') if self.peek_char(1) == Some(':') => {
-                self.consume_qualified_identifier_in_string();
+                self.consume_qualified_identifier_in_string(terminator);
                 parts.push(StringPart::Variable(Arc::from(&self.input[part_start..self.position])));
             }
             // `$"` is the list-separator special variable and interpolates on
@@ -391,6 +391,14 @@ impl PerlLexer<'_> {
         if self.position == var_start {
             return;
         }
+
+        // Fold package-qualified segments (`::`, old-style `'`) so
+        // `$Foo::bar` interpolates as the one variable Perl interpolates
+        // instead of splitting the name into a literal tail. Terminator
+        // precedence still applies: with `:` or `'` as the quote delimiter
+        // the close wins before a separator fold (`qq:$a::b:`,
+        // `qq'$foo'bar'`).
+        self.consume_qualified_identifier_in_string(terminator);
 
         parts.push(StringPart::Variable(Arc::from(&self.input[part_start..self.position])));
 
