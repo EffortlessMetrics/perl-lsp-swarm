@@ -3636,6 +3636,42 @@
       "selector_identity": "invocation:962b086de8be951b:occurrence:2",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "crates/perl-kwalitee/src/distribution_kwalitee/types.rs",
+      "enclosing_test_or_function": "allowed_class_relationship_pairs_pass",
+      "macro_family": "panic!",
+      "normalized_snippet": "|error| panic!(\"allowed pair {class:?}/{relationship:?} failed: {error}\"),",
+      "selector_identity": "invocation:a69b660a15c12f66:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-kwalitee/src/distribution_kwalitee/types.rs",
+      "enclosing_test_or_function": "score_class_fields",
+      "macro_family": "panic!",
+      "normalized_snippet": "other => panic!(\"expected ScoreClassContradiction, got {other}\"),",
+      "selector_identity": "invocation:3676dffc1916e506:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/runtime/launcher/checking_guidance.rs",
+      "enclosing_test_or_function": "completions_share_canonical_checking_descriptions",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"{shell} completions\"));",
+      "selector_identity": "invocation:4c2ec5d811ae65ac:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs-core/src/runtime/launcher/checking_guidance.rs",
+      "enclosing_test_or_function": "completions_share_canonical_checking_descriptions",
+      "macro_family": "panic!",
+      "normalized_snippet": ".unwrap_or_else(|| panic!(\"{shell} completions\"));",
+      "selector_identity": "invocation:4c2ec5d811ae65ac:occurrence:2",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
