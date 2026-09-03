@@ -169,13 +169,17 @@ PROVISIONAL_WORDS = frozenset(
         "UNDECIDED",
         "UNKNOWN",
         "DEFERRED",
-        "BLOCKED",
         # The ledger refuses a soft third `Status`; a ruling that records one is
         # the same claim moved one field over.
         "PARTIAL",
         "PARTIALLY",
     }
 )
+# Deliberately absent: `BLOCKED`. `AGENTS.md` defines `BLOCKED_BY_PREREQUISITE`
+# and `MERGE_BLOCKED` as typed outcomes, so in this repository being blocked is
+# a decision that was reached and named -- unlike `PENDING` or `DRAFT`, which
+# say no decision was taken. Listing it rejected both, which is the cost this
+# rule has to keep watching for: a correct ruling a writer cannot record.
 
 
 def ruling_defect(ruling: str) -> str | None:
@@ -567,6 +571,13 @@ class WorkedLaneLedgerTests(unittest.TestCase):
             # decision was reached -- the cost of over-reaching here is a
             # correct ruling a writer cannot record.
             "a negated but settled token": "#4179 — `NOT_PROVEN` for cross-provider coverage",
+            # `AGENTS.md` names these as typed outcomes: being blocked on a
+            # stated prerequisite is a decision that was reached, not one still
+            # being taken. A `BLOCKED` component in the provisional set rejected
+            # both, which is why the accepted side is checked against the
+            # repository's own vocabulary rather than against intuition.
+            "a repository-defined blocker": "#11141 — `BLOCKED_BY_PREREQUISITE` on the candidate lanes",
+            "an integration blocker": "#13788 — `MERGE_BLOCKED` pending the required shard",
         }
         for label, ruling in accepted.items():
             with self.subTest(accepted=label):
