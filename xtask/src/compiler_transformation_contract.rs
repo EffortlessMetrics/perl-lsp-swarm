@@ -1443,8 +1443,17 @@ impl TransformationPlan {
                 );
             }
         }
+        let mut seen_obligations = BTreeSet::new();
         for obligation in &self.equivalence_obligations {
             obligation.validate()?;
+            if !seen_obligations.insert(obligation.clone()) {
+                bail!(
+                    "plan {:?} declares the {} obligation on {} more than once",
+                    self.id.as_str(),
+                    obligation.oracle.tag(),
+                    obligation.proposition.tag()
+                );
+            }
         }
         if self.consumers.is_empty() {
             bail!("plan {:?} must name at least one consumer class", self.id.as_str());
@@ -1705,9 +1714,16 @@ impl TransformationPlan {
                 reason: "the observed candidate subject is not the plan's subject".to_owned(),
             });
         }
+        if self.input.stage != observation.observed_input.stage
+            || self.input.ir_identity != observation.observed_input.ir_identity
+        {
+            return Ok(TransformationResult::SubjectMismatch {
+                reason: "the observed input is a different stage subject from the plan's input"
+                    .to_owned(),
+            });
+        }
         if self.subject.generation != observation.observed_subject.generation
             || self.input.digest != observation.observed_input.digest
-            || self.input.stage != observation.observed_input.stage
         {
             return Ok(TransformationResult::Stale {
                 reason: "the observed input generation or digest is not the plan's input"
@@ -1717,19 +1733,21 @@ impl TransformationPlan {
         match &observation.settlement {
             Settlement::Completed => {}
             Settlement::Cancelled(reason) => {
-                return Ok(TransformationResult::Cancelled { reason: reason.clone() });
+                return Ok(TransformationResult::Cancelled { reason: bounded_reason(reason) });
             }
             Settlement::TimedOut(reason) => {
-                return Ok(TransformationResult::TimedOut { reason: reason.clone() });
+                return Ok(TransformationResult::TimedOut { reason: bounded_reason(reason) });
             }
             Settlement::LimitExceeded(reason) => {
-                return Ok(TransformationResult::LimitExceeded { reason: reason.clone() });
+                return Ok(TransformationResult::LimitExceeded { reason: bounded_reason(reason) });
             }
             Settlement::InstrumentFailed(reason) => {
-                return Ok(TransformationResult::InstrumentFailed { reason: reason.clone() });
+                return Ok(TransformationResult::InstrumentFailed {
+                    reason: bounded_reason(reason),
+                });
             }
             Settlement::CleanupFailed(reason) => {
-                return Ok(TransformationResult::CleanupFailed { reason: reason.clone() });
+                return Ok(TransformationResult::CleanupFailed { reason: bounded_reason(reason) });
             }
         }
 
@@ -1748,11 +1766,11 @@ impl TransformationPlan {
             (dynamic_first, precondition.id.clone())
         });
         if let Some(first) = unproven.first() {
-            // A prohibited plan that nevertheless mutated locations is not a
-            // clean refusal: reporting it as one would hide the mutation.
-            if !observation.applied_operations.is_empty()
-                && !self.partial_application.admits_residual()
-            {
+            // A plan that mutated locations anyway is not a clean refusal:
+            // reporting it as one would hide the mutation. Preconditions are
+            // plan-wide and conjunctive, so a subplan policy does not license
+            // applying part of the plan while one of them is unproven.
+            if !observation.applied_operations.is_empty() {
                 return Ok(TransformationResult::InvalidOutput {
                     reason: format!(
                         "partial application of {} location(s) after precondition {:?} was not proven",
@@ -1781,7 +1799,7 @@ impl TransformationPlan {
         match &observation.verifier {
             VerifierOutcome::Passed => {}
             VerifierOutcome::Failed(reason) => {
-                return Ok(TransformationResult::VerifierFailed { reason: reason.clone() });
+                return Ok(TransformationResult::VerifierFailed { reason: bounded_reason(reason) });
             }
             VerifierOutcome::NotRun => {
                 return Ok(TransformationResult::VerifierFailed {
@@ -1790,7 +1808,9 @@ impl TransformationPlan {
             }
         }
         if let EquivalenceOutcome::NotProven(reason) = &observation.equivalence {
-            return Ok(TransformationResult::EquivalenceNotProven { reason: reason.clone() });
+            return Ok(TransformationResult::EquivalenceNotProven {
+                reason: bounded_reason(reason),
+            });
         }
         for obligation in &self.equivalence_obligations {
             if !observation.discharged_obligations.contains(obligation) {
@@ -1836,26 +1856,74 @@ impl TransformationPlan {
         }
 
         if observation.applied_operations == selected {
+            // A complete application must land on the exact output subject the
+            // plan declared; anything else means the plan's expected output was
+            // never load-bearing.
+            if output != &self.expected_output {
+                return Ok(TransformationResult::InvalidOutput {
+                    reason: "the attempt did not produce the plan's expected output subject"
+                        .to_owned(),
+                });
+            }
+            if observation.residual.is_some() {
+                return Ok(TransformationResult::InvalidOutput {
+                    reason: "the attempt declared a residual boundary after applying every selected location"
+                        .to_owned(),
+                });
+            }
             return Ok(TransformationResult::AppliedExact {
                 output: output.clone(),
                 work: observation.work,
             });
         }
-        match (&observation.residual, self.partial_application.admits_residual()) {
-            (Some(residual), true) => {
-                Ok(TransformationResult::AppliedWithDeclaredResidualBoundary {
-                    output: output.clone(),
-                    work: observation.work,
-                    residual: residual.clone(),
-                })
+        // A partial application is legal only under a law that declares
+        // independent complete subplans, and only for a subplan it names.
+        let subplans = match &self.partial_application {
+            PartialApplicationPolicy::Prohibited => {
+                return Ok(TransformationResult::InvalidOutput {
+                    reason: "partial application is prohibited by the plan's law".to_owned(),
+                });
             }
-            (_, false) => Ok(TransformationResult::InvalidOutput {
-                reason: "partial application is prohibited by the plan's law".to_owned(),
-            }),
-            (None, true) => Ok(TransformationResult::InvalidOutput {
-                reason: "a partial application declared no residual boundary".to_owned(),
-            }),
+            PartialApplicationPolicy::IndependentCompleteSubplans(subplans) => subplans,
+        };
+        let residual = match &observation.residual {
+            Some(residual) => residual,
+            None => {
+                return Ok(TransformationResult::InvalidOutput {
+                    reason: "a partial application declared no residual boundary".to_owned(),
+                });
+            }
+        };
+        if !subplans.contains(&residual.subplan) {
+            return Ok(TransformationResult::InvalidOutput {
+                reason: format!(
+                    "the residual names subplan {:?}, which the plan's law does not declare",
+                    residual.subplan
+                ),
+            });
         }
+        Ok(TransformationResult::AppliedWithDeclaredResidualBoundary {
+            output: output.clone(),
+            work: observation.work,
+            residual: residual.clone(),
+        })
+    }
+
+    /// Classify one attempt after proving the plan conforms to its exact law.
+    ///
+    /// [`Self::evaluate`] is plan-local: it cannot see the law, so it presumes
+    /// conformance was established beforehand. This is the safe entry point for
+    /// a caller that holds the law — a non-conforming plan yields
+    /// [`TransformationResult::InvalidPlan`] rather than any applied state.
+    pub fn evaluate_under_law(
+        &self,
+        law: &TransformationLaw,
+        observation: &ApplicationObservation,
+    ) -> Result<TransformationResult> {
+        if let Err(error) = self.verify_law_conformance(law) {
+            return Ok(TransformationResult::InvalidPlan { reason: truncate_reason(&error) });
+        }
+        self.evaluate(observation)
     }
 }
 
@@ -2130,6 +2198,17 @@ fn fingerprint(canonical: &str) -> Result<ContractDigest> {
         let _ = write!(hex, "{byte:02x}");
     }
     ContractDigest::from_hex(&hex).context("sha256 hex output must satisfy the digest invariant")
+}
+
+/// Bound an observation-supplied reason to the module's free-text limit.
+///
+/// Result reasons come from the caller, so without this the bounded-text
+/// property would hold for every retained field except the result contract.
+fn bounded_reason(text: &str) -> String {
+    match text.char_indices().nth(MAX_TEXT_LEN) {
+        Some((index, _)) => text[..index].to_owned(),
+        None => text.to_owned(),
+    }
 }
 
 fn truncate_reason(error: &anyhow::Error) -> String {
@@ -2743,6 +2822,35 @@ mod tests {
         match LawVersion::new(value) {
             Ok(version) => version,
             Err(error) => unreachable!("law version builds: {error}"),
+        }
+    }
+
+    fn operation_id(value: &str) -> OperationId {
+        match OperationId::new(value) {
+            Ok(id) => id,
+            Err(error) => unreachable!("operation id builds: {error}"),
+        }
+    }
+
+    /// The reason text a result carries, whichever variant it is.
+    fn reason_of(result: &TransformationResult) -> &str {
+        match result {
+            TransformationResult::Stale { reason }
+            | TransformationResult::SubjectMismatch { reason }
+            | TransformationResult::InvalidPlan { reason }
+            | TransformationResult::InvalidOutput { reason }
+            | TransformationResult::VerifierFailed { reason }
+            | TransformationResult::EquivalenceNotProven { reason }
+            | TransformationResult::ZeroUsefulWork { reason }
+            | TransformationResult::Cancelled { reason }
+            | TransformationResult::TimedOut { reason }
+            | TransformationResult::LimitExceeded { reason }
+            | TransformationResult::InstrumentFailed { reason }
+            | TransformationResult::CleanupFailed { reason } => reason,
+            TransformationResult::AppliedExact { .. }
+            | TransformationResult::AppliedWithDeclaredResidualBoundary { .. }
+            | TransformationResult::RefusedPreconditionUnproven { .. }
+            | TransformationResult::RefusedDynamicOrUnsupported { .. } => "",
         }
     }
 
@@ -3669,6 +3777,9 @@ mod tests {
             ("must be at most", "an overlong precondition statement", |plan| {
                 plan.preconditions[0].statement = "x".repeat(MAX_TEXT_LEN + 1);
             }),
+            ("obligation on", "a duplicate equivalence obligation", |plan| {
+                plan.equivalence_obligations.push(plan.equivalence_obligations[0].clone());
+            }),
         ];
         for (expected, context, mutate) in cases {
             let mut broken = plan.clone();
@@ -3977,6 +4088,177 @@ mod tests {
             ..other_evidence.preconditions[0].clone()
         };
         assert_ne!(other_evidence.semantic_fingerprint()?, expected);
+        Ok(())
+    }
+
+    // Review finding: `evaluate` only compared the output *stage*, so a plan's
+    // declared output identity and digest were decoration. An exact
+    // application must land on exactly the subject the plan declared, and
+    // cannot also claim a residual.
+    #[test]
+    fn exact_application_requires_the_declared_output_subject() -> Result<()> {
+        let (law, plan) = folding();
+        assert_eq!(plan.evaluate(&observation(&plan, &law))?.tag(), "applied_exact");
+
+        let mut other_digest = observation(&plan, &law);
+        other_digest.output = Some(super::StageSubject {
+            digest: seeded_digest(0xc1),
+            ..plan.expected_output.clone()
+        });
+        match plan.evaluate(&other_digest)? {
+            TransformationResult::InvalidOutput { reason } => {
+                assert!(reason.contains("expected output subject"), "got {reason}");
+            }
+            other => unreachable!("a different output digest must not apply, got {}", other.tag()),
+        }
+
+        let mut other_identity = observation(&plan, &law);
+        other_identity.output = Some(super::StageSubject {
+            ir_identity: subject_ref("some other hir body"),
+            ..plan.expected_output.clone()
+        });
+        assert_eq!(plan.evaluate(&other_identity)?.tag(), "invalid_output");
+
+        // A complete application that also declares a residual is
+        // self-contradictory, not an exact success.
+        let mut contradictory = observation(&plan, &law);
+        contradictory.residual = Some(ResidualBoundary::new("everything", "nothing left")?);
+        match plan.evaluate(&contradictory)? {
+            TransformationResult::InvalidOutput { reason } => {
+                assert!(reason.contains("after applying every selected location"), "got {reason}");
+            }
+            other => unreachable!("a contradictory residual must not apply, got {}", other.tag()),
+        }
+        Ok(())
+    }
+
+    // Review finding: the subplan *names* a law declares were decoration --
+    // any residual was accepted whenever the policy admitted one.
+    #[test]
+    fn partial_application_requires_a_law_declared_subplan_name() -> Result<()> {
+        let law = shape_fixtures::effect_free_control_law()?;
+        let plan = shape_fixtures::effect_free_control_plan()?;
+
+        let mut partial = shape_fixtures::conforming_observation(&plan, &law)?;
+        partial.applied_operations = [operation_id("eir:block:0002")].into_iter().collect();
+        partial.work = WorkReceipt { useful_operations: 1, elapsed_micros: 300 };
+        partial.residual =
+            Some(ResidualBoundary::new("unreachable-blocks", "edges left untouched")?);
+        assert_eq!(plan.evaluate(&partial)?.tag(), "applied_with_declared_residual_boundary");
+
+        let mut undeclared = partial.clone();
+        undeclared.residual =
+            Some(ResidualBoundary::new("something-the-law-never-named", "boundary")?);
+        match plan.evaluate(&undeclared)? {
+            TransformationResult::InvalidOutput { reason } => {
+                assert!(reason.contains("does not declare"), "got {reason}");
+                assert!(reason.contains("something-the-law-never-named"), "got {reason}");
+            }
+            other => unreachable!("an undeclared subplan must not apply, got {}", other.tag()),
+        }
+
+        // And a mutation alongside an unproven precondition is invalid output
+        // even under a subplan policy: preconditions are plan-wide.
+        let mut refusing = plan.clone();
+        refusing.preconditions[0].truth = PreconditionTruth::Unknown;
+        let mut mutated = shape_fixtures::conforming_observation(&refusing, &law)?;
+        mutated.applied_operations = [operation_id("eir:block:0002")].into_iter().collect();
+        mutated.work = WorkReceipt { useful_operations: 1, elapsed_micros: 300 };
+        mutated.residual =
+            Some(ResidualBoundary::new("unreachable-blocks", "edges left untouched")?);
+        match refusing.evaluate(&mutated)? {
+            TransformationResult::InvalidOutput { reason } => {
+                assert!(reason.contains("partial application"), "got {reason}");
+            }
+            other => unreachable!(
+                "a subplan policy does not license mutating under an unproven precondition, got {}",
+                other.tag()
+            ),
+        }
+        Ok(())
+    }
+
+    // Review finding: currentness compared the input digest and stage but not
+    // its identity, so a plan could run against a differently-named subject.
+    #[test]
+    fn a_different_input_identity_is_a_subject_mismatch_not_staleness() -> Result<()> {
+        let (law, plan) = folding();
+
+        let mut renamed = observation(&plan, &law);
+        renamed.observed_input.ir_identity = subject_ref("a different hir body");
+        match plan.evaluate(&renamed)? {
+            TransformationResult::SubjectMismatch { reason } => {
+                assert!(reason.contains("different stage subject"), "got {reason}");
+            }
+            other => unreachable!("a renamed input is a subject mismatch, got {}", other.tag()),
+        }
+
+        // The same identity with a moved digest is staleness, and the two stay
+        // distinct.
+        let mut moved = observation(&plan, &law);
+        moved.observed_input.digest = seeded_digest(0xd2);
+        assert_eq!(plan.evaluate(&moved)?.tag(), "stale");
+        Ok(())
+    }
+
+    // Review finding: result reasons came from the observation unbounded, so
+    // the module's bounded-text property excluded the result contract.
+    #[test]
+    fn observation_supplied_reasons_are_bounded() -> Result<()> {
+        let (law, plan) = folding();
+        let overlong = "n".repeat(MAX_TEXT_LEN * 4);
+
+        for (settlement, expected) in [
+            (Settlement::Cancelled(overlong.clone()), "cancelled"),
+            (Settlement::TimedOut(overlong.clone()), "timed_out"),
+            (Settlement::LimitExceeded(overlong.clone()), "limit_exceeded"),
+            (Settlement::InstrumentFailed(overlong.clone()), "instrument_failed"),
+            (Settlement::CleanupFailed(overlong.clone()), "cleanup_failed"),
+        ] {
+            let mut observed = observation(&plan, &law);
+            observed.settlement = settlement;
+            let result = plan.evaluate(&observed)?;
+            assert_eq!(result.tag(), expected);
+            assert!(reason_of(&result).len() <= MAX_TEXT_LEN, "{expected} reason is unbounded");
+        }
+
+        let mut verifier = observation(&plan, &law);
+        verifier.verifier = VerifierOutcome::Failed(overlong.clone());
+        assert!(reason_of(&plan.evaluate(&verifier)?).len() <= MAX_TEXT_LEN);
+
+        let mut equivalence = observation(&plan, &law);
+        equivalence.equivalence = EquivalenceOutcome::NotProven(overlong);
+        assert!(reason_of(&plan.evaluate(&equivalence)?).len() <= MAX_TEXT_LEN);
+        Ok(())
+    }
+
+    // Review finding: `evaluate` is plan-local and cannot see the law, so
+    // legality depended on the caller having run conformance first.
+    // `evaluate_under_law` removes that discipline dependency.
+    #[test]
+    fn evaluate_under_law_refuses_a_non_conforming_plan() -> Result<()> {
+        let (law, plan) = folding();
+        let observed = observation(&plan, &law);
+        assert_eq!(plan.evaluate_under_law(&law, &observed)?.tag(), "applied_exact");
+
+        // A plan that restates its law's partial-application policy is
+        // structurally valid, so plan-local evaluation still applies it --
+        // which is exactly the discipline gap. Under the law it is invalid.
+        let mut laundered = plan.clone();
+        laundered.partial_application =
+            PartialApplicationPolicy::independent_subplans(&["invented"])?;
+        assert_eq!(laundered.evaluate(&observed)?.tag(), "applied_exact");
+        match laundered.evaluate_under_law(&law, &observed)? {
+            TransformationResult::InvalidPlan { reason } => {
+                assert!(reason.contains("partial-application policy"), "got {reason}");
+            }
+            other => unreachable!("a non-conforming plan must not apply, got {}", other.tag()),
+        }
+
+        let mut wrong_class = plan.clone();
+        wrong_class.class = TransformationClass::ExecutionOptimization;
+        wrong_class.consumers = [ConsumerClass::InternalStageRewrite].into_iter().collect();
+        assert_eq!(wrong_class.evaluate_under_law(&law, &observed)?.tag(), "invalid_plan");
         Ok(())
     }
 }
