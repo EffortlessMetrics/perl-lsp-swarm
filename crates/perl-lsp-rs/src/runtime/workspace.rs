@@ -127,6 +127,34 @@ pub(crate) fn read_watched_file_content(uri: &str, purpose: &str) -> Option<Stri
     })
 }
 
+/// Read a discovered object's raw bytes for indexing without blocking on
+/// non-regular objects (#14074 review).
+///
+/// Discovery snapshots regular files, but an object can be replaced before
+/// the scan's read: opening a FIFO (or device/socket) for reading blocks
+/// forever on Unix and would wedge the indexing slot, blocking every future
+/// scan. The regular-file screen therefore runs on BOTH sides of the open:
+/// before it, so a standing non-regular object is never opened at all, and
+/// again on the opened handle, so an object swapped into the stat-to-open
+/// window fails closed instead of feeding same-object byte classification
+/// from a non-regular object. `Ok(None)` means the object is not a regular
+/// file; `Err` is a transient read failure.
+#[cfg(feature = "workspace")]
+fn read_regular_file_bytes(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
+    if let Ok(metadata) = std::fs::metadata(path)
+        && !metadata.is_file()
+    {
+        return Ok(None);
+    }
+    let mut file = std::fs::File::open(path)?;
+    if !file.metadata()?.is_file() {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(Some(bytes))
+}
+
 /// Classify and read a workspace source file under one admission policy.
 ///
 /// `admission` is the single Perl admission authority (#14186): recognized
@@ -150,6 +178,13 @@ pub(crate) fn read_perl_source_file(
         return Ok(None);
     }
     let mut file = std::fs::File::open(path)?;
+    // Re-check the OPENED handle (#14074 review): an object swapped into the
+    // stat-to-open window fails closed here instead of feeding classification
+    // from a non-regular object, and on platforms whose non-regular opens do
+    // not block this is the rejection point.
+    if !file.metadata()?.is_file() {
+        return Ok(None);
+    }
     // Classify from a bounded prefix before paying for an unbounded read of a
     // large extensionless non-Perl artifact. The admission authority inspects
     // only the shebang window for extensionless paths, so the prefix is
@@ -2709,8 +2744,22 @@ impl LspServer {
                 // earlier; an extensionless path rewritten or a symlink
                 // retargeted between discovery and this final read must not
                 // have its new non-Perl content indexed as Perl.
-                let source_bytes = match std::fs::read(&path) {
-                    Ok(bytes) => bytes,
+                // #14074 review: the regular-file screens in
+                // `read_regular_file_bytes` keep a discovered path replaced
+                // by a FIFO from blocking this read in
+                // stat-to-open-swap windows — a blocked read would hold the
+                // indexing slot forever and block every future scan.
+                let source_bytes = match read_regular_file_bytes(&path) {
+                    Ok(Some(bytes)) => bytes,
+                    Ok(None) => {
+                        indexing_receipt.record_phase(IndexingPhase::Read, read_started.elapsed());
+                        tracing::debug!(
+                            path = %path.display(),
+                            "Startup scan skipped a discovered path replaced by a \
+                             non-regular object"
+                        );
+                        continue;
+                    }
                     Err(e) => {
                         indexing_receipt.record_phase(IndexingPhase::Read, read_started.elapsed());
                         indexing_receipt.record_read_error();
@@ -4727,6 +4776,51 @@ mod tests {
                 return Err("indexing thread did not finish before timeout".into());
             }
             std::thread::yield_now();
+        }
+        Ok(())
+    }
+
+    /// #14074 review regression: a discovered path replaced by a writer-less
+    /// FIFO before the scan's read must not block the read. The commit gate
+    /// parks the scan before the (lexically later) swapped file is read, so
+    /// the swap lands inside the discovery-to-read window; unfixed code
+    /// blocks in `std::fs::read` forever holding the indexing slot, fails
+    /// the completion deadline, and blocks every future scan.
+    #[cfg(all(feature = "workspace", unix))]
+    #[test]
+    fn startup_scan_does_not_wedge_when_discovered_file_becomes_fifo()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let gate_path = dir.path().join("aaa_gate.pl");
+        let swapped_path = dir.path().join("zzz_swapped.pm");
+        std::fs::write(&gate_path, "package Gate;\nsub gate_holder { 1 }\n1;\n")?;
+        std::fs::write(&swapped_path, "package Swapped;\nsub swapped_symbol { 1 }\n1;\n")?;
+        let server = gated_scan_server(&dir)?;
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        server.test_gate_indexing_commit(started_tx, release_rx);
+        server.start_workspace_indexing();
+        // The scan is now paused at the first file's commit seam, before
+        // `zzz_swapped.pm` is read.
+        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        std::fs::remove_file(&swapped_path)?;
+        let fifo = std::process::Command::new("mkfifo")
+            .arg(&swapped_path)
+            .status()
+            .map_err(|err| std::io::Error::other(format!("failed to spawn mkfifo: {err}")))?;
+        if !fifo.success() {
+            return Err("mkfifo could not create the FIFO fixture".into());
+        }
+        release_tx.send(())?;
+        wait_for_indexing_completion(&server)?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("Gate::gate_holder").is_none() {
+            return Err("scan lost the control file's symbols".into());
+        }
+        if coordinator.index().find_definition("Swapped::swapped_symbol").is_some() {
+            return Err("a FIFO-replaced path's bytes were indexed as Perl".into());
         }
         Ok(())
     }
