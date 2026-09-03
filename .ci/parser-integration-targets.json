@@ -47,6 +47,21 @@
       "boundedness": "focused"
     },
     {
+      "id": "parser.hir.postfix_modifiers",
+      "package": "perl-parser-core",
+      "target": "hir_statement_modifier_proof",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#6689",
+      "reason": "Execute exact flat- and body-HIR postfix statement-modifier topology, source geometry, access-mode, label-disposition, and prefix-control negative proof.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
       "id": "parser.pir.branch_body",
       "package": "perl-parser-core",
       "target": "pir_a_branch_body_test",
