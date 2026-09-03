@@ -91,3 +91,59 @@ describe('gherkin ReDoS guard (#6154)', () => {
     expect(isSafeGherkinStepMatch('^a+A+$', 'aaAA')).toBe(true);
   });
 });
+
+// #9806. Groups were invisible to the adjacency scan, so a chain of adjacent
+// variable-width groups reached `RegExp.test()` unclassified. Each rejected
+// source below was measured on main against 511 `a`s (50/80 for the alternation
+// chains) plus a final `!`, inside the module's own 256/512 bounds. These assert
+// the guard's decision rather than a wall time: the measurements motivate the
+// rule, they are not a stable oracle.
+describe('gherkin ReDoS guard: variable-width atom chains (#9806)', () => {
+  test.each([
+    ['capturing group chain, 26.3 s on main', '^(a+)(a+)(a+)(a+)b$'],
+    ['non-capturing spelling, 26.3 s on main', '^(?:a+)(?:a+)(?:a+)(?:a+)b$'],
+    ['named-group spelling', '^(?<one>a+)(?<two>a+)(?<three>a+)b$'],
+    ['minimal three-group chain', '^(a+)(a+)(a+)b$'],
+    ['class chain', '^[ab]+[a-b]+[ab]+[a-b]+$'],
+  ])('rejects %s without executing it', (_name, source) => {
+    expect(isPotentiallyExpensiveRegex(source)).toBe(true);
+  });
+
+  test.each([
+    ['three unquantified ambiguous branches', `^${'(a|aa)'.repeat(3)}b$`],
+    ['twenty-five, 1.8 s on main', `^${'(a|aa)'.repeat(25)}b$`],
+    ['forty, 89.7 s on main', `^${'(a|aa)'.repeat(40)}b$`],
+    ['overlapping branches of differing width', '^(ab|aba)(ab|aba)(ab|aba)c$'],
+  ])('rejects unquantified ambiguous alternation chain: %s', (_name, source) => {
+    expect(isPotentiallyExpensiveRegex(source)).toBe(true);
+  });
+
+  test('rejects a chain nested inside another group', () => {
+    expect(isPotentiallyExpensiveRegex('^((a+)(a+)(a+)b)$')).toBe(true);
+  });
+
+  test('rejects a chain a nullable atom cannot separate', () => {
+    expect(isPotentiallyExpensiveRegex('^(a+)x?(a+)(a+)b$')).toBe(true);
+  });
+
+  test('rejects a group chain that overlaps only after case folding', () => {
+    expect(isPotentiallyExpensiveRegex('^(a+)(A+)(a+)b$', 'i')).toBe(true);
+    expect(isPotentiallyExpensiveRegex('^(a+)(A+)(a+)b$')).toBe(false);
+  });
+
+  // Negative controls. Each differs minimally from a rejected source above, so
+  // a rule that over-rejects fails here rather than silently reintroducing the
+  // #859 false negatives.
+  test.each([
+    ['two competing groups, 1.2 ms on main', '^(a+)(a+)b$'],
+    ['two ambiguous alternations', `^${'(a|aa)'.repeat(2)}b$`],
+    ['three groups over disjoint domains', '^(a+)(b+)(c+)d$'],
+    ['a required separator between groups', '^(a+)x(a+)x(a+)b$'],
+    ['a required separator inside each group', '^(\\w+ )(\\w+ )(\\w+ )$'],
+    ['branches of equal width', '^(ab|cd)(ab|cd)(ab|cd)$'],
+    ['a single quantified alternation', '^(cat|dog)+$'],
+    ['ordinary quoted captures', '^I have "([^"]+)" and "([^"]+)"$'],
+  ])('keeps %s available', (_name, source) => {
+    expect(isPotentiallyExpensiveRegex(source)).toBe(false);
+  });
+});
