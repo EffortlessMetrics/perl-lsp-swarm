@@ -1811,29 +1811,55 @@ fn validate_reconciliation(manifest: &Manifest, raw: Option<&[u8]>, state: &mut 
         ),
     }
 
-    let source = receipt.subjects.source.commit.as_deref();
-    let target = receipt.subjects.target.commit.as_deref();
-    if source != Some(manifest.prepared_swarm_sha.as_str()) {
-        state.block(
+    // An absent subject commit and a commit that resolves to something else are
+    // different failures and deserve different verdicts. A mismatch is a
+    // concrete fact — this receipt reconciled a different tree — and is
+    // `blocked`. An absent commit means the receipt never recorded which tree it
+    // reconciled, so identity cannot be established at all, which is
+    // `not_proven`. Reporting the second as staleness misstates it: nothing is
+    // known to be stale.
+    check_reconciliation_subject(
+        receipt.subjects.source.commit.as_deref(),
+        &manifest.prepared_swarm_sha,
+        "source",
+        "prepared_swarm_sha",
+        state,
+    );
+    check_reconciliation_subject(
+        receipt.subjects.target.commit.as_deref(),
+        &manifest.release_base_sha,
+        "target",
+        "release_base_sha",
+        state,
+    );
+}
+
+/// Compare one reconciliation subject commit against the commit this manifest
+/// declares, keeping "reconciled a different tree" and "never recorded which
+/// tree" apart.
+fn check_reconciliation_subject(
+    observed: Option<&str>,
+    declared: &str,
+    subject: &str,
+    field: &str,
+    state: &mut PlanState,
+) {
+    match observed {
+        Some(commit) if commit == declared => {}
+        Some(commit) => state.block(
             "reconciliation_stale",
             format!(
-                "the reconciliation receipt reconciled source {} but this manifest projects prepared_swarm_sha {}",
-                source.unwrap_or("<unresolved>"),
-                manifest.prepared_swarm_sha
+                "the reconciliation receipt reconciled {subject} {commit} but this manifest projects {field} {declared}"
             ),
             "release/ci",
-        );
-    }
-    if target != Some(manifest.release_base_sha.as_str()) {
-        state.block(
-            "reconciliation_stale",
+        ),
+        None => state.not_proven(
+            "reconciliation_identity_unresolved",
             format!(
-                "the reconciliation receipt reconciled target {} but this manifest projects release_base_sha {}",
-                target.unwrap_or("<unresolved>"),
-                manifest.release_base_sha
+                "the reconciliation receipt records no {subject} commit, so it cannot be shown to have reconciled {field} {declared}"
             ),
             "release/ci",
-        );
+        ),
     }
 }
 

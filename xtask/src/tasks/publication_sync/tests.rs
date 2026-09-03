@@ -2572,6 +2572,12 @@ fn resolve_checkout_reports_ignored_and_unquoted_paths() -> Result<()> {
     run(&["init", "-q", "."])?;
     run(&["config", "user.email", "proof@example.invalid"])?;
     run(&["config", "user.name", "proof"])?;
+    // Pin the quoting behaviour this test depends on. `core.quotePath` defaults
+    // to true, but a developer or image with `core.quotePath=false` in global
+    // config would make Git report the non-ASCII path below verbatim even
+    // *without* `-z` — and the test would then keep passing with the flag
+    // removed, which is the one thing it exists to catch.
+    run(&["config", "core.quotePath", "true"])?;
     fs::write(root.path().join(".gitignore"), "target/\n")?;
     fs::create_dir_all(root.path().join("docs"))?;
     fs::write(root.path().join("docs/kept.md"), "kept\n")?;
@@ -2581,9 +2587,11 @@ fn resolve_checkout_reports_ignored_and_unquoted_paths() -> Result<()> {
     // An ignored file that `load_input` would happily read and hash.
     fs::create_dir_all(root.path().join("target/receipts"))?;
     fs::write(root.path().join("target/receipts/live.json"), "{}\n")?;
-    // A path Git quotes and C-escapes unless `-z` is passed.  Use a valid
-    // cross-platform Unicode name rather than a control character rejected by
-    // Windows filesystems.
+    // A path Git quotes and C-escapes unless `-z` is passed. A control
+    // character such as a tab is quoted unconditionally, but Windows
+    // filesystems reject it, so this uses a non-ASCII name instead — and
+    // non-ASCII quoting is governed by `core.quotePath`, which is configured
+    // explicitly below rather than inherited.
     fs::write(root.path().join("docs/we ird-é.md"), "x")?;
 
     let facts = resolve_checkout(root.path()).ok_or_else(|| eyre!("checkout unresolvable"))?;
@@ -2604,7 +2612,22 @@ fn resolve_checkout_reports_ignored_and_unquoted_paths() -> Result<()> {
         );
     }
 
-    // The awkward path must arrive raw rather than quoted and escaped.
+    // Prove the premise instead of assuming it: without `-z`, Git must actually
+    // quote this path. If it does not, `-z` is not what makes the assertion
+    // below pass and this control proves nothing about the flag.
+    let quoted = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root.path())
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .output()?;
+    let quoted = String::from_utf8_lossy(&quoted.stdout);
+    if !quoted.contains("\\303\\251") && !quoted.contains('"') {
+        bail!(
+            "Git did not quote the awkward path without -z, so this test cannot detect its removal: {quoted:?}"
+        );
+    }
+
+    // With `-z`, the same path must arrive raw rather than quoted and escaped.
     if !facts.dirty.contains("docs/we ird-é.md") {
         bail!("a path needing quoting was not reported verbatim: {:?}", facts.dirty);
     }
@@ -2950,4 +2973,74 @@ fn prose_inside_a_production_entry_stays_protected() -> Result<()> {
     rows_mut(&mut document)?[1]["path"] = json!("clients/sublime/README.md");
     let receipt = plan_with_surface(&document, &surface)?;
     assert_finding(&receipt, "row_product_bearing_exclusion")
+}
+
+#[test]
+fn a_reconciliation_receipt_without_a_source_commit_is_not_proven() -> Result<()> {
+    // A receipt that records no source commit never said which tree it
+    // reconciled. Nothing is known to be *stale* — identity cannot be
+    // established at all — so this is `not_proven`, not `blocked`.
+    let mut receipt_value: Value = serde_json::from_slice(RECONCILIATION_FIXTURE)?;
+    receipt_value["subjects"]["source"]["commit"] = Value::Null;
+    let mutated = serde_json::to_vec(&receipt_value)?;
+
+    let manifest: Manifest = serde_json::from_str(CLEAN)?;
+    let mut state = PlanState::default();
+    validate_reconciliation(&manifest, Some(&mutated), &mut state);
+    let (verdict, findings) = state.finish();
+
+    if verdict != Verdict::NotProven {
+        bail!("expected not_proven for an absent source commit, got {verdict:?}: {findings:?}");
+    }
+    if !findings.iter().any(|f| f.code == "reconciliation_identity_unresolved") {
+        bail!("expected reconciliation_identity_unresolved: {findings:?}");
+    }
+    if findings.iter().any(|f| f.code == "reconciliation_stale") {
+        bail!("an absent commit was reported as staleness: {findings:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_reconciliation_receipt_without_a_target_commit_is_not_proven() -> Result<()> {
+    let mut receipt_value: Value = serde_json::from_slice(RECONCILIATION_FIXTURE)?;
+    receipt_value["subjects"]["target"]["commit"] = Value::Null;
+    let mutated = serde_json::to_vec(&receipt_value)?;
+
+    let manifest: Manifest = serde_json::from_str(CLEAN)?;
+    let mut state = PlanState::default();
+    validate_reconciliation(&manifest, Some(&mutated), &mut state);
+    let (verdict, findings) = state.finish();
+
+    if verdict != Verdict::NotProven {
+        bail!("expected not_proven for an absent target commit, got {verdict:?}: {findings:?}");
+    }
+    if !findings.iter().any(|f| f.code == "reconciliation_identity_unresolved") {
+        bail!("expected reconciliation_identity_unresolved: {findings:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_resolved_but_different_reconciliation_commit_is_still_blocked() -> Result<()> {
+    // The opposite direction, and the reason the split is not just a rename: a
+    // commit that resolves to something else *is* a concrete fact about a
+    // different tree, and stays `blocked`.
+    let mut receipt_value: Value = serde_json::from_slice(RECONCILIATION_FIXTURE)?;
+    receipt_value["subjects"]["source"]["commit"] =
+        json!("9999999999999999999999999999999999999999");
+    let mutated = serde_json::to_vec(&receipt_value)?;
+
+    let manifest: Manifest = serde_json::from_str(CLEAN)?;
+    let mut state = PlanState::default();
+    validate_reconciliation(&manifest, Some(&mutated), &mut state);
+    let (verdict, findings) = state.finish();
+
+    if verdict != Verdict::Blocked {
+        bail!("expected blocked for a mismatched commit, got {verdict:?}: {findings:?}");
+    }
+    if !findings.iter().any(|f| f.code == "reconciliation_stale") {
+        bail!("expected reconciliation_stale: {findings:?}");
+    }
+    Ok(())
 }
