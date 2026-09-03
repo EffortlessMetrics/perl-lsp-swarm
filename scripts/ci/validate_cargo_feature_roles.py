@@ -254,6 +254,32 @@ class Registry:
     rows: list[dict[str, object]] = field(default_factory=list)
 
 
+def dependency_tables(manifest: dict) -> list[dict]:
+    """Every dependency table of a manifest, including target-specific ones.
+
+    Unlike `optional_dependencies`, this includes `[dev-dependencies]`: a
+    dev-dependency cannot be optional (so it declares no feature) but a
+    dev-dependency on an in-tree path *does* make that crate a workspace
+    member, which is a membership question rather than a feature question.
+    """
+    tables: list[dict] = []
+
+    def collect(container: object) -> None:
+        if not isinstance(container, dict):
+            return
+        for key in ("dependencies", "build-dependencies", "dev-dependencies"):
+            table = container.get(key)
+            if isinstance(table, dict):
+                tables.append(table)
+
+    collect(manifest)
+    targets = manifest.get("target")
+    if isinstance(targets, dict):
+        for target in targets.values():
+            collect(target)
+    return tables
+
+
 def member_dirs(root: Path) -> list[Path]:
     """Resolve workspace member directories from the root manifest."""
     manifest = root / "Cargo.toml"
@@ -296,8 +322,47 @@ def member_dirs(root: Path) -> list[Path]:
                 continue
             if (path / "Cargo.toml").is_file():
                 resolved.add(path)
+    # A root manifest carrying its own [package] is a member too.
+    if isinstance(data.get("package"), dict):
+        resolved.add(root)
     if not resolved:
         raise ValidationError("no workspace member manifests resolved")
+
+    # Cargo also enrols every path dependency that resides inside the workspace
+    # directory, even when `members` never names it. Without this a crate could
+    # be added as a path dependency and its features would escape classification
+    # entirely — a hole in the denominator, which is the property this registry
+    # exists to hold. Traversed to a fixed point, offline, from manifests only.
+    root_dir = root.resolve()
+    queue = sorted(resolved)
+    seen = {path.resolve() for path in resolved}
+    while queue:
+        current = queue.pop()
+        try:
+            member = tomllib.loads(
+                (current / "Cargo.toml").read_text(encoding="utf-8")
+            )
+        except OSError as error:
+            raise ValidationError(f"cannot read {current}/Cargo.toml: {error}") from error
+        except tomllib.TOMLDecodeError as error:
+            raise ValidationError(f"cannot parse {current}/Cargo.toml: {error}") from error
+        for table in dependency_tables(member):
+            for spec in table.values():
+                if not isinstance(spec, dict) or not isinstance(spec.get("path"), str):
+                    continue
+                candidate = (current / spec["path"]).resolve()
+                # Only in-tree, non-excluded directories are enrolled; a path
+                # dependency outside the workspace is not a member, and adding
+                # one would demand rows for a crate Cargo does not govern.
+                if root_dir not in candidate.parents and candidate != root_dir:
+                    continue
+                if candidate in seen or candidate in excluded:
+                    continue
+                if not (candidate / "Cargo.toml").is_file():
+                    continue
+                seen.add(candidate)
+                resolved.add(candidate)
+                queue.append(candidate)
     return sorted(resolved)
 
 
