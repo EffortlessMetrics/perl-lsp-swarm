@@ -6142,36 +6142,67 @@ mod tests {
 
     // Parity anchor for baseline comparison ordering (#5213).
     //
-    // `compare_baseline` appends violations in a fixed sequence -- scalar schema/mode/
-    // profile checks first, then bucket shape, boundary shape, file results, failure
-    // buckets, summary assertions, and semantic boundaries -- and
-    // `bail_baseline_comparison` joins them in that order into the operator-facing
-    // error. Existing tests only assert that some violation of a given kind is
-    // present, so reordering those `extend` calls during an extraction would change
-    // user-visible output while every test still passed.
+    // `compare_baseline` runs its scalar schema/mode/profile checks and then extends
+    // the violation list from six functions in a fixed sequence: bucket shape,
+    // boundary shape, file results, failure buckets, summary assertions, semantic
+    // boundaries. `bail_baseline_comparison` joins the result in that order into the
+    // operator-facing error, so the sequence is user-visible. Every other test here
+    // asserts only that a violation of some kind is present, which stays true under
+    // any permutation.
+    //
+    // The fixture deliberately makes all six contribute at least one violation.
+    // `Vec::extend` of an empty iterator is a no-op wherever it sits, so a fixture
+    // where contributing and non-contributing checks alternate cannot observe a swap
+    // of two adjacent calls -- the realistic accident when moving this code. With
+    // every call contributing, each of the five adjacent transpositions changes the
+    // pinned sequence.
+    //
+    // The pin is the exact `{kind} {path}: {message}` line that
+    // `bail_baseline_comparison` emits, so violation text and path attribution are
+    // anchored too, not just the ordering of kinds.
     #[test]
     fn baseline_comparison_violation_order_is_pinned() -> TestResult {
         let baseline = baseline_from_report(&sample_compile_report())?;
         let mut report = sample_compile_report();
+        // scalar checks
         report.mode = HarnessMode::Execute;
         report.profile = HarnessProfile::Comp;
-        report.summary.tap_assertions_passed = 0;
+        // bucket shape (a failing file with no failure record) and file results
         report.file_results[0].status = RunnerStatus::Fail;
+        // failure buckets
+        report.buckets.insert("compile_error".into(), 1);
+        // summary assertions
+        report.summary.tap_assertions_passed = 0;
+        // boundary shape (empty reason) and semantic boundaries (not accepted)
+        let mut boundary = sample_semantic_boundary();
+        boundary.reason = String::new();
+        report.semantic_boundaries = vec![boundary];
 
-        let observed = compare_baseline(&baseline, &report)
+        let comparison = compare_baseline(&baseline, &report);
+        let observed = comparison
             .violations
             .iter()
-            .map(|violation| format!("{:?}", violation.kind))
+            .map(|violation| {
+                let path = violation.path.as_deref().unwrap_or("-");
+                format!("{:?} {path}: {}", violation.kind, violation.message)
+            })
             .collect::<Vec<_>>();
-        let expected = vec![
-            "ModeMismatch".to_string(),
-            "ProfileMismatch".to_string(),
-            "UnbucketedFailure".to_string(),
-            "PreviouslyPassingFileFailed".to_string(),
-            "AssertionRegression".to_string(),
-        ];
+        let expected = [
+            "ModeMismatch -: baseline mode compile does not match report mode execute",
+            "ProfileMismatch -: baseline profile base does not match report profile comp",
+            "UnbucketedFailure base/lex.t: failing file has no failure bucket record",
+            "SemanticBoundary base/ok.t: semantic boundary has an empty reason",
+            "PreviouslyPassingFileFailed base/lex.t: file passed in baseline but fails in current report",
+            "BucketCountIncreased -: bucket compile_error increased from 0 to 1",
+            "AssertionRegression -: passed assertions regressed from 2 to 0",
+            "SemanticBoundary base/ok.t: current semantic boundary is not accepted by the baseline: runtime_symbolic_reference",
+        ]
+        .map(str::to_string)
+        .to_vec();
         if observed != expected {
-            bail!("baseline violation order changed: expected {expected:?}, observed {observed:?}");
+            bail!(
+                "baseline violation order changed:\nexpected {expected:#?}\nobserved {observed:#?}"
+            );
         }
         Ok(())
     }
