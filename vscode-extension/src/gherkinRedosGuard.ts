@@ -454,6 +454,9 @@ interface QuantifierFacts {
   bits: number;
   repeat: number | null;
   nullable: boolean;
+  // Largest number of times the atom may repeat; `null` when unbounded. A
+  // repeat of R places R - 1 seams inside the atom itself.
+  maxRepeat: number | null;
 }
 
 function unionDomains(domains: (Set<string> | null)[]): Set<string> | null {
@@ -474,14 +477,26 @@ function readQuantifier(source: string, index: number): QuantifierFacts {
   const lazyEnd = (end: number): number => (source[end] === '?' ? end + 1 : end);
 
   if (character === '+') {
-    return { end: lazyEnd(index + 1), bits: UNBOUNDED_ATOM_BITS, repeat: null, nullable: false };
+    return {
+      end: lazyEnd(index + 1),
+      bits: UNBOUNDED_ATOM_BITS,
+      repeat: null,
+      nullable: false,
+      maxRepeat: null,
+    };
   }
   if (character === '*') {
-    return { end: lazyEnd(index + 1), bits: UNBOUNDED_ATOM_BITS, repeat: null, nullable: true };
+    return {
+      end: lazyEnd(index + 1),
+      bits: UNBOUNDED_ATOM_BITS,
+      repeat: null,
+      nullable: true,
+      maxRepeat: null,
+    };
   }
   if (character === '?') {
     // Present or absent: one bit, not an unbounded run.
-    return { end: lazyEnd(index + 1), bits: 1, repeat: null, nullable: true };
+    return { end: lazyEnd(index + 1), bits: 1, repeat: null, nullable: true, maxRepeat: 1 };
   }
   if (character === '{') {
     const closingBrace = source.indexOf('}', index + 1);
@@ -497,6 +512,7 @@ function readQuantifier(source: string, index: number): QuantifierFacts {
           bits: UNBOUNDED_ATOM_BITS,
           repeat: null,
           nullable: minimum === 0,
+          maxRepeat: null,
         };
       }
       const choices = maximum - minimum + 1;
@@ -505,11 +521,12 @@ function readQuantifier(source: string, index: number): QuantifierFacts {
         bits: choices > 1 ? Math.min(Math.log2(choices), UNBOUNDED_ATOM_BITS) : 0,
         repeat: choices > 1 ? null : minimum,
         nullable: minimum === 0,
+        maxRepeat: maximum,
       };
     }
   }
 
-  return { end: index, bits: 0, repeat: 1, nullable: false };
+  return { end: index, bits: 0, repeat: 1, nullable: false, maxRepeat: 1 };
 }
 
 // A position the parser cannot classify. It neither varies nor overlaps, so it
@@ -606,6 +623,31 @@ function readChainAtom(
     }
 
     const group = analyzeAlternatives(source, contentStart, groupEnd, flags, depth + 1);
+    // Repeating a group places a seam between each pair of consecutive copies,
+    // exactly as writing those copies out would. `((a+))+` is eight characters
+    // and takes 81 s on thirty `a`s, because the older denylist regex cannot
+    // see a quantifier across the extra `)` and this scan reads the whole
+    // construct as one atom. Charging the group against itself catches it, and
+    // catches `(\)?a+)+`, `((a?)){20}` and `((a+|a)){3,7}` with it.
+    //
+    // A group whose own boundary is fixed seams with nothing however often it
+    // repeats, which is why `(\w+ )+` and `(cat|dog)+` stay accepted.
+    // Between two different atoms the seam is the narrower edge, because both
+    // sides must be able to move. A group repeated against itself is not that
+    // case: the copies are identical, so whatever freedom exists at the
+    // boundary is available on both sides of it. `(a+a{2})` ends in a fixed
+    // `a{2}`, but the `a+` before it still slides the boundary — and that tail
+    // is made of the same character the next copy consumes, so it blocks
+    // nothing. Measured: `^((a+a{2})){5}$` takes 5.4 s at 120 characters and
+    // does not finish at 200. Disjoint edges are what actually block a seam,
+    // which is why `(\w+ )+` and `((a+b+)){5}` stay accepted.
+    const selfSeamBits = domainsOverlap(group.trailing.domain, group.leading.domain)
+      ? Math.max(group.trailing.bits, group.leading.bits)
+      : 0;
+    const selfChain =
+      selfSeamBits > 0 &&
+      (quantifier.maxRepeat === null ||
+        (quantifier.maxRepeat - 1) * selfSeamBits > MAX_CHAIN_AMBIGUITY_BITS);
     // A repeating group can present any of its characters at either boundary, so
     // the quantifier widens both edges to the group's whole domain and adds its
     // own freedom on top of whatever the group already offers there.
@@ -624,7 +666,7 @@ function readChainAtom(
           ? null
           : group.fixedWidth * quantifier.repeat,
       nullable: quantifier.nullable || group.nullable,
-      chain: group.chain,
+      chain: group.chain || selfChain,
     };
   }
 
@@ -767,6 +809,14 @@ function analyzeAlternatives(
     // Anchors are zero-width and cannot separate their neighbours.
     if (character === '^' || character === '$') {
       index += 1;
+      continue;
+    }
+    // Neither can a word-boundary assertion, which `readRegexAtom` would
+    // otherwise hand back as an ordinary fixed atom. Treating `\B` as a
+    // separator made `^a+\Ba+\Ba+\Ba+b$` — the same shape as
+    // `^(a+)(a+)(a+)(a+)b$`, and 26.8 s on the same input — look separated.
+    if (character === '\\' && (source[index + 1] === 'b' || source[index + 1] === 'B')) {
+      index += 2;
       continue;
     }
 

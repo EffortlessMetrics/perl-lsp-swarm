@@ -190,6 +190,67 @@ describe('gherkin ReDoS guard: variable-width atom chains (#9806)', () => {
   });
 });
 
+// Repeating a group places a seam between each pair of consecutive copies, so a
+// group is charged against itself. Without that, an adversarial workspace could
+// reach `RegExp.test()` through several shapes the older rules cannot see:
+// `POTENTIALLY_EXPENSIVE_REGEX_RE` matches a quantifier inside one pair of
+// parentheses, and `[^)]*` cannot cross a `)`, so one extra wrapper or one
+// literal `)` hides it. Each source below was measured on `main`, which accepts
+// every one of them.
+describe('gherkin ReDoS guard: a repeated group seams with itself (#9806)', () => {
+  test.each([
+    ['nested wrapper, 81 s on thirty characters', '((a+))+b'],
+    ['non-capturing wrapper', '(?:(a+))+b'],
+    ['non-capturing inner', '((?:a+))+b'],
+    ['named wrapper', '(?<n>(a+))+b'],
+    ['escaped paren blocks the older rule, 103 s', '(\\)?a+)+b'],
+    ['character-class paren blocks it too, 105 s', '([)]?a+)+b'],
+    ['nullable inner under an exact repeat', '^((a?)){20}z$'],
+    ['bounded repeat of an ambiguous alternation', '^((a+|a)){3,7}((a+|a)){3,7}z$'],
+    // A fixed-width tail does not block a seam when it is built from the same
+    // character the next copy consumes. 5.4 s at 120 characters, unfinished at
+    // 200 — so the seam must be charged the wider edge, not the narrower.
+    ['a fixed tail over the same character', '^((a+a{2})){5}$'],
+  ])('rejects %s', (_name, source) => {
+    expect(isPotentiallyExpensiveRegex(source)).toBe(true);
+  });
+
+  // What actually blocks a self-seam is a boundary the neighbouring copy cannot
+  // cross. Without these, the rule would refuse most repeated groups outright.
+  test.each([
+    ['a fixed inner shape', '^((ab)){5}$'],
+    ['equal-width alternation', '^(?:(cat|dog)){2}$'],
+    ['two copies of a nullable inner', '^((a?)){2}z$'],
+    ['a repeat count at the budget', '^((a?)){17}z$'],
+    ['one more copy, still inside the budget', '^((a?)){18}z$'],
+    // The tail and the head cannot compete for a character, so the boundary is
+    // pinned however often the group repeats.
+    ['edges over disjoint characters', '^((a+b+)){5}$'],
+  ])('keeps %s available', (_name, source) => {
+    expect(isPotentiallyExpensiveRegex(source)).toBe(false);
+  });
+});
+
+// `\b` and `\B` are zero-width, so they separate nothing. `readRegexAtom` hands
+// them back as ordinary fixed atoms, which made `^a+\Ba+\Ba+\Ba+b$` — the same
+// shape as `^(a+)(a+)(a+)(a+)b$`, and 26.8 s on the same input — look separated.
+describe('gherkin ReDoS guard: zero-width assertions (#9806)', () => {
+  test.each([
+    ['\\B between every atom', '^a+\\Ba+\\Ba+\\Ba+b$'],
+    ['\\b between every atom', '^a+\\ba+\\ba+\\ba+b$'],
+    ['a chain of nullable groups joined by \\B', `^${'(a?\\B)'.repeat(40)}z$`],
+  ])('does not let %s separate a chain', (_name, source) => {
+    expect(isPotentiallyExpensiveRegex(source)).toBe(true);
+  });
+
+  test.each([
+    ['an ordinary word boundary', '^\\bword\\b$'],
+    ['boundaries around a capture', '^I have \\b(\\d+)\\b items$'],
+  ])('keeps %s available', (_name, source) => {
+    expect(isPotentiallyExpensiveRegex(source)).toBe(false);
+  });
+});
+
 // The memos cap entry counts, but each key carries the pattern text, so a count
 // alone does not bound memory. The guard's own input ceiling is enforced at
 // admission rather than being inherited from `isSafeGherkinStepMatch`, so the
