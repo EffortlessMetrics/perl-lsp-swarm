@@ -711,6 +711,7 @@ fn session_override_supplies_capability_until_it_expires() -> Result<(), Box<dyn
             granted_policy_generation: 5,
             expires_after_policy_generation: 6,
             capabilities: CapabilitySet::new([ExecutionCapability::ExecutableTool]),
+            bound_input_ids: Vec::new(),
         });
         let request = intent(
             OperationProfile::ExternalFormatter,
@@ -1165,6 +1166,7 @@ fn session_override_cannot_defeat_policy_denial() -> Result<(), Box<dyn Error>> 
         granted_policy_generation: 0,
         expires_after_policy_generation: u64::MAX,
         capabilities: CapabilitySet::new([ExecutionCapability::ExecutableTool]),
+        bound_input_ids: Vec::new(),
     });
 
     let decision = authorize(
@@ -2337,6 +2339,7 @@ fn session_override_cannot_cure_a_denied_input() -> Result<(), Box<dyn Error>> {
         granted_policy_generation: 0,
         expires_after_policy_generation: u64::MAX,
         capabilities: CapabilitySet::new([ExecutionCapability::ExecutableTool]),
+        bound_input_ids: Vec::new(),
     });
 
     let decision = authorize(
@@ -2911,6 +2914,92 @@ fn unproven_inputs_name_provenance_as_the_remedy() -> Result<(), Box<dyn Error>>
             .iter()
             .any(|reason| reason.actionable_authority == ActionableAuthority::InputProvenance),
         "an unproven activation must ask for provenance",
+    )?;
+    Ok(())
+}
+
+/// A grant issued for one input does not authorize a different one.
+///
+/// Found by an independent security lens: a capability is coarser than the
+/// thing a user actually confirmed, so an unbound grant for one ambient `PATH`
+/// executable would silently cover any other ambient executable for the rest of
+/// the generation window.
+#[test]
+fn bound_session_override_does_not_leak_to_another_input() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 5)?;
+    let approved = path_only_tool();
+    let other = ClassifiedInput::new(
+        "tool.linter",
+        InputRiskClass::AmbientPathOrCwd,
+        EnvironmentInputAuthority::Ambient,
+        InputDisposition::RequiresSeparateAuthority,
+        None,
+        "resolved_from_path",
+    );
+
+    // The grant names the input it was issued for.
+    let grant = SessionOverride {
+        override_id: "session.grant.1".to_string(),
+        scope: scope.clone(),
+        granted_policy_generation: 0,
+        expires_after_policy_generation: u64::MAX,
+        capabilities: CapabilitySet::new([ExecutionCapability::ExecutableTool]),
+        bound_input_ids: vec![approved.id.clone()],
+    };
+
+    let decide = |input: &ClassifiedInput| {
+        let mut facts = evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "format".to_string() },
+            &bound,
+            vec![input.clone()],
+        );
+        facts.session_override = Some(grant.clone());
+        authorize(
+            &intent(
+                OperationProfile::ExternalFormatter,
+                ExecutionReasonClass::ExternalTool,
+                &scope,
+                &bound,
+                vec![input.id.clone()],
+            ),
+            &facts,
+        )
+    };
+
+    require(
+        decide(&approved).outcome() == AuthorizationOutcome::Allowed,
+        "the grant covers the input it was issued for",
+    )?;
+    require(
+        decide(&other).outcome() != AuthorizationOutcome::Allowed,
+        "the grant must not authorize a different ambient executable",
+    )?;
+    require(
+        !has_reason(&decide(&other), "granted_by_session_override"),
+        "an uncovered input must not record an override grant",
+    )?;
+
+    // A grant's binding is part of its identity, so two differently-bound
+    // grants cannot share an evidence fingerprint.
+    let mut unbound = grant.clone();
+    unbound.bound_input_ids = Vec::new();
+    let with = |over: SessionOverride| {
+        let mut facts = evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "format".to_string() },
+            &bound,
+            vec![approved.clone()],
+        );
+        facts.session_override = Some(over);
+        facts.identity()
+    };
+    require(
+        with(grant) != with(unbound),
+        "a grant's input binding must be part of the evidence identity",
     )?;
     Ok(())
 }

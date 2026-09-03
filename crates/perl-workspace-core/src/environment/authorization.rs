@@ -1048,7 +1048,20 @@ impl AuthorizationActor {
 /// A scoped, expiring capability grant.
 ///
 /// An override is explicit, bound to one scope, bound to the policy generation
-/// that issued it, and expirable. It can never defeat a policy denial.
+/// that issued it, and expirable. It can never defeat a policy denial, and it
+/// never overrules a denied input — it supplies only what was left
+/// unestablished.
+///
+/// # Binding a grant to the inputs it was granted for
+///
+/// A capability is coarser than the thing a user actually confirmed. Approving
+/// one ambient `PATH` executable should not silently authorize a *different*
+/// ambient executable for the rest of the generation window. Set
+/// [`Self::bound_input_ids`] to the inputs the grant was issued for and the
+/// override applies only while the operation consumes those inputs.
+///
+/// Leaving it empty is a deliberate scope-wide capability grant, which is
+/// coarser and should be reserved for cases where that is genuinely intended.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionOverride {
@@ -1062,6 +1075,13 @@ pub struct SessionOverride {
     pub expires_after_policy_generation: u64,
     /// Capabilities the grant supplies.
     pub capabilities: CapabilitySet,
+    /// Inputs this grant was issued for.
+    ///
+    /// When non-empty, the override applies only if every input the operation
+    /// consumes is listed here, so a grant cannot be reused for an input the
+    /// user never saw. Empty means a scope-wide capability grant.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bound_input_ids: Vec<ClassifiedInputId>,
 }
 
 impl SessionOverride {
@@ -1073,12 +1093,31 @@ impl SessionOverride {
             && policy_generation <= self.expires_after_policy_generation
     }
 
+    /// Whether this grant covers the inputs an operation actually consumes.
+    ///
+    /// An unbound grant covers everything in its scope. A bound grant covers an
+    /// operation only when every input it consumes was part of the grant, so
+    /// confirming one ambient executable cannot authorize another.
+    #[must_use]
+    pub fn covers_inputs(&self, inputs: &[&ClassifiedInput]) -> bool {
+        if self.bound_input_ids.is_empty() {
+            return true;
+        }
+        let bound: BTreeSet<&ClassifiedInputId> = self.bound_input_ids.iter().collect();
+        inputs.iter().all(|input| bound.contains(&input.id))
+    }
+
     fn push_identity(&self, material: &mut String) {
         push_field(material, "override.id", self.override_id.as_str());
         self.scope.push_identity(material, "override.scope");
         push_field(material, "override.granted", &self.granted_policy_generation.to_string());
         push_field(material, "override.expires", &self.expires_after_policy_generation.to_string());
         push_field(material, "override.capabilities", &self.capabilities.tags().join(","));
+        let mut bound: Vec<&ClassifiedInputId> = self.bound_input_ids.iter().collect();
+        bound.sort();
+        for input_id in bound {
+            push_field(material, "override.bound_input", input_id.as_str());
+        }
     }
 }
 
@@ -2461,6 +2500,7 @@ fn evaluate_capability(
         && session_override.capabilities.contains(capability)
     {
         if session_override.is_current_for(&evidence.scope, evidence.generations.policy_generation)
+            && session_override.covers_inputs(inputs)
         {
             reasons.push(reason(
                 REASON_GRANTED_BY_SESSION_OVERRIDE,
