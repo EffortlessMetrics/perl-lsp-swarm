@@ -2386,9 +2386,9 @@ fn test_perl_run_subtest_missing_subroutine_arg() -> Result<(), Box<dyn std::err
 // --- Windows binary-planting RCE regression (#3028) ---
 //
 // These tests verify that `run_test_command` and `command_exists` never let a
-// planted binary in the LSP workspace root (CWD) execute.  They serialize CWD
-// mutation with a static Mutex and restore the original CWD after each test
-// regardless of outcome.
+// planted binary in the LSP workspace root (CWD) execute.  The parent test
+// process never changes its own CWD; child-process `current_dir` configuration
+// supplies the hostile workspace instead.
 //
 // The chain being guarded: `executeCommand("perl.runTests")` →
 // `run_tests` → `command_exists("yath")` / `command_exists("prove")` /
@@ -2403,10 +2403,14 @@ fn test_perl_run_subtest_missing_subroutine_arg() -> Result<(), Box<dyn std::err
 #[cfg(windows)]
 #[test]
 fn test_command_exists_ignores_planted_cwd_binary() {
+    const CHILD: &str = "PERL_LSP_CWD_RCE_EXISTS_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let provider = ExecuteCommandProvider::new();
+        assert!(!provider.command_exists("definitely_not_real_3028.bat"));
+        return;
+    }
+
     use std::io::Write as _;
-    use std::sync::Mutex;
-    static CWD_LOCK: Mutex<()> = Mutex::new(());
-    let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
     let unique = format!("rce_exists_{}", std::process::id());
     let workspace = std::env::temp_dir().join(unique);
@@ -2421,20 +2425,18 @@ fn test_command_exists_ignores_planted_cwd_binary() {
         writeln!(f, "echo PWNED").expect("write bat");
     }
 
-    let original_cwd = std::env::current_dir().expect("capture cwd");
-    std::env::set_current_dir(&workspace).expect("enter temp workspace");
-
-    let provider = ExecuteCommandProvider::new();
-    let exists = provider.command_exists("definitely_not_real_3028.bat");
-
-    std::env::set_current_dir(&original_cwd).expect("restore cwd");
+    let status =
+        std::process::Command::new(std::env::current_exe().expect("resolve test executable"))
+            .arg("test_command_exists_ignores_planted_cwd_binary")
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(CHILD, "1")
+            .current_dir(&workspace)
+            .status()
+            .expect("run isolated CWD child");
     let _ = std::fs::remove_dir_all(&workspace);
 
-    assert!(
-        !exists,
-        "SECURITY: command_exists reported true for a tool only present in the CWD — \
-         a planted binary would now be invoked via run_test_command (#3028)"
-    );
+    assert!(status.success(), "isolated CWD child failed: {status}");
 }
 
 /// `run_test_command` must fail closed (return `Err`) when the named tool is not
@@ -2446,10 +2448,17 @@ fn test_command_exists_ignores_planted_cwd_binary() {
 #[cfg(windows)]
 #[test]
 fn test_run_test_command_does_not_execute_planted_cwd_binary() {
+    const CHILD: &str = "PERL_LSP_CWD_RCE_RUN_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let workspace = std::env::current_dir().expect("capture child workspace");
+        let dummy_t = workspace.join("dummy.t");
+        let provider = ExecuteCommandProvider::with_workspace_roots(vec![workspace]);
+        let result = provider.run_test_command("pwned_3028.bat", &dummy_t);
+        assert!(result.is_err(), "child must fail closed: {result:?}");
+        return;
+    }
+
     use std::io::Write as _;
-    use std::sync::Mutex;
-    static CWD_LOCK: Mutex<()> = Mutex::new(());
-    let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
     let unique = format!("rce_run_{}", std::process::id());
     let workspace = std::env::temp_dir().join(&unique);
@@ -2468,22 +2477,19 @@ fn test_run_test_command_does_not_execute_planted_cwd_binary() {
     let dummy_t = workspace.join("dummy.t");
     std::fs::write(&dummy_t, "use Test::More;\ndone_testing;\n").expect("create dummy test");
 
-    let original_cwd = std::env::current_dir().expect("capture cwd");
-    std::env::set_current_dir(&workspace).expect("enter temp workspace");
-
-    let provider = ExecuteCommandProvider::with_workspace_roots(vec![workspace.clone()]);
-    // Drive run_test_command with the bare name of the planted batch file.
-    // The resolver must fail closed before spawning anything.
-    let result = provider.run_test_command("pwned_3028.bat", &dummy_t);
-
-    std::env::set_current_dir(&original_cwd).expect("restore cwd");
+    let status =
+        std::process::Command::new(std::env::current_exe().expect("resolve test executable"))
+            .arg("test_run_test_command_does_not_execute_planted_cwd_binary")
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(CHILD, "1")
+            .current_dir(&workspace)
+            .status()
+            .expect("run isolated CWD child");
     let marker_exists = marker.exists();
     let _ = std::fs::remove_dir_all(&workspace);
 
-    assert!(
-        result.is_err(),
-        "run_test_command must fail closed for a not-on-PATH bare name; got: {result:?}"
-    );
+    assert!(status.success(), "isolated CWD child failed: {status}");
     assert!(
         !marker_exists,
         "SECURITY: planted CWD batch file was EXECUTED via run_test_command — the RCE is live (#3028)"
