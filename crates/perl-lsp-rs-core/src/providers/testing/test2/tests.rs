@@ -904,3 +904,47 @@ fn test2_word_operator_prefixed_match_is_still_data() {
     assert!(!bare_match_can_start("mygrep "), "a longer identifier is not the operator");
     assert!(!bare_match_can_start("count "), "an ordinary identifier divides");
 }
+
+#[test]
+fn test2_backtick_command_payload_is_data_not_transform_syntax() {
+    // Review finding (@chatgpt-codex-connector on #14651). Backticks are the
+    // shorthand for `qx//`, but they carry no operator letters, so neither the
+    // quote-like scan nor the quoted-string branch saw them. An option-shaped
+    // command payload tripped the role predicate and dropped the valid import.
+    for args in [
+        "-target => `echo -as => Foo`, ok",
+        "-target => `echo -prefix => Foo`, ok",
+        "-target => `echo -postfix => Foo`, ok",
+    ] {
+        let resolved = resolve_with_analysis("Test2::V0", args);
+        assert!(!resolved.analysis_limited, "{args}: a command payload is data");
+        assert!(
+            resolved.resolved.symbols.contains("ok"),
+            "{args}: the explicit import must survive, got {:?}",
+            resolved.resolved.symbols
+        );
+    }
+
+    // A backtick expression yields command output, never the literal option
+    // text, so unlike `'-as'` it can never be rescued as an option key.
+    assert!(!contains_transform_syntax("ok => {`-as` => 'my_ok'}"));
+}
+
+#[test]
+fn test2_punctuation_named_variable_divides() {
+    // Review finding (@chatgpt-codex-connector on #14651). `$?` is a complete
+    // term, so a following `/` is division; the character-only rule read the
+    // `?` as punctuation and admitted a match, which would mask forward from a
+    // division slash and swallow real import text.
+    assert!(!bare_match_can_start("$? "), "$? is a term, so `/` divides");
+    assert!(!bare_match_can_start("$! "), "$! is a term, so `/` divides");
+    assert!(!bare_match_can_start("$_ "), "$_ is a term, so `/` divides");
+
+    // Still a match after an opener or a word operator.
+    assert!(bare_match_can_start("scalar("), "an opener still admits a match");
+    assert!(bare_match_can_start("grep "), "a word operator still admits a match");
+
+    let divided = resolve_with_analysis("Test2::V0", "-target => scalar($? / 2 + 3 / 4), ok");
+    assert!(!divided.analysis_limited, "division must not be masked as a match");
+    assert!(divided.resolved.symbols.contains("ok"));
+}

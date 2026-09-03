@@ -427,7 +427,7 @@ fn mask_data_values(text: &str) -> String {
             continue;
         }
 
-        if current != '\'' && current != '"' {
+        if current != '\'' && current != '"' && current != '`' {
             masked.push(current);
             index += current.len_utf8();
             continue;
@@ -456,7 +456,9 @@ fn mask_data_values(text: &str) -> String {
 
         let end = close + current.len_utf8();
         let inner = &text[body_start..close];
-        if TRANSFORM_OPTIONS.iter().any(|option| inner.trim() == *option) {
+        // A backtick expression runs a command and yields its output, never the
+        // literal option text, so it can never be an option key.
+        if current != '`' && TRANSFORM_OPTIONS.iter().any(|option| inner.trim() == *option) {
             masked.push_str(&text[index..end]);
         } else {
             blank_into(&mut masked, &text[index..end]);
@@ -522,6 +524,14 @@ fn bare_match_can_start(before: &str) -> bool {
     let Some(last) = trimmed.chars().next_back() else {
         return true;
     };
+
+    // A punctuation-named variable (`$?`, `$!`, `@-`) is a complete term, so a
+    // following `/` divides it.
+    let mut reversed = trimmed.chars().rev();
+    reversed.next();
+    if !last.is_alphanumeric() && last != '_' && matches!(reversed.next(), Some('$' | '@' | '%')) {
+        return false;
+    }
 
     if last.is_alphanumeric() || last == '_' {
         // A trailing word is either an operator expecting a pattern, or a value
