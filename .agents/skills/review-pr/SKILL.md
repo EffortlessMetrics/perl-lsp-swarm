@@ -140,7 +140,8 @@ in one review record.
 - For No material findings: what was challenged and why no material finding remains
 
 ## Prior finding dispositions
-- fixed | refuted | superseded | follow-up, with evidence
+- terminal: fixed | refuted | superseded | post-merge-follow-up, with evidence
+- non-terminal: current-blocker | blocked-by-prerequisite | not-proven, with evidence (thread stays open)
 
 ## What this establishes
 - Conclusions supported by the review

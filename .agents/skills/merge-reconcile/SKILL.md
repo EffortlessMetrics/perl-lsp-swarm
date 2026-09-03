@@ -30,8 +30,11 @@ For an open PR, establish the current provider-native substantive result before 
 integration green as permission to merge.
 
 Read cumulative submitted reviews and useful clean conclusions, localized findings and
-dispositions, the current candidate claim/production route/proof/limitations, and any
-material changes since the useful review.
+evidence-backed dispositions (terminal `fixed`, `refuted`, `superseded`, and
+`post-merge-follow-up`; non-terminal `current-blocker`, `blocked-by-prerequisite`, and
+`not-proven` whose threads stay open), the current candidate
+claim/production route/proof/limitations, and any material changes since the useful
+review.
 
 Classify:
 

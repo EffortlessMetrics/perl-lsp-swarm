@@ -11,11 +11,19 @@ reviews, inline threads, and relevant CI findings.
 For each substantive finding choose one supported class:
 
 ```text
-fixed
-refuted
-superseded
-follow-up
+fixed                    (terminal: resolves the thread)
+refuted                  (terminal)
+superseded               (terminal)
+post-merge-follow-up     (terminal: requires --issue plus an argument that the
+                          current claim is already satisfied)
+current-blocker          (non-terminal: thread stays open)
+blocked-by-prerequisite  (non-terminal: requires --issue)
+not-proven               (non-terminal)
 ```
+
+The legacy class `follow-up` is rejected by the helper because it does not say
+whether the current claim is already satisfied or still blocked; choose
+`post-merge-follow-up` or a keep-open class explicitly.
 
 ## Orchestration affordances
 
@@ -175,8 +183,8 @@ activity.
 7. Record `candidate_changed`, `claim_changed`, and `stale_review_dimensions`. When the candidate or claim changed or review dimensions became stale, run affected focused proof and reread the complete governing semantic unit plus dependent claims. Run a class-level falsifier only when a failure class was promoted. When `candidate_changed=false`, `claim_changed=false`, and `stale_review_dimensions` is empty, preserve current proof/review conclusions and do not manufacture another challenge cycle.
 8. If the repair introduced substantial proof machinery, run `$simplify-candidate`; then update the PR synthesis to the current candidate rather than appending a repair diary.
 9. Write the canonical human reply under the **Reply quality** contract: keep the `Disposition: <class>` and `Evidence: <claim-bounded evidence summary>` lines and put the concise reasoned judgment between them. Pass that complete text through `--reply` to `scripts/reviews/disposition` with the PR, thread ID, lowercase class, and class-specific evidence (`--commit`, `--argument`, `--superseded-by`, or `--issue`).
-10. Let the helper append the `<!-- disposition:v1 ... -->` marker to that supplied reply, post it, and only then resolve the thread.
-11. Re-run the enumerator to confirm no substantive thread or unclosed promoted failure class remains.
+10. Let the helper append the `<!-- disposition:v1 ... -->` marker to that supplied reply and post it. Terminal classes then resolve the thread; non-terminal classes keep it open, and reopen a falsely-resolved thread before posting evidence.
+11. Re-run the enumerator to confirm no substantive thread or unclosed promoted failure class remains without a non-terminal disposition.
 12. If source/proof changed, invalidate and refresh only the affected review dimensions. If the wave changed no candidate, claim, or review dimension, preserve the existing review and continue at the earliest genuinely missing judgment.
 
 Do not call raw thread-resolution APIs, resolve performatively, or use pr-responded or
