@@ -18,7 +18,6 @@ use perl_lsp_ux_tests::case_inventory::{
     UxDiscoveryFailure, UxDiscoveryRequest, sha256_hex,
 };
 use perl_lsp_ux_tests::taxonomy::UxCiTier;
-use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -169,10 +168,7 @@ fn report_probe_failure(label: &str, detail: &str) {
 
 fn file_digest(path: &Path) -> Option<String> {
     let bytes = fs::read(path).ok()?;
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    let hex: String = hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect();
-    Some(format!("sha256:{hex}"))
+    Some(sha256_hex(&bytes))
 }
 
 /// Deterministic description of any environment-declared compiler wrapper.
@@ -244,16 +240,17 @@ fn cargo_metadata_value(root: &Path) -> Option<serde_json::Value> {
     serde_json::from_slice(&output.stdout).ok()
 }
 
-fn cargo_target_root(root: &Path) -> Option<PathBuf> {
-    let value = cargo_metadata_value(root)?;
+/// Both readers take the metadata document rather than fetching their own, so
+/// one discovery sees one consistent view of the workspace and spawns one
+/// `cargo metadata` rather than two.
+fn cargo_target_root(root: &Path, value: &serde_json::Value) -> Option<PathBuf> {
     let directory = value.get("target_directory")?.as_str()?;
     let directory = PathBuf::from(directory);
     if directory.is_absolute() { Some(directory) } else { Some(root.join(directory)) }
 }
 
 /// Manifest path for the UX package, as `cargo metadata` resolves it.
-fn package_manifest_path(root: &Path) -> Option<PathBuf> {
-    let value = cargo_metadata_value(root)?;
+fn package_manifest_path(value: &serde_json::Value) -> Option<PathBuf> {
     let packages = value.get("packages")?.as_array()?;
     packages
         .iter()
@@ -268,7 +265,8 @@ fn package_manifest_path(root: &Path) -> Option<PathBuf> {
 
 fn build_request(root: &Path, tier: UxCiTier, include_local_execution: bool) -> UxDiscoveryRequest {
     let mut request = UxDiscoveryRequest::new(tier, root.to_path_buf());
-    request.cargo_target_root = cargo_target_root(root);
+    let metadata = cargo_metadata_value(root);
+    request.cargo_target_root = metadata.as_ref().and_then(|value| cargo_target_root(root, value));
 
     request.repository_sha = probe(root, "git", &["rev-parse", "HEAD"])
         .map(|sha| sha.trim().to_string())
@@ -282,8 +280,12 @@ fn build_request(root: &Path, tier: UxCiTier, include_local_execution: bool) -> 
     // Resolved through `cargo metadata` so a package rename or a workspace
     // relayout cannot silently drop the digest; the hardcoded layout is only a
     // fallback, and a miss is a declared limitation either way.
-    request.package_manifest_digest =
-        package_manifest_path(root).as_deref().and_then(file_digest).or_else(|| {
+    request.package_manifest_digest = metadata
+        .as_ref()
+        .and_then(package_manifest_path)
+        .as_deref()
+        .and_then(file_digest)
+        .or_else(|| {
             file_digest(
                 &root.join("crates").join(case_inventory::UX_INVENTORY_PACKAGE).join("Cargo.toml"),
             )
@@ -325,15 +327,22 @@ fn render(inventory: &UxCaseInventory) -> Result<String> {
 /// The staging file is unique per invocation: two discoveries racing on one
 /// output path would otherwise share `<out>.json.tmp` and could publish each
 /// other's document or fail when their staging file vanished underneath them.
+/// Directory that receives the staged file and the post-rename durability sync.
+///
+/// `Path::parent` of a bare file name is `Some("")`, and `create_dir_all("")`
+/// fails — so `--out inventory.json` would never write anything. Resolving the
+/// empty case to `.` also keeps the durability step applicable to a bare output
+/// rather than silently skipped.
+///
+/// Separated from [`write_atomic`] so the rule is provable without a process
+/// working directory: `set_current_dir` is process-wide, and a test that moved
+/// it could race any sibling test that reads it.
+fn output_parent(path: &Path) -> &Path {
+    path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."))
+}
+
 fn write_atomic(path: &Path, body: &str) -> Result<()> {
-    // `Path::parent` of a bare file name is `Some("")`, and `create_dir_all("")`
-    // fails — so `--out inventory.json` would never write anything. Resolving
-    // the empty case to `.` also keeps the durability step below applicable to
-    // a bare output rather than silently skipped.
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
+    let parent = output_parent(path);
     fs::create_dir_all(parent)?;
     let unique = format!(
         "{}.{}.{}.tmp",
@@ -794,19 +803,18 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_output_file_name_still_publishes() -> TestResult {
+    fn a_bare_output_file_name_resolves_to_the_working_directory() {
         // `Path::parent` of a bare name is `Some("")`; `create_dir_all("")`
-        // fails, so this used to write nothing at all.
-        let dir = tempfile::tempdir()?;
-        let previous = std::env::current_dir()?;
-        std::env::set_current_dir(dir.path())?;
-        let result = write_atomic(Path::new("ux-case-inventory.json"), "{}\n");
-        let written = dir.path().join("ux-case-inventory.json").is_file();
-        std::env::set_current_dir(previous)?;
-
-        result?;
-        assert!(written, "a bare --out file name must publish into the working directory");
-        Ok(())
+        // fails, so a bare `--out` used to write nothing at all.
+        //
+        // Proven through `output_parent` rather than by moving the process into
+        // a temporary directory: `std::env::set_current_dir` is process-wide, so
+        // such a test races every sibling test that reads the working directory
+        // and can fail this suite nondeterministically. A lock held by one test
+        // cannot fix that, because the racing readers do not take it.
+        assert_eq!(output_parent(Path::new("ux-case-inventory.json")), Path::new("."));
+        assert_eq!(output_parent(Path::new("receipts/ux.json")), Path::new("receipts"));
+        assert_eq!(output_parent(Path::new("/tmp/receipts/ux.json")), Path::new("/tmp/receipts"));
     }
 
     #[test]
