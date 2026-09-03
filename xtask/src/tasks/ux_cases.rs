@@ -54,6 +54,28 @@ fn truncate(text: &str) -> String {
     format!("{}… (truncated)", &text[..end])
 }
 
+/// Decode stdout that case and target identity are derived from.
+///
+/// Strict on purpose. `from_utf8_lossy` would substitute U+FFFD for invalid
+/// bytes, so a runner emitting a non-UTF-8 test name would yield a `UxCaseId`
+/// that silently disagrees with the name the executable actually holds — and
+/// the listing summary cross-check could not catch it, because replacement does
+/// not change the case count. Rust identifiers are always valid UTF-8, so this
+/// cannot trigger for conforming libtest output; it fails closed exactly when
+/// the instrument is not what discovery assumes.
+///
+/// Human-facing stderr keeps lossy decoding: a mangled diagnostic is better
+/// than no diagnostic, and nothing derives identity from it.
+fn decode_identity_bearing(stdout: &[u8], source: &str) -> Result<String, UxDiscoveryFailure> {
+    String::from_utf8(stdout.to_vec()).map_err(|error| UxDiscoveryFailure::InstrumentFailure {
+        reason: format!(
+            "`{source}` produced output that is not valid UTF-8 at byte {}; \
+             identity cannot be derived from it",
+            error.utf8_error().valid_up_to()
+        ),
+    })
+}
+
 impl UxDiscoveryCommands for SystemDiscoveryCommands {
     fn compile_test_targets(&self, argv: &[String]) -> Result<String, UxDiscoveryFailure> {
         let (program, args) = argv.split_first().ok_or_else(|| {
@@ -74,7 +96,7 @@ impl UxDiscoveryCommands for SystemDiscoveryCommands {
                 detail: truncate(&String::from_utf8_lossy(&output.stderr)),
             });
         }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        decode_identity_bearing(&output.stdout, "cargo test --no-run")
     }
 
     fn list_cases(
@@ -106,7 +128,7 @@ impl UxDiscoveryCommands for SystemDiscoveryCommands {
                 detail: truncate(&String::from_utf8_lossy(&output.stderr)),
             });
         }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        decode_identity_bearing(&output.stdout, &format!("{target_identity} --list"))
     }
 
     fn executable_digest(
@@ -800,6 +822,28 @@ mod tests {
         assert_eq!(after["schema"], UX_CASE_INVENTORY_INVALID_SCHEMA);
         assert!(!fs::read_to_string(&out)?.contains("349"));
         Ok(())
+    }
+
+    #[test]
+    fn non_utf8_identity_output_fails_closed_rather_than_being_mangled() {
+        // Lossy decoding would turn the invalid byte into U+FFFD and hand back
+        // a plausible test name, producing a `UxCaseId` that disagrees with the
+        // one the executable holds. The listing summary cross-check cannot
+        // catch that: replacement leaves the case count unchanged.
+        let stdout = b"ux_scenario_01_simple_file::opens_a_\xffile: test\n";
+        let failure = decode_identity_bearing(stdout, "runner --list")
+            .expect_err("non-UTF-8 identity output must be rejected");
+        assert_eq!(failure.kind(), "instrument_failure");
+        let rendered = failure.to_string();
+        assert!(rendered.contains("not valid UTF-8"), "{rendered}");
+        assert!(rendered.contains("runner --list"), "the source must be named: {rendered}");
+
+        // Conforming output still decodes unchanged.
+        let good = b"ux_scenario_01_simple_file::opens_a_file: test\n";
+        assert_eq!(
+            decode_identity_bearing(good, "runner --list").ok().as_deref(),
+            Some("ux_scenario_01_simple_file::opens_a_file: test\n")
+        );
     }
 
     #[test]
