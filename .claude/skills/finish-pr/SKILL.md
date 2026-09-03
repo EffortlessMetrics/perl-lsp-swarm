@@ -155,9 +155,12 @@ class was promoted—its class-level falsifier, rereads the complete governing s
 units and dependent claims, and publishes one candidate update.
 
 The repair-wave packet must state `candidate_changed`, `claim_changed`, and
-`stale_review_dimensions`. When the candidate or claim changed, or review dimensions
-became stale, refresh only those proof/challenge/review dimensions. When
-`candidate_changed=false`, `claim_changed=false`, and `stale_review_dimensions` is
+`stale_review_dimensions`. `candidate_changed` means a semantic candidate change
+(source behavior, proof obligations, or claim-bearing contracts); byte-only updates
+such as formatting, generated-receipt refreshes, comment-only edits, and additive test
+strengthening leave it false. When the candidate or claim changed semantically, or
+review dimensions became stale, refresh only those proof/challenge/review dimensions.
+When `candidate_changed=false`, `claim_changed=false`, and `stale_review_dimensions` is
 empty, preserve current proof and review conclusions; do not create an empty repair
 commit or manufacture another final-challenge cycle.
 
