@@ -189,6 +189,10 @@ test('adds discovered module directories for the owning workspace folder', async
 
   await runDiscoveredIncludePathGuidance({ globalState } as unknown as vscode.ExtensionContext);
 
+  // `includePaths` is resource-scoped and these directories were discovered
+  // under this folder's own root, so the write belongs to the folder. Writing
+  // ConfigurationTarget.Workspace published one folder's include paths to every
+  // other folder in a multi-root workspace (#14447).
   expect(update).toHaveBeenCalledWith(
     'includePaths',
     expect.arrayContaining(['src', 'vendor']),

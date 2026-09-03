@@ -1461,10 +1461,12 @@ describe('suggestDiscoveredIncludePaths (#1633)', () => {
 
     await suggestDiscoveredIncludePaths(asExtensionContext(context));
 
+    // Folder-owned resource setting, so the discovered path is written to the
+    // owning folder rather than published workspace-wide (#14447).
     expect(update).toHaveBeenCalledWith(
       'includePaths',
       expect.arrayContaining(['lib', 'local/lib/perl5', 'vendor']),
-      vscode.ConfigurationTarget.Workspace,
+      vscode.ConfigurationTarget.WorkspaceFolder,
     );
   });
 
