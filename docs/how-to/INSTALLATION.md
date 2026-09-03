@@ -121,9 +121,18 @@ PAX (`x`/`g`) or GNU long-name (`L`/`K`) extended records fail closed, because
 such a record can rewrite the path of the entry that follows it. The published
 release archives do not use them: they are built with `tar czf` on the GNU and
 macOS runners, and libarchive's restricted-pax default emits no extended record
-for their short ASCII names and small metadata. The archive-safety receipt
-records the resolved extractor profile (`gnu`, `libarchive`, `busybox`, or
-`unknown`) so an install report names the tar it ran under.
+for their short ASCII names and small metadata. Two further refusals come from
+the same header walk. Bytes after the archive's own end-of-archive marker are
+refused rather than ignored, because tar implementations disagree about whether
+a lone zero block ends the archive — BusyBox tar reads past it — so a member
+placed after that marker would be invisible to a reader that stops there and
+still be extracted by one that does not. Stored names are also restricted to
+printable ASCII excluding backslash; backslash is refused even though it is
+printable because a rejected name is echoed into a diagnostic that renders
+backslash escapes, so admitting it would let an archive forge installer output.
+The archive-safety receipt records the resolved extractor profile (`gnu`,
+`libarchive`, `busybox`, or `unknown`) so an install report names the tar it
+ran under.
 Those installers now promote a verified `perllsp` + `perl-dap` product unit as
 one current selection
 ([#8359](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8359)):
