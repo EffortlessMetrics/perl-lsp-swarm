@@ -6,6 +6,8 @@ import {
 import {
   type ClientResourceMeasurement,
   VscodeClientMeasurementRecorder,
+  notProvenResource,
+  observedResource,
   resourceReturnedToBaseline,
 } from '../clientMeasurement';
 import {
@@ -136,6 +138,30 @@ describe('activation resource census', () => {
     // The failure is reported through the receipt, not by leaving the resource
     // counted as still owned.
     expect(transaction.resourceCensus().live_total).toBe(0);
+  });
+});
+
+describe('resource measurement builders', () => {
+  test('reject an id outside the closed resource set', () => {
+    expect(() => observedResource('host_wide_listeners', 3)).toThrow(
+      /unsupported client resource id/,
+    );
+    expect(() => notProvenResource('host_wide_listeners', 'because')).toThrow(
+      /unsupported client resource id/,
+    );
+  });
+
+  test('reject a negative or non-finite observed value', () => {
+    expect(() => observedResource('extension_owned_disposables', -1)).toThrow(
+      /finite non-negative/,
+    );
+    expect(() => observedResource('extension_owned_disposables', Number.NaN)).toThrow(
+      /finite non-negative/,
+    );
+  });
+
+  test('reject an unavailable row with no reason', () => {
+    expect(() => notProvenResource('extension_owned_timers', '   ')).toThrow(/requires a reason/);
   });
 });
 

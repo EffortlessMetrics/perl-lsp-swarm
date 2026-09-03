@@ -1,6 +1,9 @@
 import type { ActivationResourceCensus } from './activationTransaction';
-import type { ClientResourceMeasurement } from './clientMeasurement';
-import { VscodeClientMeasurementRecorder } from './clientMeasurement';
+import type {
+  ClientResourceMeasurement,
+  VscodeClientMeasurementRecorder,
+} from './clientMeasurement';
+import { notProvenResource, observedResource, sortResourceMeasurements } from './clientMeasurement';
 
 /**
  * Production producer for the `extension_owned_*` counters of
@@ -35,54 +38,45 @@ export const NO_OWNED_ACTIVATION_REASON =
   'no activation attempt is currently owned by this extension';
 
 /**
- * Records the extension-owned resource counters on `recorder` from `census`.
+ * Projects `census` into the `vscode_client_measurement.v1` resource rows.
  *
- * Passing `null` (no attempt owned yet, or the module-level owner was cleared)
- * records the ownership counter as `not_proven` rather than `0`: zero owned
- * resources and an unobservable census are different facts.
+ * Returns rows only. A resource census carries no measurement subject of its
+ * own, and #7866 requires exact subject/scenario identity on a snapshot, so
+ * this producer never invents one to borrow the recorder's serializer; the
+ * caller that owns a real subject records these rows through
+ * {@link recordExtensionOwnedResources}.
+ */
+export function extensionOwnedResourceMeasurements(
+  census: ActivationResourceCensus | null,
+): ClientResourceMeasurement[] {
+  return sortResourceMeasurements([
+    census === null
+      ? notProvenResource('extension_owned_disposables', NO_OWNED_ACTIVATION_REASON)
+      : observedResource('extension_owned_disposables', census.live_total),
+    notProvenResource('extension_owned_timers', RESOURCE_KIND_NOT_CLASSIFIED_REASON),
+    notProvenResource('extension_owned_event_listeners', RESOURCE_KIND_NOT_CLASSIFIED_REASON),
+    notProvenResource('extension_host_rss_bytes', EXTENSION_HOST_MEMORY_SHARED_REASON),
+  ]);
+}
+
+/**
+ * Records the extension-owned resource counters on a recorder that already owns
+ * an exact measurement subject, so a full `vscode_client_measurement.v1`
+ * snapshot can carry them alongside its phases.
+ *
+ * Delegates to {@link extensionOwnedResourceMeasurements} so the rows have one
+ * definition; the recorder re-validates each row against the closed resource-id
+ * set as it stores it.
  */
 export function recordExtensionOwnedResources(
   recorder: VscodeClientMeasurementRecorder,
   census: ActivationResourceCensus | null,
 ): void {
-  if (census === null) {
-    recorder.markResourceNotProven('extension_owned_disposables', NO_OWNED_ACTIVATION_REASON);
-  } else {
-    recorder.observeResource('extension_owned_disposables', census.live_total);
+  for (const row of extensionOwnedResourceMeasurements(census)) {
+    if (row.availability === 'observed' && row.value !== null) {
+      recorder.observeResource(row.id, row.value);
+    } else {
+      recorder.markResourceNotProven(row.id, row.reason ?? 'unavailable');
+    }
   }
-
-  recorder.markResourceNotProven('extension_owned_timers', RESOURCE_KIND_NOT_CLASSIFIED_REASON);
-  recorder.markResourceNotProven(
-    'extension_owned_event_listeners',
-    RESOURCE_KIND_NOT_CLASSIFIED_REASON,
-  );
-  recorder.markResourceNotProven('extension_host_rss_bytes', EXTENSION_HOST_MEMORY_SHARED_REASON);
-}
-
-/**
- * Projects `census` into the `vscode_client_measurement.v1` resource rows.
- *
- * Serialization stays owned by {@link VscodeClientMeasurementRecorder}, so the
- * closed `ClientResourceId` set, the non-negative-value rule, and the
- * deterministic row ordering are enforced in exactly one place.
- */
-export function extensionOwnedResourceMeasurements(
-  census: ActivationResourceCensus | null,
-): ClientResourceMeasurement[] {
-  const recorder = new VscodeClientMeasurementRecorder(
-    {
-      candidate: 'unknown',
-      vscode_version: 'unknown',
-      platform: process.platform,
-      architecture: process.arch,
-      host_kind: 'unknown',
-      scenario: 'extension_owned_resource_census',
-      cold_warm: 'warm',
-      binary_role: 'unknown',
-      server_candidate: null,
-    },
-    0,
-  );
-  recordExtensionOwnedResources(recorder, census);
-  return recorder.snapshot().resources;
 }
