@@ -275,10 +275,17 @@ def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]
     validate_exact("public re-exports", exports, set(public_exports))
 
     expected_targets: set[CargoTarget] = set()
+    expected_target_identities: set[tuple[str, str]] = set()
     for index, raw_target in enumerate(ledger.get("targets", [])):
         item = validate_row(raw_target, f"targets[{index}]")
         kind = require_string(item, "kind", f"targets[{index}]")
         name = require_string(item, "name", f"targets[{index}]")
+        identity = (kind, name)
+        if identity in expected_target_identities:
+            raise ValueError(
+                f"duplicate parser facade ledger target identity: {kind}:{name}"
+            )
+        expected_target_identities.add(identity)
         required = item.get("required_features", [])
         if not isinstance(required, list) or any(not isinstance(x, str) for x in required):
             raise ValueError(f"targets[{index}].required_features must be a string list")

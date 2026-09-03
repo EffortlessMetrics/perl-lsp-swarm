@@ -586,6 +586,18 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate Cargo target name: example:duplicate"):
             cargo_targets(manifest)
 
+    def test_duplicate_ledger_target_identity_cannot_hide_conflicting_authority(self) -> None:
+        original = next(row for row in self.ledger["targets"] if row["kind"] == "bin")
+        duplicate = dict(original)
+        duplicate["disposition"] = "retain"
+        duplicate.pop("pending", None)
+        self.ledger["targets"].append(duplicate)
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(
+            ValueError, "duplicate parser facade ledger target identity: bin:perl-parse"
+        ):
+            check(self.root, self.ledger_path)
+
     def test_cfg_test_stripping_ignores_rust_strings_and_comments(self) -> None:
         source = (
             '#[cfg(test)]\n#[allow(dead_code)]\nmod tests {\n'
