@@ -1321,6 +1321,20 @@ impl RefactorPlanRelation {
     }
 }
 
+/// What one law-declared independent subplan completes, and what it produces.
+///
+/// A subplan is *complete*, so it owns both halves: the exact operations it
+/// applies and the exact output subject that application lands on. Without the
+/// output half, a partial application could apply the right operations and
+/// report an unrelated subject.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubplanBinding {
+    /// Exact operations this subplan applies.
+    pub operations: BTreeSet<OperationId>,
+    /// Exact output subject this subplan's application produces.
+    pub expected_output: StageSubject,
+}
+
 /// `compiler_transformation_plan.v1`: one law instantiated against one exact
 /// subject and one exact input IR subject.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1359,7 +1373,7 @@ pub struct TransformationPlan {
     /// binding, which is what makes a subplan *complete*: without it a name is
     /// a label, and any subset of the selected locations could borrow it.
     /// Empty when the law prohibits partial application.
-    pub subplan_operations: BTreeMap<String, BTreeSet<OperationId>>,
+    pub subplans: BTreeMap<String, SubplanBinding>,
     /// Partial-application policy, mirrored from the law.
     ///
     /// The policy lives on the plan rather than on an application-time
@@ -1467,7 +1481,7 @@ impl TransformationPlan {
         let selected_ids: BTreeSet<&OperationId> = self.selected_operations();
         match &self.partial_application {
             PartialApplicationPolicy::Prohibited => {
-                if !self.subplan_operations.is_empty() {
+                if !self.subplans.is_empty() {
                     bail!(
                         "plan {:?} binds subplan operations while its law prohibits partial application",
                         self.id.as_str()
@@ -1475,7 +1489,7 @@ impl TransformationPlan {
                 }
             }
             PartialApplicationPolicy::IndependentCompleteSubplans(names) => {
-                let bound: BTreeSet<&String> = self.subplan_operations.keys().collect();
+                let bound: BTreeSet<&String> = self.subplans.keys().collect();
                 let declared: BTreeSet<&String> = names.iter().collect();
                 if bound != declared {
                     bail!(
@@ -1484,7 +1498,16 @@ impl TransformationPlan {
                     );
                 }
                 let mut claimed: BTreeSet<&OperationId> = BTreeSet::new();
-                for (name, operations) in &self.subplan_operations {
+                for (name, binding) in &self.subplans {
+                    if binding.expected_output.stage != self.expected_output.stage {
+                        bail!(
+                            "plan {:?} binds subplan {name:?} to an output at stage {}, but the plan produces stage {}",
+                            self.id.as_str(),
+                            binding.expected_output.stage.tag(),
+                            self.expected_output.stage.tag()
+                        );
+                    }
+                    let operations = &binding.operations;
                     if operations.is_empty() {
                         bail!("plan {:?} binds subplan {name:?} to no operation", self.id.as_str());
                     }
@@ -1740,13 +1763,19 @@ impl TransformationPlan {
             obligation.write_canonical(&mut out);
         }
         self.work.write_canonical(&mut out);
-        out.push_str("subplan_operations[");
-        for (name, operations) in &self.subplan_operations {
+        out.push_str("subplans[");
+        for (name, binding) in &self.subplans {
             let _ = write!(out, "{name:?}=(");
-            for operation in operations {
+            for operation in &binding.operations {
                 let _ = write!(out, "{:?},", operation.as_str());
             }
-            out.push(')');
+            let _ = write!(
+                out,
+                "|{}|{:?}|{:?})",
+                binding.expected_output.stage.tag(),
+                binding.expected_output.ir_identity.as_str(),
+                binding.expected_output.digest.as_str()
+            );
         }
         out.push_str("]\npartial_application ");
         self.partial_application.write_canonical(&mut out);
@@ -1997,24 +2026,32 @@ impl TransformationPlan {
         // "Complete" is the load-bearing word: the attempt must have applied
         // exactly the operations that subplan completes, not an arbitrary
         // subset wearing its name.
-        match self.subplan_operations.get(&residual.subplan) {
-            Some(operations) if *operations == observation.applied_operations => {}
-            Some(_) => {
-                return Ok(TransformationResult::InvalidOutput {
-                    reason: format!(
-                        "the attempt did not apply exactly the operations subplan {:?} completes",
-                        residual.subplan
-                    ),
-                });
-            }
+        let binding = match self.subplans.get(&residual.subplan) {
+            Some(binding) => binding,
             None => {
                 return Ok(TransformationResult::InvalidOutput {
-                    reason: format!(
-                        "the plan binds no operations for subplan {:?}",
-                        residual.subplan
-                    ),
+                    reason: format!("the plan binds no subplan {:?}", residual.subplan),
                 });
             }
+        };
+        if binding.operations != observation.applied_operations {
+            return Ok(TransformationResult::InvalidOutput {
+                reason: format!(
+                    "the attempt did not apply exactly the operations subplan {:?} completes",
+                    residual.subplan
+                ),
+            });
+        }
+        // A subplan owns its output subject just as the whole plan owns its
+        // own: applying the right operations and landing somewhere else is not
+        // a completed subplan.
+        if output != &binding.expected_output {
+            return Ok(TransformationResult::InvalidOutput {
+                reason: format!(
+                    "the attempt did not produce the output subject subplan {:?} declares",
+                    residual.subplan
+                ),
+            });
         }
         Ok(TransformationResult::AppliedWithDeclaredResidualBoundary {
             output: output.clone(),
@@ -2356,9 +2393,9 @@ pub mod shape_fixtures {
         EquivalenceObligation, EquivalenceOracle, EquivalenceOutcome, Generation, LawId,
         LawVersion, LocationSelector, OperationId, PartialApplicationPolicy, PlanId, Precondition,
         PreconditionId, PreconditionTruth, PreservedProposition, RefactorPlanRelation, Result,
-        Settlement, SourceProvenance, StageSubject, SubjectRef, TransformationClass,
-        TransformationLaw, TransformationPlan, TransformationSubject, VerifierOutcome,
-        WorkContract, WorkReceipt, WorkScope,
+        Settlement, SourceProvenance, StageSubject, SubjectRef, SubplanBinding,
+        TransformationClass, TransformationLaw, TransformationPlan, TransformationSubject,
+        VerifierOutcome, WorkContract, WorkReceipt, WorkScope,
     };
     use std::collections::BTreeSet;
 
@@ -2545,7 +2582,7 @@ pub mod shape_fixtures {
             excluded_concepts: law.excluded_concepts.clone(),
             equivalence_obligations: obligations,
             work: work_contract("fold each selected exact-value operation exactly once")?,
-            subplan_operations: BTreeMap::new(),
+            subplans: BTreeMap::new(),
             partial_application: law.partial_application.clone(),
             consumers: [ConsumerClass::InternalStageRewrite, ConsumerClass::Analysis]
                 .into_iter()
@@ -2648,7 +2685,7 @@ pub mod shape_fixtures {
                 },
             ],
             work: work_contract("prune each proven-unreachable edge exactly once")?,
-            subplan_operations: BTreeMap::new(),
+            subplans: BTreeMap::new(),
             partial_application: law.partial_application.clone(),
             consumers: [ConsumerClass::InternalStageRewrite, ConsumerClass::Diagnostic]
                 .into_iter()
@@ -2770,14 +2807,28 @@ pub mod shape_fixtures {
                 },
             ],
             work: work_contract("remove each proven-unreachable effect-free block or edge once")?,
-            subplan_operations: BTreeMap::from([
+            subplans: BTreeMap::from([
                 (
                     "unreachable-blocks".to_owned(),
-                    BTreeSet::from([OperationId::new("eir:block:0002")?]),
+                    SubplanBinding {
+                        operations: BTreeSet::from([OperationId::new("eir:block:0002")?]),
+                        expected_output: stage_subject(
+                            CompilerStage::Eir,
+                            "eir graph lib/Shape.pm#area (blocks removed)",
+                            0x61,
+                        )?,
+                    },
                 ),
                 (
                     "unreachable-edges".to_owned(),
-                    BTreeSet::from([OperationId::new("eir:edge:0005")?]),
+                    SubplanBinding {
+                        operations: BTreeSet::from([OperationId::new("eir:edge:0005")?]),
+                        expected_output: stage_subject(
+                            CompilerStage::Eir,
+                            "eir graph lib/Shape.pm#area (edges removed)",
+                            0x62,
+                        )?,
+                    },
                 ),
             ]),
             partial_application: law.partial_application.clone(),
@@ -2867,7 +2918,7 @@ pub mod shape_fixtures {
                 },
             ],
             work: work_contract("project exactly one authorized defined-or edit")?,
-            subplan_operations: BTreeMap::new(),
+            subplans: BTreeMap::new(),
             partial_application: law.partial_application.clone(),
             consumers: [ConsumerClass::SourceEdit].into_iter().collect(),
             claim_ceiling: ClaimCeiling::AuthorizedSourceEdit,
@@ -2924,8 +2975,9 @@ mod tests {
         LawVersion, LocationSelector, MAX_SELECTED_LOCATIONS, MAX_TEXT_LEN, OperationId,
         PartialApplicationPolicy, PlanId, Precondition, PreconditionId, PreconditionTruth,
         PreservedProposition, RefactorPlanRelation, ResidualBoundary, Result, Settlement,
-        SourceProvenance, SubjectRef, TransformationClass, TransformationLaw, TransformationPlan,
-        TransformationResult, VerifierOutcome, WorkReceipt, WorkScope, shape_fixtures,
+        SourceProvenance, SubjectRef, SubplanBinding, TransformationClass, TransformationLaw,
+        TransformationPlan, TransformationResult, VerifierOutcome, WorkReceipt, WorkScope,
+        shape_fixtures,
     };
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -2954,6 +3006,14 @@ mod tests {
         match LawVersion::new(value) {
             Ok(version) => version,
             Err(error) => unreachable!("law version builds: {error}"),
+        }
+    }
+
+    /// The output subject a named subplan of `plan` declares.
+    fn subplan_output(plan: &TransformationPlan, name: &str) -> super::StageSubject {
+        match plan.subplans.get(name) {
+            Some(binding) => binding.expected_output.clone(),
+            None => unreachable!("the plan binds subplan {name}"),
         }
     }
 
@@ -3507,7 +3567,11 @@ mod tests {
                         Ok(policy) => policy,
                         Err(error) => unreachable!("subplan policy builds: {error}"),
                     };
-                plan.subplan_operations = BTreeMap::from([("only-one".to_owned(), selected)]);
+                let expected_output = plan.expected_output.clone();
+                plan.subplans = BTreeMap::from([(
+                    "only-one".to_owned(),
+                    SubplanBinding { operations: selected, expected_output },
+                )]);
             },
         ];
         for (index, mutate) in mutations.iter().enumerate() {
@@ -3750,6 +3814,7 @@ mod tests {
         partial.work = WorkReceipt { useful_operations: 1, elapsed_micros: 300 };
         partial.residual =
             Some(ResidualBoundary::new("unreachable-blocks", "edges left untouched")?);
+        partial.output = Some(subplan_output(&plan, "unreachable-blocks"));
         assert_eq!(plan.evaluate(&partial)?.tag(), "applied_with_declared_residual_boundary");
 
         let mut undeclared = partial.clone();
@@ -3765,7 +3830,7 @@ mod tests {
         // and the policy is the plan's own — an observation cannot launder it.
         let mut prohibited_plan = plan.clone();
         prohibited_plan.partial_application = PartialApplicationPolicy::Prohibited;
-        prohibited_plan.subplan_operations = BTreeMap::new();
+        prohibited_plan.subplans = BTreeMap::new();
         match prohibited_plan.evaluate(&partial)? {
             TransformationResult::InvalidOutput { reason } => {
                 assert!(reason.contains("prohibited"), "got {reason}");
@@ -4304,6 +4369,7 @@ mod tests {
         partial.work = WorkReceipt { useful_operations: 1, elapsed_micros: 300 };
         partial.residual =
             Some(ResidualBoundary::new("unreachable-blocks", "edges left untouched")?);
+        partial.output = Some(subplan_output(&plan, "unreachable-blocks"));
         assert_eq!(plan.evaluate(&partial)?.tag(), "applied_with_declared_residual_boundary");
 
         let mut undeclared = partial.clone();
@@ -4409,7 +4475,11 @@ mod tests {
             laundered.selected_operations().into_iter().cloned().collect();
         laundered.partial_application =
             PartialApplicationPolicy::independent_subplans(&["invented"])?;
-        laundered.subplan_operations = BTreeMap::from([("invented".to_owned(), selected)]);
+        let laundered_output = laundered.expected_output.clone();
+        laundered.subplans = BTreeMap::from([(
+            "invented".to_owned(),
+            SubplanBinding { operations: selected, expected_output: laundered_output },
+        )]);
         laundered.validate()?;
         assert_eq!(laundered.evaluate(&observed)?.tag(), "applied_exact");
         match laundered.evaluate_under_law(&law, &observed)? {
@@ -4502,7 +4572,35 @@ mod tests {
         exact_subplan.work = WorkReceipt { useful_operations: 1, elapsed_micros: 300 };
         exact_subplan.residual =
             Some(ResidualBoundary::new("unreachable-blocks", "edges left untouched")?);
+        let blocks_output = match plan.subplans.get("unreachable-blocks") {
+            Some(binding) => binding.expected_output.clone(),
+            None => unreachable!("the effect-free fixture binds unreachable-blocks"),
+        };
+        exact_subplan.output = Some(blocks_output.clone());
         assert_eq!(plan.evaluate(&exact_subplan)?.tag(), "applied_with_declared_residual_boundary");
+
+        // A subplan owns its output subject: the right operations landing on
+        // the whole plan's output, or anywhere else, is not a completed subplan.
+        let mut wrong_output = exact_subplan.clone();
+        wrong_output.output = Some(plan.expected_output.clone());
+        match plan.evaluate(&wrong_output)? {
+            TransformationResult::InvalidOutput { reason } => {
+                assert!(reason.contains("output subject subplan"), "got {reason}");
+                assert!(reason.contains("unreachable-blocks"), "got {reason}");
+            }
+            other => unreachable!("a subplan's output is load-bearing, got {}", other.tag()),
+        }
+
+        // A subplan cannot declare an output at another stage.
+        let mut foreign_stage = plan.clone();
+        if let Some(binding) = foreign_stage.subplans.get_mut("unreachable-blocks") {
+            binding.expected_output.stage = CompilerStage::Hir;
+        }
+        assert_invalid(
+            &foreign_stage,
+            "but the plan produces stage",
+            "a subplan cannot produce another stage",
+        );
 
         // The other subplan's operations under this subplan's name do not.
         let mut wrong_subset = exact_subplan.clone();
@@ -4518,32 +4616,44 @@ mod tests {
         // Binding invariants: within the selection, disjoint, and only when the
         // law admits subplans at all.
         let mut unselected = plan.clone();
-        unselected.subplan_operations.insert(
+        unselected.subplans.insert(
             "unreachable-blocks".to_owned(),
-            [operation_id("eir:block:9999")].into_iter().collect(),
+            SubplanBinding {
+                operations: [operation_id("eir:block:9999")].into_iter().collect(),
+                expected_output: blocks_output.clone(),
+            },
         );
         assert_invalid(&unselected, "which it does not select", "a subplan cannot bind outside");
 
         let mut overlapping = plan.clone();
-        overlapping.subplan_operations.insert(
+        overlapping.subplans.insert(
             "unreachable-edges".to_owned(),
-            [operation_id("eir:block:0002")].into_iter().collect(),
+            SubplanBinding {
+                operations: [operation_id("eir:block:0002")].into_iter().collect(),
+                expected_output: blocks_output.clone(),
+            },
         );
         assert_invalid(&overlapping, "more than one subplan", "subplans must be disjoint");
 
         let mut empty_binding = plan.clone();
-        empty_binding.subplan_operations.insert("unreachable-edges".to_owned(), BTreeSet::new());
+        empty_binding.subplans.insert(
+            "unreachable-edges".to_owned(),
+            SubplanBinding { operations: BTreeSet::new(), expected_output: blocks_output },
+        );
         assert_invalid(&empty_binding, "to no operation", "a subplan completes something");
 
         let mut unnamed = plan.clone();
-        unnamed.subplan_operations.remove("unreachable-edges");
+        unnamed.subplans.remove("unreachable-edges");
         assert_invalid(&unnamed, "exactly the subplans its law declares", "bindings match names");
 
         let (_, folding_plan) = folding();
         let mut bound_but_prohibited = folding_plan.clone();
-        bound_but_prohibited.subplan_operations = BTreeMap::from([(
+        bound_but_prohibited.subplans = BTreeMap::from([(
             "invented".to_owned(),
-            [operation_id("hir:op:0007")].into_iter().collect(),
+            SubplanBinding {
+                operations: [operation_id("hir:op:0007")].into_iter().collect(),
+                expected_output: folding_plan.expected_output.clone(),
+            },
         )]);
         assert_invalid(
             &bound_but_prohibited,
