@@ -4,38 +4,48 @@
 //! generation-aligned #7018 analysis record, or to an explicit unavailable
 //! reason. Body lowering has no table handle, so the link is an anchor that a
 //! consumer resolves itself — which is only a real link if it actually
-//! resolves.
+//! resolves, and only a *correct* link if it cannot resolve to the wrong
+//! operator.
 //!
 //! The earlier proof for this checked only that an anchor spanned the right
 //! source text, and only for an unbound `qr//`, where the construct's range
-//! and the record's operator range coincide. That is exactly the case where
-//! the distinction is invisible. For a bound `$x =~ /foo/` the node range also
+//! and the record's operator range coincide. That is the one case where the
+//! distinction is invisible. For a bound `$x =~ /foo/` the node range also
 //! covers the target and binding operator (`0..11`) while the record keys on
 //! the operator alone (`6..11`), so exact-range lookup returns nothing.
 //!
+//! Resolution is therefore family-bearing and containment-based, and both
+//! filters guard different confusions:
+//!
+//! - the last-starting tie-break stops a regex in the *target* winning;
+//! - the family filter stops a record nested inside the operator's own body
+//!   (a regex in an `/e` replacement) winning.
+//!
 //! These tests resolve every anchor end to end against a real
-//! `RegexAnalysisTable` built from the same source, so an anchoring regression
-//! fails here instead of silently producing links that never resolve.
+//! `RegexAnalysisTable`, and pin both filters with negative controls.
 //!
 //! Tests use `perl_tdd_support` helpers rather than `expect`/`panic`, per the
 //! workspace lint policy.
 
 use perl_parser_core::hir::{HirExpr, lower_ast};
-use perl_parser_core::syntax::regex_analysis::RegexAnalysisTable;
+use perl_parser_core::syntax::regex_analysis::{RegexAnalysisFamily, RegexAnalysisTable};
 use perl_parser_core::{SourceLocation, parse_source_with_regex_analysis};
 use perl_tdd_support::must_some_with;
 
+/// One anchor as body HIR records it: its range and the family it may resolve to.
+type Anchor = (SourceLocation, RegexAnalysisFamily);
+
 /// Every regex-family anchor in `source`, in body order.
-fn anchors(source: &str) -> Vec<SourceLocation> {
+fn anchors(source: &str) -> Vec<Anchor> {
     let output = parse_source_with_regex_analysis(source);
     let hir = lower_ast(&output.parse_output.ast);
     hir.bodies
         .iter()
         .flat_map(|body| body.exprs.iter())
         .filter_map(|expr| match expr {
-            HirExpr::Regex(r) => Some(r.analysis.full_range),
-            HirExpr::Match(m) => Some(m.analysis.full_range),
-            HirExpr::Substitution(s) => Some(s.analysis.full_range),
+            HirExpr::Regex(r) => Some((r.analysis.full_range, r.analysis.family)),
+            HirExpr::Match(m) => Some((m.analysis.full_range, m.analysis.family)),
+            HirExpr::Substitution(s) => Some((s.analysis.full_range, s.analysis.family)),
             // Transliteration deliberately carries no analysis anchor.
             _ => None,
         })
@@ -47,14 +57,15 @@ fn table_for(source: &str) -> RegexAnalysisTable {
 }
 
 /// Resolve one anchor and return the source text of the record it names.
-fn resolved_operator_text(source: &str, anchor: SourceLocation) -> String {
+fn resolved_operator_text(source: &str, anchor: Anchor) -> String {
+    let (range, family) = anchor;
     let table = table_for(source);
     let record = must_some_with(
-        table.find_enclosed_by(anchor),
-        format!("anchor {anchor:?} in {source:?} must resolve to a retained record"),
+        table.find_enclosed_by(range, family),
+        format!("anchor {range:?} ({family:?}) in {source:?} must resolve to a retained record"),
     );
-    let range = record.full_range;
-    must_some_with(source.get(range.start..range.end), "record range must be in bounds").to_string()
+    let span = record.full_range;
+    must_some_with(source.get(span.start..span.end), "record range must be in bounds").to_string()
 }
 
 #[test]
@@ -62,6 +73,7 @@ fn unbound_regex_anchor_resolves() {
     let source = "my $r = qr/foo/i;";
     let found = anchors(source);
     assert_eq!(found.len(), 1, "expected one anchor in {source:?}");
+    assert_eq!(found[0].1, RegexAnalysisFamily::Regex);
     assert_eq!(resolved_operator_text(source, found[0]), "qr/foo/i");
 }
 
@@ -72,6 +84,7 @@ fn bound_match_anchor_resolves_to_the_operator_not_the_binding_expression() {
     for source in ["$x =~ /foo/;", "$x !~ /foo/;"] {
         let found = anchors(source);
         assert_eq!(found.len(), 1, "expected one anchor in {source:?}");
+        assert_eq!(found[0].1, RegexAnalysisFamily::Match);
         assert_eq!(
             resolved_operator_text(source, found[0]),
             "/foo/",
@@ -85,6 +98,7 @@ fn bound_substitution_anchor_resolves() {
     let source = "$x =~ s/a/b/g;";
     let found = anchors(source);
     assert_eq!(found.len(), 1, "expected one anchor in {source:?}");
+    assert_eq!(found[0].1, RegexAnalysisFamily::Substitution);
     assert_eq!(resolved_operator_text(source, found[0]), "s/a/b/g");
 }
 
@@ -109,6 +123,32 @@ fn every_anchor_in_a_multi_operation_body_resolves_to_its_own_operator() {
 }
 
 #[test]
+fn a_regex_in_the_target_does_not_capture_the_operator_anchor() {
+    // The last-starting tie-break exists for this case: the target contributes
+    // its own anchor, so the body carries two. Each must resolve to itself.
+    let source = "foo(/inner/) =~ s/a/b/;";
+    let found = anchors(source);
+
+    let nested: Vec<Anchor> =
+        found.iter().copied().filter(|(_, f)| *f == RegexAnalysisFamily::Regex).collect();
+    let operator: Vec<Anchor> =
+        found.iter().copied().filter(|(_, f)| *f == RegexAnalysisFamily::Substitution).collect();
+    assert_eq!(nested.len(), 1, "expected the target's own regex anchor in {source:?}");
+    assert_eq!(operator.len(), 1, "expected the substitution anchor in {source:?}");
+
+    assert_eq!(
+        resolved_operator_text(source, operator[0]),
+        "s/a/b/",
+        "the operator must win over a regex inside its own target"
+    );
+    assert_eq!(
+        resolved_operator_text(source, nested[0]),
+        "/inner/",
+        "the nested regex must still resolve to itself"
+    );
+}
+
+#[test]
 fn transliteration_carries_no_anchor_to_resolve() {
     // tr/// is not a regex; the absence of an anchor is the structural
     // guarantee that it can never be routed through pattern analysis.
@@ -124,10 +164,15 @@ fn a_range_enclosing_no_record_resolves_to_none() {
     // miss means unavailable rather than clean.
     let source = "my $n = 1;";
     let table = table_for(source);
-    assert!(
-        table.find_enclosed_by(SourceLocation { start: 0, end: source.len() }).is_none(),
-        "a body with no regex must resolve no record"
-    );
+    let whole = SourceLocation { start: 0, end: source.len() };
+    for family in
+        [RegexAnalysisFamily::Regex, RegexAnalysisFamily::Match, RegexAnalysisFamily::Substitution]
+    {
+        assert!(
+            table.find_enclosed_by(whole, family).is_none(),
+            "a body with no regex must resolve no record for {family:?}"
+        );
+    }
 }
 
 #[test]
@@ -137,44 +182,64 @@ fn resolution_prefers_an_exact_operator_range() {
     let source = "my $r = qr/foo/i;";
     let table = table_for(source);
     let record = must_some_with(
-        table.find_enclosed_by(SourceLocation { start: 8, end: 16 }),
+        table.find_enclosed_by(SourceLocation { start: 8, end: 16 }, RegexAnalysisFamily::Regex),
         "exact operator range must resolve",
     );
     assert_eq!(record.full_range, SourceLocation { start: 8, end: 16 });
 }
 
+// ── Family filter: negative controls ─────────────────────────────────────────
+
 #[test]
-fn a_regex_in_the_target_does_not_capture_the_operator_anchor() {
-    // The last-starting tie-break exists for this case: the anchor for
-    // `foo(/inner/) =~ s/a/b/` contains two records, and the operator is the
-    // rightmost one. A resolver that took the first or the narrowest record
-    // would bind the operation to the target's regex instead.
-    // The target contributes its own anchor, so the body carries two: the
-    // nested `/inner/` and the substitution. Each must resolve to itself.
-    let source = "foo(/inner/) =~ s/a/b/;";
-    let output = parse_source_with_regex_analysis(source);
-    let hir = lower_ast(&output.parse_output.ast);
+fn an_anchor_never_resolves_across_operator_families() {
+    // The family filter is what stops a record nested inside an operator's own
+    // body from winning the containment tie-break. Asking each real anchor for
+    // the wrong family must find nothing, even though the range still contains
+    // the record positionally.
+    let source = "$x =~ s/a/b/g;";
+    let table = table_for(source);
+    let found = anchors(source);
+    assert_eq!(found.len(), 1);
+    let (range, family) = found[0];
+    assert_eq!(family, RegexAnalysisFamily::Substitution);
 
-    let mut nested = Vec::new();
-    let mut operator = Vec::new();
-    for expr in hir.bodies.iter().flat_map(|body| body.exprs.iter()) {
-        match expr {
-            HirExpr::Regex(r) => nested.push(r.analysis.full_range),
-            HirExpr::Substitution(s) => operator.push(s.analysis.full_range),
-            _ => {}
-        }
-    }
-    assert_eq!(nested.len(), 1, "expected the target's own regex anchor in {source:?}");
-    assert_eq!(operator.len(), 1, "expected the substitution anchor in {source:?}");
+    assert!(
+        table.find_enclosed_by(range, RegexAnalysisFamily::Substitution).is_some(),
+        "the substitution anchor must resolve for its own family"
+    );
+    assert!(
+        table.find_enclosed_by(range, RegexAnalysisFamily::Match).is_none(),
+        "a substitution record must not answer a match-family anchor"
+    );
+}
 
-    assert_eq!(
-        resolved_operator_text(source, operator[0]),
-        "s/a/b/",
-        "the operator must win over a regex inside its own target"
+#[test]
+fn a_match_record_does_not_answer_a_substitution_anchor() {
+    let source = "$x =~ /foo/;";
+    let table = table_for(source);
+    let found = anchors(source);
+    assert_eq!(found.len(), 1);
+    let (range, _) = found[0];
+
+    assert!(
+        table.find_enclosed_by(range, RegexAnalysisFamily::Match).is_some(),
+        "the match anchor must resolve for its own family"
     );
-    assert_eq!(
-        resolved_operator_text(source, nested[0]),
-        "/inner/",
-        "the nested regex must still resolve to itself"
+    assert!(
+        table.find_enclosed_by(range, RegexAnalysisFamily::Substitution).is_none(),
+        "a match record must not answer a substitution-family anchor"
     );
+}
+
+#[test]
+fn regex_and_match_families_accept_the_same_operator_set() {
+    // Documented and deliberate: the parser does not distinguish `qr//` from an
+    // unbound `m//` or a bare `/.../`, so these two families cannot be
+    // separated at this layer. Pinning it keeps the limitation visible rather
+    // than letting a future change quietly narrow one of them.
+    let source = "my $r = qr/foo/i;";
+    let table = table_for(source);
+    let range = SourceLocation { start: 8, end: 16 };
+    assert!(table.find_enclosed_by(range, RegexAnalysisFamily::Regex).is_some());
+    assert!(table.find_enclosed_by(range, RegexAnalysisFamily::Match).is_some());
 }

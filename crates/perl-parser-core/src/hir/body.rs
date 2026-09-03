@@ -24,6 +24,7 @@
 //! - All nodes carry exact byte-offset source ranges in [`BodySourceMap`]
 
 use crate::SourceLocation;
+use crate::syntax::regex_analysis::RegexAnalysisFamily;
 
 use super::model::{
     BranchKeyword, ControlTransferKind, LoopKind, ReadlineSource, RegexTargetKind,
@@ -518,8 +519,8 @@ pub enum HirExpr {
 ///
 /// # Resolving an anchor
 ///
-/// Resolve with `RegexAnalysisTable::find_enclosed_by`, **not**
-/// `find_by_full_range`.
+/// Resolve with `RegexAnalysisTable::find_enclosed_by`, passing this anchor's
+/// [`family`](Self::family) — **not** `find_by_full_range`.
 ///
 /// The anchor is the enclosing source range of the construct that was lowered.
 /// For an unbound construct that equals the operator's own range:
@@ -549,6 +550,15 @@ pub struct RegexAnalysisAnchor {
     /// See the type documentation: this is the construct's own range for an
     /// unbound form, and the whole binding expression's range for a bound one.
     pub full_range: SourceLocation,
+
+    /// Operator family this anchor may resolve to.
+    ///
+    /// Carried on the anchor rather than left to the caller so that resolution
+    /// cannot silently cross operator families: a record nested inside the
+    /// operator's own body — a regex within an `/e` replacement, say — starts
+    /// later than the operator and would otherwise win the containment
+    /// tie-break.
+    pub family: RegexAnalysisFamily,
 }
 
 /// The operand a regex-family operator applies to.

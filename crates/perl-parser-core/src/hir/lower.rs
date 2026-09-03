@@ -5,6 +5,8 @@ use perl_pragma::{CompileTimePragmaEnvironment, PragmaSnapshot};
 use perl_semantic_facts::AnchorId;
 use std::collections::BTreeMap;
 
+use crate::syntax::regex_analysis::RegexAnalysisFamily;
+
 use super::body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
     DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirExpr, HirExprId, HirRegex,
@@ -3727,7 +3729,10 @@ impl<'a> BodyBuilder2<'a> {
                     HirExpr::Regex(HirRegex {
                         modifiers: modifiers.clone(),
                         embedded_code: *has_embedded_code,
-                        analysis: RegexAnalysisAnchor { full_range: range },
+                        analysis: RegexAnalysisAnchor {
+                            full_range: range,
+                            family: RegexAnalysisFamily::Regex,
+                        },
                     }),
                     range,
                 )
@@ -3741,7 +3746,10 @@ impl<'a> BodyBuilder2<'a> {
                         negated: *negated,
                         modifiers: modifiers.clone(),
                         embedded_code: *has_embedded_code,
-                        analysis: RegexAnalysisAnchor { full_range: range },
+                        analysis: RegexAnalysisAnchor {
+                            full_range: range,
+                            family: RegexAnalysisFamily::Match,
+                        },
                     }),
                     range,
                 )
@@ -3756,7 +3764,10 @@ impl<'a> BodyBuilder2<'a> {
                         replacement: ReplacementEvaluation::from_modifiers(modifiers),
                         modifiers: modifiers.clone(),
                         embedded_code: *has_embedded_code,
-                        analysis: RegexAnalysisAnchor { full_range: range },
+                        analysis: RegexAnalysisAnchor {
+                            full_range: range,
+                            family: RegexAnalysisFamily::Substitution,
+                        },
                     }),
                     range,
                 )

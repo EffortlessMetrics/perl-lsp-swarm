@@ -112,6 +112,46 @@ impl RegexAnalysisAvailability {
     }
 }
 
+/// Operator family a canonical body-HIR anchor expects to resolve to (#7136).
+///
+/// This is the family token `RegexAnalysisTable::find_enclosed_by` filters on,
+/// so an anchor cannot resolve to a record from a different operator family.
+/// It deliberately has no transliteration variant: `tr///` is a character-list
+/// operator, carries no analysis anchor, and must never reach pattern analysis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RegexAnalysisFamily {
+    /// An unbound construct: `qr//`, `m//`, or a bare `/.../`.
+    Regex,
+    /// A bound match applied through `=~` or `!~`.
+    Match,
+    /// A substitution, `s///`.
+    Substitution,
+}
+
+impl RegexAnalysisFamily {
+    /// Whether a retained record's operator belongs to this family.
+    ///
+    /// [`Self::Regex`] and [`Self::Match`] accept the same operator set,
+    /// because the parser does not distinguish `qr//` from an unbound `m//` or
+    /// a bare `/.../` — they all produce `NodeKind::Regex`. Separating them
+    /// needs a parser-level operator discriminator; until then this mirrors
+    /// `regex_retention::ExpectedFamily::accepts` exactly, so anchor resolution
+    /// and the parser's own AST projection cannot disagree.
+    #[must_use]
+    pub const fn accepts(self, operator: RegexFamilyOperator) -> bool {
+        match self {
+            Self::Regex | Self::Match => matches!(
+                operator,
+                RegexFamilyOperator::BareMatch
+                    | RegexFamilyOperator::Match
+                    | RegexFamilyOperator::QuoteRegex
+            ),
+            Self::Substitution => matches!(operator, RegexFamilyOperator::Substitution),
+        }
+    }
+}
+
 /// Canonical static results retained for one regex pattern body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -307,29 +347,43 @@ impl RegexAnalysisTable {
     /// binding operator, while a record's `full_range` is the operator range
     /// alone. Exact equality therefore fails for every bound form.
     ///
-    /// Prefers an exact `full_range` match, then the last-starting record
-    /// wholly contained in `range` — the same rule the parser's own AST
-    /// compatibility projection applies, so both resolve identically.
+    /// Selection is **family-bearing**: only records whose operator belongs to
+    /// `family` are considered, then an exact `full_range` match is preferred,
+    /// then the last-starting record wholly contained in `range`. That is the
+    /// same rule — and the same order — the parser's own AST compatibility
+    /// projection (`regex_retention::record_for_node`) applies, so the two
+    /// resolve identically rather than becoming rival authorities.
     ///
-    /// The last-starting tie-break is what makes a bound anchor resolve to its
-    /// own operator: in `$x =~ /foo/` the operator is the rightmost part of the
-    /// binding expression, so a regex appearing in the *target* (for example
-    /// `foo(/inner/) =~ s/a/b/`) starts earlier and loses. Unlike
-    /// `regex_retention::record_for_node`, this does not additionally filter by
-    /// operator family, because a body-HIR anchor carries no family token; a
-    /// record nested *inside* the operator's own body — such as a regex within
-    /// an `/e` replacement — could therefore win the tie-break. Callers needing
-    /// that guarantee should check the resolved record's `operator`.
+    /// Both filters are load-bearing and guard different confusions:
+    ///
+    /// - the **last-starting** tie-break makes a bound anchor resolve to its
+    ///   own operator, since the operator is the rightmost part of a binding
+    ///   expression — a regex in the *target*, as in `foo(/inner/) =~ s/a/b/`,
+    ///   starts earlier and loses;
+    /// - the **family** filter guards the opposite nesting, where a record
+    ///   inside the operator's own body — a regex within an `/e` replacement,
+    ///   say — starts later and would otherwise win the tie-break despite
+    ///   belonging to a different operator family.
     ///
     /// Returning `None` means the analysis is **unavailable** for that anchor,
     /// never that the pattern is clean.
     #[must_use]
-    pub fn find_enclosed_by(&self, range: SourceLocation) -> Option<&RegexAnalysisRecord> {
-        if let Some(exact) = self.find_by_full_range(range) {
+    pub fn find_enclosed_by(
+        &self,
+        range: SourceLocation,
+        family: RegexAnalysisFamily,
+    ) -> Option<&RegexAnalysisRecord> {
+        let in_family = |record: &&RegexAnalysisRecord| {
+            record.operator.is_some_and(|operator| family.accepts(operator))
+        };
+        if let Some(exact) =
+            self.records.iter().find(|record| record.full_range == range && in_family(record))
+        {
             return Some(exact);
         }
         self.records
             .iter()
+            .filter(in_family)
             .filter(|record| {
                 range.start <= record.full_range.start && record.full_range.end <= range.end
             })
