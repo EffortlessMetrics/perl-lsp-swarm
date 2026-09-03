@@ -344,9 +344,16 @@ impl TransformationClass {
     /// Changes this class may never make, whatever a law declares.
     fn forbidden_changes(self) -> BTreeSet<ChangedProposition> {
         let forbidden: &[ChangedProposition] = match self {
-            Self::FactStrengtheningWithoutIrRewrite => {
-                &[ChangedProposition::IrShape, ChangedProposition::SourceText]
-            }
+            // Removing a redundant operation or an unreachable edge *is* an IR
+            // rewrite: the class name is the whole claim, so the count changes
+            // are forbidden alongside the shape change rather than treated as
+            // a lesser kind of edit.
+            Self::FactStrengtheningWithoutIrRewrite => &[
+                ChangedProposition::IrShape,
+                ChangedProposition::RedundantOperationCount,
+                ChangedProposition::UnreachableEdgeCount,
+                ChangedProposition::SourceText,
+            ],
             Self::SourceProjectionCandidate => &[],
             Self::UnsupportedOrNotApplicable => &[
                 ChangedProposition::IrShape,
@@ -921,6 +928,19 @@ impl TransformationLaw {
             bail!(
                 "law {:?} strengthens facts without an IR rewrite, so its input and output stage must match",
                 self.id.as_str()
+            );
+        }
+        // "Canonicalization internal to one stage" is the class definition, so
+        // a law of this class that consumes one stage and produces another is
+        // not an internal canonicalization whatever it calls itself.
+        if self.class == TransformationClass::InternalCanonicalization
+            && self.input_stage != self.output_stage
+        {
+            bail!(
+                "law {:?} canonicalizes internally to one stage, so it cannot consume stage {} and produce stage {}",
+                self.id.as_str(),
+                self.input_stage.tag(),
+                self.output_stage.tag()
             );
         }
         Ok(())
@@ -1618,6 +1638,19 @@ impl TransformationPlan {
                             self.expected_output.stage.tag()
                         );
                     }
+                    // A subplan is a landing place a partial application can
+                    // actually reach, so the class rule that binds the plan's
+                    // own output binds each subplan's too. Enforcing it only
+                    // on the whole plan would let a fact-only plan rewrite the
+                    // IR one subplan at a time.
+                    if self.class == TransformationClass::FactStrengtheningWithoutIrRewrite
+                        && binding.expected_output.ir_identity != self.input.ir_identity
+                    {
+                        bail!(
+                            "plan {:?} strengthens facts without an IR rewrite, so subplan {name:?} must keep the input's IR identity",
+                            self.id.as_str()
+                        );
+                    }
                     let operations = &binding.operations;
                     if operations.is_empty() {
                         bail!("plan {:?} binds subplan {name:?} to no operation", self.id.as_str());
@@ -2174,6 +2207,12 @@ impl TransformationPlan {
                 });
             }
         };
+        // The residual's own shape is re-established here: its fields are
+        // public, so a caller can build one without the constructor, and this
+        // value is cloned verbatim into the applied result.
+        if let Err(error) = residual.validate() {
+            return Ok(TransformationResult::InvalidOutput { reason: truncate_reason(&error) });
+        }
         if !subplans.contains(&residual.subplan) {
             return Ok(TransformationResult::InvalidOutput {
                 reason: bounded_reason(&format!(
@@ -2354,26 +2393,42 @@ impl ResidualBoundary {
     /// one is a plan-relative question, settled by
     /// [`TransformationPlan::evaluate_under_law`].
     pub fn new(subplan: &str, unapplied_subplans: &[&str], boundary: &str) -> Result<Self> {
-        non_empty("residual subplan", subplan)?;
-        non_empty("residual boundary", boundary)?;
-        if unapplied_subplans.is_empty() {
+        let residual = Self {
+            subplan: subplan.to_owned(),
+            unapplied_subplans: unapplied_subplans.iter().map(|name| (*name).to_owned()).collect(),
+            boundary: boundary.to_owned(),
+        };
+        residual.validate()?;
+        Ok(residual)
+    }
+
+    /// Validate every shape invariant of a residual boundary.
+    ///
+    /// The fields are public, so a caller can build one without
+    /// [`Self::new`]. Evaluation re-establishes these invariants rather than
+    /// trusting the constructor, which is why this is a method and not just
+    /// constructor code.
+    pub fn validate(&self) -> Result<()> {
+        // `non_empty` also enforces the universal `MAX_TEXT_LEN` bound, so a
+        // residual reaching an applied result cannot carry unbounded text.
+        non_empty("residual subplan", &self.subplan)?;
+        non_empty("residual boundary", &self.boundary)?;
+        if self.unapplied_subplans.is_empty() {
             bail!(
-                "residual boundary for subplan {subplan:?} must name at least one unapplied subplan"
+                "residual boundary for subplan {:?} must name at least one unapplied subplan",
+                self.subplan
             );
         }
-        let mut unapplied = BTreeSet::new();
-        for name in unapplied_subplans {
+        for name in &self.unapplied_subplans {
             non_empty("residual unapplied subplan name", name)?;
-            if *name == subplan {
-                bail!("residual boundary names subplan {subplan:?} as both applied and unapplied");
+            if name == &self.subplan {
+                bail!(
+                    "residual boundary names subplan {:?} as both applied and unapplied",
+                    self.subplan
+                );
             }
-            unapplied.insert((*name).to_owned());
         }
-        Ok(Self {
-            subplan: subplan.to_owned(),
-            unapplied_subplans: unapplied,
-            boundary: boundary.to_owned(),
-        })
+        Ok(())
     }
 }
 
@@ -4948,6 +5003,132 @@ mod tests {
                 .tag(),
             "applied_exact"
         );
+        Ok(())
+    }
+
+    // Review finding: `ResidualBoundary`'s fields are public, so a caller can
+    // build one without `new` and skip every constructor check. Evaluation
+    // clones that value straight into the applied result, so a malformed
+    // residual -- empty prose, or text past the universal bound -- could reach
+    // a success state. Evaluation now re-establishes the shape itself.
+    #[test]
+    fn a_residual_built_without_its_constructor_is_still_checked() -> Result<()> {
+        let law = shape_fixtures::effect_free_control_law()?;
+        let plan = shape_fixtures::effect_free_control_plan()?;
+        let mut partial = shape_fixtures::conforming_observation(&plan, &law)?;
+        partial.applied_operations = [operation_id("eir:block:0002")].into_iter().collect();
+        partial.work = WorkReceipt { useful_operations: 1, elapsed_micros: 300 };
+        partial.output = Some(subplan_output(&plan, "unreachable-blocks"));
+
+        let unapplied: BTreeSet<String> = ["unreachable-edges".to_owned()].into_iter().collect();
+        let malformed = [
+            (String::new(), "an empty boundary"),
+            ("   ".to_owned(), "a whitespace-only boundary"),
+            ("x".repeat(MAX_TEXT_LEN + 1), "a boundary past the universal bound"),
+        ];
+        for (boundary, context) in malformed {
+            let mut observed = partial.clone();
+            observed.residual = Some(ResidualBoundary {
+                subplan: "unreachable-blocks".to_owned(),
+                unapplied_subplans: unapplied.clone(),
+                boundary,
+            });
+            match plan.evaluate_under_law(&law, &observed)? {
+                TransformationResult::InvalidOutput { reason } => {
+                    assert!(reason.contains("residual boundary"), "{context}: got {reason}");
+                }
+                other => unreachable!("{context} must not apply, got {}", other.tag()),
+            }
+        }
+
+        // The remainder is checked the same way when it is built directly.
+        let mut self_naming = partial.clone();
+        self_naming.residual = Some(ResidualBoundary {
+            subplan: "unreachable-blocks".to_owned(),
+            unapplied_subplans: ["unreachable-blocks".to_owned()].into_iter().collect(),
+            boundary: "edges left untouched".to_owned(),
+        });
+        assert_eq!(plan.evaluate_under_law(&law, &self_naming)?.tag(), "invalid_output");
+
+        let mut empty_remainder = partial.clone();
+        empty_remainder.residual = Some(ResidualBoundary {
+            subplan: "unreachable-blocks".to_owned(),
+            unapplied_subplans: BTreeSet::new(),
+            boundary: "edges left untouched".to_owned(),
+        });
+        assert_eq!(plan.evaluate_under_law(&law, &empty_remainder)?.tag(), "invalid_output");
+
+        // A well-formed residual built the same way still applies, so the
+        // check discriminates rather than rejecting direct construction.
+        let mut well_formed = partial.clone();
+        well_formed.residual = Some(ResidualBoundary {
+            subplan: "unreachable-blocks".to_owned(),
+            unapplied_subplans: unapplied,
+            boundary: "edges left untouched".to_owned(),
+        });
+        assert_eq!(
+            plan.evaluate_under_law(&law, &well_formed)?.tag(),
+            "applied_with_declared_residual_boundary"
+        );
+        Ok(())
+    }
+
+    // Review finding: two class definitions were enforced only where they
+    // happened to be convenient. `InternalCanonicalization` says "internal to
+    // one stage" but validated across stages, and
+    // `FactStrengtheningWithoutIrRewrite` forbade `ir_shape` while permitting
+    // the operation-count changes that *are* an IR rewrite -- and applied the
+    // IR-identity rule to the plan's own output but not to its subplans'.
+    #[test]
+    fn a_class_definition_binds_every_output_it_names() -> Result<()> {
+        let mut crossing = shape_fixtures::exact_value_folding_law()?;
+        crossing.class = TransformationClass::InternalCanonicalization;
+        crossing.consumers = [ConsumerClass::InternalStageRewrite].into_iter().collect();
+        crossing.claim_ceiling = ClaimCeiling::InternalFactOnly;
+        crossing.output_stage = CompilerStage::PirA;
+        let error = match crossing.validate() {
+            Err(error) => format!("{error:#}"),
+            Ok(()) => unreachable!("internal canonicalization cannot cross stages"),
+        };
+        assert!(error.contains("canonicalizes internally to one stage"), "got {error}");
+
+        // Removing a redundant operation or an unreachable edge is an IR
+        // rewrite, so a fact-only law may not permit either.
+        for change in
+            [ChangedProposition::RedundantOperationCount, ChangedProposition::UnreachableEdgeCount]
+        {
+            let mut fact_only = shape_fixtures::exact_value_folding_law()?;
+            fact_only.class = TransformationClass::FactStrengtheningWithoutIrRewrite;
+            fact_only.consumers = [ConsumerClass::FactStore].into_iter().collect();
+            fact_only.permitted_changes =
+                [ChangedProposition::FactStrength, change].into_iter().collect();
+            let error = match fact_only.validate() {
+                Err(error) => format!("{error:#}"),
+                Ok(()) => unreachable!("a fact-only law cannot permit {}", change.tag()),
+            };
+            assert!(error.contains("must not permit the change"), "{}: got {error}", change.tag());
+        }
+
+        // The IR-identity rule reaches each subplan's declared output, not
+        // just the plan's own, so a fact-only plan cannot rewrite the IR one
+        // subplan at a time.
+        let law = shape_fixtures::effect_free_control_law()?;
+        let mut plan = shape_fixtures::effect_free_control_plan()?;
+        plan.class = TransformationClass::FactStrengtheningWithoutIrRewrite;
+        plan.expected_output.ir_identity = plan.input.ir_identity.clone();
+        for binding in plan.subplans.values_mut() {
+            binding.expected_output.ir_identity = plan.input.ir_identity.clone();
+        }
+        // The whole-plan rule is satisfied; only a subplan moves the identity.
+        if let Some(binding) = plan.subplans.get_mut("unreachable-blocks") {
+            binding.expected_output.ir_identity = subject_ref("a rewritten eir graph");
+        }
+        assert_invalid(
+            &plan,
+            "subplan \"unreachable-blocks\" must keep the input's IR identity",
+            "a fact-only plan cannot rewrite the IR through a subplan",
+        );
+        let _ = law;
         Ok(())
     }
 
