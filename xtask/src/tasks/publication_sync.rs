@@ -1051,14 +1051,21 @@ fn consumed_repository_paths(manifest: &Manifest) -> BTreeSet<String> {
         consumed.insert(row.path.clone());
         // The crate-root probe `validate_rows` performs on a displacing row.
         consumed.insert(format!("{}/Cargo.toml", row.path));
-        if valid_repository_path(&row.authority_ref) && looks_like_document(&row.authority_ref) {
-            consumed.insert(row.authority_ref.clone());
+        // Trimmed, because every site that *reads* one of these trims it first.
+        // An untrimmed set records a spelling no reader ever resolves — and
+        // `valid_repository_path` accepts padding, since a space is a legal path
+        // character, so the padded form is inserted rather than rejected and the
+        // guard silently compares the wrong file.
+        let authority = row.authority_ref.trim();
+        if valid_repository_path(authority) && looks_like_document(authority) {
+            consumed.insert(authority.to_string());
         }
     }
 
     for entry in evidence_entries(manifest) {
-        if valid_repository_path(&entry.reference) {
-            consumed.insert(entry.reference.clone());
+        let reference = entry.reference.trim();
+        if valid_repository_path(reference) {
+            consumed.insert(reference.to_string());
         }
     }
 

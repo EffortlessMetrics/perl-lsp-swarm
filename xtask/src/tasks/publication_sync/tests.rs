@@ -2494,6 +2494,68 @@ fn the_receipt_cannot_be_written_over_a_row_path() -> Result<()> {
 }
 
 #[test]
+fn a_padded_authority_is_still_protected_evidence() -> Result<()> {
+    // Every site that *reads* an authority or evidence reference trims it, so
+    // `"  docs/…  "` resolves to the same document a bare reference does. The
+    // consumed set did not trim, so it recorded the padded spelling — which
+    // `valid_repository_path` accepts, since a space is a legal path character —
+    // and the guard then compared the wrong file. The padding never has to be
+    // deliberate for this to matter; it just has to survive into the manifest.
+    //
+    // Third instance of one defect: the alias guard disagreeing with the
+    // evaluation site about what a path is. The first two were a stale copy of
+    // the authority rule and a name-versus-target mismatch on symlinks, and both
+    // were repaired by making one definition serve both callers. This is that
+    // definition disagreeing with its readers instead.
+    // Both reference kinds the set records, because both read sites trim and
+    // both collection sites did not.
+    //
+    // The target must not also be a declared input, or the inputs loop protects
+    // it whatever these rules do. The first draft of this control used
+    // `docs/swarm/sync-protocol.md`, which *is* an input, and so passed against
+    // the unfixed code — proving nothing.
+    for kind in ["authority", "evidence"] {
+        let mut document = clean_value()?;
+        match kind {
+            "authority" => {
+                rows_mut(&mut document)?[0]["authority_ref"] = json!("  docs/release-notes.md  ");
+            }
+            _ => {
+                document["invariants"][0]["evidence"][0]["reference"] =
+                    json!("  docs/release-notes.md  ");
+            }
+        }
+
+        let (root, manifest_path, _) = materialize_repo(&document)?;
+        let target = root.path().join("docs/release-notes.md");
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        const ORIGINAL: &[u8] = b"authority document, not a receipt\n";
+        fs::write(&target, ORIGINAL)?;
+
+        let _ = plan_with(
+            PlanConfig {
+                manifest: manifest_path,
+                repo_root: root.path().to_path_buf(),
+                receipt: target.clone(),
+            },
+            fixture_checkout,
+            fixture_tree,
+        );
+
+        // Assert the bytes rather than the verdict. A plan that fails for an
+        // unrelated reason still writes its receipt — `plan_fails_loudly_but
+        // _still_writes_the_receipt` pins that — so an `Err` return would not by
+        // itself mean the document survived, and the overwrite is the harm.
+        if fs::read(&target)? != ORIGINAL {
+            bail!("the receipt overwrote a whitespace-padded {kind} document");
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn a_consumed_path_that_differs_from_the_checkout_is_not_proven() -> Result<()> {
     // HEAD matching is not enough: the planner reads the worktree, so a
     // modified declared input is read as if it were part of S.
