@@ -120,19 +120,32 @@ def incremental_surface(path: Path) -> tuple[set[str], set[str], set[str]]:
     return modules, exports, functions
 
 
+def implicit_feature_names(manifest: dict[str, Any]) -> set[str]:
+    features = manifest.get("features", {})
+    explicit_dependency_features = {
+        entry.removeprefix("dep:")
+        for values in features.values()
+        if isinstance(values, list)
+        for entry in values
+        if isinstance(entry, str) and entry.startswith("dep:")
+    }
+    return {
+        alias
+        for _, table in contextual_dependency_tables(manifest)
+        for alias, value in table.items()
+        if isinstance(value, dict)
+        and value.get("optional") is True
+        and alias not in features
+        and alias not in explicit_dependency_features
+    }
+
+
 def feature_names(manifest: dict[str, Any]) -> set[str]:
     features = manifest.get("features")
     if not isinstance(features, dict):
         raise ValueError("perl-parser manifest has no [features] table")
     names = set(features)
-    # Cargo exposes an implicit feature for every optional dependency unless an
-    # explicit feature already occupies that name.  Keep the observer aligned
-    # with Cargo's feature namespace rather than only the [features] table.
-    for _, table in contextual_dependency_tables(manifest):
-        for alias, value in table.items():
-            if isinstance(value, dict) and value.get("optional") is True:
-                names.add(alias)
-    return names
+    return names | implicit_feature_names(manifest)
 
 
 def default_features(manifest: dict[str, Any]) -> tuple[str, ...]:
@@ -366,12 +379,7 @@ def feature_isolation(manifest: dict[str, Any], crate_root: Path) -> dict[str, s
     features = manifest.get("features")
     if not isinstance(features, dict):
         raise ValueError("perl-parser manifest has no [features] table")
-    implicit = {
-        alias
-        for _, table in contextual_dependency_tables(manifest)
-        for alias, value in table.items()
-        if isinstance(value, dict) and value.get("optional") is True and alias not in features
-    }
+    implicit = implicit_feature_names(manifest)
     features = {**features, **{name: [name] for name in implicit}}
     declared = set(features)
     # Feature entries name the manifest key, which differs from package identity
