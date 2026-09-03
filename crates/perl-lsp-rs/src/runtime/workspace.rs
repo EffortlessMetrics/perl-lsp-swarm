@@ -185,6 +185,22 @@ fn most_specific_admission(
         .unwrap_or_default()
 }
 
+/// Remap a descendant path under a renamed directory root onto the new
+/// root's URI (#14074 review). Component-wise, so a descendant like
+/// `<old>/sub/a.pm` lands at `<new>/sub/a.pm` and sibling names never
+/// participate.
+#[cfg(feature = "workspace")]
+fn remap_descendant_uri(
+    old_root_path: &Path,
+    document_path: &Path,
+    new_root_uri: &str,
+) -> Option<String> {
+    let relative = document_path.strip_prefix(old_root_path).ok()?;
+    let new_root_path = uri_to_fs_path(new_root_uri)?;
+    let new_path = new_root_path.join(relative);
+    url::Url::from_file_path(&new_path).ok().map(|url| url.to_string())
+}
+
 /// Final-seam admission decision for the startup scan (#13308, #14186).
 ///
 /// One admission authority: the seam consults the same `DiscoveryConfig`
@@ -1785,8 +1801,17 @@ impl LspServer {
     /// reach indexed descendants under the old prefix, so they would stay
     /// searchable after the directory moved or vanished. Component-wise
     /// prefix matching keeps sibling names like `dir2` safe.
+    ///
+    /// Open-buffer authority (#8041, #14074 review): an open descendant is
+    /// the buffer-backed subject, so it must observe the same handoff
+    /// contract as the exact-URI seam — its backing-file-derived index
+    /// facts are removed, and the caller's transition (deleted, or renamed
+    /// to the remapped destination URI) is recorded so didSave/didClose can
+    /// complete the handoff instead of the backing file vanishing silently.
+    /// `renamed_to` carries the new directory URI for rename events and
+    /// stays `None` for deletions.
     #[cfg(feature = "workspace")]
-    pub(crate) fn evict_index_descendants(&self, uri: &str) {
+    pub(crate) fn evict_index_descendants(&self, uri: &str, renamed_to: Option<&str>) {
         let Some(deleted_path) = uri_to_fs_path(uri) else {
             return;
         };
@@ -1798,6 +1823,33 @@ impl LspServer {
                 continue;
             };
             if document_path != deleted_path && document_path.starts_with(&deleted_path) {
+                if self.document_is_open(&document.uri) {
+                    let transition = match renamed_to {
+                        None => BackingFileTransition::Deleted,
+                        Some(new_root_uri) => {
+                            let Some(new_uri) =
+                                remap_descendant_uri(&deleted_path, &document_path, new_root_uri)
+                            else {
+                                tracing::debug!(
+                                    uri = %document.uri,
+                                    parent = %uri,
+                                    "Could not remap open descendant under renamed directory; \
+                                     leaving handoff to a later lifecycle event"
+                                );
+                                coordinator.index().clear_file(&document.uri);
+                                continue;
+                            };
+                            BackingFileTransition::RenamedOrMoved { new_uri }
+                        }
+                    };
+                    self.record_backing_file_transition(&document.uri, transition);
+                    tracing::debug!(
+                        uri = %document.uri,
+                        parent = %uri,
+                        "Recorded backing transition for open descendant of deleted or \
+                         renamed directory (#8041)"
+                    );
+                }
                 coordinator.index().clear_file(&document.uri);
                 tracing::debug!(
                     uri = %document.uri,
@@ -2215,7 +2267,10 @@ impl LspServer {
                     // A renamed directory URI must carry its indexed
                     // descendants away with it (#14186 review); per-file
                     // didRename events re-index them at their new paths.
-                    self.evict_index_descendants(&old_uri);
+                    // Open descendants record the same RenamedOrMoved
+                    // backing handoff as the exact-URI seam (#14074
+                    // review).
+                    self.evict_index_descendants(&old_uri, Some(&new_uri));
 
                     // Index new file if it's a Perl file. When a document is
                     // open at the new URI, its buffer — not disk bytes — is
@@ -2842,16 +2897,29 @@ impl LspServer {
                     if !admission_roots.iter().any(|(root, _)| path.starts_with(root)) {
                         continue;
                     }
-                    let _transition = indexing_transition_lock.lock();
+                    // Read and classify OUTSIDE the transition lock (#14074
+                    // review): `read_perl_source_file` screens non-regular
+                    // objects before opening, so a regular-file-to-FIFO
+                    // replacement cannot block this read, and the lock never
+                    // spans disk I/O — a blocked read holding the lock would
+                    // wedge every didOpen transition behind it. `Ok(None)`
+                    // means the object is not admitted Perl source on current
+                    // disk bytes — the same evidence a watcher CHANGED event
+                    // applies. Unreadable objects are transient; keep facts
+                    // until a later event confirms disk content. Openness is
+                    // snapshotted before the read and re-checked after it,
+                    // matching the watcher seam's race discipline (#8041).
                     if open_documents.is_open(&uri) {
                         continue;
                     }
                     let admission = most_specific_admission(&admission_roots, &path);
-                    // Unreadable objects are transient; keep facts until a
-                    // later event confirms disk content.
-                    let admitted = std::fs::read(&path)
-                        .map(|bytes| indexing_seam_admits_perl_source(&path, &bytes, &admission))
+                    let admitted = read_perl_source_file(&path, &admission)
+                        .map(|content| content.is_some())
                         .unwrap_or(true);
+                    let _transition = indexing_transition_lock.lock();
+                    if open_documents.is_open(&uri) {
+                        continue;
+                    }
                     if !admitted {
                         coordinator.index().clear_file(&uri);
                         tracing::debug!(
@@ -5099,6 +5167,65 @@ mod tests {
         Ok(())
     }
 
+    /// #14074 review regression: the cross-scan reconciliation must screen
+    /// non-regular objects before opening and must never span disk I/O while
+    /// holding `indexing_transition_lock`. A regular-file-to-FIFO replacement
+    /// would otherwise block the scan's read inside the lock and wedge every
+    /// didOpen transition behind it. On unfixed code the reconciliation read
+    /// blocks forever on the writer-less FIFO, so the scan never completes
+    /// and the completion deadline fails the test. Discovery skips non-regular
+    /// objects, so only the reconciliation pass can touch this URI.
+    #[cfg(all(feature = "workspace", unix))]
+    #[test]
+    fn rescan_reconciliation_does_not_wedge_on_fifo_replaced_script()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let control_path = dir.path().join("aaa_control.pl");
+        let script_path = dir.path().join("deploy_hook");
+        std::fs::write(&control_path, "package Control;\nsub control_symbol { 1 }\n1;\n")?;
+        std::fs::write(
+            &script_path,
+            "#!/usr/bin/env perl\npackage Hook;\nsub hook_symbol { 1 }\n1;\n",
+        )?;
+        let server = gated_scan_server(&dir)?;
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        {
+            let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+            if coordinator.index().find_definition("Hook::hook_symbol").is_none() {
+                return Err("fixture: first scan must index the shebang script".into());
+            }
+        }
+
+        // Replace the indexed extensionless script with a writer-less FIFO.
+        // Opening it for reading blocks forever; only a non-regular-object
+        // screen can keep the reconciliation from wedging.
+        std::fs::remove_file(&script_path)?;
+        let fifo = std::process::Command::new("mkfifo")
+            .arg(&script_path)
+            .status()
+            .map_err(|err| std::io::Error::other(format!("failed to spawn mkfifo: {err}")))?;
+        if !fifo.success() {
+            return Err("mkfifo could not create the FIFO fixture".into());
+        }
+
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("Hook::hook_symbol").is_some() {
+            return Err(
+                "stale symbols from a script replaced by a non-regular object survived a rescan"
+                    .into(),
+            );
+        }
+        if coordinator.index().find_definition("Control::control_symbol").is_none() {
+            return Err("rescan lost the control file's symbols".into());
+        }
+        Ok(())
+    }
+
     /// #14186 review regression (directory events): deleting a directory URI
     /// must evict every indexed descendant, not just the exact URI.
     #[cfg(feature = "workspace")]
@@ -5131,6 +5258,136 @@ mod tests {
         if coordinator.index().find_definition("Sibling::sibling_symbol").is_none() {
             return Err("directory delete evicted files outside the deleted directory".into());
         }
+        Ok(())
+    }
+
+    /// #14074 review regression (open-buffer authority): an open descendant
+    /// of a deleted directory must receive the same recorded backing handoff
+    /// as the exact-URI seam, so didSave/didClose can complete the transition
+    /// instead of the backing file vanishing silently.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn directory_delete_records_backing_transition_for_open_descendant()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let nested = dir.path().join("pkg");
+        std::fs::create_dir_all(&nested)?;
+        let child_path = nested.join("open_child.pm");
+        let child_source = "package OpenChild;\nsub open_child_symbol { 1 }\n1;\n";
+        std::fs::write(&child_path, child_source)?;
+        std::fs::write(nested.join("closed.pm"), "package Closed;\nsub closed_symbol { 1 }\n1;\n")?;
+        let server = gated_scan_server(&dir)?;
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        let child_uri = url::Url::from_directory_path(&child_path)
+            .map_err(|_| "invalid child uri")?
+            .to_string();
+        server.did_open(json!({
+            "textDocument": {
+                "uri": child_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": child_source
+            }
+        }))?;
+
+        let nested_uri = url::Url::from_directory_path(&nested)
+            .map_err(|_| "invalid nested directory uri")?
+            .to_string();
+        server.handle_did_delete_files(Some(json!({ "files": [{ "uri": nested_uri }] })))?;
+
+        assert!(
+            server.document_is_open(&child_uri),
+            "the open descendant's buffer must survive the directory delete"
+        );
+        assert_eq!(
+            server.take_backing_file_transition(&child_uri),
+            Some(BackingFileTransition::Deleted),
+            "the open descendant must inherit the exact-URI seam's Deleted handoff"
+        );
+        assert_eq!(
+            server.take_backing_file_transition(&child_uri),
+            None,
+            "the backing handoff must resolve exactly once"
+        );
+        Ok(())
+    }
+
+    /// #14074 review regression (open-buffer authority): an open descendant
+    /// of a renamed directory must record the same RenamedOrMoved backing
+    /// handoff as the exact-URI seam, with its destination remapped under
+    /// the new root, while closed descendants lose their old-root facts.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn directory_rename_records_backing_transition_for_open_descendant()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let old_nested = dir.path().join("pkg");
+        std::fs::create_dir_all(&old_nested)?;
+        let child_path = old_nested.join("open_child.pm");
+        let child_source = "package OpenChild;\nsub open_child_symbol { 1 }\n1;\n";
+        std::fs::write(&child_path, child_source)?;
+        std::fs::write(
+            old_nested.join("closed.pm"),
+            "package Closed;\nsub closed_symbol { 1 }\n1;\n",
+        )?;
+        let server = gated_scan_server(&dir)?;
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        let child_uri = url::Url::from_directory_path(&child_path)
+            .map_err(|_| "invalid child uri")?
+            .to_string();
+        server.did_open(json!({
+            "textDocument": {
+                "uri": child_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": child_source
+            }
+        }))?;
+
+        let new_nested = dir.path().join("pkg2");
+        std::fs::rename(&old_nested, &new_nested)?;
+        let old_nested_uri = url::Url::from_directory_path(&old_nested)
+            .map_err(|_| "invalid old directory uri")?
+            .to_string();
+        let new_nested_uri = url::Url::from_directory_path(&new_nested)
+            .map_err(|_| "invalid new directory uri")?
+            .to_string();
+        server.handle_did_rename_files(Some(json!({
+            "files": [{ "oldUri": old_nested_uri, "newUri": new_nested_uri }]
+        })))?;
+
+        let expected_child_uri = url::Url::from_file_path(new_nested.join("open_child.pm"))
+            .map_err(|_| "invalid remapped child uri")?
+            .to_string();
+        assert!(
+            server.document_is_open(&child_uri),
+            "the open descendant's buffer stays bound to its original URI"
+        );
+        // The exact-URI seam records its transition under the handler's
+        // normalized URI spelling, so the descendant handoff is compared
+        // through the same denominator.
+        let recorded = server.take_backing_file_transition(&child_uri);
+        assert!(
+            matches!(&recorded, Some(BackingFileTransition::RenamedOrMoved { .. })),
+            "the open descendant must inherit the exact-URI seam's RenamedOrMoved \
+             handoff, got {recorded:?}"
+        );
+        if let Some(BackingFileTransition::RenamedOrMoved { new_uri }) = recorded {
+            assert_eq!(
+                server.normalize_uri_key(&new_uri),
+                server.normalize_uri_key(&expected_child_uri),
+                "the recorded descendant destination must remap under the new root"
+            );
+        }
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        assert!(
+            coordinator.index().find_definition("Closed::closed_symbol").is_none(),
+            "a closed descendant of the renamed directory must not keep old-root facts"
+        );
         Ok(())
     }
 

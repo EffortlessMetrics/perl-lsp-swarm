@@ -990,7 +990,9 @@ impl LspServer {
             // Catch-all watcher/file-operation contract (#13308, #14186
             // review): a deleted directory URI must also evict every indexed
             // descendant; the exact-URI eviction above cannot reach them.
-            self.evict_index_descendants(uri);
+            // Open descendants record the same Deleted backing handoff as
+            // this exact-URI seam (#14074 review).
+            self.evict_index_descendants(uri, None);
         }
 
         if self.document_is_open(uri) {
