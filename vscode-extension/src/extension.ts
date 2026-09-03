@@ -110,7 +110,7 @@ import {
   StaleDocumentReplayError,
   replayOpenPerlDocumentsWhenReady,
 } from './languageClientDocumentSync';
-import { settleLspProviderCall } from './lspProviderCall';
+import { settleLspProviderCallWithDisposition } from './lspProviderCall';
 import {
   CrashRecoveryArbiter,
   type CrashObservationSource,
@@ -2065,14 +2065,11 @@ export function createLanguageClient(serverPath: string): LanguageClient {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return null;
         }
-        return settleLspProviderCall(
-          async () => {
-            const result = await next(document, position, context, token);
-            recordLspProviderOutcome('Completion', document, result);
-            return result;
-          },
+        return settleMiddlewareProviderCall(
+          'Completion',
+          document,
+          async () => next(document, position, context, token),
           null,
-          (error) => handleLspProviderError('Completion', error),
         );
       },
       // The one authoritative provider for Perl inline completion (#8282).
@@ -2095,70 +2092,56 @@ export function createLanguageClient(serverPath: string): LanguageClient {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return null;
         }
-        return settleLspProviderCall(
-          async () => {
-            const result = await next(document, position, token);
-            recordLspProviderOutcome('Definition', document, result);
-            return result;
-          },
+        return settleMiddlewareProviderCall(
+          'Definition',
+          document,
+          async () => next(document, position, token),
           null,
-          (error) => handleLspProviderError('Definition', error),
         );
       },
       provideHover: async (document, position, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return null;
         }
-        return settleLspProviderCall(
-          async () => {
-            const result = await next(document, position, token);
-            recordLspProviderOutcome('Hover', document, result);
-            return result;
-          },
+        return settleMiddlewareProviderCall(
+          'Hover',
+          document,
+          async () => next(document, position, token),
           null,
-          (error) => handleLspProviderError('Hover', error),
         );
       },
       provideReferences: async (document, position, options, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return null;
         }
-        return settleLspProviderCall(
-          async () => {
-            const result = await next(document, position, options, token);
-            recordLspProviderOutcome('References', document, result);
-            return result;
-          },
+        return settleMiddlewareProviderCall(
+          'References',
+          document,
+          async () => next(document, position, options, token),
           null,
-          (error) => handleLspProviderError('References', error),
         );
       },
       provideDocumentSymbols: async (document, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return null;
         }
-        return settleLspProviderCall(
-          async () => {
-            const result = await next(document, token);
-            recordLspProviderOutcome('Symbols', document, result);
-            return result;
-          },
+        return settleMiddlewareProviderCall(
+          'Symbols',
+          document,
+          async () => next(document, token),
           null,
-          (error) => handleLspProviderError('Symbols', error),
         );
       },
       provideRenameEdits: async (document, position, newName, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return null;
         }
-        return settleLspProviderCall(
-          async () => {
-            const result = await next(document, position, newName, token);
-            recordLspProviderOutcome('Rename', document, result, 'safe_refusal');
-            return result;
-          },
+        return settleMiddlewareProviderCall(
+          'Rename',
+          document,
+          async () => next(document, position, newName, token),
           null,
-          (error) => handleLspProviderError('Rename', error),
+          'safe_refusal',
         );
       },
       provideCodeLenses: async (document, token, next) => {
@@ -2478,8 +2461,32 @@ function recordLspProviderOutcome(
   healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
 }
 
+async function settleMiddlewareProviderCall<T>(
+  label: string,
+  document: vscode.TextDocument,
+  call: () => Promise<T>,
+  fallback: T,
+  emptyOutcome: 'legitimate_empty' | 'safe_refusal' = 'legitimate_empty',
+): Promise<T> {
+  const settlement = await settleLspProviderCallWithDisposition(call, fallback);
+  if (settlement.kind === 'returned') {
+    recordLspProviderOutcome(label, document, settlement.value, emptyOutcome);
+  } else if (settlement.kind === 'failed') {
+    handleLspProviderError(label, settlement.error);
+  }
+  return settlement.wireValue;
+}
+
+function describeLspProviderError(error: unknown): string {
+  try {
+    return error instanceof Error ? error.message : String(error);
+  } catch {
+    return 'unavailable provider error';
+  }
+}
+
 function handleLspProviderError(label: string, error: unknown): void {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = describeLspProviderError(error);
   const presentation = presentLspProviderError(label, message);
   healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
   outputChannel?.warn(`[provider] ${label} failed: ${message}`);

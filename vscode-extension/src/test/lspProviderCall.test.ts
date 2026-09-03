@@ -183,6 +183,22 @@ describe('typed LSP provider call settlement', () => {
     expect(onFailure).not.toHaveBeenCalled();
   });
 
+  test('compatibility adapter does not report client disposal as a product failure', async () => {
+    const error = new Error("Client got disposed and can't be restarted.");
+    const onFailure = jest.fn();
+
+    const result = await settleLspProviderCall(
+      async () => {
+        throw error;
+      },
+      [] as string[],
+      onFailure,
+    );
+
+    expect(result).toEqual([]);
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
   test('typed callers retain disposition before choosing the wire projection', async () => {
     const error = new Error('hover failed');
     const settlement = await settleLspProviderCallWithDisposition(async () => {
