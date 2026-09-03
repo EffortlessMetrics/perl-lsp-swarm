@@ -567,7 +567,16 @@ impl SemanticAnalyzer {
         receiver_class: &str,
         method_name: &str,
     ) -> Option<HoverInfo> {
-        if !model.methods.iter().any(|m| m.name == method_name) {
+        // Lexical `my sub`/`state sub` declarations are recorded in the model
+        // for provenance, but they do not enter the package method table and
+        // therefore cannot satisfy a package method dispatch.  Keep the exact
+        // hover path aligned with `method_location_in_model` and the modifier
+        // resolver by requiring a package-level declarator.
+        if !model
+            .methods
+            .iter()
+            .any(|method| method.name == method_name && method.declarator.is_none())
+        {
             return None;
         }
         let is_direct = model.name == receiver_class;
@@ -1201,6 +1210,42 @@ sub real_method { 2 }
             "exact resolution must not carry the dynamic-dispatch detail, got: {:?}",
             hover.details
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_lexical_subs_do_not_claim_exact_method_hover() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // Named lexical subs are collected for source/provenance purposes, but
+        // they are not package methods.  If exact hover checks only the name,
+        // these declarations incorrectly outrank the class AUTOLOAD boundary.
+        let code = r#"
+package Foo;
+use Moo;
+use feature 'lexical_subs';
+my sub hidden_method { 1 }
+state sub another_hidden_method { 2 }
+sub AUTOLOAD { 3 }
+"#;
+
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        for method_name in ["hidden_method", "another_hidden_method"] {
+            let hover = analyzer
+                .resolve_inherited_method_hover("Foo", method_name)
+                .ok_or_else(|| format!("expected AUTOLOAD hover for {method_name}"))?;
+            assert_eq!(
+                hover.signature, "sub Foo::AUTOLOAD",
+                "lexical {method_name} must not be presented as an exact package method"
+            );
+            assert_eq!(
+                hover.provenance,
+                Some(Provenance::DynamicBoundary),
+                "lexical {method_name} should fall through to the dynamic AUTOLOAD boundary"
+            );
+        }
         Ok(())
     }
 
