@@ -253,6 +253,7 @@ fn lexer_error_clone() {
 // ===========================================================================
 
 #[test]
+#[allow(deprecated)] // Deliberately exercises the deprecated compatibility field.
 fn default_config_values() {
     let cfg = LexerConfig::default();
     assert!(cfg.parse_interpolation);
@@ -261,6 +262,7 @@ fn default_config_values() {
 }
 
 #[test]
+#[allow(deprecated)] // Deliberately exercises the deprecated compatibility field.
 fn custom_config() {
     let cfg = LexerConfig {
         parse_interpolation: false,

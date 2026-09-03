@@ -82,10 +82,9 @@ impl PerlLexer<'_> {
                 self.position += 1;
             } else if let Some(ch) =
                 self.input.get(self.position..limit).and_then(|s| s.chars().next())
+                && self.position + ch.len_utf8() <= limit
             {
-                if self.position + ch.len_utf8() <= limit {
-                    self.position += ch.len_utf8();
-                }
+                self.position += ch.len_utf8();
             }
         }
     }

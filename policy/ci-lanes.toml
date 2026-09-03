@@ -283,6 +283,38 @@ duplicate_of = []
 # Automation / external review lanes
 # -----------------------------------------------------------------------------
 
+[lane.critic_rule_proof]
+description = "Path-filtered critic rule-proof schema, fixture, and live checker."
+intent = "rule-proof correctness"
+runner = "ubuntu_24_04"
+base_lem = 8
+default_pr = false
+blocking = false
+paths = [
+  "schemas/critic_rule_proof.v1.schema.json",
+  "fixtures/critic-rule-proof/**",
+  "docs/project/status/critic_rule_proof.md",
+  "xtask/src/critic_rule_proof/**",
+  "xtask/src/tasks/critic_rule_proof.rs",
+  "xtask/tests/critic_rule_proof.rs",
+  "crates/perl-lsp-rs-core/src/tooling/perl_critic/identity.rs",
+  "crates/perl-lsp-rs-core/src/tooling/perl_critic/remediation.rs",
+  "crates/perl-lsp-rs-core/src/tooling/perl_critic/types.rs",
+  "crates/perl-lsp-rs-core/src/tooling/perl_critic/native.rs",
+  "crates/perl-lsp-rs-core/src/tooling/perl_critic/native/**",
+  "crates/perl-parser/**",
+  "crates/perl-parser-core/**",
+  "crates/perl-lexer/**",
+  "crates/perl-ast/**",
+  "crates/perl-semantic-analyzer/**",
+  "crates/perl-module/**",
+  "crates/perl-workspace/**",
+  "crates/perl-tdd-support/**",
+  ".github/workflows/critic-rule-proof.yml",
+]
+outputs = ["job output"]
+duplicate_of = []
+
 [lane.droid_auto_review]
 description = "Paused historical Droid PR review lane; automatic execution is disabled."
 intent = "paused historical record"

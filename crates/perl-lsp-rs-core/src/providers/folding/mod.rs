@@ -343,7 +343,7 @@ impl FoldingRangeExtractor {
                 self.visit_node(init);
             }
 
-            NodeKind::DataSection { marker: _, body }
+            NodeKind::DataSection { marker: _, body, .. }
                 // Fold the data section body as a comment
                 if body.is_some() =>
             {

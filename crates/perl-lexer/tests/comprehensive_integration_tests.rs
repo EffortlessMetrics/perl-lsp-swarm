@@ -965,6 +965,7 @@ fn next_token_returns_none_after_eof() -> R {
 // ===========================================================================
 
 #[test]
+#[allow(deprecated)] // Deliberately exercises the deprecated compatibility field.
 fn custom_config() -> R {
     let config = LexerConfig {
         parse_interpolation: false,
@@ -980,6 +981,7 @@ fn custom_config() -> R {
 }
 
 #[test]
+#[allow(deprecated)] // Deliberately exercises the deprecated compatibility field.
 fn default_config_works() -> R {
     let config = LexerConfig::default();
     assert!(config.parse_interpolation);

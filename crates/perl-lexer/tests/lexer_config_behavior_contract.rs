@@ -2,9 +2,15 @@
 //!
 //! These tests exercise `PerlLexer::with_config` rather than treating field
 //! names as evidence. They distinguish observable effects, compatibility fields,
-//! shared-cursor thresholds, and the currently empty `simd` Cargo feature.
+//! shared-cursor thresholds, and the deprecated empty `simd` Cargo feature.
+//!
+//! The `track_positions` field is deprecated (since 0.17.0, removal owned by
+//! #8749) but remains the exact surface under contract until removal, so these
+//! tests deliberately keep naming it.
 
-use std::sync::Arc;
+#![allow(deprecated)]
+
+use std::{collections::HashSet, sync::Arc};
 
 use perl_lexer::{
     Checkpointable, LexerConfig, LocalSymbolTable, PerlLexer, StringPart, Token, TokenType,
@@ -211,6 +217,28 @@ fn position_compatibility_field_does_not_change_authoritative_tokens() {
 }
 
 #[test]
+fn track_positions_deprecation_diagnostic_preserves_struct_update_guidance() -> R {
+    let source = include_str!("../src/config.rs");
+    let note = source
+        .lines()
+        .find(|line| line.trim_start().starts_with("note = "))
+        .ok_or_else(|| missing("track_positions deprecation note disappeared"))?;
+    for required in [
+        "while this compatibility field remains",
+        "remove the field from literals and add",
+        "..LexerConfig::default()",
+        "temporarily retain it with an allowance",
+    ] {
+        if !note.contains(required) {
+            return Err(missing(format!(
+                "track_positions deprecation note lost migration guidance: {required}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn shared_lookahead_limit_has_distinct_zero_one_and_two_boundaries() -> R {
     let zero = LexerConfig { max_lookahead: 0, ..LexerConfig::default() };
     let one = LexerConfig { max_lookahead: 1, ..LexerConfig::default() };
@@ -320,4 +348,1065 @@ fn canonical_token_contract_is_exact_under_every_compiled_feature_set() {
     ];
 
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn checkpoint_identity_ignores_noop_configuration_variation() -> R {
+    // Checkpoints capture replay state only. The deprecated `track_positions`
+    // field is a no-op, so flipping it between capture and restore must neither
+    // reject the checkpoint nor change the replayed token projection.
+    let input = "my $x = q{v}; print $x;";
+    for prefix_tokens in [1usize, 3] {
+        let mut tracked = PerlLexer::with_config(input, LexerConfig::default());
+        for _ in 0..prefix_tokens {
+            if tracked.next_token().is_none() {
+                break;
+            }
+        }
+        let checkpoint = tracked.checkpoint();
+        assert!(tracked.can_restore(&checkpoint), "captured checkpoint must be valid");
+
+        let mut untracked = PerlLexer::with_config(
+            input,
+            LexerConfig { track_positions: false, ..LexerConfig::default() },
+        );
+        assert!(
+            untracked.can_restore(&checkpoint),
+            "no-op field variation must not invalidate checkpoint identity"
+        );
+
+        let from_tracked = collect_remaining(&mut tracked);
+        untracked.restore(&checkpoint);
+        let replayed = collect_remaining(&mut untracked);
+        assert_eq!(
+            from_tracked, replayed,
+            "replay changed under track_positions variation after {prefix_tokens} prefix token(s)"
+        );
+
+        // The reverse direction: a checkpoint captured under the no-op value
+        // restores into the default configuration unchanged.
+        let mut source = PerlLexer::with_config(
+            input,
+            LexerConfig { track_positions: false, ..LexerConfig::default() },
+        );
+        for _ in 0..prefix_tokens {
+            if source.next_token().is_none() {
+                break;
+            }
+        }
+        let flipped_checkpoint = source.checkpoint();
+        let expected_reverse = collect_remaining(&mut source);
+        let mut back_on_default = PerlLexer::with_config(input, LexerConfig::default());
+        assert!(
+            back_on_default.can_restore(&flipped_checkpoint),
+            "default configuration must accept checkpoints captured under the no-op value"
+        );
+        back_on_default.restore(&flipped_checkpoint);
+        let reverse_replayed = collect_remaining(&mut back_on_default);
+        assert_eq!(
+            expected_reverse, reverse_replayed,
+            "reverse checkpoint replay changed under track_positions variation after {prefix_tokens} prefix token(s)"
+        );
+    }
+    Ok(())
+}
+
+fn collect_rust_sources(
+    root: &std::path::Path,
+    excluded_directories: &[&str],
+    sources: &mut Vec<std::path::PathBuf>,
+    is_package_root: bool,
+) -> R {
+    let metadata = std::fs::symlink_metadata(root)?;
+    if metadata.file_type().is_symlink() {
+        return Err(missing(format!(
+            "cannot verify Rust source through symlink {}; keep the simd gate closed",
+            root.display()
+        )));
+    }
+    if metadata.is_dir() {
+        for entry in std::fs::read_dir(root)? {
+            let entry = entry?;
+            let path = entry.path();
+            // Inspect metadata before applying exclusions so a symlink named
+            // `target`, even under `src`, cannot disappear from the scan.
+            let entry_metadata = std::fs::symlink_metadata(&path)?;
+            if entry_metadata.file_type().is_symlink() {
+                return Err(missing(format!(
+                    "cannot verify Rust source through symlink {}; keep the simd gate closed",
+                    path.display()
+                )));
+            }
+            if is_package_root
+                && entry_metadata.is_dir()
+                && path
+                    .file_name()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .is_some_and(|name| excluded_directories.contains(&name))
+            {
+                continue;
+            }
+            collect_rust_sources(&path, excluded_directories, sources, false)?;
+        }
+    } else if metadata.is_file() && root.extension().is_some_and(|ext| ext == "rs") {
+        sources.push(root.to_path_buf());
+    } else if !metadata.is_file() {
+        return Err(missing(format!(
+            "cannot verify non-regular source entry {}; keep the simd gate closed",
+            root.display()
+        )));
+    }
+    Ok(())
+}
+
+fn simd_selection_sources(
+    root: &std::path::Path,
+    excluded_directories: &[&str],
+) -> R<Vec<std::path::PathBuf>> {
+    let canonical_root = std::fs::canonicalize(root)?;
+    reject_configured_build_script(root)?;
+    let mut sources = Vec::new();
+    collect_rust_sources(root, excluded_directories, &mut sources, true)?;
+    let mut offenders = Vec::new();
+    let mut inspected = HashSet::new();
+    for path in sources {
+        inspect_source(&path, &canonical_root, &mut inspected, &mut offenders)?;
+    }
+    Ok(offenders)
+}
+
+fn inspect_source(
+    path: &std::path::Path,
+    canonical_root: &std::path::Path,
+    inspected: &mut HashSet<std::path::PathBuf>,
+    offenders: &mut Vec<std::path::PathBuf>,
+) -> R {
+    let canonical_path = std::fs::canonicalize(path)?;
+    if !canonical_path.starts_with(canonical_root) {
+        return Err(missing(format!(
+            "Rust source {} escapes the checked-in package root {}; keep the simd gate closed",
+            path.display(),
+            canonical_root.display()
+        )));
+    }
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(missing(format!(
+            "cannot verify included Rust source through symlink {}; keep the simd gate closed",
+            path.display()
+        )));
+    }
+    if !metadata.is_file() {
+        return Err(missing(format!(
+            "cannot verify non-regular included source {}; keep the simd gate closed",
+            path.display()
+        )));
+    }
+    if !inspected.insert(canonical_path) {
+        return Ok(());
+    }
+
+    if path.file_name().and_then(std::ffi::OsStr::to_str) == Some("build.rs") {
+        return Err(missing(format!(
+            "cannot verify OUT_DIR-generated Rust from build script {}; keep the simd gate closed until generated output is inspectable",
+            path.display()
+        )));
+    }
+    let contents = std::fs::read_to_string(path)?;
+    if contents.contains("CARGO_FEATURE_SIMD") {
+        return Err(missing(format!(
+            "cannot verify custom build-script feature handling in {}; CARGO_FEATURE_SIMD must remain unused",
+            path.display()
+        )));
+    }
+    if contains_simd_selection(&contents)? {
+        offenders.push(path.to_path_buf());
+    }
+    for included in literal_include_sources(&contents, path, canonical_root)? {
+        inspect_source(&included, canonical_root, inspected, offenders)?;
+    }
+    Ok(())
+}
+
+fn contains_simd_selection(source: &str) -> R<bool> {
+    let source = sanitize_rust_source(source)?;
+    let bytes = source.as_bytes();
+    let cfg_contexts = cfg_selector_contexts(bytes)?;
+    for (start, _) in source.match_indices("feature") {
+        let before_is_identifier = start
+            .checked_sub(1)
+            .and_then(|index| bytes.get(index))
+            .is_some_and(|character| character.is_ascii_alphanumeric() || *character == b'_');
+        let after_feature = start + "feature".len();
+        let after_is_identifier = bytes
+            .get(after_feature)
+            .is_some_and(|character| character.is_ascii_alphanumeric() || *character == b'_');
+        if before_is_identifier || after_is_identifier {
+            continue;
+        }
+        if !cfg_contexts
+            .iter()
+            .any(|&(context_start, context_end)| context_start <= start && start < context_end)
+        {
+            continue;
+        }
+        let Some(equal_start) = skip_rust_whitespace_and_comments(bytes, after_feature) else {
+            continue;
+        };
+        if bytes.get(equal_start) != Some(&b'=') {
+            continue;
+        }
+        let Some(value_start) = skip_rust_whitespace_and_comments(bytes, equal_start + 1) else {
+            continue;
+        };
+        if is_simd_string_literal(bytes, value_start)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn cfg_selector_contexts(bytes: &[u8]) -> R<Vec<(usize, usize)>> {
+    let source = std::str::from_utf8(bytes)?;
+    let mut contexts = Vec::new();
+    for (start, _) in source.match_indices("cfg") {
+        let before_is_identifier = start
+            .checked_sub(1)
+            .and_then(|index| bytes.get(index))
+            .is_some_and(|character| character.is_ascii_alphanumeric() || *character == b'_');
+        if before_is_identifier {
+            continue;
+        }
+
+        let cfg_end = start + "cfg".len();
+        let is_cfg_attr = bytes.get(cfg_end..cfg_end + "_attr".len()) == Some(b"_attr")
+            && !bytes
+                .get(cfg_end + "_attr".len())
+                .is_some_and(|character| character.is_ascii_alphanumeric() || *character == b'_');
+        let name_end = if is_cfg_attr { cfg_end + "_attr".len() } else { cfg_end };
+        let Some(mut cursor) = skip_rust_whitespace_and_comments(bytes, name_end) else {
+            continue;
+        };
+        let is_cfg_macro = !is_cfg_attr && bytes.get(cursor) == Some(&b'!');
+        if is_cfg_macro {
+            cursor = skip_rust_whitespace_and_comments(bytes, cursor + 1)
+                .ok_or_else(|| missing("unterminated cfg! selector invocation"))?;
+        } else if !is_attribute_name(bytes, start) {
+            continue;
+        }
+        if bytes.get(cursor) != Some(&b'(') {
+            continue;
+        }
+        let close = matching_parenthesis(bytes, cursor)?;
+        contexts.push((cursor + 1, close));
+    }
+    Ok(contexts)
+}
+
+fn is_attribute_name(bytes: &[u8], start: usize) -> bool {
+    let Some(bracket) = previous_non_whitespace(bytes, start) else {
+        return false;
+    };
+    if bytes.get(bracket) != Some(&b'[') {
+        return false;
+    }
+    let Some(prefix) = previous_non_whitespace(bytes, bracket) else {
+        return false;
+    };
+    if bytes.get(prefix) == Some(&b'#') {
+        return true;
+    }
+    bytes.get(prefix) == Some(&b'!')
+        && previous_non_whitespace(bytes, prefix).is_some_and(|hash| bytes.get(hash) == Some(&b'#'))
+}
+
+fn reject_configured_build_script(root: &std::path::Path) -> R {
+    let manifest = root.join("Cargo.toml");
+    let metadata = match std::fs::symlink_metadata(&manifest) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(missing(format!(
+            "cannot verify package manifest {}; keep the simd gate closed",
+            manifest.display()
+        )));
+    }
+    let contents = std::fs::read_to_string(&manifest)?;
+    let mut in_package = false;
+    for line in contents.lines() {
+        let line = line.split_once('#').map_or(line, |(code, _)| code).trim();
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if in_package && is_build_assignment(line) {
+            return Err(missing(format!(
+                "cannot verify configured build script in {}; generated source is not inspectable, so keep the simd gate closed",
+                manifest.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn is_build_assignment(line: &str) -> bool {
+    line.split_once('=')
+        .map(|(key, _)| matches!(key.trim(), "build" | "\"build\"" | "'build'"))
+        .unwrap_or(false)
+}
+
+fn previous_non_whitespace(bytes: &[u8], mut index: usize) -> Option<usize> {
+    while index > 0 {
+        index -= 1;
+        if !bytes[index].is_ascii_whitespace() {
+            return Some(index);
+        }
+    }
+    None
+}
+
+fn matching_parenthesis(bytes: &[u8], open: usize) -> R<usize> {
+    let mut depth = 0usize;
+    for (index, character) in bytes.iter().enumerate().skip(open) {
+        match character {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth
+                    .checked_sub(1)
+                    .ok_or_else(|| missing("unbalanced cfg selector invocation"))?;
+                if depth == 0 {
+                    return Ok(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    Err(missing("unterminated cfg selector invocation"))
+}
+
+fn literal_include_sources(
+    source: &str,
+    source_path: &std::path::Path,
+    canonical_root: &std::path::Path,
+) -> R<Vec<std::path::PathBuf>> {
+    let original = source;
+    let source = sanitize_rust_source(source)?;
+    let sanitized_bytes = source.as_bytes();
+    let original_bytes = original.as_bytes();
+    let mut included_sources = Vec::new();
+    for (start, _) in source.match_indices("include") {
+        let before_is_identifier = start
+            .checked_sub(1)
+            .and_then(|index| sanitized_bytes.get(index))
+            .is_some_and(|character| character.is_ascii_alphanumeric() || *character == b'_');
+        if before_is_identifier {
+            continue;
+        }
+        let Some(mut cursor) =
+            skip_rust_whitespace_and_comments(original_bytes, start + "include".len())
+        else {
+            continue;
+        };
+        if original_bytes.get(cursor) != Some(&b'!') {
+            continue;
+        }
+        cursor =
+            skip_rust_whitespace_and_comments(original_bytes, cursor + 1).ok_or_else(|| {
+                missing(format!("cannot inspect include! in {}", source_path.display()))
+            })?;
+        if original_bytes.get(cursor) != Some(&b'(') {
+            return Err(missing(format!("cannot inspect include! in {}", source_path.display())));
+        }
+        cursor = skip_rust_whitespace_and_comments(original_bytes, cursor + 1).ok_or_else(|| {
+            missing(format!(
+                "cannot inspect dynamically generated include! in {}; keep the simd gate closed",
+                source_path.display()
+            ))
+        })?;
+        if original_bytes.get(cursor) != Some(&b'"') {
+            return Err(missing(format!(
+                "cannot inspect dynamically generated include! in {}; keep the simd gate closed",
+                source_path.display()
+            )));
+        }
+        let literal_start = cursor + 1;
+        let literal_end = original_bytes
+            .get(literal_start..)
+            .and_then(|tail| tail.iter().position(|character| *character == b'"'))
+            .map(|offset| literal_start + offset)
+            .ok_or_else(|| missing(format!(
+                "cannot inspect dynamically generated include! in {}; keep the simd gate closed",
+                source_path.display()
+            )))?;
+        let literal = original.get(literal_start..literal_end).ok_or_else(|| {
+            missing(format!("cannot resolve include! in {}", source_path.display()))
+        })?;
+        if literal.contains('\\') {
+            return Err(missing(format!(
+                "cannot inspect escaped include! path in {}; keep the simd gate closed",
+                source_path.display()
+            )));
+        }
+        let parent = source_path.parent().ok_or_else(|| {
+            missing(format!("cannot resolve include! in {}", source_path.display()))
+        })?;
+        let candidate = parent.join(literal);
+        let metadata = std::fs::symlink_metadata(&candidate)?;
+        if metadata.file_type().is_symlink() {
+            return Err(missing(format!(
+                "cannot verify include! source through symlink {}; keep the simd gate closed",
+                candidate.display()
+            )));
+        }
+        if !metadata.is_file() {
+            return Err(missing(format!(
+                "cannot verify non-regular include! source {}; keep the simd gate closed",
+                candidate.display()
+            )));
+        }
+        let included = std::fs::canonicalize(candidate)?;
+        if !included.starts_with(canonical_root) {
+            return Err(missing(format!(
+                "include! source {} escapes the checked-in package root {}; keep the simd gate closed",
+                included.display(),
+                canonical_root.display()
+            )));
+        }
+        included_sources.push(included);
+    }
+    Ok(included_sources)
+}
+
+fn sanitize_rust_source(source: &str) -> R<String> {
+    let bytes = source.as_bytes();
+    let mut sanitized = source.as_bytes().to_vec();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes.get(index..index + 2) == Some(b"//") {
+            let start = index;
+            index += 2;
+            while bytes.get(index).is_some_and(|character| *character != b'\n') {
+                index += 1;
+            }
+            for character in &mut sanitized[start..index] {
+                if *character != b'\n' {
+                    *character = b' ';
+                }
+            }
+        } else if bytes.get(index..index + 2) == Some(b"/*") {
+            let start = index;
+            index += 2;
+            let mut depth = 1usize;
+            while depth > 0 {
+                if bytes.get(index..index + 2) == Some(b"/*") {
+                    depth += 1;
+                    index += 2;
+                } else if bytes.get(index..index + 2) == Some(b"*/") {
+                    depth -= 1;
+                    index += 2;
+                } else if bytes.get(index).is_some() {
+                    index += 1;
+                } else {
+                    return Err(missing("unterminated Rust block comment"));
+                }
+            }
+            for character in &mut sanitized[start..index] {
+                if *character != b'\n' {
+                    *character = b' ';
+                }
+            }
+        } else if bytes[index] == b'"'
+            || (bytes[index] == b'\''
+                && (bytes.get(index + 2) == Some(&b'\'') || bytes.get(index + 1) == Some(&b'\\')))
+        {
+            let quote = bytes[index];
+            let start = index;
+            index += 1;
+            let mut escaped = false;
+            let mut closed = false;
+            while let Some(&character) = bytes.get(index) {
+                index += 1;
+                if escaped {
+                    escaped = false;
+                } else if character == b'\\' {
+                    escaped = true;
+                } else if character == quote {
+                    closed = true;
+                    break;
+                }
+            }
+            if !closed {
+                return Err(missing("unterminated Rust string or character literal"));
+            }
+            let is_simd = quote == b'"'
+                && ordinary_string_is_simd(
+                    source
+                        .get(start + 1..index - 1)
+                        .ok_or_else(|| missing("invalid Rust string literal boundaries"))?,
+                )?;
+            if !is_simd {
+                for character in &mut sanitized[start..index] {
+                    *character = b' ';
+                }
+            }
+        } else if bytes[index] == b'r'
+            && bytes
+                .get(index + 1)
+                .is_some_and(|character| *character == b'#' || *character == b'"')
+        {
+            let start = index;
+            index += 1;
+            let mut hashes = 0usize;
+            while bytes.get(index) == Some(&b'#') {
+                hashes += 1;
+                index += 1;
+            }
+            if bytes.get(index) != Some(&b'"') {
+                continue;
+            }
+            index += 1;
+            let content_start = index;
+            let mut content_end = None;
+            while index < bytes.len() {
+                if bytes[index] == b'"'
+                    && (0..hashes).all(|offset| bytes.get(index + 1 + offset) == Some(&b'#'))
+                {
+                    content_end = Some(index);
+                    index += 1 + hashes;
+                    break;
+                }
+                index += 1;
+            }
+            let content_end = content_end.ok_or_else(|| missing("unterminated Rust raw string"))?;
+            if &source[content_start..content_end] != "simd" {
+                for character in &mut sanitized[start..index] {
+                    *character = b' ';
+                }
+            }
+        } else {
+            index += 1;
+        }
+    }
+    String::from_utf8(sanitized)
+        .map_err(|error| missing(format!("Rust source was not UTF-8: {error}")))
+}
+
+fn is_simd_string_literal(bytes: &[u8], start: usize) -> R<bool> {
+    if bytes.get(start) == Some(&b'"') {
+        let mut cursor = start + 1;
+        let mut escaped = false;
+        while let Some(&character) = bytes.get(cursor) {
+            cursor += 1;
+            if escaped {
+                escaped = false;
+            } else if character == b'\\' {
+                escaped = true;
+            } else if character == b'"' {
+                let contents = std::str::from_utf8(
+                    bytes
+                        .get(start + 1..cursor - 1)
+                        .ok_or_else(|| missing("invalid Rust string literal boundaries"))?,
+                )?;
+                return ordinary_string_is_simd(contents);
+            }
+        }
+        return Err(missing("unterminated Rust string literal"));
+    }
+    if bytes.get(start) != Some(&b'r') {
+        return Ok(false);
+    }
+
+    let mut cursor = start + 1;
+    let mut hashes = 0usize;
+    while bytes.get(cursor) == Some(&b'#') {
+        hashes += 1;
+        cursor += 1;
+    }
+    if bytes.get(cursor) != Some(&b'"') {
+        return Ok(false);
+    }
+    cursor += 1;
+    if bytes.get(cursor..cursor + 4) != Some(b"simd") {
+        return Ok(false);
+    }
+    cursor += 4;
+    if bytes.get(cursor) != Some(&b'"') {
+        return Ok(false);
+    }
+    cursor += 1;
+    Ok((0..hashes).all(|_| {
+        let matches = bytes.get(cursor) == Some(&b'#');
+        cursor += usize::from(matches);
+        matches
+    }))
+}
+
+fn ordinary_string_is_simd(contents: &str) -> R<bool> {
+    let mut decoded = String::new();
+    let mut characters = contents.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character != '\\' {
+            decoded.push(character);
+            continue;
+        }
+        let escape = characters.next().ok_or_else(|| missing("unterminated Rust string escape"))?;
+        match escape {
+            '"' | '\\' | '\'' => decoded.push(escape),
+            'n' => decoded.push('\n'),
+            'r' => decoded.push('\r'),
+            't' => decoded.push('\t'),
+            '0' => decoded.push('\0'),
+            '\n' => {
+                while characters.peek().is_some_and(|character| character.is_whitespace()) {
+                    characters.next();
+                }
+            }
+            '\r' => {
+                if characters.peek() == Some(&'\n') {
+                    characters.next();
+                }
+                while characters.peek().is_some_and(|character| character.is_whitespace()) {
+                    characters.next();
+                }
+            }
+            'x' => {
+                let high = characters
+                    .next()
+                    .and_then(hex_digit)
+                    .ok_or_else(|| missing("invalid Rust hex string escape"))?;
+                let low = characters
+                    .next()
+                    .and_then(hex_digit)
+                    .ok_or_else(|| missing("invalid Rust hex string escape"))?;
+                decoded.push(char::from((high << 4) | low));
+            }
+            'u' => {
+                if characters.next() != Some('{') {
+                    return Err(missing("invalid Rust unicode string escape"));
+                }
+                let mut value = 0u32;
+                let mut digits = 0usize;
+                loop {
+                    let next = characters
+                        .next()
+                        .ok_or_else(|| missing("unterminated Rust unicode string escape"))?;
+                    if next == '}' {
+                        break;
+                    }
+                    let digit = hex_digit(next)
+                        .ok_or_else(|| missing("invalid Rust unicode string escape"))?;
+                    digits += 1;
+                    value = value
+                        .checked_mul(16)
+                        .and_then(|value| value.checked_add(u32::from(digit)))
+                        .ok_or_else(|| missing("overflowing Rust unicode string escape"))?;
+                }
+                if digits == 0 {
+                    return Err(missing("empty Rust unicode string escape"));
+                }
+                decoded.push(
+                    char::from_u32(value)
+                        .ok_or_else(|| missing("invalid Rust unicode string escape"))?,
+                );
+            }
+            _ => return Err(missing(format!("unsupported Rust string escape \\{escape}"))),
+        }
+    }
+    Ok(decoded == "simd")
+}
+
+fn hex_digit(character: char) -> Option<u8> {
+    character.to_digit(16).and_then(|digit| u8::try_from(digit).ok())
+}
+
+fn skip_rust_whitespace_and_comments(bytes: &[u8], mut index: usize) -> Option<usize> {
+    loop {
+        while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
+            index += 1;
+        }
+        if bytes.get(index..index + 2) == Some(b"//") {
+            index += 2;
+            while bytes.get(index).is_some_and(|character| *character != b'\n') {
+                index += 1;
+            }
+            continue;
+        }
+        if bytes.get(index..index + 2) != Some(b"/*") {
+            return Some(index);
+        }
+        index += 2;
+        let mut depth = 1usize;
+        while depth > 0 {
+            if bytes.get(index..index + 2) == Some(b"/*") {
+                depth += 1;
+                index += 2;
+            } else if bytes.get(index..index + 2) == Some(b"*/") {
+                depth -= 1;
+                index += 2;
+            } else if bytes.get(index).is_some() {
+                index += 1;
+            } else {
+                return None;
+            }
+        }
+    }
+}
+
+fn validate_simd_readme_contract(readme: &str) -> R {
+    let simd_row = readme
+        .lines()
+        .find(|line| line.starts_with("| Cargo feature `simd` |"))
+        .ok_or_else(|| missing("README lost the Cargo feature simd configuration row"))?;
+    for required in [
+        "**Deprecated**",
+        "Compatibility no-op",
+        "no `simd` selector was found",
+        "checked-in Rust sources or literal `include!` output",
+        "Top-level excluded package directories are not traversed as source roots, while literal `include!` output from scanned sources is inspected",
+        "Symlinks, build scripts, and dynamic or out-of-tree includes are rejected closed",
+        "No SIMD performance claim is made",
+        "#8749",
+    ] {
+        if !simd_row.contains(required) {
+            return Err(missing(format!(
+                "README simd row lost required deprecation wording: {required}"
+            )));
+        }
+    }
+    for line in readme.to_ascii_lowercase().lines() {
+        if !line.contains("simd") {
+            continue;
+        }
+        for forbidden in [
+            "enabled",
+            "active",
+            "available",
+            "accelerat",
+            "vectorized",
+            "optimized",
+            "optimization",
+            "simd implementation",
+            "simd processing",
+            "simd scanner",
+            "simd capability",
+            "simd backend",
+            "simd support",
+            "simd path",
+            "simd is used",
+            "uses simd",
+            "simd acceleration",
+        ] {
+            if line
+                .match_indices(forbidden)
+                .any(|(match_start, _)| !simd_claim_is_negated(&line[..match_start]))
+            {
+                return Err(missing(format!(
+                    "README simd contract contains a contradictory capability claim: {forbidden}"
+                )));
+            }
+        }
+        let residual = simd_performance_claim_residual(line);
+        if residual.contains("simd") && residual.contains("performance") {
+            return Err(missing(format!(
+                "README simd contract contains a contradictory performance claim: {line}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn simd_performance_claim_residual(line: &str) -> String {
+    let mut residual = line.to_ascii_lowercase();
+    for disclaimer in [
+        "no simd performance claim is made",
+        "no simd performance claims are made",
+        "no claim about simd performance is made",
+        "no claim of simd performance is made",
+        "does not make a simd performance claim",
+        "doesn't make a simd performance claim",
+    ] {
+        residual = residual.replace(disclaimer, " ");
+    }
+    residual
+}
+
+fn simd_claim_is_negated(prefix: &str) -> bool {
+    let clause = prefix.rsplit(['.', ';', '!', '?', '|']).next().unwrap_or(prefix);
+    let mut words = clause
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '\'')
+        .filter(|word| !word.is_empty())
+        .rev();
+    let Some(last) = words.next() else {
+        return false;
+    };
+    if matches!(last, "no" | "not" | "without" | "never" | "isn't" | "doesn't") {
+        return true;
+    }
+    matches!(last, "use" | "uses" | "used" | "using")
+        && matches!(words.next(), Some("not" | "without" | "never" | "doesn't"))
+}
+
+#[test]
+fn simd_feature_stays_declared_empty_and_unreferenced() -> R {
+    // The `simd` feature is a deprecated compatibility no-op (since 0.17.0,
+    // removal owned by #8749). This gate fails if anyone gives the feature a
+    // dependency list, selects it from code, or drops the no-op declaration —
+    // which would silently turn the advertised feature into a real claim. The
+    // checked-in Rust source scan is bounded, and build scripts are rejected
+    // closed because their generated output is not statically inspectable here.
+    let manifest = include_str!("../Cargo.toml");
+    let features_block = manifest
+        .split("[features]")
+        .nth(1)
+        .ok_or_else(|| missing("Cargo.toml lost its [features] table"))?;
+    let simd_row =
+        features_block.lines().map(str::trim).find(|line| line.starts_with("simd ")).ok_or_else(
+            || missing("Cargo.toml no longer declares the compatibility simd feature"),
+        )?;
+    assert_eq!(
+        simd_row, "simd = []",
+        "the deprecated simd feature must stay an empty dependency-free no-op until #8749 removes it"
+    );
+
+    let readme = include_str!("../README.md");
+    validate_simd_readme_contract(readme)?;
+
+    let package_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let offenders =
+        simd_selection_sources(package_root, &["tests", "examples", "benches", "target"])?;
+    assert!(
+        offenders.is_empty(),
+        "no production, generated, or build source may select the compatibility simd feature, but these do: {offenders:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn simd_gate_detects_selection_in_build_surface_fixture() -> R {
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("simd_feature_selection")
+        .join("generated");
+    let offenders = simd_selection_sources(&fixture_root, &[])?;
+    assert_eq!(
+        offenders,
+        vec![fixture_root.join("selector.rs")],
+        "the negative control must detect simd selection in a generated surface outside src"
+    );
+    Ok(())
+}
+
+#[test]
+fn simd_gate_does_not_hide_nested_excluded_directory_sources() -> R {
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("simd_feature_selection");
+    let offenders = simd_selection_sources(&fixture_root, &["target"])?;
+    assert!(
+        offenders.contains(&fixture_root.join("generated").join("selector.rs")),
+        "the generated fixture must remain a detected simd selector"
+    );
+    assert!(
+        offenders.contains(&fixture_root.join("nested").join("target").join("hidden.rs")),
+        "a nested directory named target must not hide a checked-in Rust source"
+    );
+    Ok(())
+}
+
+#[test]
+fn simd_gate_inspects_literal_non_rust_include_fixture() -> R {
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("simd_feature_includes");
+    let offenders = simd_selection_sources(&fixture_root, &[])?;
+    assert!(
+        offenders.contains(&std::fs::canonicalize(fixture_root.join("payload.inc"))?),
+        "literal non-Rust include output must be inspected for simd selectors"
+    );
+    Ok(())
+}
+
+#[test]
+fn simd_gate_rejects_literal_include_under_excluded_directory() -> R {
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("simd_feature_includes");
+    let offenders = simd_selection_sources(&fixture_root, &["excluded"])?;
+    assert!(
+        offenders.contains(&std::fs::canonicalize(fixture_root.join("excluded/selector.inc"))?),
+        "literal include! output under an excluded directory must still be inspected"
+    );
+    Ok(())
+}
+
+#[test]
+fn simd_gate_detects_raw_string_feature_selection() -> R {
+    assert!(contains_simd_selection(r##"#[cfg(feature = r#"simd"#)]"##)?);
+    assert!(contains_simd_selection(r###"cfg!(feature = r##"simd"##)"###)?);
+    assert!(contains_simd_selection(r##"#[cfg_attr(feature = "simd", allow(dead_code))]"##)?);
+    assert!(contains_simd_selection(r##"#[cfg(feature = "\x73imd")]"##)?);
+    assert!(!contains_simd_selection(r#"let feature = "simd";"#)?);
+    assert!(!contains_simd_selection(r#"const FEATURE: &str = "simd";"#)?);
+    assert!(!contains_simd_selection("// cfg(feature = \"simd\")")?);
+    assert!(!contains_simd_selection("const TEXT: &str = \"cfg(feature = \\\"simd\\\")\";")?);
+    Ok(())
+}
+
+#[test]
+fn simd_gate_detects_inner_attributes_and_ignores_cfg_attr_calls() -> R {
+    assert!(contains_simd_selection("#![cfg(feature = \"simd\")]")?);
+    assert!(contains_simd_selection("#![cfg_attr(feature = \"simd\", allow(dead_code))]")?);
+    assert!(!contains_simd_selection("cfg(feature = \"simd\")")?);
+    assert!(!contains_simd_selection("fn cfg_attr(feature: &str) {}\ncfg_attr(\"simd\");")?);
+    assert!(!contains_simd_selection(
+        "macro_rules! cfg_attr { ($($item:tt)*) => {} }\ncfg_attr!(feature = \"simd\");"
+    )?);
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("simd_feature_inner_attribute");
+    let offenders = simd_selection_sources(&fixture_root, &[])?;
+    assert_eq!(offenders, vec![fixture_root.join("selector.rs")]);
+    Ok(())
+}
+
+#[test]
+fn simd_gate_rejects_uninspectable_out_dir_generation_fixture() -> R {
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("simd_feature_generation");
+    let build_script = std::fs::read_to_string(fixture_root.join("build.rs"))?;
+    assert!(
+        build_script.contains("concat!(\"OUT\", \"_DIR\")"),
+        "fixture must exercise a dynamically constructed OUT_DIR key"
+    );
+    let error = simd_selection_sources(&fixture_root, &[])
+        .err()
+        .ok_or_else(|| missing("OUT_DIR generation fixture unexpectedly passed the simd gate"))?;
+    assert!(
+        error.to_string().contains("OUT_DIR"),
+        "OUT_DIR generation must remain an explicit uninspectable gate failure: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn simd_gate_rejects_uninspectable_custom_build_script_fixture() -> R {
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("simd_feature_custom_build");
+    let build_script = std::fs::read_to_string(fixture_root.join("custom_build.rs"))?;
+    assert!(build_script.contains("CARGO_FEATURE_"));
+    assert!(!build_script.contains("CARGO_FEATURE_SIMD"));
+    let error = simd_selection_sources(&fixture_root, &[])
+        .err()
+        .ok_or_else(|| missing("custom build-script feature environment unexpectedly passed"))?;
+    assert!(
+        error.to_string().contains("configured build script"),
+        "custom build-script feature handling must fail closed beyond exact text matches: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn quoted_build_manifest_key_is_fail_closed_and_unrelated_keys_are_allowed() -> R {
+    assert!(is_build_assignment("build = \"custom_build.rs\""));
+    assert!(is_build_assignment("\"build\" = \"custom_build.rs\""));
+    assert!(is_build_assignment("'build' = \"custom_build.rs\""));
+    assert!(!is_build_assignment("builder = \"custom_build.rs\""));
+    assert!(!is_build_assignment("\"build-script\" = \"custom_build.rs\""));
+    Ok(())
+}
+
+#[test]
+fn simd_readme_guard_rejects_contradictory_capability_claim() -> R {
+    let readme = include_str!("../README.md");
+    let contradictory = format!("{readme}\nThe lexer uses SIMD acceleration.\n");
+    let error = validate_simd_readme_contract(&contradictory)
+        .err()
+        .ok_or_else(|| missing("contradictory README SIMD wording unexpectedly passed"))?;
+    assert!(
+        error.to_string().contains("accelerat"),
+        "README contradiction must identify the capability claim: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn simd_readme_guard_rejects_mixed_negation_capability_claim() -> R {
+    let readme = include_str!("../README.md");
+    let contradictory = format!("{readme}\nNo claim; lexer uses SIMD acceleration.\n");
+    let error = validate_simd_readme_contract(&contradictory)
+        .err()
+        .ok_or_else(|| missing("mixed README SIMD wording unexpectedly passed"))?;
+    assert!(
+        error.to_string().contains("accelerat"),
+        "mixed-clause contradiction must identify the capability claim: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn simd_readme_guard_allows_negated_implementation_claim() -> R {
+    let readme = include_str!("../README.md");
+    let truthful = format!("{readme}\nNo SIMD implementation is used.\n");
+    validate_simd_readme_contract(&truthful)?;
+    Ok(())
+}
+
+#[test]
+fn simd_readme_guard_rejects_simd_backend_claim() -> R {
+    let readme = include_str!("../README.md");
+    let contradictory = format!("{readme}\nThe lexer uses a SIMD backend.\n");
+    let error = validate_simd_readme_contract(&contradictory)
+        .err()
+        .ok_or_else(|| missing("contradictory README SIMD backend wording unexpectedly passed"))?;
+    assert!(
+        error.to_string().contains("simd backend"),
+        "README contradiction must identify the backend claim: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn simd_readme_guard_rejects_contradictory_performance_claim() -> R {
+    let readme = include_str!("../README.md");
+    let contradictory = format!(
+        "{readme}\nNo SIMD performance claim is made; the lexer provides better SIMD performance.\n"
+    );
+    let error = validate_simd_readme_contract(&contradictory).err().ok_or_else(|| {
+        missing("contradictory README SIMD performance wording unexpectedly passed")
+    })?;
+    assert!(
+        error.to_string().contains("performance"),
+        "README contradiction must identify the performance claim: {error}"
+    );
+    validate_simd_readme_contract(readme)?;
+    Ok(())
+}
+
+#[test]
+fn simd_readme_guard_allows_repeated_truthful_performance_disclaimers() -> R {
+    let readme = include_str!("../README.md");
+    let truthful = format!(
+        "{readme}\nNo SIMD performance claim is made; no SIMD performance claim is made.\n"
+    );
+    validate_simd_readme_contract(&truthful)?;
+    Ok(())
+}
+
+#[test]
+fn simd_readme_guard_allows_unrelated_capability_wording() -> R {
+    let readme = include_str!("../README.md");
+    let unrelated = format!("{readme}\nInterpolation is enabled by default.\n");
+    validate_simd_readme_contract(&unrelated)?;
+    Ok(())
 }

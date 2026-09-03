@@ -47,8 +47,47 @@ pub enum BackendError {
     #[error("debug backend resource limit exceeded: {0}")]
     ResourceLimit(String),
     /// The peer/engine reported an error for a request.
+    ///
+    /// Retained for the in-process native backend, whose reachable
+    /// `success: false` sites are adapter-side faults. The external-peer path
+    /// uses [`BackendError::PeerReported`] instead (#8758).
     #[error("debug backend reported an error: {0}")]
     Engine(String),
+    /// A negotiated external debugger peer answered `success: false` (#8758).
+    ///
+    /// This records a *reported outcome*, not evidence that the adapter
+    /// violated an internal invariant. On this path a well-formed
+    /// `success: false` is the peer using the protocol as designed, and an
+    /// ordinary debuggee failure — a `die`, an undefined subroutine, a runtime
+    /// error — is reachable through `evaluate`, `stackTrace`, `scopes`, and
+    /// `variables`. Calling that an adapter bug is what this variant exists to
+    /// stop.
+    ///
+    /// **What this variant deliberately does not claim.** The bucket is
+    /// heterogeneous: it also holds peer-side refusals such as `no active
+    /// suspension` or `unknown frame id`, which are closer to a client or
+    /// session-state error than to a debuggee outcome. [`PeerResponse`] carries
+    /// only `success`, `command`, `message`, and `request_seq` — no cause or
+    /// code field — so the responder's cause is genuinely absent at this
+    /// boundary and is *not* recovered by reading `message`, which would make
+    /// classification depend on peer-authored free text. Separating those
+    /// populations needs a cause on the peer wire (#14582); until then this
+    /// boundary asserts only the distinction the evidence supports, which is
+    /// adapter fault versus reported outcome.
+    ///
+    /// `Display` is unchanged from [`BackendError::Engine`]:
+    /// [`peer_bridge::DapPeerBridge`] renders it straight onto the DAP wire, so
+    /// the editor-visible text must not drift. `command` is a structured field
+    /// for receipts and logs only.
+    ///
+    /// [`PeerResponse`]: crate::peer_protocol::PeerResponse
+    #[error("debug backend reported an error: {message}")]
+    PeerReported {
+        /// The command the peer answered.
+        command: String,
+        /// The reason the peer reported.
+        message: String,
+    },
     /// The operation is not supported by this backend/negotiated capabilities.
     #[error("operation not supported by this backend: {0}")]
     Unsupported(String),
@@ -79,6 +118,11 @@ impl perl_parser_core::ErrorClass for BackendError {
             // include a debuggee die), but the error itself is an adapter-
             // operational outcome, not a debuggee-termination signal (#4979).
             Self::Engine(_) => perl_parser_core::ErrorCategory::Bug,
+            // A peer answered `success: false`. This is what the peer reported,
+            // not a failed invariant of ours, so it is never `Bug`. The peer
+            // wire carries no cause, so no finer category is claimed and the
+            // reason text is never inspected to invent one (#8758, #14582).
+            Self::PeerReported { .. } => perl_parser_core::ErrorCategory::Advisory,
             // The requested operation isn't supported — usage/configuration.
             Self::Unsupported(_) => perl_parser_core::ErrorCategory::UserError,
             // Serialization/deserialization — the other side violated format.
@@ -159,7 +203,9 @@ pub struct SetFunctionBreakpointsParams {
 /// Outcome of a continue.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContinueResult {
-    /// Whether all threads resumed (Perl is single-threaded, usually `true`).
+    /// Whether every exposed context resumed. This is selected-backend
+    /// behavior for the one synthetic main execution context, not a Perl
+    /// language fact; runtime context discovery is not proven (#8294).
     pub all_threads_continued: bool,
 }
 

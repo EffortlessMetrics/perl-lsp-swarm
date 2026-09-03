@@ -5,6 +5,12 @@
 
 use perl_lexer::{Checkpointable, LexerConfig, PerlLexer, StringPart, Token, TokenType};
 
+type R<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+fn missing(message: impl Into<String>) -> Box<dyn std::error::Error> {
+    std::io::Error::other(message.into()).into()
+}
+
 fn config(interpolation: bool) -> LexerConfig {
     LexerConfig { parse_interpolation: interpolation, ..LexerConfig::default() }
 }
@@ -28,31 +34,31 @@ fn heredoc_tokens_with(input: &str, interpolation: bool) -> Vec<Token> {
     collect(&mut PerlLexer::with_config_and_body_tokens(input, config(interpolation)))
 }
 
-fn quote_double_parts(input: &str, interpolation: bool) -> Vec<StringPart> {
+fn quote_double_parts(input: &str, interpolation: bool) -> R<Vec<StringPart>> {
     tokens_with(input, interpolation)
         .iter()
         .find_map(|token| match &token.token_type {
             TokenType::QuoteDouble(parts) => Some(parts.clone()),
             _ => None,
         })
-        .unwrap_or_else(|| panic!("no QuoteDouble token for {input:?}"))
+        .ok_or_else(|| missing(format!("no QuoteDouble token for {input:?}")))
 }
 
-fn interpolated_string_parts(input: &str) -> Vec<StringPart> {
+fn interpolated_string_parts(input: &str) -> R<Vec<StringPart>> {
     tokens_with(input, true)
         .iter()
         .find_map(|token| match &token.token_type {
             TokenType::InterpolatedString(parts) => Some(parts.clone()),
             _ => None,
         })
-        .unwrap_or_else(|| panic!("no InterpolatedString token for {input:?}"))
+        .ok_or_else(|| missing(format!("no InterpolatedString token for {input:?}")))
 }
 
 // --- Surface dispositions -------------------------------------------------
 
 #[test]
-fn qq_enabled_segments_the_body_during_the_scan() {
-    let parts = quote_double_parts("qq($name and @list!)", true);
+fn qq_enabled_segments_the_body_during_the_scan() -> R {
+    let parts = quote_double_parts("qq($name and @list!)", true)?;
     assert_eq!(
         parts,
         vec![
@@ -62,18 +68,20 @@ fn qq_enabled_segments_the_body_during_the_scan() {
             StringPart::Literal("!".into()),
         ]
     );
+    Ok(())
 }
 
 #[test]
-fn qq_disabled_is_uniformly_opaque() {
+fn qq_disabled_is_uniformly_opaque() -> R {
     for input in ["qq($name and @list!)", "qq/$name/", "qq {$x}"] {
-        let parts = quote_double_parts(input, false);
+        let parts = quote_double_parts(input, false)?;
         assert_eq!(
             parts,
             vec![StringPart::Literal(expected_opaque_body(input).into())],
             "disabled qq must keep one opaque Literal part for {input:?}"
         );
     }
+    Ok(())
 }
 
 fn expected_opaque_body(input: &str) -> &'static str {
@@ -86,15 +94,16 @@ fn expected_opaque_body(input: &str) -> &'static str {
 }
 
 #[test]
-fn qq_delimiter_variants_all_segment_when_enabled() {
+fn qq_delimiter_variants_all_segment_when_enabled() -> R {
     for input in ["qq($v)", "qq{$v}", "qq[$v]", "qq<$v>", "qq/$v/", "qq!$v!", "qq,$v,", "qq|$v|"] {
-        let parts = quote_double_parts(input, true);
+        let parts = quote_double_parts(input, true)?;
         assert_eq!(
             parts,
             vec![StringPart::Variable("$v".into())],
             "delimiter variant {input:?} must segment the island"
         );
     }
+    Ok(())
 }
 
 #[test]
@@ -134,7 +143,7 @@ fn qx_and_backticks_are_the_intentional_opaque_boundary() {
 // --- One policy: the qq mirror matches the ordinary-string scanner --------
 
 #[test]
-fn qq_parts_match_the_ordinary_string_scanner_over_the_island_matrix() {
+fn qq_parts_match_the_ordinary_string_scanner_over_the_island_matrix() -> R {
     let corpus = [
         "$name",
         "@list",
@@ -157,13 +166,14 @@ fn qq_parts_match_the_ordinary_string_scanner_over_the_island_matrix() {
         "a $b c",
     ];
     for body in corpus {
-        let ordinary = interpolated_string_parts(&format!("\"{body}\""));
-        let qq = quote_double_parts(&format!("qq({body})"), true);
+        let ordinary = interpolated_string_parts(&format!("\"{body}\""))?;
+        let qq = quote_double_parts(&format!("qq({body})"), true)?;
         assert_eq!(
             ordinary, qq,
             "island policy diverged between \"...\" and qq(...) for body {body:?}"
         );
     }
+    Ok(())
 }
 
 #[test]
@@ -191,19 +201,20 @@ fn unclosed_qq_still_recovers_into_the_error_token() {
 }
 
 #[test]
-fn paired_qq_delimiters_are_not_consumed_as_interpolation_tail_boundaries() {
+fn paired_qq_delimiters_are_not_consumed_as_interpolation_tail_boundaries() -> R {
     assert_eq!(
-        quote_double_parts("qq{${foo}}", true),
+        quote_double_parts("qq{${foo}}", true)?,
         vec![StringPart::Expression("${foo}".into())],
     );
     assert_eq!(
-        quote_double_parts("qq[$a[0]]", true),
+        quote_double_parts("qq[$a[0]]", true)?,
         vec![StringPart::Variable("$a".into()), StringPart::ArraySlice("[0]".into())],
     );
     assert_eq!(
-        quote_double_parts("qq($obj->())", true),
+        quote_double_parts("qq($obj->())", true)?,
         vec![StringPart::Variable("$obj".into()), StringPart::MethodCall("->()".into())],
     );
+    Ok(())
 }
 
 // --- Heredoc dispositions --------------------------------------------------
@@ -216,7 +227,7 @@ fn single_quoted_heredoc_source(body: &str) -> String {
     format!("my $text = <<'END';\n{body}\nEND\n")
 }
 
-fn heredoc_body_kind(input: &str, interpolation: bool) -> TokenType {
+fn heredoc_body_kind(input: &str, interpolation: bool) -> R<TokenType> {
     heredoc_tokens_with(input, interpolation)
         .into_iter()
         .find_map(|token| match token.token_type {
@@ -225,13 +236,13 @@ fn heredoc_body_kind(input: &str, interpolation: bool) -> TokenType {
             }
             _ => None,
         })
-        .unwrap_or_else(|| panic!("no heredoc body token for {input:?}"))
+        .ok_or_else(|| missing(format!("no heredoc body token for {input:?}")))
 }
 
 #[test]
-fn interpolating_heredoc_enabled_segments_the_body() {
+fn interpolating_heredoc_enabled_segments_the_body() -> R {
     let source = heredoc_source("value $name!");
-    let kind = heredoc_body_kind(&source, true);
+    let kind = heredoc_body_kind(&source, true)?;
     match kind {
         TokenType::InterpolatedHeredocBody(parts) => assert_eq!(
             parts,
@@ -241,53 +252,59 @@ fn interpolating_heredoc_enabled_segments_the_body() {
                 StringPart::Literal("!\n".into()),
             ]
         ),
-        other => panic!("expected interpolated heredoc body, got {other:?}"),
+        other => return Err(missing(format!("expected interpolated heredoc body, got {other:?}"))),
     }
+    Ok(())
 }
 
 #[test]
-fn interpolating_heredoc_disabled_is_uniformly_opaque() {
+fn interpolating_heredoc_disabled_is_uniformly_opaque() -> R {
     let source = heredoc_source("value $name!");
-    match heredoc_body_kind(&source, false) {
+    match heredoc_body_kind(&source, false)? {
         TokenType::InterpolatedHeredocBody(parts) => assert_eq!(
             parts,
             vec![StringPart::Literal("value $name!\n".into())],
             "disabled interpolating heredocs keep one opaque Literal part"
         ),
-        other => panic!("expected interpolated heredoc body, got {other:?}"),
+        other => return Err(missing(format!("expected interpolated heredoc body, got {other:?}"))),
     }
+    Ok(())
 }
 
 #[test]
-fn disabled_interpolating_heredocs_keep_one_complete_literal_for_empty_and_escaped_bodies() {
+fn disabled_interpolating_heredocs_keep_one_complete_literal_for_empty_and_escaped_bodies() -> R {
     for (body, expected) in [("", "\n"), (r"a\$name", "a\\$name\n")] {
         let source = heredoc_source(body);
-        match heredoc_body_kind(&source, false) {
+        match heredoc_body_kind(&source, false)? {
             TokenType::InterpolatedHeredocBody(parts) => {
                 assert_eq!(parts, vec![StringPart::Literal(expected.into())], "{body:?}");
             }
-            other => panic!("expected interpolated heredoc body, got {other:?}"),
+            other => {
+                return Err(missing(format!("expected interpolated heredoc body, got {other:?}")));
+            }
         }
     }
+    Ok(())
 }
 
 #[test]
-fn interpolating_heredoc_body_matches_the_ordinary_scanner_per_line() {
+fn interpolating_heredoc_body_matches_the_ordinary_scanner_per_line() -> R {
     let body = "head $v tail";
     let source = heredoc_source(body);
-    let ordinary = interpolated_string_parts(&format!("\"{body}\n\""));
-    match heredoc_body_kind(&source, true) {
+    let ordinary = interpolated_string_parts(&format!("\"{body}\n\""))?;
+    match heredoc_body_kind(&source, true)? {
         TokenType::InterpolatedHeredocBody(parts) => {
             assert_eq!(parts, ordinary, "island policy must be one policy");
         }
-        other => panic!("expected interpolated heredoc body, got {other:?}"),
+        other => return Err(missing(format!("expected interpolated heredoc body, got {other:?}"))),
     }
+    Ok(())
 }
 
 #[test]
-fn interpolating_heredoc_segments_across_multiple_body_lines() {
+fn interpolating_heredoc_segments_across_multiple_body_lines() -> R {
     let source = heredoc_source("line1 $v\nline2");
-    match heredoc_body_kind(&source, true) {
+    match heredoc_body_kind(&source, true)? {
         TokenType::InterpolatedHeredocBody(parts) => assert_eq!(
             parts,
             vec![
@@ -296,14 +313,15 @@ fn interpolating_heredoc_segments_across_multiple_body_lines() {
                 StringPart::Literal("\nline2\n".into()),
             ]
         ),
-        other => panic!("expected interpolated heredoc body, got {other:?}"),
+        other => return Err(missing(format!("expected interpolated heredoc body, got {other:?}"))),
     }
+    Ok(())
 }
 
 #[test]
-fn interpolating_heredoc_allows_multiline_interpolation_islands() {
+fn interpolating_heredoc_allows_multiline_interpolation_islands() -> R {
     let source = heredoc_source("before ${\n  $name\n} after");
-    match heredoc_body_kind(&source, true) {
+    match heredoc_body_kind(&source, true)? {
         TokenType::InterpolatedHeredocBody(parts) => assert_eq!(
             parts,
             vec![
@@ -312,12 +330,13 @@ fn interpolating_heredoc_allows_multiline_interpolation_islands() {
                 StringPart::Literal(" after\n".into()),
             ]
         ),
-        other => panic!("expected interpolated heredoc body, got {other:?}"),
+        other => return Err(missing(format!("expected interpolated heredoc body, got {other:?}"))),
     }
+    Ok(())
 }
 
 #[test]
-fn unclosed_heredoc_interpolation_stays_within_body_boundary() {
+fn unclosed_heredoc_interpolation_stays_within_body_boundary() -> R {
     let source = "my $text = <<\"END\";\nbefore ${\n$name\nEND\nprint $text;\n";
     let tokens = heredoc_tokens_with(source, true);
     let body = tokens
@@ -326,19 +345,20 @@ fn unclosed_heredoc_interpolation_stays_within_body_boundary() {
             TokenType::InterpolatedHeredocBody(parts) => Some(parts),
             _ => None,
         })
-        .expect("interpolated heredoc body");
+        .ok_or_else(|| missing("interpolated heredoc body"))?;
     assert_eq!(
         body,
         &vec![StringPart::Literal("before ".into()), StringPart::Expression("${\n$name\n".into()),]
     );
     assert!(body.iter().all(|part| !format!("{part:?}").contains("END")));
     assert!(tokens.iter().any(|token| token.text == "print".into()));
+    Ok(())
 }
 
 #[test]
-fn indented_interpolating_heredoc_segments_too() {
+fn indented_interpolating_heredoc_segments_too() -> R {
     let source = String::from("my $text = <<~\"END\";\n    value $v\n    END\n");
-    match heredoc_body_kind(&source, true) {
+    match heredoc_body_kind(&source, true)? {
         TokenType::InterpolatedHeredocBody(parts) => assert_eq!(
             parts,
             vec![
@@ -347,21 +367,22 @@ fn indented_interpolating_heredoc_segments_too() {
                 StringPart::Literal("\n".into())
             ]
         ),
-        other => panic!("expected interpolated heredoc body, got {other:?}"),
+        other => return Err(missing(format!("expected interpolated heredoc body, got {other:?}"))),
     }
+    Ok(())
 }
 
 #[test]
 fn non_interpolating_heredocs_are_invariant_controls() {
     let bodies = [
         (single_quoted_heredoc_source("value $name!"), "single-quoted"),
-        (format!("my $text = <<\\END;\nvalue $name!\nEND\n"), "backslashed"),
-        (format!("my $text = <<`END`;\nvalue $name!\nEND\n"), "backtick boundary"),
+        (String::from("my $text = <<\\END;\nvalue $name!\nEND\n"), "backslashed"),
+        (String::from("my $text = <<`END`;\nvalue $name!\nEND\n"), "backtick boundary"),
     ];
     for (source, label) in bodies {
         for interpolation in [true, false] {
             assert!(
-                matches!(heredoc_body_kind(&source, interpolation), TokenType::HeredocBody(_)),
+                matches!(heredoc_body_kind(&source, interpolation), Ok(TokenType::HeredocBody(_))),
                 "{label} heredoc must stay HeredocBody under interpolation={interpolation}"
             );
         }
@@ -369,11 +390,11 @@ fn non_interpolating_heredocs_are_invariant_controls() {
 }
 
 #[test]
-fn heredoc_identity_and_geometry_are_stable_across_settings() {
+fn heredoc_identity_and_geometry_are_stable_across_settings() -> R {
     let source = heredoc_source("value $name");
     let enabled = heredoc_tokens_with(&source, true);
     let disabled = heredoc_tokens_with(&source, false);
-    let pick = |tokens: &[Token]| {
+    let pick = |tokens: &[Token]| -> R<Token> {
         tokens
             .iter()
             .find(|t| {
@@ -382,13 +403,14 @@ fn heredoc_identity_and_geometry_are_stable_across_settings() {
                     TokenType::HeredocBody(_) | TokenType::InterpolatedHeredocBody(_)
                 )
             })
-            .expect("body token")
-            .clone()
+            .cloned()
+            .ok_or_else(|| missing("body token"))
     };
-    let (a, b) = (pick(&enabled), pick(&disabled));
+    let (a, b) = (pick(&enabled)?, pick(&disabled)?);
     assert_eq!(a.start, b.start, "body geometry must not move");
     assert_eq!(a.end, b.end, "body geometry must not move");
     assert_eq!(a.text, b.text, "body token text stays geometry-only");
+    Ok(())
 }
 
 #[test]

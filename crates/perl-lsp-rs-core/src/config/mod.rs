@@ -1984,7 +1984,7 @@ fn output_with_timeout(mut command: Command, timeout: Duration) -> std::io::Resu
 ///
 /// Unknown TOML keys are silently ignored for forward compatibility.
 #[non_exhaustive]
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectConfig {
     /// `[perl]` section: module resolution settings.
@@ -2007,7 +2007,7 @@ pub struct ProjectConfig {
 }
 
 /// `[perl]` section of `.perl-lsp.toml`.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectPerlConfig {
     /// Additional include paths for module resolution.
@@ -2019,8 +2019,9 @@ pub struct ProjectPerlConfig {
     pub discovery_extensions: Vec<String>,
     /// Additional directory names skipped during workspace discovery.
     pub discovery_skipped_dirs: Vec<String>,
-    /// Perl version string (e.g. "5.38") — parsed but not yet wired to diagnostics.
-    /// Reserved for future use; ignored in this implementation.
+    /// Trusted per-folder Perl version string (e.g. "5.38") used as the PL900
+    /// fallback target when the source has no `use VERSION` declaration.
+    /// Invalid values fail closed and source declarations always win.
     pub version: Option<String>,
     /// Whether to read `PERL5LIB` from the environment and include it in the
     /// module search path.  Unset means "leave the server default unchanged".
@@ -2031,7 +2032,7 @@ pub struct ProjectPerlConfig {
 }
 
 /// `[diagnostics]` section of `.perl-lsp.toml`.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectDiagnosticsConfig {
     /// Whether perlcritic is enabled. Maps to `ServerConfig.perlcritic_enabled`.
@@ -2041,7 +2042,7 @@ pub struct ProjectDiagnosticsConfig {
 }
 
 /// `[critic]` section of `.perl-lsp.toml`.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectCriticConfig {
     /// Critic engine (`legacy`, `perlcritic`, or `native`).
@@ -2055,7 +2056,7 @@ pub struct ProjectCriticConfig {
 }
 
 /// `[features]` section of `.perl-lsp.toml`.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectFeaturesConfig {
     /// Whether inlay hints are enabled globally. Maps to `ServerConfig.inlay_hints_enabled`.
@@ -2078,7 +2079,7 @@ pub struct ProjectFeaturesConfig {
 /// activate a remote AI backend or override user-owned provider/model choice.
 /// Those settings arrive only through the LSP client configuration channel
 /// (`ServerConfig::update_from_value`'s `aiCompletion` block).
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectAiCompletionConfig {
     /// Opt-out only: when `false`, disables AI completions for this workspace.
@@ -2094,7 +2095,7 @@ pub struct ProjectAiCompletionConfig {
 /// ignored/deprecation reason instead of apparent success; it can never
 /// enable the internal scaffold gate or report ready/enabled.
 #[non_exhaustive]
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectNextEditConfig {
     /// Legacy `enabled` flag. Ignored; kept only for the deprecation reason.
@@ -2102,7 +2103,7 @@ pub struct ProjectNextEditConfig {
 }
 
 /// `[formatting]` section of `.perl-lsp.toml`.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectFormattingConfig {
     /// Whether LSP formatting is enabled.
@@ -3834,70 +3835,46 @@ profile = "recommended"
     }
 
     #[test]
-    #[allow(unsafe_code)] // transient PATH mutation, serialized + restored (see below)
-    fn perltidy_discoverable_on_path_still_yields_native_default()
-    -> std::result::Result<(), Box<dyn std::error::Error>> {
-        // Stronger form of the guard above. The previous test only proves the
-        // default holds when `perltidy` is ABSENT from PATH (the usual CI
-        // condition), so it would not catch a regression that auto-selects the
-        // external engine only when a PATH probe (`which perltidy`) succeeds.
-        // Here we make a real `perltidy` executable discoverable on PATH and
-        // assert the default engine is STILL native — locking the "installed
-        // external tools must not change default behavior merely by existing on
-        // PATH" contract behaviorally, not just structurally.
-        //
-        // PATH is process-global, so serialize against any other PATH-touching
-        // test and restore it before asserting (a leaked mutation would poison
-        // sibling tests). The lock is crate-shared (`crate::test_support`), not
-        // function-local, so every PATH-mutating test acquires the SAME guard.
-        use std::io::Write as _;
-        let _lock = crate::test_support::PATH_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-
+    fn perltidy_discoverable_on_path_still_yields_native_default() -> TestResult {
+        const MARKER: &str = "PERL_LSP_WAVE_A1_PATH_CHILD";
+        if std::env::var_os(MARKER).is_some() {
+            let status = if cfg!(windows) {
+                let comspec = std::env::var_os("ComSpec")
+                    .ok_or_else(|| "ComSpec is required for the Windows fixture".to_owned())?;
+                std::process::Command::new(comspec).args(["/C", "perltidy.cmd"]).status()?
+            } else {
+                std::process::Command::new("perltidy").status()?
+            };
+            assert!(status.success(), "child PATH must discover perltidy");
+            assert_eq!(ServerConfig::default().formatting_engine, FormatterMode::Native);
+            return Ok(());
+        }
+        // Exercise executable discoverability with an explicit PATH input; the
+        // test runner's environment is never changed.
         let dir = tempfile::tempdir()?;
-        let bin_name = if cfg!(windows) { "perltidy.exe" } else { "perltidy" };
-        let bin_path = dir.path().join(bin_name);
-        std::fs::File::create(&bin_path)?.write_all(b"#!/bin/sh\nexit 0\n")?;
+        let name = if cfg!(windows) { "perltidy.cmd" } else { "perltidy" };
+        let executable = dir.path().join(name);
+        #[cfg(windows)]
+        std::fs::write(&executable, b"@echo off\r\nexit /b 0\r\n")?;
+        #[cfg(not(windows))]
+        std::fs::write(&executable, b"#!/bin/sh\nexit 0\n")?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt as _;
-            let mut perms = std::fs::metadata(&bin_path)?.permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&bin_path, perms)?;
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&executable)?.permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&executable, permissions)?;
         }
-
-        let original_path = std::env::var_os("PATH");
-        let probe_path = {
-            let mut parts = vec![dir.path().to_path_buf()];
-            if let Some(existing) = &original_path {
-                parts.extend(std::env::split_paths(existing));
-            }
-            std::env::join_paths(parts)?
-        };
-        // SAFETY: serialized by PATH_ENV_LOCK; PATH is restored below before any
-        // assertion can unwind the thread. Mirrors the crate's existing
-        // `EnvVarGuard` pattern (runtime/launcher/mod.rs).
-        unsafe { std::env::set_var("PATH", &probe_path) };
-
-        let mut config = ServerConfig::default();
-        config.update_from_value(&serde_json::json!({
-            "formatting": { "enabled": true }
-        }));
-        let engine_with_perltidy_on_path = config.formatting_engine;
-
-        // Restore PATH before asserting so a failing assert cannot leak the
-        // mutated PATH into sibling tests. SAFETY: still under PATH_ENV_LOCK.
-        match original_path {
-            Some(prev) => unsafe { std::env::set_var("PATH", prev) },
-            None => unsafe { std::env::remove_var("PATH") },
-        }
-
-        assert_eq!(
-            engine_with_perltidy_on_path,
-            FormatterMode::Native,
-            "a `perltidy` discoverable on PATH must not flip the default formatter engine"
-        );
+        let output = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "config::tests::perltidy_discoverable_on_path_still_yields_native_default",
+                "--nocapture",
+            ])
+            .env(MARKER, "1")
+            .env("PATH", dir.path())
+            .output()?;
+        assert!(output.status.success(), "child PATH/default proof failed: {output:?}");
         Ok(())
     }
 
@@ -5181,6 +5158,7 @@ profile = "recommended"
     /// available.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn output_with_timeout_kills_long_running_subprocess() -> TestResult {
         let perl_path = match resolve_perl_path_with_toolchain() {
             Ok(path) => path,
@@ -5218,6 +5196,7 @@ profile = "recommended"
     /// typed cache holds that outcome for reuse.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn get_system_inc_does_not_stall_on_slow_interpreter() -> TestResult {
         let perl_path = match resolve_perl_path_with_toolchain() {
             Ok(path) => path,
@@ -5280,6 +5259,7 @@ profile = "recommended"
     /// `IoFailed`, so a fast second process cannot satisfy this oracle.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[serial_test::serial]
     fn get_system_inc_reuses_cached_probe_without_relaunching() -> TestResult {
         PerlOracleEnv::with_startup_inc_probe_timeout(Duration::from_secs(30), || {
             let perl_path = match resolve_perl_path_with_toolchain() {
