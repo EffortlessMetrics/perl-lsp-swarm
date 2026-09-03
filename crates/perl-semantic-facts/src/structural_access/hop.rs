@@ -234,13 +234,13 @@ impl StructuralAccessHop {
     ///     reachability law, so it is gated on the outcome claiming a member
     ///     answer.
     /// 11. A limitation that restates a typed field must not contradict it.
-    ///     `OpenAggregate`, `MutatedAggregate` and `EscapedAggregate` each
-    ///     assert word for word what a completeness or disposition field on
-    ///     this same record asserts, so carrying one binds that field. The
-    ///     law is one-directional — omitting a limitation asserts nothing —
-    ///     and covers only those three; the remaining limitations either
-    ///     restate no field or are deliberately weaker than the outcome that
-    ///     shares their name.
+    ///     `OpenAggregate`, `MutatedAggregate`, `EscapedAggregate` and
+    ///     `DynamicSelector` each assert word for word what a completeness,
+    ///     disposition or selector field on this same record asserts, so
+    ///     carrying one binds that field. The law is one-directional —
+    ///     omitting a limitation asserts nothing — and covers only those
+    ///     four; the remaining limitations either restate no field or are
+    ///     deliberately weaker than the outcome that shares their name.
     /// 12. A plain subscript on a named variable cannot report
     ///     [`StructuralHopOutcome::ShapeMismatch`]. Law 9 has already bound
     ///     the operator to the variable's own sigil, so the shape is fixed in
@@ -499,7 +499,7 @@ impl StructuralAccessHop {
         }
 
         // Law 11: a limitation that restates a typed field must not contradict
-        // it. Three limitations assert the same proposition as a field on this
+        // it. Four limitations assert the same proposition as a field on this
         // same record, word for word, so a record carrying both must agree:
         //
         // - `OpenAggregate` says "the member set is not closed", which is what
@@ -507,7 +507,11 @@ impl StructuralAccessHop {
         // - `MutatedAggregate` says "written after construction", which is what
         //   `StructuralAggregateDisposition::Mutated` says;
         // - `EscapedAggregate` says "reached unanalyzed code", which is what
-        //   `StructuralAggregateDisposition::Escaped` says.
+        //   `StructuralAggregateDisposition::Escaped` says;
+        // - `DynamicSelector` says "the selector is computed at runtime", which
+        //   is what `StructuralAccessSelector::DynamicKey` and `DynamicIndex`
+        //   say. A static selector names its member outright, so the two
+        //   cannot both describe one hop.
         //
         // A consumer reading the limitation and a consumer reading the field
         // would otherwise reach opposite conclusions from one record, which is
@@ -525,8 +529,8 @@ impl StructuralAccessHop {
         // subject — different claims that may hold independently — and
         // `BudgetExhausted` as a limitation is weaker than the outcome by the
         // design recorded above, where only the outcome forces zero remaining
-        // units. `DynamicSelector`, `RecoveredSyntax`, `CompatibilityBridge`
-        // and `Unsupported` restate no field at all.
+        // units. `RecoveredSyntax`, `CompatibilityBridge` and `Unsupported`
+        // restate no field at all.
         for limitation in &self.limitations {
             let contradiction = match limitation {
                 StructuralAccessLimitation::OpenAggregate => {
@@ -545,8 +549,13 @@ impl StructuralAccessHop {
                         | StructuralAggregateDisposition::EscapedAndMutated
                 ))
                 .then_some("an escaped-aggregate limitation contradicts an unescaped aggregate"),
-                StructuralAccessLimitation::DynamicSelector
-                | StructuralAccessLimitation::RecoveredSyntax
+                StructuralAccessLimitation::DynamicSelector => (!matches!(
+                    self.selector,
+                    StructuralAccessSelector::DynamicKey(_)
+                        | StructuralAccessSelector::DynamicIndex(_)
+                ))
+                .then_some("a dynamic-selector limitation contradicts a static selector"),
+                StructuralAccessLimitation::RecoveredSyntax
                 | StructuralAccessLimitation::BudgetExhausted
                 | StructuralAccessLimitation::StaleDependency
                 | StructuralAccessLimitation::CompatibilityBridge

@@ -189,14 +189,17 @@ fn limitations_are_canonicalized_so_producer_order_does_not_change_equality()
             limitations,
         )
     };
+    // Both limitations restate no typed field, so this fixture tests canonical
+    // ordering and nothing else. Using ones that do restate a field would
+    // couple an ordering test to law 11's honesty constraints.
     let ascending = build(vec![
-        StructuralAccessLimitation::DynamicSelector,
-        StructuralAccessLimitation::OpenAggregate,
+        StructuralAccessLimitation::RecoveredSyntax,
+        StructuralAccessLimitation::CompatibilityBridge,
     ])?;
     let descending = build(vec![
-        StructuralAccessLimitation::OpenAggregate,
-        StructuralAccessLimitation::DynamicSelector,
-        StructuralAccessLimitation::OpenAggregate,
+        StructuralAccessLimitation::CompatibilityBridge,
+        StructuralAccessLimitation::RecoveredSyntax,
+        StructuralAccessLimitation::CompatibilityBridge,
     ])?;
     assert_eq!(ascending, descending);
     assert_eq!(ascending.limitations().len(), 2);
@@ -2612,7 +2615,6 @@ fn limitations_that_restate_no_field_stay_unconstrained() -> Result<(), Box<dyn 
         StructuralAggregateDisposition::Stable,
         StructuralHopOutcome::AbsentMember,
         vec![
-            StructuralAccessLimitation::DynamicSelector,
             StructuralAccessLimitation::RecoveredSyntax,
             StructuralAccessLimitation::BudgetExhausted,
             StructuralAccessLimitation::StaleDependency,
@@ -2730,6 +2732,65 @@ fn a_plain_subscript_mismatch_cannot_survive_the_transport_boundary() -> Result<
     assert!(
         decoded.validate().is_err(),
         "a fabricated plain-subscript mismatch must not survive transport"
+    );
+    Ok(())
+}
+
+// ── DynamicSelector restates the selector too (found by Devin review) ─────
+
+#[test]
+fn a_dynamic_selector_limitation_cannot_annotate_a_static_selector() -> Result<(), Box<dyn Error>> {
+    // `DynamicSelector` says "the selector is computed at runtime", which is
+    // what `DynamicKey`/`DynamicIndex` say. A `StaticKey` names its member
+    // outright, so one record cannot claim both. This case was missed when
+    // law 11 first landed: the limitation was filed under "restates no field".
+    let error = contract_error(hop_with_limitations(
+        StructuralAggregateCompleteness::Closed,
+        StructuralAggregateDisposition::Stable,
+        StructuralHopOutcome::AbsentMember,
+        vec![StructuralAccessLimitation::DynamicSelector],
+    ))?;
+    assert!(
+        matches!(error, StructuralAccessContractError::ContradictoryStatus(_)),
+        "a dynamic-selector limitation on a static selector must be rejected, got {error:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_dynamic_selector_limitation_annotates_a_dynamic_selector() -> Result<(), Box<dyn Error>> {
+    // Negative control: the same limitation over the selector it describes.
+    StructuralAccessHop::new(
+        0,
+        hash_variable(),
+        StructuralAccessOperator::HashSlot,
+        StructuralAccessSelector::DynamicKey(dynamic_boundary(
+            BoundaryKind::DynamicValue,
+            SemanticReasonCode::DynamicValue,
+        )),
+        spelling("{$k}", 0, 4)?,
+        StructuralHopOutcome::UnknownMember,
+        StructuralHopCertainty::Possible,
+        StructuralAggregateCompleteness::Open,
+        StructuralAggregateDisposition::Stable,
+        SemanticProducer::SemanticAnalyzer,
+        SemanticProvenance::Unknown,
+        SemanticConfidence::Known(Confidence::Low),
+        SemanticReasonCode::DynamicValue,
+        StructuralAccessBudget::new(10, 9)?,
+        vec![StructuralAccessLimitation::DynamicSelector],
+    )?;
+    Ok(())
+}
+
+#[test]
+fn a_dynamic_limitation_on_a_static_key_cannot_survive_transport() -> Result<(), Box<dyn Error>> {
+    let mut value = serde_json::to_value(nested_chain()?)?;
+    value["hops"][0]["limitations"] = serde_json::json!(["DynamicSelector"]);
+    let decoded: StructuralAccessChain = serde_json::from_value(value)?;
+    assert!(
+        decoded.validate().is_err(),
+        "a dynamic-selector limitation over a static key must not survive transport"
     );
     Ok(())
 }

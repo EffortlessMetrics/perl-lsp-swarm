@@ -320,8 +320,15 @@ fn every_limitation_round_trips_and_stays_canonical() -> Result<(), Box<dyn Erro
                 name: "rows".to_string(),
             },
             StructuralAccessOperator::ArrayIndex,
-            StructuralAccessSelector::StaticIndex(3),
-            "[3]",
+            // A dynamic index, because this hop carries the `DynamicSelector`
+            // limitation, which restates exactly what this field says. A
+            // static index here would make the all-variants coverage rest on
+            // a record the contract rejects.
+            StructuralAccessSelector::DynamicIndex(boundary(
+                BoundaryKind::DynamicValue,
+                BoundaryDisposition::Degrade,
+            )),
+            "[$i]",
             StructuralHopOutcome::UnknownMember,
             StructuralHopCertainty::Possible,
             StructuralAggregateCompleteness::Open,
