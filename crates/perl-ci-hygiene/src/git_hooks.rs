@@ -80,6 +80,20 @@ while IFS= read -r -d '' staged_path; do
 done < <(git diff --cached --root --name-only -z --diff-filter=ADRM)
 
 if [ "$STAGED_INVENTORY_CHANGE" -eq 1 ]; then
+    # Never turn an inventory deletion into a self-omitting refreshed commit.
+    # Refuse both the deletion itself and the dangerous deletion-plus-
+    # unstaged-recreation shape before materializing or copying anything.
+    if git diff --cached --quiet --diff-filter=D -- docs/policy/NON_RUST_INVENTORY.md; then
+        :
+    else
+        if [ -e docs/policy/NON_RUST_INVENTORY.md ]; then
+            echo "❌ Cannot refresh non-Rust inventory: inventory is staged for deletion but recreated in the worktree"
+        else
+            echo "❌ Cannot refresh non-Rust inventory: docs/policy/NON_RUST_INVENTORY.md is staged for deletion"
+        fi
+        echo "   Restore the inventory and stage an explicit replacement before retrying the commit."
+        exit 1
+    fi
     if ! git diff --quiet -- policy/non-rust-allowlist.toml; then
         echo "❌ Cannot refresh non-Rust inventory: policy/non-rust-allowlist.toml has unstaged edits"
         echo "   Stage or discard those allowlist edits, then retry the commit."
@@ -136,6 +150,19 @@ if [ "$STAGED_INVENTORY_CHANGE" -eq 1 ]; then
     ); then
         cleanup_inv_wt
         echo "❌ Non-Rust inventory refresh failed inside the staged-tree worktree"
+        exit 1
+    fi
+    # Do not stage a snapshot built from an older index if another process
+    # mutates the index while the generator is running.
+    CURRENT_INV_TREE="$(git write-tree)" || {
+        cleanup_inv_wt
+        echo "❌ Cannot refresh non-Rust inventory: staged index changed into an unmerged state"
+        exit 1
+    }
+    if [ "$CURRENT_INV_TREE" != "$INV_TREE" ]; then
+        cleanup_inv_wt
+        echo "❌ Cannot refresh non-Rust inventory: staged index changed during the refresh"
+        echo "   Re-stage the intended files and retry the commit."
         exit 1
     fi
     # The build takes a while: revalidate the snapshot and allowlist so a
@@ -666,6 +693,12 @@ mod tests {
         assert!(hook.contains("has unstaged edits"));
         assert!(hook.contains("policy/non-rust-allowlist.toml has unstaged edits"));
         assert!(hook.contains("docs/policy/NON_RUST_INVENTORY.md has unstaged edits"));
+        assert!(hook.contains(
+            "git diff --cached --quiet --diff-filter=D -- docs/policy/NON_RUST_INVENTORY.md"
+        ));
+        assert!(hook.contains("staged for deletion"));
+        assert!(hook.contains("CURRENT_INV_TREE=\"$(git write-tree)\""));
+        assert!(hook.contains("staged index changed during the refresh"));
         assert!(hook.contains("read -r -d ''"));
         assert!(hook.contains("printf '   %q\\n'"));
         assert!(hook.contains("cargo xtask fmt --staged"));
@@ -673,6 +706,161 @@ mod tests {
             !hook.contains("git ls-files --others"),
             "working-tree drift guards are obsolete once the generator runs in the staged tree"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn pre_commit_refuses_staged_inventory_deletion_and_preserves_recreation() -> Result<()> {
+        use color_eyre::eyre::ensure;
+
+        let repo = temp_repo()?;
+        run_git(&repo, &["config", "user.email", "test@example.com"])?;
+        run_git(&repo, &["config", "user.name", "hook test"])?;
+        fs::create_dir_all(repo.join("docs/policy"))?;
+        fs::create_dir_all(repo.join("policy"))?;
+        fs::write(repo.join("docs/policy/NON_RUST_INVENTORY.md"), "# baseline\n")?;
+        fs::write(repo.join("policy/non-rust-allowlist.toml"), "# baseline\n")?;
+        run_git(&repo, &["add", "."])?;
+        run_git(&repo, &["commit", "-qm", "baseline"])?;
+
+        let bin = repo.join("fake-bin");
+        fs::create_dir_all(&bin)?;
+        let fake_cargo = bin.join("cargo");
+        fs::write(&fake_cargo, "#!/usr/bin/env bash\nexit 0\n")?;
+        #[cfg(unix)]
+        fs::set_permissions(&fake_cargo, fs::Permissions::from_mode(0o755))?;
+        let hook = repo.join("pre-commit");
+        fs::write(&hook, pre_commit_hook_script())?;
+        #[cfg(unix)]
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755))?;
+
+        let bash = [
+            PathBuf::from("bash"),
+            PathBuf::from(r"C:\Program Files\Git\bin\bash.exe"),
+            PathBuf::from(r"C:\Program Files\Git\usr\bin\bash.exe"),
+        ]
+        .into_iter()
+        .find(|candidate| Command::new(candidate).arg("--version").output().is_ok())
+        .ok_or_else(|| color_eyre::eyre::eyre!("bash is required for deletion refusal test"))?;
+        let path_var = if cfg!(windows) {
+            format!("{};{}", bin.display(), std::env::var("PATH")?)
+        } else {
+            format!("{}:{}", bin.display(), std::env::var("PATH")?)
+        };
+
+        run_git(&repo, &["rm", "-q", "docs/policy/NON_RUST_INVENTORY.md"])?;
+        let rejected =
+            Command::new(&bash).arg(&hook).current_dir(&repo).env("PATH", &path_var).output()?;
+        ensure!(!rejected.status.success(), "staged inventory deletion must be refused");
+        ensure!(
+            String::from_utf8_lossy(&rejected.stdout).contains("staged for deletion"),
+            "deletion refusal must identify the staged inventory deletion"
+        );
+        ensure!(
+            !repo.join("docs/policy/NON_RUST_INVENTORY.md").exists(),
+            "a plain staged deletion must not be recreated"
+        );
+
+        fs::create_dir_all(repo.join("docs/policy"))?;
+        fs::write(repo.join("docs/policy/NON_RUST_INVENTORY.md"), "# recreated by contributor\n")?;
+        let recreated = fs::read_to_string(repo.join("docs/policy/NON_RUST_INVENTORY.md"))?;
+        let rejected_recreation =
+            Command::new(&bash).arg(&hook).current_dir(&repo).env("PATH", &path_var).output()?;
+        ensure!(
+            !rejected_recreation.status.success(),
+            "staged deletion plus recreation must be refused"
+        );
+        ensure!(
+            fs::read_to_string(repo.join("docs/policy/NON_RUST_INVENTORY.md"))? == recreated,
+            "refusal must preserve the unstaged recreation"
+        );
+        fs::remove_dir_all(repo)?;
+        Ok(())
+    }
+
+    #[test]
+    fn pre_commit_refuses_index_mutation_during_refresh() -> Result<()> {
+        use color_eyre::eyre::ensure;
+
+        let repo = temp_repo()?;
+        run_git(&repo, &["config", "user.email", "test@example.com"])?;
+        run_git(&repo, &["config", "user.name", "hook test"])?;
+        fs::create_dir_all(repo.join("docs/policy"))?;
+        fs::create_dir_all(repo.join("policy"))?;
+        fs::write(repo.join("docs/policy/NON_RUST_INVENTORY.md"), "# baseline\n")?;
+        fs::write(repo.join("policy/non-rust-allowlist.toml"), "# baseline\n")?;
+        run_git(&repo, &["add", "."])?;
+        run_git(&repo, &["commit", "-qm", "baseline"])?;
+
+        let bin = repo.join("fake-bin");
+        fs::create_dir_all(&bin)?;
+        let fake_cargo = bin.join("cargo");
+        fs::write(
+            &fake_cargo,
+            "#!/usr/bin/env bash\n\
+             if [ \"$2\" = non-rust ]; then\n\
+               printf 'raced index entry\\n' > \"$ORIGINAL_REPO/race.txt\"\n\
+               git -C \"$ORIGINAL_REPO\" add -- race.txt\n\
+               mkdir -p docs/policy\n\
+               printf '# refreshed\\n' > docs/policy/NON_RUST_INVENTORY.md\n\
+             fi\n",
+        )?;
+        #[cfg(unix)]
+        fs::set_permissions(&fake_cargo, fs::Permissions::from_mode(0o755))?;
+        let hook = repo.join("pre-commit");
+        fs::write(&hook, pre_commit_hook_script())?;
+        #[cfg(unix)]
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755))?;
+
+        fs::write(repo.join("trigger.txt"), "trigger\n")?;
+        run_git(&repo, &["add", "--", "trigger.txt"])?;
+        let bash = [
+            PathBuf::from("bash"),
+            PathBuf::from(r"C:\Program Files\Git\bin\bash.exe"),
+            PathBuf::from(r"C:\Program Files\Git\usr\bin\bash.exe"),
+        ]
+        .into_iter()
+        .find(|candidate| Command::new(candidate).arg("--version").output().is_ok())
+        .ok_or_else(|| color_eyre::eyre::eyre!("bash is required for index race test"))?;
+        let path_var = if cfg!(windows) {
+            format!("{};{}", bin.display(), std::env::var("PATH")?)
+        } else {
+            format!("{}:{}", bin.display(), std::env::var("PATH")?)
+        };
+        let output = Command::new(&bash)
+            .arg(&hook)
+            .current_dir(&repo)
+            .env("PATH", &path_var)
+            .env("ORIGINAL_REPO", &repo)
+            .output()?;
+        ensure!(!output.status.success(), "index mutation during refresh must be refused");
+        ensure!(
+            String::from_utf8_lossy(&output.stdout)
+                .contains("staged index changed during the refresh"),
+            "index race refusal must identify the changed tree"
+        );
+        ensure!(
+            repo.join("race.txt").exists(),
+            "the concurrent staged mutation fixture must have executed"
+        );
+        ensure!(
+            !String::from_utf8_lossy(
+                &Command::new("git")
+                    .current_dir(&repo)
+                    .args([
+                        "diff",
+                        "--cached",
+                        "--name-only",
+                        "--",
+                        "docs/policy/NON_RUST_INVENTORY.md"
+                    ])
+                    .output()?
+                    .stdout
+            )
+            .contains("NON_RUST_INVENTORY.md"),
+            "a raced refresh must not stage its stale inventory snapshot"
+        );
+        fs::remove_dir_all(repo)?;
         Ok(())
     }
 
@@ -740,7 +928,6 @@ mod tests {
         fs::write(&hook, pre_commit_hook_script())?;
         #[cfg(unix)]
         fs::set_permissions(&hook, fs::Permissions::from_mode(0o755))?;
-        run_git(&repo, &["rm", "-q", "docs/policy/NON_RUST_INVENTORY.md"])?;
         fs::write(repo.join("unusual name;touch pwned.json"), "{}\n")?;
         run_git(&repo, &["add", "--", "unusual name;touch pwned.json"])?;
         // A literal `\033` sequence discriminates `printf %q` from
