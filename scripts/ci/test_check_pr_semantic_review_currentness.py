@@ -255,19 +255,39 @@ class MarkerResultTests(unittest.TestCase):
         module.fetch_pr = fake_fetch_pr
         self.addCleanup(lambda: setattr(module, "fetch_pr", self._real_fetch_pr))
 
-    def test_review_current_still_emits_a_valid_marker_by_default(self) -> None:
-        emitted = module.emit_marker(self.root, "o/r", 42)
+    def test_explicit_review_current_emits_a_valid_marker(self) -> None:
+        emitted = module.emit_marker(self.root, "o/r", 42, "REVIEW_CURRENT")
         payload = json.loads(module.MARKER_RE.findall(emitted)[0])
         self.assertEqual("REVIEW_CURRENT", payload["result"])
         self.assertEqual(42, payload["pr"])
         self.assertEqual(self.head, payload["head"])
+
+    def test_legacy_bare_emit_marker_cannot_mint_a_marker(self) -> None:
+        """The published pre-#14653 invocation must not still mint REVIEW_CURRENT.
+
+        A `--result` default would have preserved exactly the defect this flag
+        closes: the caller never states a conclusion and gets one anyway. Every
+        published invocation now names the result, so the bare form must fail.
+        """
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as raised:
+                module.main(["42", "o/r", "--root", str(self.root), "--emit-marker"])
+        self.assertNotEqual(0, raised.exception.code)
+        self.assertNotIn("semantic-review:v1", stdout.getvalue())
+        self.assertIn("--result", stderr.getvalue())
+
+    def test_emit_marker_requires_an_explicit_result_argument(self) -> None:
+        """The API carries no silent default either, not just the CLI."""
+        with self.assertRaises(TypeError):
+            module.emit_marker(self.root, "o/r", 42)  # type: ignore[call-arg]
 
     def test_emitted_marker_is_accepted_by_the_verifier(self) -> None:
         """Round-trip: the emitter and the checker must agree on one subject.
 
         Guards the `--result` plumbing against emitting a marker the checker rejects.
         """
-        emitted = module.emit_marker(self.root, "o/r", 42)
+        emitted = module.emit_marker(self.root, "o/r", 42, "REVIEW_CURRENT")
         review_body = REVIEW_SECTIONS + "\n" + emitted + "\n"
         marker = module.parse_marker(review_body, 42, self.head)
         self.assertIsNotNone(marker)
@@ -308,11 +328,19 @@ class MarkerResultTests(unittest.TestCase):
         self.assertEqual("MARKER_REFUSED", payload["classification"])
         self.assertEqual("CHANGES_REQUIRED", payload["result"])
 
-    def test_cli_review_current_emits_the_marker(self) -> None:
+    def test_cli_explicit_review_current_emits_the_marker(self) -> None:
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             code = module.main(
-                ["42", "o/r", "--root", str(self.root), "--emit-marker"]
+                [
+                    "42",
+                    "o/r",
+                    "--root",
+                    str(self.root),
+                    "--emit-marker",
+                    "--result",
+                    "REVIEW_CURRENT",
+                ]
             )
         self.assertEqual(0, code)
         self.assertIn("semantic-review:v1", stdout.getvalue())

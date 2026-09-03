@@ -433,7 +433,7 @@ class MarkerRefused(RuntimeError):
     """The substantive review result does not carry a marker; not an instrument failure."""
 
 
-def emit_marker(root: Path, repo: str, pr: int, result: str = MARKER_RESULT) -> str:
+def emit_marker(root: Path, repo: str, pr: int, result: str) -> str:
     if result not in SUBSTANTIVE_REVIEW_RESULTS:
         raise CurrentnessError(f"unknown substantive review result: {result!r}")
     if result != MARKER_RESULT:
@@ -468,15 +468,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument(
         "--result",
         choices=SUBSTANTIVE_REVIEW_RESULTS,
-        default=MARKER_RESULT,
+        default=None,
         help=(
-            "the substantive review result this marker would bind. "
-            f"Only {MARKER_RESULT} (the default) emits a marker; every other "
-            "result is refused so a marker cannot assert a conclusion the review "
-            "did not reach."
+            "the substantive review result this marker binds. Required with "
+            f"--emit-marker, with no default: only {MARKER_RESULT} emits a marker, "
+            "and every other result is refused. A default would let the legacy "
+            "invocation keep minting a REVIEW_CURRENT marker without the caller "
+            "ever stating their conclusion, which is the defect this flag closes."
         ),
     )
     args = parser.parse_args(argv)
+    if args.emit_marker and args.result is None:
+        parser.error("--emit-marker requires --result naming the substantive review result")
     root = args.root.resolve()
     fixture = args.fixture
     if fixture is None and os.environ.get("SEMANTIC_REVIEW_TEST_FIXTURE"):
