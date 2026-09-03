@@ -38,11 +38,15 @@ fn subject() -> Result<StructuralAccessSubject, StructuralAccessContractError> {
     )
 }
 
+/// A spelling anchored at `start`, spanning exactly its own text.
+///
+/// The width is derived rather than passed, so a fixture cannot drift into
+/// claiming a range that does not match the text it records.
 fn spelling(
     text: &str,
     start: u32,
-    end: u32,
 ) -> Result<StructuralAccessSpelling, StructuralAccessContractError> {
+    let end = start + u32::try_from(text.len()).unwrap_or(u32::MAX);
     StructuralAccessSpelling::new(text, SourceAnchor::new(Some(AnchorId(1)), DOCUMENT, start, end))
 }
 
@@ -79,7 +83,7 @@ fn selecting_hop(
         aggregate,
         operator,
         selector,
-        spelling(text, ordinal * 10, ordinal * 10 + 5)?,
+        spelling(text, ordinal * 10)?,
         StructuralHopOutcome::Selected {
             shape,
             value_fact: Some(FactId(100 + u64::from(ordinal))),
@@ -176,7 +180,7 @@ fn limitations_are_canonicalized_so_producer_order_does_not_change_equality()
             base_variable(),
             StructuralAccessOperator::HashRefSlot,
             StructuralAccessSelector::StaticKey("groups".to_string()),
-            spelling("->{groups}", 0, 10)?,
+            spelling("->{groups}", 0)?,
             StructuralHopOutcome::UnknownMember,
             StructuralHopCertainty::Possible,
             StructuralAggregateCompleteness::Open,
@@ -325,7 +329,7 @@ fn two_dynamic_selectors_with_different_boundaries_stay_distinguishable()
             base_variable(),
             StructuralAccessOperator::HashRefSlot,
             StructuralAccessSelector::DynamicKey(boundary.clone()),
-            spelling("->{$key}", 0, 8)?,
+            spelling("->{$key}", 0)?,
             StructuralHopOutcome::Boundary(boundary),
             StructuralHopCertainty::Possible,
             StructuralAggregateCompleteness::Closed,
@@ -384,13 +388,13 @@ fn spelling_is_evidence_and_never_participates_in_identity() -> Result<(), Box<d
     // class": hops that differ only in written text and position are the same
     // access, and a hop whose text *looks* like an arrow is still classified
     // by its operator field alone.
-    let build = |text: &str, start: u32, end: u32| {
+    let build = |text: &str, start: u32| {
         StructuralAccessHop::new(
             0,
             hash_variable(),
             StructuralAccessOperator::HashSlot,
             StructuralAccessSelector::StaticKey("groups".to_string()),
-            spelling(text, start, end)?,
+            spelling(text, start)?,
             StructuralHopOutcome::Selected { shape: ValueShape::HashRef, value_fact: None },
             StructuralHopCertainty::Definite,
             StructuralAggregateCompleteness::Closed,
@@ -403,10 +407,10 @@ fn spelling_is_evidence_and_never_participates_in_identity() -> Result<(), Box<d
             Vec::new(),
         )
     };
-    let original = build("{groups}", 0, 8)?;
+    let original = build("{groups}", 0)?;
 
     // Reformatted and relocated: same access.
-    let moved = build("  {groups}  ", 4096, 4108)?;
+    let moved = build("  {groups}  ", 4096)?;
     assert_eq!(
         moved.fingerprint(),
         original.fingerprint(),
@@ -414,7 +418,7 @@ fn spelling_is_evidence_and_never_participates_in_identity() -> Result<(), Box<d
     );
 
     // Text containing an earlier arrow cannot make this a hashref slot.
-    let arrow_text = build("->{outer}{groups}", 0, 17)?;
+    let arrow_text = build("->{outer}{groups}", 0)?;
     assert_eq!(arrow_text.operator(), StructuralAccessOperator::HashSlot);
     assert!(!arrow_text.operator().dereferences());
     assert_eq!(arrow_text.fingerprint(), original.fingerprint());
@@ -437,7 +441,7 @@ fn a_dynamic_key_hop_never_digests_as_a_dynamic_index_hop() -> Result<(), Box<dy
             aggregate,
             operator,
             selector,
-            spelling("[$i]", 0, 4)?,
+            spelling("[$i]", 0)?,
             StructuralHopOutcome::Boundary(boundary.clone()),
             StructuralHopCertainty::Possible,
             StructuralAggregateCompleteness::Open,
@@ -472,7 +476,7 @@ fn an_index_selector_cannot_ride_a_hash_operator() -> Result<(), Box<dyn Error>>
         base_variable(),
         StructuralAccessOperator::HashRefSlot,
         StructuralAccessSelector::StaticIndex(0),
-        spelling("->{b}", 0, 5)?,
+        spelling("->{b}", 0)?,
         StructuralHopOutcome::Selected { shape: ValueShape::Scalar, value_fact: None },
         StructuralHopCertainty::Definite,
         StructuralAggregateCompleteness::Closed,
@@ -492,7 +496,7 @@ fn an_index_selector_cannot_ride_a_hash_operator() -> Result<(), Box<dyn Error>>
         array_variable(),
         StructuralAccessOperator::ArrayIndex,
         StructuralAccessSelector::StaticKey("b".to_string()),
-        spelling("[b]", 0, 3)?,
+        spelling("[b]", 0)?,
         StructuralHopOutcome::Selected { shape: ValueShape::Scalar, value_fact: None },
         StructuralHopCertainty::Definite,
         StructuralAggregateCompleteness::Closed,
@@ -580,7 +584,7 @@ fn nothing_can_be_selected_out_of_a_non_selecting_hop() -> Result<(), Box<dyn Er
         base_variable(),
         StructuralAccessOperator::HashRefSlot,
         StructuralAccessSelector::StaticKey("groups".to_string()),
-        spelling("->{groups}", 0, 10)?,
+        spelling("->{groups}", 0)?,
         StructuralHopOutcome::UnknownMember,
         StructuralHopCertainty::Possible,
         StructuralAggregateCompleteness::Open,
@@ -620,7 +624,7 @@ fn definite_absence_requires_a_closed_aggregate() -> Result<(), Box<dyn Error>> 
             base_variable(),
             StructuralAccessOperator::HashRefSlot,
             StructuralAccessSelector::StaticKey("missing".to_string()),
-            spelling("->{missing}", 0, 11)?,
+            spelling("->{missing}", 0)?,
             StructuralHopOutcome::AbsentMember,
             StructuralHopCertainty::Definite,
             completeness,
@@ -649,7 +653,7 @@ fn an_escaped_or_mutated_aggregate_cannot_support_a_definite_outcome() -> Result
             base_variable(),
             StructuralAccessOperator::HashRefSlot,
             StructuralAccessSelector::StaticKey("groups".to_string()),
-            spelling("->{groups}", 0, 10)?,
+            spelling("->{groups}", 0)?,
             StructuralHopOutcome::Selected { shape: ValueShape::HashRef, value_fact: None },
             certainty,
             StructuralAggregateCompleteness::Closed,
@@ -688,7 +692,7 @@ fn budget_accounting_must_be_monotone_and_back_its_own_outcome() -> Result<(), B
         base_variable(),
         StructuralAccessOperator::HashRefSlot,
         StructuralAccessSelector::StaticKey("groups".to_string()),
-        spelling("->{groups}", 0, 10)?,
+        spelling("->{groups}", 0)?,
         StructuralHopOutcome::BudgetExhausted,
         StructuralHopCertainty::Possible,
         StructuralAggregateCompleteness::Open,
@@ -716,7 +720,7 @@ fn budget_accounting_must_be_monotone_and_back_its_own_outcome() -> Result<(), B
         StructuralAccessAggregate::PrecedingHop { ordinal: 0 },
         StructuralAccessOperator::HashSlot,
         StructuralAccessSelector::StaticKey("staff".to_string()),
-        spelling("{staff}", 10, 17)?,
+        spelling("{staff}", 10)?,
         StructuralHopOutcome::Selected { shape: ValueShape::ArrayRef, value_fact: None },
         StructuralHopCertainty::Definite,
         StructuralAggregateCompleteness::Closed,
@@ -795,7 +799,7 @@ fn an_unnameable_aggregate_uses_a_typed_identity_not_a_rendered_label() -> Resul
         )),
         StructuralAccessOperator::HashRefSlot,
         StructuralAccessSelector::StaticKey("groups".to_string()),
-        spelling("->{groups}", 0, 10)?,
+        spelling("->{groups}", 0)?,
         StructuralHopOutcome::Boundary(dynamic_boundary(
             BoundaryKind::DynamicValue,
             SemanticReasonCode::DynamicValue,
@@ -1077,7 +1081,7 @@ fn a_selected_value_fact_is_not_its_absence() -> Result<(), Box<dyn Error>> {
             hash_variable(),
             StructuralAccessOperator::HashSlot,
             StructuralAccessSelector::StaticKey("k".to_string()),
-            spelling("{k}", 0, 3)?,
+            spelling("{k}", 0)?,
             StructuralHopOutcome::Selected { shape: ValueShape::Scalar, value_fact },
             StructuralHopCertainty::Definite,
             StructuralAggregateCompleteness::Closed,
@@ -1144,7 +1148,7 @@ fn spending_the_last_unit_is_not_itself_a_defect() -> Result<(), Box<dyn Error>>
         hash_variable(),
         StructuralAccessOperator::HashSlot,
         StructuralAccessSelector::StaticKey("k".to_string()),
-        spelling("{k}", 0, 3)?,
+        spelling("{k}", 0)?,
         StructuralHopOutcome::Selected { shape: ValueShape::Scalar, value_fact: None },
         StructuralHopCertainty::Definite,
         StructuralAggregateCompleteness::Closed,
@@ -1244,7 +1248,7 @@ fn a_member_missing_from_a_closed_aggregate_is_absent_not_unknown() -> Result<()
             base_variable(),
             StructuralAccessOperator::HashRefSlot,
             StructuralAccessSelector::StaticKey("missing".to_string()),
-            spelling("->{missing}", 0, 11)?,
+            spelling("->{missing}", 0)?,
             outcome,
             StructuralHopCertainty::Possible,
             completeness,
@@ -1303,7 +1307,7 @@ fn boundaries_differing_only_in_disposition_do_not_collide() -> Result<(), Box<d
             base_variable(),
             StructuralAccessOperator::HashRefSlot,
             StructuralAccessSelector::DynamicKey(boundary.clone()),
-            spelling("->{$k}", 0, 6)?,
+            spelling("->{$k}", 0)?,
             StructuralHopOutcome::Boundary(boundary),
             StructuralHopCertainty::Possible,
             StructuralAggregateCompleteness::Open,
@@ -1356,7 +1360,7 @@ fn an_operator_cannot_select_through_a_shape_that_cannot_carry_it() -> Result<()
         StructuralAccessAggregate::PrecedingHop { ordinal: 0 },
         StructuralAccessOperator::ArrayIndex,
         StructuralAccessSelector::StaticIndex(0),
-        spelling("[0]", 10, 13)?,
+        spelling("[0]", 10)?,
         StructuralHopOutcome::ShapeMismatch { observed: ValueShape::HashRef },
         StructuralHopCertainty::Definite,
         StructuralAggregateCompleteness::Closed,
@@ -1385,7 +1389,7 @@ fn every_outcome_kind_reaches_the_hop_fingerprint() -> Result<(), Box<dyn Error>
             base_variable(),
             StructuralAccessOperator::HashRefSlot,
             StructuralAccessSelector::StaticKey("k".to_string()),
-            spelling("->{k}", 0, 5)?,
+            spelling("->{k}", 0)?,
             outcome,
             StructuralHopCertainty::Possible,
             StructuralAggregateCompleteness::Open,
@@ -1555,7 +1559,7 @@ fn a_recorded_shape_mismatch_must_be_a_real_one() -> Result<(), Box<dyn Error>> 
             StructuralAccessAggregate::PrecedingHop { ordinal: 0 },
             operator,
             selector,
-            spelling(text, 10, 13)?,
+            spelling(text, 10)?,
             StructuralHopOutcome::ShapeMismatch { observed },
             StructuralHopCertainty::Definite,
             StructuralAggregateCompleteness::Closed,
@@ -1631,7 +1635,7 @@ fn fingerprints_do_not_follow_rust_debug_names() -> Result<(), Box<dyn Error>> {
             BoundaryDisposition::Refuse,
             SemanticReasonCode::UnsupportedEffect,
         )),
-        spelling("->{$k}", 0, 6)?,
+        spelling("->{$k}", 0)?,
         StructuralHopOutcome::Selected {
             shape: ValueShape::Object { package: "Foo".to_string(), confidence: Confidence::High },
             value_fact: None,
@@ -1667,7 +1671,7 @@ fn an_outcome_independent_of_the_aggregate_stays_definite_when_it_moves()
             base_variable(),
             StructuralAccessOperator::HashRefSlot,
             StructuralAccessSelector::StaticKey("k".to_string()),
-            spelling("->{k}", 0, 5)?,
+            spelling("->{k}", 0)?,
             outcome,
             StructuralHopCertainty::Definite,
             StructuralAggregateCompleteness::Open,
@@ -1795,7 +1799,7 @@ fn an_empty_package_in_a_shape_mismatch_is_rejected() -> Result<(), Box<dyn Erro
             base_variable(),
             StructuralAccessOperator::HashRefSlot,
             StructuralAccessSelector::StaticKey("k".to_string()),
-            spelling("->{k}", 0, 5)?,
+            spelling("->{k}", 0)?,
             StructuralHopOutcome::ShapeMismatch {
                 observed: ValueShape::PackageName { package: package.to_string() },
             },
@@ -1865,7 +1869,7 @@ fn an_operator_cannot_reach_a_member_through_a_shape_that_cannot_carry_it()
             StructuralAccessAggregate::PrecedingHop { ordinal: 0 },
             StructuralAccessOperator::ArrayIndex,
             StructuralAccessSelector::StaticIndex(0),
-            spelling("[0]", 10, 13)?,
+            spelling("[0]", 10)?,
             outcome,
             StructuralHopCertainty::Definite,
             completeness,
@@ -1945,7 +1949,7 @@ fn a_permissive_shape_still_admits_a_member_level_answer() -> Result<(), Box<dyn
             StructuralAccessAggregate::PrecedingHop { ordinal: 0 },
             StructuralAccessOperator::ArrayIndex,
             StructuralAccessSelector::StaticIndex(0),
-            spelling("[0]", 10, 13)?,
+            spelling("[0]", 10)?,
             StructuralHopOutcome::AbsentMember,
             StructuralHopCertainty::Definite,
             StructuralAggregateCompleteness::Closed,
@@ -1986,7 +1990,7 @@ fn a_dishonest_absence_cannot_survive_the_transport_boundary() -> Result<(), Box
         StructuralAccessAggregate::PrecedingHop { ordinal: 0 },
         StructuralAccessOperator::ArrayIndex,
         StructuralAccessSelector::StaticIndex(0),
-        spelling("[0]", 10, 13)?,
+        spelling("[0]", 10)?,
         StructuralHopOutcome::ShapeMismatch { observed: ValueShape::HashRef },
         StructuralHopCertainty::Definite,
         StructuralAggregateCompleteness::Closed,
@@ -2080,7 +2084,7 @@ fn an_undef_scalar_cannot_be_contradicted_by_a_shape_mismatch() -> Result<(), Bo
         StructuralAccessAggregate::PrecedingHop { ordinal: 0 },
         StructuralAccessOperator::ArrayIndex,
         StructuralAccessSelector::StaticIndex(0),
-        spelling("[0]", 10, 13)?,
+        spelling("[0]", 10)?,
         StructuralHopOutcome::ShapeMismatch { observed: ValueShape::Scalar },
         StructuralHopCertainty::Definite,
         StructuralAggregateCompleteness::Closed,
@@ -2151,7 +2155,7 @@ fn hop_behind_boundary(
         aggregate,
         StructuralAccessOperator::HashRefSlot,
         selector,
-        spelling("->{$k}", 0, 6)?,
+        spelling("->{$k}", 0)?,
         StructuralHopOutcome::Selected { shape: ValueShape::ArrayRef, value_fact },
         StructuralHopCertainty::Possible,
         StructuralAggregateCompleteness::Open,
@@ -2342,7 +2346,7 @@ fn an_arrow_cannot_dereference_an_array_or_hash_container() -> Result<(), Box<dy
             },
             StructuralAccessOperator::HashRefSlot,
             StructuralAccessSelector::StaticKey("k".to_string()),
-            spelling("->{k}", 0, 5)?,
+            spelling("->{k}", 0)?,
             outcome,
             StructuralHopCertainty::Definite,
             completeness,
@@ -2513,7 +2517,7 @@ fn hop_with_limitations(
         hash_variable(),
         StructuralAccessOperator::HashSlot,
         StructuralAccessSelector::StaticKey("k".to_string()),
-        spelling("{k}", 0, 3)?,
+        spelling("{k}", 0)?,
         outcome,
         StructuralHopCertainty::Possible,
         completeness,
@@ -2652,7 +2656,7 @@ fn mismatching_hop(
         aggregate,
         operator,
         selector,
-        spelling(text, 0, 4)?,
+        spelling(text, 0)?,
         StructuralHopOutcome::ShapeMismatch { observed },
         StructuralHopCertainty::Definite,
         StructuralAggregateCompleteness::Closed,
@@ -2767,7 +2771,7 @@ fn a_dynamic_selector_limitation_annotates_a_dynamic_selector() -> Result<(), Bo
             BoundaryKind::DynamicValue,
             SemanticReasonCode::DynamicValue,
         )),
-        spelling("{$k}", 0, 4)?,
+        spelling("{$k}", 0)?,
         StructuralHopOutcome::UnknownMember,
         StructuralHopCertainty::Possible,
         StructuralAggregateCompleteness::Open,
@@ -2918,7 +2922,7 @@ fn mismatch_after_with(
                 } else {
                     StructuralAccessSelector::StaticIndex(0)
                 },
-                spelling(text, 10, 15)?,
+                spelling(text, 10)?,
                 StructuralHopOutcome::ShapeMismatch { observed },
                 StructuralHopCertainty::Definite,
                 StructuralAggregateCompleteness::Closed,
@@ -3071,5 +3075,67 @@ fn confidence_does_not_rescue_a_different_class() -> Result<(), Box<dyn Error>> 
             "two different classes cannot describe one value, got {error:?}"
         );
     }
+    Ok(())
+}
+
+// ── A spelling's anchor spans its own text (found by Devin review) ────────
+
+/// A spelling whose anchor width is stated independently of its text.
+fn spelling_spanning(
+    text: &str,
+    start: u32,
+    end: u32,
+) -> Result<StructuralAccessSpelling, StructuralAccessContractError> {
+    StructuralAccessSpelling::new(text, SourceAnchor::new(Some(AnchorId(1)), DOCUMENT, start, end))
+}
+
+#[test]
+fn a_spelling_anchor_must_span_exactly_its_own_text() -> Result<(), Box<dyn Error>> {
+    // The text is the hop "as written" and the anchor is its "exact source
+    // anchor", so the two describe one run of source. A record whose anchor is
+    // a different width is lying about one of them, and a consumer that
+    // highlights by anchor would show something other than the recorded text.
+    for (start, end, why) in [(0, 0, "zero length"), (0, 3, "truncated"), (0, 40, "oversized")] {
+        let error = contract_error(spelling_spanning("->{groups}", start, end))?;
+        assert!(
+            matches!(error, StructuralAccessContractError::ContradictoryStatus(_)),
+            "a {why} anchor must be rejected, got {error:?}"
+        );
+    }
+    // The honest width, and a non-zero start, both still build.
+    spelling_spanning("->{groups}", 0, 10)?;
+    spelling_spanning("->{groups}", 17, 27)?;
+    Ok(())
+}
+
+#[test]
+fn a_multibyte_spelling_is_measured_in_bytes() -> Result<(), Box<dyn Error>> {
+    // The anchor records byte offsets, so the comparison is against the text's
+    // byte length rather than its character count. `{café}` is six characters
+    // and seven bytes; a six-wide anchor would be the character-count mistake.
+    let text = "{café}";
+    assert_eq!(text.chars().count(), 6);
+    assert_eq!(text.len(), 7);
+    spelling_spanning(text, 0, 7)?;
+    let error = contract_error(spelling_spanning(text, 0, 6))?;
+    assert!(
+        matches!(error, StructuralAccessContractError::ContradictoryStatus(_)),
+        "a character-count anchor must be rejected, got {error:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_contradictory_spelling_cannot_survive_the_transport_boundary() -> Result<(), Box<dyn Error>> {
+    // Serde reaches the record without the constructor, so the law has to hold
+    // on the transport path too. The first hop of `nested_chain` is
+    // `->{groups}`; widening its anchor alone leaves every other law satisfied.
+    let mut value = serde_json::to_value(nested_chain()?)?;
+    value["hops"][0]["spelling"]["anchor"]["end_byte"] = serde_json::json!(999);
+    let decoded: StructuralAccessChain = serde_json::from_value(value)?;
+    assert!(
+        decoded.validate().is_err(),
+        "an anchor that does not span its own text must not survive transport"
+    );
     Ok(())
 }

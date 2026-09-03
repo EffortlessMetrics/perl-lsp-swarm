@@ -57,7 +57,7 @@ fn hop(
         aggregate,
         operator,
         selector,
-        StructuralAccessSpelling::new(text, anchor(start, start + 10))?,
+        StructuralAccessSpelling::new(text, anchor(start, start + text.len() as u32))?,
         outcome,
         certainty,
         completeness,

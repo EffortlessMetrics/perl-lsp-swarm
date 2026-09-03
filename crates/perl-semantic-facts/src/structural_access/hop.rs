@@ -260,17 +260,7 @@ impl StructuralAccessHop {
         self.aggregate.validate()?;
         self.budget.validate()?;
 
-        if self.spelling.text.trim().is_empty() {
-            return Err(StructuralAccessContractError::EmptyIdentityField(
-                "StructuralAccessSpelling.text",
-            ));
-        }
-        if self.spelling.anchor.start_byte > self.spelling.anchor.end_byte {
-            return Err(StructuralAccessContractError::MalformedRange {
-                start_byte: self.spelling.anchor.start_byte,
-                end_byte: self.spelling.anchor.end_byte,
-            });
-        }
+        self.spelling.validate()?;
         // Law 9: a plain subscript on a named variable addresses that
         // variable's own container, never a scalar that merely shares its name.
         //

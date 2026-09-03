@@ -425,19 +425,48 @@ impl StructuralAccessSpelling {
         text: impl Into<String>,
         anchor: SourceAnchor,
     ) -> Result<Self, StructuralAccessContractError> {
-        let text = text.into();
-        if text.trim().is_empty() {
+        let spelling = Self { text: text.into(), anchor };
+        spelling.validate()?;
+        Ok(spelling)
+    }
+
+    /// Validate the spelling.
+    ///
+    /// Serde reaches this record without running the constructor, so the laws
+    /// live here and the constructor calls them, as the subject and budget
+    /// records in this contract already do.
+    ///
+    /// # Errors
+    /// Returns [`StructuralAccessContractError::EmptyIdentityField`] when the
+    /// text is blank, [`StructuralAccessContractError::MalformedRange`] when
+    /// the anchor range is inverted, and
+    /// [`StructuralAccessContractError::ContradictoryStatus`] when the anchor
+    /// does not span exactly the text.
+    pub fn validate(&self) -> Result<(), StructuralAccessContractError> {
+        if self.text.trim().is_empty() {
             return Err(StructuralAccessContractError::EmptyIdentityField(
                 "StructuralAccessSpelling.text",
             ));
         }
-        if anchor.start_byte > anchor.end_byte {
+        if self.anchor.start_byte > self.anchor.end_byte {
             return Err(StructuralAccessContractError::MalformedRange {
-                start_byte: anchor.start_byte,
-                end_byte: anchor.end_byte,
+                start_byte: self.anchor.start_byte,
+                end_byte: self.anchor.end_byte,
             });
         }
-        Ok(Self { text, anchor })
+        // The two fields describe the same run of source: the text is the hop
+        // "as written" and the anchor is its "exact source anchor". A record
+        // whose anchor spans a different number of bytes than its own text is
+        // lying about one of them, and a consumer highlighting by anchor would
+        // show something other than what the record says was written. Both
+        // sides are byte counts, so the comparison is exact for any input.
+        let span = u64::from(self.anchor.end_byte - self.anchor.start_byte);
+        if span != self.text.len() as u64 {
+            return Err(StructuralAccessContractError::ContradictoryStatus(
+                "a spelling's anchor must span exactly its own text",
+            ));
+        }
+        Ok(())
     }
 }
 
