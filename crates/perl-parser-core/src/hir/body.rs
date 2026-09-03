@@ -543,6 +543,27 @@ pub enum HirExpr {
 /// This deliberately carries no completeness claim. A lookup that finds no
 /// record means the analysis is **unavailable**, never that the pattern is
 /// clean — HIR never asserts a regex is complete or valid.
+///
+/// # Freshness is the caller's obligation
+///
+/// An anchor is a *position*, and positions do not identify a source snapshot.
+/// `HirFile` carries no source digest — `lower_ast` never sees source bytes,
+/// which is the same reason the anchor is a range rather than a record
+/// reference — so nothing in HIR can establish that a given table was built
+/// from the source this body was lowered from. Resolving an anchor against a
+/// table built from *different* source will succeed and return facts about the
+/// wrong text, most easily after an edit that keeps a construct at the same
+/// offsets (`s/a/b/` → `s/a/c/`).
+///
+/// A consumer holding both must therefore verify the pairing itself, with
+/// `RegexAnalysisTable::source_matches` against the source the HIR was lowered
+/// from, before resolving any anchor. Every lookup on that table is positional
+/// and generation-unchecked in this same way; the table's digest exists for
+/// exactly this check, and it is the caller that must perform it.
+///
+/// A shared generation identity spanning body HIR and the retained table would
+/// make the mismatch unrepresentable rather than merely documented. That is a
+/// `HirFile`-level change affecting every consumer, tracked as #14658.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RegexAnalysisAnchor {
     /// Enclosing source range of the regex-family construct as written.

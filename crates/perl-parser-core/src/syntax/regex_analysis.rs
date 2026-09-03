@@ -379,6 +379,14 @@ impl RegexAnalysisTable {
     /// never that the pattern is clean. A returned record may itself be
     /// unavailable; callers must read [`RegexAnalysisRecord::availability`]
     /// rather than treating resolution as a completeness claim.
+    ///
+    /// Resolution is **positional and generation-unchecked**, like every other
+    /// lookup on this table. An anchor identifies a range, not a source
+    /// snapshot, so resolving one against a table built from different source
+    /// succeeds and answers about the wrong text — most easily after an edit
+    /// that leaves a construct at the same offsets. Verify the pairing with
+    /// [`Self::source_matches`] against the source the anchors were lowered
+    /// from before resolving. See `RegexAnalysisAnchor` and #14658.
     #[must_use]
     pub fn find_enclosed_by(
         &self,

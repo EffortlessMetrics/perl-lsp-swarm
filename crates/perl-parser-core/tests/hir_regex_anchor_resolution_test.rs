@@ -231,6 +231,43 @@ fn a_match_record_does_not_answer_a_substitution_anchor() {
     );
 }
 
+// ── Freshness: resolution is positional, not generation-checked ──────────────
+
+#[test]
+fn a_stale_table_resolves_an_anchor_and_only_the_digest_catches_it() {
+    // Anchors are positions, and positions do not identify a source snapshot.
+    // `HirFile` carries no source identity, so pairing HIR from one parse with a
+    // table from another succeeds and answers about the wrong text — worst for
+    // an edit that leaves the construct at the same offsets.
+    //
+    // This pins the hazard rather than asserting it away: the mismatch is real
+    // and only `source_matches` detects it. A shared generation identity that
+    // makes it unrepresentable is #14658.
+    let lowered_from = "$x =~ s/a/b/;";
+    let edited = "$x =~ s/a/c/;";
+    assert_eq!(lowered_from.len(), edited.len(), "the edit must not move any offset");
+
+    let found = anchors(lowered_from);
+    assert_eq!(found.len(), 1);
+    let (range, family) = found[0];
+
+    let stale = table_for(edited);
+    let record = must_some_with(
+        stale.find_enclosed_by(range, family),
+        "a stale table still resolves the anchor — that is the hazard",
+    );
+    let span = record.full_range;
+    assert_eq!(
+        must_some_with(edited.get(span.start..span.end), "record range must be in bounds"),
+        "s/a/c/",
+        "resolution reports the edited source, not the source the body was lowered from"
+    );
+
+    // The escape hatch, and the reason a consumer must use it before resolving.
+    assert!(!stale.source_matches(lowered_from), "the digest must reject the stale pairing");
+    assert!(stale.source_matches(edited), "and accept its own source");
+}
+
 #[test]
 fn an_exact_range_does_not_bypass_the_family_filter_for_a_real_operator() {
     // Exact-range resolution deliberately accepts a record that carries *no*
