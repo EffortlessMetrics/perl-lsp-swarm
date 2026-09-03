@@ -654,12 +654,13 @@ pub fn plan_test_commands(
                             evidence.requirement(GeneratedArtifact::BlibRoots),
                             &working_dir,
                             evidence_matches_snapshot,
+                            None,
                         )],
                         test_roots.coverage,
                     )?);
                 }
             }
-            Some(RunnerShape::Make) => {
+            Some(RunnerShape::Make(flavor)) => {
                 for build in active_build_systems(snapshot, BuildFamily::MakeMaker) {
                     candidates.push(build_candidate(
                         snapshot,
@@ -676,6 +677,7 @@ pub fn plan_test_commands(
                             evidence.requirement(GeneratedArtifact::Makefile),
                             &working_dir,
                             evidence_matches_snapshot,
+                            Some(flavor),
                         )],
                         // The `test` target chooses its own files from the
                         // generated makefile; this plan passes no test roots, so
@@ -696,6 +698,7 @@ pub fn plan_test_commands(
         evidence.requirement(GeneratedArtifact::BuildScript),
         &working_dir,
         evidence_matches_snapshot,
+        None,
     );
     for build in active_build_systems(snapshot, BuildFamily::ModuleBuild) {
         let Some(authority) = input_authority(snapshot, &build.input_id) else {
@@ -774,7 +777,7 @@ pub fn plan_test_commands(
 
 enum RunnerShape {
     Prove,
-    Make,
+    Make(MakeFlavor),
 }
 
 #[derive(Clone, Copy)]
@@ -791,10 +794,14 @@ enum BuildFamily {
 fn classify_runner(role: &ToolCandidateRole, logical_name: &str) -> Option<RunnerShape> {
     match role {
         ToolCandidateRole::TestRunner if logical_name == "prove" => Some(RunnerShape::Prove),
-        ToolCandidateRole::TestRunner | ToolCandidateRole::BuildTool
-            if matches!(logical_name, "make" | "gmake" | "dmake" | "nmake") =>
-        {
-            Some(RunnerShape::Make)
+        ToolCandidateRole::TestRunner | ToolCandidateRole::BuildTool => {
+            let flavor = match logical_name {
+                "make" | "gmake" => MakeFlavor::Gnu,
+                "nmake" => MakeFlavor::Nmake,
+                "dmake" => MakeFlavor::Dmake,
+                _ => return None,
+            };
+            Some(RunnerShape::Make(flavor))
         }
         _ => None,
     }
@@ -917,13 +924,35 @@ fn relative_test_directories(
     TestRootArguments { arguments: directories, coverage }
 }
 
-/// Whether a name is one `make` will discover in its working directory.
+/// Which launcher will invoke `make test`.
 ///
-/// GNU make looks for `GNUmakefile`, `makefile`, then `Makefile`; ExtUtils::
-/// MakeMaker generates the last. Anything else in the directory is a file the
-/// emitted `make test` would never read.
-fn is_discoverable_makefile(relative: &str) -> bool {
-    matches!(relative, "Makefile" | "makefile" | "GNUmakefile")
+/// The launcher decides which makefile filenames it will *discover* when no
+/// `-f` / `/F` is passed. Applying GNU make's defaults to `nmake` or `dmake`
+/// would let evidence at `GNUmakefile` mark a command Ready that would never
+/// read that file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MakeFlavor {
+    /// GNU make — the `make` on Linux, `gmake` elsewhere. Discovers
+    /// `GNUmakefile`, `makefile`, then `Makefile`.
+    Gnu,
+    /// Microsoft nmake. Without `/F`, discovers `MAKEFILE` in the working
+    /// directory; the Windows filesystem is case-insensitive at the FS layer
+    /// but the observation is a captured string, so both spellings are
+    /// accepted.
+    Nmake,
+    /// Digital Mars dmake. Discovers `makefile` and `Makefile` by default.
+    Dmake,
+}
+
+impl MakeFlavor {
+    /// Whether this launcher will discover the makefile at `name` without a
+    /// filename passed on the command line.
+    fn discovers(self, name: &str) -> bool {
+        match self {
+            Self::Gnu => matches!(name, "Makefile" | "makefile" | "GNUmakefile"),
+            Self::Nmake | Self::Dmake => matches!(name, "Makefile" | "makefile"),
+        }
+    }
 }
 
 /// Whether an observed path is the working directory itself, not a file in it.
@@ -950,6 +979,28 @@ fn is_workspace_blib(working_dir: &EnvironmentPathRef, candidate: &str) -> bool 
     })
 }
 
+/// Which characters this platform recognizes as a path separator.
+///
+/// Windows accepts both `/` and `\\`; POSIX accepts only `/`, and a backslash
+/// is a legal filename character there. The snapshot does not carry a platform
+/// tag, so the parent's own shape decides: a `\\` in the parent means the
+/// producer emitted a Windows path and the child is read the same way; a parent
+/// with only forward slashes is POSIX, and treating `\\` as a separator there
+/// would fabricate a child from a sibling whose name literally contains one.
+const fn path_separators(parent: &str) -> &'static [char] {
+    // `str::contains(char)` is not `const`, so scan by bytes; a backslash is
+    // ASCII, so a byte scan is equivalent to a char scan for this predicate.
+    let bytes = parent.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\\' {
+            return &['/', '\\'];
+        }
+        index += 1;
+    }
+    &['/']
+}
+
 /// Strip a normalized parent prefix, returning the child portion.
 ///
 /// Returns `None` when `child` is not under `parent`. Both inputs are already
@@ -966,26 +1017,41 @@ fn is_workspace_blib(working_dir: &EnvironmentPathRef, candidate: &str) -> bool 
 /// is encoded as `./-name` rather than refused. Dropping it would fall back to
 /// the conventional default and silently run a *different* directory than the
 /// project declared.
+///
+/// Which characters count as separators is decided by the parent — see
+/// [`path_separators`]. On POSIX a `\\` in the child is a filename character,
+/// so `/ws\\outside/t` is a sibling of `/ws`, not a child.
 fn relative_child(parent: &str, child: &str) -> Option<String> {
-    let trimmed_parent = parent.trim_end_matches(['/', '\\']);
+    let separators = path_separators(parent);
+    let trimmed_parent = parent.trim_end_matches(separators);
     let remainder = child.strip_prefix(trimmed_parent)?;
-    let relative = remainder.trim_start_matches(['/', '\\']);
 
     // The child *is* the parent. Relative to the working directory that is the
     // current directory, which is a usable argument — reporting it as
     // unrelatable would substitute a different directory than the one declared.
-    if relative.is_empty() {
+    if remainder.is_empty() {
         return Some(CURRENT_DIRECTORY.to_string());
     }
 
-    if !trimmed_parent.is_empty() && !remainder.starts_with(['/', '\\']) {
+    // Only a separator opens a new segment. `starts_with` on a `&[char]`
+    // checks the first char against each in turn.
+    if !trimmed_parent.is_empty() && !remainder.starts_with(separators) {
         return None;
+    }
+
+    let relative = remainder.trim_start_matches(separators);
+    if relative.is_empty() {
+        return Some(CURRENT_DIRECTORY.to_string());
     }
     if is_absolute_path(relative) {
         return None;
     }
 
-    let relative = relative.replace('\\', "/");
+    // On Windows both separators are legal; normalize to `/` so the emitted
+    // argument is uniform. On POSIX a `\\` is a filename character and must
+    // survive verbatim — replacing it would silently rename a file.
+    let relative =
+        if separators.contains(&'\\') { relative.replace('\\', "/") } else { relative.to_string() };
     if relative.starts_with('-') {
         return Some(format!("{CURRENT_DIRECTORY}/{relative}"));
     }
@@ -1072,6 +1138,11 @@ fn bind_requirement_to_working_dir(
     mut requirement: GeneratedStateRequirement,
     working_dir: &EnvironmentPathRef,
     evidence_matches_snapshot: bool,
+    // Only the [`GeneratedArtifact::Makefile`] arm consults the launcher, so
+    // this is `None` for `BuildScript` and `BlibRoots`. A `None` reaching the
+    // Makefile arm is a caller wiring bug; treated as undiscoverable so a
+    // misroute cannot produce a Ready candidate.
+    make_flavor: Option<MakeFlavor>,
 ) -> GeneratedStateRequirement {
     let artifact = requirement.artifact.identity_tag();
     let downgrade = |requirement: &mut GeneratedStateRequirement, suffix: &str| {
@@ -1112,14 +1183,15 @@ fn bind_requirement_to_working_dir(
                 // `make test` reads the makefile in its working directory and
                 // `./Build test` runs the script there; neither is given a
                 // path, so the artifact must be directly in that directory.
-                // `make test` is passed no `-f`, so it discovers its makefile
-                // *by name* in the working directory. Any other direct child is
-                // therefore not the file this command would read, however
-                // current the observation is.
-                GeneratedArtifact::Makefile => {
+                // `make test` is passed no `-f` (or `/F`), so it discovers its
+                // makefile *by name* — and the name it discovers depends on the
+                // launcher. `nmake` looks for `MAKEFILE`, not `GNUmakefile`; a
+                // launcher-blind discovery set would mark `nmake test` Ready
+                // against a file that command would never read.
+                GeneratedArtifact::Makefile => make_flavor.is_some_and(|flavor| {
                     relative_child(&working_dir.normalized, &path.normalized)
-                        .is_some_and(|relative| is_discoverable_makefile(&relative))
-                }
+                        .is_some_and(|relative| flavor.discovers(&relative))
+                }),
                 // The Build script is different: its path becomes the program,
                 // so the command reads exactly what was observed and the file
                 // name carries no meaning. Requiring one would reject the
@@ -1509,8 +1581,20 @@ mod tests {
             Some(RunnerShape::Prove)
         ));
         assert!(matches!(
+            classify_runner(&ToolCandidateRole::BuildTool, "make"),
+            Some(RunnerShape::Make(MakeFlavor::Gnu))
+        ));
+        assert!(matches!(
             classify_runner(&ToolCandidateRole::BuildTool, "gmake"),
-            Some(RunnerShape::Make)
+            Some(RunnerShape::Make(MakeFlavor::Gnu))
+        ));
+        assert!(matches!(
+            classify_runner(&ToolCandidateRole::BuildTool, "nmake"),
+            Some(RunnerShape::Make(MakeFlavor::Nmake))
+        ));
+        assert!(matches!(
+            classify_runner(&ToolCandidateRole::BuildTool, "dmake"),
+            Some(RunnerShape::Make(MakeFlavor::Dmake))
         ));
         assert!(classify_runner(&ToolCandidateRole::TestRunner, "yath").is_none());
         assert!(classify_runner(&ToolCandidateRole::Formatter, "prove").is_none());

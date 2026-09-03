@@ -1087,6 +1087,170 @@ fn an_assumed_test_directory_is_recorded_as_a_limitation() -> Result<(), Fixture
     Ok(())
 }
 
+/// `\` is a legal filename character on POSIX; only `/` is a path separator
+/// there. If containment treats `\` as a separator regardless of platform, the
+/// sibling `/ws\outside/t` reduces to `outside/t` under the parent `/ws` and
+/// silently becomes a Ready command targeting a directory that is neither
+/// declared nor beneath the workspace. Rules out: a platform-blind separator
+/// set that fabricates a child from a POSIX sibling.
+#[test]
+fn a_posix_sibling_containing_a_backslash_is_not_a_child() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.prove");
+    let test_input = accepted_input("root.test");
+    // Parent `/ws` is a POSIX path (no backslash). Child `/ws\outside/t` shares
+    // its textual prefix but is a sibling: on POSIX the `\` after `/ws` is part
+    // of a filename, so the child sits under `/` and not under `/ws`.
+    let snapshot = builder
+        .with_input(tool_input.clone())
+        .with_input(test_input.clone())
+        .with_tool_candidate(prove_tool(tool_input.id.clone()))
+        .with_project_root(ProjectRoot::new(
+            ProjectRootRole::Test,
+            path("/ws\\outside/t"),
+            test_input.id.clone(),
+        ))
+        .build()?;
+
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+    let prove = candidates_of(&plan.candidates, TestRunnerKind::Prove);
+
+    for candidate in &prove {
+        assert_eq!(
+            candidate.argv,
+            vec!["-l".to_string(), "t".to_string()],
+            "the sibling must fall back to the assumed default, not fabricate `outside/t`"
+        );
+        assert_eq!(
+            candidate.admission,
+            TestCommandAdmission::BlockedIncompleteTestRoots,
+            "a command that silently substitutes for a declared root is not ready"
+        );
+    }
+    assert!(
+        plan.limitations
+            .iter()
+            .any(|item| item.code == "test_command.test_root_outside_working_directory"),
+        "the sibling is reported, not silently dropped"
+    );
+    Ok(())
+}
+
+/// On POSIX, a backslash is a legal filename character, so an emitted argument
+/// must preserve it verbatim rather than fabricating a subdirectory. Rules out:
+/// a platform-blind separator normalization that turns `wa\it` into `wa/it`.
+#[test]
+fn a_posix_child_backslash_survives_as_a_filename() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.prove");
+    let test_input = accepted_input("root.test");
+    let snapshot = builder
+        .with_input(tool_input.clone())
+        .with_input(test_input.clone())
+        .with_tool_candidate(prove_tool(tool_input.id.clone()))
+        .with_project_root(ProjectRoot::new(
+            ProjectRootRole::Test,
+            path("/ws/wa\\it/t"),
+            test_input.id.clone(),
+        ))
+        .build()?;
+
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+    let prove = candidates_of(&plan.candidates, TestRunnerKind::Prove);
+    let candidate = prove.first().ok_or(FixtureError::Missing("prove"))?;
+
+    assert_eq!(
+        candidate.argv,
+        vec!["-l".to_string(), "wa\\it/t".to_string()],
+        "a POSIX filename backslash must not become a path separator"
+    );
+    Ok(())
+}
+
+/// Windows paths remain first-class: the containment rule is driven by the
+/// parent's separator style, so a genuine `C:\ws\t` child of `C:\ws` still
+/// resolves. Rules out: overcorrecting the POSIX fix into a POSIX-only helper.
+#[test]
+fn a_windows_backslash_child_still_resolves() -> Result<(), FixtureError> {
+    let root_input = accepted_input("root.workspace");
+    let tool_input = accepted_input("tool.prove");
+    let test_input = accepted_input("root.test");
+    let snapshot =
+        ProjectEnvironmentSnapshotBuilder::new(WORKSPACE_ID, 11, WorkspaceTrust::Trusted)
+            .with_input(root_input.clone())
+            .with_input(tool_input.clone())
+            .with_input(test_input.clone())
+            .with_project_root(ProjectRoot::new(
+                ProjectRootRole::Workspace,
+                path("C:\\ws"),
+                root_input.id.clone(),
+            ))
+            .with_project_root(ProjectRoot::new(
+                ProjectRootRole::Test,
+                path("C:\\ws\\t\\basic"),
+                test_input.id.clone(),
+            ))
+            .with_tool_candidate(prove_tool(tool_input.id.clone()))
+            .build()?;
+
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+    let prove = candidates_of(&plan.candidates, TestRunnerKind::Prove);
+    let candidate = prove.first().ok_or(FixtureError::Missing("prove"))?;
+
+    assert_eq!(candidate.argv, vec!["-l".to_string(), "t/basic".to_string()]);
+    assert_eq!(candidate.admission, TestCommandAdmission::Ready);
+    Ok(())
+}
+
+/// `nmake` does not discover `GNUmakefile` — without `/F`, it looks for
+/// `MAKEFILE` in the current directory. Applying GNU make's default filenames
+/// to every classified make launcher would mark `nmake test` Ready against
+/// evidence pointing at a file that command would never read. Rules out: a
+/// launcher-blind discovery set.
+#[test]
+fn discoverable_makefile_names_depend_on_the_launcher() -> Result<(), FixtureError> {
+    for (launcher, location, expected) in [
+        // GNU make discovers all three.
+        ("make", "/ws/GNUmakefile", TestCommandAdmission::Ready),
+        ("make", "/ws/makefile", TestCommandAdmission::Ready),
+        ("make", "/ws/Makefile", TestCommandAdmission::Ready),
+        ("gmake", "/ws/GNUmakefile", TestCommandAdmission::Ready),
+        // nmake does not discover the GNU variant.
+        ("nmake", "/ws/GNUmakefile", TestCommandAdmission::NotProvenGeneratedState),
+        ("nmake", "/ws/Makefile", TestCommandAdmission::Ready),
+        // dmake likewise.
+        ("dmake", "/ws/GNUmakefile", TestCommandAdmission::NotProvenGeneratedState),
+        ("dmake", "/ws/Makefile", TestCommandAdmission::Ready),
+    ] {
+        let (builder, _) = base_builder();
+        let tool_input = accepted_input(&format!("tool.{launcher}"));
+        let build_input = accepted_input("build.eumm");
+        let snapshot = builder
+            .with_input(tool_input.clone())
+            .with_input(build_input.clone())
+            .with_tool_candidate(make_tool(launcher, tool_input.id.clone()))
+            .with_build_system(build_fact(
+                BuildSystemKind::ExtUtilsMakeMaker,
+                build_input.id.clone(),
+            ))
+            .build()?;
+
+        let evidence = GeneratedStateEvidence::for_snapshot(&snapshot).with_observation(
+            GeneratedArtifact::Makefile,
+            observed(GeneratedStateFreshness::Current, Some(location)),
+        );
+        let plan = plan_test_commands(&snapshot, &evidence)?;
+        let make = candidates_of(&plan.candidates, TestRunnerKind::MakeTest);
+        let candidate = make.first().ok_or(FixtureError::Missing("make test"))?;
+
+        assert_eq!(
+            candidate.admission, expected,
+            "admission for `{launcher} test` against evidence at {location}"
+        );
+    }
+    Ok(())
+}
+
 /// The Build launcher's observed path *becomes the program*, so it must be able
 /// to name a file. The working directory is a directory, and `relative_child`
 /// reduces it to `.` — a legitimate answer for a test-root argument, but never a
