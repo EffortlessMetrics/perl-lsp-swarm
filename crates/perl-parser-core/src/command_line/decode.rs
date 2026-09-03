@@ -731,10 +731,36 @@ fn scan_module_option_name(body: &str) -> Result<usize, ModuleNameScanError> {
 /// (`Foo::` loads `Foo/.pm`) while a trailing apostrophe opens a string, so
 /// `-MFoo'` dies on an unterminated string rather than loading anything.
 fn classify_module_name(text: &str) -> ModuleNameClass {
+    match scan_name(text, NameCharacters::Ascii) {
+        Ok(()) => ModuleNameClass::PlainName,
+        Err(rest) => match rest.chars().next() {
+            // The scan stopped at non-ASCII text, which `utf8` would make a
+            // name character — so the scan would run *past* it. Ask whether the
+            // argument would be a plain name once it does. If it breaks anyway,
+            // it is a name under no source context, and answering "cannot tell"
+            // would hide an injection that really runs.
+            Some(character) if !character.is_ascii() => {
+                match scan_name(text, NameCharacters::AsciiOrWide) {
+                    Ok(()) => ModuleNameClass::DependsOnSourceContext,
+                    Err(_) => ModuleNameClass::NotAName,
+                }
+            }
+            // It stopped at ASCII text, or ran out of argument (`-MFoo'` opens
+            // a string). No pragma moves either.
+            _ => ModuleNameClass::NotAName,
+        },
+    }
+}
+
+/// Scan `text` as a module name over `alphabet`, reporting where it broke.
+///
+/// `Err` carries the unread remainder, whose first character is the text that
+/// ended the name.
+fn scan_name(text: &str, alphabet: NameCharacters) -> Result<(), &str> {
     const LEGACY_SEPARATOR: char = '\'';
 
-    let Some((first, mut rest)) = split_leading_component(text) else {
-        return broke_at(text);
+    let Some((first, mut rest)) = split_leading_component(text, alphabet) else {
+        return Err(text);
     };
     // The first component always leads with ASCII, whatever `utf8` says: perl's
     // option scan is byte-wise, so a non-ASCII first byte leaves it having read
@@ -743,24 +769,21 @@ fn classify_module_name(text: &str) -> ModuleNameClass {
     let mut characters = first.chars();
     let leads = matches!(characters.next(), Some(c) if c.is_ascii_alphabetic() || c == '_');
     if !leads {
-        return broke_at(first);
+        return Err(first);
     }
 
     loop {
         if rest.is_empty() {
-            return ModuleNameClass::PlainName;
+            return Ok(());
         }
         let (separator_is_legacy, after) = if let Some(after) = rest.strip_prefix("::") {
             (false, after)
         } else if let Some(after) = rest.strip_prefix(LEGACY_SEPARATOR) {
             (true, after)
         } else {
-            // The character that ends the name decides the answer. `-Mstrict;…`
-            // breaks at an ASCII `;` and is arbitrary code whatever `utf8` says,
-            // while `-MFooα` breaks at text whose meaning depends on it.
-            return broke_at(rest);
+            return Err(rest);
         };
-        match split_leading_component(after) {
+        match split_leading_component(after, alphabet) {
             Some((component, remainder)) => {
                 // A later component may lead with a digit, unlike the first —
                 // but only after `::`. The apostrophe is a package separator
@@ -771,15 +794,21 @@ fn classify_module_name(text: &str) -> ModuleNameClass {
                 //   perl -MFoo'_x   -e1 → Old package separator "'" deprecated
                 //   perl -MFoo'1    -e1 → Can't find string terminator "'"
                 //   perl -MFoo::'1  -e1 → Can't find string terminator "'"
+                //
+                // Under `utf8` a later component may also lead with non-ASCII
+                // text — `perl -Mutf8 -MFoo::á` loads `Foo/á.pm` and
+                // `perl -Mutf8 -MFoo'á` only warns about the separator — so the
+                // permissive alphabet admits that lead after either separator.
                 let mut characters = component.chars();
                 let leads = matches!(characters.next(), Some(c) if c == '_'
+                || alphabet.admits_wide(c)
                 || if separator_is_legacy {
                     c.is_ascii_alphabetic()
                 } else {
                     c.is_ascii_alphanumeric()
                 });
                 if !leads {
-                    return broke_at(component);
+                    return Err(component);
                 }
                 rest = remainder;
             }
@@ -793,7 +822,7 @@ fn classify_module_name(text: &str) -> ModuleNameClass {
             // Continuing here rather than returning is what lets the next
             // separator be read. It terminates because each pass removes at
             // least one separator byte from `rest`.
-            None if separator_is_legacy => return broke_at(after),
+            None if separator_is_legacy => return Err(after),
             None => rest = after,
         }
     }
@@ -803,34 +832,54 @@ fn classify_module_name(text: &str) -> ModuleNameClass {
 enum ModuleNameClass {
     /// A plain `Foo::Bar` name, decided from argv alone.
     PlainName,
-    /// Not a name, and the text that proves it is ASCII — so Perl source
-    /// context cannot change the answer.
+    /// Not a name under any source context.
+    ///
+    /// Either the name grammar broke at ASCII text, which no pragma moves, or
+    /// it broke at non-ASCII text and still breaks when every non-ASCII
+    /// character is granted name status — `-MFooα;print 999` runs the `print`
+    /// under `-Mutf8` and dies without it, so it is a name in neither.
     NotAName,
-    /// The name grammar broke at non-ASCII text, whose meaning depends on
-    /// whether `utf8` is in force.
+    /// A plain name exactly when `utf8` is in force, so argv alone cannot say.
+    ///
+    /// `-MFooα` loads `Fooα.pm` under the pragma and dies without it. Settling
+    /// which applies means knowing whether an earlier arbitrary `-M` expression
+    /// turned it on, which is Perl source — layer 3.
     DependsOnSourceContext,
 }
 
-/// Classify a failure by the text that ended the name.
+/// Which characters a name scan accepts inside a component.
 ///
-/// This is the whole distinction between the two ambiguities: `-Mstrict;print
-/// "α"` stops at an ASCII `;` and really is arbitrary code — it runs and prints
-/// with or without an earlier `-Mutf8` — while `-MFooα` stops at text that is a
-/// module name under the pragma and a syntax error without it. Testing the
-/// argument as a whole would let one stray non-ASCII byte anywhere downgrade a
-/// definite injection report to "cannot tell".
-fn broke_at(remaining: &str) -> ModuleNameClass {
-    match remaining.chars().next() {
-        Some(character) if !character.is_ascii() => ModuleNameClass::DependsOnSourceContext,
-        _ => ModuleNameClass::NotAName,
+/// The two readings answer the two questions this layer can settle from argv
+/// alone: is the argument a plain name as written, and would it be one if
+/// `utf8` were in force?
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NameCharacters {
+    /// What Perl reads with no `utf8` pragma in effect.
+    Ascii,
+    /// The same, plus *any* non-ASCII character.
+    ///
+    /// Deliberately wider than Perl's real identifier rule, which admits only
+    /// characters with the appropriate Unicode properties. Being a superset is
+    /// what makes it usable without those tables: whatever this scan rejects,
+    /// Perl rejects too, so a rejection here is decisive while acceptance only
+    /// means "possible", which is exactly
+    /// [`ModuleNameClass::DependsOnSourceContext`].
+    AsciiOrWide,
+}
+
+impl NameCharacters {
+    /// Whether this reading admits `character` on the strength of it being
+    /// non-ASCII.
+    fn admits_wide(self, character: char) -> bool {
+        self == NameCharacters::AsciiOrWide && !character.is_ascii()
     }
 }
 
 /// Split off the leading run of name characters, if any.
-fn split_leading_component(text: &str) -> Option<(&str, &str)> {
+fn split_leading_component(text: &str, alphabet: NameCharacters) -> Option<(&str, &str)> {
     let length: usize = text
         .chars()
-        .take_while(|character| is_name_character(*character))
+        .take_while(|character| is_name_character(*character, alphabet))
         .map(char::len_utf8)
         .sum();
     if length == 0 {
@@ -852,6 +901,6 @@ fn split_leading_component(text: &str) -> Option<(&str, &str)> {
 /// perl -MFooα -Mutf8 -e1 → Unrecognized character \xCE   (order matters)
 /// perl -MFoo2        -e1 → Can't locate Foo2.pm in @INC  (the ASCII control)
 /// ```
-fn is_name_character(character: char) -> bool {
-    character.is_ascii_alphanumeric() || character == '_'
+fn is_name_character(character: char, alphabet: NameCharacters) -> bool {
+    character.is_ascii_alphanumeric() || character == '_' || alphabet.admits_wide(character)
 }

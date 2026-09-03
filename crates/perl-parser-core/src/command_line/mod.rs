@@ -50,9 +50,11 @@
 //!   `perl -Mutf8 -MFooα` loads `Fooα.pm` while `perl -MFooα -Mutf8` dies, and
 //!   an arbitrary expression such as `-M'strict;use utf8'` flips it too. Those
 //!   are reported as undecidable rather than classified — see
-//!   [`AmbiguityKind::ModuleNameDependsOnSourceContext`]. An argument that
-//!   already stopped being a name at an ASCII character stays arbitrary code,
-//!   so `-M'strict;print "α"'` is reported as such;
+//!   [`AmbiguityKind::ModuleNameDependsOnSourceContext`]. Undecidable means the
+//!   pragma really would settle it: an argument that is not a plain name under
+//!   `utf8` either stays arbitrary code, so both `-M'strict;print "α"'` (which
+//!   breaks before the non-ASCII text) and `-M'Fooα;print 999'` (which breaks
+//!   after it, and prints `999` under `-Mutf8`) are reported as such;
 //! - a value-taking switch consumes the rest of its cluster, so `-ine` is `-i`
 //!   with the extension `ne`, not `-i -n -e`;
 //! - `-l` and `-0` consume octal digits and then keep bundling, so `-lane` is

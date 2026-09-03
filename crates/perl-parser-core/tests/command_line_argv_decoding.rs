@@ -820,6 +820,39 @@ fn a_non_ascii_module_name_is_reported_as_undecidable_rather_than_guessed() {
         );
     }
 
+    // Non-ASCII text ends the name, but what follows it still decides. Under
+    // `utf8` the name scan would run *past* that text, so the argument is only
+    // undecidable when it would be a plain name once it does. When something
+    // after the non-ASCII run breaks the name anyway, the argument is arbitrary
+    // code in both readings, and reporting "cannot tell" would hide injection
+    // that really runs. Verified against 5.38.2 with the modules made
+    // resolvable, so the load could not mask the suffix:
+    //
+    //   perl -I. -Mutf8 -MFooα';print 999'      -e1 → LOADED 999
+    //   perl -I. -MFooα';print 999'             -e1 → Unrecognized character \xCE
+    //   perl -I. -Mutf8 -MFooα::Bar';print 999' -e1 → 999
+    //   perl -Mutf8 -MFooα+                     -e1 → syntax error near "+;"
+    //   perl -Mutf8 -MFooα=a,b                  -e1 → syntax error near "use Fooα="
+    //
+    // The last one is the reason the permissive reading must not treat `=` as
+    // an import-argument split: perl's option scan is byte-wise and stops at
+    // `\xCE` before ever reaching the `=`, so `=a,b` stays inside the spliced
+    // expression and `Fooα=a,b` is not a name under the pragma either.
+    for expression in ["Fooα;print 999", "Fooα::Bar;print 999", "Fooα+", "Fooα=a,b"] {
+        let argv = format!("-M{expression}");
+        let injected = perl(&[argv.as_str(), "-e", "print"]);
+        let ContextFactKind::ModuleImport { form, spec } = &facts(&injected)[0] else {
+            panic!("expected a module import for {expression}");
+        };
+        assert!(!spec.module_is_plain_name, "{expression:?} is not a name either way");
+        assert_eq!(spec.import_action(*form), ModuleImportAction::Undetermined);
+        assert_eq!(
+            injected.ambiguities.iter().map(|a| a.kind).collect::<Vec<_>>(),
+            vec![AmbiguityKind::ModuleExpressionIsNotAModuleName],
+            "{expression:?} is not a name under any pragma, so it is not undecidable",
+        );
+    }
+
     // Ordinary ASCII names stay decidable, so the boundary is not a blanket
     // refusal: `perl -MFoo2` looks for `Foo2.pm` with or without the pragma.
     let plain = perl(&["-MFoo2", "-e", "print"]);

@@ -120,14 +120,22 @@ pub struct ModuleSpec {
     /// Whether `module` is *decidably* a plain `Foo::Bar` module name — one
     /// this layer can classify from argv alone, which means an ASCII one.
     ///
-    /// A false answer has two causes, told apart by the recorded ambiguity and
-    /// decided by the text that *ended* the name rather than by the argument as
-    /// a whole. [`AmbiguityKind::ModuleExpressionIsNotAModuleName`] means the
-    /// name broke at ASCII text, so it is arbitrary code whatever Perl source
-    /// context applies: `-M'strict;print 99'` runs at compile time, and so does
-    /// `-M'strict;print "α"'` — the non-ASCII byte inside the code changes
-    /// nothing. [`AmbiguityKind::ModuleNameDependsOnSourceContext`] is recorded
-    /// only when the name itself broke at non-ASCII text.
+    /// A false answer has two causes, told apart by the recorded ambiguity.
+    /// [`AmbiguityKind::ModuleExpressionIsNotAModuleName`] means the argument is
+    /// arbitrary code whatever Perl source context applies: `-M'strict;print
+    /// 99'` runs at compile time, and so does `-M'strict;print "α"'` — a
+    /// non-ASCII byte *inside* the code changes nothing.
+    /// [`AmbiguityKind::ModuleNameDependsOnSourceContext`] is recorded only when
+    /// the answer genuinely turns on the pragma.
+    ///
+    /// Which applies is decided by reading the argument under both available
+    /// readings, not by the single character that ended the name. `-MFooα`
+    /// stops at non-ASCII text and *is* a plain name once `utf8` grants that
+    /// text name status, so it is undecidable. `-MFooα;print 999` stops at the
+    /// same character but still breaks at the `;` under that reading, so it is
+    /// arbitrary code either way — verified: it prints `999` under `-Mutf8` and
+    /// dies without it. Stopping at the break character alone would report that
+    /// injection as merely undecidable.
     pub module_is_plain_name: bool,
 }
 
