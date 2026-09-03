@@ -150,7 +150,14 @@ MIN_ABBREV = 7
 # This stays structural, like every other check here. It cannot judge whether
 # `PROMOTE` was the right call on #4192; review owns that.
 RULING_TOKEN = re.compile(r"`([A-Z][A-Z_]{2,})`")
-PROVISIONAL_RULINGS = frozenset(
+# Matched per underscore-separated word, not against the whole token. An exact
+# blacklist rejects `PENDING` and waves `PENDING_REVIEW` and `DRAFT_PROMOTE`
+# through, which is the same hole one level down -- and answering it by naming
+# those two would just invite the next compound. A disposition qualified by a
+# provisional word is provisional whatever it is qualified with, so the word is
+# what gets matched. `NOT_PROVEN` and `SUPERSEDED_OR_CLOSE` are unaffected:
+# their components say a decision was reached.
+PROVISIONAL_WORDS = frozenset(
     {
         "PENDING",
         "TBD",
@@ -158,11 +165,15 @@ PROVISIONAL_RULINGS = frozenset(
         "DRAFT",
         "PROPOSED",
         "ONGOING",
-        "IN_PROGRESS",
+        "PROGRESS",
         "UNDECIDED",
         "UNKNOWN",
         "DEFERRED",
         "BLOCKED",
+        # The ledger refuses a soft third `Status`; a ruling that records one is
+        # the same claim moved one field over.
+        "PARTIAL",
+        "PARTIALLY",
     }
 )
 
@@ -188,7 +199,12 @@ def ruling_defect(ruling: str) -> str | None:
             "names no disposition; a terminal ruling carries a backticked "
             "token such as `PROMOTE`"
         )
-    provisional = sorted(tokens & PROVISIONAL_RULINGS)
+    provisional = sorted(
+        word
+        for token in tokens
+        for word in token.split("_")
+        if word in PROVISIONAL_WORDS
+    )
     if provisional:
         return f"is still provisional ({', '.join(provisional)})"
     return None
@@ -523,6 +539,12 @@ class WorkedLaneLedgerTests(unittest.TestCase):
             "the ABSENT marker": "none",
             "nothing at all": "",
             "whitespace": "   ",
+            # An exact blacklist rejected `PENDING` and passed these, which is
+            # the same defect one level down: a disposition qualified by a
+            # provisional word is provisional whatever it is qualified with.
+            "a qualified pending state": "#4192 — `PENDING_REVIEW` until it lands",
+            "a provisional prefix": "#4192 — `DRAFT_PROMOTE`",
+            "a soft status as a ruling": "#5247 — `PARTIALLY_SATISFIED` so far",
         }
         for label, ruling in rejected.items():
             with self.subTest(rejected=label):
@@ -541,6 +563,10 @@ class WorkedLaneLedgerTests(unittest.TestCase):
             ),
             "a bare reference": "#4192 — `NOT_PROVEN` for cross-provider calibration",
             "an underscored token": "#5713 — `SUPERSEDED_OR_CLOSE` on the umbrella",
+            # Component matching must not swallow compounds whose words say a
+            # decision was reached -- the cost of over-reaching here is a
+            # correct ruling a writer cannot record.
+            "a negated but settled token": "#4179 — `NOT_PROVEN` for cross-provider coverage",
         }
         for label, ruling in accepted.items():
             with self.subTest(accepted=label):
