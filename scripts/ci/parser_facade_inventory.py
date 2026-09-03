@@ -256,7 +256,9 @@ def feature_source_gates(
 PRODUCTION_TARGET_KINDS = {"bin"}
 
 
-def target_required_features(manifest: dict[str, Any], kinds: set[str]) -> set[str]:
+def target_required_features(
+    manifest: dict[str, Any], kinds: set[str], package_root: Path
+) -> set[str]:
     """Features that gate whether a Cargo target of the given kinds is built at all.
 
     A binary is a shipped deliverable, so gating one is a production boundary. A
@@ -302,9 +304,11 @@ def feature_isolation(manifest: dict[str, Any], crate_root: Path) -> dict[str, s
     # A gate reachable only inside a `#[cfg(test)]` module is a test profile.
     test_gated = feature_source_gates(crate_root, FEATURE_TEST_DIRECTORIES)
     test_gated |= feature_source_gates(crate_root, FEATURE_PRODUCTION_DIRECTORIES) - gated
-    target_gated = target_required_features(manifest, PRODUCTION_TARGET_KINDS)
+    target_gated = target_required_features(manifest, PRODUCTION_TARGET_KINDS, crate_root)
     test_gated |= target_required_features(
-        manifest, {target.kind for target in cargo_targets(manifest)} - PRODUCTION_TARGET_KINDS
+        manifest,
+        {target.kind for target in cargo_targets(manifest, crate_root)} - PRODUCTION_TARGET_KINDS,
+        crate_root,
     )
 
     def closure(name: str) -> set[str]:
@@ -362,8 +366,16 @@ def feature_isolation(manifest: dict[str, Any], crate_root: Path) -> dict[str, s
     return result
 
 
-def cargo_targets(manifest: dict[str, Any]) -> set[CargoTarget]:
+def cargo_targets(manifest: dict[str, Any], package_root: Path | None = None) -> set[CargoTarget]:
+    """Inventory explicit and conventional Cargo targets.
+
+    Explicit target stanzas win over conventional discovery at the same path.  The
+    package-level ``auto*`` switches are honored, so a disabled family contributes no
+    implicit targets while explicit stanzas remain visible.
+    """
     result: set[CargoTarget] = set()
+    explicit_paths: set[Path] = set()
+    package_name = manifest.get("package", {}).get("name")
     for key in ("bin", "bench", "example", "test"):
         values = manifest.get(key, [])
         if not isinstance(values, list):
@@ -375,6 +387,55 @@ def cargo_targets(manifest: dict[str, Any]) -> set[CargoTarget]:
             if not isinstance(required, list) or any(not isinstance(item, str) for item in required):
                 raise ValueError(f"perl-parser [[{key}]] required-features are invalid")
             result.add(CargoTarget(key, value["name"], tuple(required)))
+            if package_root is not None:
+                default_path = {
+                    "bin": Path("src/main.rs") if value["name"] == package_name else Path("src/bin") / f"{value['name']}.rs",
+                    "bench": Path("benches") / f"{value['name']}.rs",
+                    "example": Path("examples") / f"{value['name']}.rs",
+                    "test": Path("tests") / f"{value['name']}.rs",
+                }[key]
+                explicit_paths.add(Path(value.get("path", default_path)))
+    if package_root is None:
+        return result
+
+    auto_enabled = {
+        "bin": manifest.get("package", {}).get("autobins", True),
+        "bench": manifest.get("package", {}).get("autobenches", True),
+        "example": manifest.get("package", {}).get("autoexamples", True),
+        "test": manifest.get("package", {}).get("autotests", True),
+    }
+    roots = {"bench": "benches", "example": "examples", "test": "tests"}
+    if auto_enabled["bin"]:
+        candidates = []
+        main = package_root / "src/main.rs"
+        if main.is_file():
+            candidates.append((Path("src/main.rs"), manifest.get("package", {}).get("name")))
+        candidates.extend(
+            (path.relative_to(package_root), path.stem)
+            for path in (package_root / "src/bin").rglob("*.rs")
+            if path.is_file() and path.name != "main.rs"
+        )
+    else:
+        candidates = []
+    for path, name in candidates:
+        if path not in explicit_paths and isinstance(name, str):
+            result.add(CargoTarget("bin", name, ()))
+    for kind, directory in roots.items():
+        if not auto_enabled[kind]:
+            continue
+        root = package_root / directory
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*.rs"):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(package_root)
+            relative_name = relative.relative_to(directory)
+            name = relative_name.with_suffix("").as_posix()
+            if relative_name.name == "main.rs":
+                name = relative_name.parent.as_posix()
+            if name and relative not in explicit_paths:
+                result.add(CargoTarget(kind, name, ()))
     return result
 
 
