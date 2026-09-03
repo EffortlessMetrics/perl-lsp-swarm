@@ -1072,6 +1072,32 @@ fn test2_value_tokens_before_division_do_not_open_a_match() {
     assert!(!bare_match_can_start("__FILE__ "), "a compile-time token divides");
     assert!(bare_match_can_start("grep "), "a call still opens a match");
     assert!(bare_match_can_start("__ "), "a bare `__` is not a compile-time token");
+
+    // Review finding (@devin-ai-integration on #14651). The set of compile-time
+    // tokens is closed; a user-defined `__helper__` is an ordinary subroutine
+    // name, so its argument slash opens a match like any other call's. Reading
+    // the *shape* instead would leave that pattern visible and cost the
+    // statement its symbols.
+    assert!(bare_match_can_start("__helper__ "), "a user-defined sub opens a match");
+    let helper = "-target => scalar(__helper__ /-as => Foo/), ok";
+    assert!(
+        !contains_transform_syntax(helper),
+        "a pattern passed to a user-defined sub is data, not transform syntax"
+    );
+    let resolved = resolve_with_analysis("Test2::V0", helper);
+    assert!(!resolved.analysis_limited, "an opaque target argument does not limit the statement");
+    assert!(
+        resolved.resolved.symbols.contains("ok"),
+        "the genuine import survives, got {:?}",
+        resolved.resolved.symbols
+    );
+    for fabricated in ["Foo", "-as", "as", "scalar", "__helper__"] {
+        assert!(
+            !resolved.resolved.symbols.contains(fabricated),
+            "{fabricated} must not be imported, got {:?}",
+            resolved.resolved.symbols
+        );
+    }
 }
 
 #[test]

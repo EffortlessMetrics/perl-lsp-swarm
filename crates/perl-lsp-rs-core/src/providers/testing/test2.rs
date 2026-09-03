@@ -604,8 +604,12 @@ fn bare_match_can_start(before: &str) -> bool {
         if word.starts_with(|c: char| c.is_ascii_digit()) {
             return false;
         }
-        // `__FILE__`-style tokens are compile-time values, never calls.
-        if word.len() > 4 && word.starts_with("__") && word.ends_with("__") {
+        // Perl's compile-time tokens are values, never calls. The set is
+        // closed: `__helper__` is an ordinary subroutine name, and the general
+        // bareword rule above already treats those as calls. Excluding the
+        // whole `__NAME__` *shape* would make this the one place a spelling,
+        // rather than structure, decided the question.
+        if matches!(word, "__FILE__" | "__LINE__" | "__PACKAGE__" | "__SUB__" | "__CLASS__") {
             return false;
         }
         return true;
