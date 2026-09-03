@@ -749,6 +749,101 @@ fn session_override_supplies_capability_until_it_expires() -> Result<(), Box<dyn
     Ok(())
 }
 
+/// An override's own scope is validated, like every other identity here.
+///
+/// `SessionOverride`'s fields are public, so a caller can supply one whose
+/// scope was never checked. Every other identity in the evidence is validated
+/// and bounded; skipping this one leaves an unbounded caller-authored string
+/// feeding `stable_id`, which is exactly the bound `MAX_IDENTIFIER_LEN` exists
+/// to hold.
+#[test]
+fn override_with_an_invalid_scope_is_rejected_by_validation() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 5)?;
+    let mut facts = evidence(
+        &scope,
+        WorkspaceTrust::Trusted,
+        AuthorizationActor::ExplicitUserAction { action_id: "format".to_string() },
+        &bound,
+        vec![path_only_tool()],
+    );
+    facts.session_override = Some(SessionOverride {
+        override_id: "session.grant.1".to_string(),
+        // Empty workspace id: rejected everywhere else, previously unchecked here.
+        scope: TrustScope::editor_workspace(""),
+        granted_policy_generation: 5,
+        expires_after_policy_generation: 6,
+        capabilities: CapabilitySet::new([ExecutionCapability::ExecutableTool]),
+        bound_input_ids: Vec::new(),
+    });
+
+    require(
+        facts.validate().is_err(),
+        "evidence carrying an override with an invalid scope must not validate",
+    )?;
+    Ok(())
+}
+
+/// An override minted for another scope grants nothing here.
+///
+/// This is the reason a malformed override scope cannot widen a decision:
+/// `is_current_for` requires the override's scope to equal the evidence scope,
+/// and the evidence scope is itself validated. So a scope that fails
+/// validation can never match one that passes, and the override falls out as
+/// not-current rather than granting. Pinning it means the validation above is
+/// defence in depth rather than the only thing standing between a forged
+/// override and an allow.
+#[test]
+fn override_for_a_foreign_scope_does_not_grant() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let foreign = TrustScope::editor_workspace("someone-elses-workspace");
+    let bound = generations("ws", 5)?;
+    let ambient = path_only_tool();
+
+    let mut facts = evidence(
+        &scope,
+        WorkspaceTrust::Trusted,
+        AuthorizationActor::ExplicitUserAction { action_id: "format".to_string() },
+        &bound,
+        vec![ambient.clone()],
+    );
+    facts.session_override = Some(SessionOverride {
+        override_id: "session.grant.1".to_string(),
+        scope: foreign,
+        granted_policy_generation: 5,
+        expires_after_policy_generation: 6,
+        capabilities: CapabilitySet::new([ExecutionCapability::ExecutableTool]),
+        bound_input_ids: Vec::new(),
+    });
+
+    require(facts.validate().is_ok(), "the foreign scope is well-formed, just not ours")?;
+
+    let decision = authorize(
+        &intent(
+            OperationProfile::ExternalFormatter,
+            ExecutionReasonClass::ExternalTool,
+            &scope,
+            &bound,
+            vec![ambient.id.clone()],
+        ),
+        &facts,
+    );
+
+    require(
+        decision.outcome() != AuthorizationOutcome::Allowed,
+        "an override minted for another workspace must not authorize this one",
+    )?;
+    require(
+        !decision.permits(ExecutionCapability::ExecutableTool),
+        "the foreign override must not supply the capability",
+    )?;
+    require(
+        has_reason(&decision, "session_override_not_current"),
+        "the outcome must say the override is not current for this scope",
+    )?;
+    Ok(())
+}
+
 /// Roots carrying different generations are different authorization subjects.
 #[test]
 fn distinct_roots_and_generations_are_distinct_subjects() -> Result<(), Box<dyn Error>> {

@@ -1349,6 +1349,13 @@ impl AuthorizationEvidence {
             }
         }
         if let Some(session_override) = &self.session_override {
+            // The override carries a caller-authored scope like any other, and
+            // its fields are public. Validating it keeps every identifier that
+            // reaches `stable_id` bounded. It is defence in depth rather than
+            // the load-bearing check: `is_current_for` already requires this
+            // scope to equal the validated evidence scope, so a malformed one
+            // falls out as not-current instead of granting.
+            session_override.scope.validate()?;
             if session_override.override_id.is_empty() {
                 return Err(AuthorizationError::EmptyOverrideId);
             }
