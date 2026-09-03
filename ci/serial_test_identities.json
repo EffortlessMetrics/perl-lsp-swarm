@@ -261,17 +261,17 @@
       "path": "crates/perl-tdd-support/src/tdd/test_runner.rs",
       "test_function": "tests::hermetic_perl_command_strips_perl5lib",
       "signals": "env_remove,env_set",
-      "accepted_reason": "Serialized in-file by a static Mutex guard (ENV_MUTEX) held for the whole test body, equivalent to #[serial] within this binary.",
-      "state": "active",
-      "remediation": "pending"
+      "accepted_reason": "The test configures PERL5LIB only on a selected child process; the parent test runner remains mutation-free.",
+      "state": "retired",
+      "remediation": "eliminated"
     },
     {
       "path": "crates/perl-tdd-support/src/tdd/test_runner.rs",
       "test_function": "tests::hermetic_perl_command_strips_perl5opt",
       "signals": "env_remove,env_set",
-      "accepted_reason": "Serialized in-file by a static Mutex guard (ENV_MUTEX) held for the whole test body, equivalent to #[serial] within this binary.",
-      "state": "active",
-      "remediation": "pending"
+      "accepted_reason": "The test configures PERL5OPT only on a selected child process; the parent test runner remains mutation-free.",
+      "state": "retired",
+      "remediation": "eliminated"
     },
     {
       "path": "xtask/src/test_support.rs",
