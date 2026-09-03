@@ -25,6 +25,7 @@ import pathlib
 import re
 import sys
 import zipfile
+import zlib
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
@@ -232,6 +233,11 @@ def package_artifacts(args: argparse.Namespace) -> int:
     output = pathlib.Path(args.output)
     exact_regular_file(server, "perllsp")
     exact_regular_file(dap, "perl-dap")
+    if server.name == dap.name:
+        raise ObservationError(
+            "perllsp and perl-dap must have distinct archive member names, "
+            f"got {server.name!r} for both"
+        )
 
     manifest = {
         "schema": PRODUCT_UNIT_SCHEMA,
@@ -337,8 +343,8 @@ def verify_product_unit(
                     f"product-unit manifest is unreadable: {error}"
                 )
                 return None
-    except zipfile.BadZipFile as error:
-        findings.append(f"product-unit archive is not a valid zip: {error}")
+    except (zipfile.BadZipFile, EOFError, OSError, zlib.error) as error:
+        findings.append(f"product-unit archive is not a readable zip: {error}")
         return None
 
     if not isinstance(manifest, dict):
@@ -603,12 +609,16 @@ def build_row(args: argparse.Namespace) -> int:
         ),
         "crash_recovery": stage_verdict(stages.get("crash_recovery_journey")),
         # A concrete selector is exact host evidence only when a bound smoke
-        # receipt actually ran against it; without the receipt the requested
-        # version is unobserved and stays not_proven.
+        # receipt actually ran against that same version; a receipt from
+        # another host version or a missing receipt stays not_proven.
         "host_version_exactness": (
-            "not_proven"
-            if args.vscode_version == "stable" or receipt is None
-            else "pass"
+            "pass"
+            if (
+                args.vscode_version != "stable"
+                and receipt is not None
+                and receipt.get("vscode_version") == args.vscode_version
+            )
+            else "not_proven"
         ),
         "source_generation_exactness": "not_proven",
         "native_critic_installed": "not_proven",
@@ -654,8 +664,11 @@ def build_row(args: argparse.Namespace) -> int:
         else:
             cells["packaged_provider_edit_journey"] = "unsupported_or_withdrawn"
 
-    cleanup_failure = receipt.get("cleanup_failure") if receipt else "not_observed"
-    if receipt is not None and cleanup_failure is None and behavioral_status == "pass":
+    # An absent cleanup_failure key is unobserved evidence, never proof of
+    # clean cleanup; only an explicitly null observed value can pass.
+    cleanup_reported = receipt is not None and "cleanup_failure" in receipt
+    cleanup_failure = receipt.get("cleanup_failure") if cleanup_reported else "not_observed"
+    if cleanup_reported and cleanup_failure is None and behavioral_status == "pass":
         cells["process_cleanup"] = "pass"
     elif cleanup_failure not in (None, "not_observed"):
         cells["process_cleanup"] = "instrument_defect"

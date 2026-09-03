@@ -62,6 +62,17 @@ ROW_ARTIFACT_NAME = "rolling-installed-row-${{ matrix.row_id }}"
 ROW_DOWNLOAD_PATTERN = "rolling-installed-row-*"
 FAN_IN_PACKET = "rolling_installed_public_beta_fan_in.json"
 DISPATCH_ONLY = "github.event_name == 'workflow_dispatch'"
+# The read-only mutation boundary extends to action identities: a publishing
+# step introduced through `uses:` carries no forbidden run token.
+ALLOWED_ACTIONS = {
+    "./.github/actions/setup-vscode-toolchain",
+    "Swatinem/rust-cache",
+    "actions/checkout",
+    "actions/download-artifact",
+    "actions/upload-artifact",
+    "dtolnay/rust-toolchain",
+    "shogo82148/actions-setup-perl",
+}
 
 
 class WorkflowError(RuntimeError):
@@ -245,6 +256,14 @@ def _require(condition: bool, message: str) -> None:
         raise WorkflowError(message)
 
 
+def _needs(job: Any) -> list[str]:
+    """Normalize a scalar or flow-list `needs` to a list for element checks."""
+    value = job.get("needs") if isinstance(job, dict) else None
+    if isinstance(value, str):
+        return [value]
+    return [item for item in value or [] if isinstance(item, str)]
+
+
 def _executable_lines(run: Any) -> list[str]:
     """Shell-executable lines of a run block: comments and blanks removed."""
     if not isinstance(run, str):
@@ -352,7 +371,7 @@ def validate(document: dict[str, Any]) -> None:
         "subject pinning must remain manual-only",
     )
     _require(
-        "contract" in (subject.get("needs") or []),
+        "contract" in _needs(subject),
         "subject pinning must remain downstream of contract tests",
     )
     _step_named(subject, "subject", "Require current default-branch tip and resolve identities")
@@ -373,7 +392,7 @@ def validate(document: dict[str, Any]) -> None:
         "platform rows must remain manual-only",
     )
     _require(
-        "subject" in (row.get("needs") or []),
+        "subject" in _needs(row),
         "platform rows must remain downstream of the pinned subject",
     )
     matrix = row.get("strategy", {}).get("matrix", {}).get("include")
@@ -482,6 +501,23 @@ def validate(document: dict[str, Any]) -> None:
                 f"rolling observation gained public mutation command: {forbidden}"
             )
 
+    # A publishing step introduced through `uses:` contains no forbidden run
+    # token, so the mutation boundary must also pin every action identity.
+    for job_name in jobs:
+        for step in _steps(jobs[job_name], job_name):
+            uses = step.get("uses")
+            if uses is None:
+                continue
+            _require(
+                isinstance(uses, str),
+                f"job {job_name} step uses must be a string: {uses!r}",
+            )
+            identity = uses.split("@", 1)[0]
+            _require(
+                identity in ALLOWED_ACTIONS,
+                f"job {job_name} uses unapproved action {uses!r}",
+            )
+
 
 # ---------------------------------------------------------------------------
 # Negative controls (text-level mutations that must all fail validation)
@@ -522,6 +558,19 @@ def expect_failure(text: str, mutation: str) -> None:
         mutated = text.replace(
             "PERL_LSP_SERVER_SOURCE_SHA",
             "REMOVED_SERVER_SOURCE_SHA",
+        )
+    elif mutation == "needs_contract_drift":
+        mutated = replace_once(text, "needs: contract", "needs: contract-lite", mutation)
+    elif mutation == "needs_subject_drift":
+        mutated = replace_once(text, "needs: subject\n", "needs: subject-preview\n", mutation)
+    elif mutation == "publishing_action":
+        mutated = replace_once(
+            text,
+            "      - name: Run receipt and fan-in falsifiers",
+            "      - name: Publish release\n"
+            "        uses: softprops/action-gh-release@9d7c94cfd0d1f3ed45544c887983e9fa900fd056\n"
+            "      - name: Run receipt and fan-in falsifiers",
+            mutation,
         )
     elif mutation == "add_publish":
         mutated = replace_once(
@@ -568,6 +617,9 @@ def main() -> int:
             "workspace_build",
             "comment_out_build",
             "drop_server_identity",
+            "needs_contract_drift",
+            "needs_subject_drift",
+            "publishing_action",
             "add_publish",
             "job_write_scope",
             "flatten_rows",

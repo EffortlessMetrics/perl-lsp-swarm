@@ -308,7 +308,7 @@ class ObservationTest(unittest.TestCase):
         row = self.build_row(receipt=smoke_receipt(self.server))
         self.assertEqual(row["cells"]["artifact_identity"], "instrument_defect")
         self.assertTrue(
-            any("not a valid zip" in finding for finding in row["findings"])
+            any("not a readable zip" in finding for finding in row["findings"])
         )
 
     def test_archive_with_wrong_member_set_fails(self) -> None:
@@ -333,6 +333,43 @@ class ObservationTest(unittest.TestCase):
         )
 
     def test_archive_with_substituted_server_bytes_fails(self) -> None:
+        # Package a well-formed archive whose perllsp member carries the DAP
+        # bytes under a distinct impostor path: the member set stays canonical,
+        # so only the built-binary hash comparison can reject this archive.
+        impostor = self.root / "impostor" / "perllsp"
+        impostor.parent.mkdir(parents=True)
+        impostor.write_bytes(self.dap.read_bytes())
+        result = self.run_row(
+            [
+                "package",
+                "--source-sha",
+                SHA,
+                "--source-version",
+                VERSION,
+                "--platform",
+                "linux",
+                "--architecture",
+                "x64",
+                "--server",
+                str(impostor),
+                "--dap",
+                str(self.dap),
+                "--output",
+                str(self.archive),
+            ]
+        )
+        self.assertEqual(result, 0)
+        row = self.build_row(receipt=smoke_receipt(self.server))
+        self.assertEqual(row["cells"]["artifact_identity"], "instrument_defect")
+        self.assertTrue(
+            any(
+                "not the built release binary" in finding
+                for finding in row["findings"]
+            )
+        )
+
+    def test_package_rejects_colliding_member_names(self) -> None:
+        output = self.root / "collision.zip"
         result = self.run_row(
             [
                 "package",
@@ -349,17 +386,47 @@ class ObservationTest(unittest.TestCase):
                 "--dap",
                 str(self.dap),
                 "--output",
-                str(self.archive),
+                str(output),
             ]
         )
-        self.assertEqual(result, 0)
-        # The archive was packaged from the DAP bytes under the server name, so
-        # its perllsp member cannot be the built release server.
-        with zipfile.ZipFile(self.archive) as unit:
-            names = sorted(unit.namelist())
-        self.assertIn("perl-dap", names)
-        row = self.build_row(receipt=smoke_receipt(self.server))
+        self.assertEqual(result, 2)
+        self.assertFalse(output.exists())
+
+    def test_truncated_archive_read_is_instrument_defect(self) -> None:
+        real_read = zipfile.ZipFile.read
+
+        def truncated_read(self: zipfile.ZipFile, name: str) -> bytes:
+            if name == "perllsp":
+                raise EOFError("truncated deflate data")
+            return real_read(self, name)
+
+        try:
+            zipfile.ZipFile.read = truncated_read  # type: ignore[assignment]
+            row = self.build_row(receipt=smoke_receipt(self.server))
+        finally:
+            zipfile.ZipFile.read = real_read
         self.assertEqual(row["cells"]["artifact_identity"], "instrument_defect")
+        self.assertTrue(
+            any("not a readable zip" in finding for finding in row["findings"])
+        )
+
+    def test_mismatched_concrete_host_version_is_not_exactness(self) -> None:
+        row = self.build_row(
+            receipt=smoke_receipt(self.server, vscode_version="1.126.0"),
+            vscode_version="1.125.0",
+        )
+        self.assertEqual(row["cells"]["host_version_exactness"], "not_proven")
+        self.assertTrue(
+            any(
+                "selector does not match" in finding for finding in row["findings"]
+            )
+        )
+
+    def test_unreported_cleanup_failure_is_not_proven(self) -> None:
+        receipt = smoke_receipt(self.server)
+        del receipt["cleanup_failure"]
+        row = self.build_row(receipt=receipt)
+        self.assertEqual(row["cells"]["process_cleanup"], "not_proven")
 
     def test_manifest_from_another_source_sha_fails(self) -> None:
         result = self.run_row(

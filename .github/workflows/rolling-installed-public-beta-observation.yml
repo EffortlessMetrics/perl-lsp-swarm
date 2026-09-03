@@ -270,12 +270,28 @@ jobs:
         env:
           SOURCE_SHA: ${{ needs.subject.outputs.source_sha }}
           SOURCE_VERSION: ${{ needs.subject.outputs.source_version }}
+          MINIMUM_VSCODE: ${{ needs.subject.outputs.minimum_vscode }}
           ROW_ID: ${{ matrix.row_id }}
           PLATFORM: ${{ matrix.platform }}
           ARCHITECTURE: ${{ matrix.architecture }}
           HOST_ROLE: ${{ matrix.host_role }}
         run: |
           set -euo pipefail
+          # A failed or skipped setup/build step must still leave an honest
+          # instrument-defect row: default the values those steps export so
+          # set -u cannot abort assembly. Missing binaries, archives, and
+          # receipts degrade their cells to instrument_defect/not_proven in
+          # the row builder, never to pass.
+          SERVER_PATH="${SERVER_PATH:-$RUNNER_TEMP/unobserved/perllsp}"
+          DAP_PATH="${DAP_PATH:-$RUNNER_TEMP/unobserved/perl-dap}"
+          SMOKE_OUTCOME="${SMOKE_OUTCOME:-failure}"
+          if [ -z "${OBSERVED_VSCODE_VERSION:-}" ]; then
+            if [ "$HOST_ROLE" = "minimum_supported" ]; then
+              OBSERVED_VSCODE_VERSION="$MINIMUM_VSCODE"
+            else
+              OBSERVED_VSCODE_VERSION="stable"
+            fi
+          fi
           python3 scripts/ci/rolling_installed_observation.py row \
             --source-sha "$SOURCE_SHA" \
             --source-version "$SOURCE_VERSION" \
