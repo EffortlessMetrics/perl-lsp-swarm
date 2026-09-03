@@ -325,8 +325,16 @@ pub struct TimingDecomposition {
 #[serde(rename_all = "snake_case")]
 pub enum TimingVerdict {
     Complete,
-    Incomplete { missing: Vec<String> },
-    Mismatch { computed_sum_nanos: u64, declared_total_nanos: u64 },
+    Incomplete {
+        missing: Vec<String>,
+    },
+    Mismatch {
+        computed_sum_nanos: u64,
+        declared_total_nanos: u64,
+    },
+    /// Phase arithmetic overflowed u64 nanos; a hostile or corrupt record can
+    /// never reconcile through wrapping.
+    Overflow,
 }
 
 impl TimingDecomposition {
@@ -353,10 +361,15 @@ impl TimingDecomposition {
         if !missing.is_empty() {
             return TimingVerdict::Incomplete { missing };
         }
-        let sum = self.preparation_nanos.unwrap_or(0)
-            + self.admission_wait_nanos.unwrap_or(0)
-            + self.execution_nanos.unwrap_or(0)
-            + self.reporting_nanos.unwrap_or(0);
+        let sum = self
+            .preparation_nanos
+            .unwrap_or(0)
+            .checked_add(self.admission_wait_nanos.unwrap_or(0))
+            .and_then(|sum| sum.checked_add(self.execution_nanos.unwrap_or(0)))
+            .and_then(|sum| sum.checked_add(self.reporting_nanos.unwrap_or(0)));
+        let Some(sum) = sum else {
+            return TimingVerdict::Overflow;
+        };
         let total = self.total_wall_nanos.unwrap_or(0);
         let delta = sum.abs_diff(total);
         if delta > self.tolerance_nanos {
@@ -460,10 +473,19 @@ pub enum LockObservation {
 }
 
 impl LockObservation {
-    /// Whether the lock row can be admitted. Only an honestly held lock or an
-    /// honestly declared lock-free policy passes.
-    pub fn is_admitted(&self) -> bool {
-        matches!(self, LockObservation::Held { .. } | LockObservation::PolicyDeclaresNone)
+    /// Whether the lock row can be admitted **for the cell's declared
+    /// policy**. A held lock satisfies only the exact declared primitive
+    /// (a generic `FileLock` never stands in for the declared
+    /// whole-Cargo-process flock); a lock-free observation satisfies only a
+    /// lock-free policy; anything else is `NOT_PROVEN` for the lock row.
+    pub fn is_admitted_for(&self, policy: LockPolicy) -> bool {
+        matches!(
+            (self, policy),
+            (
+                LockObservation::Held { primitive: LockPrimitive::WholeProcessFlock, .. },
+                LockPolicy::WholeProcessFlock
+            ) | (LockObservation::PolicyDeclaresNone, LockPolicy::None)
+        )
     }
 }
 
@@ -519,6 +541,16 @@ impl CacheCounters {
             non_cacheable: self.non_cacheable.saturating_sub(baseline.non_cacheable),
         }
     }
+
+    /// Whether every counter moved monotonically forward from `baseline`.
+    /// Any regression (counter restart, server replacement, or an unrelated
+    /// reset) makes the interval unusable for a clean delta.
+    pub fn is_monotonic_after(&self, baseline: &CacheCounters) -> bool {
+        self.requests >= baseline.requests
+            && self.hits >= baseline.hits
+            && self.misses >= baseline.misses
+            && self.non_cacheable >= baseline.non_cacheable
+    }
 }
 
 /// Whether the observed cache delta may be attributed to this cell.
@@ -540,8 +572,11 @@ pub enum CacheAttribution {
 /// counter delta, and only when attribution holds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CacheObservation {
-    /// Exact server/process identity the counters were read from.
+    /// Exact server/process identity at the baseline snapshot.
     pub server_identity: Option<String>,
+    /// Exact server/process identity at the delta snapshot. A restart or
+    /// reconnection between snapshots makes the interval unattributable.
+    pub delta_server_identity: Option<String>,
     pub baseline: Option<CacheCounters>,
     pub delta: Option<CacheCounters>,
     /// Unrelated users observed on the same server between snapshots.
@@ -550,17 +585,25 @@ pub struct CacheObservation {
 }
 
 impl CacheObservation {
-    /// The observed hit/miss delta, only when attribution admits it.
+    /// The observed hit/miss delta, only when attribution admits it **and**
+    /// the interval itself is clean (monotonic counters, one server identity).
     pub fn clean_delta(&self) -> Option<CacheCounters> {
         match self.attribution {
-            CacheAttribution::Attributed => {
-                self.server_identity.as_ref()?;
-                let baseline = self.baseline.as_ref()?;
-                let later = self.delta.as_ref()?;
-                Some(later.delta_since(baseline))
-            }
-            _ => None,
+            CacheAttribution::Attributed => {}
+            _ => return None,
         }
+        if self.server_identity.is_none() || self.delta_server_identity.is_none() {
+            return None;
+        }
+        if self.server_identity != self.delta_server_identity {
+            return None;
+        }
+        let baseline = self.baseline.as_ref()?;
+        let later = self.delta.as_ref()?;
+        if !later.is_monotonic_after(baseline) {
+            return None;
+        }
+        Some(later.delta_since(baseline))
     }
 }
 
@@ -572,10 +615,16 @@ pub struct WorkObservation {
     pub exit_code: Option<i32>,
 }
 
-/// The subject the cell actually executed, as proven by artifact/output
-/// identity metadata. `None` means the executed subject was never proven;
-/// it is never assumed equal to the declared subject.
-pub type ExecutedSubject = Option<SubjectIdentity>;
+/// The exact candidate identity the cell actually executed, as proven by
+/// artifact/output identity metadata. This is **explicitly partial
+/// evidence**: only the exact-candidate (commit) dimension is claimed. No
+/// other subject dimension (package, target, features, toolchain, profile)
+/// is ever synthesized into a proven claim — those remain the declared
+/// cell's identity, and proving them from parsed receipts is the host
+/// observation lanes' (#11640/#11641) obligation. `None` means the executed
+/// subject was never proven; it is never assumed equal to the declared
+/// subject.
+pub type ExecutedSubjectCommit = Option<String>;
 
 /// One admitted or refused measurement, as typed reasons.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -614,12 +663,30 @@ pub enum NotProvenReason {
     /// The executed subject was never proven (artifact/output identity
     /// missing) — fail-closed, never assumed equal to the declared subject.
     ExecutedSubjectUnproven,
-    /// The proven executed subject differs from the declared subject: a
+    /// The proven executed candidate differs from the declared subject: a
     /// cross-candidate artifact/test substitution. Cache statistics cannot
     /// compensate (decision law 1).
     ExecutedSubjectMismatch {
         detail: String,
     },
+    /// The command's exit code was never observed. A run whose success is
+    /// unobservable is never an admitted measurement.
+    CommandExitUnproven,
+    /// The command exited nonzero. A failed run remains a renderable record
+    /// but can never be an admitted experiment row.
+    CommandFailed {
+        exit_code: i32,
+    },
+    /// Compiler/test descendants remained alive at observation (or a
+    /// "clean" observation carried a positive descendant count): process
+    /// exit is not terminality, and a residual tree contaminates subsequent
+    /// cells (decision law 10).
+    ProcessResidual {
+        descendant_count: u64,
+        terminality: Terminality,
+    },
+    /// Phase arithmetic overflowed; the timing block cannot be trusted.
+    TimingOverflow,
     /// A proof cell ran zero selected work (or the counts did not reconcile).
     SelectedWorkUnproven {
         expected: Option<u64>,
@@ -647,7 +714,7 @@ pub struct MeasurementRecord {
     pub process: ProcessObservation,
     pub cache: CacheObservation,
     pub work: WorkObservation,
-    pub executed_subject: ExecutedSubject,
+    pub executed_subject_commit: ExecutedSubjectCommit,
     /// Digest over the raw observed facts only.
     pub raw_digest: String,
     /// Digest over the normalized interpretation (canonical cell + admission
@@ -709,18 +776,34 @@ impl MeasurementRecord {
                     declared_total_nanos,
                 });
             }
+            TimingVerdict::Overflow => reasons.push(NotProvenReason::TimingOverflow),
         }
 
         if self.cell.host == HostProfile::Unsupported {
             reasons.push(NotProvenReason::UnsupportedHost);
         }
 
-        if !self.lock.is_admitted() {
+        // Lock admission is policy-aware: the observed state must match the
+        // declared policy and its exact primitive.
+        if !self.lock.is_admitted_for(self.cell.lock_policy) {
             reasons.push(NotProvenReason::LockNotAdmitted);
         }
 
-        if matches!(self.process, ProcessObservation::InstrumentUnavailable) {
-            reasons.push(NotProvenReason::ProcessInstrumentUnavailable);
+        match &self.process {
+            ProcessObservation::InstrumentUnavailable => {
+                reasons.push(NotProvenReason::ProcessInstrumentUnavailable);
+            }
+            ProcessObservation::Observed { descendant_count, terminality } => {
+                // Process exit is not terminality: only a clean tree with
+                // zero live descendants admits. "Clean" with a positive
+                // count is an inconsistent observation and fails closed.
+                if *descendant_count > 0 || *terminality == Terminality::ResidualDescendants {
+                    reasons.push(NotProvenReason::ProcessResidual {
+                        descendant_count: *descendant_count,
+                        terminality: *terminality,
+                    });
+                }
+            }
         }
 
         match &self.disk_admission {
@@ -734,16 +817,23 @@ impl MeasurementRecord {
             }
         }
 
-        match &self.executed_subject {
+        match &self.executed_subject_commit {
             None => reasons.push(NotProvenReason::ExecutedSubjectUnproven),
-            Some(executed) => {
-                let differing = executed.differences(&self.cell.subject);
-                if !differing.is_empty() {
+            Some(executed_commit) => {
+                if executed_commit != &self.cell.subject.commit {
                     reasons.push(NotProvenReason::ExecutedSubjectMismatch {
-                        detail: differing.join(", "),
+                        detail: "commit".to_string(),
                     });
                 }
             }
+        }
+
+        // A run whose success is unobservable or failed is never an admitted
+        // experiment row, regardless of any other clean evidence.
+        match self.work.exit_code {
+            None => reasons.push(NotProvenReason::CommandExitUnproven),
+            Some(0) => {}
+            Some(exit_code) => reasons.push(NotProvenReason::CommandFailed { exit_code }),
         }
 
         if self.cell.requires_selected_work() {

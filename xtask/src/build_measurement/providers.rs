@@ -130,10 +130,15 @@ impl CommandRunner for SystemCommandRunner {
     }
 }
 
-/// Deterministic concurrency barrier for multi-cell (concurrency) cells.
-/// Participants arrive by name; the barrier releases only when the required
-/// number has arrived. No timing sleeps: orchestration of concurrent cells
-/// is proven by arrival order, never by waiting.
+/// Deterministic concurrency coordination for multi-cell (concurrency)
+/// experiments. Participants arrive by name; the return of [`Self::arrive`]
+/// is the release signal once the required set has arrived.
+///
+/// This is deliberately **not a blocking wait primitive**: blocking would
+/// require real threads or sleeps, which the protocol forbids as a
+/// nondeterministic oracle. Concurrency cells are driven as deterministic
+/// interleaved scripts; the barrier proves arrival ordering, and actual
+/// parallel scheduling stays with the host observation lanes.
 #[derive(Debug)]
 pub struct DeterministicBarrier {
     required: usize,
@@ -160,7 +165,8 @@ impl DeterministicBarrier {
 }
 
 /// Scripted monotonic clock: pops scripted nanos in order. When the script
-/// runs dry it repeats the last value (deterministic, fail-closed).
+/// runs dry it repeats the final value, preserving the monotonic-clock
+/// contract (a dry script never rewinds time to zero).
 pub struct ScriptedClock {
     steps: Mutex<VecDeque<u64>>,
 }
@@ -177,10 +183,11 @@ impl ClockProvider for ScriptedClock {
             Ok(guard) => guard,
             Err(_) => return 0,
         };
-        match steps.pop_front() {
-            Some(nanos) => nanos,
-            None => *steps.back().unwrap_or(&0),
+        if steps.len() > 1 {
+            return steps.pop_front().unwrap_or_default();
         }
+        // Last scripted value repeats indefinitely (empty script reads 0).
+        *steps.front().unwrap_or(&0)
     }
 }
 
@@ -242,23 +249,28 @@ impl ProcessObserver for ScriptedProcess {
     }
 }
 
-/// Scripted cache metrics: one server identity, scripted successive counter
-/// snapshots (baseline then delta), and a foreign-user count observed
-/// between snapshots. A dry snapshot script returns `None` (instrument
-/// unavailable — fail-closed).
+/// Scripted cache metrics: scripted successive server identities (baseline
+/// then delta — a changed second identity models a restart/reconnection),
+/// scripted successive counter snapshots, and a foreign-user count observed
+/// between snapshots. A dry script yields `None` (instrument unavailable —
+/// fail-closed).
 pub struct ScriptedCache {
-    pub server_identity: Option<String>,
+    server_identities: Mutex<VecDeque<Option<String>>>,
     snapshots: Mutex<VecDeque<CacheCounters>>,
     pub foreign_users: u64,
 }
 
 impl ScriptedCache {
     pub fn new(
-        server_identity: Option<String>,
+        server_identities: Vec<Option<String>>,
         snapshots: Vec<CacheCounters>,
         foreign_users: u64,
     ) -> Self {
-        Self { server_identity, snapshots: Mutex::new(VecDeque::from(snapshots)), foreign_users }
+        Self {
+            server_identities: Mutex::new(VecDeque::from(server_identities)),
+            snapshots: Mutex::new(VecDeque::from(snapshots)),
+            foreign_users,
+        }
     }
 }
 
@@ -266,7 +278,14 @@ impl CacheMetricsProvider for ScriptedCache {
     fn reset(&mut self) {}
 
     fn server_identity(&self) -> Option<String> {
-        self.server_identity.clone()
+        let mut identities = match self.server_identities.lock() {
+            Ok(guard) => guard,
+            Err(_) => return None,
+        };
+        if identities.len() > 1 {
+            return identities.pop_front().unwrap_or(None);
+        }
+        identities.front().cloned().flatten()
     }
 
     fn snapshot(&self) -> Option<CacheCounters> {

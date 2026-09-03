@@ -131,20 +131,48 @@ impl MeasurementHarness {
         let disk_admission = measure_disk_admission(self.filesystems.as_ref(), &canonical);
         let t2 = self.clock.monotonic_nanos();
 
-        // Execution: baseline snapshot, command, delta snapshot.
+        // Execution: baseline snapshot, command, delta snapshot. The cache
+        // server/process identity is sampled with BOTH snapshots so a
+        // restart or reconnection mid-cell can never produce an attributed
+        // delta across two different servers.
         if execution.cache_snapshot == CacheSnapshotPolicy::ResetThenSnapshot {
             self.cache.reset();
         }
-        let server_identity = self.cache.server_identity();
+        let baseline_identity = self.cache.server_identity();
         let baseline = self.cache.snapshot();
         let outcome = self.commands.run(&execution.command);
         let delta = self.cache.snapshot();
+        let delta_identity = self.cache.server_identity();
         let foreign_users_observed = self.cache.foreign_users_observed();
         let t3 = self.clock.monotonic_nanos();
 
-        let cache = attribute_cache(server_identity, baseline, delta, foreign_users_observed);
+        // Reporting: process observation, interpretation, and record
+        // assembly all happen inside the measured reporting window.
+        let process = self.process.observe().unwrap_or(ProcessObservation::InstrumentUnavailable);
+        let cache = attribute_cache(
+            baseline_identity,
+            delta_identity,
+            baseline,
+            delta,
+            foreign_users_observed,
+        );
 
-        // Reporting: interpretation + digests.
+        let command_identity = CommandIdentity {
+            program: execution.command.program.clone(),
+            args: execution.command.args.clone(),
+            effective_env: execution.command.env.clone(),
+        };
+
+        // Explicitly partial evidence: only the exact-candidate (commit)
+        // identity is proven here; no other subject dimension is synthesized.
+        let executed_subject_commit = outcome.executed_commit.clone();
+
+        let work = WorkObservation {
+            expected_selected: execution.expected_selected_work,
+            observed_selected: outcome.selected_work,
+            exit_code: outcome.exit_code,
+        };
+
         let t4 = self.clock.monotonic_nanos();
 
         let timings = TimingDecomposition {
@@ -155,26 +183,6 @@ impl MeasurementHarness {
             total_wall_nanos: Some(t4.saturating_sub(t0)),
             tolerance_nanos: DEFAULT_TOLERANCE_NANOS,
         };
-
-        let command_identity = CommandIdentity {
-            program: execution.command.program.clone(),
-            args: execution.command.args.clone(),
-            effective_env: execution.command.env.clone(),
-        };
-
-        let executed_subject = outcome.executed_commit.as_ref().map(|commit| {
-            let mut subject = canonical.subject.clone();
-            subject.commit = commit.clone();
-            subject
-        });
-
-        let work = WorkObservation {
-            expected_selected: execution.expected_selected_work,
-            observed_selected: outcome.selected_work,
-            exit_code: outcome.exit_code,
-        };
-
-        let process = self.process.observe().unwrap_or(ProcessObservation::InstrumentUnavailable);
 
         let mut record = MeasurementRecord {
             protocol_version: PROTOCOL_VERSION.to_string(),
@@ -187,11 +195,16 @@ impl MeasurementHarness {
             process,
             cache,
             work,
-            executed_subject,
+            executed_subject_commit,
             raw_digest: String::new(),
             normalized_digest: String::new(),
         };
 
+        // Digest computation sits outside the phase decomposition by
+        // construction: it is the harness's identity overhead, identical for
+        // every cell and model, so excluding it uniformly cannot flatter any
+        // candidate. The digests finalize the record's evidence chain; the
+        // raw digest is recomputable by anyone via [`raw_facts_digest`].
         record.raw_digest = raw_facts_digest(&record)?;
         record.normalized_digest = normalized_digest(&record)?;
 
@@ -201,8 +214,9 @@ impl MeasurementHarness {
 
 /// Digest over the raw observed facts only — no model labels, no admission
 /// verdicts. The #11642 decision successor can re-derive interpretation from
-/// these facts without trusting the harness's preferred labels.
-fn raw_facts_digest(record: &MeasurementRecord) -> Result<String> {
+/// these facts without trusting the harness's preferred labels, and any
+/// consumer can verify a record's raw digest by recomputation.
+pub fn raw_facts_digest(record: &MeasurementRecord) -> Result<String> {
     let bytes = serde_json::to_vec(&json!({
     "command": record.command,
     "environment": record.environment,
@@ -212,13 +226,13 @@ fn raw_facts_digest(record: &MeasurementRecord) -> Result<String> {
     "process": record.process,
     "cache": {
         "server_identity": record.cache.server_identity,
+        "delta_server_identity": record.cache.delta_server_identity,
         "baseline": record.cache.baseline,
         "delta": record.cache.delta,
         "foreign_users_observed": record.cache.foreign_users_observed,
     },
     "work": record.work,
-    "executed_subject_commit":
-        record.executed_subject.as_ref().map(|s| s.commit.clone()),
+    "executed_subject_commit": record.executed_subject_commit,
     }))
     .map_err(|error| eyre!("serializing raw facts: {error}"))?;
     sha256_bytes(&bytes).map_err(|error| eyre!("digesting raw facts: {error}"))
@@ -226,8 +240,8 @@ fn raw_facts_digest(record: &MeasurementRecord) -> Result<String> {
 
 /// Digest over the normalized interpretation: canonical cell identity plus
 /// the admission outcome. Kept separate from the raw digest by construction
-/// and by content.
-fn normalized_digest(record: &MeasurementRecord) -> Result<String> {
+/// and by content. Recomputable by any consumer via this function.
+pub fn normalized_digest(record: &MeasurementRecord) -> Result<String> {
     let bytes = serde_json::to_vec(&json!({
     "cell_id": record.cell.canonical_id(),
     "protocol_version": record.protocol_version,
@@ -237,32 +251,50 @@ fn normalized_digest(record: &MeasurementRecord) -> Result<String> {
     sha256_bytes(&bytes).map_err(|error| eyre!("digesting interpretation: {error}"))
 }
 
-/// Attribution is decided from observed preconditions only: one known
-/// server identity, fresh baseline and delta snapshots, and zero foreign
-/// users between them. Environment variables never appear here.
+/// Attribution is decided from observed preconditions only: one known,
+/// stable server identity across BOTH snapshots, fresh baseline and delta
+/// snapshots, monotonically forward counters, and zero foreign users between
+/// them. Environment variables never appear here.
 fn attribute_cache(
-    server_identity: Option<String>,
+    baseline_identity: Option<String>,
+    delta_identity: Option<String>,
     baseline: Option<CacheCounters>,
     delta: Option<CacheCounters>,
     foreign_users_observed: u64,
 ) -> CacheObservation {
-    let attribution = match (&server_identity, &baseline, &delta) {
-        (None, _, _) => CacheAttribution::Unattributed {
+    let attribution = match (&baseline_identity, &delta_identity, &baseline, &delta) {
+        (None, _, _, _) | (_, None, _, _) => CacheAttribution::Unattributed {
             reason: "cache server identity unresolved".to_string(),
         },
-        (_, None, _) | (_, _, None) => {
+        (Some(before), Some(after), _, _) if before != after => CacheAttribution::Unattributed {
+            reason: "cache server identity changed between snapshots".to_string(),
+        },
+        (_, _, None, _) | (_, _, _, None) => {
             CacheAttribution::Unattributed { reason: "counter snapshots incomplete".to_string() }
         }
-        (Some(_), Some(_), Some(_)) if foreign_users_observed > 0 => {
+        (Some(_), Some(_), Some(before), Some(after)) if !after.is_monotonic_after(before) => {
+            CacheAttribution::Unattributed {
+                reason: "counter regression observed (possible restart or unrelated reset)"
+                    .to_string(),
+            }
+        }
+        (Some(_), Some(_), Some(_), Some(_)) if foreign_users_observed > 0 => {
             CacheAttribution::Unattributed {
                 reason: format!(
                     "{foreign_users_observed} unrelated users observed on the same server between snapshots"
                 ),
             }
         }
-        (Some(_), Some(_), Some(_)) => CacheAttribution::Attributed,
+        (Some(_), Some(_), Some(_), Some(_)) => CacheAttribution::Attributed,
     };
-    CacheObservation { server_identity, baseline, delta, foreign_users_observed, attribution }
+    CacheObservation {
+        server_identity: baseline_identity,
+        delta_server_identity: delta_identity,
+        baseline,
+        delta,
+        foreign_users_observed,
+        attribution,
+    }
 }
 
 /// Convenience: default empty effective-environment map for scripted specs.

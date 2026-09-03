@@ -78,6 +78,9 @@ pub fn render_human(record: &MeasurementRecord) -> String {
         } => out.push_str(&format!(
             "not_proven (phase sum {computed_sum_nanos}ns != declared total {declared_total_nanos}ns beyond tolerance)\n"
         )),
+        TimingVerdict::Overflow => {
+            out.push_str("not_proven (phase arithmetic overflowed; timing block untrustworthy)\n")
+        }
     }
 
     out.push_str(&format!("lock:               {}\n", lock_text(&record.lock)));
@@ -198,16 +201,15 @@ fn work_text(record: &MeasurementRecord) -> String {
 }
 
 fn executed_subject_text(record: &MeasurementRecord) -> String {
-    match &record.executed_subject {
-        None => "not_proven (executed subject never proven)".to_string(),
-        Some(executed) => {
-            let differing = executed.differences(&record.cell.subject);
-            if differing.is_empty() {
-                format!("proven (commit {} matches declared subject)", executed.commit)
+    match &record.executed_subject_commit {
+        None => "not_proven (executed candidate never proven)".to_string(),
+        Some(executed_commit) => {
+            if executed_commit == &record.cell.subject.commit {
+                format!("proven (commit {executed_commit} matches declared subject)")
             } else {
                 format!(
-                    "not_proven (executed subject differs from declared: {})",
-                    differing.join(", ")
+                    "not_proven (executed candidate {executed_commit} differs from declared commit {})",
+                    record.cell.subject.commit
                 )
             }
         }
@@ -222,18 +224,30 @@ fn reason_text(reason: &NotProvenReason) -> String {
         NotProvenReason::TimingMismatch { computed_sum_nanos, declared_total_nanos } => format!(
             "timing mismatch: phase sum {computed_sum_nanos}ns vs declared total {declared_total_nanos}ns"
         ),
+        NotProvenReason::TimingOverflow => {
+            "timing arithmetic overflowed; phase block untrustworthy".to_string()
+        }
         NotProvenReason::UnsupportedHost => "host profile declared unsupported".to_string(),
-        NotProvenReason::LockNotAdmitted => "lock row not admitted".to_string(),
+        NotProvenReason::LockNotAdmitted => {
+            "lock row not admitted (does not match the declared policy/primitive)".to_string()
+        }
         NotProvenReason::ProcessInstrumentUnavailable => {
             "process instrument unavailable".to_string()
         }
+        NotProvenReason::ProcessResidual { descendant_count, terminality } => format!(
+            "process tree residual ({descendant_count} descendants, terminality {terminality:?})"
+        ),
         NotProvenReason::DiskAdmissionMissing => "disk admission missing".to_string(),
         NotProvenReason::DiskAdmissionRefused { detail } => {
             format!("disk admission refused: {detail}")
         }
-        NotProvenReason::ExecutedSubjectUnproven => "executed subject never proven".to_string(),
+        NotProvenReason::ExecutedSubjectUnproven => "executed candidate never proven".to_string(),
         NotProvenReason::ExecutedSubjectMismatch { detail } => {
-            format!("executed subject differs from declared subject: {detail}")
+            format!("executed candidate differs from declared subject: {detail}")
+        }
+        NotProvenReason::CommandExitUnproven => "command exit code never observed".to_string(),
+        NotProvenReason::CommandFailed { exit_code } => {
+            format!("command exited nonzero ({exit_code})")
         }
         NotProvenReason::SelectedWorkUnproven { expected, observed } => {
             format!("selected work unproven (expected {expected:?}, observed {observed:?})")

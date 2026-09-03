@@ -13,11 +13,11 @@ use super::model::{
     Terminality, TimingDecomposition, TimingVerdict, WorkObservation, WorkflowClass,
 };
 use super::providers::{
-    CommandOutcome, CommandSpec, DeterministicBarrier, ScriptedCache, ScriptedClock,
+    ClockProvider, CommandOutcome, CommandSpec, DeterministicBarrier, ScriptedCache, ScriptedClock,
     ScriptedFilesystems, ScriptedLocks, ScriptedProcess, ScriptedRunner,
 };
 use super::runner::{CacheSnapshotPolicy, CellExecution, MeasurementHarness};
-use super::{render_human, render_json};
+use super::{normalized_digest, raw_facts_digest, render_human, render_json};
 use color_eyre::eyre::{Result, eyre};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -149,7 +149,7 @@ fn standard_parts(commit: &str) -> HarnessParts {
         ScriptedLocks { flock_available: true, acquire_wait_nanos: 500 },
         clean_process(),
         ScriptedCache::new(
-            Some("sccache://fixture-1".to_string()),
+            vec![Some("sccache://fixture-1".to_string()), Some("sccache://fixture-1".to_string())],
             attributed_cache_snapshots(),
             0,
         ),
@@ -444,7 +444,7 @@ fn missing_lock_primitive_is_never_a_locked_success() -> Result<()> {
     );
     let record = executed(harness.execute_cell(cell, proof_execution()))?;
     assert_eq!(record.lock, LockObservation::PrimitiveUnavailable);
-    assert!(!record.lock.is_admitted());
+    assert!(!record.lock.is_admitted_for(record.cell.lock_policy));
     let human = render_human(&record);
     assert!(
         human.contains("not_proven (lock primitive unavailable"),
@@ -520,7 +520,7 @@ fn wsl_or_git_bash_evidence_cannot_fill_native_windows_row() -> Result<()> {
 fn foreign_sccache_user_between_snapshots_forces_unattributed() -> Result<()> {
     let (clock, filesystems, locks, process, _cache, commands) = standard_parts(COMMIT_A);
     let cache = ScriptedCache::new(
-        Some("sccache://fixture-1".to_string()),
+        vec![Some("sccache://fixture-1".to_string()), Some("sccache://fixture-1".to_string())],
         attributed_cache_snapshots(),
         1,
     );
@@ -663,9 +663,215 @@ fn unobservable_run_is_fail_closed_not_invented() -> Result<()> {
     let record = executed(harness.execute_cell(cell, proof_execution()))?;
     assert_eq!(record.work.exit_code, None);
     assert_eq!(record.work.observed_selected, None);
-    assert_eq!(record.executed_subject, None);
+    assert_eq!(record.executed_subject_commit, None);
     assert!(reasons_of(&record).contains(&NotProvenReason::ExecutedSubjectUnproven));
+    assert!(reasons_of(&record).contains(&NotProvenReason::CommandExitUnproven));
     Ok(())
+}
+
+/// A nonzero exit is never an admitted measurement, even with otherwise
+/// perfect subject, work, cache, disk, lock, process, and timing evidence.
+#[test]
+fn failed_exit_is_never_an_admitted_measurement() -> Result<()> {
+    let (clock, filesystems, locks, process, cache, _commands) = standard_parts(COMMIT_A);
+    let commands = ScriptedRunner::new(vec![CommandOutcome {
+        exit_code: Some(1),
+        selected_work: Some(4),
+        executed_commit: Some(COMMIT_A.to_string()),
+    }]);
+    let mut harness = harness_from_parts(clock, filesystems, locks, process, cache, commands);
+    let cell = fixture_cell(
+        ExecutionModel::PrivateTargetSharedCargoSccache,
+        WorkflowClass::Proof,
+        Operation::ExactTest,
+        fixture_subject(COMMIT_A),
+        HostProfile::NativePosix,
+        LockPolicy::None,
+    );
+    let record = executed(harness.execute_cell(cell, proof_execution()))?;
+    assert!(reasons_of(&record).contains(&NotProvenReason::CommandFailed { exit_code: 1 }));
+    Ok(())
+}
+
+/// Decision law 10: process exit is not terminality. Residual descendants —
+/// and inconsistent "clean" observations carrying live descendants — fail
+/// closed.
+#[test]
+fn residual_descendants_are_never_admitted() -> Result<()> {
+    for observation in [
+        ProcessObservation::Observed {
+            descendant_count: 2,
+            terminality: Terminality::ResidualDescendants,
+        },
+        // Inconsistent: "clean" with a live descendant count.
+        ProcessObservation::Observed { descendant_count: 1, terminality: Terminality::Clean },
+    ] {
+        let (clock, filesystems, locks, _process, cache, commands) = standard_parts(COMMIT_A);
+        let process = ScriptedProcess { observation: Some(observation.clone()) };
+        let mut harness = harness_from_parts(clock, filesystems, locks, process, cache, commands);
+        let cell = fixture_cell(
+            ExecutionModel::RawPrivateWorktree,
+            WorkflowClass::Construction,
+            Operation::Check,
+            fixture_subject(COMMIT_A),
+            HostProfile::NativePosix,
+            LockPolicy::None,
+        );
+        let record = executed(harness.execute_cell(cell, proof_execution()))?;
+        let reasons = reasons_of(&record);
+        assert!(
+            reasons.iter().any(|reason| matches!(reason, NotProvenReason::ProcessResidual { .. })),
+            "expected process-residual refusal for {observation:?}, got {reasons:?}"
+        );
+    }
+    Ok(())
+}
+
+/// Falsifier: cache server restart/reconnection between snapshots. Counters
+/// from two different server processes can never be attributed as reuse.
+#[test]
+fn cache_restart_between_snapshots_forces_unattributed() -> Result<()> {
+    let (clock, filesystems, locks, process, _cache, commands) = standard_parts(COMMIT_A);
+    let cache = ScriptedCache::new(
+        vec![
+            Some("sccache://fixture-1".to_string()),
+            Some("sccache://fixture-2-restarted".to_string()),
+        ],
+        attributed_cache_snapshots(),
+        0,
+    );
+    let mut harness = harness_from_parts(clock, filesystems, locks, process, cache, commands);
+    let cell = fixture_cell(
+        ExecutionModel::PrivateTargetSharedCargoSccache,
+        WorkflowClass::Proof,
+        Operation::ExactTest,
+        fixture_subject(COMMIT_A),
+        HostProfile::NativePosix,
+        LockPolicy::None,
+    );
+    let record = executed(harness.execute_cell(cell, proof_execution()))?;
+    assert_eq!(
+        record.cache.attribution,
+        CacheAttribution::Unattributed {
+            reason: "cache server identity changed between snapshots".to_string()
+        }
+    );
+    assert!(record.cache.clean_delta().is_none());
+    Ok(())
+}
+
+/// Falsifier: saturating subtraction hiding a counter regression. Any counter
+/// moving backwards between snapshots refuses the delta instead of clamping
+/// to a clean-looking zero.
+#[test]
+fn counter_regression_forces_unattributed() -> Result<()> {
+    let (clock, filesystems, locks, process, _cache, commands) = standard_parts(COMMIT_A);
+    let cache = ScriptedCache::new(
+        vec![Some("sccache://fixture-1".to_string()), Some("sccache://fixture-1".to_string())],
+        vec![
+            CacheCounters { requests: 100, hits: 40, misses: 60, non_cacheable: 0 },
+            // Requests regressed: a restart or unrelated reset happened.
+            CacheCounters { requests: 10, hits: 47, misses: 63, non_cacheable: 0 },
+        ],
+        0,
+    );
+    let mut harness = harness_from_parts(clock, filesystems, locks, process, cache, commands);
+    let cell = fixture_cell(
+        ExecutionModel::PrivateTargetSharedCargoSccache,
+        WorkflowClass::Proof,
+        Operation::ExactTest,
+        fixture_subject(COMMIT_A),
+        HostProfile::NativePosix,
+        LockPolicy::None,
+    );
+    let record = executed(harness.execute_cell(cell, proof_execution()))?;
+    assert_eq!(
+        record.cache.attribution,
+        CacheAttribution::Unattributed {
+            reason: "counter regression observed (possible restart or unrelated reset)".to_string()
+        }
+    );
+    assert!(record.cache.clean_delta().is_none());
+    Ok(())
+}
+
+/// Reconciliation uses checked arithmetic: a hostile or corrupt record with
+/// u64::MAX phases overflows into an explicit verdict instead of wrapping
+/// into a false "complete".
+#[test]
+fn reconciliation_never_panics_or_wraps_on_overflow() -> Result<()> {
+    let mut record = admitted_shared_cache_record()?;
+    let max = u64::MAX;
+    record.timings = TimingDecomposition {
+        preparation_nanos: Some(max),
+        admission_wait_nanos: Some(max),
+        execution_nanos: Some(max),
+        reporting_nanos: Some(max),
+        total_wall_nanos: Some(max),
+        tolerance_nanos: 1_000_000,
+    };
+    match record.timings.reconcile() {
+        TimingVerdict::Overflow => {}
+        other => return Err(eyre!("expected overflow verdict, got {other:?}")),
+    }
+    assert!(reasons_of(&record).contains(&NotProvenReason::TimingOverflow));
+    Ok(())
+}
+
+/// Lock admission is policy-aware: a held lock under the wrong primitive, or
+/// a held lock under a lock-free policy, never satisfies the declared row.
+#[test]
+fn wrong_lock_primitive_or_policy_is_refused() -> Result<()> {
+    let mut record = admitted_shared_cache_record()?;
+    // Held FileLock under a whole-process-flock policy: wrong primitive.
+    record.cell.lock_policy = LockPolicy::WholeProcessFlock;
+    record.lock =
+        LockObservation::Held { primitive: super::model::LockPrimitive::FileLock, wait_nanos: 500 };
+    assert!(reasons_of(&record).contains(&NotProvenReason::LockNotAdmitted));
+
+    // Held flock under a lock-free policy: inconsistent observation.
+    record.cell.lock_policy = LockPolicy::None;
+    record.lock = LockObservation::Held {
+        primitive: super::model::LockPrimitive::WholeProcessFlock,
+        wait_nanos: 500,
+    };
+    assert!(reasons_of(&record).contains(&NotProvenReason::LockNotAdmitted));
+    Ok(())
+}
+
+/// The reporting phase covers the post-command work (process observation,
+/// interpretation, assembly) and the phase sum still reconciles with total.
+#[test]
+fn reporting_phase_covers_post_command_work() -> Result<()> {
+    let record = admitted_shared_cache_record()?;
+    assert_eq!(record.timings.reporting_nanos, Some(200));
+    assert_eq!(record.timings.total_wall_nanos, Some(12_200));
+    assert_eq!(record.timings.reconcile(), TimingVerdict::Complete);
+    Ok(())
+}
+
+/// Raw digests are verifiable by recomputation; a tampered record no longer
+/// matches its own claimed evidence chain.
+#[test]
+fn raw_digests_are_verifiable_by_recomputation() -> Result<()> {
+    let record = admitted_shared_cache_record()?;
+    assert_eq!(raw_facts_digest(&record)?, record.raw_digest);
+    assert_eq!(normalized_digest(&record)?, record.normalized_digest);
+    let mut tampered = record.clone();
+    tampered.timings.execution_nanos = Some(999_999);
+    assert_ne!(raw_facts_digest(&tampered)?, record.raw_digest);
+    Ok(())
+}
+
+/// The scripted clock honors the monotonic contract: a dry script repeats
+/// its final value instead of rewinding to zero.
+#[test]
+fn scripted_clock_repeats_last_value_when_dry() {
+    let clock = ScriptedClock::new(vec![5, 9]);
+    assert_eq!(clock.monotonic_nanos(), 5);
+    assert_eq!(clock.monotonic_nanos(), 9);
+    assert_eq!(clock.monotonic_nanos(), 9);
+    assert_eq!(clock.monotonic_nanos(), 9);
 }
 
 /// All eight execution models are representable with distinct spellings and

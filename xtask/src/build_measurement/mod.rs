@@ -24,7 +24,7 @@ pub use render::{render_human, render_json};
 
 pub use model::{
     CacheAttribution, CacheCounters, CacheObservation, CapacityPolicy, CellVerdict,
-    CommandIdentity, DiskAdmission, DiskRefusal, EnvironmentIdentity, ExecutedSubject,
+    CommandIdentity, DiskAdmission, DiskRefusal, EnvironmentIdentity, ExecutedSubjectCommit,
     FilesystemFreeSpace, FilesystemIdentity, HostProfile, LockObservation, LockPolicy,
     LockPrimitive, MeasurementCell, MeasurementRecord, NotProvenReason, Operation,
     PROTOCOL_VERSION, PathRole, PathScope, ProcessObservation, RepetitionOrdinal, RowRefusal,
@@ -37,4 +37,6 @@ pub use providers::{
     ProcessObserver, ScriptedCache, ScriptedClock, ScriptedFilesystems, ScriptedLocks,
     ScriptedProcess, ScriptedRunner, SystemCommandRunner,
 };
-pub use runner::{CacheSnapshotPolicy, CellExecution, MeasurementHarness};
+pub use runner::{
+    CacheSnapshotPolicy, CellExecution, MeasurementHarness, normalized_digest, raw_facts_digest,
+};
