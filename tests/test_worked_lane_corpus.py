@@ -176,10 +176,22 @@ PROVISIONAL_WORDS = frozenset(
     }
 )
 # Deliberately absent: `BLOCKED`. `AGENTS.md` defines `BLOCKED_BY_PREREQUISITE`
-# and `MERGE_BLOCKED` as typed outcomes, so in this repository being blocked is
-# a decision that was reached and named -- unlike `PENDING` or `DRAFT`, which
-# say no decision was taken. Listing it rejected both, which is the cost this
-# rule has to keep watching for: a correct ruling a writer cannot record.
+# as a review outcome, so in this repository being blocked on a named
+# prerequisite is a decision that was reached -- unlike `PENDING` or `DRAFT`,
+# which say no decision was taken. Listing the word rejected that outcome,
+# which is the cost this rule has to keep watching for: a correct ruling a
+# writer cannot record.
+
+# `AGENTS.md` lists review outcomes and integration outcomes as separate lines,
+# and both it and `CLAUDE.md` say "substantive review and integration posture
+# remain separate". An integration state says where a PR stood at a moment --
+# `PR_IN_FLIGHT` while checks run, `MERGE_BLOCKED` on a ruleset or queue -- and
+# a later push can change it. That is not a ruling about whether a lane
+# demonstrated its transition, so it cannot carry a `COVERED` row.
+#
+# Matched whole, not per word: `MERGE` and `BLOCKED` are unobjectionable
+# elsewhere, and `BLOCKED_BY_PREREQUISITE` is a review outcome that stays valid.
+INTEGRATION_STATES = frozenset({"MERGE_BLOCKED", "PR_IN_FLIGHT"})
 
 
 def ruling_defect(ruling: str) -> str | None:
@@ -211,6 +223,12 @@ def ruling_defect(ruling: str) -> str | None:
     )
     if provisional:
         return f"is still provisional ({', '.join(provisional)})"
+    posture = sorted(tokens & INTEGRATION_STATES)
+    if posture:
+        return (
+            f"records integration posture ({', '.join(posture)}), which a later "
+            f"push can change, not a ruling about the lane"
+        )
     return None
 
 # The front door states how many categories are open. A hard-coded count there
@@ -549,6 +567,10 @@ class WorkedLaneLedgerTests(unittest.TestCase):
             "a qualified pending state": "#4192 — `PENDING_REVIEW` until it lands",
             "a provisional prefix": "#4192 — `DRAFT_PROMOTE`",
             "a soft status as a ruling": "#5247 — `PARTIALLY_SATISFIED` so far",
+            # Integration posture, not a lane ruling: a later push changes it,
+            # so a transient red check could otherwise carry a COVERED row.
+            "an integration blocker": "#13788 — `MERGE_BLOCKED` on the required shard",
+            "a run still in flight": "#13788 — `PR_IN_FLIGHT` while checks finish",
         }
         for label, ruling in rejected.items():
             with self.subTest(rejected=label):
@@ -577,7 +599,6 @@ class WorkedLaneLedgerTests(unittest.TestCase):
             # both, which is why the accepted side is checked against the
             # repository's own vocabulary rather than against intuition.
             "a repository-defined blocker": "#11141 — `BLOCKED_BY_PREREQUISITE` on the candidate lanes",
-            "an integration blocker": "#13788 — `MERGE_BLOCKED` pending the required shard",
         }
         for label, ruling in accepted.items():
             with self.subTest(accepted=label):
