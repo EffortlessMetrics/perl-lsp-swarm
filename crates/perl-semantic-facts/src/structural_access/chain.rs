@@ -14,8 +14,32 @@ use crate::semantic_identity::SemanticIdentityFingerprint;
 ///
 /// Order is the contract. Hops are held privately and exposed as a slice so a
 /// consumer cannot reorder or drop one after validation, and every hop's
-/// aggregate names its immediate predecessor so a dropped or reordered hop is
-/// mechanically detectable rather than merely improbable.
+/// aggregate names its immediate predecessor by ordinal, so a chain whose
+/// order is internally inconsistent is mechanically detectable rather than
+/// merely improbable.
+///
+/// # What the predecessor link does not prove
+///
+/// The ordinal link is a coherence check, not an integrity mechanism. It
+/// rejects a chain that contradicts itself — a hop naming a predecessor that
+/// is not `ordinal - 1`, ordinals that are not dense and ascending, a reorder
+/// or deletion that leaves either inconsistent. It cannot reject a deletion
+/// that renumbers everything after it, and no self-contained validator could:
+/// `$config->{a}{b}{c}` with `{b}` removed and `{c}` renumbered *is*
+/// `$config->{a}{c}`, which an honest producer emits for real source.
+/// Rejecting it would reject that source.
+///
+/// Binding each hop to a predecessor *fingerprint* would not close this
+/// either. These digests carry no secret and the folding is public, so anyone
+/// able to renumber an ordinal can recompute a digest just as cheaply; it
+/// would add a field to every hop and buy no guarantee against an edit.
+///
+/// What distinguishes a shortened chain is therefore identity, not validity:
+/// [`Self::fingerprint`] folds the subject and every hop in written order, so
+/// a consumer holding the expected digest sees the substitution. A consumer
+/// that needs to trust a chain arriving from a transport must compare it
+/// against an expected identity; validation alone establishes that a record is
+/// a possible access, never that it is the access that was meant.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructuralAccessChain {

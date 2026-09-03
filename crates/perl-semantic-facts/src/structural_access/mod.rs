@@ -287,8 +287,13 @@ impl StructuralAccessSelector {
 /// What this hop selected out of.
 ///
 /// The first hop of a chain names a real input aggregate; every later hop
-/// names its immediate predecessor by ordinal. That is what makes a dropped
-/// or reordered hop detectable rather than merely unlikely.
+/// names its immediate predecessor by ordinal. That is what makes an
+/// internally inconsistent order detectable rather than merely unlikely — a
+/// hop naming a predecessor that is not `ordinal - 1`, or a drop or reorder
+/// that leaves the ordinals non-dense.
+///
+/// It is a coherence check and not an integrity mechanism; see
+/// [`StructuralAccessChain`] for what it deliberately cannot prove.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StructuralAccessAggregate {

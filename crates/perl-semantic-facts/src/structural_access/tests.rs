@@ -2410,3 +2410,80 @@ fn an_arrow_through_an_array_container_cannot_survive_the_transport_boundary()
     chain.validate()?;
     Ok(())
 }
+
+// ── The limit of the ordinal predecessor link (found by Devin review) ─────
+
+#[test]
+fn a_renumbered_middle_hop_deletion_still_validates() -> Result<(), Box<dyn Error>> {
+    // The ordinal predecessor link catches an *incoherent* chain: a hop naming
+    // a non-adjacent predecessor, a gap or duplicate in the ordinals, a reorder
+    // that leaves the ordinals inconsistent. It cannot catch a deletion that
+    // renumbers what follows it, and no self-contained validator could: the
+    // shortened chain is a faithful description of a *different* real access.
+    //
+    // `$config->{a}{b}{c}` with `{b}` removed and `{c}` renumbered is exactly
+    // `$config->{a}{c}`, which an honest producer may emit for real source.
+    // Rejecting it would reject that source. This test pins the boundary so a
+    // future change that claims to close it has something to flip.
+    let build = |ordinal: u32, aggregate, key: &str| {
+        selecting_hop(
+            ordinal,
+            aggregate,
+            if ordinal == 0 {
+                StructuralAccessOperator::HashRefSlot
+            } else {
+                StructuralAccessOperator::HashSlot
+            },
+            StructuralAccessSelector::StaticKey(key.to_string()),
+            if ordinal == 0 { "->{a}" } else { "{k}" },
+            ValueShape::HashRef,
+        )
+    };
+    let full = StructuralAccessChain::new(
+        subject()?,
+        vec![
+            build(0, base_variable(), "a")?,
+            build(1, StructuralAccessAggregate::PrecedingHop { ordinal: 0 }, "b")?,
+            build(2, StructuralAccessAggregate::PrecedingHop { ordinal: 1 }, "c")?,
+        ],
+    )?;
+
+    // Delete the middle hop and renumber the survivor, as a tamperer would.
+    let mut value = serde_json::to_value(&full)?;
+    let hops = value["hops"].as_array_mut().ok_or("hops must be an array")?;
+    hops.remove(1);
+    hops[1]["ordinal"] = serde_json::json!(1);
+    hops[1]["aggregate"] = serde_json::json!({ "PrecedingHop": { "ordinal": 0 } });
+    let shortened: StructuralAccessChain = serde_json::from_value(value)?;
+
+    // The boundary: validation accepts it, because it describes real source.
+    shortened.validate()?;
+
+    // What actually distinguishes it is identity, not validity. The chain
+    // fingerprint folds every hop in order, so the shortened chain cannot be
+    // mistaken for the original by a consumer that kept the original digest.
+    assert_ne!(
+        shortened.fingerprint(),
+        full.fingerprint(),
+        "a shortened chain must not share the original's identity"
+    );
+    assert_eq!(shortened.hops().len(), 2, "the deletion really happened");
+    Ok(())
+}
+
+#[test]
+fn a_deletion_without_renumbering_is_still_rejected() -> Result<(), Box<dyn Error>> {
+    // Negative control for the boundary above: the ordinal link does its actual
+    // job. Removing a hop without renumbering leaves the ordinals non-dense and
+    // a predecessor reference that no longer names `ordinal - 1`, and that is
+    // mechanically detected.
+    let mut value = serde_json::to_value(nested_chain()?)?;
+    let hops = value["hops"].as_array_mut().ok_or("hops must be an array")?;
+    hops.remove(1);
+    let decoded: StructuralAccessChain = serde_json::from_value(value)?;
+    assert!(
+        decoded.validate().is_err(),
+        "a deletion that leaves the ordinals inconsistent must be rejected"
+    );
+    Ok(())
+}
