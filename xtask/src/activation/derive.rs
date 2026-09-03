@@ -696,9 +696,17 @@ fn collect_declared_modules(
         if !seen.insert(current.clone()) {
             continue;
         }
-        let Ok(text) = fs::read_to_string(&current) else {
-            continue;
-        };
+        // A declared module that cannot be read is a missing input, not an
+        // empty one: its gates vanish from the population and the remaining
+        // test-side sites classify the feature test-only. Same rule as
+        // `read_source_dir` and the gate-index file read — absence of
+        // evidence must never be manufactured.
+        let text = fs::read_to_string(&current).map_err(|error| {
+            ActivationError::new(format!(
+                "crates/{crate_dir}: cannot read declared module `{}`: {error}",
+                current.display()
+            ))
+        })?;
         let Some(parent) = current.parent() else {
             continue;
         };
@@ -733,7 +741,6 @@ fn collect_declared_modules(
             }
         }
     }
-    let _ = crate_dir;
     Ok(())
 }
 
