@@ -691,17 +691,13 @@ pub fn observe_invocations(config: &ObserveInvocationsConfig) -> Result<Instrume
     argv.extend(selectors);
     let process_nonce = mint_instrument_nonce()?;
     let trace_session_id = format!("trace-{process_nonce}");
-    let mut environment = BTreeMap::from([
-        ("LC_ALL".to_string(), "C".to_string()),
-        (TRACE_ENV_FILE.to_string(), TRACE_CHANNEL_BASENAME.to_string()),
-        (TRACE_ENV_SESSION.to_string(), trace_session_id.clone()),
-        (TRACE_ENV_ARTIFACT.to_string(), instrumented_digest.clone()),
-        (TRACE_ENV_TARGET.to_string(), config.target_id.clone()),
-        (TRACE_ENV_INSTRUMENTATION.to_string(), config.instrumentation_id.clone()),
-    ]);
-    for (key, value) in &entry.contract.environment {
-        environment.insert(key.clone(), value.clone());
-    }
+    let environment = build_instrumentation_environment(
+        &entry.contract.environment,
+        &trace_session_id,
+        &instrumented_digest,
+        &config.target_id,
+        &config.instrumentation_id,
+    );
     let instrumented_t_dir = instrumented_tree.join("t");
     let mut command = Command::new(&host_perl);
     command.current_dir(&instrumented_t_dir);
@@ -1320,6 +1316,28 @@ fn clear_stale_output(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Compose the process environment while keeping capture-owned identity
+/// authoritative over target-contract configuration. A target may contribute
+/// ordinary runtime variables, but it may not redirect the private trace file
+/// or forge the session, artifact, target, instrumentation, or locale values
+/// that the receipts bind.
+fn build_instrumentation_environment(
+    contract_environment: &BTreeMap<String, String>,
+    trace_session_id: &str,
+    instrumented_artifact_digest: &str,
+    target_id: &str,
+    instrumentation_id: &str,
+) -> BTreeMap<String, String> {
+    let mut environment = contract_environment.clone();
+    environment.insert("LC_ALL".to_string(), "C".to_string());
+    environment.insert(TRACE_ENV_FILE.to_string(), TRACE_CHANNEL_BASENAME.to_string());
+    environment.insert(TRACE_ENV_SESSION.to_string(), trace_session_id.to_string());
+    environment.insert(TRACE_ENV_ARTIFACT.to_string(), instrumented_artifact_digest.to_string());
+    environment.insert(TRACE_ENV_TARGET.to_string(), target_id.to_string());
+    environment.insert(TRACE_ENV_INSTRUMENTATION.to_string(), instrumentation_id.to_string());
+    environment
+}
+
 fn parse_runner(value: &str) -> Result<RunnerKind> {
     match RunnerKind::parse(value) {
         Ok(RunnerKind::Test) => Ok(RunnerKind::Test),
@@ -1368,7 +1386,9 @@ mod contract_tests {
 
     use super::{
         CleanupRecord, ExactPatchOp, ExactPatchSpec, InstrumentationState, InstrumentationWork,
-        PatchApplicationError, apply_exact_patch, derive_instrumentation_state, manifest_changes,
+        PatchApplicationError, TRACE_CHANNEL_BASENAME, TRACE_ENV_ARTIFACT, TRACE_ENV_FILE,
+        TRACE_ENV_INSTRUMENTATION, TRACE_ENV_SESSION, TRACE_ENV_TARGET, apply_exact_patch,
+        build_instrumentation_environment, derive_instrumentation_state, manifest_changes,
         prescan_instrument_stream, read_bounded_trace, remeasure_instrumented_artifact,
         required_limitations,
     };
@@ -1508,6 +1528,37 @@ mod contract_tests {
         assert!(was_oversized);
         assert_eq!(retained.len(), super::MAX_TRACE_STREAM_BYTES);
         Ok(())
+    }
+
+    #[test]
+    fn capture_owned_environment_cannot_be_overridden_by_target_contract() {
+        let contract = [
+            (TRACE_ENV_FILE.to_string(), "foreign-trace.jsonl".to_string()),
+            (TRACE_ENV_SESSION.to_string(), "foreign-session".to_string()),
+            (TRACE_ENV_ARTIFACT.to_string(), "foreign-digest".to_string()),
+            (TRACE_ENV_TARGET.to_string(), "foreign-target".to_string()),
+            (TRACE_ENV_INSTRUMENTATION.to_string(), "foreign-instrumentation".to_string()),
+            ("PERL5LIB".to_string(), "target/lib".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let environment = build_instrumentation_environment(
+            &contract,
+            "trace-session",
+            "instrumented-digest",
+            "component_base",
+            "instrumentation-1",
+        );
+        assert_eq!(environment.get(TRACE_ENV_FILE), Some(&TRACE_CHANNEL_BASENAME.to_string()));
+        assert_eq!(environment.get(TRACE_ENV_SESSION), Some(&"trace-session".to_string()));
+        assert_eq!(environment.get(TRACE_ENV_ARTIFACT), Some(&"instrumented-digest".to_string()));
+        assert_eq!(environment.get(TRACE_ENV_TARGET), Some(&"component_base".to_string()));
+        assert_eq!(
+            environment.get(TRACE_ENV_INSTRUMENTATION),
+            Some(&"instrumentation-1".to_string())
+        );
+        assert_eq!(environment.get("PERL5LIB"), Some(&"target/lib".to_string()));
+        assert_eq!(environment.get("LC_ALL"), Some(&"C".to_string()));
     }
 
     #[test]
