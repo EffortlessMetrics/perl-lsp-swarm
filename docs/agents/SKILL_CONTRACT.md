@@ -177,7 +177,9 @@ REVIEW_CURRENT
   → verify-live-ci
 
 PR_IN_FLIGHT
-  → return to deliver-goal so another distinct claim frame may proceed
+  → return to deliver-goal so another distinct claim frame may proceed;
+    a deliver-pr invoked standalone returns PR_IN_FLIGHT to its caller,
+    since an external system may own the next transition
 
 ALREADY_SATISFIED
   → return to deliver-pr for reconciliation

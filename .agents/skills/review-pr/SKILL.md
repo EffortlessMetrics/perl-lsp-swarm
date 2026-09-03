@@ -67,6 +67,12 @@ Differing directions beat additional workers. When two lenses examine one surfac
 them different sources, oracles, methods, threat models, environments, or useful
 attention surfaces. Repeated same-framing answers are not corroboration.
 
+Every read-only worker returns its evidence packet, not only findings: the assigned
+question, the angles attempted, the outcome for each angle, supporting evidence and
+falsifiers, residual uncertainty, and affected proof/review dimensions. The accountable
+root enforces the differing-directions rule and detects duplicate coverage from these
+packets alone.
+
 ### Mutation owner and join
 
 The construction context must not be the only detection surface supporting a
@@ -104,15 +110,17 @@ through `$address-review-comments`; read-only reviewers do not mutate.
 
 A `COMMENTED` review is only a GitHub fact; it does not become substantive merely
 because it exists. When the cumulative conclusion is `REVIEW_CURRENT`, generate the
-subject-bound marker from the current PR diff:
+subject-bound marker from the current PR diff **before** invoking the submission
+command, and pass the submission command the fully assembled body — conclusion,
+findings, and the already-appended marker — so the submitted review itself carries it:
 
 ```bash
 python3 scripts/ci/check-pr-semantic-review-currentness.py \
   <pr> <owner/repo> --emit-marker --result REVIEW_CURRENT
 ```
 
-Append the emitted `semantic-review:v1` marker — an HTML comment bound to the current
-PR diff — to the same useful review record. The marker binds semantic currentness without turning the full head SHA into a
+The emitted `semantic-review:v1` marker — an HTML comment bound to the current
+PR diff — is appended to the same useful review record. The marker binds semantic currentness without turning the full head SHA into a
 ceremonial review receipt.
 
 **The accountable root posts the cumulative review.** A bounded review programme returns

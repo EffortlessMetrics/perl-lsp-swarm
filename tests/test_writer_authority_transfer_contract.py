@@ -77,20 +77,37 @@ def normalize(text: str) -> str:
 
 
 def section(text: str, heading: str) -> tuple[str | None, str | None]:
+    lines = text.splitlines()
+
+    def fenced_regions(line: str, state: list[bool]) -> bool:
+        """Toggle fence state on ``` lines and report whether `line` sits in a fence.
+
+        A fenced line such as `# gh pr merge ...` is example text, not a
+        heading, and must never terminate the scanned section.
+        """
+        if line.lstrip().startswith("```"):
+            state[0] = not state[0]
+            return True
+        return state[0]
+
+    fence = [False]
     matches = [
         index
-        for index, line in enumerate(text.splitlines())
-        if line.strip().casefold() == heading.casefold()
+        for index, line in enumerate(lines)
+        if not fenced_regions(line, fence) and line.strip().casefold() == heading.casefold()
     ]
     if not matches:
         return None, f"missing section {heading!r}"
     if len(matches) != 1:
         return None, f"section {heading!r} occurs {len(matches)} times"
 
-    lines = text.splitlines()
     target_level = len(heading) - len(heading.lstrip("#"))
     body: list[str] = []
+    fence = [False]
     for line in lines[matches[0] + 1 :]:
+        if fenced_regions(line, fence):
+            body.append(line)
+            continue
         found = HEADING.match(line.lstrip())
         if found is not None and len(found.group(1)) <= target_level:
             break

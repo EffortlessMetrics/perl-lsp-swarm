@@ -123,7 +123,9 @@ evidence rule:
 - a rerun of a merge-tree-evaluated check replays its original merge snapshot: after
   material base movement (release bumps, fmt/clippy sweeps landing on main), a fresh
   trigger (empty-commit head bump, e.g. `ci: re-request fresh merge-tree checks`)
-  re-evaluates the current tree and is the honest action; the empty-commit ban covers
+  re-evaluates the current tree and is the honest action; the bound is at most one
+  fresh trigger per observed material base movement — never per wait cycle — and the
+  accountable root owns the action. The empty-commit ban covers
   manufacturing a current status on an unchanged subject, not re-evaluating a changed
   merge tree (#12174, #12251, #12256, #12258 each unblocked only through the fresh
   trigger). Advisory CI-Gate shard redness on that fresh tree is then a main-red

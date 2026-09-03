@@ -183,7 +183,8 @@ RETIRED_ACTIVE_SKILL_AUTHORITY = (
     re.compile(r"\blane owner\b"),
 )
 SUBORDINATE_AUTHORITY = re.compile(
-    r"\b(?:the|a|one)\s+(?:claim|lane)(?:[- ](?:root|orchestrator|coordinator|owner))"
+    r"\b(?:the|a|an|one|each|every|another|this)\s+(?:claim|lane)"
+    r"(?:[- ](?:root|orchestrator|coordinator|owner))"
     r"\b[^.]{0,100}\b(?:owns?|retains?|decides?|joins?|posts?|selects?|routes?|runs?)\b",
     re.IGNORECASE,
 )
@@ -562,7 +563,24 @@ class CrossSurfaceInvariantTests(unittest.TestCase):
             self.assertIn(agent, roster)
 
     def test_provider_skill_route_and_semantic_parity(self) -> None:
-        for skill in PARITY_SKILLS:
+        # Divergence detection covers EVERY skill shared by both provider
+        # trees, not only the orchestration-critical list: a shared skill
+        # outside PARITY_SKILLS that diverges between providers is exactly
+        # the contradiction this guard exists to catch. Positive
+        # orchestration-authority and semantic-invariant assertions stay
+        # scoped to PARITY_SKILLS, whose surfaces carry those contracts.
+        codex_skill_root = ROOT / ".agents" / "skills"
+        claude_skill_root = ROOT / ".claude" / "skills"
+        shared_skills = sorted(
+            {p.name for p in codex_skill_root.iterdir() if (p / "SKILL.md").is_file()}
+            & {p.name for p in claude_skill_root.iterdir() if (p / "SKILL.md").is_file()}
+        )
+        self.assertTrue(shared_skills, "no shared provider skills discovered")
+        self.assertFalse(
+            set(PARITY_SKILLS) - set(shared_skills),
+            "PARITY_SKILLS names skills that are not shared by both provider trees",
+        )
+        for skill in shared_skills:
             codex_path = f".agents/skills/{skill}/SKILL.md"
             claude_path = f".claude/skills/{skill}/SKILL.md"
             codex = active_text(codex_path)
@@ -582,6 +600,15 @@ class CrossSurfaceInvariantTests(unittest.TestCase):
                 claude_edges,
                 f"{skill} provider implementations disagree on result-to-route edges",
             )
+        for skill in PARITY_SKILLS:
+            codex_path = f".agents/skills/{skill}/SKILL.md"
+            claude_path = f".claude/skills/{skill}/SKILL.md"
+            codex = active_text(codex_path)
+            claude = active_text(claude_path)
+            codex_visible = visible_text(codex_path)
+            claude_visible = visible_text(claude_path)
+            codex_edges = result_route_edges(codex_visible)
+            claude_edges = result_route_edges(claude_visible)
             for required_edge in REQUIRED_ROUTE_EDGES.get(skill, frozenset()):
                 self.assertIn(
                     required_edge,
@@ -635,8 +662,25 @@ class WorkflowContractTests(unittest.TestCase):
             )
 
     def test_workflow_runs_only_its_own_surface(self) -> None:
+        import importlib.util
+
+        helper_path = ROOT / "tests" / "test_writer_authority_transfer_contract.py"
+        spec = importlib.util.spec_from_file_location("_writer_authority_helper", helper_path)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+
         workflow = read(WORKFLOW)
-        self.assertIn(f"python3 -m unittest {SELF_TEST}", workflow)
+        # Assert on parsed `run:` commands, not raw workflow text: a comment
+        # line must not be able to satisfy the executable-command assertion.
+        commands = helper.workflow_run_commands(workflow)
+        self.assertTrue(
+            any(f"python3 -m unittest {SELF_TEST}" in command for command in commands),
+            "workflow must execute the active-authority contract suite in a run command",
+        )
+        self.assertFalse(
+            any("cargo test" in command or "cargo fmt" in command for command in commands),
+            "workflow run commands must stay on their own python surface",
+        )
         self.assertNotIn("cargo test", workflow)
         self.assertNotIn("cargo fmt", workflow)
 
@@ -662,6 +706,11 @@ class RatchetSelfTests(unittest.TestCase):
 
     def test_subordinate_authority_detector_rejects_renamed_actor(self) -> None:
         self.assertIsNotNone(SUBORDINATE_AUTHORITY.search("The claim coordinator owns review disposition."))
+        self.assertIsNotNone(
+            SUBORDINATE_AUTHORITY.search("Each claim coordinator owns review."),
+            "a renamed determiner must not rescue retired subordinate authority",
+        )
+        self.assertIsNotNone(SUBORDINATE_AUTHORITY.search("Every lane owner decides the claim."))
         self.assertIsNone(SUBORDINATE_AUTHORITY.search("A claim is a logical frame held by the root."))
 
     def test_result_route_edges_cover_real_bullets_and_reject_inversion(self) -> None:

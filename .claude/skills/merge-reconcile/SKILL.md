@@ -146,8 +146,10 @@ If an armed auto-merge has not fired, one manual probe merge through the REST en
 (`gh api -X PUT repos/{owner}/{repo}/pulls/<n>/merge -f merge_method=squash -f
 sha=<current-head-sha>`) is the sanctioned no-polling probe only after the required
 union is green on the head SHA, or after an explicit evidence-backed waiver is recorded
-on the PR/issue naming every unmet requirement. A waiver recorded merely to save
-wall-clock is not a waiver.
+on the PR/issue naming the head SHA it was issued against and every unmet requirement.
+A waiver authorizes a probe of that head only; after any head movement the waiver is
+void until re-issued for the new head. A waiver recorded merely to save wall-clock is
+not a waiver.
 
 The **main/accountable root** records any such waiver, owns the compare-and-swap
 transition, and either merges or arms auto-merge. A bounded writer/reviewer/subagent does

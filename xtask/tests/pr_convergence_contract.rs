@@ -51,9 +51,21 @@ fn section<'a>(document: &'a str, heading: &str) -> Result<&'a str, String> {
 
     let mut offset = 0;
     let mut start = None;
+    // A fenced line such as `# gh pr merge ...` is example text, not a
+    // heading, and must never terminate the scanned section.
+    let mut in_fence = false;
     for line in document.split_inclusive('\n') {
         let body = line.strip_suffix('\n').unwrap_or(line);
         let body = body.strip_suffix('\r').unwrap_or(body);
+        if body.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            offset += line.len();
+            continue;
+        }
+        if in_fence {
+            offset += line.len();
+            continue;
+        }
         if start.is_none() {
             if body == heading {
                 start = Some(offset + line.len());
