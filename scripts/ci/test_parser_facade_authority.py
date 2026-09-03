@@ -118,7 +118,9 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
             targets += [f'[[{row["kind"]}]]', f'name = {json.dumps(row["name"])}']
             if row["required_features"]:
                 targets.append("required-features = " + json.dumps(row["required_features"]))
-        manifest = ['[package]\nname="perl-parser"\nversion="0.1.0"\n']
+        # Keep the synthetic feature-profile helper from becoming an unrelated
+        # implicit target; auto-discovery is exercised explicitly below.
+        manifest = ['[package]\nname="perl-parser"\nversion="0.1.0"\nautotests = false\n']
         for header, lines in sections.items():
             manifest.append(f"[{header}]\n" + "\n".join(lines) + "\n")
         manifest.append("[features]\n" + "\n".join(features) + "\n")
@@ -493,6 +495,18 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
             "exit_condition": "fixture-only probe target.",
         })
         self.write_ledger(self.ledger)
+        check(self.root, self.ledger_path)
+
+    def test_auto_discovered_target_requires_a_ledger_row(self) -> None:
+        self.write("crates/perl-parser/tests/conventional_target.rs", "#[test]\nfn probe() {}\n")
+        self.manifest_path.write_text(self.manifest_path.read_text().replace(
+            "autotests = false", "autotests = true", 1
+        ))
+        with self.assertRaisesRegex(ValueError, "unclassified=test:conventional_target"):
+            check(self.root, self.ledger_path)
+
+    def test_auto_discovered_target_honors_package_opt_out(self) -> None:
+        self.write("crates/perl-parser/tests/conventional_target.rs", "#[test]\nfn probe() {}\n")
         check(self.root, self.ledger_path)
 
     def test_review_row_target_owner_must_be_actionable(self) -> None:

@@ -283,8 +283,16 @@ def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]
         if not isinstance(required, list) or any(not isinstance(x, str) for x in required):
             raise ValueError(f"targets[{index}].required_features must be a string list")
         expected_targets.add(CargoTarget(kind, name, tuple(required)))
-    if cargo_targets(manifest) != expected_targets:
-        raise ValueError("Cargo bin/bench/example targets differ from authority ledger")
+    observed_targets = cargo_targets(manifest, manifest_path.parent)
+    if observed_targets != expected_targets:
+        missing = sorted(observed_targets - expected_targets, key=lambda target: (target.kind, target.name))
+        absent = sorted(expected_targets - observed_targets, key=lambda target: (target.kind, target.name))
+        details = []
+        if missing:
+            details.append("unclassified=" + ",".join(f"{target.kind}:{target.name}" for target in missing))
+        if absent:
+            details.append("absent=" + ",".join(f"{target.kind}:{target.name}" for target in absent))
+        raise ValueError("Cargo targets differ from authority ledger: " + "; ".join(details))
 
     inc_modules, inc_exports, inc_functions = incremental_surface(root / CANONICAL_SOURCE_PATHS["incremental"])
     module_rows = table_by_name(ledger.get("incremental_public_modules"), "incremental_public_modules")
