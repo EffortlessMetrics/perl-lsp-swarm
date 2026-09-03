@@ -73,6 +73,22 @@ The README is a front door, not the metric source of truth. Current release post
 code --install-extension EffortlessMetrics.perl-lsp-rs
 ```
 
+**Cargo** (supported Linux, macOS, and Windows platforms; Rust 1.95 or newer) —
+installs the `perllsp` language-server binary from crates.io. This installs
+`perllsp` only, not the `perl-dap` debug adapter; use a release archive if you
+need the debugger. Support on other Rust targets is not established here.
+crates.io is an independently versioned channel, so compare
+`perllsp --version` with the latest
+[release](https://github.com/EffortlessMetrics/perl-lsp/releases) before
+relying on it:
+
+```bash
+cargo install perllsp --locked
+```
+
+The crates.io package `perl-lsp` is a different project; the package for this
+toolchain is `perllsp`.
+
 **macOS and Linux** — use a manual archive from
 [GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases) until
 the release closeout publishes an immutable installer ref and the reviewed
@@ -95,17 +111,33 @@ curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTAL
 brew install effortlessmetrics/tap/perllsp
 ```
 
-**Windows** (x86_64) — download
-`perllsp-<version>-x86_64-pc-windows-msvc.zip` from
+The tap is an independently versioned channel and can lag the GitHub release;
+check `brew info effortlessmetrics/tap/perllsp` to confirm the formula version
+matches the release you expect before installing.
+
+**Windows** (x86_64, plus Windows 11 ARM64 via x64 emulation) — on x86_64,
+download `perllsp-<version>-x86_64-pc-windows-msvc.zip` from
 [Releases](https://github.com/EffortlessMetrics/perl-lsp/releases), extract it,
 and put the folder containing `perllsp.exe` on your `PATH`.
 
-The PowerShell installer script is **not usable yet**: the copy published at
-`perl-lsp/master` still builds a `perl-lsp-…zip` asset name, and releases ship
-`perllsp-…zip`, so it fails with a 404. The fix exists in this repository but
-has not been promoted to the publication repo
-([#4348](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4348)). Use
-the manual archive until it has.
+The published PowerShell installer is usable for x86_64 Windows and Windows 11
+ARM64 under x64 emulation. It selects the current
+`perllsp-<version>-x86_64-pc-windows-msvc.zip` release asset, installs
+`perllsp.exe`, and verifies the asset against the release `SHA256SUMS` file,
+aborting on a checksum mismatch; any other checksum failure — the file cannot
+be downloaded, has no row for the asset, cannot be parsed, or the hash cannot
+be computed — prints a warning and continues without verification. Download
+it, inspect it, then run it from PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 -OutFile install.ps1
+# Review install.ps1, then:
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+Windows 10 ARM64 and unsupported architectures must build from source. On
+x86_64 Windows the manual archive above remains available as an alternative to
+the installer.
 
 Then inspect the install before wiring it into an editor. `--doctor` reports
 the local Perl and workspace setup; it is a diagnostic report, not a CI gate.

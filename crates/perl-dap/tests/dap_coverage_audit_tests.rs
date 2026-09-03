@@ -1139,6 +1139,10 @@ fn test_feature_catalog_all_dap_features_registered() {
     // honesty while `advertised = false`, so it is deliberately absent here
     // (the goto rows #9064 likewise). The unadvertised value is pinned by the
     // coverage suite's feature-gate test.
+    //
+    // #9091: `dap.watchpoints` is deliberately excluded — the row remains in
+    // features.toml with full maturity metadata, but it is no longer advertised
+    // until watchpoint identity/install/hit proof exists.
     let all_ids = [
         "dap.core",
         "dap.breakpoints.basic",
@@ -1148,7 +1152,6 @@ fn test_feature_catalog_all_dap_features_registered() {
         "dap.exceptions.die",
         "dap.exceptions.warn",
         "dap.modules",
-        "dap.watchpoints",
     ];
     for id in all_ids {
         assert!(
@@ -1159,6 +1162,16 @@ fn test_feature_catalog_all_dap_features_registered() {
     assert!(
         !perl_dap::feature_catalog::has_feature("dap.inline_values"),
         "dap.inline_values must stay unadvertised until #9089's negotiation gate passes"
+    );
+}
+
+/// #9091: watchpoints stay unadvertised while the re-enable gate
+/// (identity/install/hit proof) is unmet.
+#[test]
+fn test_feature_catalog_watchpoints_not_advertised() {
+    assert!(
+        !perl_dap::feature_catalog::has_feature("dap.watchpoints"),
+        "dap.watchpoints must not be advertised while the #9091 re-enable gate (watchpoint identity/install/hit proof) is unmet"
     );
 }
 

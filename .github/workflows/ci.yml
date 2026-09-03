@@ -591,7 +591,7 @@ jobs:
 
       - name: Install just
         if: needs.draft-pr-check.outputs.api_scope == 'true'
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -741,7 +741,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -1030,7 +1030,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -1330,7 +1330,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -1536,7 +1536,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc  # v2.86.7
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -1596,6 +1596,18 @@ jobs:
       # to the four contracts above on the same required merge surface.
       - name: Gate-policy budget witness contract (required merge surface)
         run: cargo test -p xtask --test issue_4657_ci_workflow_contract --locked -- --nocapture
+
+      # #14585: nothing executed `xtask/tests/file_policy.rs`. No workflow named
+      # `--test file_policy`, the merge gate runs `cargo test --workspace --lib`
+      # (which does not build `tests/`), and the policy shard runs
+      # `cargo xtask gates` rather than the test binary. The suite asserts the
+      # inventory gate's tier, required flag, description, command, timeout,
+      # budgets, single mapping, and shard membership — so the gate guarding the
+      # non-Rust inventory was itself guarded by a contract that could not go
+      # red, and did in fact sit red on main unnoticed. Same reasoning as the
+      # contracts above, so it belongs on the same required merge surface.
+      - name: Non-Rust file policy contract (required merge surface)
+        run: cargo test -p xtask --test file_policy --locked -- --nocapture
 
   lsp-memory-smoke:
     name: LSP Memory Smoke

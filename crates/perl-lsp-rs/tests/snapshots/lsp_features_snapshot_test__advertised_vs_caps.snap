@@ -53,7 +53,6 @@ catalog:
   - dap.source
   - dap.step_in_targets
   - dap.threads
-  - dap.watchpoints
   - experimental.perlInlineCompletionStream
   - lsp.apply_edit
   - lsp.apply_edit_metadata
