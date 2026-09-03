@@ -46,21 +46,28 @@ impl DebugAdapter {
             };
 
         // #9578: partition floored optional-field entries out of the request
-        // before any store or session work. Unsupported combinations reject on
-        // every offending field; they never widen another feature.
+        // before any store or session work. Each rejection is gated on its own
+        // authority, so promotion flips advertisement and admission together
+        // and one capability's receipt can never widen another. Unsupported
+        // combinations reject on every still-floored offending field.
         let input_len = parsed.breakpoints.as_ref().map_or(0, Vec::len);
         let mut rejected: Vec<(usize, i64, Option<i64>, String)> = Vec::new();
         let mut plain_entries: Vec<crate::protocol::SourceBreakpoint> = Vec::new();
         let mut plain_slots: Vec<(usize, i64)> = Vec::new();
         for (index, entry) in parsed.breakpoints.iter().flatten().enumerate() {
             let mut reasons: Vec<&'static str> = Vec::new();
-            if entry.condition.is_some() {
+            if entry.condition.is_some()
+                && !crate::backend::capabilities::advertises_conditional_breakpoints()
+            {
                 reasons.push(crate::backend::capabilities::CONDITION_UNSUPPORTED_MESSAGE);
             }
-            if entry.hit_condition.is_some() {
+            if entry.hit_condition.is_some()
+                && !crate::backend::capabilities::advertises_hit_conditional_breakpoints()
+            {
                 reasons.push(crate::backend::capabilities::HIT_CONDITION_UNSUPPORTED_MESSAGE);
             }
-            if entry.log_message.is_some() {
+            if entry.log_message.is_some() && !crate::backend::capabilities::advertises_log_points()
+            {
                 reasons.push(crate::backend::capabilities::LOG_MESSAGE_UNSUPPORTED_MESSAGE);
             }
             if reasons.is_empty() {
