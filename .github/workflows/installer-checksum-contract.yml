@@ -55,7 +55,37 @@ jobs:
       - name: Run checksum negative controls
         run: bash scripts/tests/test-installer-checksum-required.sh
 
-      - name: Run archive-safety controls
+      # Without these the archive-safety run reports the bsdtar and BusyBox
+      # profiles NOT PROVEN and only GNU tar is covered. BusyBox tar is the
+      # profile whose listing divergence admitted links and absolute-path
+      # members (#11508), and bsdtar is the macOS tar family.
+      - name: Install additional tar profiles
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libarchive-tools busybox-static
+
+      # These packages are intentionally unversioned: Ubuntu drops superseded
+      # versions from the archive, so a pinned install starts 404-ing as soon
+      # as a security update lands. Record what actually resolved instead, so
+      # the profile evidence names its decoders rather than assuming them. The
+      # archive-safety driver separately validates that each profile resolves
+      # to the expected implementation family and fails if one is swapped.
+      - name: Record resolved tar-profile package versions
+        run: |
+          set -euo pipefail
+          dpkg-query -W -f='${binary:Package} ${Version}\n' libarchive-tools busybox-static \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          bsdtar --version | head -n 1 | tee -a "$GITHUB_STEP_SUMMARY"
+          busybox tar --help 2>&1 | head -n 1 | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Run archive-safety controls across tar profiles
+        # The install step above is the only reason all three profiles exist
+        # here, so require them: without this the driver reports NOT PROVEN in
+        # the log and still exits 0, and a silently degraded image would look
+        # green while covering one profile of three (#11508).
+        env:
+          PERL_LSP_REQUIRE_TAR_PROFILES: '1'
         run: bash scripts/tests/test-installer-archive-safety.sh
 
       - name: Run product-unit promotion controls
