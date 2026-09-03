@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12643 |
-| Rust-family files | 3933 |
-| Non-Rust files | 8710 |
-| Allowlisted | 6471 |
+| Total tracked files | 12650 |
+| Rust-family files | 3936 |
+| Non-Rust files | 8714 |
+| Allowlisted | 6475 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -17,10 +17,10 @@
 | Category | Count |
 |---|---|
 | config | 501 |
-| documentation | 2844 |
+| documentation | 2845 |
 | generated | 2 |
 | production | 354 |
-| test | 2090 |
+| test | 2093 |
 | tooling | 680 |
 | unclassified | 2239 |
 
@@ -7106,6 +7106,9 @@
 | `test_corpus/gold/parse_error_recovery/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/push_arrayref/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/rename_basic/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `test_corpus/gold/rename_subroutine/expected.json` | test | `non-rust-rename-subroutine-diagnostics-gold` | parser/lsp-fixtures |
+| `test_corpus/gold/rename_subroutine/expected_rename.json` | test | `non-rust-rename-subroutine-rename-gold` | parser/lsp-fixtures |
+| `test_corpus/gold/rename_subroutine/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/symbols_subs_and_pkg/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/symbols_two_packages/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
 | `test_corpus/gold/use_if_strict/fixture.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
