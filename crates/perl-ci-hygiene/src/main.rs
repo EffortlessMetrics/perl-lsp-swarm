@@ -378,8 +378,17 @@ fn cmd_preflight(_repo_root: &Path) -> Result<i32> {
 
 fn cargo_test_args(cargo_args: &[String], rust_test_threads: &str) -> Vec<String> {
     let mut args = vec!["test".to_owned()];
-    args.extend_from_slice(cargo_args);
-    args.extend(["--".to_owned(), format!("--test-threads={rust_test_threads}")]);
+    if let Some(separator) = cargo_args.iter().position(|arg| arg == "--") {
+        args.extend_from_slice(&cargo_args[..separator]);
+        args.push("--".to_owned());
+        args.extend_from_slice(&cargo_args[separator + 1..]);
+    } else {
+        args.extend_from_slice(cargo_args);
+        args.push("--".to_owned());
+    }
+    if !args.iter().any(|arg| arg.starts_with("--test-threads=")) {
+        args.push(format!("--test-threads={rust_test_threads}"));
+    }
     args
 }
 
@@ -441,8 +450,10 @@ fn cmd_e2e_gate(repo_root: &Path, cargo_args: &[String]) -> Result<i32> {
 
         if command_status(repo_root, "flock", &["-n", lock_file, "true"], &[])? == 0 {
             println!("E2E slot ready");
-            let direct_args =
-                std::iter::once(lock_file).chain(refs.iter().copied()).collect::<Vec<_>>();
+            let direct_args = std::iter::once(lock_file)
+                .chain(std::iter::once("cargo"))
+                .chain(refs.iter().copied())
+                .collect::<Vec<_>>();
             command_status_strict(
                 repo_root,
                 "flock",
@@ -453,8 +464,10 @@ fn cmd_e2e_gate(repo_root: &Path, cargo_args: &[String]) -> Result<i32> {
         }
 
         println!("E2E slot busy → waiting...");
-        let blocking_args =
-            std::iter::once(lock_file).chain(refs.iter().copied()).collect::<Vec<_>>();
+        let blocking_args = std::iter::once(lock_file)
+            .chain(std::iter::once("cargo"))
+            .chain(refs.iter().copied())
+            .collect::<Vec<_>>();
         command_status_strict(
             repo_root,
             "flock",
@@ -3068,6 +3081,26 @@ mod tests {
             cargo_test_args(&cargo_args, "2"),
             ["test", "--package", "perl-lsp-rs-core", "--", "--test-threads=2"]
         );
+    }
+
+    #[test]
+    fn cargo_wrapper_preserves_explicit_harness_separator() {
+        let cargo_args = [
+            "--package".to_owned(),
+            "perl-lsp-rs-core".to_owned(),
+            "--".to_owned(),
+            "filters".to_owned(),
+        ];
+        assert_eq!(
+            cargo_test_args(&cargo_args, "2"),
+            ["test", "--package", "perl-lsp-rs-core", "--", "filters", "--test-threads=2"]
+        );
+    }
+
+    #[test]
+    fn cargo_wrapper_does_not_duplicate_explicit_thread_limit() {
+        let cargo_args = ["--".to_owned(), "--test-threads=1".to_owned()];
+        assert_eq!(cargo_test_args(&cargo_args, "2"), ["test", "--", "--test-threads=1"]);
     }
 
     #[test]
