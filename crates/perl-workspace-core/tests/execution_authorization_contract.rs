@@ -3561,3 +3561,66 @@ fn a_denied_project_configuration_blocks_the_operation() -> Result<(), Box<dyn E
     )?;
     Ok(())
 }
+
+/// An override that supplied nothing does not put its expiry on the decision.
+///
+/// `finish` attached `override_expires_after_policy_generation` — and the
+/// `override_expiry` revalidation trigger — whenever an override was merely
+/// *present* in the evidence. A decision granted entirely by base facts then
+/// published "this expires when that override expires", which is not true of
+/// it. The direction is fail-safe (consumers revalidate more often than they
+/// need to), but a decision record that overstates its own expiry is the same
+/// class of dishonesty this contract exists to prevent.
+#[test]
+fn an_irrelevant_override_does_not_date_the_decision() -> Result<(), Box<dyn Error>> {
+    let scope = TrustScope::editor_workspace("ws");
+    let bound = generations("ws", 5)?;
+    let tool = verified_tool();
+
+    let mut facts = evidence(
+        &scope,
+        WorkspaceTrust::Trusted,
+        AuthorizationActor::ExplicitUserAction { action_id: "format".to_string() },
+        &bound,
+        vec![tool.clone()],
+    );
+    // Current and well-formed, but grants a capability this operation never
+    // asks for, so it supplies nothing to this decision.
+    facts.session_override = Some(SessionOverride {
+        override_id: "session.grant.unrelated".to_string(),
+        scope: scope.clone(),
+        granted_policy_generation: 5,
+        expires_after_policy_generation: 6,
+        capabilities: CapabilitySet::new([ExecutionCapability::InteractiveSession]),
+        bound_input_ids: Vec::new(),
+    });
+
+    let decision = authorize(
+        &intent(
+            OperationProfile::ExternalFormatter,
+            ExecutionReasonClass::ExternalTool,
+            &scope,
+            &bound,
+            vec![tool.id.clone()],
+        ),
+        &facts,
+    );
+
+    require(
+        decision.outcome() == AuthorizationOutcome::Allowed,
+        "the verified tool alone authorizes this operation",
+    )?;
+    require(
+        !has_reason(&decision, "granted_by_session_override"),
+        "nothing here was supplied by the override",
+    )?;
+    require(
+        decision.revalidation().override_expires_after_policy_generation.is_none(),
+        "a decision the override did not contribute to must not carry its expiry",
+    )?;
+    require(
+        !decision.revalidation().revalidate_on.iter().any(|trigger| trigger == "override_expiry"),
+        "nor must it name the override expiry as a revalidation trigger",
+    )?;
+    Ok(())
+}

@@ -1819,6 +1819,20 @@ impl ExecutionAuthorizationDecision {
     ///
     /// Treat a failure as non-authoritative: do not consult [`Self::granted`]
     /// on an invalid value.
+    ///
+    /// # What this does not prove
+    ///
+    /// This is an **integrity** check, not an **authentication** one. The
+    /// fingerprint is an unkeyed digest, so it detects a decision that was
+    /// altered or corrupted without its identity being recomputed — it cannot
+    /// detect one that was rebuilt wholesale by a party who also recomputed the
+    /// fingerprint. Anyone able to edit a decision in transit can do that.
+    ///
+    /// A caller passing decisions across a trust boundary therefore must not
+    /// treat a successful `validate` as evidence of origin, and needs its own
+    /// authentication over the transport. That is deliberately not solved here:
+    /// keying this digest would require a key-management design, and #11095
+    /// admits no transport, no consumer, and no such mechanism.
     pub fn validate(&self) -> Result<(), AuthorizationError> {
         // A decision that carries an unusable scope can never be authoritative,
         // and must not round-trip one into a public record.
@@ -3170,8 +3184,19 @@ fn finish(
     });
     reasons.dedup();
 
-    let override_expiry =
-        evidence.session_override.as_ref().map(|item| item.expires_after_policy_generation);
+    // Only an override that actually supplied a capability dates this decision.
+    // Attaching the expiry because an override was merely present in the
+    // evidence made a base-granted decision publish an expiry that is not its
+    // own — fail-safe, since consumers would revalidate too often rather than
+    // too rarely, but still a decision record overstating what binds it. The
+    // grant leaves a reason behind, so that is what decides.
+    let granted_by_override =
+        reasons.iter().any(|item| item.code == REASON_GRANTED_BY_SESSION_OVERRIDE);
+    let override_expiry = evidence
+        .session_override
+        .as_ref()
+        .filter(|_| granted_by_override)
+        .map(|item| item.expires_after_policy_generation);
     let mut revalidate_on = vec![
         REVALIDATE_ON_CONFIGURATION_GENERATION.to_string(),
         REVALIDATE_ON_POLICY_GENERATION.to_string(),
