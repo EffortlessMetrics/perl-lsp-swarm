@@ -55,6 +55,72 @@ impl OutputCapture {
     }
 }
 
+fn lsp_frame(body: &[u8]) -> Vec<u8> {
+    let mut frame = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
+    frame.extend_from_slice(body);
+    frame
+}
+
+#[test]
+fn output_capture_parses_two_coalesced_frames() {
+    let output = OutputCapture::new();
+    let mut writer = output.clone();
+    writer
+        .write_all(
+            &[
+                lsp_frame(br#"{"id":1,"result":"first"}"#),
+                lsp_frame(br#"{"id":2,"result":"second"}"#),
+            ]
+            .concat(),
+        )
+        .expect("capture accepts coalesced frames");
+
+    assert_eq!(
+        output.get_messages(),
+        vec![json!({"id": 1, "result": "first"}), json!({"id": 2, "result": "second"}),]
+    );
+}
+
+#[test]
+fn output_capture_waits_for_split_frame() {
+    let output = OutputCapture::new();
+    let frame = lsp_frame(br#"{"id":3,"result":"split"}"#);
+    let split = frame.len() / 2;
+    let mut writer = output.clone();
+    writer.write_all(&frame[..split]).expect("capture accepts frame prefix");
+    assert!(output.get_messages().is_empty(), "truncated frame must not parse");
+
+    writer.write_all(&frame[split..]).expect("capture accepts frame suffix");
+    assert_eq!(output.get_messages(), vec![json!({"id": 3, "result": "split"})]);
+}
+
+#[test]
+fn output_capture_preserves_crlf_in_frame_body() {
+    let output = OutputCapture::new();
+    let mut writer = output.clone();
+    let body = b"{\r\n\"id\":4,\r\n\"result\":\"body\"\r\n}\r\n\r\n";
+    writer.write_all(&lsp_frame(body)).expect("capture accepts CRLF body");
+
+    assert_eq!(output.get_messages(), vec![json!({"id": 4, "result": "body"})]);
+}
+
+#[test]
+fn output_capture_rejects_malformed_and_truncated_lengths() {
+    let output = OutputCapture::new();
+    let mut writer = output.clone();
+    writer.write_all(b"Content-Length: nope\r\n\r\n{}").expect("capture accepts malformed frame");
+    assert!(output.get_messages().is_empty(), "malformed length must not parse");
+
+    output.clear();
+    let body = br#"{"id":5,"result":"truncated"}"#;
+    let frame = lsp_frame(body);
+    writer.write_all(&frame[..frame.len() - 1]).expect("capture accepts truncated frame");
+    assert!(output.get_messages().is_empty(), "truncated body must not parse");
+
+    writer.write_all(&frame[frame.len() - 1..]).expect("capture accepts final byte");
+    assert_eq!(output.get_messages(), vec![json!({"id": 5, "result": "truncated"})]);
+}
+
 fn wait_for_messages(output: &OutputCapture, minimum_count: usize) -> Vec<Value> {
     let deadline = Instant::now() + Duration::from_millis(250);
     loop {

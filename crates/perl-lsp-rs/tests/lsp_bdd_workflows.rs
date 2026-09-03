@@ -20,6 +20,10 @@ use std::time::{Duration, Instant};
 use support::bdd_diagnostics::{BddScenario, DocumentDiagnosticFlow};
 use support::lsp_harness::{LspHarness, TempWorkspace};
 
+fn is_retryable_readiness_error(error: &str) -> bool {
+    error.starts_with("Request timed out after ") || error == "No response received"
+}
+
 fn find_position(text: &str, needle: &str) -> (u32, u32) {
     perl_tdd_support::must_some(
         text.split('\n').enumerate().find_map(|(line_idx, line)| {
@@ -2024,16 +2028,18 @@ Foo::do_foo();
     // hover payload arrives; the content assertions below still discriminate.
     let hover_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let response = loop {
-        let reply = harness
-            .request_with_timeout(
-                "textDocument/hover",
-                json!({
-                    "textDocument": { "uri": main_uri },
-                    "position": { "line": line, "character": col + 4 } // offset for "use "
-                }),
-                std::time::Duration::from_secs(2),
-            )
-            .unwrap_or(serde_json::Value::Null);
+        let reply = match harness.request_with_timeout(
+            "textDocument/hover",
+            json!({
+                "textDocument": { "uri": main_uri },
+                "position": { "line": line, "character": col + 4 } // offset for "use "
+            }),
+            std::time::Duration::from_secs(2),
+        ) {
+            Ok(reply) => reply,
+            Err(error) if is_retryable_readiness_error(&error) => serde_json::Value::Null,
+            Err(error) => return Err(error.into()),
+        };
         if reply.get("contents").is_some() || std::time::Instant::now() >= hover_deadline {
             break reply;
         }
@@ -2090,15 +2096,17 @@ sub main_func {}
     // the full symbol assertions below still discriminate the content.
     let symbols_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let response = loop {
-        let reply = harness
-            .request_with_timeout(
-                "textDocument/documentSymbol",
-                json!({
-                    "textDocument": { "uri": uri }
-                }),
-                std::time::Duration::from_secs(2),
-            )
-            .unwrap_or(serde_json::Value::Null);
+        let reply = match harness.request_with_timeout(
+            "textDocument/documentSymbol",
+            json!({
+                "textDocument": { "uri": uri }
+            }),
+            std::time::Duration::from_secs(2),
+        ) {
+            Ok(reply) => reply,
+            Err(error) if is_retryable_readiness_error(&error) => serde_json::Value::Null,
+            Err(error) => return Err(error.into()),
+        };
         let published = reply.as_array().is_some_and(|symbols| {
             symbols.iter().any(|node| node["name"].as_str() == Some("Outer"))
         });
