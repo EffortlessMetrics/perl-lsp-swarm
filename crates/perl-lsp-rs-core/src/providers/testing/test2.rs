@@ -375,11 +375,16 @@ fn contains_transform_syntax(text: &str) -> bool {
 ///   which the rest of this module already treats as opaque;
 /// * ordinary single- and double-quoted strings.
 ///
-/// A quoted string whose entire contents are one option name is kept, so the
-/// quoted option key in `{'-as' => ...}` stays visible. Quote-like expressions
-/// are always masked: a quote-like used *as* an option key is not a form the
-/// recognizers accept, and `scan_import_transforms` fails closed anyway if a
-/// recognizer disagrees with this masking.
+/// A value whose entire payload is one option name is **not** masked, because
+/// it is an option key rather than data: `{'-as' => ...}` and `{q{-as} => ...}`
+/// evaluate to the same key. A quote-like key is re-emitted as the bare option
+/// so the role predicate can see the following `=>`; the span is padded back to
+/// its original character length so nothing else shifts.
+///
+/// Masking a genuine option key would hide it from *both* the detector and the
+/// recognizers — the recognizers do not accept the quote-like spelling either —
+/// leaving no disagreement for `scan_import_transforms` to fail closed on, and
+/// the bareword scan would then report the map's atoms as imports.
 ///
 /// An unterminated string is left visible, so malformed text still reaches the
 /// conservative detector rather than being silently swallowed.
@@ -391,7 +396,16 @@ fn mask_data_values(text: &str) -> String {
         if let Some(end) = quote_like_expression_end(text, index)
             && end > index
         {
-            blank_into(&mut masked, &text[index..end]);
+            let span = &text[index..end];
+            match quote_like_option_key(span) {
+                Some(option) => {
+                    masked.push_str(option);
+                    for _ in option.chars().count()..span.chars().count() {
+                        masked.push(' ');
+                    }
+                }
+                None => blank_into(&mut masked, span),
+            }
             index = end;
             continue;
         }
@@ -437,6 +451,26 @@ fn mask_data_values(text: &str) -> String {
     }
 
     masked
+}
+
+/// The transform option a quote-like expression evaluates to, when its entire
+/// payload is exactly one option name (`q{-as}`, `qq[-prefix]`), else `None`.
+///
+/// Only single-segment forms can produce a bare option key; `s///`-style
+/// two-segment expressions never trim to one option name and fall through.
+fn quote_like_option_key(span: &str) -> Option<&'static str> {
+    let after_operator = span.trim_start_matches(|c: char| c.is_ascii_alphabetic()).trim_start();
+    let mut chars = after_operator.chars();
+    let open = chars.next()?;
+    let close = match open {
+        '(' => ')',
+        '{' => '}',
+        '[' => ']',
+        '<' => '>',
+        other => other,
+    };
+    let inner = chars.as_str().strip_suffix(close)?;
+    TRANSFORM_OPTIONS.iter().copied().find(|option| inner.trim() == *option)
 }
 
 /// Append one space per character of `span`, keeping token boundaries intact

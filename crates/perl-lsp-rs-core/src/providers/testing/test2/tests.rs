@@ -755,3 +755,52 @@ fn test2_quote_like_masking_does_not_uncover_a_real_transform() {
     assert!(disagreement.analysis_limited);
     assert!(disagreement.resolved.symbols.is_empty());
 }
+
+#[test]
+fn test2_quote_like_option_key_is_syntax_not_data() {
+    // Review finding (@devin-ai-integration on #14651). `q{-as}` evaluates to
+    // the same option key as `'-as'`, so masking it as data hid the transform
+    // from BOTH the detector and the recognizers. With neither seeing it there
+    // is no disagreement for the fail-closed guard to catch, and the bareword
+    // scan reported the map's atoms as imports:
+    //
+    //   ok => {q{-as} => 'my_ok'}  ->  symbols {"my_ok", "ok"}, limited=false
+    //
+    // Both are fabricated — `ok` is the rename's original, `my_ok` was never
+    // parsed — and it claimed to be a clean result.
+    for (args, alias) in [
+        ("ok => {q{-as} => 'my_ok'}", "my_ok"),
+        ("ok => {q{-prefix} => 'my_'}", "my_"),
+        ("ok => {q{-postfix} => '_mine'}", "_mine"),
+        ("ok => {qq[-as] => 'my_ok'}", "my_ok"),
+    ] {
+        let resolved = resolve_with_analysis("Test2::V0", args);
+        assert!(
+            resolved.analysis_limited,
+            "{args}: an uninterpreted option key is never a clean result"
+        );
+        assert!(
+            !resolved.resolved.symbols.contains("ok"),
+            "{args}: rename original must not be imported, got {:?}",
+            resolved.resolved.symbols
+        );
+        assert!(
+            !resolved.resolved.symbols.contains(alias),
+            "{args}: unparsed alias must not be imported, got {:?}",
+            resolved.resolved.symbols
+        );
+        assert!(resolved.resolved.symbols.is_empty());
+    }
+
+    // Control: the same quote-like operators carrying an ordinary payload stay
+    // data, so `-target` values still resolve (the previous review finding).
+    let payload = resolve_with_analysis("Test2::V0", "-target => q{-as => Foo}, ok");
+    assert!(!payload.analysis_limited, "an option-shaped payload is still data");
+    assert!(payload.resolved.symbols.contains("ok"));
+
+    // Unit-level boundary for the key/payload split.
+    assert_eq!(quote_like_option_key("q{-as}"), Some("-as"));
+    assert_eq!(quote_like_option_key("qq[-prefix]"), Some("-prefix"));
+    assert_eq!(quote_like_option_key("q{-as => Foo}"), None, "a payload is not a key");
+    assert_eq!(quote_like_option_key("q{Foo}"), None);
+}
