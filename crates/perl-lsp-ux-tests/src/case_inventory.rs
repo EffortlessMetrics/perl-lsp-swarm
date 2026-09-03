@@ -1771,7 +1771,15 @@ fn executable_identity(
 
     if let Ok(relative) = executable.strip_prefix(workspace_root) {
         let relative = normalize_path(relative);
-        let role = if relative.starts_with("target/") {
+        // `CARGO_TARGET_DIR` may point inside the checkout under any name, so
+        // the declared root decides the role whenever it is known; the literal
+        // `target/` prefix is the fallback for an unknown root and still marks
+        // artifacts left in the default location. Classifying only by the
+        // literal would record a custom in-workspace target directory's
+        // executables as ordinary workspace files.
+        let under_declared_target_root =
+            cargo_target_root.is_some_and(|root| executable.starts_with(root));
+        let role = if under_declared_target_root || relative.starts_with("target/") {
             UxExecutableRole::WorkspaceTarget
         } else {
             UxExecutableRole::WorkspaceOther

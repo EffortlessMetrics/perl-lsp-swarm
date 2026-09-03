@@ -941,6 +941,40 @@ fn an_executable_replaced_between_digest_and_listing_fails_closed() -> TestResul
     Ok(())
 }
 
+/// `CARGO_TARGET_DIR` may point inside the checkout under a name other than
+/// `target/` — this repository sets one in CI and documents `target-dir` in
+/// `.cargo/config.local.toml.example`. Classifying by the literal `target/`
+/// prefix alone would record those build artifacts as ordinary workspace files,
+/// telling a consumer a compiled executable is checked-in source.
+#[test]
+fn a_custom_in_workspace_target_dir_is_still_a_target_role() -> TestResult {
+    let target_root = format!("{WORKSPACE_ROOT}/.cache/cargo-target");
+    let executable = format!("{target_root}/debug/deps/ux_scenario_01_simple_file-1004");
+    let stdout =
+        artifact_line("perl-lsp-ux-tests", "test", "ux_scenario_01_simple_file", &executable, &[]);
+    let commands = FixtureCommands::new(stdout).listing(&executable, terse(&["opens_a_file"]));
+
+    let mut req = request(UxCiTier::Pr);
+    req.cargo_target_root = Some(PathBuf::from(&target_root));
+    let inventory = discover_cases(&commands, &req)?;
+
+    let target = inventory.targets.first().ok_or("one target")?;
+    assert_eq!(
+        target.executable.role,
+        UxExecutableRole::WorkspaceTarget,
+        "a custom in-workspace target dir is a build root, not ordinary workspace content"
+    );
+    // The replay stays workspace-relative because the executable really is
+    // inside the checkout; only the role was wrong.
+    assert_eq!(
+        target.executable.workspace_relative_path.as_deref(),
+        Some(".cache/cargo-target/debug/deps/ux_scenario_01_simple_file-1004")
+    );
+    let serialized = serde_json::to_string(&inventory.durable_projection()?)?;
+    assert!(!serialized.contains(WORKSPACE_ROOT), "no absolute path may leak: {serialized}");
+    Ok(())
+}
+
 #[test]
 fn an_external_cargo_target_dir_keeps_a_runnable_replay() -> TestResult {
     // `.cargo/config.local.toml.example` supports a target dir outside the
