@@ -1020,28 +1020,43 @@ pub(super) fn shape_is_decisive(shape: &ValueShape) -> bool {
     )
 }
 
-/// Whether a shape commits to a representation another record must agree with.
+/// Whether two shapes can honestly describe one and the same value.
 ///
 /// This is a different question from [`shape_is_decisive`], which asks what a
-/// shape can carry. A shape may be useless for deciding operators and still be
-/// a definite claim about what the value *is*: `ValueShape::Scalar` decides no
-/// operator, because `undef` is a scalar and Perl autovivifies it, yet it
-/// still says the value is a plain scalar and not a hash reference. Two
-/// records describing one value cannot say both.
+/// shape can carry. A shape may decide no operator and still be a definite
+/// claim about what the value *is*: `ValueShape::Scalar` decides nothing about
+/// subscripting, because `undef` is a scalar and Perl autovivifies it, yet it
+/// still says the value is a plain scalar rather than a hash reference.
 ///
-/// Only two shapes are exempt, and each for its own reason:
+/// The relation is symmetric on purpose. A blessed reference carries both a
+/// class and an underlying reference kind — `bless {}, "Foo"` has
+/// `ref` `Foo` and `reftype` `HASH` — so `Object` and `HashRef` are two honest
+/// descriptions of one value, and which one a producer recorded first must not
+/// decide whether the record is valid. The same holds for blessed arrays and
+/// blessed code references.
 ///
-/// - `Unknown` asserts nothing, so nothing can disagree with it.
-/// - `Object` is a blessed reference, and a blessed hash is honestly
-///   describable as either `Object` or `HashRef`. The two can co-describe one
-///   value, so requiring agreement would reject an honest record.
-pub(super) fn shape_is_concrete(shape: &ValueShape) -> bool {
-    match shape {
-        ValueShape::Scalar
-        | ValueShape::HashRef
-        | ValueShape::ArrayRef
-        | ValueShape::CodeRef
-        | ValueShape::PackageName { .. } => true,
-        ValueShape::Unknown | ValueShape::Object { .. } => false,
-    }
+/// What remains a contradiction:
+///
+/// - two different classes, since one value has one class;
+/// - `Object` against `Scalar` or `PackageName`, since a blessed value is
+///   always a reference and neither of those is one;
+/// - any two different concrete representations, such as `HashRef` against
+///   `ArrayRef`.
+///
+/// `Unknown` asserts nothing, so nothing can disagree with it.
+pub(super) fn shapes_may_describe_one_value(left: &ValueShape, right: &ValueShape) -> bool {
+    left == right
+        || matches!(
+            (left, right),
+            (ValueShape::Unknown, _)
+                | (_, ValueShape::Unknown)
+                | (
+                    ValueShape::Object { .. },
+                    ValueShape::HashRef | ValueShape::ArrayRef | ValueShape::CodeRef,
+                )
+                | (
+                    ValueShape::HashRef | ValueShape::ArrayRef | ValueShape::CodeRef,
+                    ValueShape::Object { .. },
+                )
+        )
 }

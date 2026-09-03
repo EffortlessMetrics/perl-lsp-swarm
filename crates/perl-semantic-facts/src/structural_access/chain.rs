@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     STRUCTURAL_ACCESS_CHAIN_SCHEMA_VERSION, STRUCTURAL_ACCESS_SCHEMA_TAG,
     StructuralAccessContractError, StructuralAccessHop, StructuralAccessSubject,
-    StructuralHopOutcome, shape_carries, shape_is_concrete, shape_is_decisive,
+    StructuralHopOutcome, shape_carries, shape_is_decisive, shapes_may_describe_one_value,
 };
 use crate::semantic_identity::SemanticIdentityFingerprint;
 
@@ -211,20 +211,24 @@ impl StructuralAccessChain {
                 // when the predecessor's shape decides what it carries, so
                 // that half is gated on `shape_is_decisive`.
                 //
-                // Whether the mismatch describes the same value is answerable
-                // whenever the predecessor's shape commits to a
-                // representation, which is a wider set. `Scalar` decides no
-                // operator, yet still says the value is a plain scalar rather
-                // than a hash reference — so a later record observing a
-                // `HashRef` for that same aggregate contradicts it. Sharing
-                // one guard let exactly that record through.
+                // Whether the mismatch describes the same value is a question
+                // about the two shapes together, not about one of them, and it
+                // is answerable far more often. `Scalar` decides no operator,
+                // yet still says the value is a plain scalar rather than a
+                // hash reference — so a later record observing a `HashRef` for
+                // that same aggregate contradicts it.
+                //
+                // The comparison is symmetric because the underlying fact is:
+                // a blessed hash is honestly either `Object` or `HashRef`, so
+                // which description a producer recorded first must not decide
+                // whether the record is valid.
                 if let StructuralHopOutcome::ShapeMismatch { observed } = next.outcome() {
                     if shape_is_decisive(shape) && carries {
                         return Err(StructuralAccessContractError::ContradictoryStatus(
                             "a shape mismatch cannot be recorded for an operator the shape carries",
                         ));
                     }
-                    if shape_is_concrete(shape) && observed != shape {
+                    if !shapes_may_describe_one_value(shape, observed) {
                         return Err(StructuralAccessContractError::ContradictoryStatus(
                             "a shape mismatch must observe the shape the predecessor selected",
                         ));

@@ -2892,9 +2892,11 @@ fn an_invented_first_hop_mismatch_cannot_survive_transport() -> Result<(), Box<d
 
 /// A two-hop chain: a head selecting `shape`, then an arrow-indexed mismatch
 /// observing `observed`.
-fn mismatch_after(
+fn mismatch_after_with(
     shape: ValueShape,
     observed: ValueShape,
+    operator: StructuralAccessOperator,
+    text: &str,
 ) -> Result<StructuralAccessChain, StructuralAccessContractError> {
     StructuralAccessChain::new(
         subject()?,
@@ -2910,9 +2912,13 @@ fn mismatch_after(
             StructuralAccessHop::new(
                 1,
                 StructuralAccessAggregate::PrecedingHop { ordinal: 0 },
-                StructuralAccessOperator::ArrayRefIndex,
-                StructuralAccessSelector::StaticIndex(0),
-                spelling("->[0]", 10, 15)?,
+                operator,
+                if operator.is_keyed() {
+                    StructuralAccessSelector::StaticKey("k".to_string())
+                } else {
+                    StructuralAccessSelector::StaticIndex(0)
+                },
+                spelling(text, 10, 15)?,
                 StructuralHopOutcome::ShapeMismatch { observed },
                 StructuralHopCertainty::Definite,
                 StructuralAggregateCompleteness::Closed,
@@ -2926,6 +2932,14 @@ fn mismatch_after(
             )?,
         ],
     )
+}
+
+/// The common case: an arrow-indexed mismatch after the given selected shape.
+fn mismatch_after(
+    shape: ValueShape,
+    observed: ValueShape,
+) -> Result<StructuralAccessChain, StructuralAccessContractError> {
+    mismatch_after_with(shape, observed, StructuralAccessOperator::ArrayRefIndex, "->[0]")
 }
 
 #[test]
@@ -2963,5 +2977,66 @@ fn a_shape_that_asserts_nothing_does_not_fix_the_observed_shape() -> Result<(), 
         ValueShape::Object { package: "Staff".to_string(), confidence: Confidence::High },
         ValueShape::HashRef,
     )?;
+    Ok(())
+}
+
+// ── Object/reference equivalence is symmetric (found by Devin review) ─────
+
+#[test]
+fn a_blessed_reference_reads_the_same_in_either_order() -> Result<(), Box<dyn Error>> {
+    // A blessed reference carries both a class and an underlying reference
+    // kind — `bless {}, "Foo"` has `ref` `Foo` and `reftype` `HASH` — so
+    // `Object` and `HashRef` are two honest descriptions of one value. Which
+    // one a producer recorded first must not decide validity. The one-sided
+    // predicate this replaced accepted only the first of these two.
+    let staff =
+        || ValueShape::Object { package: "Staff".to_string(), confidence: Confidence::High };
+    mismatch_after(staff(), ValueShape::HashRef)?;
+    mismatch_after(ValueShape::HashRef, staff())?;
+    // Blessed arrays and blessed code references are the same case. The array
+    // one uses a keyed operator: an array reference genuinely carries an
+    // indexed one, so an indexed mismatch there would be rejected by the
+    // operator clause before the shape comparison is ever reached.
+    mismatch_after_with(
+        ValueShape::ArrayRef,
+        staff(),
+        StructuralAccessOperator::HashRefSlot,
+        "->{k}",
+    )?;
+    mismatch_after(ValueShape::CodeRef, staff())?;
+    Ok(())
+}
+
+#[test]
+fn two_different_classes_cannot_describe_one_value() -> Result<(), Box<dyn Error>> {
+    // The symmetry must not become permissiveness. One value has one class, so
+    // two different packages remain a contradiction — a case the previous
+    // one-sided predicate could not reject at all, because it exempted every
+    // `Object` predecessor outright.
+    let error = contract_error(mismatch_after(
+        ValueShape::Object { package: "Staff".to_string(), confidence: Confidence::High },
+        ValueShape::Object { package: "Payroll".to_string(), confidence: Confidence::High },
+    ))?;
+    assert!(
+        matches!(error, StructuralAccessContractError::ContradictoryStatus(_)),
+        "two different classes cannot describe one value, got {error:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_blessed_value_is_never_a_plain_scalar_or_a_package_name() -> Result<(), Box<dyn Error>> {
+    // A blessed value is always a reference, so `Object` genuinely conflicts
+    // with the two shapes that are not references. This pins that the
+    // equivalence covers exactly the three reference kinds.
+    let staff =
+        || ValueShape::Object { package: "Staff".to_string(), confidence: Confidence::High };
+    for other in [ValueShape::Scalar, ValueShape::PackageName { package: "Staff".to_string() }] {
+        let error = contract_error(mismatch_after(staff(), other.clone()))?;
+        assert!(
+            matches!(error, StructuralAccessContractError::ContradictoryStatus(_)),
+            "a blessed value is not {other:?}, got {error:?}"
+        );
+    }
     Ok(())
 }
