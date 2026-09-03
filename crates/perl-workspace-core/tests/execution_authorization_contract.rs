@@ -1460,6 +1460,92 @@ fn public_explanation_is_redacted() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// The *scope's own* identity is redacted too, not just input-derived values.
+///
+/// `public_explanation_is_redacted` above uses a benign workspace id (`"ws"`),
+/// so it never challenges the one field the projection copies from the caller.
+/// A workspace id is very often a filesystem path — that is the natural thing
+/// for an editor to use — and #11095 requires the public identity to carry
+/// "stable classes, digests, generations, and reason codes, *not* raw
+/// executable paths", with negative control 11 failing when a raw path enters
+/// the public explanation. A caller obligation stated in prose does not satisfy
+/// a negative control, so the projection has to enforce it.
+#[test]
+fn a_path_shaped_workspace_id_is_not_published_raw() -> Result<(), Box<dyn Error>> {
+    let path_id = "/home/alice/clients/acme-confidential/checkout";
+    let scope = TrustScope::editor_workspace(path_id);
+    let bound = generations(path_id, 1)?;
+    let tool = verified_tool();
+
+    let decision = authorize(
+        &intent(
+            OperationProfile::RunCurrentSavedFile,
+            ExecutionReasonClass::ExplicitUserAction,
+            &scope,
+            &bound,
+            vec![tool.id.clone()],
+        ),
+        &evidence(
+            &scope,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "run".to_string() },
+            &bound,
+            vec![tool],
+        ),
+    );
+
+    require(
+        decision.outcome() == AuthorizationOutcome::Allowed,
+        "a path-shaped workspace id is well-formed; this is about projection, not rejection",
+    )?;
+
+    let explanation = decision.public_explanation();
+    let rendered = serde_json::to_string(&explanation)?;
+    require(
+        !rendered.contains(path_id),
+        "the raw workspace path must not reach the public explanation",
+    )?;
+    require(
+        !rendered.contains("acme-confidential"),
+        "no identifying segment of the workspace path may survive into the public record",
+    )?;
+    require(
+        !rendered.contains("/home/alice"),
+        "no directory prefix of the workspace path may survive either",
+    )?;
+
+    // Redaction must not cost attribution: the same workspace still yields the
+    // same published identity, and a different one yields a different identity.
+    let other = TrustScope::editor_workspace("/home/alice/clients/other/checkout");
+    let other_bound = generations("/home/alice/clients/other/checkout", 1)?;
+    let other_tool = verified_tool();
+    let other_decision = authorize(
+        &intent(
+            OperationProfile::RunCurrentSavedFile,
+            ExecutionReasonClass::ExplicitUserAction,
+            &other,
+            &other_bound,
+            vec![other_tool.id.clone()],
+        ),
+        &evidence(
+            &other,
+            WorkspaceTrust::Trusted,
+            AuthorizationActor::ExplicitUserAction { action_id: "run".to_string() },
+            &other_bound,
+            vec![other_tool],
+        ),
+    );
+    require(
+        explanation.workspace == decision.public_explanation().workspace,
+        "the published workspace identity must be stable for one workspace",
+    )?;
+    require(
+        explanation.workspace != other_decision.public_explanation().workspace,
+        "two different workspaces must not collapse to one published identity",
+    )?;
+    Ok(())
+}
+
 /// A blocked public explanation still names the capability and what to change.
 #[test]
 fn public_explanation_stays_actionable() -> Result<(), Box<dyn Error>> {

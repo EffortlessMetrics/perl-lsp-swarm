@@ -1864,14 +1864,16 @@ impl ExecutionAuthorizationDecision {
     /// secret, source text, configuration prose, caller explanation code,
     /// semantic key, or `Debug` output crosses this boundary.
     ///
-    /// The one caller-authored string carried through is
-    /// [`TrustScope::workspace_id`], deliberately, so an explanation can be
-    /// attributed to its workspace. It is the caller's own scope identity
-    /// rather than anything derived from project inputs, and producers are
-    /// required to keep it an opaque identifier — the same obligation
-    /// [`super::PublicProjectEnvironmentReceipt`] already places on it. This
-    /// projection cannot enforce that, so a producer that puts a filesystem
-    /// path in `workspace_id` leaks it here.
+    /// No caller-authored string crosses this boundary either.
+    /// [`TrustScope::workspace_id`] is published as a [`Digest`], not verbatim:
+    /// it is the caller's own scope identity rather than anything derived from
+    /// project inputs, but it is very often a filesystem path, and a producer
+    /// obligation to "keep it opaque" is not something this projection could
+    /// enforce. Hashing keeps the attribution the field exists for — equal
+    /// workspaces give equal digests — without publishing the value.
+    ///
+    /// The digest is unkeyed, so it resists disclosure, not a determined
+    /// guesser holding a candidate list of workspace paths.
     #[must_use]
     pub fn public_explanation(&self) -> PublicAuthorizationExplanation {
         let blocked: Vec<&'static str> = self
@@ -1895,7 +1897,7 @@ impl ExecutionAuthorizationDecision {
             schema_version: self.schema_version,
             outcome: self.outcome,
             scope_kind: self.scope.kind,
-            workspace_id: self.scope.workspace_id.clone(),
+            workspace: Digest::of(&self.scope.workspace_id),
             granted: self.granted.tags().into_iter().map(str::to_string).collect(),
             blocked_capabilities: blocked.into_iter().map(str::to_string).collect(),
             omitted_capabilities: self.omitted.tags().into_iter().map(str::to_string).collect(),
@@ -1927,8 +1929,17 @@ pub struct PublicAuthorizationExplanation {
     pub outcome: AuthorizationOutcome,
     /// Scope kind.
     pub scope_kind: TrustScopeKind,
-    /// Stable workspace identity.
-    pub workspace_id: String,
+    /// Stable workspace identity, as a digest rather than the caller's string.
+    ///
+    /// `TrustScope::workspace_id` is caller-authored and is very often a
+    /// filesystem path, so publishing it verbatim would put a raw path in the
+    /// public record — which #11095 forbids and its negative control 11 exists
+    /// to catch. Hashing keeps what the field is *for* (attributing an
+    /// explanation to its workspace: equal workspaces give equal digests,
+    /// different ones differ) while removing what it must not carry. The digest
+    /// is unkeyed, so this resists disclosure, not a determined guesser with a
+    /// candidate list of paths.
+    pub workspace: Digest,
     /// Granted capability tags.
     pub granted: Vec<String>,
     /// Capability tags named by a reason but not granted.
