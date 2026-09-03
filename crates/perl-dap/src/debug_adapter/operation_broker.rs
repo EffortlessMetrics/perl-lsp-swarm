@@ -23,7 +23,7 @@
 //! follow-up families (inspection, mutation, execution control) migrate onto
 //! this seam without inventing another correlation mechanism.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -225,6 +225,8 @@ struct PendingEntry {
 #[derive(Debug, Default)]
 struct PendingTable {
     fifo: VecDeque<PendingEntry>,
+    /// Terminal outcomes retained until the corresponding waiter observes them.
+    settled: HashMap<OperationId, BrokerTerminal>,
 }
 
 /// The typed operation broker. All submission goes through one serialized
@@ -234,6 +236,7 @@ pub(crate) struct OperationBroker {
     pending: Mutex<PendingTable>,
     next_operation_id: AtomicU64,
     session_generation: AtomicU64,
+    accepting: AtomicBool,
 }
 
 impl OperationBroker {
@@ -245,6 +248,7 @@ impl OperationBroker {
             // types that are never compared, so the two counters cannot be
             // confused even though both start at 1.
             session_generation: AtomicU64::new(1),
+            accepting: AtomicBool::new(true),
         }
     }
 
@@ -284,6 +288,9 @@ impl OperationBroker {
         if spec.session_generation != self.current_session_generation() {
             return Err(BrokerTerminal::StaleGeneration);
         }
+        if !self.accepting.load(Ordering::Acquire) {
+            return Err(BrokerTerminal::SessionGone("session_not_ready"));
+        }
         if table.fifo.len() >= MAX_PENDING_OPERATIONS {
             return Err(BrokerTerminal::Rejected(format!(
                 "broker pending bound exceeded ({MAX_PENDING_OPERATIONS})"
@@ -305,6 +312,27 @@ impl OperationBroker {
     pub(crate) fn retire(&self, id: OperationId) {
         let mut table = lock_or_recover(&self.pending, "operation_broker.pending");
         table.fifo.retain(|entry| entry.operation.id != id);
+    }
+
+    /// Retire an operation only if it is still pending. Completion and session
+    /// settlement race on this arbitration point; whichever removes the entry
+    /// first owns the terminal outcome.
+    fn retire_for_completion(&self, id: OperationId) -> bool {
+        let mut table = lock_or_recover(&self.pending, "operation_broker.pending");
+        let before = table.fifo.len();
+        table.fifo.retain(|entry| entry.operation.id != id);
+        table.fifo.len() != before
+    }
+
+    fn take_settled(&self, id: OperationId) -> Option<BrokerTerminal> {
+        lock_or_recover(&self.pending, "operation_broker.pending").settled.remove(&id)
+    }
+
+    /// Admit operations for the newly installed session after its transport
+    /// is ready. Session teardown closes admission until this is called.
+    pub(crate) fn open_session(&self) {
+        let _table = lock_or_recover(&self.pending, "operation_broker.pending");
+        self.accepting.store(true, Ordering::Release);
     }
 
     /// Settle every pending operation as `SessionGone` and advance the
@@ -353,7 +381,11 @@ impl OperationBroker {
                 );
                 return false;
             }
-            table.fifo.clear();
+            let pending = table.fifo.drain(..).collect::<Vec<_>>();
+            for entry in pending {
+                table.settled.insert(entry.operation.id, BrokerTerminal::SessionGone(reason));
+            }
+            self.accepting.store(false, Ordering::Release);
             self.session_generation.fetch_add(1, Ordering::AcqRel);
         }
         tracing::debug!(reason, "operation broker settled all pending operations");
@@ -397,7 +429,9 @@ impl OperationBroker {
             }
             // A session-end settle removed this operation from the table.
             if !self.is_pending(operation.id) {
-                return BrokerTerminal::SessionGone("settled");
+                return self
+                    .take_settled(operation.id)
+                    .unwrap_or(BrokerTerminal::SessionGone("settled"));
             }
 
             {
@@ -411,8 +445,14 @@ impl OperationBroker {
                         &mut framed_lines,
                     ) {
                         ScanDisposition::End => {
-                            self.retire(operation.id);
-                            return BrokerTerminal::Completed(std::mem::take(&mut framed_lines));
+                            if self.retire_for_completion(operation.id) {
+                                return BrokerTerminal::Completed(std::mem::take(
+                                    &mut framed_lines,
+                                ));
+                            }
+                            return self
+                                .take_settled(operation.id)
+                                .unwrap_or(BrokerTerminal::SessionGone("settled"));
                         }
                         ScanDisposition::Begin | ScanDisposition::Payload => {}
                         ScanDisposition::Ignore => {}
@@ -714,6 +754,41 @@ mod tests {
     }
 
     #[test]
+    fn closed_session_refuses_new_submissions_until_transport_ready() {
+        let broker = OperationBroker::new();
+        let old_generation = broker.current_session_generation();
+        broker.settle_all("restart");
+        let current_generation = broker.current_session_generation();
+
+        let refused = broker.submit(query_spec(&broker, NEGATIVE_WAIT));
+        assert!(
+            matches!(refused, Err(BrokerTerminal::SessionGone("session_not_ready"))),
+            "a settled transport must close admission for the replacement gap: {refused:?}"
+        );
+        assert_ne!(old_generation, current_generation);
+
+        broker.open_session();
+        assert!(broker.submit(query_spec(&broker, NEGATIVE_WAIT)).is_ok());
+    }
+
+    #[test]
+    fn settled_operation_cannot_complete_from_late_frame() {
+        let broker = OperationBroker::new();
+        let operation = broker.submit(query_spec(&broker, NEGATIVE_WAIT)).expect("submit");
+        let (begin, end) = markers(&operation);
+        broker.settle_all("restart");
+        let output = buffer_with(&[&begin, "late", &end]);
+
+        let terminal =
+            broker.await_framed_payload(&operation, &begin, &end, &output, &Default::default());
+        assert_eq!(
+            terminal,
+            BrokerTerminal::SessionGone("restart"),
+            "a late frame from the closed generation cannot win completion arbitration"
+        );
+    }
+
+    #[test]
     fn session_end_settles_waiters_without_panic_or_deadlock() {
         let broker = Arc::new(OperationBroker::new());
         let operation = broker.submit(query_spec(&broker, Duration::from_mins(1))).expect("submit");
@@ -733,7 +808,7 @@ mod tests {
 
         let terminal = waiter.join().expect("waiter thread must not panic");
         assert!(
-            matches!(terminal, BrokerTerminal::SessionGone(_)),
+            matches!(terminal, BrokerTerminal::SessionGone("terminated")),
             "session end must settle the waiter: got {terminal:?}"
         );
     }
@@ -832,6 +907,7 @@ mod tests {
         // ...but a replacement session advanced the epoch and queued its own
         // operation before the stale reader observed EOF.
         broker.settle_all("restart");
+        broker.open_session();
         let replacement =
             broker.submit(query_spec(&broker, Duration::from_mins(1))).expect("replacement submit");
         let replacement_generation = broker.current_session_generation();

@@ -584,6 +584,7 @@ impl DebugAdapter {
                             .to_string(),
                     );
                 }
+                self.operation_broker.open_session();
 
                 // Apply any function breakpoints configured before launch.
                 self.apply_stored_function_breakpoints();
@@ -1815,6 +1816,7 @@ impl DebugAdapter {
                         if let Ok(mut guard) = self.tcp_session.lock() {
                             *guard = Some(session);
                         }
+                        self.operation_broker.open_session();
 
                         // Start event handler thread for TCP events
                         let seq_counter = self.seq.clone();
