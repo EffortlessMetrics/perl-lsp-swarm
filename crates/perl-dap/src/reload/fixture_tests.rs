@@ -16,6 +16,14 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
+/// Operation identity used when applying the clock in this corpus.
+///
+/// These fixtures assert only what the clock *did* — its effect code and
+/// whether it advanced — and never project a witness to the wire, so the
+/// identity that binds a witness to its transaction is immaterial here.
+/// The projector's ownership guard is proven in `reload_family`.
+const FIXTURE_OPERATION: u64 = 1;
+
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 /// Harness-local reason code: the clock advanced but the candidate claims
@@ -229,7 +237,7 @@ fn transaction_corpus_pins_generation_effect_phase_validity_and_projection() -> 
         );
         // The generation clock must agree with the declared effect.
         let mut clock = RuntimeModuleGenerationClock::new();
-        let advance = clock.apply(&outcome);
+        let advance = clock.apply(&outcome, FIXTURE_OPERATION);
         assert_eq!(
             advance.code(),
             fixture.expected_generation_effect,
@@ -348,7 +356,7 @@ fn run_control(doc: &NegativeControlDoc) -> Result<Result<(), String>, String> {
                 .unwrap_or_default()
                 .to_string();
             let mut clock = RuntimeModuleGenerationClock::new();
-            let advance = clock.apply(&outcome);
+            let advance = clock.apply(&outcome, FIXTURE_OPERATION);
             Ok(match (advance.advanced(), claimed.as_str()) {
                 (true, "advance") | (false, "none") => Ok(()),
                 (true, _) => Err(POSSIBLY_APPLIED_WITHOUT_ADVANCE.to_string()),
