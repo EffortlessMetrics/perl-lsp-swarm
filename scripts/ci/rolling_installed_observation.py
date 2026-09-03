@@ -594,6 +594,18 @@ def build_row(args: argparse.Namespace) -> int:
         if receipt.get("vscode_version") != args.vscode_version:
             findings.append("smoke receipt VS Code selector does not match the row")
             identity_ok = False
+        if (
+            args.vscode_version != "stable"
+            and receipt.get("observed_vscode_version") != args.vscode_version
+        ):
+            # A concrete selector is exact host evidence only when the bound
+            # receipt records that the launched runtime matched it; the
+            # requested selector alone never proves the host.
+            findings.append(
+                "smoke receipt does not bind an observed runtime VS Code "
+                "version to the row's concrete selector"
+            )
+            identity_ok = False
 
     cells: dict[str, str] = {
         "artifact_identity": (
@@ -609,14 +621,16 @@ def build_row(args: argparse.Namespace) -> int:
         ),
         "crash_recovery": stage_verdict(stages.get("crash_recovery_journey")),
         # A concrete selector is exact host evidence only when a bound smoke
-        # receipt actually ran against that same version; a receipt from
-        # another host version or a missing receipt stays not_proven.
+        # receipt records that the launched runtime matched it: both the
+        # requested selector and the observed runtime version must equal the
+        # row selector. Anything less stays not_proven.
         "host_version_exactness": (
             "pass"
             if (
                 args.vscode_version != "stable"
                 and receipt is not None
                 and receipt.get("vscode_version") == args.vscode_version
+                and receipt.get("observed_vscode_version") == args.vscode_version
             )
             else "not_proven"
         ),
@@ -668,7 +682,33 @@ def build_row(args: argparse.Namespace) -> int:
     # clean cleanup; only an explicitly null observed value can pass.
     cleanup_reported = receipt is not None and "cleanup_failure" in receipt
     cleanup_failure = receipt.get("cleanup_failure") if cleanup_reported else "not_observed"
-    if cleanup_reported and cleanup_failure is None and behavioral_status == "pass":
+    # The journey stages carry the orchestrator's post-host-exit scan of their
+    # isolated profiles. A surviving bundled server is an observed orphaned
+    # candidate process; a stage without the scan field is unobserved
+    # evidence and can never count toward a clean cleanup pass.
+    post_exit_observed = False
+    post_exit_survivors: list[str] = []
+    for stage_name in ("activation_failure_journey", "crash_recovery_journey"):
+        stage = stages.get(stage_name)
+        if isinstance(stage, dict) and isinstance(
+            stage.get("post_host_exit_processes"), list
+        ):
+            post_exit_observed = True
+            post_exit_survivors.extend(
+                str(item) for item in stage["post_host_exit_processes"]
+            )
+    if post_exit_survivors:
+        findings.append(
+            "post-host-exit scan observed surviving candidate server "
+            "processes: " + ", ".join(sorted(set(post_exit_survivors)))
+        )
+        cells["process_cleanup"] = "product_defect"
+    elif (
+        cleanup_reported
+        and cleanup_failure is None
+        and behavioral_status == "pass"
+        and post_exit_observed
+    ):
         cells["process_cleanup"] = "pass"
     elif cleanup_failure not in (None, "not_observed"):
         cells["process_cleanup"] = "instrument_defect"

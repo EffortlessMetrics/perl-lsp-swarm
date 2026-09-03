@@ -35,6 +35,7 @@ def smoke_receipt(
     server_hash: str | None = None,
     platform: str = "linux",
     vscode_version: str = "1.125.0",
+    observed_vscode_version: str | None = "1.125.0",
     stages: dict[str, object] | None = None,
     instrument_failure: str | None = None,
 ) -> dict[str, object]:
@@ -42,8 +43,14 @@ def smoke_receipt(
         "package_creation": {"status": "pass"},
         "package_inventory": {"status": "pass", "behavior_safe": True},
         "behavioral_smoke": {"status": "pass"},
-        "activation_failure_journey": {"status": "pass"},
-        "crash_recovery_journey": {"status": "pass"},
+        "activation_failure_journey": {
+            "status": "pass",
+            "post_host_exit_processes": [],
+        },
+        "crash_recovery_journey": {
+            "status": "pass",
+            "post_host_exit_processes": [],
+        },
     }
     if stages:
         default_stages.update(stages)
@@ -54,6 +61,7 @@ def smoke_receipt(
         "platform": platform,
         "architecture": "x64",
         "vscode_version": vscode_version,
+        "observed_vscode_version": observed_vscode_version,
         "server": {
             "source_sha": repository_sha,
             "path": str(server),
@@ -427,6 +435,66 @@ class ObservationTest(unittest.TestCase):
         del receipt["cleanup_failure"]
         row = self.build_row(receipt=receipt)
         self.assertEqual(row["cells"]["process_cleanup"], "not_proven")
+
+    def test_unscanned_post_host_exit_processes_are_not_clean_cleanup(self) -> None:
+        # A receipt from before the orchestrator recorded its post-host-exit
+        # scan carries no orphan evidence; cleanup must stay unproven.
+        row = self.build_row(
+            receipt=smoke_receipt(
+                self.server,
+                stages={
+                    "activation_failure_journey": {"status": "pass"},
+                    "crash_recovery_journey": {"status": "pass"},
+                },
+            )
+        )
+        self.assertEqual(row["cells"]["process_cleanup"], "not_proven")
+
+    def test_surviving_server_processes_are_orphaned_product_defect(self) -> None:
+        row = self.build_row(
+            receipt=smoke_receipt(
+                self.server,
+                stages={
+                    "crash_recovery_journey": {
+                        "status": "failed",
+                        "reason": "crash_recovery_journey_leg_observed_failure",
+                        "post_host_exit_processes": ["perllsp (pid 4242)"],
+                    }
+                },
+            )
+        )
+        self.assertEqual(row["cells"]["process_cleanup"], "product_defect")
+        self.assertEqual(
+            row["zero_budget_counts"]["orphaned_candidate_process"], 1
+        )
+        self.assertTrue(
+            any("surviving candidate server" in finding for finding in row["findings"])
+        )
+        self.assertEqual(row["status"], "blocked")
+
+    def test_unobserved_runtime_host_version_is_not_exactness(self) -> None:
+        row = self.build_row(
+            receipt=smoke_receipt(self.server, observed_vscode_version=None)
+        )
+        self.assertEqual(row["cells"]["host_version_exactness"], "not_proven")
+        self.assertTrue(
+            any(
+                "observed runtime VS Code version" in finding
+                for finding in row["findings"]
+            )
+        )
+
+    def test_mismatched_runtime_host_version_is_not_exactness(self) -> None:
+        row = self.build_row(
+            receipt=smoke_receipt(self.server, observed_vscode_version="1.126.0")
+        )
+        self.assertEqual(row["cells"]["host_version_exactness"], "not_proven")
+        self.assertTrue(
+            any(
+                "observed runtime VS Code version" in finding
+                for finding in row["findings"]
+            )
+        )
 
     def test_manifest_from_another_source_sha_fails(self) -> None:
         result = self.run_row(
