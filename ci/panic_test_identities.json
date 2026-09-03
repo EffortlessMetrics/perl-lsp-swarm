@@ -3528,6 +3528,24 @@
       "selector_identity": "invocation:cc52f20ad70e4644:occurrence:2",
       "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
       "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs/src/runtime/language/completion.rs",
+      "enclosing_test_or_function": "same_document_lexical_variable_is_withdrawn_from_runtime_fallback",
+      "macro_family": "panic!",
+      "normalized_snippet": "|| panic!(\"vacuity guard: expected the same-document `$api_local`; got {items:?}\"),",
+      "selector_identity": "invocation:8d84636bc47037f1:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
+    },
+    {
+      "path": "crates/perl-lsp-rs/src/runtime/language/completion.rs",
+      "enclosing_test_or_function": "same_document_lexical_variable_is_withdrawn_from_runtime_fallback",
+      "macro_family": "panic!",
+      "normalized_snippet": "|| panic!(\"vacuity guard: expected the cross-file `$api_token`; got {items:?}\"),",
+      "selector_identity": "invocation:8a6a062823aa5710:occurrence:1",
+      "accepted_reason": "Intentional test failure diagnostic for an invalid fixture, impossible test branch, or unmet test precondition.",
+      "state": "active"
     }
   ]
 }
