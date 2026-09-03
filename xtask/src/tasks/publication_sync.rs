@@ -363,29 +363,57 @@ struct Blocker {
     owner: String,
 }
 
-/// The minimal typed view of a `sync-divergence` reconciliation receipt this
-/// planner needs. Unknown fields are tolerated deliberately — `sync_divergence`
-/// owns that receipt's shape and may add fields within a version — but
-/// `schema_version` is read and pinned, so a receipt from another version (or
-/// another producer that happens to carry a `verdict` and `subjects`) cannot
-/// authorize a plan.
+/// The typed view of a `sync-divergence` v2 reconciliation receipt.
+///
+/// Unknown fields stay tolerated — `sync_divergence` owns this shape and may add
+/// to it within a version — but every field that identifies the document as its
+/// output is required, and the three subject roles are pinned to the constants
+/// it writes.
+///
+/// Reading only `schema_version`, `verdict` and two commits admitted a
+/// four-field document no `sync-divergence` run can emit. The declared digest
+/// does not close that gap: it binds the bytes the manifest points at, and an
+/// author who forges the receipt declares the forgery's digest too. This is the
+/// same hole the live-control contract closed, and the same repair — require the
+/// document to prove it is what it claims to be.
+///
+/// The six commit arrays are deliberately *not* required. They are payload
+/// rather than identity: a real reconciliation with nothing to report writes
+/// them empty, and anyone who can forge `subjects` can write `[]` six times, so
+/// requiring them would add unread fields without adding discrimination.
 #[derive(Debug, Clone, Deserialize)]
 struct ReconciliationReceipt {
     schema_version: u32,
     verdict: Verdict,
     subjects: ReconciliationSubjects,
+    ledger: String,
+    population_digest: String,
 }
 
+/// All three subjects, because `sync_divergence` always writes all three. A
+/// document carrying only `source` and `target` is not one of its receipts.
 #[derive(Debug, Clone, Deserialize)]
 struct ReconciliationSubjects {
     source: ReconciliationSubject,
+    boundary: ReconciliationSubject,
     target: ReconciliationSubject,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct ReconciliationSubject {
+    role: String,
+    input: String,
     commit: Option<String>,
 }
+
+/// The role `sync_divergence` writes for each reconciliation subject, in the
+/// order this planner checks them. Structure alone is not provenance: a document
+/// can carry every field the producer emits and still describe other subjects.
+const RECONCILIATION_SUBJECT_ROLES: [(&str, &str); 3] = [
+    ("source", "patch_equivalence_upstream"),
+    ("boundary", "history_limit"),
+    ("target", "release_head"),
+];
 
 // ---------------------------------------------------------------------------
 // Receipt
@@ -1845,6 +1873,61 @@ fn report_load_failure(
 /// The reconciliation input is a `sync-divergence` receipt. It is current only
 /// when it passed and when it reconciled exactly this manifest's `S` against
 /// exactly this manifest's `R`.
+/// Establish that this document is a `sync-divergence` receipt, not merely a
+/// document shaped like one.
+///
+/// Every check here is `not_proven` rather than `blocked`: a document that fails
+/// them has not been shown to describe a *failed* reconciliation, only to be
+/// unrecognisable as the producer's output. Reporting that as a hard stop would
+/// assert something the planner does not know.
+fn validate_reconciliation_provenance(receipt: &ReconciliationReceipt, state: &mut PlanState) {
+    let subjects = [&receipt.subjects.source, &receipt.subjects.boundary, &receipt.subjects.target];
+    for ((name, expected), subject) in RECONCILIATION_SUBJECT_ROLES.iter().zip(subjects) {
+        if subject.role != *expected {
+            state.not_proven(
+                "reconciliation_subject_role_invalid",
+                format!(
+                    "the reconciliation receipt labels its {name} subject {:?}, but sync-divergence writes {expected}",
+                    subject.role
+                ),
+                "release/ci",
+            );
+        }
+        if subject.input.trim().is_empty() {
+            state.not_proven(
+                "reconciliation_subject_input_missing",
+                format!("the reconciliation receipt's {name} subject names no input"),
+                "release/ci",
+            );
+        }
+    }
+
+    if receipt.ledger.trim().is_empty() {
+        state.not_proven(
+            "reconciliation_ledger_missing",
+            "the reconciliation receipt names no ledger",
+            "release/ci",
+        );
+    }
+
+    // Bare lowercase hex, not a `sha256:` reference: `compute_population_digest`
+    // formats the raw bytes, so a value in this repository's usual prefixed
+    // digest form is a different producer's output.
+    if receipt.population_digest.len() != 64
+        || !receipt.population_digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || receipt.population_digest.chars().any(|character| character.is_ascii_uppercase())
+    {
+        state.not_proven(
+            "reconciliation_population_digest_invalid",
+            format!(
+                "the reconciliation receipt's population_digest {:?} is not the 64-character lowercase hex digest sync-divergence writes",
+                receipt.population_digest
+            ),
+            "release/ci",
+        );
+    }
+}
+
 fn validate_reconciliation(manifest: &Manifest, raw: Option<&[u8]>, state: &mut PlanState) {
     let Some(raw) = raw else {
         // A missing or unreadable reconciliation input is already reported by
@@ -1874,6 +1957,8 @@ fn validate_reconciliation(manifest: &Manifest, raw: Option<&[u8]>, state: &mut 
         );
         return;
     }
+
+    validate_reconciliation_provenance(&receipt, state);
 
     match receipt.verdict {
         Verdict::Pass => {}

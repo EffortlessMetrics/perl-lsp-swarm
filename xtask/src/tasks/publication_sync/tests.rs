@@ -666,6 +666,125 @@ fn a_non_passing_reconciliation_receipt_cannot_be_consumed() -> Result<()> {
 }
 
 #[test]
+fn a_minimal_document_is_not_a_reconciliation_receipt() -> Result<()> {
+    // A declared digest binds the bytes the manifest points at; it does not
+    // establish that those bytes came from `sync-divergence`. A manifest author
+    // who forges the receipt declares the forgery's digest too, so the byte
+    // layer cannot be what refuses this.
+    //
+    // Reading only `schema_version`, `verdict` and two commits admitted the
+    // four-field document below, which no `sync-divergence` run can emit: the
+    // producer always writes three subjects with fixed roles, a ledger, a
+    // population digest and six commit arrays. This is the same hole the
+    // live-control contract closed one round earlier — there the fix was a
+    // typed `publication_live_control_receipt.v1` naming its own subject.
+    let forged = serde_json::to_vec(&json!({
+        "schema_version": 2,
+        "verdict": "pass",
+        "subjects": {
+            "source": {"commit": "1111111111111111111111111111111111111111"},
+            "target": {"commit": "2222222222222222222222222222222222222222"}
+        }
+    }))?;
+
+    let manifest: Manifest = serde_json::from_str(CLEAN)?;
+    let mut state = PlanState::default();
+    validate_reconciliation(&manifest, Some(&forged), &mut state);
+    let (verdict, findings) = state.finish();
+    if verdict == Verdict::Pass {
+        bail!("a four-field document authorized a plan: {findings:?}");
+    }
+    if !findings.iter().any(|finding| finding.code == "reconciliation_unreadable") {
+        bail!("a forged minimal receipt produced {findings:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn every_identifying_field_is_independently_required() -> Result<()> {
+    // The four-field control above is refused by *any one* of the added
+    // requirements, so on its own it cannot show that each is load-bearing —
+    // dropping two of the three would leave it passing. Delete one field at a
+    // time from the real fixture instead, so each requirement has its own
+    // falsifier.
+    //
+    // `boundary` earns its place separately: `sync_divergence` resolves three
+    // subjects and the planner reads only two, so nothing else in this module
+    // would notice its absence.
+    for pointer in ["subjects", "ledger", "population_digest"] {
+        let mut receipt_value: Value = serde_json::from_slice(RECONCILIATION_FIXTURE)?;
+        if receipt_value.get(pointer).is_none() {
+            bail!("fixture has no {pointer}; this control is mis-aimed");
+        }
+        receipt_value
+            .as_object_mut()
+            .ok_or_else(|| eyre!("reconciliation fixture is not an object"))?
+            .remove(pointer);
+        let stripped = serde_json::to_vec(&receipt_value)?;
+
+        let manifest: Manifest = serde_json::from_str(CLEAN)?;
+        let mut state = PlanState::default();
+        validate_reconciliation(&manifest, Some(&stripped), &mut state);
+        let (verdict, findings) = state.finish();
+        if verdict == Verdict::Pass {
+            bail!("a receipt with no {pointer} authorized a plan: {findings:?}");
+        }
+        if !findings.iter().any(|finding| finding.code == "reconciliation_unreadable") {
+            bail!("a receipt with no {pointer} produced {findings:?}");
+        }
+    }
+
+    // And the third subject specifically, with the other two left intact.
+    let mut receipt_value: Value = serde_json::from_slice(RECONCILIATION_FIXTURE)?;
+    receipt_value["subjects"]
+        .as_object_mut()
+        .ok_or_else(|| eyre!("reconciliation fixture subjects is not an object"))?
+        .remove("boundary");
+    let stripped = serde_json::to_vec(&receipt_value)?;
+
+    let manifest: Manifest = serde_json::from_str(CLEAN)?;
+    let mut state = PlanState::default();
+    validate_reconciliation(&manifest, Some(&stripped), &mut state);
+    let (verdict, findings) = state.finish();
+    if verdict == Verdict::Pass {
+        bail!("a receipt with no boundary subject authorized a plan: {findings:?}");
+    }
+    if !findings.iter().any(|finding| finding.code == "reconciliation_unreadable") {
+        bail!("a receipt with no boundary subject produced {findings:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_reconciliation_receipt_must_carry_the_producers_subject_roles() -> Result<()> {
+    // Structure alone is not provenance. A document can carry every field the
+    // producer emits and still describe different subjects, so the three roles
+    // are pinned to the constants `sync_divergence` writes. Only the role is
+    // changed here; every other field stays exactly as the real fixture has it,
+    // so nothing else can be what refuses it.
+    for (subject, role) in [("source", "patch_equivalence_upstream"), ("target", "release_head")] {
+        let mut receipt_value: Value = serde_json::from_slice(RECONCILIATION_FIXTURE)?;
+        if receipt_value["subjects"][subject]["role"] != json!(role) {
+            bail!("fixture role for {subject} is not {role}; this control is mis-aimed");
+        }
+        receipt_value["subjects"][subject]["role"] = json!("history_limit");
+        let mislabelled = serde_json::to_vec(&receipt_value)?;
+
+        let manifest: Manifest = serde_json::from_str(CLEAN)?;
+        let mut state = PlanState::default();
+        validate_reconciliation(&manifest, Some(&mislabelled), &mut state);
+        let (verdict, findings) = state.finish();
+        if verdict == Verdict::Pass {
+            bail!("a receipt whose {subject} role was rewritten authorized a plan: {findings:?}");
+        }
+        if !findings.iter().any(|finding| finding.code == "reconciliation_subject_role_invalid") {
+            bail!("a rewritten {subject} role produced {findings:?}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn an_unreadable_reconciliation_receipt_is_not_proven() -> Result<()> {
     let manifest: Manifest = serde_json::from_str(CLEAN)?;
     let mut state = PlanState::default();
