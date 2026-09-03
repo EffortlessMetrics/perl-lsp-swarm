@@ -863,15 +863,44 @@ fn test2_bare_match_payload_is_data_not_transform_syntax() {
 
     // Division must stay visible: masking from a `/` that follows a term would
     // swallow real import text up to the next `/`.
-    assert!(!bare_match_can_start(Some('a')), "a `/` after an identifier is division");
-    assert!(!bare_match_can_start(Some(')')), "a `/` after a closing paren is division");
-    assert!(bare_match_can_start(Some('(')), "a `/` after an opener starts a match");
-    assert!(bare_match_can_start(Some('>')), "a `/` after a fat comma starts a match");
-    assert!(bare_match_can_start(None), "a leading `/` starts a match");
+    assert!(!bare_match_can_start("$count "), "a `/` after a variable is division");
+    assert!(!bare_match_can_start("f(1) "), "a `/` after a closing paren is division");
+    assert!(!bare_match_can_start("'Foo' "), "a `/` after a quoted term is division");
+    assert!(bare_match_can_start("scalar("), "a `/` after an opener starts a match");
+    assert!(bare_match_can_start("-target => "), "a `/` after a fat comma starts a match");
+    assert!(bare_match_can_start(""), "a leading `/` starts a match");
 
     // The `qw//` list form is still consumed by the operator path, not by the
     // bare-match path, so ordinary imports are untouched.
     let list = resolve_with_analysis("Test2::Tools::Compare", "qw/is like/");
     assert!(!list.analysis_limited);
     assert!(list.resolved.symbols.contains("is") && list.resolved.symbols.contains("like"));
+}
+
+#[test]
+fn test2_word_operator_prefixed_match_is_still_data() {
+    // Review finding (@devin-ai-integration on #14651). The bare-match
+    // discriminator looked only at the preceding character, so a match after a
+    // word operator (`grep /.../`) read as division: the payload stayed visible,
+    // tripped the role predicate, and dropped the valid import.
+    for args in [
+        "-target => scalar(grep /-as => Foo/, @values), ok",
+        "-target => scalar(map /-prefix => Foo/, @values), ok",
+        "-target => scalar(split /-postfix => Foo/, $text), ok",
+    ] {
+        let resolved = resolve_with_analysis("Test2::V0", args);
+        assert!(!resolved.analysis_limited, "{args}: a match payload is data");
+        assert!(
+            resolved.resolved.symbols.contains("ok"),
+            "{args}: the explicit import must survive, got {:?}",
+            resolved.resolved.symbols
+        );
+    }
+
+    // The token, not its last character, decides.
+    assert!(bare_match_can_start("scalar(grep "), "grep takes a pattern");
+    assert!(bare_match_can_start("return "), "return takes a pattern");
+    assert!(!bare_match_can_start("$grep "), "a sigil makes it a variable, not the operator");
+    assert!(!bare_match_can_start("mygrep "), "a longer identifier is not the operator");
+    assert!(!bare_match_can_start("count "), "an ordinary identifier divides");
 }

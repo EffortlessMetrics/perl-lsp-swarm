@@ -391,9 +391,6 @@ fn contains_transform_syntax(text: &str) -> bool {
 fn mask_data_values(text: &str) -> String {
     let mut masked = String::with_capacity(text.len());
     let mut index = 0usize;
-    // The last non-whitespace character consumed, used only to tell a bare
-    // match from division. A masked value counts as a completed term.
-    let mut previous: Option<char> = None;
 
     while index < text.len() {
         if let Some(end) = quote_like_expression_end(text, index)
@@ -409,7 +406,6 @@ fn mask_data_values(text: &str) -> String {
                 }
                 None => blank_into(&mut masked, span),
             }
-            previous = Some(')');
             index = end;
             continue;
         }
@@ -423,20 +419,16 @@ fn mask_data_values(text: &str) -> String {
         // resolves `/` by parse state; here the discriminator is whether a term
         // can start, which keeps division (`$a / $b`) visible.
         if current == '/'
-            && bare_match_can_start(previous)
+            && bare_match_can_start(&text[..index])
             && let Some(end) = bare_match_end(text, index)
         {
             blank_into(&mut masked, &text[index..end]);
-            previous = Some(')');
             index = end;
             continue;
         }
 
         if current != '\'' && current != '"' {
             masked.push(current);
-            if !current.is_whitespace() {
-                previous = Some(current);
-            }
             index += current.len_utf8();
             continue;
         }
@@ -469,7 +461,6 @@ fn mask_data_values(text: &str) -> String {
         } else {
             blank_into(&mut masked, &text[index..end]);
         }
-        previous = Some(')');
         index = end;
     }
 
@@ -511,22 +502,47 @@ fn quote_like_option_key(span: &str) -> Option<&'static str> {
     TRANSFORM_OPTIONS.iter().copied().find(|option| inner.trim() == *option)
 }
 
-/// Whether a `/` following `previous` opens a bare match rather than division.
+/// Perl word operators that take a match as their next argument, so a `/`
+/// after one opens a pattern rather than dividing the word's value.
+const MATCH_TAKING_WORD_OPERATORS: [&str; 24] = [
+    "grep", "map", "split", "join", "push", "unshift", "return", "print", "say", "sort", "scalar",
+    "defined", "not", "and", "or", "xor", "if", "elsif", "unless", "while", "until", "for",
+    "foreach", "do",
+];
+
+/// Whether a `/` at the end of `before` opens a bare match rather than
+/// dividing what precedes it.
 ///
 /// Perl resolves this from parse state. Inside an import list the practical
-/// discriminator is whether a term can start here: after a value or an
-/// identifier a `/` is division, otherwise it opens a match.
-fn bare_match_can_start(previous: Option<char>) -> bool {
-    match previous {
-        None => true,
-        Some(character) => {
-            !(character.is_alphanumeric()
-                || character == '_'
-                || character == ')'
-                || character == ']'
-                || character == '}')
+/// discriminator is whether a term can start here, which needs the preceding
+/// *token*, not just its last character: `grep /.../` opens a match even though
+/// `grep` ends in a letter, while `$count /` divides.
+fn bare_match_can_start(before: &str) -> bool {
+    let trimmed = before.trim_end();
+    let Some(last) = trimmed.chars().next_back() else {
+        return true;
+    };
+
+    if last.is_alphanumeric() || last == '_' {
+        // A trailing word is either an operator expecting a pattern, or a value
+        // being divided. Only the operator spelling admits a match.
+        let word_start = trimmed
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| c.is_alphanumeric() || *c == '_')
+            .last()
+            .map_or(trimmed.len(), |(offset, _)| offset);
+        let word = &trimmed[word_start..];
+        // A sigil makes it a variable (`$grep /`), never an operator.
+        let sigil = trimmed[..word_start].chars().next_back();
+        if matches!(sigil, Some('$' | '@' | '%' | '&')) {
+            return false;
         }
+        return MATCH_TAKING_WORD_OPERATORS.contains(&word);
     }
+
+    // Closers and quotes end a term, so a following `/` divides it.
+    !matches!(last, ')' | ']' | '}' | '\'' | '"')
 }
 
 /// End offset just past a bare `/.../` match and any trailing flags, or `None`
