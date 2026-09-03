@@ -1573,12 +1573,16 @@ impl TransformationPlan {
                 self.id.as_str()
             );
         }
+        // `StageSubject::digest` covers the IR *and* the facts attached to it,
+        // so only an attempt that changed nothing at all reproduces the input
+        // digest. Any intended change at the same stage therefore contradicts
+        // an unchanged expected output -- not only an IR-shape change.
         if self.expected_output.stage == self.input.stage
             && self.expected_output.digest == self.input.digest
-            && self.intended_changes.contains(&ChangedProposition::IrShape)
+            && !self.intended_changes.is_empty()
         {
             bail!(
-                "plan {:?} intends to change the IR shape but expects the input digest unchanged",
+                "plan {:?} intends a change but expects the input subject unchanged",
                 self.id.as_str()
             );
         }
@@ -1882,11 +1886,11 @@ impl TransformationPlan {
             // applying part of the plan while one of them is unproven.
             if !observation.applied_operations.is_empty() {
                 return Ok(TransformationResult::InvalidOutput {
-                    reason: format!(
+                    reason: bounded_reason(&format!(
                         "partial application of {} location(s) after precondition {:?} was not proven",
                         observation.applied_operations.len(),
                         first.id.as_str()
-                    ),
+                    )),
                 });
             }
             return Ok(match first.truth {
@@ -1925,11 +1929,11 @@ impl TransformationPlan {
         for obligation in &self.equivalence_obligations {
             if !observation.discharged_obligations.contains(obligation) {
                 return Ok(TransformationResult::EquivalenceNotProven {
-                    reason: format!(
+                    reason: bounded_reason(&format!(
                         "the {} obligation on {} was not discharged",
                         obligation.oracle.tag(),
                         obligation.proposition.tag()
-                    ),
+                    )),
                 });
             }
         }
@@ -1944,11 +1948,11 @@ impl TransformationPlan {
         // report fewer units than the attempt says it changed.
         if observation.work.useful_operations < observation.applied_operations.len() as u64 {
             return Ok(TransformationResult::InvalidOutput {
-                reason: format!(
+                reason: bounded_reason(&format!(
                     "the attempt applied {} location(s) but reported only {} useful operation(s)",
                     observation.applied_operations.len(),
                     observation.work.useful_operations
-                ),
+                )),
             });
         }
         let selected: BTreeSet<OperationId> =
@@ -1968,11 +1972,11 @@ impl TransformationPlan {
         };
         if output.stage != self.expected_output.stage {
             return Ok(TransformationResult::InvalidOutput {
-                reason: format!(
+                reason: bounded_reason(&format!(
                     "the attempt produced stage {} but the plan expects stage {}",
                     output.stage.tag(),
                     self.expected_output.stage.tag()
-                ),
+                )),
             });
         }
 
@@ -2017,10 +2021,10 @@ impl TransformationPlan {
         };
         if !subplans.contains(&residual.subplan) {
             return Ok(TransformationResult::InvalidOutput {
-                reason: format!(
+                reason: bounded_reason(&format!(
                     "the residual names subplan {:?}, which the plan's law does not declare",
                     residual.subplan
-                ),
+                )),
             });
         }
         // "Complete" is the load-bearing word: the attempt must have applied
@@ -2030,16 +2034,19 @@ impl TransformationPlan {
             Some(binding) => binding,
             None => {
                 return Ok(TransformationResult::InvalidOutput {
-                    reason: format!("the plan binds no subplan {:?}", residual.subplan),
+                    reason: bounded_reason(&format!(
+                        "the plan binds no subplan {:?}",
+                        residual.subplan
+                    )),
                 });
             }
         };
         if binding.operations != observation.applied_operations {
             return Ok(TransformationResult::InvalidOutput {
-                reason: format!(
+                reason: bounded_reason(&format!(
                     "the attempt did not apply exactly the operations subplan {:?} completes",
                     residual.subplan
-                ),
+                )),
             });
         }
         // A subplan owns its output subject just as the whole plan owns its
@@ -2047,10 +2054,10 @@ impl TransformationPlan {
         // a completed subplan.
         if output != &binding.expected_output {
             return Ok(TransformationResult::InvalidOutput {
-                reason: format!(
+                reason: bounded_reason(&format!(
                     "the attempt did not produce the output subject subplan {:?} declares",
                     residual.subplan
-                ),
+                )),
             });
         }
         Ok(TransformationResult::AppliedWithDeclaredResidualBoundary {
@@ -2361,18 +2368,21 @@ fn fingerprint(canonical: &str) -> Result<ContractDigest> {
 /// Result reasons come from the caller, so without this the bounded-text
 /// property would hold for every retained field except the result contract.
 fn bounded_reason(text: &str) -> String {
-    match text.char_indices().nth(MAX_TEXT_LEN) {
-        Some((index, _)) => text[..index].to_owned(),
-        None => text.to_owned(),
+    // MAX_TEXT_LEN is a byte limit, so bound bytes, not characters: 512
+    // multibyte characters are well over 512 bytes. Back off to the nearest
+    // char boundary so the result stays valid UTF-8.
+    if text.len() <= MAX_TEXT_LEN {
+        return text.to_owned();
     }
+    let mut end = MAX_TEXT_LEN;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
 }
 
 fn truncate_reason(error: &anyhow::Error) -> String {
-    let text = format!("{error:#}");
-    match text.char_indices().nth(MAX_TEXT_LEN) {
-        Some((index, _)) => text[..index].to_owned(),
-        None => text,
-    }
+    bounded_reason(&format!("{error:#}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -3964,7 +3974,7 @@ mod tests {
                 },
             ),
             (
-                "intends to change the IR shape but expects the input digest unchanged",
+                "intends a change but expects the input subject unchanged",
                 "an unchanged output digest",
                 |plan| plan.expected_output = plan.input.clone(),
             ),
@@ -4724,5 +4734,119 @@ mod tests {
         weakened.excluded_concepts.remove(&DynamicConcept::Overload);
         assert!(weakened.verify_law_conformance(&law).is_err());
         Ok(())
+    }
+
+    // Review finding: the unchanged-output guard only fired for an IR-shape
+    // change, but `StageSubject::digest` covers the IR *and* its facts, so any
+    // intended change contradicts an unchanged expected output.
+    #[test]
+    fn no_intended_change_may_expect_the_input_subject_unchanged() -> Result<()> {
+        let (_, plan) = folding();
+
+        for change in ChangedProposition::ALL {
+            let mut unchanged = plan.clone();
+            unchanged.intended_changes = [change].into_iter().collect();
+            unchanged.expected_output = unchanged.input.clone();
+            // Source-text projection needs its relation to stay valid; give it
+            // one so the failure under test is the unchanged output, not that.
+            if change == ChangedProposition::SourceText {
+                unchanged.consumers = [ConsumerClass::SourceEdit].into_iter().collect();
+                unchanged.class = TransformationClass::SourceProjectionCandidate;
+                unchanged.claim_ceiling = ClaimCeiling::AuthorizedSourceEdit;
+                unchanged.preserved.remove(&PreservedProposition::SourceMapping);
+                unchanged.refactor_relation = Some(RefactorPlanRelation {
+                    refactor_plan_id: subject_ref("refactor-plan/unchanged"),
+                    edit_set_equality: subject_ref("equality"),
+                    application_proof: subject_ref("application"),
+                    post_edit_proof: subject_ref("post-edit"),
+                });
+            }
+            assert_invalid(
+                &unchanged,
+                "intends a change but expects the input subject unchanged",
+                "an unchanged output contradicts an intended change",
+            );
+        }
+
+        // A plan that intends no change -- the unsupported class -- may declare
+        // the input subject unchanged, because it changes nothing.
+        let mut unsupported = plan.clone();
+        unsupported.class = TransformationClass::UnsupportedOrNotApplicable;
+        unsupported.consumers = [ConsumerClass::NoConsumer].into_iter().collect();
+        unsupported.claim_ceiling = ClaimCeiling::InternalFactOnly;
+        unsupported.intended_changes = BTreeSet::new();
+        unsupported.expected_output = unsupported.input.clone();
+        unsupported.preconditions[0].truth =
+            PreconditionTruth::DynamicOrUnsupported(DynamicConcept::Overload);
+        unsupported.validate()?;
+        Ok(())
+    }
+
+    // Review finding: MAX_TEXT_LEN is a byte limit, but the bounding helper
+    // counted characters, and several internally formatted reasons were never
+    // bounded at all.
+    #[test]
+    fn every_result_reason_is_bounded_in_bytes() -> Result<()> {
+        let (law, plan) = folding();
+
+        // 512 multibyte characters are far more than 512 bytes.
+        let multibyte = "\u{00e9}\u{4f60}\u{1f600}".repeat(MAX_TEXT_LEN);
+        assert!(multibyte.len() > MAX_TEXT_LEN * 4);
+        let bounded = super::bounded_reason(&multibyte);
+        assert!(bounded.len() <= MAX_TEXT_LEN, "bounded to {} bytes", bounded.len());
+        // Still valid UTF-8: it round-trips through the same slice.
+        assert_eq!(bounded, String::from_utf8(bounded.clone().into_bytes())?);
+
+        for settlement in [
+            Settlement::Cancelled(multibyte.clone()),
+            Settlement::TimedOut(multibyte.clone()),
+            Settlement::LimitExceeded(multibyte.clone()),
+            Settlement::InstrumentFailed(multibyte.clone()),
+            Settlement::CleanupFailed(multibyte.clone()),
+        ] {
+            let mut observed = observation(&plan, &law);
+            observed.settlement = settlement;
+            let result = plan.evaluate(&observed)?;
+            assert!(
+                reason_of(&result).len() <= MAX_TEXT_LEN,
+                "{} reason is {} bytes",
+                result.tag(),
+                reason_of(&result).len()
+            );
+        }
+
+        // An internally formatted reason embeds caller-supplied text, so it is
+        // bounded too. A maximum-length subplan name is the longest such case.
+        let long_name = "\u{4f60}".repeat(MAX_TEXT_LEN / 3);
+        let subplan_law = shape_fixtures::effect_free_control_law()?;
+        let subplan_plan = shape_fixtures::effect_free_control_plan()?;
+        let mut partial = shape_fixtures::conforming_observation(&subplan_plan, &subplan_law)?;
+        partial.applied_operations = [operation_id("eir:block:0002")].into_iter().collect();
+        partial.work = WorkReceipt { useful_operations: 1, elapsed_micros: 10 };
+        partial.residual = Some(ResidualBoundary::new(&long_name, "boundary")?);
+        let result = subplan_plan.evaluate(&partial)?;
+        assert_eq!(result.tag(), "invalid_output");
+        assert!(
+            reason_of(&result).len() <= MAX_TEXT_LEN,
+            "formatted reason is {} bytes",
+            reason_of(&result).len()
+        );
+
+        // An invalid plan's reason comes from an error chain and is bounded the
+        // same way.
+        let mut broken = plan.clone();
+        broken.preconditions[0].statement = "\u{1f600}".repeat(MAX_TEXT_LEN);
+        let invalid = plan_with_invalid_statement(&broken, &law)?;
+        assert_eq!(invalid.tag(), "invalid_plan");
+        assert!(reason_of(&invalid).len() <= MAX_TEXT_LEN);
+        Ok(())
+    }
+
+    fn plan_with_invalid_statement(
+        plan: &TransformationPlan,
+        law: &TransformationLaw,
+    ) -> Result<TransformationResult> {
+        let observed = shape_fixtures::conforming_observation(plan, law)?;
+        plan.evaluate(&observed)
     }
 }
