@@ -752,10 +752,22 @@ fn is_plain_module_name(text: &str) -> bool {
         };
         match split_leading_component(after) {
             Some((component, remainder)) => {
-                // A later component may lead with a digit, unlike the first.
+                // A later component may lead with a digit, unlike the first —
+                // but only after `::`. The apostrophe is a package separator
+                // just before an identifier start, so it takes the stricter
+                // rule and a digit opens a string instead:
+                //
+                //   perl -MFoo::1   -e1 → Can't locate Foo/1.pm in @INC
+                //   perl -MFoo'_x   -e1 → Old package separator "'" deprecated
+                //   perl -MFoo'1    -e1 → Can't find string terminator "'"
+                //   perl -MFoo::'1  -e1 → Can't find string terminator "'"
                 let mut characters = component.chars();
-                let leads =
-                    matches!(characters.next(), Some(c) if c.is_ascii_alphanumeric() || c == '_');
+                let leads = matches!(characters.next(), Some(c) if c == '_'
+                || if separator_is_legacy {
+                    c.is_ascii_alphabetic()
+                } else {
+                    c.is_ascii_alphanumeric()
+                });
                 if !leads || !characters.all(is_name_character) {
                     return false;
                 }

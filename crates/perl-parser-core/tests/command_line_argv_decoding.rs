@@ -710,6 +710,7 @@ fn a_module_expression_that_is_not_a_module_name_is_reported_as_ambiguous() {
         "Foo::::Bar",
         "Foo::::",
         "Foo::'Bar",
+        "Foo'_x",
     ] {
         let argv = format!("-M{plain}");
         let invocation = perl(&[argv.as_str(), "-e", "print"]);
@@ -726,7 +727,14 @@ fn a_module_expression_that_is_not_a_module_name_is_reported_as_ambiguous() {
     // `perl -MFoo''Bar` is `Bareword found where operator expected` and
     // `perl -MFoo'` dies on an unterminated string, so a legacy separator still
     // needs a component after it.
-    for opaque in ["::Foo", "1Foo", "Foo-Bar", "Foo''Bar", "Foo'"] {
+    // A `::` component may lead with a digit but an apostrophe one may not —
+    // the apostrophe separates packages only before an identifier start, so a
+    // digit opens a string. This holds with or without a preceding `::`:
+    //
+    //   perl -MFoo::1  -e1 → Can't locate Foo/1.pm in @INC     (accepted above)
+    //   perl -MFoo'1   -e1 → Can't find string terminator "'"
+    //   perl -MFoo::'1 -e1 → Can't find string terminator "'"
+    for opaque in ["::Foo", "1Foo", "Foo-Bar", "Foo''Bar", "Foo'", "Foo'1", "Foo::'1"] {
         let argv = format!("-M{opaque}");
         let invocation = perl(&[argv.as_str(), "-e", "print"]);
         let ContextFactKind::ModuleImport { spec, .. } = &facts(&invocation)[0] else {
