@@ -1,0 +1,757 @@
+# Cargo feature role registry (#8409)
+#
+# One classified role per governed Cargo feature, plus the consumer evidence
+# discovered from current source. Validated by
+# `python3 scripts/ci/validate_cargo_feature_roles.py`, which rediscovers every
+# (crate, feature) pair and fails when a feature is unregistered, a row is
+# stale, a declared consumer disposition no longer matches the source, a
+# restricted role becomes reachable from a crate default, or a name asserts
+# test/experimental/roadmap status that the role does not.
+#
+# This registry is NOT a second authority for:
+#   * supported build-feature combinations  -> #3790
+#   * product capability maturity/advertisement -> #6731
+#   * public compatibility for renames/removals -> #8097
+# Rows carry role and consumer evidence only; unknown keys are rejected.
+#
+# `consumers` records the exact SET of ways discovery observes the feature
+# being consumed, not one winning label. A feature commonly carries several
+# signals at once, so a single-valued field would hide the gain or loss of
+# every signal but the highest-priority one:
+#   cfg_gated          a `feature = "..."` predicate inside a real cfg form
+#                      (comments and string literals do not count)
+#   composition        the feature enables dependencies or other features
+#   propagated         another feature enables this one
+#   required_features  a Cargo target (lib/bin/test/example/bench) lists it in
+#                      `required-features`, so it selects whether that target
+#                      builds at all
+# An empty list means nothing consumes the feature, which requires an explicit
+# `migration` disposition.
+#
+# Regenerate the observed evidence with:
+#   python3 scripts/ci/validate_cargo_feature_roles.py --explain
+
+schema_version = 1
+policy = "cargo-feature-roles"
+
+roles = [
+  "build_composition",
+  "product_profile",
+  "experimental_opt_in",
+  "test_only",
+  "legacy_alias",
+  "aspirational_milestone",
+]
+
+consumer_signals = [
+  "cfg_gated",
+  "composition",
+  "propagated",
+  "required_features",
+]
+
+[authority]
+classification = "#8409"
+umbrella = "#8121"
+migration = "#8411"
+build_combinations = "#3790"
+product_maturity = "#6731"
+public_compatibility = "#8097"
+
+[[feature]]
+crate = "perl-corpus"
+name = "ci-fast"
+role = "test_only"
+owner = "#8409"
+consumers = ["cfg_gated"]
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Selects the fast corpus subset used by CI test runs."
+
+[[feature]]
+crate = "perl-corpus"
+name = "default"
+role = "build_composition"
+owner = "#8409"
+consumers = []
+
+[[feature]]
+crate = "perl-dap"
+name = "dap-phase2"
+role = "product_profile"
+owner = "#8409"
+consumers = ["cfg_gated", "propagated"]
+name_exception = "Phase name asserts roadmap position; #8411 owns the rename. The feature itself is implemented and default-on."
+
+[[feature]]
+crate = "perl-dap"
+name = "dap-phase3"
+role = "product_profile"
+owner = "#8409"
+consumers = ["cfg_gated", "propagated"]
+name_exception = "Phase name asserts roadmap position; #8411 owns the rename. The feature itself is implemented and default-on."
+
+[[feature]]
+crate = "perl-dap"
+name = "default"
+role = "build_composition"
+owner = "#8409"
+consumers = ["composition"]
+
+[[feature]]
+crate = "perl-dap"
+name = "test-helpers"
+role = "test_only"
+owner = "#8409"
+consumers = ["cfg_gated", "required_features"]
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Test helper surface; enabled explicitly by the justfile DAP test recipe."
+
+[[feature]]
+crate = "perl-diagnostics"
+name = "default"
+role = "build_composition"
+owner = "#8409"
+consumers = []
+
+[[feature]]
+crate = "perl-diagnostics"
+name = "serde"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "composition"]
+
+[[feature]]
+crate = "perl-incremental-parsing"
+name = "default"
+role = "build_composition"
+owner = "#8409"
+consumers = []
+
+[[feature]]
+crate = "perl-lexer"
+name = "default"
+role = "build_composition"
+owner = "#8409"
+consumers = []
+
+[[feature]]
+crate = "perl-lexer"
+name = "simd"
+role = "aspirational_milestone"
+owner = "#8409"
+consumers = []
+migration = "#6715 owns implementation or removal."
+note = "Declared but empty: selects no distinct implementation. crates/perl-lexer/README.md and tests/lexer_config_behavior_contract.rs already record it as a compatibility no-op."
+
+[[feature]]
+crate = "perl-lexer"
+name = "slow_tests"
+role = "test_only"
+owner = "#8409"
+consumers = ["cfg_gated"]
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Consumed through #[cfg_attr(not(feature = \"slow_tests\"), ignore)]."
+
+[[feature]]
+crate = "perl-lsp-rs"
+name = "constant-advanced"
+role = "aspirational_milestone"
+owner = "#8409"
+consumers = []
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Declared with no edges and no cfg consumer."
+
+[[feature]]
+crate = "perl-lsp-rs"
+name = "dap-phase3"
+role = "aspirational_milestone"
+owner = "#8409"
+consumers = []
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+name_exception = "Phase name asserts roadmap position; #8411 owns the rename."
+note = "Declared with no edges and no cfg consumer; perl-dap owns the implemented dap-phase3."
+
+[[feature]]
+crate = "perl-lsp-rs"
+name = "default"
+role = "build_composition"
+owner = "#8409"
+consumers = ["composition"]
+
+[[feature]]
+crate = "perl-lsp-rs"
+name = "error-classifier-v2"
+role = "aspirational_milestone"
+owner = "#8409"
+consumers = []
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+name_exception = "Version suffix asserts roadmap position; #8411 owns the rename."
+note = "Declared with no edges and no cfg consumer; perl-parser owns the implemented toggle."
+
+[[feature]]
+crate = "perl-lsp-rs"
+name = "experimental-features"
+role = "experimental_opt_in"
+owner = "#8409"
+consumers = ["cfg_gated"]
+
+[[feature]]
+crate = "perl-lsp-rs"
+name = "expose_lsp_test_api"
+role = "test_only"
+owner = "#8409"
+consumers = ["cfg_gated", "composition"]
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Widest test-only surface in the workspace; forwards to perl-parser/expose_lsp_test_api."
+
+[[feature]]
+crate = "perl-lsp-rs"
+name = "incremental"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "composition", "propagated"]
+
+[[feature]]
+crate = "perl-lsp-rs"
+name = "lsp-advanced"
+role = "aspirational_milestone"
+owner = "#8409"
+consumers = []
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Declared with no edges and no cfg consumer."
+
+[[feature]]
+crate = "perl-lsp-rs"
+name = "lsp-extras"
+role = "product_profile"
+owner = "#8409"
+consumers = ["cfg_gated"]
+
+[[feature]]
+crate = "perl-lsp-rs"
+name = "lsp-ga-lock"
+role = "product_profile"
+owner = "#8409"
+consumers = ["cfg_gated", "composition"]
+
+[[feature]]
+crate = "perl-lsp-rs"
+name = "package-qualified"
+role = "aspirational_milestone"
+owner = "#8409"
+consumers = []
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Declared with no edges and no cfg consumer; perl-parser owns the implemented toggle."
+
+[[feature]]
+crate = "perl-lsp-rs"
+name = "qw-variants"
+role = "aspirational_milestone"
+owner = "#8409"
+consumers = []
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Declared with no edges and no cfg consumer; perl-parser owns the implemented toggle."
+
+[[feature]]
+crate = "perl-lsp-rs"
+name = "stress-tests"
+role = "test_only"
+owner = "#8409"
+consumers = ["cfg_gated"]
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+
+[[feature]]
+crate = "perl-lsp-rs"
+name = "strict-jsonrpc"
+role = "product_profile"
+owner = "#8409"
+consumers = ["cfg_gated"]
+note = "Selects strict JSON-RPC validation behavior."
+
+[[feature]]
+crate = "perl-lsp-rs"
+name = "test-fallbacks"
+role = "test_only"
+owner = "#8409"
+consumers = ["cfg_gated"]
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+
+[[feature]]
+crate = "perl-lsp-rs"
+name = "test-performance"
+role = "test_only"
+owner = "#8409"
+consumers = []
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Declared with no edges and no cfg consumer."
+
+[[feature]]
+crate = "perl-lsp-rs"
+name = "utf16-complete"
+role = "product_profile"
+owner = "#8409"
+consumers = ["cfg_gated", "composition"]
+
+[[feature]]
+crate = "perl-lsp-rs"
+name = "workspace"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "propagated"]
+note = "Widest build-composition switch in the workspace."
+
+[[feature]]
+crate = "perl-lsp-rs-core"
+name = "ai-provider"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "composition", "propagated"]
+note = "Default-on; enables the ureq dependency."
+
+[[feature]]
+crate = "perl-lsp-rs-core"
+name = "default"
+role = "build_composition"
+owner = "#8409"
+consumers = ["composition"]
+
+[[feature]]
+crate = "perl-lsp-rs-core"
+name = "lsp-compat"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated"]
+
+[[feature]]
+crate = "perl-lsp-rs-core"
+name = "lsp-ga-lock"
+role = "product_profile"
+owner = "#8409"
+consumers = ["cfg_gated", "propagated"]
+
+[[feature]]
+crate = "perl-lsp-ux-tests"
+name = "integration-test"
+role = "test_only"
+owner = "#8409"
+consumers = ["cfg_gated"]
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Gates the UX integration scenarios; enabled explicitly in CI."
+
+[[feature]]
+crate = "perl-parser"
+name = "anyhow"
+role = "build_composition"
+owner = "#8409"
+consumers = ["propagated"]
+
+[[feature]]
+crate = "perl-parser"
+name = "cli"
+role = "build_composition"
+owner = "#8409"
+consumers = ["required_features"]
+note = "Selects whether the perl-parse binary builds: [[bin]] perl-parse declares required-features = [\"cli\"]."
+
+[[feature]]
+crate = "perl-parser"
+name = "constant-advanced"
+role = "product_profile"
+owner = "#8409"
+consumers = ["cfg_gated"]
+
+[[feature]]
+crate = "perl-parser"
+name = "crash-repros"
+role = "test_only"
+owner = "#8409"
+consumers = ["cfg_gated"]
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+
+[[feature]]
+crate = "perl-parser"
+name = "default"
+role = "build_composition"
+owner = "#8409"
+consumers = ["composition"]
+
+[[feature]]
+crate = "perl-parser"
+name = "doc-coverage"
+role = "test_only"
+owner = "#8409"
+consumers = ["cfg_gated"]
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+
+[[feature]]
+crate = "perl-parser"
+name = "error-classifier-v2"
+role = "experimental_opt_in"
+owner = "#8409"
+consumers = ["cfg_gated"]
+name_exception = "Version suffix asserts roadmap position; #8411 owns the rename."
+
+[[feature]]
+crate = "perl-parser"
+name = "experimental-features"
+role = "experimental_opt_in"
+owner = "#8409"
+consumers = []
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Declared with no edges and no cfg consumer; perl-lsp-rs owns the implemented opt-in."
+
+[[feature]]
+crate = "perl-parser"
+name = "expose_lsp_test_api"
+role = "test_only"
+owner = "#8409"
+consumers = ["propagated"]
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Inert forwarding target: perl-lsp-rs/expose_lsp_test_api enables it but perl-parser gates nothing on it."
+
+[[feature]]
+crate = "perl-parser"
+name = "incremental"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "composition", "propagated", "required_features"]
+
+[[feature]]
+crate = "perl-parser"
+name = "lsp-advanced"
+role = "aspirational_milestone"
+owner = "#8409"
+consumers = []
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Declared with no edges and no cfg consumer."
+
+[[feature]]
+crate = "perl-parser"
+name = "lsp-compat"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "composition", "propagated"]
+
+[[feature]]
+crate = "perl-parser"
+name = "lsp-ga-lock"
+role = "aspirational_milestone"
+owner = "#8409"
+consumers = []
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Declared with no edges and no cfg consumer; perl-lsp-rs-core owns the implemented lock."
+
+[[feature]]
+crate = "perl-parser"
+name = "lsp-types"
+role = "build_composition"
+owner = "#8409"
+consumers = ["propagated"]
+
+[[feature]]
+crate = "perl-parser"
+name = "modernize"
+role = "experimental_opt_in"
+owner = "#8409"
+consumers = ["cfg_gated"]
+
+[[feature]]
+crate = "perl-parser"
+name = "package-qualified"
+role = "product_profile"
+owner = "#8409"
+consumers = ["cfg_gated"]
+
+[[feature]]
+crate = "perl-parser"
+name = "parser-extras"
+role = "product_profile"
+owner = "#8409"
+consumers = ["cfg_gated"]
+
+[[feature]]
+crate = "perl-parser"
+name = "perl-line-index"
+role = "build_composition"
+owner = "#8409"
+consumers = ["propagated"]
+
+[[feature]]
+crate = "perl-parser"
+name = "qw-variants"
+role = "product_profile"
+owner = "#8409"
+consumers = ["cfg_gated"]
+
+[[feature]]
+crate = "perl-parser"
+name = "semantic-phase2"
+role = "experimental_opt_in"
+owner = "#8409"
+consumers = ["cfg_gated"]
+name_exception = "Phase name asserts roadmap position; #8411 owns the rename."
+
+[[feature]]
+crate = "perl-parser"
+name = "slow_tests"
+role = "test_only"
+owner = "#8409"
+consumers = ["cfg_gated"]
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Consumed through #[cfg_attr(not(feature = \"slow_tests\"), ignore)]."
+
+[[feature]]
+crate = "perl-parser"
+name = "substitution-advanced"
+role = "aspirational_milestone"
+owner = "#8409"
+consumers = []
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Declared with no edges and no cfg consumer."
+
+[[feature]]
+crate = "perl-parser"
+name = "test-performance"
+role = "test_only"
+owner = "#8409"
+consumers = []
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Declared with no edges and no cfg consumer."
+
+[[feature]]
+crate = "perl-parser"
+name = "tracing"
+role = "build_composition"
+owner = "#8409"
+consumers = ["propagated"]
+
+[[feature]]
+crate = "perl-parser"
+name = "utf16-complete"
+role = "legacy_alias"
+owner = "#8409"
+consumers = ["propagated"]
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Inert forwarding target: perl-lsp-rs/utf16-complete enables it but perl-parser gates nothing on it."
+
+[[feature]]
+crate = "perl-parser"
+name = "workspace"
+role = "build_composition"
+owner = "#8409"
+consumers = ["composition", "propagated"]
+note = "Forwards to perl-workspace/workspace; gates nothing locally."
+
+[[feature]]
+crate = "perl-parser"
+name = "workspace_refactor"
+role = "legacy_alias"
+owner = "#8409"
+consumers = ["cfg_gated", "propagated"]
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+name_exception = "Name asserts an in-flight refactor; #8411 owns the rename."
+note = "Default-on and widely consumed; the migration it named has landed."
+
+[[feature]]
+crate = "perl-parser-comparison"
+name = "current-upstream"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "composition"]
+
+[[feature]]
+crate = "perl-parser-comparison"
+name = "default"
+role = "build_composition"
+owner = "#8409"
+consumers = ["composition"]
+
+[[feature]]
+crate = "perl-parser-comparison"
+name = "historical"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "composition", "propagated", "required_features"]
+
+[[feature]]
+crate = "perl-parser-core"
+name = "default"
+role = "build_composition"
+owner = "#8409"
+consumers = []
+
+[[feature]]
+crate = "perl-parser-pest"
+name = "default"
+role = "build_composition"
+owner = "#8409"
+consumers = []
+
+[[feature]]
+crate = "perl-parser-pest"
+name = "serde"
+role = "legacy_alias"
+owner = "#8409"
+consumers = []
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Declared empty with no cfg consumer; the crate's serde support is unconditional."
+
+[[feature]]
+crate = "perl-position-tracking"
+name = "default"
+role = "build_composition"
+owner = "#8409"
+consumers = []
+
+[[feature]]
+crate = "perl-position-tracking"
+name = "lsp-compat"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "composition"]
+
+[[feature]]
+crate = "perl-position-tracking"
+name = "lsp-types"
+role = "build_composition"
+owner = "#8409"
+consumers = ["propagated"]
+
+[[feature]]
+crate = "perl-tdd-support"
+name = "default"
+role = "build_composition"
+owner = "#8409"
+consumers = []
+
+[[feature]]
+crate = "perl-tdd-support"
+name = "lsp-compat"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "composition", "propagated"]
+
+[[feature]]
+crate = "perl-tdd-support"
+name = "lsp-types"
+role = "build_composition"
+owner = "#8409"
+consumers = ["propagated"]
+
+[[feature]]
+crate = "perl-tdd-support"
+name = "url"
+role = "build_composition"
+owner = "#8409"
+consumers = ["propagated"]
+
+[[feature]]
+crate = "perl-uri"
+name = "default"
+role = "build_composition"
+owner = "#8409"
+consumers = []
+
+[[feature]]
+crate = "perl-workspace"
+name = "default"
+role = "build_composition"
+owner = "#8409"
+consumers = []
+
+[[feature]]
+crate = "perl-workspace"
+name = "lsp-compat"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "composition", "propagated"]
+
+[[feature]]
+crate = "perl-workspace"
+name = "lsp-types"
+role = "build_composition"
+owner = "#8409"
+consumers = ["propagated"]
+
+[[feature]]
+crate = "perl-workspace"
+name = "memory-profiling"
+role = "experimental_opt_in"
+owner = "#8409"
+consumers = ["cfg_gated", "required_features"]
+note = "Opt-in allocation instrumentation."
+
+[[feature]]
+crate = "perl-workspace"
+name = "workspace"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "propagated", "required_features"]
+
+[[feature]]
+crate = "tree-sitter-perl-c"
+name = "c-scanner"
+role = "legacy_alias"
+owner = "#8409"
+consumers = ["propagated"]
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "Default-on but inert: get_scanner_config() returns the literal \"c-scanner\" unconditionally."
+
+[[feature]]
+crate = "tree-sitter-perl-c"
+name = "default"
+role = "build_composition"
+owner = "#8409"
+consumers = ["composition"]
+
+[[feature]]
+crate = "tree-sitter-perl-c"
+name = "test-utils"
+role = "test_only"
+owner = "#8409"
+consumers = ["required_features"]
+migration = "Rename or retire under #8411; Cargo features must not encode roadmap or test status."
+note = "No cfg gate; consumed only through [[bin]] bench_parser_c required-features."
+
+[[feature]]
+crate = "tree-sitter-perl-rs"
+name = "default"
+role = "build_composition"
+owner = "#8409"
+consumers = []
+
+[[feature]]
+crate = "tree-sitter-perl-rs"
+name = "queries"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "composition"]
+note = "Enables the regex dependency for query support."
+
+[[feature]]
+crate = "xtask"
+name = "legacy"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "composition", "propagated"]
+
+[[feature]]
+crate = "xtask"
+name = "parser-tasks"
+role = "build_composition"
+owner = "#8409"
+consumers = ["cfg_gated", "composition"]
+
+[[feature]]
+crate = "xtask"
+name = "perl-parser-pest"
+role = "build_composition"
+owner = "#8409"
+consumers = ["propagated"]
+
+[[feature]]
+crate = "xtask"
+name = "tree-sitter-perl-c"
+role = "build_composition"
+owner = "#8409"
+consumers = ["propagated"]
