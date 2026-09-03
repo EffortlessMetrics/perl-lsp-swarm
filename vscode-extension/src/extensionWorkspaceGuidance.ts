@@ -226,21 +226,24 @@ async function directoryContainsPerlModule(
       return false;
     }
 
-    let entries: fs.Dirent[];
+    const entries: fs.Dirent[] = [];
     try {
-      entries = await fs.promises.readdir(current, { withFileTypes: true });
+      const directory = await fs.promises.opendir(current);
+      for await (const entry of directory) {
+        if (state.remaining <= 0) {
+          state.complete = false;
+          break;
+        }
+        state.remaining -= 1;
+        state.visited += 1;
+        entries.push(entry);
+      }
     } catch {
       state.complete = false;
       return false;
     }
 
     for (const entry of entries) {
-      if (state.remaining <= 0) {
-        state.complete = false;
-        return false;
-      }
-      state.remaining -= 1;
-      state.visited += 1;
       if (entry.isFile() && entry.name.endsWith('.pm')) {
         return true;
       }
@@ -313,8 +316,12 @@ export async function runDiscoveredIncludePathGuidance(
 
     for (const candidate of DISCOVERY_CANDIDATE_DIRS) {
       const resolved = path.resolve(folder.uri.fsPath, candidate);
+      const candidateRealPath = await realpathIfExists(resolved);
+      if (!candidateRealPath || !isWithinBasePath(rootRealPath, candidateRealPath)) {
+        continue;
+      }
       try {
-        const stat = await fs.promises.stat(resolved);
+        const stat = await fs.promises.stat(candidateRealPath);
         if (!stat.isDirectory()) {
           continue;
         }
@@ -331,7 +338,7 @@ export async function runDiscoveredIncludePathGuidance(
         continue;
       }
 
-      const scan = await directoryContainsPerlModule(resolved);
+      const scan = await directoryContainsPerlModule(candidateRealPath);
       complete = complete && scan.complete;
       if (scan.found) {
         discovered.push(candidate);
@@ -345,7 +352,15 @@ export async function runDiscoveredIncludePathGuidance(
 
     const signature = crypto
       .createHash('sha256')
-      .update(`${complete ? 'complete' : 'incomplete'}\n${discovered.slice().sort().join('\n')}`)
+      .update(
+        JSON.stringify({
+          folderUri: folder.uri.toString(),
+          rootRealPath,
+          includePathsFingerprint: includePathsFingerprint(includePaths),
+          complete,
+          discovered: discovered.slice().sort(),
+        }),
+      )
       .digest('hex');
     const cacheKey = `perl-lsp.includePathsSuggestion.${encodeURIComponent(folder.uri.toString())}`;
     if (context.globalState.get<string | undefined>(cacheKey) === signature) {
@@ -413,7 +428,26 @@ export async function runDiscoveredIncludePathGuidance(
         continue;
       }
 
-      const next = Array.from(new Set([...currentIncludePaths, ...finding.discovered]));
+      const currentDiscovered: string[] = [];
+      for (const candidate of finding.discovered) {
+        const candidateRealPath = await realpathIfExists(
+          path.resolve(currentFolder.uri.fsPath, candidate),
+        );
+        if (!candidateRealPath || !isWithinBasePath(currentRootRealPath, candidateRealPath)) {
+          stale.push(finding.folder.name);
+          continue;
+        }
+        const stat = await fs.promises.stat(candidateRealPath).catch(() => undefined);
+        if (!stat?.isDirectory()) {
+          stale.push(finding.folder.name);
+          continue;
+        }
+        currentDiscovered.push(candidate);
+      }
+      if (currentDiscovered.length === 0) {
+        continue;
+      }
+      const next = Array.from(new Set([...currentIncludePaths, ...currentDiscovered]));
       try {
         await currentConfig.update(
           'includePaths',
