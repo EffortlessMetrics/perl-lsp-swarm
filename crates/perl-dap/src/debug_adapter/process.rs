@@ -1560,7 +1560,22 @@ impl DebugAdapter {
                 return;
             }
 
-            // Kill the debuggee process.  The output reader will see EOF and
+            // Keep the termination-state lock while acquiring the session lock
+            // and killing. Replacement teardown takes these locks in the same
+            // order, so a replacement cannot advance the generation between
+            // the check above and selection of the process to kill.
+            let termination_guard =
+                lock_or_recover(&termination_state, "debug_adapter.termination_state");
+            if termination_guard.generation != session_generation {
+                tracing::debug!(
+                    session_generation,
+                    current_generation = termination_guard.generation,
+                    "Debuggee watchdog: session replaced before process kill"
+                );
+                return;
+            }
+
+            // Kill the debuggee process. The output reader will see EOF and
             // clean up session state via clear_active_session_state_for_generation.
             let killed = {
                 let Ok(mut guard) = session.lock() else {
@@ -1572,6 +1587,7 @@ impl DebugAdapter {
                     true // already gone
                 }
             };
+            drop(termination_guard);
 
             if !killed {
                 tracing::error!("Debuggee watchdog: failed to kill hung debuggee process");
