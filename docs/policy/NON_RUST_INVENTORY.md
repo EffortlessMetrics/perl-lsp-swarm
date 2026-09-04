@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12692 |
-| Rust-family files | 3951 |
-| Non-Rust files | 8741 |
-| Allowlisted | 6502 |
+| Total tracked files | 12694 |
+| Rust-family files | 3952 |
+| Non-Rust files | 8742 |
+| Allowlisted | 6503 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -21,7 +21,7 @@
 | generated | 2 |
 | production | 356 |
 | test | 2109 |
-| tooling | 681 |
+| tooling | 682 |
 | unclassified | 2239 |
 
 ## Unclassified files
@@ -6914,6 +6914,7 @@
 | `scripts/tests/test-install-ps1-archive-safety.ps1` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-ps1-checksum-required.ps1` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-ps1-product-unit-promotion.ps1` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-install-source-version-binding.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-target-selection.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-installer-archive-safety.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-installer-checksum-required.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
