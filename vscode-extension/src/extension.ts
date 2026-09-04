@@ -105,6 +105,7 @@ import { registerSupportCommandGroup } from './supportCommandGroup';
 import { reportIssueCommand } from './supportCommands';
 export { formatIssueDiagnosticInfo } from './supportCommands';
 import { ExtensionLanguageClientLifecycle } from './extensionComposition';
+import { LanguageClientLifecycleError } from './languageClientLifecycle';
 import type { LifecycleState } from './languageClientLifecycle';
 import {
   StaleDocumentReplayError,
@@ -167,6 +168,8 @@ import {
   ExtensionActivationOwner,
   _setActivationPhaseFailureInjectorForTest,
 } from './activationOwner';
+import type { ClientResourceMeasurement } from './clientMeasurement';
+import { extensionOwnedResourceMeasurements } from './extensionOwnedResourceCensus';
 
 // Compatibility projections for existing command/provider code. Lifecycle
 // ownership lives in `languageClientLifecycle`; these values are synchronized
@@ -252,6 +255,27 @@ export function getFeatureActivationMetrics(): FeatureActivationMetricsSnapshot 
 
 export function getActiveDocumentReadiness(): ActiveDocumentReadinessSnapshot {
   return activeDocumentReadiness.snapshot();
+}
+
+/**
+ * Production producer for the `extension_owned_*` counters of
+ * `vscode_client_measurement.v1` (#14678, parent #7866).
+ *
+ * Sourced from the activation ownership registry, so it reports only resources
+ * this extension registered. Counters the registry cannot distinguish, and
+ * shared extension-host memory, stay `not_proven` rather than `0`. This is a
+ * separate authority from {@link getLanguageClientStartupMetrics}, which owns
+ * startup milestone and server timing and carries no resource counts.
+ *
+ * Scope: the census is **attempt-scoped**. `extensionActivation` is replaced on
+ * each activation, so this reports the current attempt's ownership only and
+ * cannot see a resource a previous attempt failed to release. Within one
+ * attempt a failed release stays visible; detecting retention *across* a reload
+ * needs terminal censuses aggregated outside the attempt, which is part of
+ * #7866's restart/reload work, not this claim.
+ */
+export function getExtensionOwnedResourceMeasurements(): ClientResourceMeasurement[] {
+  return extensionOwnedResourceMeasurements(extensionActivation?.resourceCensus() ?? null);
 }
 
 export function markLanguageClientStartupMilestone(
@@ -468,6 +492,16 @@ export function _spawnReplacementCrashGenerationForTest(): number {
  */
 export function _setUserInitiatedStopPendingForTest(value: boolean): void {
   userInitiatedStopPending = value;
+}
+
+/**
+ * Test helper — drive the explicit restart path with an injected lifecycle so
+ * cleanup-blocked restart admission can be asserted without a command
+ * registry (#14448).
+ * @internal
+ */
+export function _restartServerForTest(context: vscode.ExtensionContext): Promise<boolean> {
+  return restartServer(context);
 }
 
 export async function syncPerlCriticConfiguration(
@@ -1250,6 +1284,7 @@ async function runExtensionActivation(
       getLanguageClientStartupMetrics,
       getFeatureActivationMetrics,
       getActiveDocumentReadiness,
+      getExtensionOwnedResourceMeasurements,
       markLanguageClientStartupMilestone,
       waitForActiveDocumentReady,
       stop: stopLanguageClientForActivationApi,
@@ -1299,6 +1334,7 @@ async function runExtensionActivation(
     getLanguageClientStartupMetrics,
     getFeatureActivationMetrics,
     getActiveDocumentReadiness,
+    getExtensionOwnedResourceMeasurements,
     markLanguageClientStartupMilestone,
     waitForActiveDocumentReady,
     stop: stopLanguageClientForActivationApi,
@@ -1927,6 +1963,26 @@ async function finalizeStartedLanguageClient(
   outputChannel.info('Perl Language Server started successfully');
 }
 
+/**
+ * Present the remediation for replacement startup blocked by incomplete
+ * client cleanup (#14448): the lifecycle refuses to construct a replacement
+ * client until the window reloads, so generic start/restart guidance would
+ * mislead the user into retrying a permanently blocked lifecycle.
+ */
+async function presentCleanupIncompleteBlockedRecovery(): Promise<void> {
+  healthWidget?.onStateChange(ClientState.Stopped);
+  const choice = await vscode.window.showErrorMessage(
+    'The previous Perl language client did not finish cleaning up, so replacement startup is blocked. Reload the window before trying again.',
+    'Reload Window',
+    'View Logs',
+  );
+  if (choice === 'Reload Window') {
+    void vscode.commands.executeCommand('workbench.action.reloadWindow');
+  } else if (choice === 'View Logs') {
+    outputChannel.show();
+  }
+}
+
 async function initializeLanguageClient(context: vscode.ExtensionContext): Promise<boolean> {
   healthWidget?.onStateChange(ClientState.Starting);
 
@@ -1953,6 +2009,14 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
   } catch (startError: unknown) {
     const msg = startError instanceof Error ? startError.message : String(startError);
     outputChannel.error(`[startup] Language client failed to start: ${msg}`);
+
+    if (
+      startError instanceof LanguageClientLifecycleError &&
+      startError.reason === 'cleanup-incomplete'
+    ) {
+      await presentCleanupIncompleteBlockedRecovery();
+      return false;
+    }
 
     if (!lifecycle.serverPath) {
       healthWidget?.onStateChange(ClientState.Stopped);
@@ -2763,11 +2827,19 @@ function getSupportedFeatureProfiles(): string[] {
   return ['auto', 'ga-lock', 'ga', 'prod', 'production', 'all'];
 }
 
-async function restartServer(_context: vscode.ExtensionContext) {
+/**
+ * Restart the language server through the authoritative lifecycle.
+ *
+ * Returns true only when restart was refused because the lifecycle's client
+ * cleanup is incomplete (#14448): that lifecycle cannot admit a replacement
+ * until the window reloads, so automatic crash recovery must not spend
+ * further retry slots on it.
+ */
+async function restartServer(_context: vscode.ExtensionContext): Promise<boolean> {
   const lifecycle = languageClientLifecycle;
   if (!lifecycle) {
     vscode.window.showWarningMessage('Perl Language Server is not initialized yet.');
-    return;
+    return false;
   }
 
   // A dormant server has nothing to restart: only a lifecycle that never
@@ -2787,7 +2859,7 @@ async function restartServer(_context: vscode.ExtensionContext) {
   ) {
     if (!serverDemand) {
       vscode.window.showWarningMessage('Perl Language Server is not initialized yet.');
-      return;
+      return false;
     }
     await serverDemand.ensureStarted('command:restart', { retry: true });
     syncLifecycleProjection();
@@ -2805,7 +2877,7 @@ async function restartServer(_context: vscode.ExtensionContext) {
             outputChannel.show();
           }
         });
-      return;
+      return false;
     }
     vscode.window
       .showInformationMessage('Perl Language Server started', 'Show Output')
@@ -2814,7 +2886,7 @@ async function restartServer(_context: vscode.ExtensionContext) {
           outputChannel.show();
         }
       });
-    return;
+    return false;
   }
 
   // Mark this as a user-driven (or auto-recovery-driven) restart so the
@@ -2828,7 +2900,7 @@ async function restartServer(_context: vscode.ExtensionContext) {
     disposeClientIntegrations();
     const started = await lifecycle.restart();
     if (!started) {
-      return;
+      return false;
     }
     languageClientStartupMetrics.markMilestone('restart');
     syncLifecycleProjection();
@@ -2843,6 +2915,7 @@ async function restartServer(_context: vscode.ExtensionContext) {
           outputChannel.show();
         }
       });
+    return false;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     outputChannel?.error(`Failed to restart perl-lsp: ${message}`);
@@ -2852,6 +2925,13 @@ async function restartServer(_context: vscode.ExtensionContext) {
     // document demand, and even an explicit health-check retry no-ops because
     // `retry` only overrides `failed`.
     serverDemand?.noteStopped();
+    if (error instanceof LanguageClientLifecycleError && error.reason === 'cleanup-incomplete') {
+      // Incomplete cleanup blocks this lifecycle until the window reloads
+      // (#14448): present that remediation instead of a bare restart failure,
+      // and report the block so automatic crash recovery stops retrying.
+      await presentCleanupIncompleteBlockedRecovery();
+      return true;
+    }
     vscode.window
       .showErrorMessage(`Failed to restart Perl Language Server: ${message}`, 'Show Output')
       .then((selection) => {
@@ -2859,6 +2939,7 @@ async function restartServer(_context: vscode.ExtensionContext) {
           outputChannel.show();
         }
       });
+    return false;
   } finally {
     userInitiatedStopPending = false;
   }
@@ -3280,10 +3361,11 @@ async function recoverFromObservedCrash(
     await settleRecoveryEpisode(decision, 'recovery_failed', null);
     return;
   }
-  // restartServer never rejects (it surfaces its own dialogs/logs and
-  // returns), so the terminal startup state is read from the lifecycle
-  // snapshot instead of a catch block.
-  await restartServer(context);
+  // restartServer surfaces its own dialogs/logs; its boolean result reports
+  // the one terminal refusal automatic recovery must not retry: a lifecycle
+  // whose client cleanup is incomplete stays blocked until the window
+  // reloads, and re-arming it would only burn the remaining retry budget.
+  const restartBlockedByIncompleteCleanup = await restartServer(context);
   // The replacement run now owns the next failed-generation identity (in
   // the unit-test harness the lifecycle controller is absent, so the
   // fallback generation advances here — after arbitration began — so that
@@ -3325,7 +3407,7 @@ async function recoverFromObservedCrash(
   // exhaustion (fail-closed: genuinely repeated failures still end at the
   // exhaustion dialog). An explicit recovery that superseded the failed
   // generation meanwhile is handled by the stale-generation guard above.
-  if (replacementSnapshot.state === 'failed') {
+  if (replacementSnapshot.state === 'failed' && !restartBlockedByIncompleteCleanup) {
     await recoverFromObservedCrash('startup_failure', replacementSnapshot.generation);
   }
 }

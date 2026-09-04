@@ -494,6 +494,7 @@ fn run_listening_fake_peer(
                             success: true,
                             body: None,
                             message: None,
+                            cause: None,
                         });
                     send(&mut write, &response);
                 }

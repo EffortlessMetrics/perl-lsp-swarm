@@ -432,6 +432,9 @@ function childReceipt(overrides = {}, environmentOverrides = {}) {
       server_source_revision: CHILD_SUBJECT.expectedServerSourceSha,
       vsix_sha256: CHILD_SUBJECT.expectedVsixSha256,
       requested_vscode_version: CHILD_SUBJECT.expectedVscodeVersion,
+      // The launched runtime identity the extension host actually observed;
+      // the requested selector alone never proves the host.
+      vscode_version: '1.130.2',
       extension_id: 'EffortlessMetrics.perl-lsp-rs',
       ...environmentOverrides,
     },
@@ -487,6 +490,39 @@ void test('a child receipt from another matrix leg is rejected', () => {
   const result = validateChild(childReceipt({}, { requested_vscode_version: '1.125.0' }));
   assert.equal(result.ok, false);
   assert.match(result.violations.join('; '), /VS Code version .* is not this matrix leg/);
+});
+
+void test('a child receipt without the launched runtime version is rejected', () => {
+  const result = validateChild(childReceipt({}, { vscode_version: undefined }));
+  assert.equal(result.ok, false);
+  assert.match(result.violations.join('; '), /launched VS Code runtime version/);
+});
+
+void test('a concrete leg rejects a different launched runtime version', () => {
+  const concrete = {
+    ...CHILD_SUBJECT,
+    expectedVscodeVersion: '1.125.0',
+    receiptFile: '/fixture/first_hour_vscode_receipt.json',
+    exists: () => true,
+  };
+  const mismatched = validateChildSmokeReceipt({
+    ...concrete,
+    readFile: () =>
+      JSON.stringify(
+        childReceipt({}, { requested_vscode_version: '1.125.0', vscode_version: '1.126.0' }),
+      ),
+  });
+  assert.equal(mismatched.ok, false);
+  assert.match(mismatched.violations.join('; '), /launched VS Code .* requested the concrete/);
+
+  const matched = validateChildSmokeReceipt({
+    ...concrete,
+    readFile: () =>
+      JSON.stringify(
+        childReceipt({}, { requested_vscode_version: '1.125.0', vscode_version: '1.125.0' }),
+      ),
+  });
+  assert.equal(matched.ok, true);
 });
 
 void test('a non-terminal or failing child receipt is rejected', () => {

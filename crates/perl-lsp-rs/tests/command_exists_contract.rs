@@ -33,7 +33,7 @@ const CHILD_MODE_ENV: &str = "PERL_LSP_COMMAND_EXISTS_CHILD";
 const CHILD_COMMAND_ENV: &str = "PERL_LSP_COMMAND_EXISTS_NAME";
 const CHILD_EXPECTED_ENV: &str = "PERL_LSP_COMMAND_EXISTS_EXPECTED";
 const CHILD_FILTER: &str = "command_exists_contract_child";
-const CHILD_PROBE_TIMEOUT: Duration = Duration::from_secs(120);
+const CHILD_PROBE_TIMEOUT: Duration = Duration::from_mins(2);
 const CHILD_PROBE_POLL: Duration = Duration::from_millis(20);
 
 fn command_candidate_name(command: &str) -> String {
