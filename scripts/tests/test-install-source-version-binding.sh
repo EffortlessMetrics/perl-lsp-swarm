@@ -133,6 +133,10 @@ run_source_build() {
     local resolved_version="$2"    # what the shim-staged binary reports
     local mode="${3:-ok}"          # ok | fail-version | fail-build
     local identity_prefix="${4:-perllsp}"
+    # For latest, the value resolve_version would have left in VERSION_NUM
+    # from the GitHub release; pass a stale value to prove the post-build
+    # completion subject is the staged binary's version, not that value.
+    local stale_version_num="${5:-}"
 
     : > "$FAKE_CARGO_LOG"
     : > "$FAKE_CARGO_INSTALL_LOG"
@@ -149,7 +153,7 @@ run_source_build() {
         VERSION="$requested_version"
         case "$VERSION" in
             v*) VERSION_NUM="${VERSION#v}" ;;
-            latest) VERSION_NUM="" ;;
+            latest) VERSION_NUM="$stale_version_num" ;;
             *) VERSION_NUM="$VERSION" ;;
         esac
         TMPDIR="$HARNESS_TMP/stage"
@@ -161,6 +165,9 @@ run_source_build() {
         # shellcheck disable=SC1090
         . "$CANONICAL_INSTALLER"
         build_from_source
+        # Surface the completion-subject variable so callers can prove what
+        # the "Done. perllsp <VERSION_NUM> installed" line would claim.
+        printf 'VERSION_NUM_AFTER=%s\n' "$VERSION_NUM"
     )
 }
 
@@ -309,6 +316,17 @@ if [[ "$combined_latest_output" == *"resolved registry subject: perllsp 0.12.0-a
 else
     fail "latest accepts and surfaces a combined prerelease/build identity" \
         "combined identity was not surfaced: $combined_latest_output"
+fi
+
+# The completion line claims VERSION_NUM; for an explicit latest request that
+# claim must be the staged binary's version, not the GitHub-release value
+# resolve_version left behind (0.12.0 here while crates.io staged 0.99.0).
+rebind_output="$(run_source_build latest 0.99.0 ok perllsp 0.12.0 2>&1)"
+if [[ "$rebind_output" == *"VERSION_NUM_AFTER=0.99.0"* ]]; then
+    pass "explicit latest rebinds VERSION_NUM to the staged binary version"
+else
+    fail "explicit latest rebinds VERSION_NUM to the staged binary version" \
+        "post-build VERSION_NUM was not the resolved subject: $rebind_output"
 fi
 
 # ---------------------------------------------------------------------------

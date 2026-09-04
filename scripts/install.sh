@@ -1115,6 +1115,11 @@ verify_source_install_identity() {
     case "$VERSION" in
         latest|"")
             info "resolved registry subject: ${BIN_NAME} ${_resolved_ver}"
+            # Rebind VERSION_NUM to the verified staged identity: the
+            # completion line reports VERSION_NUM, and resolve_version filled
+            # it from the GitHub release, which can name a different subject
+            # than the crates.io build that was actually staged.
+            VERSION_NUM="$_resolved_ver"
             ;;
         *)
             if [ "$_resolved_ver" != "$VERSION_NUM" ]; then
