@@ -3,17 +3,20 @@
 ## Purpose
 
 This repository uses a shift-left, review-forward, orchestration-heavy development
-loop. Capable roots govern goals and claims while skill-consuming agents perform
-bounded investigation, proof, mutation, repair, and review.
+loop. The main/root provider thread governs goals and logical claim frames while bounded
+researcher, builder, reviewer, fork, worker, workflow, or Team contexts perform useful
+investigation, proof, mutation, repair, and review.
 
-Useful passes are controls. Permanent personas, lifecycle labels, tracked frontiers,
-agent liveness, completion hooks, exact-head review receipts, and stage files are not.
+Useful passes are controls. Permanent personas, subordinate claim orchestrators,
+lifecycle labels, tracked frontiers, agent liveness, completion hooks, exact-head review
+receipts, and stage files are not.
 
 ```text
 current durable artifact
 → selected provider-native route
+→ root-held claim frame
 → bounded execution and challenge
-→ joined evidence or candidate delta
+→ root joins evidence or candidate delta
 → useful GitHub/repository update
 → next named route
 ```
@@ -42,66 +45,119 @@ Codex
 
 This document states shared invariants. It is not the runtime router.
 
-## Durable graph and ephemeral executor graph
+## Durable graph and ephemeral execution
 
 Durable nodes include goals, issues, accepted contracts, proofs, candidates, findings,
 decisions, reviews, checks, merges, and residual claims.
 
-Ephemeral nodes include campaign/lane/worker contexts, subagents, worktrees, task
-lists, frontiers, wake events, retries, provider/model choices, raw logs, and
+Ephemeral nodes include root claim-frame ordering, workers, subagents, forks, Teams,
+worktrees, task lists, wake events, retries, provider/model choices, raw logs, and
 provisional reasoning.
 
 Encode the work, not the workers. Persist useful conclusions through their owning
-issue, PR, review, check, merge, or contract. Do not persist the executor topology.
+issue, PR, review, check, merge, or contract. Do not persist executor topology.
 
-## Hierarchical orchestration
+## Root orchestration
 
-### Campaign root
-
-Owns the selected durable outcome:
+The main/root thread is the accountable orchestrator across both goal and claim scopes.
+It owns:
 
 - goal source and current interpretation;
 - acceptance predicates and required claims;
+- selection and ordering of claims;
 - cross-claim dependencies and contradictions;
-- runtime-local claim frontier and wake events;
-- evidence joins, merge judgment, and goal reconciliation.
+- runtime-local claim frames and wake events;
+- evidence joins and finding disposition;
+- candidate writer allocation;
+- review sufficiency, integration judgment, and reconciliation.
 
-Campaign-root leaf execution is exceptional because disposable work permanently
-occupies the context needed for later decisions.
+A claim/lane is a **logical frame retained by the root**:
 
-### Lane root
+```text
+claim
+acceptance predicate
+durable subject
+current candidate / writer
+current route or missing judgment
+proof and review state / limitations
+external wait
+wake event
+```
 
-Owns one coherent acceptance-and-rollback claim through `deliver-pr`:
+The root may switch among these frames. A claim reaching a GitHub-owned wait remains
+`IN_FLIGHT` without a live representative. The frame is reconstructed from durable
+artifacts after compaction or replacement.
 
-- issue/contract and semantic owner;
-- production consumers and proof obligations;
-- candidate/writer;
-- findings, review, integration, and closeout.
+A substantial claim does not normally create a subordinate orchestrator. The root keeps
+orchestration and delegates bounded programmes.
 
-A lane root may orchestrate workers within the claim. Tiny claim-local work may remain
-with the lane root or writer when delegation costs more than the context.
+## Bounded programme contexts
 
-### Worker, writer, reviewer
+### Researcher / read-only worker
 
-- workers answer bounded read-only questions;
-- one writer mutates the current candidate;
-- reviewers challenge proof/candidate/production paths through differentiated sources,
-  oracles, methods, environments, threat models, or attention surfaces.
+Use for source ownership, archaeology, external truth, CI/log triage, broad inventories,
+currentness checks, or other high-output-to-answer work.
 
-A whole-flow `deliver-pr` child is a lane root. Leaf recursion requires explicit
-claim-local orchestration authority.
+### Builder / writer
+
+Use for one current candidate or proof mutation programme. One writer owns a candidate
+branch/worktree at a time.
+
+### Reviewer
+
+Use for one fixed subject and a differentiated review programme. Reviewers change the
+evidence surface through source/oracle/method/threat/environment/attention, not merely
+through identity.
+
+### Direct root work
+
+Use for tiny or tightly coupled decisions where delegation changes no evidence surface
+and briefing/join cost exceeds its value.
+
+### Provider-native forks, nested agents, workflows, and Teams
+
+These are physical execution techniques. Use them when inherited context, dynamic task
+readiness, different tools, or lateral communication materially improves a bounded
+programme. They do not acquire logical claim-orchestration authority and are not a
+required repository topology.
+
+## Programme continuity
+
+A programme may span several ordered atomic skills while one context remains useful:
+
+```text
+researcher
+→ research-issue / external truth / related evidence
+
+builder
+→ spec-to-test / build-from-proof / improve-test-suite /
+  simplify-candidate / affected repair
+
+reviewer
+→ issue / plan / proof / candidate lenses over one fixed subject
+```
+
+Do not fork once per skill when the same subject and artifact understanding remain
+load-bearing. Atomic skills change attention, not identity.
+
+Conversely, use a fresh context when a different source, oracle, threat model,
+environment, tool boundary, or independence property is the point.
 
 ## Route discipline
 
-At the campaign/lane boundary, name the route and then run it:
+The root names the route and then runs it:
 
 ```text
 deliver-goal
-→ deliver-pr(#123)
+→ select root-held claim frame
+→ deliver-pr
 → orchestrate-work
-→ writer: build-candidate
-→ reviewer: review-tests
-→ lane root: finish-pr
+   ├── researcher programme(s), if useful
+   ├── one writer / build-candidate programme
+   └── reviewer programme(s)
+→ root joins evidence
+→ finish-pr
+→ return to deliver-goal / caller
 ```
 
 Children receive the parent route, exact durable subject, selected skill, established
@@ -109,25 +165,27 @@ facts, authority, read/write boundary, falsifiers, sufficient return, backward r
 stop conditions, and non-goals.
 
 Do not give children an invented lifecycle when repository skills already define the
-route.
+method. Do not grant generic claim-orchestration authority merely because a task is
+substantial.
 
-## Runtime-local frontier
+## Runtime-local claim frames
 
-A campaign root may keep an in-context table of claim, goal predicate, lane context,
-durable subject, current judgment, next material action, external wait, and wake event.
+The root may keep an in-context table of claim, goal predicate, durable subject,
+candidate/writer, current judgment, next material action, external wait, and wake event.
 
 This table is not committed or posted. Reconstruct it from current issues, PRs,
 submitted reviews, checks, merges, and repository facts after compaction/replacement.
 
-When GitHub owns the next transition, return `IN_FLIGHT`, advance another independent
-claim, and revisit only when its named wake event occurs. Do not poll unchanged state.
+When GitHub owns the next transition, mark the frame `IN_FLIGHT`, advance another
+independent claim, and revisit only when its named wake event occurs. Do not poll
+unchanged state or keep an idle agent alive to symbolize the wait.
 
 ## Orchestration economics
 
 Delegate when expected evidence gain, root-context preservation,
 dependency-unlocking value, elapsed-time gain, changed detection surface, or avoided CI
-cost exceeds cold-start, briefing, duplicated research, resource contention, join,
-and correlated-failure costs.
+cost exceeds cold-start, briefing, duplicated research, resource contention, join, and
+correlated-failure costs.
 
 High-output-to-answer work is normally delegated: CI/log triage, corpus/repository
 sweeps, dependency/API audits, external-source collection, failure bisection, broad
@@ -143,11 +201,14 @@ contradiction/uncertainty, what is/is not established, affected claim/proof/auth
 edge, recommended route, `NOT_PROVEN` boundary, and stable overflow references.
 
 Writers add candidate identity, changed behavior/seams, proof run/not run, repaired
-findings, limitations, and typed flow result.
+findings, limitations, and typed result.
 
 The root joins evidence rather than votes. Repeated claims from one source remain one
 evidence path. Builder self-report is not independent proof. Contradictions remain
 visible until resolved.
+
+A dispatched review dimension that never returns remains `NOT_PROVEN`, not
+examined-and-clean.
 
 ## GitHub-native durable updates
 
@@ -161,26 +222,27 @@ Use GitHub when information is useful later:
 - merge/closure effect and residual work.
 
 When another context benefits and the intended route is not already obvious, one
-compact route declaration may record the parent goal, claim, entry flow, current named
+compact route declaration may record parent goal, claim, entry flow, current named
 transition, reason, durable subject, and wake event. Update it only when the material
 route changes. It is a resumability aid, not a stage record or runtime state mirror.
 
-Do not write agent assignments/liveness, frontier rows, skill completion, polling,
-transcripts, provisional reasoning, or duplicate unchanged summaries.
+Do not write root claim-frame ordering, agent assignments/liveness, skill completion,
+polling, transcripts, provisional reasoning, or duplicate unchanged summaries.
 
 ## Public flows
 
-| Flow | Normal owner and outcome |
+| Flow | Normal root responsibility and outcome |
 | --- | --- |
-| `deliver-goal` | Campaign root advances a durable outcome through claim lanes |
-| `deliver-pr` | Lane root carries one claim and current candidate |
-| `prepare-issue` | Lane root orchestrates problem/owner/scope/plan research |
-| `prepare-proof` | Lane root orchestrates one proof writer plus useful adversaries |
-| `build-candidate` | Lane root orchestrates one candidate writer plus hardening/review |
-| `finish-pr` | Lane root converges the selected PR through review, integration, merge, closeout |
+| `deliver-goal` | manage the durable outcome, acceptance predicates, and root-held claim frames |
+| `deliver-pr` | focus on one claim frame and carry it through its current SDLC route |
+| `prepare-issue` | settle problem/owner/scope/plan with bounded research/review programmes as useful |
+| `prepare-proof` | establish/challenge discriminating proof with one proof mutation owner where needed |
+| `build-candidate` | drive one candidate writer plus hardening/simplification/challenge programmes |
+| `finish-pr` | converge the selected PR through repair, review, integration, merge, closeout |
 
-Atomic skills usually run in worker/reviewer contexts; public flows usually run in
-campaign/lane roots. This is a default topology, not a fixed persona chain.
+Public flows are root-facing. Atomic skills may run in the root or in bounded
+researcher/writer/reviewer programmes. This is a semantic method, not a fixed physical
+executor graph.
 
 ## Claim independence and optimistic concurrency
 
@@ -221,7 +283,7 @@ claim honesty, authority/complexity, risk/rollback, and remaining uncertainty.
 ```text
 finish-pr
 → final mutable challenge
-→ orchestrated differentiated review
+→ root selects differentiated review programmes
 → root joins and submits cumulative review-pr
 → REVIEW_CURRENT
 → verify-live-ci
@@ -230,8 +292,8 @@ finish-pr
 ```
 
 Green CI, mergeability, zero threads, bot approval, or author self-certification cannot
-create `REVIEW_CURRENT`. Merge requires both current review and current integration
-evidence.
+create `REVIEW_CURRENT`. Merge requires both current substantive review and current
+integration evidence.
 
 Review is semantic and cumulative. Refresh only findings/proof/dimensions materially
 changed by repair, claim/authority/risk changes, or actual conflict/combined-tree

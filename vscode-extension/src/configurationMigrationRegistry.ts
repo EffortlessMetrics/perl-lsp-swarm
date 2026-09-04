@@ -1,3 +1,5 @@
+import { parseStrictSemver, type ParsedSemver } from './strictSemver';
+
 export type MigrationDisposition =
   | 'unchanged'
   | 'renamed_compatible'
@@ -18,6 +20,96 @@ export type MigrationScope =
 
 export type MigrationSecurityClass = 'ordinary' | 'machine_sensitive' | 'process_execution';
 
+function isMigrationDisposition(value: unknown): value is MigrationDisposition {
+  switch (value) {
+    case 'unchanged':
+    case 'renamed_compatible':
+    case 'renamed_requires_user_action':
+    case 'deprecated_read_only':
+    case 'removed_inert':
+    case 'replaced_by_standard_vscode_setting':
+    case 'replaced_by_server_or_project_config':
+    case 'unsupported_legacy_value':
+      return true;
+    default:
+      return false;
+  }
+}
+
+function isMigrationScope(value: unknown): value is MigrationScope {
+  switch (value) {
+    case 'user':
+    case 'workspace':
+    case 'workspace-folder':
+    case 'resource':
+    case 'machine':
+    case 'machine-overridable':
+      return true;
+    default:
+      return false;
+  }
+}
+
+function isConflictPolicy(
+  value: unknown,
+): value is ConfigurationMigrationRow['old_plus_new_conflict_policy'] {
+  switch (value) {
+    case 'current_wins':
+    case 'legacy_only':
+    case 'action_required':
+    case 'not_applicable':
+      return true;
+    default:
+      return false;
+  }
+}
+
+function isMigrationSecurityClass(value: unknown): value is MigrationSecurityClass {
+  switch (value) {
+    case 'ordinary':
+    case 'machine_sensitive':
+    case 'process_execution':
+      return true;
+    default:
+      return false;
+  }
+}
+
+export type CompatibilityWindow =
+  | { kind: 'no_expiry' }
+  | {
+      kind: 'through_extension_version';
+      version: string;
+      post_expiry_disposition: 'action_required' | 'invalid' | 'inert';
+    }
+  | {
+      kind: 'removed_in_extension_version';
+      version: string;
+      post_expiry_disposition: 'action_required' | 'invalid' | 'inert';
+    };
+
+export type MigrationVersion = ParsedSemver;
+
+/** Parse the exact SemVer subset accepted by both registry validation and runtime expiry. */
+export function parseMigrationVersion(value: unknown): MigrationVersion | null {
+  return parseStrictSemver(value);
+}
+
+/** Keep JSON-loaded or future registry variants from becoming runtime policy by accident. */
+export function isValidCompatibilityWindow(value: unknown): value is CompatibilityWindow {
+  if (typeof value !== 'object' || value === null || !('kind' in value)) return false;
+  const window = value as { kind?: unknown; version?: unknown; post_expiry_disposition?: unknown };
+  if (window.kind === 'no_expiry') return true;
+  return (
+    (window.kind === 'through_extension_version' ||
+      window.kind === 'removed_in_extension_version') &&
+    parseMigrationVersion(window.version) !== null &&
+    (window.post_expiry_disposition === 'action_required' ||
+      window.post_expiry_disposition === 'invalid' ||
+      window.post_expiry_disposition === 'inert')
+  );
+}
+
 export interface ConfigurationMigrationRow {
   migration_id: string;
   old_key: string;
@@ -37,15 +129,59 @@ export interface ConfigurationMigrationRow {
     | 'not_applicable';
   security_trust_class: MigrationSecurityClass;
   warning_reason_code: string;
-  expiry_version_or_issue: string;
+  compatibility_window: CompatibilityWindow;
+  expiry_owner_issue: number | null;
   installed_proof_requirement: string;
 }
 
 export interface ConfigurationMigrationRegistry {
-  schema_version: 'vscode_configuration_migration.v1';
+  schema_version: 'vscode_configuration_migration.v2';
   target_release: string;
   source_public_release: string;
   rows: ConfigurationMigrationRow[];
+}
+
+/** Reject missing or future registry envelopes before their contents become policy. */
+export function isSupportedMigrationRegistry(
+  value: unknown,
+): value is ConfigurationMigrationRegistry {
+  if (typeof value !== 'object' || value === null) return false;
+  const registry = value as {
+    schema_version?: unknown;
+    target_release?: unknown;
+    source_public_release?: unknown;
+    rows?: unknown;
+  };
+  return (
+    registry.schema_version === 'vscode_configuration_migration.v2' &&
+    parseMigrationVersion(registry.target_release) !== null &&
+    parseMigrationVersion(registry.source_public_release) !== null &&
+    Array.isArray(registry.rows)
+  );
+}
+
+function isMigrationRowShape(value: unknown): value is ConfigurationMigrationRow {
+  if (typeof value !== 'object' || value === null) return false;
+  const row = value as Record<string, unknown>;
+  return (
+    typeof row.migration_id === 'string' &&
+    typeof row.old_key === 'string' &&
+    typeof row.old_value_shape === 'string' &&
+    typeof row.introduced_version === 'string' &&
+    typeof row.last_supported_version === 'string' &&
+    (typeof row.new_key_or_authority === 'string' || row.new_key_or_authority === null) &&
+    isMigrationScope(row.old_scope) &&
+    (isMigrationScope(row.new_scope) || row.new_scope === null) &&
+    isMigrationDisposition(row.migration_disposition) &&
+    typeof row.automatic_read_compatibility === 'boolean' &&
+    typeof row.explicit_write_allowed === 'boolean' &&
+    isConflictPolicy(row.old_plus_new_conflict_policy) &&
+    isMigrationSecurityClass(row.security_trust_class) &&
+    typeof row.warning_reason_code === 'string' &&
+    'compatibility_window' in row &&
+    (typeof row.expiry_owner_issue === 'number' || row.expiry_owner_issue === null) &&
+    typeof row.installed_proof_requirement === 'string'
+  );
 }
 
 /// Dispositions under which a setting keeps no configuration authority at all,
@@ -65,7 +201,7 @@ const SCOPE_RANK: Record<MigrationScope, number> = {
 };
 
 export const V018_CONFIGURATION_MIGRATIONS: ConfigurationMigrationRegistry = {
-  schema_version: 'vscode_configuration_migration.v1',
+  schema_version: 'vscode_configuration_migration.v2',
   target_release: '0.18.0',
   source_public_release: '0.17.0',
   rows: [
@@ -84,7 +220,8 @@ export const V018_CONFIGURATION_MIGRATIONS: ConfigurationMigrationRegistry = {
       old_plus_new_conflict_policy: 'not_applicable',
       security_trust_class: 'process_execution',
       warning_reason_code: 'legacy_mcp_passthrough_removed',
-      expiry_version_or_issue: '#7119',
+      compatibility_window: { kind: 'no_expiry' },
+      expiry_owner_issue: 7119,
       installed_proof_requirement: '#7841',
     },
   ],
@@ -105,8 +242,19 @@ export function normalizedMigrationRegistry(
   };
 }
 
+function canonicalizeJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeJson);
+  if (typeof value !== 'object' || value === null) return value;
+
+  const canonical: Record<string, unknown> = {};
+  for (const key of Object.keys(value).sort()) {
+    canonical[key] = canonicalizeJson((value as Record<string, unknown>)[key]);
+  }
+  return canonical;
+}
+
 export function serializeMigrationRegistry(registry: ConfigurationMigrationRegistry): string {
-  return `${JSON.stringify(normalizedMigrationRegistry(registry), null, 2)}\n`;
+  return `${JSON.stringify(canonicalizeJson(normalizedMigrationRegistry(registry)), null, 2)}\n`;
 }
 
 export function findMigrationRows(
@@ -121,7 +269,18 @@ export function validateMigrationRegistry(registry: ConfigurationMigrationRegist
   const migrationIds = new Set<string>();
   const exactHistoricalSubjects = new Set<string>();
 
-  for (const row of registry.rows) {
+  const candidate: unknown = registry;
+  if (!isSupportedMigrationRegistry(candidate)) {
+    errors.push('migration registry envelope is missing or unsupported');
+    return errors;
+  }
+
+  for (const candidateRow of registry.rows as unknown[]) {
+    if (!isMigrationRowShape(candidateRow)) {
+      errors.push('migration row is missing required fields');
+      continue;
+    }
+    const row = candidateRow;
     if (migrationIds.has(row.migration_id)) {
       errors.push(`duplicate migration_id: ${row.migration_id}`);
     }
@@ -172,8 +331,42 @@ export function validateMigrationRegistry(registry: ConfigurationMigrationRegist
     if (row.warning_reason_code.length === 0) {
       errors.push(`migration must define warning_reason_code: ${row.migration_id}`);
     }
-    if (row.expiry_version_or_issue.length === 0) {
-      errors.push(`migration must define expiry owner: ${row.migration_id}`);
+    if (
+      row.expiry_owner_issue !== null &&
+      (!Number.isSafeInteger(row.expiry_owner_issue) || row.expiry_owner_issue <= 0)
+    ) {
+      errors.push(`migration expiry owner must be a positive issue number: ${row.migration_id}`);
+    }
+    const compatibilityWindow: unknown = row.compatibility_window;
+    if (!isValidCompatibilityWindow(compatibilityWindow)) {
+      if (
+        typeof compatibilityWindow === 'object' &&
+        compatibilityWindow !== null &&
+        'kind' in compatibilityWindow &&
+        compatibilityWindow.kind !== 'no_expiry' &&
+        'version' in compatibilityWindow &&
+        parseMigrationVersion(compatibilityWindow.version) === null
+      ) {
+        errors.push(`migration expiry version is not valid SemVer: ${row.migration_id}`);
+      } else {
+        errors.push(`migration compatibility window is not valid: ${row.migration_id}`);
+      }
+    }
+    if (
+      isValidCompatibilityWindow(row.compatibility_window) &&
+      row.migration_disposition === 'removed_inert' &&
+      row.compatibility_window.kind !== 'no_expiry' &&
+      row.compatibility_window.post_expiry_disposition !== 'inert'
+    ) {
+      errors.push(`removed_inert migration must remain inert after expiry: ${row.migration_id}`);
+    }
+    if (
+      isValidCompatibilityWindow(row.compatibility_window) &&
+      row.migration_disposition === 'unsupported_legacy_value' &&
+      row.compatibility_window.kind !== 'no_expiry' &&
+      row.compatibility_window.post_expiry_disposition !== 'invalid'
+    ) {
+      errors.push(`unsupported migration must remain invalid after expiry: ${row.migration_id}`);
     }
     if (row.installed_proof_requirement.length === 0) {
       errors.push(`migration must define installed proof requirement: ${row.migration_id}`);

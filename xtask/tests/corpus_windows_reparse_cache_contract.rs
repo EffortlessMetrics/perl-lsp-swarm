@@ -1,10 +1,15 @@
 //! Static topology contract for the Windows reparse proof workflow.
 //!
 //! This proves the declared YAML structure, pinned action identities, trigger and
-//! permission shape, cache inputs/order, and non-vacuous command text. It does
-//! not prove runtime cache restore/save provenance, discovery of arbitrary
-//! shell-local writers, or trusted runner `cargo`/`PATH` resolution; those are
-//! NOT_PROVEN here and require runtime or host evidence.
+//! permission shape, cache inputs/order, non-vacuous command text, and rejection
+//! of the modeled selected-test mutation channels: direct assignment, element or
+//! array rewrites, unset/read/mapfile/declaration forms, `printf -v`, eval, and
+//! nameref or variable-name indirection. It remains a literal static oracle, not
+//! a shell parser: it does not prove runtime cache restore/save provenance,
+//! discovery of arbitrary unseen shell or local cache writers, obfuscated name
+//! construction beyond the named indirection forms, or trusted runner
+//! `cargo`/`PATH` resolution; those are NOT_PROVEN here and require runtime or
+//! host evidence.
 
 use std::{collections::BTreeSet, fs, path::PathBuf};
 
@@ -414,6 +419,24 @@ fn validate_workflow(source: &str) -> Result<()> {
         "topology proof must not clear its selected test population"
     );
     let after_selected_declaration = &topology_raw[selected_end + 2..];
+    // Bash can only retarget an array through eval, a nameref declaration, or a
+    // variable holding the array name; reject those indirection channels in the
+    // whole topology script (whitespace-normalized so flag spacing cannot hide
+    // them). Obfuscated name construction beyond these named forms remains a
+    // static-oracle boundary, not a parsed proof.
+    ensure!(
+        !topology_raw.lines().map(str::trim).any(|line| {
+            let line = line.to_ascii_lowercase();
+            let flat = normalized(&line);
+            line.contains("eval")
+                || flat.contains("declare -n")
+                || flat.contains("typeset -n")
+                || line.contains("=selected_tests")
+                || line.contains("=\"selected_tests\"")
+                || line.contains("='selected_tests'")
+        }),
+        "topology proof must not alias, eval, or indirectly address its selected tests"
+    );
     ensure!(
         !after_selected_declaration.lines().map(str::trim).any(|line| {
             let line = line.to_ascii_lowercase();
@@ -429,6 +452,7 @@ fn validate_workflow(source: &str) -> Result<()> {
                 || line.contains("declare -a selected_tests")
                 || line.contains("typeset selected_tests")
                 || line.contains("typeset -a selected_tests")
+                || line.contains("printf -v")
                 || (line.contains("mapfile") || line.contains("readarray"))
                     && line.contains("selected_tests")
                 || line.contains("read -a selected_tests")
@@ -675,6 +699,38 @@ fn static_contract_rejects_structural_proof_and_trigger_mutations() -> Result<()
         (
             "          )\n\n          test_list=\"$(mktemp)\"",
             "          )\n          IFS= read -ra selected_tests <<< \"\"\n\n          test_list=\"$(mktemp)\"",
+        ),
+        (
+            "          )\n\n          test_list=\"$(mktemp)\"",
+            "          )\n          array_name=selected_tests\n          eval \"${array_name}=(api::topology::tests::symlinked_entries_fail_closed)\"\n\n          test_list=\"$(mktemp)\"",
+        ),
+        (
+            "          )\n\n          test_list=\"$(mktemp)\"",
+            "          )\n          declare -n alias=selected_tests\n          alias=(api::topology::tests::symlinked_entries_fail_closed)\n\n          test_list=\"$(mktemp)\"",
+        ),
+        (
+            "          )\n\n          test_list=\"$(mktemp)\"",
+            "          )\n          typeset -n alias=selected_tests\n          alias=()\n\n          test_list=\"$(mktemp)\"",
+        ),
+        (
+            "          )\n\n          test_list=\"$(mktemp)\"",
+            "          )\n          declare -- selected_tests=(api::topology::tests::symlinked_entries_fail_closed)\n\n          test_list=\"$(mktemp)\"",
+        ),
+        (
+            "          )\n\n          test_list=\"$(mktemp)\"",
+            "          )\n          typeset -- selected_tests=(api::topology::tests::symlinked_entries_fail_closed)\n\n          test_list=\"$(mktemp)\"",
+        ),
+        (
+            "          )\n\n          test_list=\"$(mktemp)\"",
+            "          )\n          printf -v selected_tests \"%s\" \"api::topology::tests::symlinked_entries_fail_closed\"\n\n          test_list=\"$(mktemp)\"",
+        ),
+        (
+            "          )\n\n          test_list=\"$(mktemp)\"",
+            "          )\n          array_name=selected_tests\n          unset -v \"$array_name\"\n\n          test_list=\"$(mktemp)\"",
+        ),
+        (
+            TOPOLOGY_SHELL_SOURCE_ANCHOR,
+            "        shell: bash\n        run: |\n          set -euo pipefail\n          declare  -n  alias=selected_tests\n\n          selected_tests=(",
         ),
         (TOPOLOGY_CARDINALITY_GUARD, ""),
         (

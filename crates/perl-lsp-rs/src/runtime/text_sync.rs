@@ -148,6 +148,10 @@ impl LspServer {
                     &normalized_uri,
                     &guard_state.generation,
                     guard_state.current_generation(),
+                    self.workspace_identity_generation.load(Ordering::SeqCst),
+                )
+                .with_folder_config_generation(
+                    self.project_config_generation_for_uri(&normalized_uri),
                 );
                 {
                     #[cfg(feature = "workspace")]
@@ -198,6 +202,10 @@ impl LspServer {
                     &normalized_uri,
                     &guard_state.generation,
                     guard_state.current_generation(),
+                    self.workspace_identity_generation.load(Ordering::SeqCst),
+                )
+                .with_folder_config_generation(
+                    self.project_config_generation_for_uri(&normalized_uri),
                 );
                 {
                     #[cfg(feature = "workspace")]
@@ -244,6 +252,10 @@ impl LspServer {
                     &normalized_uri,
                     &guard_state.generation,
                     guard_state.current_generation(),
+                    self.workspace_identity_generation.load(Ordering::SeqCst),
+                )
+                .with_folder_config_generation(
+                    self.project_config_generation_for_uri(&normalized_uri),
                 );
                 {
                     #[cfg(feature = "workspace")]
@@ -412,6 +424,14 @@ impl LspServer {
                 acceptance_class,
                 None,
             );
+
+            // Single-file mode: this cold didOpen path is the only production
+            // moment that can populate the retained single-file project
+            // authority (the initialize-time pass runs before any document
+            // exists). Refresh it before the first publish so the documented
+            // `[perl].version` PL900 fallback reaches the opened document
+            // (#13195 review).
+            self.refresh_single_file_project_config_if_unowned();
 
             if let Some(ref ast) = ast_arc {
                 self.commit_document_symbols_from_ast(&symbol_identity, ast, text);
@@ -621,7 +641,7 @@ impl LspServer {
             // still replacing the buffer. In that case every stream for the URI
             // captured stale text, including same-version sessions, and must be
             // cancelled. Ordinary versioned changes retain the older-only policy.
-            for key in self.uri_key_variants(uri) {
+            for key in Self::uri_key_variants(uri) {
                 if let Some(version) = incoming_version_i64 {
                     if allow_same_version {
                         self.stream_sessions().cancel_for_uri(&key);
@@ -785,6 +805,10 @@ impl LspServer {
                         &normalized_uri,
                         &doc_state.generation,
                         doc_state.current_generation(),
+                        self.workspace_identity_generation.load(Ordering::SeqCst),
+                    )
+                    .with_folder_config_generation(
+                        self.project_config_generation_for_uri(&normalized_uri),
                     );
                     documents.insert(normalized_uri.clone(), doc_state);
                     // Guarded no-parse document: terminal readiness state (#11675).
@@ -837,6 +861,10 @@ impl LspServer {
                         &normalized_uri,
                         &doc_state.generation,
                         doc_state.current_generation(),
+                        self.workspace_identity_generation.load(Ordering::SeqCst),
+                    )
+                    .with_folder_config_generation(
+                        self.project_config_generation_for_uri(&normalized_uri),
                     );
                     documents.insert(normalized_uri.clone(), doc_state);
                     // Guarded no-parse document: terminal readiness state (#11675).
@@ -885,6 +913,10 @@ impl LspServer {
                         &normalized_uri,
                         &doc_state.generation,
                         doc_state.current_generation(),
+                        self.workspace_identity_generation.load(Ordering::SeqCst),
+                    )
+                    .with_folder_config_generation(
+                        self.project_config_generation_for_uri(&normalized_uri),
                     );
                     documents.insert(normalized_uri.clone(), doc_state);
                     // Guarded no-parse document: terminal readiness state (#11675).
