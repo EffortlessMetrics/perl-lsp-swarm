@@ -37,7 +37,13 @@ const EXPECTED_LEDGER_DECISIONS: &[(&str, &str, &str, &str)] = &[
     ("notebook-318-additions", "Notebook 3.18 additions", "accepted-disposition", "n/a"),
     (
         "relative-pattern-document-selector",
-        "`RelativePattern` watcher registrations",
+        "Document-filter `relative pattern` (text-document filters)",
+        "accepted-disposition",
+        "n/a",
+    ),
+    (
+        "relative-pattern-notebook-selector",
+        "Notebook document-filter `relative pattern`",
         "accepted-disposition",
         "n/a",
     ),

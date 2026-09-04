@@ -151,17 +151,23 @@ fn test_feature_gate_dap_breakpoints_basic() {
     );
 }
 
-/// Capability test: initialize advertises conditional breakpoint support.
+/// Capability test: initialize keeps conditional breakpoint support false.
+///
+/// #9578: the four optional breakpoint capability rows fail closed from the
+/// single breakpoint authority. Even while `dap.breakpoints.basic` is
+/// registered AND advertised in the catalog, the runtime contract (exact
+/// condition installation and enforcement, #8988) is unproven, so the catalog
+/// row cannot widen the wire value.
 #[test]
 fn test_capability_dap_breakpoints_basic_initialize_response() -> TestResult {
     let body = get_initialize_body()?;
 
     if has_feature("dap.breakpoints.basic") {
         let supports_conditional =
-            body.get("supportsConditionalBreakpoints").and_then(|v| v.as_bool()).unwrap_or(false);
+            body.get("supportsConditionalBreakpoints").and_then(|v| v.as_bool()).unwrap_or(true);
         assert!(
-            supports_conditional,
-            "supportsConditionalBreakpoints must be true when dap.breakpoints.basic is enabled"
+            !supports_conditional,
+            "supportsConditionalBreakpoints must stay false while the catalog row is advertised (#9578)"
         );
     }
     Ok(())
@@ -236,19 +242,21 @@ fn test_feature_gate_dap_breakpoints_hit_condition() {
     );
 }
 
-/// Capability test: initialize advertises hit-conditional breakpoint support.
+/// Capability test: initialize keeps hit-conditional breakpoint support false.
+///
+/// #9578: attributed hit counting with serialized auto-continue is unproven,
+/// so `dap.breakpoints.hit_condition` being registered and advertised cannot
+/// widen the wire value.
 #[test]
 fn test_capability_dap_breakpoints_hit_condition_initialize_response() -> TestResult {
     let body = get_initialize_body()?;
 
     if has_feature("dap.breakpoints.hit_condition") {
-        let supports_hit_conditional = body
-            .get("supportsHitConditionalBreakpoints")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let supports_hit_conditional =
+            body.get("supportsHitConditionalBreakpoints").and_then(|v| v.as_bool()).unwrap_or(true);
         assert!(
-            supports_hit_conditional,
-            "supportsHitConditionalBreakpoints must be true when dap.breakpoints.hit_condition is enabled"
+            !supports_hit_conditional,
+            "supportsHitConditionalBreakpoints must stay false while the catalog row is advertised (#9578)"
         );
     }
     Ok(())
@@ -375,26 +383,30 @@ fn test_feature_gate_dap_breakpoints_function() {
     );
 }
 
-/// Capability test: initialize advertises supportsFunctionBreakpoints.
+/// Capability test: initialize keeps supportsFunctionBreakpoints false.
 ///
-/// `supportsFunctionBreakpoints` is tied to `dap.core` in the adapter
-/// (function breakpoints are a core DAP capability, not a separately-gated
-/// extension).  This test asserts the advertised capability matches the
-/// feature-catalog state.
+/// #9578: a syntactically valid function name is not runtime resolution or
+/// engine installation (#8645 re-enable gate), so the wire value stays false
+/// regardless of the catalog or `dap.core`.
 #[test]
 fn test_capability_dap_breakpoints_function_initialize_response() -> TestResult {
     let body = get_initialize_body()?;
     let supports =
-        body.get("supportsFunctionBreakpoints").and_then(|v| v.as_bool()).unwrap_or(false);
-    assert!(supports, "supportsFunctionBreakpoints must be true in the initialize response");
+        body.get("supportsFunctionBreakpoints").and_then(|v| v.as_bool()).unwrap_or(true);
+    assert!(
+        !supports,
+        "supportsFunctionBreakpoints must stay false until exact runtime proof exists (#9578)"
+    );
     Ok(())
 }
 
-/// Functional test: setFunctionBreakpoints accepts a Perl variable as condition.
+/// Functional test: setFunctionBreakpoints is refused while the capability is
+/// floored (#9578).
 ///
-/// The DAP spec permits any string expression as a breakpoint condition; the
-/// adapter stores it without semantic validation.  A valid function name with
-/// a Perl-variable condition must return `success: true` and `verified: true`.
+/// A function name with a Perl-variable condition used to be accepted and
+/// stored. #8645 owns the runtime resolution and engine install/remove/hit
+/// proof; until then every shape — including a well-formed one — must receive
+/// the identical deterministic refusal with no stored record.
 #[test]
 fn test_functional_dap_function_breakpoints_with_condition() -> TestResult {
     if !has_feature("dap.breakpoints.function") {
@@ -414,14 +426,12 @@ fn test_functional_dap_function_breakpoints_with_condition() -> TestResult {
     );
 
     match response {
-        DapMessage::Response { success: true, command, body: Some(body), .. }
+        DapMessage::Response { success: false, command, message: Some(message), .. }
             if command == "setFunctionBreakpoints" =>
         {
-            let bps = body["breakpoints"].as_array().ok_or("missing breakpoints array")?;
-            assert_eq!(bps.len(), 1, "expected exactly one breakpoint record");
             assert!(
-                bps[0]["verified"].as_bool().unwrap_or(false),
-                "function breakpoint 'test_func' must be verified"
+                message.contains("supportsFunctionBreakpoints") && message.contains("#9578"),
+                "expected the #9578 floor refusal, got {message:?}"
             );
             Ok(())
         }
@@ -429,10 +439,8 @@ fn test_functional_dap_function_breakpoints_with_condition() -> TestResult {
     }
 }
 
-/// Functional test: setFunctionBreakpoints accepts a scalar variable condition ($count).
-///
-/// Perl scalars are truthy/falsy at runtime; the adapter must store the
-/// condition string as-is without rejecting non-boolean expressions.
+/// Functional test: setFunctionBreakpoints is refused for a scalar variable
+/// condition shape ($count) while the capability is floored (#9578).
 #[test]
 fn test_functional_dap_function_breakpoints_scalar_condition() -> TestResult {
     if !has_feature("dap.breakpoints.function") {
@@ -452,14 +460,12 @@ fn test_functional_dap_function_breakpoints_scalar_condition() -> TestResult {
     );
 
     match response {
-        DapMessage::Response { success: true, command, body: Some(body), .. }
+        DapMessage::Response { success: false, command, message: Some(message), .. }
             if command == "setFunctionBreakpoints" =>
         {
-            let bps = body["breakpoints"].as_array().ok_or("missing breakpoints array")?;
-            assert_eq!(bps.len(), 1, "expected exactly one breakpoint record");
             assert!(
-                bps[0]["verified"].as_bool().unwrap_or(false),
-                "function breakpoint 'my_sub' must be verified"
+                message.contains("supportsFunctionBreakpoints") && message.contains("#9578"),
+                "expected the #9578 floor refusal, got {message:?}"
             );
             Ok(())
         }
@@ -467,11 +473,12 @@ fn test_functional_dap_function_breakpoints_scalar_condition() -> TestResult {
     }
 }
 
-/// Functional test: setFunctionBreakpoints accepts a compound boolean expression as condition.
+/// Functional test: setFunctionBreakpoints is refused for a compound boolean
+/// expression shape while the capability is floored (#9578).
 ///
 /// Complex Perl expressions (e.g., `defined($ENV{DEBUG}) && $ENV{DEBUG} > 0`)
-/// are valid breakpoint conditions.  The adapter stores them for the debugger
-/// to evaluate at runtime.
+/// are syntactically valid conditions, but no acceptance path exists while the
+/// capability is floored: the same deterministic refusal applies.
 #[test]
 fn test_functional_dap_function_breakpoints_complex_condition() -> TestResult {
     if !has_feature("dap.breakpoints.function") {
@@ -491,14 +498,12 @@ fn test_functional_dap_function_breakpoints_complex_condition() -> TestResult {
     );
 
     match response {
-        DapMessage::Response { success: true, command, body: Some(body), .. }
+        DapMessage::Response { success: false, command, message: Some(message), .. }
             if command == "setFunctionBreakpoints" =>
         {
-            let bps = body["breakpoints"].as_array().ok_or("missing breakpoints array")?;
-            assert_eq!(bps.len(), 1, "expected exactly one breakpoint record");
             assert!(
-                bps[0]["verified"].as_bool().unwrap_or(false),
-                "function breakpoint 'handler' must be verified"
+                message.contains("supportsFunctionBreakpoints") && message.contains("#9578"),
+                "expected the #9578 floor refusal, got {message:?}"
             );
             Ok(())
         }
@@ -519,17 +524,21 @@ fn test_feature_gate_dap_breakpoints_logpoints() {
     );
 }
 
-/// Capability test: initialize advertises logpoint support.
+/// Capability test: initialize keeps logpoint support false.
+///
+/// #9578: install → hit → correlated lookup → output → continue is unproven
+/// (#9000 re-enable gate), so `dap.breakpoints.logpoints` being registered and
+/// advertised cannot widen the wire value.
 #[test]
 fn test_capability_dap_breakpoints_logpoints_initialize_response() -> TestResult {
     let body = get_initialize_body()?;
 
     if has_feature("dap.breakpoints.logpoints") {
         let supports_log_points =
-            body.get("supportsLogPoints").and_then(|v| v.as_bool()).unwrap_or(false);
+            body.get("supportsLogPoints").and_then(|v| v.as_bool()).unwrap_or(true);
         assert!(
-            supports_log_points,
-            "supportsLogPoints must be true when dap.breakpoints.logpoints is enabled"
+            !supports_log_points,
+            "supportsLogPoints must stay false while the catalog row is advertised (#9578)"
         );
     }
     Ok(())
@@ -1071,16 +1080,19 @@ fn test_functional_dap_exceptions_warn_set_filter() -> TestResult {
 // AC9: dap.watchpoints
 // ---------------------------------------------------------------------------
 
-/// Feature gate: dap.watchpoints is registered in the catalog.
+/// Feature gate: native data breakpoints are fail-closed (#9091), so the
+/// dap.watchpoints row is retired from the advertised set.
 #[test]
 fn test_feature_gate_dap_watchpoints() {
     assert!(
-        has_feature("dap.watchpoints"),
-        "dap.watchpoints must be registered in the feature catalog"
+        !has_feature("dap.watchpoints"),
+        "dap.watchpoints must not be advertised while native watchpoint identity/install/hit proof is absent (#9091)"
     );
 }
 
-/// Capability test: initialize advertises supportsDataBreakpoints when feature is enabled.
+/// Capability test: native data breakpoints are fail-closed (#9091), so the
+/// catalog row stays registered in features.toml but is no longer advertised,
+/// and initialize must not claim supportsDataBreakpoints.
 #[test]
 fn test_capability_dap_watchpoints_initialize_response() -> TestResult {
     let body = get_initialize_body()?;
@@ -1088,38 +1100,41 @@ fn test_capability_dap_watchpoints_initialize_response() -> TestResult {
     let supports_data_breakpoints =
         body.get("supportsDataBreakpoints").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    if has_feature("dap.watchpoints") {
-        assert!(
-            supports_data_breakpoints,
-            "supportsDataBreakpoints must be true when dap.watchpoints is enabled"
-        );
-    } else {
-        assert!(
-            !supports_data_breakpoints,
-            "supportsDataBreakpoints must be false when dap.watchpoints is disabled"
-        );
-    }
+    assert!(
+        !supports_data_breakpoints,
+        "supportsDataBreakpoints must be false while watchpoint identity/install/hit proof is absent (#9091)"
+    );
+    assert!(
+        !has_feature("dap.watchpoints"),
+        "dap.watchpoints must be unadvertised while native data breakpoints are unsupported (#9091)"
+    );
     Ok(())
 }
 
-/// Functional test: dataBreakpointInfo and setDataBreakpoints work when watchpoints are enabled.
+/// Functional test: the data-breakpoint surface answers honestly without any
+/// debugger mutation while native watchpoints are unsupported (#9091).
 #[test]
 fn test_functional_dap_watchpoints_data_breakpoint_roundtrip() -> TestResult {
     let mut adapter = initialize_adapter();
 
-    // dataBreakpointInfo must succeed for a valid variable name
+    // dataBreakpointInfo stays a successful DAP response but must not mint a dataId
     let info_response =
         adapter.handle_request(2, "dataBreakpointInfo", Some(json!({ "name": "$x" })));
 
     match info_response {
-        DapMessage::Response { success, command, .. } => {
-            assert!(success, "dataBreakpointInfo must succeed");
+        DapMessage::Response { success, command, body: Some(body), .. } => {
+            assert!(success, "dataBreakpointInfo must respond");
             assert_eq!(command, "dataBreakpointInfo");
+            assert!(
+                body.get("dataId").is_some_and(|value| value.is_null()),
+                "no persistent native dataId may be minted (#9091)"
+            );
         }
         _ => return Err("Expected dataBreakpointInfo response".into()),
     }
 
-    // setDataBreakpoints with a valid breakpoint must succeed and return a breakpoints array
+    // setDataBreakpoints must succeed at the protocol layer with one
+    // unverified entry per input and zero debugger mutation (#9091)
     let set_response = adapter.handle_request(
         3,
         "setDataBreakpoints",
@@ -1128,15 +1143,15 @@ fn test_functional_dap_watchpoints_data_breakpoint_roundtrip() -> TestResult {
 
     match set_response {
         DapMessage::Response { success, command, body: Some(body), .. } => {
-            assert!(success, "setDataBreakpoints must succeed");
+            assert!(success, "setDataBreakpoints must respond");
             assert_eq!(command, "setDataBreakpoints");
             let bps = body
                 .get("breakpoints")
                 .and_then(|v| v.as_array())
                 .ok_or("missing breakpoints array")?;
-            assert_eq!(bps.len(), 1, "setDataBreakpoints must return one record");
-            let verified = bps[0].get("verified").and_then(|v| v.as_bool()).unwrap_or(false);
-            assert!(verified, "returned breakpoint must be verified");
+            assert_eq!(bps.len(), 1, "setDataBreakpoints must return one record per input");
+            let verified = bps[0].get("verified").and_then(|v| v.as_bool()).unwrap_or(true);
+            assert!(!verified, "returned watchpoint must be unverified while unsupported (#9091)");
         }
         _ => return Err("Expected setDataBreakpoints response with body".into()),
     }
@@ -1207,7 +1222,11 @@ fn test_functional_dap_goto_targets_requests_fail_closed() -> TestResult {
 // Cross-feature: feature catalog completeness
 // ---------------------------------------------------------------------------
 
-/// All 10 DAP features must be registered in the feature catalog.
+/// Advertised DAP features must be registered in the feature catalog.
+///
+/// #9091: `dap.watchpoints` is deliberately excluded — the row remains in
+/// features.toml with full maturity metadata, but it is no longer advertised
+/// until watchpoint identity/install/hit proof exists.
 #[test]
 fn test_all_dap_features_registered_in_catalog() {
     let dap_features = [
@@ -1220,7 +1239,6 @@ fn test_all_dap_features_registered_in_catalog() {
         "dap.exceptions.warn",
         "dap.inline_values",
         "dap.modules",
-        "dap.watchpoints",
     ];
 
     let missing: Vec<&str> = dap_features.iter().filter(|&&f| !has_feature(f)).copied().collect();
@@ -1238,19 +1256,18 @@ fn test_initialize_does_not_advertise_disabled_features() -> TestResult {
 
     // Each capability must be false if its feature is disabled.
     // Derived from handle_initialize in debug_adapter/process.rs:
-    //   supportsConditionalBreakpoints      = supports_basic_breakpoints
     //   supportsBreakpointLocationsRequest  = supports_basic_breakpoints
-    //   supportsHitConditionalBreakpoints   = supports_hit_conditions
-    //   supportsLogPoints                   = supports_log_points
     //   supportsInlineValues                = supports_inline_values
     //   supportsCompletionsRequest          = supports_completions
     //   supportsModulesRequest              = supports_modules
     //   supportsDataBreakpoints             = supports_watchpoints
+    //
+    //   #9578: supportsConditionalBreakpoints / supportsHitConditionalBreakpoints /
+    //   supportsLogPoints no longer mirror catalog rows at all (they are pinned
+    //   false by the breakpoint authority and pinned again below), and
+    //   supportsFunctionBreakpoints never mirrored `dap.breakpoints.basic`.
     let feature_to_cap = [
-        ("dap.breakpoints.basic", "supportsConditionalBreakpoints"),
         ("dap.breakpoints.basic", "supportsBreakpointLocationsRequest"),
-        ("dap.breakpoints.hit_condition", "supportsHitConditionalBreakpoints"),
-        ("dap.breakpoints.logpoints", "supportsLogPoints"),
         ("dap.inline_values", "supportsInlineValues"),
         ("dap.completions", "supportsCompletionsRequest"),
         ("dap.modules", "supportsModulesRequest"),
@@ -1267,6 +1284,23 @@ fn test_initialize_does_not_advertise_disabled_features() -> TestResult {
         assert_eq!(
             advertised, enabled,
             "Capability `{capability}` must mirror feature `{feature}`: enabled={enabled}, advertised={advertised}"
+        );
+    }
+
+    // #9578: the four optional breakpoint capability rows must stay false even
+    // while their catalog rows are registered and advertised — a catalog or
+    // core flag change cannot make the fields true.
+    let floored_rows = [
+        "supportsFunctionBreakpoints",
+        "supportsConditionalBreakpoints",
+        "supportsHitConditionalBreakpoints",
+        "supportsLogPoints",
+    ];
+    for capability in floored_rows {
+        let advertised = body.get(capability).and_then(|v| v.as_bool()).unwrap_or(true);
+        assert!(
+            !advertised,
+            "Capability `{capability}` must stay false despite its advertised catalog row (#9578)"
         );
     }
     Ok(())

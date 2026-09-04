@@ -273,15 +273,15 @@ fn test_step_in_targets_missing_args_returns_failure() -> Result<(), Box<dyn std
 }
 
 #[test]
-// AC:16
-fn test_step_in_targets_no_session_returns_empty_success() -> Result<(), Box<dyn std::error::Error>>
-{
+// AC:16 / #9069
+fn test_step_in_targets_no_session_returns_unsupported_failure()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let args = json!({ "frameId": 1 });
     let response = adapter.handle_request(1, "stepInTargets", Some(args));
-    let body = assert_response(response, "stepInTargets", true)?;
-    let body = body.ok_or("stepInTargets must return a body")?;
-    assert!(body.get("targets").is_some(), "targets array required");
+    // Targeted stepping is fail-closed (#9069): no empty success that a client
+    // could read as a (vacuous) targeted-step contract.
+    assert_response(response, "stepInTargets", false)?;
     Ok(())
 }
 
@@ -581,16 +581,14 @@ fn test_goto_targets_response_body_has_no_targets_while_unsupported()
 // --- stepInTargets response body has targets[] ---
 
 #[test]
-// AC:16 (Schema: stepInTargets response includes targets array)
-fn test_step_in_targets_response_body_has_targets_array() -> Result<(), Box<dyn std::error::Error>>
-{
+// AC:16 (Schema: #9069 fail-closed — unsupported stepInTargets carries no body)
+fn test_step_in_targets_unsupported_response_has_no_targets_body()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let args = json!({ "frameId": 1 });
     let response = adapter.handle_request(1, "stepInTargets", Some(args));
-    let body = assert_response(response, "stepInTargets", true)?;
-    let body = body.ok_or("stepInTargets body is required")?;
-    let targets = body.get("targets").ok_or("stepInTargets body must have 'targets'")?;
-    assert!(targets.is_array(), "'targets' must be an array");
+    let body = assert_response(response, "stepInTargets", false)?;
+    assert!(body.is_none(), "unsupported stepInTargets must not publish a targets body (#9069)");
     Ok(())
 }
 

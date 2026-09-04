@@ -540,64 +540,77 @@ fn test_set_expression_newline_in_value_fails() -> Result<(), Box<dyn std::error
 // stepInTargets — AC:2783
 // ============================================================================
 
+fn assert_step_in_targets_unsupported(
+    msg: DapMessage,
+) -> Result<String, Box<dyn std::error::Error>> {
+    match msg {
+        DapMessage::Response { success, command, body, message, .. } => {
+            assert_eq!(command, "stepInTargets", "command name must match");
+            assert!(!success, "stepInTargets must fail while unsupported (#9069)");
+            assert!(body.is_none(), "unsupported stepInTargets must not publish target IDs");
+            let message = message.ok_or_else(|| {
+                std::io::Error::other(
+                    "unsupported stepInTargets response must include an error message",
+                )
+            })?;
+            assert!(
+                !message.trim().is_empty(),
+                "unsupported stepInTargets response must include a non-empty error message"
+            );
+            assert!(
+                message.to_lowercase().contains("unsupported"),
+                "unsupported stepInTargets response must explain its disposition: {message}"
+            );
+            Ok(message)
+        }
+        other => Err(format!("expected Response for stepInTargets, got {other:?}").into()),
+    }
+}
+
 #[test]
-fn test_step_in_targets_missing_arguments_fails() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — stepInTargets without arguments must fail
+fn test_step_in_targets_missing_arguments_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+    // AC:2783 / #9069 — malformed requests cannot unlock targeted stepping.
     let mut adapter = DebugAdapter::new();
     let msg = adapter.handle_request(1, "stepInTargets", None);
-    let err = assert_failure_response(msg, "stepInTargets")?;
+    let err = assert_step_in_targets_unsupported(msg)?;
     assert!(
-        err.to_lowercase().contains("missing") || err.to_lowercase().contains("invalid"),
-        "error must describe missing/invalid args: {err}"
+        err.to_lowercase().contains("unsupported"),
+        "fail-closed targeted stepping must explain its unsupported disposition: {err}"
     );
     Ok(())
 }
 
 #[test]
-fn test_step_in_targets_no_session_returns_empty() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — without a session there are no step-in targets
+fn test_step_in_targets_no_session_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+    // AC:2783 / #9069 — no session cannot turn an unsupported request into an empty success.
     let mut adapter = DebugAdapter::new();
     let args = json!({ "frameId": 0 });
     let msg = adapter.handle_request(1, "stepInTargets", Some(args));
-    let (success, _) = assert_response(msg, "stepInTargets")?;
-    assert!(success, "stepInTargets must succeed even without a session");
+    let err = assert_step_in_targets_unsupported(msg)?;
+    assert!(
+        err.contains("#9069"),
+        "unsupported response must preserve the issue disposition: {err}"
+    );
     Ok(())
 }
 
 #[test]
-fn test_step_in_targets_body_has_targets_array() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — response body must contain a "targets" array
+fn test_step_in_targets_valid_args_publish_no_targets() -> Result<(), Box<dyn std::error::Error>> {
+    // AC:2783 / #9069 — valid arguments still cannot publish unusable target IDs.
     let mut adapter = DebugAdapter::new();
     let args = json!({ "frameId": 0 });
     let msg = adapter.handle_request(1, "stepInTargets", Some(args));
-    match msg {
-        DapMessage::Response { body, success, .. } => {
-            assert!(success);
-            let body = body.ok_or("stepInTargets must have a response body")?;
-            assert!(
-                body.get("targets").is_some(),
-                "body must contain 'targets' array, got: {body}"
-            );
-        }
-        other => return Err(format!("expected Response, got {other:?}").into()),
-    }
+    let _ = assert_step_in_targets_unsupported(msg)?;
     Ok(())
 }
 
 #[test]
-fn test_step_in_targets_empty_when_no_session() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — no session means zero callable targets
+fn test_step_in_targets_other_frame_is_also_rejected() -> Result<(), Box<dyn std::error::Error>> {
+    // AC:2783 / #9069 — changing the frame ID cannot create a target registry.
     let mut adapter = DebugAdapter::new();
     let args = json!({ "frameId": 1 });
     let msg = adapter.handle_request(1, "stepInTargets", Some(args));
-    match msg {
-        DapMessage::Response { body, .. } => {
-            let body = body.ok_or("must have body")?;
-            let targets = body["targets"].as_array().ok_or("targets must be array")?;
-            assert!(targets.is_empty(), "no session means no step-in targets");
-        }
-        other => return Err(format!("expected Response, got {other:?}").into()),
-    }
+    let _ = assert_step_in_targets_unsupported(msg)?;
     Ok(())
 }
 

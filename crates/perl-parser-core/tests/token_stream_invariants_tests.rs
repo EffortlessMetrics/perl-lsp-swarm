@@ -6,7 +6,9 @@
 //! rather than integration-level parsing scenarios covered by the other
 //! token_stream_* test files.
 
-use perl_parser_core::token_stream::{Token, TokenKind, TokenStream};
+use perl_parser_core::token_stream::{
+    ContextualFallbackReason, ContextualOpResult, ContextualTokenOp, Token, TokenKind, TokenStream,
+};
 use perl_tdd_support::must;
 
 // ---------------------------------------------------------------------------
@@ -181,13 +183,13 @@ fn single_token_live_stream_is_eof_after_consuming() -> Result<(), Box<dyn std::
 // on_stmt_boundary
 // ---------------------------------------------------------------------------
 
-/// `on_stmt_boundary` clears the peek cache. In buffered mode, the cleared cache
-/// means tokens that were in the lookahead slots are dropped; tokens not yet
-/// fetched into the lookahead buffer are still available. This tests the invariant
-/// that `on_stmt_boundary` in buffered mode leaves the stream readable after the
-/// already-buffered window, and that the stream reaches EOF eventually.
+/// `on_stmt_boundary` on a buffered stream is refused with a typed fallback
+/// requirement (#8128): buffered kinds cannot be re-classified, and clearing
+/// the lookahead cache while leaving classification fixed is not an accepted
+/// contextual operation. The stream state is preserved so the refusal is
+/// observable, and the stream remains fully drainable.
 #[test]
-fn on_stmt_boundary_in_buffered_mode_clears_cache_stream_remains_usable()
+fn on_stmt_boundary_on_buffered_stream_is_typed_fallback_state_preserved()
 -> Result<(), Box<dyn std::error::Error>> {
     // Use a multi-token buffered stream.
     let tokens = vec![
@@ -203,20 +205,31 @@ fn on_stmt_boundary_in_buffered_mode_clears_cache_stream_remains_usable()
     let second_kind = must(stream.peek_second()).kind();
     assert_eq!(second_kind, TokenKind::Identifier, "second peek must be Identifier");
 
-    // Clearing the cache in buffered mode discards what was pre-fetched.
-    stream.on_stmt_boundary();
+    // The contextual request is refused, naming the missing authority.
+    assert_eq!(
+        stream.apply_contextual(ContextualTokenOp::StatementBoundaryReset),
+        ContextualOpResult::FallbackRequired { reason: ContextualFallbackReason::NoBufferedSource },
+        "buffered statement boundary reset must report the typed fallback requirement"
+    );
 
-    // The stream must remain usable — it should eventually reach EOF.
+    // The refusal is observable: the lookahead window is untouched.
+    assert_eq!(must(stream.peek()).kind(), TokenKind::My, "refused op must not clear lookahead");
+    assert_eq!(
+        must(stream.peek_second()).kind(),
+        TokenKind::Identifier,
+        "refused op must not clear second lookahead"
+    );
+
+    // The stream must remain usable — it drains every buffered token to EOF.
     let mut count = 0;
     while !stream.is_eof() {
         must(stream.next());
         count += 1;
         if count > 20 {
-            return Err("on_stmt_boundary left stream in an infinite loop".into());
+            return Err("refused on_stmt_boundary left stream in an infinite loop".into());
         }
     }
-    // After boundary clear, only un-fetched tokens remain (\";\" was not in a peek slot).
-    assert_eq!(count, 1, "only the un-fetched Semicolon should remain after boundary clear");
+    assert_eq!(count, 3, "every buffered token must remain after the refused operation");
     Ok(())
 }
 

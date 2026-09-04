@@ -49,10 +49,51 @@ pub struct DapPeerBridge {
 }
 
 impl DapPeerBridge {
+    /// The one synthetic execution context this peer frontend advertises:
+    /// `threads` reports id 1 and runtime context discovery across the peer
+    /// bridge is not proven (#8294).
+    const ADVERTISED_THREAD_ID: i64 = 1;
+
     /// Create a bridge over `backend`.
     #[must_use]
     pub fn new(backend: Box<dyn DebugBackend>) -> Self {
         Self { backend, seq: 0, terminated_emitted: false }
+    }
+
+    /// Strict identity gate for every thread-scoped request (#8294): the
+    /// request must name the advertised synthetic execution context. A
+    /// missing, unknown, or stale id fails the request before any backend
+    /// method runs; the failed response is pushed onto `out` and `None`
+    /// returned.
+    fn validate_thread_scoped(
+        &mut self,
+        command: &str,
+        request_seq: i64,
+        args: Option<&Value>,
+        out: &mut Vec<DapMessage>,
+    ) -> Option<ThreadId> {
+        let reported = args.and_then(|a| a.get("threadId")).and_then(Value::as_i64);
+        if reported != Some(Self::ADVERTISED_THREAD_ID) {
+            let detail = match reported {
+                Some(id) => {
+                    format!("unknown or stale `threadId` {id}")
+                }
+                None => "missing `threadId`".to_string(),
+            };
+            out.push(self.response(
+                request_seq,
+                command,
+                false,
+                None,
+                Some(format!(
+                    "{detail}; this peer frontend advertises only the synthetic execution \
+                     context {}. Re-request `threads` to obtain the current id.",
+                    Self::ADVERTISED_THREAD_ID
+                )),
+            ));
+            return None;
+        }
+        Some(ThreadId(reported.unwrap_or(Self::ADVERTISED_THREAD_ID)))
     }
 
     fn next_seq(&mut self) -> i64 {
@@ -107,16 +148,25 @@ impl DapPeerBridge {
             // is future work for cooperative mode; the v1 integration target does
             // not require peers to send it — see PTKDB_PEER_INTEGRATION_TARGET.md.)
             DebugEvent::Initialized => {}
-            DebugEvent::Stopped { reason, thread_id, .. } => {
+            DebugEvent::Stopped { reason, thread_id: _, .. } => {
+                // Same identity contract as `validate_thread_scoped`: the
+                // editor must only ever observe the advertised synthetic
+                // execution context, so a backend event reporting a foreign id
+                // is normalized here instead of being forwarded verbatim
+                // (#8294) — otherwise the editor would see an id that every
+                // thread-scoped request then rejects.
                 let body = json!({
                     "reason": dap_stop_reason(&reason),
-                    "threadId": thread_id.0,
+                    "threadId": Self::ADVERTISED_THREAD_ID,
                     "allThreadsStopped": true,
                 });
                 out.push(self.event("stopped", Some(body)));
             }
-            DebugEvent::Continued { thread_id } => {
-                let body = json!({ "threadId": thread_id.0, "allThreadsContinued": true });
+            DebugEvent::Continued { thread_id: _ } => {
+                // Normalized for the same identity contract as the stopped
+                // event above (#8294).
+                let body =
+                    json!({ "threadId": Self::ADVERTISED_THREAD_ID, "allThreadsContinued": true });
                 out.push(self.event("continued", Some(body)));
             }
             DebugEvent::Output { category, output } => {
@@ -209,13 +259,16 @@ impl DapPeerBridge {
                 }
             }
             Some(DapRequestRoute::Continue) => {
-                let tid = thread_id_arg(arguments.as_ref());
-                match self.backend.continue_thread(tid) {
-                    Ok(r) => {
-                        let body = json!({ "allThreadsContinued": r.all_threads_continued });
-                        out.push(self.response(request_seq, command, true, Some(body), None));
+                if let Some(tid) =
+                    self.validate_thread_scoped(command, request_seq, arguments.as_ref(), &mut out)
+                {
+                    match self.backend.continue_thread(tid) {
+                        Ok(r) => {
+                            let body = json!({ "allThreadsContinued": r.all_threads_continued });
+                            out.push(self.response(request_seq, command, true, Some(body), None));
+                        }
+                        Err(e) => out.push(self.error(request_seq, command, e)),
                     }
-                    Err(e) => out.push(self.error(request_seq, command, e)),
                 }
             }
             Some(DapRequestRoute::Next) => {
@@ -228,18 +281,25 @@ impl DapPeerBridge {
                 self.step(request_seq, command, arguments.as_ref(), Step::Out, &mut out)
             }
             Some(DapRequestRoute::Pause) => {
-                let tid = thread_id_arg(arguments.as_ref());
-                match self.backend.pause(tid) {
-                    Ok(()) => out.push(self.response(request_seq, command, true, None, None)),
-                    Err(e) => out.push(self.error(request_seq, command, e)),
+                if let Some(tid) =
+                    self.validate_thread_scoped(command, request_seq, arguments.as_ref(), &mut out)
+                {
+                    match self.backend.pause(tid) {
+                        Ok(()) => out.push(self.response(request_seq, command, true, None, None)),
+                        Err(e) => out.push(self.error(request_seq, command, e)),
+                    }
                 }
             }
             Some(DapRequestRoute::StackTrace) => {
-                match self.handle_stack_trace(arguments.as_ref()) {
-                    Ok(body) => {
-                        out.push(self.response(request_seq, command, true, Some(body), None))
+                if let Some(thread_id) =
+                    self.validate_thread_scoped(command, request_seq, arguments.as_ref(), &mut out)
+                {
+                    match self.handle_stack_trace(thread_id, arguments.as_ref()) {
+                        Ok(body) => {
+                            out.push(self.response(request_seq, command, true, Some(body), None))
+                        }
+                        Err(e) => out.push(self.error(request_seq, command, e)),
                     }
-                    Err(e) => out.push(self.error(request_seq, command, e)),
                 }
             }
             Some(DapRequestRoute::Scopes) => match self.handle_scopes(arguments.as_ref()) {
@@ -255,7 +315,9 @@ impl DapPeerBridge {
                 Err(e) => out.push(self.error(request_seq, command, e)),
             },
             Some(DapRequestRoute::Threads) => {
-                // Perl's stock debugger is single-threaded; report one thread.
+                // One synthetic main execution context; runtime context
+                // discovery across the peer bridge is not proven (#8294).
+
                 let body = json!({ "threads": [{ "id": 1, "name": "main" }] });
                 out.push(self.response(request_seq, command, true, Some(body), None));
             }
@@ -301,10 +363,24 @@ impl DapPeerBridge {
                 }
             }
             None | Some(_) => {
-                // Lenient: acknowledge unrecognized requests so a client is not
-                // wedged, but carry no body. (mirror-MVP behavior.)
-                tracing::warn!(command, "peer bridge: unhandled DAP request");
-                out.push(self.response(request_seq, command, true, None, None));
+                if DapRequestRoute::from_command(command).is_some() {
+                    // A catalog route that exists but is unavailable in this
+                    // frontend must fail closed: acknowledging it would report
+                    // success for work no backend performed (#9069).
+                    tracing::warn!(command, "peer bridge: request is unavailable in this frontend");
+                    out.push(self.response(
+                        request_seq,
+                        command,
+                        false,
+                        None,
+                        Some("request is unavailable in the external peer frontend".to_string()),
+                    ));
+                } else {
+                    // Lenient: acknowledge unrecognized requests so a client is not
+                    // wedged, but carry no body. (mirror-MVP behavior.)
+                    tracing::warn!(command, "peer bridge: unhandled DAP request");
+                    out.push(self.response(request_seq, command, true, None, None));
+                }
             }
         }
         // Surface any events the backend queued while handling the request.
@@ -320,7 +396,32 @@ impl DapPeerBridge {
         which: Step,
         out: &mut Vec<DapMessage>,
     ) {
-        let tid = thread_id_arg(args);
+        let Some(tid) = self.validate_thread_scoped(command, request_seq, args, out) else {
+            return;
+        };
+        // #9069: this frontend negotiates `supportsStepInTargetsRequest` as
+        // false, so a supplied `targetId` must fail closed rather than
+        // silently degrade to an untargeted step the client did not ask for.
+        if matches!(which, Step::In)
+            && let Some(args) = args
+            && args.get("targetId").is_some()
+        {
+            out.push(
+                self.response(
+                    request_seq,
+                    command,
+                    false,
+                    None,
+                    Some(
+                        "`stepIn targetId` is not supported: targeted stepping is \
+                     unavailable, so the request is refused instead of stepping \
+                     without the requested target"
+                            .to_string(),
+                    ),
+                ),
+            );
+            return;
+        }
         let result = match which {
             Step::Next => self.backend.next(tid),
             Step::In => self.backend.step_in(tid),
@@ -468,9 +569,13 @@ impl DapPeerBridge {
         Ok(json!({ "breakpoints": bps }))
     }
 
-    fn handle_stack_trace(&mut self, args: Option<&Value>) -> super::BackendResult<Value> {
+    fn handle_stack_trace(
+        &mut self,
+        thread_id: ThreadId,
+        args: Option<&Value>,
+    ) -> super::BackendResult<Value> {
         let params = StackTraceParams {
-            thread_id: thread_id_arg(args),
+            thread_id,
             start_frame: args
                 .and_then(|a| a.get("startFrame"))
                 .and_then(Value::as_u64)
@@ -597,13 +702,22 @@ pub fn run_external_peer_session_stdio(
 /// responses/events to `writer` on the calling thread, interleaving backend
 /// event delivery on `poll_interval` ticks.
 ///
+/// Frame admission is bounded (#9522): the reader enqueues through
+/// [`super::peer_frame_queue::admit_peer_frame`] against a
+/// [`super::peer_frame_queue::PEER_FRAME_QUEUE_CAPACITY`] bounded channel. If
+/// the session loop cannot keep up and the queue saturates, the reader stops
+/// and the session ends with the typed
+/// [`super::peer_frame_queue::PEER_BACKPRESSURE_MSG`] failure instead of
+/// buffering without bound or reporting generic success.
+///
 /// Used by [`run_external_peer_session_stdio`] (stdin/stdout) and exercised in
 /// tests over in-memory pipes. The reader thread is detached rather than joined:
 /// on a DAP `disconnect` the editor may not close its write half immediately, so
 /// joining could block; the thread exits on stdin EOF or process teardown.
 ///
 /// # Errors
-/// Returns a transport error if writing framed messages to `writer` fails.
+/// Returns a transport error if writing framed messages to `writer` fails, or
+/// the typed peer backpressure failure when the bounded frame queue saturates.
 fn run_peer_session_threaded<R, W>(
     reader_src: R,
     mut writer: W,
@@ -614,10 +728,14 @@ where
     R: Read + Send + 'static,
     W: Write,
 {
+    use super::peer_frame_queue::{PEER_FRAME_QUEUE_CAPACITY, admit_peer_frame, overflow_failure};
     use perl_lsp_rs_core::transport::ContentLengthFramer;
+    use std::sync::atomic::AtomicBool;
     use std::sync::mpsc;
 
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(PEER_FRAME_QUEUE_CAPACITY);
+    let overflow = std::sync::Arc::new(AtomicBool::new(false));
+    let reader_overflow = std::sync::Arc::clone(&overflow);
     let _reader = std::thread::spawn(move || {
         let mut src = reader_src;
         let mut framer = ContentLengthFramer::new();
@@ -629,9 +747,15 @@ where
                     framer.push(&buf[..n]);
                     loop {
                         match framer.try_next() {
-                            // Receiver gone (session ended) — stop reading.
+                            // Receiver gone, queue saturated, or session ended —
+                            // stop reading (bounded admission #9522).
                             Ok(Some(body)) => {
-                                if tx.send(body).is_err() {
+                                if !admit_peer_frame(
+                                    &tx,
+                                    body,
+                                    &reader_overflow,
+                                    "peer bridge (stdio)",
+                                ) {
                                     return;
                                 }
                             }
@@ -675,9 +799,24 @@ where
             }
             // No editor input this tick; loop to poll events again.
             Err(mpsc::RecvTimeoutError::Timeout) => {}
-            // Reader thread ended (stdin closed / malformed): end the session.
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            // Reader thread ended (stdin closed / malformed / saturated queue):
+            // a saturated queue fails the session closed with the typed
+            // backpressure disposition instead of generic success (#9522);
+            // frames admitted before the overflow were still dispatched above.
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if let Some(failure) = overflow_failure(&overflow) {
+                    return Err(failure);
+                }
+                break;
+            }
         }
+    }
+
+    // A latched overflow wins over every successful exit — including a DAP
+    // `disconnect` admitted before the reader stopped: reporting generic
+    // success after rejecting frames is the explicit #9522 falsifier.
+    if let Some(failure) = overflow_failure(&overflow) {
+        return Err(failure);
     }
     Ok(())
 }
@@ -781,10 +920,6 @@ fn parse_attach(args: Option<&Value>) -> AttachBackendParams {
     }
 }
 
-fn thread_id_arg(args: Option<&Value>) -> ThreadId {
-    ThreadId(args.and_then(|a| a.get("threadId")).and_then(Value::as_i64).unwrap_or(1))
-}
-
 fn dap_source(v: Option<&Value>) -> DebugSource {
     let path = v.and_then(|s| s.get("path")).and_then(Value::as_str).unwrap_or_default();
     DebugSource {
@@ -882,6 +1017,9 @@ mod tests {
         /// backend. This turns "no debugger command was written" into a direct
         /// observation instead of an inference from the response (#9573).
         evaluate_calls: Arc<AtomicUsize>,
+        /// Counts real `step_in` calls that reached the backend, so a refused
+        /// targeted `stepIn` is observed directly rather than inferred (#9069).
+        step_in_calls: Arc<AtomicUsize>,
     }
 
     impl DebugBackend for ScriptBackend {
@@ -939,12 +1077,22 @@ mod tests {
             Ok(())
         }
         fn step_in(&mut self, _t: ThreadId) -> BackendResult<()> {
+            self.step_in_calls.fetch_add(1, AtomicOrdering::SeqCst);
             Ok(())
         }
         fn step_out(&mut self, _t: ThreadId) -> BackendResult<()> {
             Ok(())
         }
         fn pause(&mut self, _t: ThreadId) -> BackendResult<()> {
+            // Deliberately reports a FOREIGN id (9 != the advertised synthetic
+            // context): `backend_events_normalize_foreign_thread_ids...` uses
+            // this to prove the bridge normalizes identity-bearing backend
+            // events instead of forwarding raw ids.
+            self.events.push(DebugEvent::Stopped {
+                reason: StopReason::Pause,
+                thread_id: ThreadId(9),
+                position: None,
+            });
             Ok(())
         }
         fn stack_trace(&mut self, _p: StackTraceParams) -> BackendResult<Vec<DebugStackFrame>> {
@@ -1130,6 +1278,69 @@ mod tests {
         Ok(())
     }
 
+    /// Thread-scoped requests that do not name the advertised synthetic
+    /// execution context fail before any backend method runs (#8294): the
+    /// failed response is the only emitted message and no backend event is
+    /// queued.
+    #[test]
+    fn thread_scoped_requests_reject_unknown_or_missing_ids_before_the_backend_runs()
+    -> Result<(), String> {
+        let mut b = bridge();
+        for (command, args) in [
+            ("continue", Some(json!({ "threadId": 7 }))),
+            ("continue", None),
+            ("pause", Some(json!({ "threadId": 0 }))),
+            ("next", Some(json!({ "threadId": -1 }))),
+            ("stepIn", Some(json!({}))),
+            ("stackTrace", Some(json!({ "threadId": 2 }))),
+        ] {
+            let out = b.dispatch(9, command, args);
+            match &out[0] {
+                DapMessage::Response { command: cmd, success, message, .. } => {
+                    assert_eq!(cmd, command);
+                    assert!(!success, "a non-advertised threadId must fail {command}: {out:?}");
+                    let message = message.as_deref().unwrap_or_default();
+                    assert!(
+                        message.contains("synthetic execution context"),
+                        "the rejection must name the advertised synthetic context: {message}"
+                    );
+                }
+                other => return Err(format!("expected a response for {command}, got {other:?}")),
+            }
+            // `continue` is load-bearing here: its backend mock queues
+            // continued+stopped events, so a single-message out proves the
+            // backend method never ran.
+            assert_eq!(out.len(), 1, "no backend side effects may follow {command}: {out:?}");
+        }
+        Ok(())
+    }
+
+    /// Backend events carry identity too: a backend that reports a foreign
+    /// thread id still produces editor-visible stopped events named by the
+    /// advertised synthetic context, never by the backend's raw id — otherwise
+    /// the editor would observe an id that every thread-scoped request then
+    /// rejects (#8294).
+    #[test]
+    fn backend_events_normalize_foreign_thread_ids_to_the_advertised_context() -> Result<(), String>
+    {
+        let mut b = bridge();
+        // The mock backend queues a stopped event with foreign id 9 on pause;
+        // the pause itself must name the advertised id to be accepted.
+        let out = b.dispatch(11, "pause", Some(json!({ "threadId": 1 })));
+        let (cmd, ok, _) = as_response(&out[0])?;
+        assert_eq!(cmd, "pause");
+        assert!(ok);
+        let events: Vec<&str> = out[1..].iter().map(event_name).collect::<Result<_, _>>()?;
+        assert_eq!(events, vec!["stopped"]);
+        if let DapMessage::Event { body: Some(body), .. } = &out[1] {
+            assert_eq!(body["threadId"], 1, "the foreign backend id must be normalized");
+            assert_eq!(body["allThreadsStopped"], true);
+        } else {
+            return Err("expected a stopped event body".into());
+        }
+        Ok(())
+    }
+
     #[test]
     fn stack_scopes_variables_evaluate_round_trip() -> Result<(), String> {
         let mut b = bridge();
@@ -1205,6 +1416,7 @@ mod tests {
         let mut b = DapPeerBridge::new(Box::new(ScriptBackend {
             events: Vec::new(),
             evaluate_calls: Arc::clone(&calls),
+            step_in_calls: Arc::new(AtomicUsize::new(0)),
         }));
 
         let init = b.dispatch(1, "initialize", Some(json!({ "adapterID": "perl" })));
@@ -1284,6 +1496,55 @@ mod tests {
         let out = b.dispatch(1, "initialize", Some(json!({ "adapterID": "perl" })));
         let caps = must_some(as_response(&out[0])?.2);
         assert_eq!(caps["supportsEvaluateForHovers"], false);
+        Ok(())
+    }
+
+    #[test]
+    fn native_only_step_in_targets_fails_closed() -> Result<(), String> {
+        let mut b = bridge();
+        let out = b.dispatch(17, "stepInTargets", Some(json!({ "frameId": 1 })));
+        let (command, success, body) = as_response(&out[0])?;
+        assert_eq!(command, "stepInTargets");
+        assert!(!success, "peer-unavailable requests must not acknowledge success");
+        assert!(body.is_none(), "a refused request must not carry a response body");
+        if let DapMessage::Response { message, .. } = &out[0] {
+            assert!(message.as_deref().is_some_and(|message| !message.is_empty()));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn step_in_with_target_id_fails_closed_and_never_reaches_the_backend() -> Result<(), String> {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut b = DapPeerBridge::new(Box::new(ScriptBackend {
+            events: Vec::new(),
+            evaluate_calls: Arc::new(AtomicUsize::new(0)),
+            step_in_calls: Arc::clone(&calls),
+        }));
+
+        // #9069: `supportsStepInTargetsRequest` is negotiated false, so a
+        // client-supplied `targetId` must be refused outright — never silently
+        // executed as the untargeted step the client did not ask for.
+        let out = b.dispatch(21, "stepIn", Some(json!({ "threadId": 1, "targetId": 7 })));
+        let (command, success, body) = as_response(&out[0])?;
+        assert_eq!(command, "stepIn");
+        assert!(!success, "a targeted stepIn must not acknowledge success");
+        assert!(body.is_none(), "a refused request must not carry a response body");
+        if let DapMessage::Response { message, .. } = &out[0] {
+            assert!(message.as_deref().is_some_and(|message| !message.is_empty()));
+        }
+        assert_eq!(
+            calls.load(AtomicOrdering::SeqCst),
+            0,
+            "a refused targeted stepIn must reach the backend zero times"
+        );
+
+        // Control: an ordinary untargeted stepIn still steps, proving the
+        // refusal is scoped to `targetId` and the probe is live.
+        let out = b.dispatch(22, "stepIn", Some(json!({ "threadId": 1 })));
+        let (_, success, _) = as_response(&out[0])?;
+        assert!(success, "untargeted stepIn keeps its existing contract");
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 1, "untargeted stepIn reaches the backend");
         Ok(())
     }
 
@@ -1627,5 +1888,155 @@ mod tests {
             "the valid frames after the malformed one must still be processed: {commands:?}"
         );
         assert!(commands.contains(&"disconnect".to_string()), "commands: {commands:?}");
+    }
+
+    /// #9522: a frame burst against a stalled session loop saturates the
+    /// bounded queue, and the session fails closed with the typed backpressure
+    /// disposition instead of buffering without bound or returning generic
+    /// success. Frames admitted before the overflow are still dispatched (the
+    /// control below proves the loop keeps answering under the same pipe
+    /// harness without pressure).
+    #[test]
+    fn threaded_driver_fails_closed_when_frame_queue_saturates() -> Result<(), String> {
+        use perl_lsp_rs_core::transport::frame;
+        use std::io::Cursor;
+        use std::sync::Condvar;
+        use std::sync::Mutex;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // A writer sink that stalls its first write until released (or a short
+        // bounded deadline elapses), which leaves the session loop parked in
+        // `write` while the reader bursts frames into the bounded queue.
+        struct GatedSink {
+            gate: Arc<(Mutex<bool>, Condvar)>,
+            first_write_done: AtomicBool,
+        }
+        impl GatedSink {
+            fn new(gate: Arc<(Mutex<bool>, Condvar)>) -> Self {
+                Self { gate, first_write_done: AtomicBool::new(false) }
+            }
+        }
+        impl std::io::Write for GatedSink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if !self.first_write_done.swap(true, Ordering::SeqCst) {
+                    let (lock, cvar) = &*self.gate;
+                    let _guard = cvar
+                        .wait_timeout_while(
+                            lock.lock().unwrap_or_else(|e| e.into_inner()),
+                            Duration::from_millis(300),
+                            |open| !*open,
+                        )
+                        .unwrap_or_else(|e| e.into_inner());
+                }
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        // Far more frames than PEER_FRAME_QUEUE_CAPACITY, sent while the loop
+        // is stalled in its first write: the queue must saturate.
+        let frame_of = |seq: i64| {
+            frame(&must(serde_json::to_vec(&json!({
+                "seq": seq, "type": "request", "command": "unknownCommand", "arguments": {}
+            }))))
+        };
+        let mut input = Vec::new();
+        for seq in 1..=200 {
+            input.extend_from_slice(&frame_of(seq));
+        }
+
+        let gate: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
+        let result = run_peer_session_threaded(
+            Cursor::new(input),
+            GatedSink::new(Arc::clone(&gate)),
+            bridge(),
+            Duration::from_millis(1),
+        );
+
+        let Err(failure) = result else {
+            return Err(
+                "a saturated peer frame queue must fail the session, not return Ok".to_string()
+            );
+        };
+        assert!(
+            failure.to_string().contains(crate::backend::peer_frame_queue::PEER_BACKPRESSURE_MSG),
+            "the session failure must carry the typed backpressure disposition, got: {failure}"
+        );
+        Ok(())
+    }
+
+    /// #9522 review: a DAP `disconnect` admitted before the reader stopped
+    /// must not mask a latched overflow. The queue holds [request, disconnect,
+    /// filler...] when the reader saturates on the fillers; the session loop
+    /// dispatches the first request (stalling its first write so the reader
+    /// finishes the burst), then the disconnect breaks the loop — the typed
+    /// backpressure failure must win over generic success.
+    #[test]
+    fn threaded_driver_disconnect_does_not_mask_overflow() -> Result<(), String> {
+        use perl_lsp_rs_core::transport::frame;
+        use std::io::Cursor;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Condvar, Mutex};
+
+        struct GatedSink {
+            gate: Arc<(Mutex<bool>, Condvar)>,
+            first_write_done: AtomicBool,
+        }
+        impl GatedSink {
+            fn new(gate: Arc<(Mutex<bool>, Condvar)>) -> Self {
+                Self { gate, first_write_done: AtomicBool::new(false) }
+            }
+        }
+        impl std::io::Write for GatedSink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if !self.first_write_done.swap(true, Ordering::SeqCst) {
+                    let (lock, cvar) = &*self.gate;
+                    let _guard = cvar
+                        .wait_timeout_while(
+                            lock.lock().unwrap_or_else(|e| e.into_inner()),
+                            Duration::from_millis(300),
+                            |open| !*open,
+                        )
+                        .unwrap_or_else(|e| e.into_inner());
+                }
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let frame_of = |seq: i64, command: &str| {
+            frame(&must(serde_json::to_vec(
+                &json!({ "seq": seq, "type": "request", "command": command, "arguments": {} }),
+            )))
+        };
+        let mut input = Vec::new();
+        input.extend_from_slice(&frame_of(1, "unknownCommand"));
+        input.extend_from_slice(&frame_of(2, "disconnect"));
+        for seq in 3..=220 {
+            input.extend_from_slice(&frame_of(seq, "unknownCommand"));
+        }
+
+        let gate: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
+        let result = run_peer_session_threaded(
+            Cursor::new(input),
+            GatedSink::new(Arc::clone(&gate)),
+            bridge(),
+            Duration::from_millis(1),
+        );
+
+        let Err(failure) = result else {
+            return Err("an admitted disconnect after a latched overflow must not report success"
+                .to_string());
+        };
+        assert!(
+            failure.to_string().contains(crate::backend::peer_frame_queue::PEER_BACKPRESSURE_MSG),
+            "the session failure must carry the typed backpressure disposition, got: {failure}"
+        );
+        Ok(())
     }
 }
