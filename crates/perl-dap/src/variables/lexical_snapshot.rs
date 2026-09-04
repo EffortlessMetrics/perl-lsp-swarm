@@ -265,7 +265,11 @@ fn build_node(value: SourceValue<'_>, depth: usize, cursor: &mut BudgetCursor) -
         cursor.record_truncation(TruncationReason::ContainerItemLimit);
     }
 
-    let mut snapshot_children = Vec::with_capacity(admitted);
+    // Never reserve more slots than the remaining cumulative node budget can
+    // retain: a wide root under a small `max_total_nodes` must not trigger an
+    // excessive allocation for children that will never be visited.
+    let capacity = admitted.min(cursor.budget.max_total_nodes.saturating_sub(cursor.visited));
+    let mut snapshot_children = Vec::with_capacity(capacity);
     let mut outcome = if admitted < source_children.len() {
         Some(TruncationReason::ContainerItemLimit)
     } else {
@@ -438,6 +442,21 @@ mod tests {
         assert_eq!(snapshot.root.name, "");
         assert_eq!(snapshot.root.kind_label, "");
         assert_eq!(snapshot.total_retained_bytes, 0);
+    }
+
+    #[test]
+    fn node_budget_caps_the_requested_children_capacity() {
+        // Budget of 1 total node: the root alone exhausts it. The children
+        // vector must not reserve capacity for children the budget can never
+        // retain, even when the per-container limit admits a wide root.
+        let kids: Vec<SourceValue<'_>> = (0..64).map(|_| scalar("s", "v")).collect();
+        let root = SourceValue::container("@v", "array", &kids);
+        let budget = SnapshotBudget { max_total_nodes: 1, ..SnapshotBudget::defaults() };
+        let snapshot = capture_snapshot(root, budget);
+
+        assert_eq!(snapshot.truncation, Some(TruncationReason::NodeBudgetExhausted));
+        assert!(snapshot.root.children.is_empty());
+        assert_eq!(snapshot.root.children.capacity(), 0);
     }
 
     #[test]
