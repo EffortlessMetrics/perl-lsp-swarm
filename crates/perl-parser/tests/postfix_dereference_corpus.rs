@@ -331,7 +331,7 @@ fn find_parent_assignment(node: &Node, expected_lhs: &Node, found: &mut bool) {
 }
 
 /// The same postfix text occurs twice and must bind twice, with identical
-/// HashSlice payloads and two distinct statement parents.
+/// HashSlice payloads at two distinct source occurrences.
 fn assert_repeated_hash_slice(ast: &Node, source: &str) -> Result<(), String> {
     let found = collect_all_spanning(ast, source, REPEATED_MARKER);
     if found.len() != 2 {
@@ -355,6 +355,11 @@ fn assert_repeated_hash_slice(ast: &Node, source: &str) -> Result<(), String> {
     }
     if std::ptr::eq(found[0], found[1]) {
         return Err("the repeated marker matched one node twice".to_string());
+    }
+    if found[0].location.start == found[1].location.start
+        && found[0].location.end == found[1].location.end
+    {
+        return Err("the repeated marker bound one source occurrence twice".to_string());
     }
     Ok(())
 }
@@ -398,7 +403,112 @@ fn assert_generic_slice_controls(ast: &Node, source: &str) -> Result<(), String>
     if op != "->{}" {
         return Err(format!("arrow element control carried op {op:?}, expected \"->{{}}\""));
     }
+
+    // Zero-match negative controls must use each control node's actual
+    // receiver and selector spans.  Keeping this collection rooted at the
+    // resolved control node also prevents a legitimate postfix occurrence
+    // elsewhere in the fixture from making the negative control vacuous.
+    for text in [
+        "@control_hash{'alpha', 'beta'}",
+        "%control_hash{qw(alpha beta)}",
+        "@$href{'alpha', 'beta'}",
+        "%$href{qw(alpha beta)}",
+    ] {
+        let control = exact_node(ast, source, text)?;
+        let (receiver, selector) = match &control.kind {
+            NodeKind::HashSlice { target, keys } | NodeKind::KeyValueSlice { target, keys } => (
+                node_source(target, source)
+                    .ok_or_else(|| format!("control {text:?} has an invalid receiver span"))?,
+                node_source(keys, source)
+                    .ok_or_else(|| format!("control {text:?} has an invalid selector span"))?,
+            ),
+            other => {
+                return Err(format!(
+                    "control {text:?} produced {}, expected a slice node",
+                    other.kind_name()
+                ));
+            }
+        };
+
+        let mut found = Vec::new();
+        collect_postfix_slice(control, source, receiver, selector, &mut found);
+        if !found.is_empty() {
+            return Err(format!(
+                "control {text:?} ({receiver}, {selector}) satisfied a postfix slice expectation"
+            ));
+        }
+        for star_op in ["->$*", "->$#*", "->@*", "->%*", "->&*", "->**"] {
+            let mut found = Vec::new();
+            collect_star_unary(control, source, star_op, receiver, &mut found);
+            if !found.is_empty() {
+                return Err(format!(
+                    "control {text:?} receiver {receiver} satisfied the star-form postfix expectation {star_op}"
+                ));
+            }
+        }
+    }
+
+    // No retained control node may itself satisfy a dedicated postfix
+    // expectation.
+    for text in [
+        "@control_hash{'alpha', 'beta'}",
+        "%control_hash{qw(alpha beta)}",
+        "@$href{'alpha', 'beta'}",
+        "%$href{qw(alpha beta)}",
+        "$href->{alpha}",
+    ] {
+        let node = exact_node(ast, source, text)?;
+        if satisfies_postfix_expectation(node, source) {
+            return Err(format!("control {text:?} satisfied a dedicated postfix expectation"));
+        }
+    }
     Ok(())
+}
+
+/// Whether a node satisfies a dedicated postfix-dereference expectation: an
+/// arrow star-form Unary, an arrow-slice Binary (`->@[]` / `->%{}`), or a
+/// HashSlice whose own source text contains the arrow. Ordinary/prefix slices
+/// and arrow element access never qualify.
+fn satisfies_postfix_expectation(node: &Node, source: &str) -> bool {
+    match &node.kind {
+        NodeKind::Unary { op, .. } => op.starts_with("->") && op.ends_with('*'),
+        NodeKind::Binary { op, .. } => op == "->@[]" || op == "->%{}",
+        NodeKind::HashSlice { .. } => {
+            node_source(node, source).is_some_and(|text| text.contains("->"))
+        }
+        _ => false,
+    }
+}
+
+/// Collect the dedicated arrow-slice postfix bindings for a receiver/selector
+/// payload: arrow-slice Binary rows and HashSlice rows whose own source text
+/// contains the arrow (excluding ordinary and prefix slices).
+fn collect_postfix_slice<'a>(
+    node: &'a Node,
+    source: &str,
+    receiver: &str,
+    selector: &str,
+    found: &mut Vec<&'a Node>,
+) {
+    let matches = match &node.kind {
+        NodeKind::Binary { op, left, right } => {
+            (op == "->@[]" || op == "->%{}")
+                && node_source(left, source) == Some(receiver)
+                && node_source(right, source) == Some(selector)
+        }
+        NodeKind::HashSlice { target, keys } => {
+            node_source(target, source) == Some(receiver)
+                && node_source(keys, source) == Some(selector)
+                && node_source(node, source).is_some_and(|text| text.contains("->"))
+        }
+        _ => false,
+    };
+    if matches {
+        found.push(node);
+    }
+    for child in node.children() {
+        collect_postfix_slice(child, source, receiver, selector, found);
+    }
 }
 
 fn exact_node<'a>(ast: &'a Node, source: &str, expected: &str) -> Result<&'a Node, String> {
