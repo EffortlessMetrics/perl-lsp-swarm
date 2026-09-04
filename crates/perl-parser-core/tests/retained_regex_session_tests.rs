@@ -182,6 +182,58 @@ fn an_out_of_order_finish_retains_nothing_rather_than_another_sessions_geometry(
     );
 }
 
+/// A parse of a *different* buffer must not contribute geometry to this session,
+/// even when the two are the same length.
+///
+/// Geometry is offered to whichever session is active, so admitting it on length
+/// alone lets a parse of another document anchor spans in a table built from this
+/// one — text nobody analyzed, carrying a digest that still matches. The session
+/// owns one buffer, and only that buffer's parse may contribute.
+///
+/// The fixture needs equal lengths and a regex operator at the same byte offset,
+/// differing only in body, for the same reason as the out-of-order test: anything
+/// less similar is silently repaired by re-extraction and proves nothing.
+#[test]
+fn a_parse_of_another_buffer_cannot_contribute_geometry() {
+    let session_source = "my $a = qr/(a+)+b/;\n";
+    let parser_source = "my $a = qr/(x+)-b/;\n";
+    assert_eq!(
+        session_source.len(),
+        parser_source.len(),
+        "the fixture only discriminates while both sources are the same length"
+    );
+
+    let session = RetainedRegexSession::begin(session_source);
+    // Deliberately parse the *other* buffer inside this session.
+    let mut parser = Parser::new(parser_source);
+    let parsed = parser.parse();
+    assert!(parsed.is_ok(), "the parser source must parse: {parsed:?}");
+    let Ok(mut ast) = parsed else { return };
+    let table = session.finish(Some(&mut ast));
+
+    assert!(
+        table.source_matches(session_source),
+        "the table binds the source the session was begun for"
+    );
+
+    // The measured difference, and the reason this is a data-integrity bug rather
+    // than a lost finding: admitting the other buffer's geometry produces an
+    // `Analyzed` record whose body was `(x+)-b`, so the table reports a *clean*
+    // pattern for a document whose actual body is `(a+)+b`. Refusing is the honest
+    // outcome — an explicit `GeometryUnavailable` record with no analysis.
+    for record in &table.records {
+        assert_ne!(
+            record.availability,
+            RegexAnalysisAvailability::Analyzed,
+            "a foreign parse must not yield an analyzed record: {table:#?}"
+        );
+        assert!(
+            record.pattern.is_none(),
+            "a foreign parse must not yield pattern analysis: {table:#?}"
+        );
+    }
+}
+
 /// Negative control for the equivalence above. It passes only because the session
 /// actually retained something; an empty table would make the comparison vacuous.
 #[test]

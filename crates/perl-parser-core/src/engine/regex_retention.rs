@@ -204,7 +204,10 @@ pub(crate) fn record_operator_geometry(source: &str, start: usize) -> bool {
         let Some(session) = sessions.last_mut() else {
             return false;
         };
-        if session.source_len != source.len() {
+        if !session.owns(source) {
+            // A parse of some other buffer. Suppressing the legacy scan for it
+            // would lose its findings without retaining anything in exchange, so
+            // hand it back to the compatibility path.
             return false;
         }
         if let Some(text) = source.get(start..)
@@ -644,17 +647,36 @@ struct PendingGeometrySession {
     /// Identity of the guard that pushed this entry, so a session finished out of
     /// order cannot pop and consume a different session's geometry.
     id: u64,
+    /// Address of the exact buffer this session was begun for.
+    ///
+    /// Length alone is not identity. Two documents of the same length would
+    /// otherwise both satisfy the admission test, so a parse of one could
+    /// contribute geometry to a table built from the other — spans anchored in
+    /// text nobody analyzed, carrying a digest that still matches. Comparing the
+    /// buffer address as well means only the parse this session actually wraps
+    /// can contribute.
+    source_ptr: usize,
     source_len: usize,
     geometries: Vec<RegexFamilyGeometry>,
 }
 
 impl PendingGeometrySession {
     fn for_source(id: u64, source: &str) -> Self {
-        Self { id, source_len: source.len(), geometries: Vec::new() }
+        Self {
+            id,
+            source_ptr: source.as_ptr() as usize,
+            source_len: source.len(),
+            geometries: Vec::new(),
+        }
     }
 
     fn empty() -> Self {
-        Self { id: 0, source_len: 0, geometries: Vec::new() }
+        Self { id: 0, source_ptr: 0, source_len: 0, geometries: Vec::new() }
+    }
+
+    /// Whether `source` is the exact buffer this session was begun for.
+    fn owns(&self, source: &str) -> bool {
+        self.source_ptr == source.as_ptr() as usize && self.source_len == source.len()
     }
 }
 
