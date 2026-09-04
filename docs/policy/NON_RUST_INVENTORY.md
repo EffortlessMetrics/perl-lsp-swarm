@@ -6,8 +6,8 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12703 |
-| Rust-family files | 3952 |
+| Total tracked files | 12705 |
+| Rust-family files | 3954 |
 | Non-Rust files | 8751 |
 | Allowlisted | 6512 |
 | Unclassified | 2239 |
@@ -17,10 +17,10 @@
 | Category | Count |
 |---|---|
 | config | 502 |
-| documentation | 2853 |
+| documentation | 2852 |
 | generated | 2 |
 | production | 361 |
-| test | 2110 |
+| test | 2111 |
 | tooling | 684 |
 | unclassified | 2239 |
 
@@ -2824,7 +2824,6 @@
 | `.claude/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/agents/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/agents/builder.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `.claude/agents/lane-orchestrator.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/agents/researcher.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/agents/reviewer.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/reference/review-convergence.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -8380,6 +8379,7 @@
 | `tests/test_active_authority_contract.py` | test | `non-rust-active-authority-contract-test` | release/ci |
 | `tests/test_agent_authority_status.py` | test | `non-rust-agent-authority-status-test` | release/ci |
 | `tests/test_legacy_authority_banners.py` | test | `non-rust-legacy-authority-banners-test` | release/ci |
+| `tests/test_writer_authority_transfer_contract.py` | test | `non-rust-writer-authority-transfer-contract-test` | release/ci |
 | `tree-sitter-perl/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 | `tree-sitter-perl/PURE_RUST_PERFORMANCE_ANALYSIS.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `tree-sitter-perl/README.md` | documentation | `non-rust-root-governance-docs` | docs |
