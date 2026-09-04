@@ -103,8 +103,11 @@ fn legacy_field_call_reuses_existing_lexical_target() -> TestResult {
     let nodes = lower_single_body(body, HirBodyId(0), &file);
 
     assert!(
-        nodes.iter().any(|node| matches!(node.operation, PirOperation::LexicalWrite { .. })),
-        "legacy field calls must preserve writes to an existing lexical: {nodes:?}"
+        nodes.iter().any(|node| {
+            matches!(node.operation, PirOperation::LexicalWrite { .. })
+                && node.source_anchor.range.map(|range| (range.start, range.end)) == Some((13, 15))
+        }),
+        "legacy field call must write the existing lexical at the field argument anchor: {nodes:?}"
     );
     assert!(
         nodes.iter().any(|node| matches!(node.operation, PirOperation::Assign)),
