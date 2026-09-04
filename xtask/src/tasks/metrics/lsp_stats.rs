@@ -2517,6 +2517,14 @@ mod tests {
         let conditionals = evidence["allOf"].as_array().ok_or("evidence.allOf")?;
         let verified_then = &conditionals[0]["then"]["properties"];
         assert_eq!(
+            verified_then["verification_pr"]["type"], "integer",
+            "verified rows must carry a non-null verification_pr identity"
+        );
+        assert_eq!(
+            verified_then["verification_pr"]["minimum"], 1,
+            "verified rows must not carry a placeholder verification_pr"
+        );
+        assert_eq!(
             verified_then["verified_sha"]["type"], "string",
             "verified rows must carry a non-null 40-hex verified_sha"
         );

@@ -30,14 +30,30 @@ PEER_DISPATCH_PATHS = (
     Path("crates/perl-dap/src/backend/peer_bridge.rs"),
     Path("crates/perl-dap/src/backend/peer_launch.rs"),
 )
+# The pinned compatibility-fallback bodies (#9527, fail-closed split #9069):
+# a catalog route that exists but is unavailable in the peer frontend must
+# fail closed (success: false, no body) — a lenient ack would report success
+# for work no backend performed — while a genuinely unknown command keeps the
+# mirror-MVP acknowledgement so a client is never wedged. Changing the shape
+# of this arm is a deliberate contract edit that updates these constants.
 EXPECTED_PEER_FALLBACKS = {
     PEER_DISPATCH_PATHS[0]: (
+        "if DapRequestRoute::from_command(command).is_some() { "
+        'tracing::warn!(command, "peer bridge: request is unavailable in this frontend"); '
+        "out.push(self.response( request_seq, command, false, None, "
+        'Some("request is unavailable in the external peer frontend".to_string()), )); '
+        "} else { "
         'tracing::warn!(command, "peer bridge: unhandled DAP request"); '
-        "out.push(self.response(request_seq, command, true, None, None));"
+        "out.push(self.response(request_seq, command, true, None, None)); }"
     ),
     PEER_DISPATCH_PATHS[1]: (
+        "if DapRequestRoute::from_command(command).is_some() { "
+        'tracing::warn!( command, "mirror bridge: request is unavailable in this frontend" ); '
+        "out.push(self.response( request_seq, command, false, None, "
+        'Some("request is unavailable in the mirror peer frontend".to_string()), )); '
+        "} else { "
         'tracing::warn!(command, "mirror bridge: unhandled DAP request"); '
-        "out.push(self.response(request_seq, command, true, None, None));"
+        "out.push(self.response(request_seq, command, true, None, None)); }"
     ),
 }
 FORBIDDEN_DOC_PHRASES = (
