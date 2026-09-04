@@ -47,6 +47,13 @@
 //!   for the four candidate mechanisms. Compile success is never reload
 //!   success, and no external module (for example Class::Refresh) becomes
 //!   product authority merely by being available.
+//! - **Runtime transaction** ([`runtime`], #10098): the executor that
+//!   drives one bounded transaction through a channel seam whose mutation
+//!   call is distinct from its read-only calls, so a lost answer after the
+//!   boundary can only be projected as
+//!   `indeterminate_possibly_applied`. It is unrouted: R03 (#10102) wires
+//!   it to the adapter and R04 (#10104) proves it through the public
+//!   binary.
 //! - **Live measurement** ([`measurement`], #10098): the controlled
 //!   real-Perl harness that records each directly measurable mechanism's
 //!   actual state limits as typed facts, and every boundary the harness
@@ -68,6 +75,7 @@ mod generation;
 mod invalidation;
 mod measurement;
 mod mechanism;
+mod runtime;
 mod subject;
 mod surface;
 mod transaction;
@@ -90,6 +98,10 @@ pub use measurement::{
 pub use mechanism::{
     MechanismClaim, MechanismClaims, MechanismRecordError, ReloadMechanism, ReloadMechanismRecord,
     mechanism_records, verify_mechanism_claims,
+};
+pub use runtime::{
+    ChannelSettlement, CommandPlanError, ReloadCommandPlan, ReloadExecution, ReloadRuntimeChannel,
+    UnsettledKind, execute_reload, mechanism_is_executable, plan_commands,
 };
 pub use subject::{
     LoadedModuleSubject, ModuleClassification, SubjectBindingError, SubjectCandidate,

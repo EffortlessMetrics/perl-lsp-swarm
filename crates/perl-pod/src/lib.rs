@@ -90,7 +90,8 @@ pub fn extract_pod(source: &str) -> PodDoc {
     for line in source.lines() {
         // Detect POD start directives. Use exact command-word matching to avoid
         // false positives like `=cutlery` matching `=cut` or `=headache`
-        // matching `=head` (#4971).
+        // matching `=head` (narrow command-map slice: #13575; broader POD
+        // parser authority: #4971).
         if pod_command(line).is_some() {
             in_pod = true;
         }
@@ -212,7 +213,8 @@ pub fn extract_pod(source: &str) -> PodDoc {
 /// Recognized POD commands. Returns the command name (without `=`) when `line`
 /// starts with `=` followed by exactly one of the known command identifiers and
 /// a word boundary (space, tab, or end-of-line). This prevents `=cutlery` from
-/// matching `=cut` and `=headache` from matching `=head` (#4971).
+/// matching `=cut` and `=headache` from matching `=head` (narrow command-map
+/// slice: #13575; broader POD parser authority: #4971).
 fn pod_command(line: &str) -> Option<&'static str> {
     let rest = line.strip_prefix('=')?;
     // The command is the leading alphanumeric run (e.g. `head1`, `head2`).
@@ -223,28 +225,21 @@ fn pod_command(line: &str) -> Option<&'static str> {
         return None;
     }
     match cmd {
-        "pod" | "cut" | "head1" | "head2" | "head3" | "head4" | "head5" | "head6" | "over"
-        | "back" | "item" | "begin" | "end" | "for" | "encoding" => Some(
-            // Safety: `cmd` is a substring of a static match arm.
-            match cmd {
-                "pod" => "pod",
-                "cut" => "cut",
-                "head1" => "head1",
-                "head2" => "head2",
-                "head3" => "head3",
-                "head4" => "head4",
-                "head5" => "head5",
-                "head6" => "head6",
-                "over" => "over",
-                "back" => "back",
-                "item" => "item",
-                "begin" => "begin",
-                "end" => "end",
-                "for" => "for",
-                "encoding" => "encoding",
-                _ => unreachable!(),
-            },
-        ),
+        "pod" => Some("pod"),
+        "cut" => Some("cut"),
+        "head1" => Some("head1"),
+        "head2" => Some("head2"),
+        "head3" => Some("head3"),
+        "head4" => Some("head4"),
+        "head5" => Some("head5"),
+        "head6" => Some("head6"),
+        "over" => Some("over"),
+        "back" => Some("back"),
+        "item" => Some("item"),
+        "begin" => Some("begin"),
+        "end" => Some("end"),
+        "for" => Some("for"),
+        "encoding" => Some("encoding"),
         _ => None,
     }
 }
@@ -313,7 +308,12 @@ fn flush_section(doc: &mut PodDoc, section: &Option<Section>, body: &str, in_ove
             doc.name = Some(strip_pod_formatting_display_text(trimmed));
         }
         Section::Synopsis => {
-            doc.synopsis = Some(cleaned);
+            // Synopsis feeds the same plain-text hover/virtual-content
+            // surfaces as NAME, so links render as display text there too.
+            // The markdown `L<>` rendering percent-encodes link targets and
+            // made a cleaned synopsis longer than its source, tripping the
+            // `pod_extraction` fuzz invariant (#12824 family).
+            doc.synopsis = Some(strip_pod_formatting_display_text(trimmed));
         }
         Section::Description => {
             // Take only the first paragraph
@@ -373,10 +373,10 @@ pub fn strip_pod_formatting(text: &str) -> String {
 
 /// Like [`strip_pod_formatting`], but renders `L<...>` links as their plain
 /// display text only — no markdown `[text](url)` wrapper, no percent-encoded
-/// target. Used for the NAME field (#12824): its sole consumer renders it as
-/// plain perldoc text, so link markup is noise, and the percent-encoding
-/// expansion made a cleaned NAME longer than its source, violating the
-/// extraction invariant the `pod_extraction` fuzz target asserts.
+/// target. Used for the NAME and SYNOPSIS fields (#12824, #14171): their
+/// consumers render them as plain perldoc text, so link markup is noise, and
+/// the percent-encoding expansion made a cleaned field longer than its source,
+/// violating the extraction invariant the `pod_extraction` fuzz target asserts.
 pub fn strip_pod_formatting_display_text(text: &str) -> String {
     strip_pod_formatting_depth_links(text, 0, LinkRendering::DisplayText)
 }
@@ -796,31 +796,46 @@ mod tests {
         assert_eq!(doc.methods.len(), 1, "expected exactly one method section");
     }
 
-    // ── POD command-prefix matching (#4971) ────────────────────────────────
+    // ── POD command-prefix matching (#13575; broader authority #4971) ─────
 
     #[test]
-    fn pod_command_matches_exact_names() {
-        assert_eq!(pod_command("=head1 NAME"), Some("head1"));
-        assert_eq!(pod_command("=head2 Method"), Some("head2"));
-        assert_eq!(pod_command("=head3 Sub"), Some("head3"));
-        assert_eq!(pod_command("=cut"), Some("cut"));
-        assert_eq!(pod_command("=over 4"), Some("over"));
-        assert_eq!(pod_command("=back"), Some("back"));
-        assert_eq!(pod_command("=item * foo"), Some("item"));
-        assert_eq!(pod_command("=pod"), Some("pod"));
-        assert_eq!(pod_command("=encoding utf-8"), Some("encoding"));
+    fn pod_command_maps_complete_closed_vocabulary() {
+        for command in [
+            "pod", "cut", "head1", "head2", "head3", "head4", "head5", "head6", "over", "back",
+            "item", "begin", "end", "for", "encoding",
+        ] {
+            let bare = format!("={command}");
+            let spaced = format!("={command} value");
+            let tabbed = format!("={command}\tvalue");
+
+            assert_eq!(pod_command(&bare), Some(command), "bare directive {command}");
+            assert_eq!(pod_command(&spaced), Some(command), "spaced directive {command}");
+            assert_eq!(pod_command(&tabbed), Some(command), "tabbed directive {command}");
+        }
     }
 
     #[test]
     fn pod_command_rejects_prefix_only_matches() {
-        // #4971: `=cutlery` must NOT match `=cut`, `=headache` must NOT match
-        // `=head`, `=overboard` must NOT match `=over`.
-        assert_eq!(pod_command("=cutlery"), None);
-        assert_eq!(pod_command("=headache"), None);
-        assert_eq!(pod_command("=overboard"), None);
-        assert_eq!(pod_command("=backspace"), None);
-        assert_eq!(pod_command("=items"), None);
-        assert_eq!(pod_command("=podcast"), None);
+        // #13575: lookalikes must not match a shorter recognized directive.
+        for line in [
+            "=cutlery",
+            "=headache",
+            "=head7",
+            "=head10",
+            "=head1:",
+            "=cut!",
+            "=heаd1 confusable",
+            "=overboard",
+            "=backspace",
+            "=items",
+            "=podcast",
+            "=beginner",
+            "=ending",
+            "=forward",
+            "=encodingx",
+        ] {
+            assert_eq!(pod_command(line), None, "lookalike directive {line}");
+        }
     }
 
     #[test]
