@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12706 |
+| Total tracked files | 12707 |
 | Rust-family files | 3960 |
-| Non-Rust files | 8746 |
-| Allowlisted | 6507 |
+| Non-Rust files | 8747 |
+| Allowlisted | 6508 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -19,7 +19,7 @@
 | config | 502 |
 | documentation | 2852 |
 | generated | 2 |
-| production | 356 |
+| production | 357 |
 | test | 2110 |
 | tooling | 685 |
 | unclassified | 2239 |
@@ -8635,6 +8635,7 @@
 | `vscode-extension/src/test/languageClientConfiguration.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/languageClientDocumentSync.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/languageClientLifecycle.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/languageClientLifecycleSettlement.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/languageClientStartupMetrics.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/languageServerHealth.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/loadedModuleReloadFamily.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
