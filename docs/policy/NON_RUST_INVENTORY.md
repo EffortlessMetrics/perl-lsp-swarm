@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12701 |
-| Rust-family files | 3956 |
-| Non-Rust files | 8745 |
-| Allowlisted | 6506 |
+| Total tracked files | 12709 |
+| Rust-family files | 3960 |
+| Non-Rust files | 8749 |
+| Allowlisted | 6510 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 502 |
-| documentation | 2856 |
+| config | 503 |
+| documentation | 2855 |
 | generated | 2 |
 | production | 356 |
-| test | 2109 |
-| tooling | 681 |
+| test | 2110 |
+| tooling | 684 |
 | unclassified | 2239 |
 
 ## Unclassified files
@@ -2825,7 +2825,6 @@
 | `.claude/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/agents/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/agents/builder.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `.claude/agents/lane-orchestrator.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/agents/researcher.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/agents/reviewer.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/reference/review-convergence.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -2978,6 +2977,7 @@
 | `.github/workflows/review-receipt-retirement.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/ripr-infra-retry.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/ripr.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/rolling-installed-public-beta-observation.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/scoop-bump.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/security-reconciliation.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/semantic-close-containment.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -6559,6 +6559,7 @@
 | `scripts/ci/check_perl_lsp_rs_core_package.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check_publish_package_contents.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check_release_settings_closeout.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/check_rolling_installed_workflow.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check_security_reconciliation.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check_source_commit_api.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/ci_classify.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6688,6 +6689,7 @@
 | `scripts/ci/release_artifact_size_smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/release_artifact_size_stage.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/ripr_summary.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/rolling_installed_observation.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/route-codecov-packs.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/run_gate_shard.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/run_parser_integration.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6720,6 +6722,7 @@
 | `scripts/ci/test_receipts_to_junit.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_reconcile_github_enforcement_snapshot.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_ripr_summary.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_rolling_installed_observation.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_route_codecov_packs.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_run_gate_shard.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_run_parser_integration.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -8380,6 +8383,7 @@
 | `tests/test_active_authority_contract.py` | test | `non-rust-active-authority-contract-test` | release/ci |
 | `tests/test_agent_authority_status.py` | test | `non-rust-agent-authority-status-test` | release/ci |
 | `tests/test_legacy_authority_banners.py` | test | `non-rust-legacy-authority-banners-test` | release/ci |
+| `tests/test_writer_authority_transfer_contract.py` | test | `non-rust-writer-authority-transfer-contract-test` | release/ci |
 | `tree-sitter-perl/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 | `tree-sitter-perl/PURE_RUST_PERFORMANCE_ANALYSIS.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `tree-sitter-perl/README.md` | documentation | `non-rust-root-governance-docs` | docs |
