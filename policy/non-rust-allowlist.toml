@@ -360,6 +360,22 @@ created = "2026-08-15"
 review_after = "2026-11-15"
 
 [[allow]]
+id = "non-rust-writer-authority-transfer-contract-test"
+path = "tests/test_writer_authority_transfer_contract.py"
+kind = "control_plane_contract_test"
+language = "python"
+surface = "ci"
+classification = "test"
+owner = "release/ci"
+reason = "Pins writer-authority transfer semantics (revoke-before-reassign, typed return, explicit `not_proven`, silence does not transfer ownership) across the orchestrate-work and build-candidate skill mirrors and the authority workflow. Standard-library `unittest` only, so it needs no Rust build and no Python dependency install."
+covered_by = [
+  "python3 -m unittest tests/test_active_authority_contract.py tests/test_writer_authority_transfer_contract.py",
+  ".github/workflows/active-authority-contract.yml",
+]
+created = "2026-08-31"
+review_after = "2026-11-30"
+
+[[allow]]
 id = "non-rust-agent-authority-status-test"
 path = "tests/test_agent_authority_status.py"
 kind = "control_plane_contract_test"

@@ -22,6 +22,7 @@ mod regexes;
 pub(crate) mod safe_eval;
 mod session;
 mod sync_utils;
+mod tcp_attach_forwarder;
 mod transport;
 pub mod var_ref;
 mod variable_cache;
@@ -959,6 +960,220 @@ print "result: $final\n";
     }
 
     #[test]
+    fn test_set_breakpoints_all_optional_entries_do_not_touch_store()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #9578: a request whose entries all carry floored optional fields
+        // must not replace desired state, so pre-existing breakpoints for the
+        // file survive untouched and no function re-apply pass runs.
+        let (_keep, source_path) = create_breakpoint_test_perl_file()?;
+        let mut adapter = DebugAdapter::new();
+
+        let first = adapter.handle_request(
+            1,
+            "setBreakpoints",
+            Some(json!({
+                "source": { "path": source_path },
+                "breakpoints": [{ "line": 10 }],
+            })),
+        );
+        match first {
+            DapMessage::Response { success: true, .. } => {}
+            other => return Err(format!("expected successful plain request, got {other:?}").into()),
+        }
+        let before = adapter.breakpoints.get_breakpoints(&source_path);
+        assert_eq!(before.len(), 1, "precondition: the plain request stored one breakpoint");
+
+        let rejected = adapter.handle_request(
+            2,
+            "setBreakpoints",
+            Some(json!({
+                "source": { "path": source_path },
+                "breakpoints": [
+                    { "line": 3, "condition": "$x > 0" },
+                    { "line": 4, "logMessage": "loop" },
+                ],
+            })),
+        );
+        match rejected {
+            DapMessage::Response { success: true, body: Some(body), .. } => {
+                let breakpoints =
+                    body.get("breakpoints").and_then(Value::as_array).ok_or("missing array")?;
+                assert_eq!(breakpoints.len(), 2, "one response per input");
+                assert!(
+                    breakpoints
+                        .iter()
+                        .all(|bp| bp.get("verified").and_then(Value::as_bool) == Some(false)),
+                    "every optional-field entry must reject"
+                );
+            }
+            other => return Err(format!("expected per-item rejections, got {other:?}").into()),
+        }
+
+        let after = adapter.breakpoints.get_breakpoints(&source_path);
+        assert_eq!(
+            after.iter().map(|bp| bp.line).collect::<Vec<_>>(),
+            before.iter().map(|bp| bp.line).collect::<Vec<_>>(),
+            "a fully-rejected request must not clear or replace stored breakpoints"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_breakpoints_combined_entry_rejects_every_still_floored_field()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #9578 review: one entry carrying all three optional fields rejects
+        // on EVERY still-floored capability — the reasons are cumulative, not
+        // first-match — so promoting one capability can never admit an entry
+        // whose other fields remain floored.
+        let (_keep, source_path) = create_breakpoint_test_perl_file()?;
+        let mut adapter = DebugAdapter::new();
+
+        let combined = adapter.handle_request(
+            1,
+            "setBreakpoints",
+            Some(json!({
+                "source": { "path": source_path },
+                "breakpoints": [{
+                    "line": 7,
+                    "condition": "$x == 1",
+                    "hitCondition": ">= 2",
+                    "logMessage": "combined",
+                }],
+            })),
+        );
+        match combined {
+            DapMessage::Response { success: true, body: Some(body), .. } => {
+                let breakpoints =
+                    body.get("breakpoints").and_then(Value::as_array).ok_or("missing array")?;
+                assert_eq!(breakpoints.len(), 1, "one response per input");
+                let entry = &breakpoints[0];
+                assert_eq!(
+                    entry.get("verified").and_then(Value::as_bool),
+                    Some(false),
+                    "a combined entry with every field floored must reject"
+                );
+                let message = entry
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .ok_or("rejected entry must carry its refusal reasons")?;
+                assert!(
+                    message.contains(crate::backend::capabilities::CONDITION_UNSUPPORTED_MESSAGE),
+                    "the condition refusal must be present, got: {message}"
+                );
+                assert!(
+                    message
+                        .contains(crate::backend::capabilities::HIT_CONDITION_UNSUPPORTED_MESSAGE),
+                    "the hitCondition refusal must be present, got: {message}"
+                );
+                assert!(
+                    message.contains(crate::backend::capabilities::LOG_MESSAGE_UNSUPPORTED_MESSAGE),
+                    "the logMessage refusal must be present, got: {message}"
+                );
+            }
+            other => return Err(format!("expected per-item rejection, got {other:?}").into()),
+        }
+
+        assert!(
+            adapter.breakpoints.get_breakpoints(&source_path).is_empty(),
+            "a combined rejected entry must not mutate the store"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_breakpoints_mixed_request_stores_only_plain_entries()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #9578: replace semantics run over the plain subset only; the
+        // rejected optional-field entry must not leak into the store in any
+        // form (unconditional, counted, or simulated-output).
+        let (_keep, source_path) = create_breakpoint_test_perl_file()?;
+        let mut adapter = DebugAdapter::new();
+
+        let mixed = adapter.handle_request(
+            1,
+            "setBreakpoints",
+            Some(json!({
+                "source": { "path": source_path },
+                "breakpoints": [
+                    { "line": 10 },
+                    { "line": 11, "condition": "$y == 2" },
+                    { "line": 12, "hitCondition": ">= 5" },
+                ],
+            })),
+        );
+        match mixed {
+            DapMessage::Response { success: true, body: Some(body), .. } => {
+                let breakpoints =
+                    body.get("breakpoints").and_then(Value::as_array).ok_or("missing array")?;
+                assert_eq!(breakpoints.len(), 3, "one response per input");
+                assert_eq!(breakpoints[0].get("verified").and_then(Value::as_bool), Some(true));
+                assert_eq!(breakpoints[1].get("verified").and_then(Value::as_bool), Some(false));
+                assert_eq!(breakpoints[2].get("verified").and_then(Value::as_bool), Some(false));
+            }
+            other => return Err(format!("expected mixed response, got {other:?}").into()),
+        }
+
+        let stored = adapter.breakpoints.get_breakpoints(&source_path);
+        assert_eq!(stored.len(), 1, "only the plain entry may be stored");
+        assert_eq!(stored[0].line, 10);
+        assert!(stored[0].condition.is_none(), "no condition may reach the store while floored");
+        assert!(
+            stored[0].hit_condition.is_none() && stored[0].log_message.is_none(),
+            "no optional metadata may reach the store while floored"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_function_breakpoints_floor_never_mutates_function_registry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #9578: the floored setFunctionBreakpoints path refuses before
+        // registry mutation, so the stored function-breakpoint registry stays
+        // empty across every shape, and the floor leaves the line-breakpoint
+        // store untouched (families stay isolated).
+        let (_keep, source_path) = create_breakpoint_test_perl_file()?;
+        let mut adapter = DebugAdapter::new();
+
+        adapter.handle_request(
+            1,
+            "setBreakpoints",
+            Some(json!({
+                "source": { "path": source_path },
+                "breakpoints": [{ "line": 10 }],
+            })),
+        );
+
+        for (seq, arguments) in [
+            (2, Some(json!({ "breakpoints": [{ "name": "main::run" }] }))),
+            (3, Some(json!({ "breakpoints": [] }))),
+            (4, None),
+        ] {
+            let response = adapter.handle_request(seq, "setFunctionBreakpoints", arguments);
+            match response {
+                DapMessage::Response { success: false, message: Some(message), .. } => {
+                    assert!(
+                        message.contains("supportsFunctionBreakpoints"),
+                        "refusal must name the floored capability, got {message:?}"
+                    );
+                }
+                other => return Err(format!("expected the floor refusal, got {other:?}").into()),
+            }
+            assert!(
+                adapter.function_breakpoints.lock().map(|g| g.is_empty()).unwrap_or(true),
+                "a refused request must not mutate the function-breakpoint registry"
+            );
+        }
+
+        let stored = adapter.breakpoints.get_breakpoints(&source_path);
+        assert_eq!(stored.len(), 1, "refused function requests must not touch the source family");
+
+        Ok(())
+    }
+
+    #[test]
     fn test_initialize_capabilities_mirror_feature_catalog()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut adapter = DebugAdapter::new();
@@ -978,14 +1193,24 @@ print "result: $final\n";
 
         let expectations = [
             ("supportsConfigurationDoneRequest", crate::feature_catalog::has_feature("dap.core")),
-            ("supportsFunctionBreakpoints", crate::feature_catalog::has_feature("dap.core")),
+            // #9578: the four optional breakpoint capability rows are bound to
+            // the fail-closed breakpoint authority, not to `dap.core` or
+            // `dap.breakpoints.*`. Their runtime contracts (engine
+            // resolution/install, condition enforcement, attributed hit
+            // counting, correlated logpoint output) are unproven, so the wire
+            // value stays false even while the catalog rows advertise —
+            // re-enable gates: #8645, #8988, #8994, #9000.
+            (
+                "supportsFunctionBreakpoints",
+                crate::backend::capabilities::advertises_function_breakpoints(),
+            ),
             (
                 "supportsConditionalBreakpoints",
-                crate::feature_catalog::has_feature("dap.breakpoints.basic"),
+                crate::backend::capabilities::advertises_conditional_breakpoints(),
             ),
             (
                 "supportsHitConditionalBreakpoints",
-                crate::feature_catalog::has_feature("dap.breakpoints.hit_condition"),
+                crate::backend::capabilities::advertises_hit_conditional_breakpoints(),
             ),
             // #9573: bound to the hover authority, not to `dap.core`. Hover is
             // gated on a pure selected-frame inspection proof, so the catalog
@@ -997,7 +1222,7 @@ print "result: $final\n";
             ("supportsSetVariable", crate::feature_catalog::has_feature("dap.core")),
             ("supportsValueFormattingOptions", crate::feature_catalog::has_feature("dap.core")),
             ("supportTerminateDebuggee", crate::feature_catalog::has_feature("dap.core")),
-            ("supportsLogPoints", crate::feature_catalog::has_feature("dap.breakpoints.logpoints")),
+            ("supportsLogPoints", crate::backend::capabilities::advertises_log_points()),
             (
                 "supportsExceptionOptions",
                 crate::feature_catalog::has_feature("dap.exceptions.die")
