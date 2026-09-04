@@ -214,20 +214,6 @@ impl DapPeerBridge {
         arguments: Option<Value>,
     ) -> Vec<DapMessage> {
         let mut out = Vec::new();
-        if DapRequestRoute::from_command(command)
-            .is_some_and(|route| !route.available_in_peer_frontends())
-        {
-            tracing::warn!(command, "peer bridge: request is unavailable in this frontend");
-            out.push(self.response(
-                request_seq,
-                command,
-                false,
-                None,
-                Some("request is unavailable in the external peer frontend".to_string()),
-            ));
-            out.extend(self.poll_events());
-            return out;
-        }
         match DapRequestRoute::from_command(command)
             .filter(DapRequestRoute::available_in_peer_frontends)
         {
@@ -377,10 +363,24 @@ impl DapPeerBridge {
                 }
             }
             None | Some(_) => {
-                // Lenient: acknowledge unrecognized requests so a client is not
-                // wedged, but carry no body. (mirror-MVP behavior.)
-                tracing::warn!(command, "peer bridge: unhandled DAP request");
-                out.push(self.response(request_seq, command, true, None, None));
+                if DapRequestRoute::from_command(command).is_some() {
+                    // A catalog route that exists but is unavailable in this
+                    // frontend must fail closed: acknowledging it would report
+                    // success for work no backend performed (#9069).
+                    tracing::warn!(command, "peer bridge: request is unavailable in this frontend");
+                    out.push(self.response(
+                        request_seq,
+                        command,
+                        false,
+                        None,
+                        Some("request is unavailable in the external peer frontend".to_string()),
+                    ));
+                } else {
+                    // Lenient: acknowledge unrecognized requests so a client is not
+                    // wedged, but carry no body. (mirror-MVP behavior.)
+                    tracing::warn!(command, "peer bridge: unhandled DAP request");
+                    out.push(self.response(request_seq, command, true, None, None));
+                }
             }
         }
         // Surface any events the backend queued while handling the request.
@@ -399,6 +399,29 @@ impl DapPeerBridge {
         let Some(tid) = self.validate_thread_scoped(command, request_seq, args, out) else {
             return;
         };
+        // #9069: this frontend negotiates `supportsStepInTargetsRequest` as
+        // false, so a supplied `targetId` must fail closed rather than
+        // silently degrade to an untargeted step the client did not ask for.
+        if matches!(which, Step::In)
+            && let Some(args) = args
+            && args.get("targetId").is_some()
+        {
+            out.push(
+                self.response(
+                    request_seq,
+                    command,
+                    false,
+                    None,
+                    Some(
+                        "`stepIn targetId` is not supported: targeted stepping is \
+                     unavailable, so the request is refused instead of stepping \
+                     without the requested target"
+                            .to_string(),
+                    ),
+                ),
+            );
+            return;
+        }
         let result = match which {
             Step::Next => self.backend.next(tid),
             Step::In => self.backend.step_in(tid),
@@ -960,6 +983,9 @@ mod tests {
         /// backend. This turns "no debugger command was written" into a direct
         /// observation instead of an inference from the response (#9573).
         evaluate_calls: Arc<AtomicUsize>,
+        /// Counts real `step_in` calls that reached the backend, so a refused
+        /// targeted `stepIn` is observed directly rather than inferred (#9069).
+        step_in_calls: Arc<AtomicUsize>,
     }
 
     impl DebugBackend for ScriptBackend {
@@ -1017,6 +1043,7 @@ mod tests {
             Ok(())
         }
         fn step_in(&mut self, _t: ThreadId) -> BackendResult<()> {
+            self.step_in_calls.fetch_add(1, AtomicOrdering::SeqCst);
             Ok(())
         }
         fn step_out(&mut self, _t: ThreadId) -> BackendResult<()> {
@@ -1355,6 +1382,7 @@ mod tests {
         let mut b = DapPeerBridge::new(Box::new(ScriptBackend {
             events: Vec::new(),
             evaluate_calls: Arc::clone(&calls),
+            step_in_calls: Arc::new(AtomicUsize::new(0)),
         }));
 
         let init = b.dispatch(1, "initialize", Some(json!({ "adapterID": "perl" })));
@@ -1448,6 +1476,41 @@ mod tests {
         if let DapMessage::Response { message, .. } = &out[0] {
             assert!(message.as_deref().is_some_and(|message| !message.is_empty()));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn step_in_with_target_id_fails_closed_and_never_reaches_the_backend() -> Result<(), String> {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut b = DapPeerBridge::new(Box::new(ScriptBackend {
+            events: Vec::new(),
+            evaluate_calls: Arc::new(AtomicUsize::new(0)),
+            step_in_calls: Arc::clone(&calls),
+        }));
+
+        // #9069: `supportsStepInTargetsRequest` is negotiated false, so a
+        // client-supplied `targetId` must be refused outright — never silently
+        // executed as the untargeted step the client did not ask for.
+        let out = b.dispatch(21, "stepIn", Some(json!({ "threadId": 1, "targetId": 7 })));
+        let (command, success, body) = as_response(&out[0])?;
+        assert_eq!(command, "stepIn");
+        assert!(!success, "a targeted stepIn must not acknowledge success");
+        assert!(body.is_none(), "a refused request must not carry a response body");
+        if let DapMessage::Response { message, .. } = &out[0] {
+            assert!(message.as_deref().is_some_and(|message| !message.is_empty()));
+        }
+        assert_eq!(
+            calls.load(AtomicOrdering::SeqCst),
+            0,
+            "a refused targeted stepIn must reach the backend zero times"
+        );
+
+        // Control: an ordinary untargeted stepIn still steps, proving the
+        // refusal is scoped to `targetId` and the probe is live.
+        let out = b.dispatch(22, "stepIn", Some(json!({ "threadId": 1 })));
+        let (_, success, _) = as_response(&out[0])?;
+        assert!(success, "untargeted stepIn keeps its existing contract");
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 1, "untargeted stepIn reaches the backend");
         Ok(())
     }
 

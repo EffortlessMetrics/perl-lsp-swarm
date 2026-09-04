@@ -375,8 +375,19 @@ macro_rules! dap_request_table {
         {
             Some(DapRequestRoute::Initialize) => out.push(ok()),
             None | Some(_) => {
-                tracing::warn!(command, "BRIDGE_MESSAGE");
-                out.push(self.response(request_seq, command, true, None, None));
+                if DapRequestRoute::from_command(command).is_some() {
+UNAVAILABLE_WARN
+                    out.push(self.response(
+                        request_seq,
+                        command,
+                        false,
+                        None,
+                        Some("UNAVAILABLE_DETAIL".to_string()),
+                    ));
+                } else {
+                    tracing::warn!(command, "BRIDGE_MESSAGE");
+                    out.push(self.response(request_seq, command, true, None, None));
+                }
             }
         }
         out.extend(self.poll_events());
@@ -384,14 +395,33 @@ macro_rules! dap_request_table {
     }
 }
 """
-        messages = (
-            "peer bridge: unhandled DAP request",
-            "mirror bridge: unhandled DAP request",
+        fallbacks = (
+            (
+                "                    tracing::warn!(command, "
+                '"peer bridge: request is unavailable in this frontend");',
+                "request is unavailable in the external peer frontend",
+                "peer bridge: unhandled DAP request",
+            ),
+            (
+                "                    tracing::warn!(\n"
+                "                        command,\n"
+                '                        "mirror bridge: request is unavailable in this frontend"\n'
+                "                    );",
+                "request is unavailable in the mirror peer frontend",
+                "mirror bridge: unhandled DAP request",
+            ),
         )
-        for peer_path, message in zip(PEER_DISPATCH_PATHS, messages, strict=True):
+        for peer_path, (unavailable, detail, message) in zip(
+            PEER_DISPATCH_PATHS, fallbacks, strict=True
+        ):
             path = self.root / peer_path
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(peer_source.replace("BRIDGE_MESSAGE", message), encoding="utf-8")
+            path.write_text(
+                peer_source.replace("UNAVAILABLE_WARN", unavailable)
+                .replace("UNAVAILABLE_DETAIL", detail)
+                .replace("BRIDGE_MESSAGE", message),
+                encoding="utf-8",
+            )
 
         event_source = self.root / MODULE.DEBUG_ADAPTER_ROOT / "events.rs"
         event_source.parent.mkdir(parents=True, exist_ok=True)

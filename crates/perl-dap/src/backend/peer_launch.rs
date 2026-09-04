@@ -596,20 +596,6 @@ impl MirrorPeerBridge {
         arguments: Option<Value>,
     ) -> Vec<DapMessage> {
         let mut out = Vec::new();
-        if DapRequestRoute::from_command(command)
-            .is_some_and(|route| !route.available_in_peer_frontends())
-        {
-            tracing::warn!(command, "mirror bridge: request is unavailable in this frontend");
-            out.push(self.response(
-                request_seq,
-                command,
-                false,
-                None,
-                Some("request is unavailable in the mirror peer frontend".to_string()),
-            ));
-            out.extend(self.poll_events());
-            return out;
-        }
         match DapRequestRoute::from_command(command)
             .filter(DapRequestRoute::available_in_peer_frontends)
         {
@@ -703,8 +689,27 @@ impl MirrorPeerBridge {
                 }
             }
             None | Some(_) => {
-                tracing::warn!(command, "mirror bridge: unhandled DAP request");
-                out.push(self.response(request_seq, command, true, None, None));
+                if DapRequestRoute::from_command(command).is_some() {
+                    // A catalog route that exists but is unavailable in this
+                    // frontend must fail closed: acknowledging it would report
+                    // success for work no backend performed (#9069).
+                    tracing::warn!(
+                        command,
+                        "mirror bridge: request is unavailable in this frontend"
+                    );
+                    out.push(self.response(
+                        request_seq,
+                        command,
+                        false,
+                        None,
+                        Some("request is unavailable in the mirror peer frontend".to_string()),
+                    ));
+                } else {
+                    // Lenient: acknowledge unrecognized requests so a client is not
+                    // wedged, but carry no body. (mirror-MVP behavior.)
+                    tracing::warn!(command, "mirror bridge: unhandled DAP request");
+                    out.push(self.response(request_seq, command, true, None, None));
+                }
             }
         }
         out.extend(self.poll_events());
