@@ -1461,6 +1461,45 @@ impl LspServer {
         *self.diagnostic_debouncer.lock() = Some(debouncer);
     }
 
+    /// Install the production diagnostic debouncer (called from
+    /// `Scheduler::new` after `Arc` wrapping).
+    ///
+    /// Requires `Arc<Self>` because the debounce worker's `publish_fn` calls
+    /// back into `LspServer` from its own thread -- the same shape as
+    /// `install_default_parse_worker` below, and for the same reason.
+    ///
+    /// The callback captures `Weak<Self>`, not `Arc<Self>` (#14539). The
+    /// debouncer is owned by the server, so a strong capture would close an
+    /// ownership cycle -- `LspServer -> diagnostic_debouncer ->
+    /// DiagnosticDebouncer -> worker thread closure -> Arc<LspServer>` --
+    /// that no teardown path can break: the worker only stops on
+    /// `DiagnosticDebouncer::drop`, which is only reachable through the
+    /// server's own drop. `install_file_watcher_debouncer`'s callback is
+    /// weak for the identical reason (#8064).
+    ///
+    /// Because the callback is weak, the worker's shutdown drain is a clean
+    /// no-op during real server teardown: by the time this debouncer is
+    /// dropped as a field of `LspServer`, the strong count is already zero
+    /// and `upgrade()` returns `None`. Pending diagnostics are discarded
+    /// rather than published at teardown, which is the intended boundary --
+    /// there is no live server left to publish to.
+    ///
+    /// The interval comes from the active `RuntimeTuning` so e2e mode
+    /// (debounce=0) and user-tuned CLI/env values take effect.
+    pub(crate) fn install_default_diagnostic_debouncer(self: &Arc<Self>) {
+        let cb_server = Arc::downgrade(self);
+        let interval = self.runtime_tuning().diagnostic_debounce();
+        let debouncer =
+            diagnostic_debounce::DiagnosticDebouncer::with_interval(interval, move |uri| {
+                // Break the Arc cycle: if the server has been dropped
+                // (shutdown path), skip the publication cleanly.
+                if let Some(server) = cb_server.upgrade() {
+                    server.publish_diagnostics(uri);
+                }
+            });
+        self.install_diagnostic_debouncer(debouncer);
+    }
+
     /// Publish diagnostics with trailing-edge debouncing.
     ///
     /// If a working debouncer is installed (normal runtime via Scheduler), the
