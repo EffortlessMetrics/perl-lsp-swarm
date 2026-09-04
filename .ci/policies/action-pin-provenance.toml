@@ -308,6 +308,14 @@ sha = '3d0d9888cb7fd7b750713d6e236d1fcb99157228'
 kind = 'release_tag'
 value = 'v3.0.2'
 
+# Verified against upstream on 2026-09-03:
+# softprops/action-gh-release v3.0.3 -> efb35369e0ad2afab669f228072c1b0d510eae64
+[[pin]]
+action = 'softprops/action-gh-release'
+sha = 'efb35369e0ad2afab669f228072c1b0d510eae64'
+kind = 'release_tag'
+value = 'v3.0.3'
+
 [[pin]]
 action = 'taiki-e/install-action'
 sha = '6c6fd71fe4fb72c3697d269963d0e15df8adedad'
