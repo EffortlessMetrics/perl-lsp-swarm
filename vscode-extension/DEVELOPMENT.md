@@ -50,6 +50,7 @@ npm run bundle     # One-shot Rolldown production bundle only (out/extension.js 
 npm run sample:published:local # Repeat exact-source VSIX smoke and write p50/p95 receipt summary
 npm run watch:bundle # Rebuild out/extension.js on every file change (use during active development)
 npm run watch:types # Optional companion: authority preflight, then live tsc --noEmit watch in a separate terminal
+npm run dev        # ONE fail-closed dev service: both watchers supervised together (preferred over the two commands above)
 ```
 
 Every TypeScript execution above — and in `compile:test`, `test:integration`,
@@ -58,6 +59,14 @@ gate runs to completion first, and a red gate refuses to compile rather than
 running whatever `tsc` happens to resolve to. No public command reaches `tsc`
 without that preflight, and `scripts/checked-command-contract.test.js` keeps it
 that way structurally.
+
+`npm run dev` starts `watch:bundle` and `watch:types` together under
+`scripts/dev-supervisor.js`, which makes them one fail-closed service: it
+reports readiness only after the governed TypeScript watcher has finished its
+first pass AND Rolldown has completed its first build (spawn is not readiness);
+if either watcher dies — before or after readiness — the supervisor stops the
+sibling and exits non-zero; and stopping the service (Ctrl+C or task kill)
+terminates both watcher trees, leaving no orphan on Windows or POSIX.
 
 `npm run typecheck:authority` (also the first stage of `build`, and blocking
 in the extension PR gate) proves the claim above rather than restating it: that
@@ -88,11 +97,32 @@ current-source server variables as `npm run test:published:local`.
 
 ## Run and test in VS Code
 
-1. Open the `vscode-extension/` folder in VS Code.
-2. Press **F5** — this opens an Extension Development Host window with your local build loaded.
-3. Open any `.pl` or `.pm` file in the host window and verify the server starts (check the Output panel → "Perl LSP").
+The extension folder owns its own checked F5 workflow (`.vscode/launch.json` +
+`.vscode/tasks.json`); the repository-root `.vscode` files keep their separate
+Rust LLDB and Jest meanings and are unrelated to extension development.
 
-To reload after code changes: **Ctrl+Shift+P** → "Developer: Reload Window" in the host window.
+1. Open the `vscode-extension/` folder in VS Code.
+2. Press **F5** and pick a launch:
+   - **Run Extension (checked build)** — runs the checked `build` task first
+     (compiler authority, config inventory, all-config type-check, then the
+     bundle), so the host always loads current checked output; a type error
+     keeps the host from starting.
+   - **Run Extension (dev watch)** — starts the `npm run dev` supervisor task
+     and waits for its `[dev-supervisor] ready` line before starting the host,
+     then code changes rebuild in the background without relaunching.
+3. Both launches open the bounded workspace at
+   `.vscode/dev-workspace/` (one minimal `sample.pl`), never an arbitrary user
+   workspace. Open `sample.pl` in the host window and verify the server starts
+   (check the Output panel → "Perl LSP").
+
+The development bundle keeps its source map, so breakpoints in `src/**/*.ts`
+bind on the activation path. To stop the watch launch, stop the
+`perl-lsp: dev watch (supervisor)` task (or terminate the debug session and
+then the task); the supervisor forwards the stop to both watcher trees, so no
+orphan remains.
+
+To reload after code changes in the one-shot flow: **Ctrl+Shift+P** →
+"Developer: Reload Window" in the host window.
 
 ## Run the test suite
 
@@ -146,8 +176,9 @@ The `.vsix` file can be installed directly in VS Code via **Extensions → Insta
 | ------------------------------ | --------------------------------- |
 | Checked build (types + bundle) | `npm run build`                   |
 | Bundle only (Rolldown)         | `npm run bundle`                  |
-| Watch bundle                   | `npm run watch:bundle`            |
-| Watch types                    | `npm run watch:types`             |
+| Combined dev watch service     | `npm run dev`                     |
+| Watch bundle (standalone)      | `npm run watch:bundle`            |
+| Watch types (standalone)       | `npm run watch:types`             |
 | Run unit tests                 | `npm test`                        |
 | Lint                           | `npm run lint`                    |
 | Build `.vsix` package          | `npm run package`                 |
