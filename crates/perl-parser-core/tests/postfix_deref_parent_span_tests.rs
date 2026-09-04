@@ -1,6 +1,9 @@
 //! Parent-span coverage for every arrow-star postfix dereference form.
 
-use perl_parser_core::{Node, NodeKind, Parser};
+mod cpan_test_helpers;
+
+use cpan_test_helpers::*;
+use perl_parser_core::{Node, NodeKind};
 
 const CASES: &[(&str, &str, &str)] = &[
     ("$sref->$*", "->$*", "$sref"),
@@ -15,8 +18,8 @@ const CASES: &[(&str, &str, &str)] = &[
 fn every_arrow_star_deref_keeps_enclosing_untie_span_covering_child() -> Result<(), String> {
     for (deref_text, operator, receiver) in CASES {
         let source = format!("untie {deref_text};");
-        let mut parser = Parser::new(&source);
-        let ast = parser.parse().map_err(|error| format!("{operator}: {error:?}"))?;
+        assert_clean_parse(&source);
+        let ast = parse(&source);
         let (untie, deref) = find_untie_with_deref(&ast, &source, operator, receiver)
             .ok_or_else(|| format!("missing Untie({operator}) nodes in {}", ast.to_sexp()))?;
 
