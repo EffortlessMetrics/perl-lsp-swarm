@@ -5,7 +5,7 @@ use std::io::{BufReader, Read};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 
@@ -72,41 +72,93 @@ const TCP_DROP_NOTICE_ATTEMPTS: u8 = 8;
 /// `error`) are non-lossy: they apply the same backpressure policy as the
 /// #5149 outbound queue, so they are always admitted while the forwarding side
 /// lives and can never be silently discarded behind output pressure. Waiting
-/// happens without any lock held, as a bounded-rate retry that re-checks the
-/// retirement hook each attempt, so a disconnect or replacement retires the
-/// producer instead of parking it on a stale session; receiver loss is
+/// happens without any lock held on the queue, as a bounded-rate retry that
+/// re-checks retirement each attempt, so a disconnect or replacement retires
+/// the producer instead of parking it on a stale session; receiver loss is
 /// observed within [`ADMISSION_RETIRE_CHECK`] as `Disconnected`.
-/// [`admit_event_until`] without retirement: the plain admission entry point.
+///
+/// Retirement check and enqueue are serialized under the session's
+/// [`ReaderRetirement`] gate, so an event admitted before `disconnect`
+/// returned is pre-disconnect, and any attempt after it is refused — the
+/// check-to-send window is closed exactly, not probabilistically.
+pub(crate) struct ReaderRetirement {
+    epoch: Arc<AtomicU64>,
+    gate: Mutex<()>,
+}
+
+impl ReaderRetirement {
+    pub(crate) fn new() -> Self {
+        Self { epoch: Arc::new(AtomicU64::new(0)), gate: Mutex::new(()) }
+    }
+
+    /// The reader id a newly spawned reader captures.
+    pub(crate) fn current_reader_id(&self) -> u64 {
+        self.epoch.load(Ordering::SeqCst)
+    }
+
+    /// Retire every reader at or below the captured ids: the epoch bump is
+    /// serialized against admission attempts under the gate, so when this
+    /// returns, no in-flight admission for a retired reader can still be
+    /// inside its check-to-send window.
+    pub(crate) fn retire(&self) {
+        let _gate = self.gate.lock().unwrap_or_else(|error| error.into_inner());
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Epoch handle for the synchronized connected-state update
+    /// ([`mark_disconnected_if_current`]).
+    pub(crate) fn epoch(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.epoch)
+    }
+
+    fn lock_gate(&self) -> MutexGuard<'_, ()> {
+        self.gate.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    fn is_retired(&self, reader_id: u64) -> bool {
+        self.epoch.load(Ordering::SeqCst) != reader_id
+    }
+}
+
+/// Admit one event for reader `reader_id` under the session's retirement
+/// contract: retirement governs both admission families before any enqueue —
+/// a retired producer must not put buffered frames into a queue a replacement
+/// connection reuses, not even loss-eligible ones; the drop-on-full policy
+/// governs pressure, not staleness (#9521 review).
+/// [`admit_event_until`] for a live (never-retired) reader: the plain
+/// admission entry point (test instrumentation).
 #[cfg(test)]
 pub(crate) fn admit_event(
     sender: &SyncSender<DapEvent>,
     event: DapEvent,
     accounting: &TcpOutputDropAccounting,
 ) -> EventAdmission {
-    admit_event_until(sender, event, accounting, &|| false)
+    let retirement = ReaderRetirement::new();
+    let reader_id = retirement.current_reader_id();
+    admit_event_until(sender, event, accounting, &retirement, reader_id)
 }
 
-/// Admission with a retirement hook: the hook is re-checked while the
-/// admission waits for queue room, so a caller that owns the session lifecycle
-/// (reader/forwarder pairing) can retire a stale producer instead of letting a
-/// parked state event commit into a replacement session's stream (#9521).
+/// Admit one event for reader `reader_id` under the session's retirement
+/// contract: retirement governs both admission families before any enqueue —
+/// a retired producer must not put buffered frames into a queue a replacement
+/// connection reuses, not even loss-eligible ones; the drop-on-full policy
+/// governs pressure, not staleness (#9521 review).
 pub(crate) fn admit_event_until(
     sender: &SyncSender<DapEvent>,
     mut event: DapEvent,
     accounting: &TcpOutputDropAccounting,
-    retired: &dyn Fn() -> bool,
+    retirement: &ReaderRetirement,
+    reader_id: u64,
 ) -> EventAdmission {
-    // Retirement governs both families before any admission: a retired
-    // producer must not enqueue buffered frames into a queue a replacement
-    // connection reuses, not even loss-eligible ones — the drop-on-full
-    // policy governs pressure, not staleness (#9521 review).
-    if retired() {
-        return EventAdmission::Retired;
-    }
     if matches!(event, DapEvent::Output { .. }) {
+        let gate = retirement.lock_gate();
+        if retirement.is_retired(reader_id) {
+            return EventAdmission::Retired;
+        }
         match sender.try_send(event) {
             Ok(()) => EventAdmission::Accepted,
             Err(TrySendError::Full(_)) => {
+                drop(gate);
                 let dropped_total = accounting.dropped.fetch_add(1, Ordering::Relaxed) + 1;
                 if dropped_total == 1 || dropped_total.is_multiple_of(TCP_OUTPUT_DROP_WARN_INTERVAL)
                 {
@@ -122,17 +174,23 @@ pub(crate) fn admit_event_until(
         }
     } else {
         loop {
-            if retired() {
-                return EventAdmission::Retired;
-            }
-            match sender.try_send(event) {
-                Ok(()) => return EventAdmission::Accepted,
-                Err(TrySendError::Full(returned)) => {
-                    event = returned;
-                    thread::sleep(ADMISSION_RETIRE_CHECK);
+            {
+                // Check-to-send is serialized under the gate: a disconnect's
+                // epoch bump can never land between this validation and the
+                // non-blocking enqueue.
+                let _gate = retirement.lock_gate();
+                if retirement.is_retired(reader_id) {
+                    return EventAdmission::Retired;
                 }
-                Err(TrySendError::Disconnected(_)) => return EventAdmission::Disconnected,
+                match sender.try_send(event) {
+                    Ok(()) => return EventAdmission::Accepted,
+                    Err(TrySendError::Full(returned)) => event = returned,
+                    Err(TrySendError::Disconnected(_)) => return EventAdmission::Disconnected,
+                }
             }
+            // Park OUTSIDE the gate: a disconnect waiting to bump the epoch is
+            // never delayed by more than one non-blocking try_send.
+            thread::sleep(ADMISSION_RETIRE_CHECK);
         }
     }
 }
@@ -188,11 +246,11 @@ pub(crate) fn spawn_reader(
     connected: Arc<Mutex<bool>>,
     event_sender: Option<SyncSender<DapEvent>>,
     accounting: Arc<TcpOutputDropAccounting>,
-    reader_epoch: Arc<AtomicU64>,
-    reader_id: u64,
+    retirement: Arc<ReaderRetirement>,
 ) {
+    let reader_id = retirement.current_reader_id();
     thread::spawn(move || {
-        run_reader(stream, connected, event_sender, accounting, reader_epoch, reader_id)
+        run_reader(stream, connected, event_sender, accounting, retirement, reader_id)
     });
 }
 
@@ -201,14 +259,14 @@ fn run_reader(
     connected: Arc<Mutex<bool>>,
     event_sender: Option<SyncSender<DapEvent>>,
     accounting: Arc<TcpOutputDropAccounting>,
-    reader_epoch: Arc<AtomicU64>,
+    retirement: Arc<ReaderRetirement>,
     reader_id: u64,
 ) {
-    // Retirement hook: the session bumps the epoch on every disconnect, so a
-    // reader parked in cancellation-aware admission for a stale connection
-    // retires instead of delivering stale events or clobbering the shared
-    // connection state of a replacement connection (#9521).
-    let retired = || reader_epoch.load(Ordering::Relaxed) != reader_id;
+    // Retirement: the session retires under the admission gate on every
+    // disconnect, so a reader parked in cancellation-aware admission for a
+    // stale connection retires instead of delivering stale events or
+    // clobbering the shared connection state of a replacement connection
+    // (#9521).
     let mut reader = BufReader::new(stream);
     let mut framer = ContentLengthFramer::new();
     let mut read_buf = [0u8; 8 * 1024];
@@ -216,11 +274,12 @@ fn run_reader(
     loop {
         let bytes_read = match reader.read(&mut read_buf) {
             Ok(0) => {
-                mark_disconnected_if_current(&connected, &reader_epoch, reader_id);
+                mark_disconnected_if_current(&connected, &retirement.epoch(), reader_id);
                 send_event(
                     &event_sender,
                     &accounting,
-                    &retired,
+                    retirement.as_ref(),
+                    reader_id,
                     DapEvent::Terminated { reason: "connection_closed".to_string() },
                 );
                 tracing::debug!("TCP connection closed by debugger");
@@ -228,11 +287,12 @@ fn run_reader(
             }
             Ok(n) => n,
             Err(error) => {
-                mark_disconnected_if_current(&connected, &reader_epoch, reader_id);
+                mark_disconnected_if_current(&connected, &retirement.epoch(), reader_id);
                 send_event(
                     &event_sender,
                     &accounting,
-                    &retired,
+                    retirement.as_ref(),
+                    reader_id,
                     DapEvent::Error { message: format!("TCP read error: {}", error) },
                 );
                 tracing::error!(%error, "Error reading from TCP");
@@ -241,12 +301,12 @@ fn run_reader(
         };
 
         framer.push(&read_buf[..bytes_read]);
-        if !drain_frames(&mut framer, &event_sender, &accounting, &retired) {
+        if !drain_frames(&mut framer, &event_sender, &accounting, retirement.as_ref(), reader_id) {
             // Forwarding side gone, or the session retired this reader: stop
             // reading. Session teardown observes the disconnect through
             // `connected`/channel loss (#9521). The synchronized mark keeps a
             // retired reader from clearing a replacement connection's state.
-            mark_disconnected_if_current(&connected, &reader_epoch, reader_id);
+            mark_disconnected_if_current(&connected, &retirement.epoch(), reader_id);
             return;
         }
     }
@@ -260,7 +320,8 @@ fn drain_frames(
     framer: &mut ContentLengthFramer,
     event_sender: &Option<SyncSender<DapEvent>>,
     accounting: &TcpOutputDropAccounting,
-    retired: &dyn Fn() -> bool,
+    retirement: &ReaderRetirement,
+    reader_id: u64,
 ) -> bool {
     loop {
         let buffer = match framer.try_next() {
@@ -273,7 +334,7 @@ fn drain_frames(
         };
 
         trace_frame(&buffer);
-        if !emit_frame_event(&buffer, event_sender, accounting, retired) {
+        if !emit_frame_event(&buffer, event_sender, accounting, retirement, reader_id) {
             return false;
         }
     }
@@ -294,7 +355,8 @@ fn emit_frame_event(
     buffer: &[u8],
     event_sender: &Option<SyncSender<DapEvent>>,
     accounting: &TcpOutputDropAccounting,
-    retired: &dyn Fn() -> bool,
+    retirement: &ReaderRetirement,
+    reader_id: u64,
 ) -> bool {
     let Some(sender) = event_sender else {
         return true;
@@ -306,7 +368,7 @@ fn emit_frame_event(
         return true;
     };
 
-    match admit_event_until(sender, event, accounting, retired) {
+    match admit_event_until(sender, event, accounting, retirement, reader_id) {
         EventAdmission::Retired => false,
         other => other != EventAdmission::Disconnected,
     }
@@ -318,14 +380,14 @@ fn emit_frame_event(
 fn send_event(
     event_sender: &Option<SyncSender<DapEvent>>,
     accounting: &TcpOutputDropAccounting,
-    retired: &dyn Fn() -> bool,
+    retirement: &ReaderRetirement,
+    reader_id: u64,
     event: DapEvent,
 ) {
     if let Some(sender) = event_sender {
-        // The caller already checked `retired`; the hook closes the residual
-        // window during the admission wait itself. Lifecycle events are never
-        // `output`, so the accounting is untouched on this path.
-        let _ = admit_event_until(sender, event, accounting, retired);
+        // Lifecycle events are never `output`, so the accounting is untouched
+        // on this path.
+        let _ = admit_event_until(sender, event, accounting, retirement, reader_id);
     }
 }
 
@@ -528,12 +590,18 @@ mod tests {
         let tx2 = tx.clone();
         let handle = thread::spawn(move || {
             let accounting2 = TcpOutputDropAccounting::new();
-            let retired = || true;
+            let retirement = ReaderRetirement::new();
+            let reader_id = retirement.current_reader_id();
+            // Retire the producer before the admission attempt: the gate
+            // serializes the epoch bump against the check-to-send window, so
+            // the stale state event is refused, not enqueued.
+            retirement.retire();
             admit_event_until(
                 &tx2,
                 DapEvent::Stopped { reason: "stale".into(), thread_id: 7 },
                 &accounting2,
-                &retired,
+                &retirement,
+                reader_id,
             )
         });
 
@@ -574,5 +642,31 @@ mod tests {
             false,
             "the current reader id marks the connection disconnected"
         );
+    }
+
+    /// The retirement gate serializes the epoch bump against admission: a
+    /// `retire()` call waits for an in-flight admission window instead of
+    /// landing inside its check-to-send gap, which is what makes the
+    /// retirement/admission exclusion exact (#9521 review).
+    #[test]
+    fn retire_waits_for_an_in_flight_admission_window() {
+        let retirement = Arc::new(ReaderRetirement::new());
+        let gate_guard = retirement.lock_gate();
+
+        let handle = {
+            let retirement = Arc::clone(&retirement);
+            thread::spawn(move || {
+                retirement.retire();
+            })
+        };
+
+        thread::sleep(Duration::from_millis(80));
+        assert!(
+            !handle.is_finished(),
+            "retire() must wait for the in-flight admission window to close"
+        );
+
+        drop(gate_guard);
+        handle.join().expect("retire thread must finish once the gate opens");
     }
 }
