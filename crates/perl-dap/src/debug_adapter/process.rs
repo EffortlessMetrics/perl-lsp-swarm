@@ -2069,6 +2069,9 @@ impl DebugAdapter {
         let _args: Option<DisconnectArguments> =
             arguments.and_then(|v| serde_json::from_value(v).ok());
 
+        // Settle broker waiters before terminating the child so EOF cannot
+        // win the race and replace the client-requested disconnect reason.
+        self.operation_broker.settle_all("disconnect");
         if let Some(ref sender) = self.event_sender {
             emit_terminated_event(sender, &self.seq, &self.termination_state, None, None);
         }
@@ -2098,6 +2101,9 @@ impl DebugAdapter {
         let restart = args.and_then(|a| a.restart);
 
         let terminated_body = restart.map(|restart| json!({ "restart": restart }));
+        // Settle broker waiters before terminating the child so EOF cannot
+        // win the race and replace the client-requested terminate reason.
+        self.operation_broker.settle_all("terminated");
         if let Some(ref sender) = self.event_sender {
             emit_terminated_event(
                 sender,
