@@ -370,14 +370,18 @@ impl PullDiagnosticsProvider {
         doc_state: Option<&DocumentState>,
     ) -> Vec<LspDiagnostic> {
         let code_text = code_slice(content);
+        // Retain the canonical regex analysis for this exact parse (#7024) so the
+        // pull path publishes the same regex findings as the push path.
+        let session = perl_parser_core::RetainedRegexSession::begin(code_text);
         let mut parser = Parser::new(code_text);
 
         match parser.parse() {
-            Ok(ast) => {
+            Ok(mut ast) => {
+                let regex_analysis = std::sync::Arc::new(session.finish(code_text, Some(&mut ast)));
                 // Retrieve any collected parse errors from error recovery
                 let parse_errors: Vec<ParseError> = parser.errors().to_vec();
                 let ast = std::sync::Arc::new(ast);
-                let provider = DiagnosticsProvider::new();
+                let provider = DiagnosticsProvider::new().with_regex_analysis(regex_analysis);
                 let uri_str = uri.to_string();
                 let source_path = url::Url::parse(&uri_str)
                     .map_err(|e| {
@@ -821,7 +825,10 @@ impl PullDiagnosticsProvider {
         };
         if let Some(ast) = parsed.ast() {
             let parse_errors = parsed.parse_errors();
-            let provider = DiagnosticsProvider::new();
+            let provider = match parsed.regex_analysis().cloned() {
+                Some(table) => DiagnosticsProvider::new().with_regex_analysis(table),
+                None => DiagnosticsProvider::new(),
+            };
             let source_path =
                 url::Url::parse(&uri.to_string()).ok().and_then(|value| value.to_file_path().ok());
             // Build the baseline include paths (configured + PERL5LIB, without lexical

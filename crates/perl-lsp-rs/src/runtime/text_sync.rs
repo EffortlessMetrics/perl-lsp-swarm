@@ -301,23 +301,26 @@ impl LspServer {
             // No AST-only cache lookup: the retired AstCache stored only the
             // AST without parse errors, so a hit synthesised Vec::new() --
             // live semantic corruption for recovery-bearing source (#11215).
-            let (ast, errors) = {
+            // The parse runs inside a `RetainedRegexSession` (#7024) so this exact
+            // source keeps its one canonical regex analysis. See `parse_worker`.
+            let (ast, errors, regex_analysis) = {
                 let code_text = crate::util::code_slice(text);
+                let session = perl_parser_core::RetainedRegexSession::begin(code_text);
                 let mut parser = match cancellation_token {
                     Some(token) => Parser::new_with_cancellation(code_text, token),
                     None => Parser::new(code_text),
                 };
                 match parser.parse() {
-                    Ok(ast) => {
+                    Ok(mut ast) => {
+                        let table = session.finish(code_text, Some(&mut ast));
                         let errors = parser.errors().to_vec();
-                        let arc_ast = Arc::new(ast);
-                        (Some((*arc_ast).clone()), errors)
+                        (Some(ast), errors, Arc::new(table))
                     }
                     Err(crate::error::ParseError::Cancelled) => {
                         tracing::debug!("Parse cancelled for {} — newer change pending", uri);
                         return Ok(());
                     }
-                    Err(e) => (None, vec![e]),
+                    Err(e) => (None, vec![e], Arc::new(session.finish(code_text, None))),
                 }
             };
 
@@ -397,12 +400,10 @@ impl LspServer {
             // starts pending and can only advance through the acceptance and
             // required-effect stages below.
             self.install_active_document_pending(&normalized_uri, uri, &generation, doc_generation);
-            let snapshot = Arc::new(ParsedSnapshot::from_parse_result(
-                doc_generation,
-                text,
-                ast_arc.clone(),
-                errors,
-            ));
+            let snapshot = Arc::new(
+                ParsedSnapshot::from_parse_result(doc_generation, text, ast_arc.clone(), errors)
+                    .with_regex_analysis(regex_analysis),
+            );
             doc_state.publish_parsed_if_current(doc_generation, Arc::clone(&snapshot));
 
             {
@@ -1052,17 +1053,19 @@ impl LspServer {
                 // -- live semantic corruption for recovery-bearing source
                 // (#11215).
                 let t_parse_start = std::time::Instant::now();
-                let (ast, errors) = {
+                // Retained canonical regex analysis for this generation (#7024).
+                let (ast, errors, regex_analysis) = {
                     let code_text = crate::util::code_slice(&text);
+                    let session = perl_parser_core::RetainedRegexSession::begin(code_text);
                     let mut parser = match cancellation_token {
                         Some(token) => Parser::new_with_cancellation(code_text, token),
                         None => Parser::new(code_text),
                     };
                     match parser.parse() {
-                        Ok(ast) => {
+                        Ok(mut ast) => {
+                            let table = session.finish(code_text, Some(&mut ast));
                             let errors = parser.errors().to_vec();
-                            let arc_ast = Arc::new(ast);
-                            (Some((*arc_ast).clone()), errors)
+                            (Some(ast), errors, Arc::new(table))
                         }
                         Err(crate::error::ParseError::Cancelled) => {
                             tracing::debug!("Parse cancelled for {} — newer change pending", uri);
@@ -1079,7 +1082,7 @@ impl LspServer {
                             }
                             return Ok(());
                         }
-                        Err(e) => (None, vec![e]),
+                        Err(e) => (None, vec![e], Arc::new(session.finish(code_text, None))),
                     }
                 };
                 let full_parse_ms = crate::runtime::timing::elapsed_ms(t_parse_start);
@@ -1097,12 +1100,10 @@ impl LspServer {
                 // are cheap by comparison. Published later, once `doc_state`
                 // has been rebuilt below.
                 let t_parent_map_start = std::time::Instant::now();
-                let snapshot = Arc::new(ParsedSnapshot::from_parse_result(
-                    next_gen,
-                    &text,
-                    ast_arc.clone(),
-                    errors,
-                ));
+                let snapshot = Arc::new(
+                    ParsedSnapshot::from_parse_result(next_gen, &text, ast_arc.clone(), errors)
+                        .with_regex_analysis(regex_analysis),
+                );
                 let parent_map_ms = crate::runtime::timing::elapsed_ms(t_parent_map_start);
 
                 let t_incremental_start = std::time::Instant::now();

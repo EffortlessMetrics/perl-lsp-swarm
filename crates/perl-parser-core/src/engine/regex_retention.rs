@@ -97,6 +97,72 @@ pub fn parse_tokens_with_regex_analysis(tokens: Vec<Token>, source: &str) -> Reg
     finish_output(source, parse_output, session.finish())
 }
 
+/// Retain canonical regex analysis around a parse the caller drives itself.
+///
+/// The whole-parse entry points above own both the parse and its recovery policy.
+/// A long-lived host such as the language server already owns that policy — it
+/// drives [`Parser::parse`] directly so it can keep its own failure handling — but
+/// it still needs the one canonical regex table for the same source snapshot.
+///
+/// Wrapping the caller's parse in this session gives it exactly that, without a
+/// second parse and without a second regex authority:
+///
+/// ```
+/// use perl_parser_core::{Parser, RetainedRegexSession};
+///
+/// let source = "my $re = qr/(a+)+b/;";
+/// let session = RetainedRegexSession::begin(source);
+/// let mut parser = Parser::new(source);
+/// let mut ast = parser.parse().expect("clean parse");
+/// let table = session.finish(source, Some(&mut ast));
+///
+/// assert_eq!(table.records.len(), 1);
+/// assert!(table.source_matches(source));
+/// ```
+///
+/// While the session is active the parser's legacy per-operator scan is suppressed
+/// exactly as it is for the whole-parse entry points, so the retained table is the
+/// only regex evidence produced for that parse.
+///
+/// The session is thread-local and bound to the source it began with. Dropping it
+/// without calling [`RetainedRegexSession::finish`] releases it and retains nothing.
+#[derive(Debug)]
+pub struct RetainedRegexSession {
+    guard: PendingGeometryGuard,
+}
+
+impl RetainedRegexSession {
+    /// Begin retaining parser-owned geometry for a parse of `source`.
+    #[must_use]
+    pub fn begin(source: &str) -> Self {
+        Self { guard: PendingGeometryGuard::begin(source) }
+    }
+
+    /// Finish the session and build the canonical table for the parsed `ast`.
+    ///
+    /// `source` must be the exact source the session began with; the returned table
+    /// binds its digest so a later consumer can prove freshness.
+    ///
+    /// `ast` is `None` when the caller's parse produced no usable tree. That case
+    /// returns an empty source-bound table rather than a fabricated clean one: no
+    /// record is not the same claim as no finding, and the caller can still tell the
+    /// two apart through [`RegexAnalysisTable::source_matches`].
+    ///
+    /// The AST's compatibility flags (`has_embedded_code`) are refreshed from the
+    /// table so they remain a projection of the canonical analysis rather than an
+    /// independent scan result.
+    #[must_use]
+    pub fn finish(self, source: &str, ast: Option<&mut Node>) -> RegexAnalysisTable {
+        let pending = self.guard.finish();
+        let Some(ast) = ast else {
+            return RegexAnalysisTable::for_source(source);
+        };
+        let table = build_table(source, ast, pending);
+        apply_ast_compatibility_flags(ast, &table);
+        table
+    }
+}
+
 /// Record parser-owned geometry and suppress the legacy detached-body scan.
 ///
 /// Returns `true` only while a canonical retained-analysis entry point owns the
@@ -135,18 +201,31 @@ pub(crate) fn has_active_session() -> bool {
 fn finish_output(
     source: &str,
     mut parse_output: ParseOutput,
-    mut pending: PendingGeometrySession,
+    pending: PendingGeometrySession,
 ) -> RegexParseOutput {
-    let environment = CompileTimePragmaEnvironment::build(&parse_output.ast);
+    let table = build_table(source, &parse_output.ast, pending);
+
+    apply_ast_compatibility_flags(&mut parse_output.ast, &table);
+    project_regex_diagnostics(&mut parse_output, &table);
+
+    RegexParseOutput { parse_output, regex_analysis: table }
+}
+
+/// Build the canonical table for one already-parsed AST and its exact source.
+///
+/// This is the single retention body shared by every entry point: the whole-parse
+/// entry points above and the caller-driven [`RetainedRegexSession`]. Keeping one
+/// body is what stops a second regex authority from appearing for callers that
+/// drive their own parse.
+fn build_table(
+    source: &str,
+    ast: &Node,
+    mut pending: PendingGeometrySession,
+) -> RegexAnalysisTable {
+    let environment = CompileTimePragmaEnvironment::build(ast);
     let parser_geometry = pending.geometries.clone();
     let mut unavailable = Vec::new();
-    collect_ast_geometry(
-        &parse_output.ast,
-        source,
-        &parser_geometry,
-        &mut pending.geometries,
-        &mut unavailable,
-    );
+    collect_ast_geometry(ast, source, &parser_geometry, &mut pending.geometries, &mut unavailable);
     pending.geometries.sort_by_key(geometry_sort_key);
     pending.geometries.dedup_by(|left, right| {
         left.operator == right.operator && left.full_range == right.full_range
@@ -188,10 +267,7 @@ fn finish_output(
         }
     }
 
-    apply_ast_compatibility_flags(&mut parse_output.ast, &table);
-    project_regex_diagnostics(&mut parse_output, &table);
-
-    RegexParseOutput { parse_output, regex_analysis: table }
+    table
 }
 
 fn profile_at(environment: &CompileTimePragmaEnvironment, offset: usize) -> CaptureLanguageProfile {
@@ -545,6 +621,7 @@ impl PendingGeometrySession {
     }
 }
 
+#[derive(Debug)]
 struct PendingGeometryGuard {
     active: bool,
 }

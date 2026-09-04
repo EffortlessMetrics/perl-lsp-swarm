@@ -3,9 +3,10 @@
 //! This module provides the core diagnostic generation functionality.
 
 use std::path::Path;
+use std::sync::Arc;
 
-use perl_parser_core::Node;
 use perl_parser_core::error::ParseError;
+use perl_parser_core::{Node, RegexAnalysisTable};
 use perl_pragma::PragmaTracker;
 use perl_semantic_analyzer::scope_analyzer::ScopeAnalyzer;
 use perl_semantic_analyzer::symbol::SymbolExtractor;
@@ -30,13 +31,14 @@ use super::lints::package_subroutine::{
 use super::lints::pod_coverage::check_pod_coverage;
 use super::lints::printf_format::check_printf_format;
 use super::lints::role_conflicts::check_role_conflicts;
-use super::lints::security::check_security;
+use super::lints::security::check_security_with_canonical_regex;
 use super::lints::source_filter::check_source_filter_risk;
 use super::lints::strict_warnings::check_strict_warnings;
 use super::lints::unreachable_code::check_unreachable_code;
 use super::lints::unused_imports::check_unused_imports;
 use super::lints::version_compat::check_version_compat_with_project_version;
 use super::parse_errors::{parse_error_code, parse_error_severity};
+use super::regex_canonical::project_canonical_regex_diagnostics;
 use super::scope::scope_issues_to_diagnostics_with_semantics;
 
 // ── NullSemanticQueries ──
@@ -120,7 +122,15 @@ pub use perl_diagnostics::codes::{DiagnosticCode, DiagnosticSeverity};
 ///
 /// Analyzes Perl source code and generates diagnostic messages for
 /// parse errors, scope issues, and lint warnings.
-pub struct DiagnosticsProvider;
+pub struct DiagnosticsProvider {
+    /// Parser-retained canonical regex analysis for the document this provider
+    /// will be asked about, when the caller holds one (#7024).
+    ///
+    /// A provider is constructed per document per publish, so this is document
+    /// state, not shared state. It is `Arc` because the same retained table is
+    /// owned by the document snapshot and must not be cloned per publish.
+    regex_analysis: Option<Arc<RegexAnalysisTable>>,
+}
 
 impl Default for DiagnosticsProvider {
     fn default() -> Self {
@@ -135,7 +145,36 @@ impl DiagnosticsProvider {
     /// methods; it is not stored on the provider to avoid an extra full-document
     /// allocation on every diagnostic publish (#5053).
     pub fn new() -> Self {
-        Self
+        Self { regex_analysis: None }
+    }
+
+    /// Publish regex findings from the parser-retained canonical analysis (#7024).
+    ///
+    /// `table` must be the analysis retained for the exact source that will be
+    /// passed to the `get_diagnostics*` call. The provider re-checks that itself
+    /// through [`RegexAnalysisTable::source_matches`] and silently declines a table
+    /// that does not match, so a snapshot that raced an edit degrades to the
+    /// compatibility path instead of publishing findings at stale offsets.
+    ///
+    /// Without a table the provider keeps its previous behavior exactly: regex
+    /// findings arrive only as parser errors and as the AST-flag embedded-code lint.
+    #[must_use]
+    pub fn with_regex_analysis(mut self, table: Arc<RegexAnalysisTable>) -> Self {
+        self.regex_analysis = Some(table);
+        self
+    }
+
+    /// The retained analysis for `source`, or `None` when it is absent or stale.
+    ///
+    /// The table is bound to the text the *parser* saw, which is the document's
+    /// code slice: everything before `__DATA__` / `__END__`. Comparing against the
+    /// full document would decline every table for a document with a data section,
+    /// silently dropping canonical regex diagnostics from a common Perl idiom.
+    /// The code slice is a prefix, so every retained offset stays valid against the
+    /// full text.
+    fn canonical_regex_analysis(&self, source: &str) -> Option<&RegexAnalysisTable> {
+        let code = perl_lexer::code_slice(source);
+        self.regex_analysis.as_deref().filter(|table| table.source_matches(code))
     }
 
     /// Generate diagnostics for the given AST
@@ -516,7 +555,20 @@ impl DiagnosticsProvider {
             check_source_filter_risk(ast, &mut diagnostics);
 
             // Security anti-pattern detection (string eval, two-arg open, backtick exec)
-            check_security(ast, &mut diagnostics);
+            // Canonical regex findings (#7024). When the caller supplied the
+            // parser-retained analysis for this exact source, it is the authority for
+            // every regex finding: exact spans, catalog codes, typed classes. The
+            // AST-flag embedded-code lint then stays silent so the same finding is
+            // not published twice under two identities.
+            let canonical_regex = self.canonical_regex_analysis(source);
+            let embedded_code_spans = match canonical_regex {
+                Some(table) => {
+                    diagnostics.extend(project_canonical_regex_diagnostics(table));
+                    super::regex_canonical::embedded_code_spans(table)
+                }
+                None => Vec::new(),
+            };
+            check_security_with_canonical_regex(ast, &mut diagnostics, &embedded_code_spans);
             check_ffi_checklib(ast, &mut diagnostics);
             check_eval_error_flow(ast, &mut diagnostics);
 

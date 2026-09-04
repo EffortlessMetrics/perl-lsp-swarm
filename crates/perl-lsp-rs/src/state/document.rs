@@ -177,6 +177,13 @@ pub struct ParsedSnapshot {
     parent_map: Arc<ParentMap>,
     /// Degradation tier computed from `ast` and `parse_errors`.
     degradation_tier: DegradationTier,
+    /// Canonical regex analysis retained during this exact parse (#7018/#7024).
+    ///
+    /// `None` when the parse ran outside a retention session (compatibility
+    /// callers and tests). It is retained rather than derived on demand because
+    /// deriving it later would mean a second parse, and a second parse is a
+    /// second regex authority.
+    regex_analysis: Option<Arc<perl_parser_core::RegexAnalysisTable>>,
     /// Lazily-built, generation-owned single-file semantic analyzer. Empty
     /// until first requested via [`Self::semantic_analyzer`]; never populated
     /// for a `Minimal` (AST-less) snapshot.
@@ -270,6 +277,7 @@ impl ParsedSnapshot {
             parse_errors: Arc::from(parse_errors),
             parent_map: Arc::new(parent_map),
             degradation_tier,
+            regex_analysis: None,
             semantic_analyzer: OnceLock::new(),
             type_environment: OnceLock::new(),
             source_region_index: OnceLock::new(),
@@ -280,6 +288,24 @@ impl ParsedSnapshot {
             #[cfg(test)]
             source_region_index_build_count: std::cell::Cell::new(0),
         }
+    }
+
+    /// Attach the canonical regex analysis retained during this snapshot's parse.
+    ///
+    /// The table must come from the [`perl_parser_core::RetainedRegexSession`] that
+    /// wrapped the parse this snapshot was built from, so it is bound to the same
+    /// source. Consumers re-check that binding before trusting it.
+    pub(crate) fn with_regex_analysis(
+        mut self,
+        regex_analysis: Arc<perl_parser_core::RegexAnalysisTable>,
+    ) -> Self {
+        self.regex_analysis = Some(regex_analysis);
+        self
+    }
+
+    /// Canonical regex analysis retained for this snapshot's source, if any.
+    pub fn regex_analysis(&self) -> Option<&Arc<perl_parser_core::RegexAnalysisTable>> {
+        self.regex_analysis.as_ref()
     }
 
     /// The document generation this snapshot was parsed from.

@@ -713,6 +713,10 @@ impl LspServer {
                     Arc::clone(&doc.generation),
                     doc.generation.load(Ordering::SeqCst),
                     self.workspace_identity_generation.load(Ordering::SeqCst),
+                    // Canonical regex analysis retained for this same snapshot
+                    // (#7024). Snapshotted with the AST so the two cannot come
+                    // from different generations.
+                    parsed.regex_analysis().cloned(),
                 ))
             })
             // lock is released here
@@ -728,6 +732,7 @@ impl LspServer {
                 generation,
                 gen_at_snapshot,
                 workspace_gen_at_snapshot,
+                regex_analysis,
             )| {
                 (
                     ast_opt,
@@ -740,6 +745,7 @@ impl LspServer {
                     gen_at_snapshot,
                     workspace_gen_at_snapshot,
                     project_config_generation_for_doc(self, &normalized_uri),
+                    regex_analysis,
                 )
             },
         );
@@ -755,6 +761,7 @@ impl LspServer {
             gen_at_snapshot,
             workspace_gen_at_snapshot,
             config_generation_at_snapshot,
+            regex_analysis,
         )) = snapshot
         else {
             return;
@@ -780,7 +787,10 @@ impl LspServer {
             // `resolve_use_lib_paths_from_source_at_offset` instead of the whole-file
             // scan, ensuring `no lib 'lib'` strips the path before `use GoneModule` is
             // checked.
-            let provider = DiagnosticsProvider::new();
+            let provider = match regex_analysis.clone() {
+                Some(table) => DiagnosticsProvider::new().with_regex_analysis(table),
+                None => DiagnosticsProvider::new(),
+            };
             let resolver = |module: &str, use_site_offset: usize| {
                 self.resolve_module_to_path_with_doc_at_offset(
                     module,
@@ -2037,7 +2047,10 @@ impl LspServer {
             let Some(parsed) = doc.current_parsed() else { continue };
             if let Some(ast) = parsed.ast() {
                 let parse_errors = parsed.parse_errors();
-                let provider = DiagnosticsProvider::new();
+                let provider = match parsed.regex_analysis().cloned() {
+                    Some(table) => DiagnosticsProvider::new().with_regex_analysis(table),
+                    None => DiagnosticsProvider::new(),
+                };
                 // Position-aware resolver: each `use` statement is checked against only
                 // the @INC roots that are lexically active at its offset, so `no lib`
                 // cancellations that precede the statement are respected.

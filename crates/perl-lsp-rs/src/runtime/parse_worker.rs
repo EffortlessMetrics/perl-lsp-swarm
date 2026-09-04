@@ -1127,26 +1127,34 @@ fn process_job(
     // errors, so a cache hit was forced to synthesize an empty error list --
     // live semantic corruption for recovery-bearing source (#11215). Every
     // live parse path now runs the full parser unconditionally.
-    let (ast, errors) = {
+    // The parse runs inside a `RetainedRegexSession` (#7024) so the one canonical
+    // regex analysis for this exact source is retained as the parse happens. It
+    // costs no extra parse: the session records the geometry the parser already
+    // computes, and suppresses the legacy per-operator scan while it is active.
+    let (ast, errors, regex_analysis) = {
         let code_text = crate::util::code_slice(&job.text);
+        let session = perl_parser_core::RetainedRegexSession::begin(code_text);
         let mut parser = perl_parser::Parser::new(code_text);
         match parser.parse() {
-            Ok(ast) => {
+            Ok(mut ast) => {
+                let table = session.finish(code_text, Some(&mut ast));
                 let errors = parser.errors().to_vec();
                 let arc_ast = Arc::new(ast);
-                (Some(arc_ast), errors)
+                (Some(arc_ast), errors, Arc::new(table))
             }
             // A parse failure still produces a snapshot -- `ast: None` maps
             // to `DegradationTier::Minimal` inside `from_parse_result`, and
             // that failure snapshot still needs to reach the publish gate
             // below so it can correctly supersede an older successful one.
-            Err(e) => (None, vec![e]),
+            Err(e) => (None, vec![e], Arc::new(session.finish(code_text, None))),
         }
     };
     let is_failure = ast.is_none();
 
-    let snapshot =
-        Arc::new(ParsedSnapshot::from_parse_result(job.generation, &job.text, ast.clone(), errors));
+    let snapshot = Arc::new(
+        ParsedSnapshot::from_parse_result(job.generation, &job.text, ast.clone(), errors)
+            .with_regex_analysis(regex_analysis),
+    );
 
     if crate::runtime::timing::is_enabled() {
         crate::runtime::timing::emit(crate::runtime::timing::TimingSpan::labeled(
