@@ -38,6 +38,15 @@ use crate::protocol::error_disposition::{Disposition, disposition_for};
 use crate::runtime::cancellation::CancellationError;
 use perl_parser_core::ErrorCategory;
 
+/// Canonical identity of this adapter.
+///
+/// The #4982 error inventory names the adapter that classifies
+/// [`CancellationError`]. It references this constant rather than repeating the
+/// path, so the inventory row and the adapter cannot drift into two separately
+/// editable statements of the same fact.
+pub const CANCELLATION_ERROR_ADAPTER: &str =
+    "perl_lsp_rs_core::protocol::cancellation_error_category";
+
 /// Projects a [`CancellationError`] onto the Perl product's [`ErrorCategory`].
 ///
 /// The match is exhaustive over [`CancellationError`] on purpose: a new

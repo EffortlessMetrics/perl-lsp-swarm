@@ -104,7 +104,7 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             crate_name: "perl-lsp-rs-core",
             has_error_class: false,
             classification_route: ClassificationRoute::AppAdapter(
-                "perl_lsp_rs_core::protocol::cancellation_error_category",
+                crate::protocol::cancellation_error_class::CANCELLATION_ERROR_ADAPTER,
             ),
             sample_category: Some(ErrorCategory::Bug),
             sample_disposition: Some(disposition_for(ErrorCategory::Bug)),
@@ -342,7 +342,7 @@ mod tests {
             assert_eq!(
                 entry.classification_route,
                 ClassificationRoute::AppAdapter(
-                    "perl_lsp_rs_core::protocol::cancellation_error_category"
+                    crate::protocol::cancellation_error_class::CANCELLATION_ERROR_ADAPTER
                 ),
                 "the app-owned adapter is the single category map for CancellationError"
             );
