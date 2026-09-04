@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Added
+body: Publish regex diagnostics from the parser's canonical analysis, with exact source ranges and stable PL1000-PL1007 codes.
+time: 2026-09-04T00:00:00Z
+custom:
+  PR: "14751"
+  Slug: canonical-regex-diagnostics
+  Breaking: "no"
