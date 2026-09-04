@@ -1294,6 +1294,22 @@ fn timeout_and_not_proven_terminate_distinctly() {
     assert_ne!(timed_out.stage_set_digest, unproven.stage_set_digest);
 }
 
+/// A failed receipt must name a failure reason family; borrowing the
+/// dedicated cancelled or timeout families would fold a cancellation or
+/// timeout as a plain failure.
+#[test]
+fn failed_receipt_cannot_borrow_cancelled_or_timeout_reasons() {
+    let (_, subject_digest) = resolved_archive(&base_intent());
+    for reason in [ReasonFamily::Cancelled, ReasonFamily::Timeout] {
+        let mut receipt =
+            succeeded_receipt("tx", "attempt-1", &subject_digest, StageId::Transport, &[]);
+        receipt.result = StageResult::Failed;
+        receipt.reason = reason;
+        receipt.next_action = ActionClass::AbortInstall;
+        expect_code(receipt.validate().map(|_| ()), ContractViolation::OutcomeConflict);
+    }
+}
+
 #[test]
 fn green_local_development_still_cannot_claim_installed() {
     let mut intent = base_intent();

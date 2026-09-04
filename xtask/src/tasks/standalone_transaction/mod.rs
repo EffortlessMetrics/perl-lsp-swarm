@@ -1335,7 +1335,13 @@ impl StageReceipt {
                 self.reason == ReasonFamily::None && self.next_action == ActionClass::None
             }
             StageResult::Failed => {
-                self.reason != ReasonFamily::None && self.next_action != ActionClass::None
+                // Cancellation and timeouts stay distinct: a failed receipt
+                // must name a failure reason, never the dedicated cancelled
+                // or timeout families that belong to their own results.
+                !matches!(
+                    self.reason,
+                    ReasonFamily::None | ReasonFamily::Cancelled | ReasonFamily::Timeout
+                ) && self.next_action != ActionClass::None
             }
             StageResult::Cancelled => {
                 self.reason == ReasonFamily::Cancelled && self.next_action != ActionClass::None
