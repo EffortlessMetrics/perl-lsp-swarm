@@ -1019,6 +1019,69 @@ print "result: $final\n";
     }
 
     #[test]
+    fn test_set_breakpoints_combined_entry_rejects_every_still_floored_field()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #9578 review: one entry carrying all three optional fields rejects
+        // on EVERY still-floored capability — the reasons are cumulative, not
+        // first-match — so promoting one capability can never admit an entry
+        // whose other fields remain floored.
+        let (_keep, source_path) = create_breakpoint_test_perl_file()?;
+        let mut adapter = DebugAdapter::new();
+
+        let combined = adapter.handle_request(
+            1,
+            "setBreakpoints",
+            Some(json!({
+                "source": { "path": source_path },
+                "breakpoints": [{
+                    "line": 7,
+                    "condition": "$x == 1",
+                    "hitCondition": ">= 2",
+                    "logMessage": "combined",
+                }],
+            })),
+        );
+        match combined {
+            DapMessage::Response { success: true, body: Some(body), .. } => {
+                let breakpoints =
+                    body.get("breakpoints").and_then(Value::as_array).ok_or("missing array")?;
+                assert_eq!(breakpoints.len(), 1, "one response per input");
+                let entry = &breakpoints[0];
+                assert_eq!(
+                    entry.get("verified").and_then(Value::as_bool),
+                    Some(false),
+                    "a combined entry with every field floored must reject"
+                );
+                let message = entry
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .ok_or("rejected entry must carry its refusal reasons")?;
+                assert!(
+                    message.contains(crate::backend::capabilities::CONDITION_UNSUPPORTED_MESSAGE),
+                    "the condition refusal must be present, got: {message}"
+                );
+                assert!(
+                    message
+                        .contains(crate::backend::capabilities::HIT_CONDITION_UNSUPPORTED_MESSAGE),
+                    "the hitCondition refusal must be present, got: {message}"
+                );
+                assert!(
+                    message.contains(crate::backend::capabilities::LOG_MESSAGE_UNSUPPORTED_MESSAGE),
+                    "the logMessage refusal must be present, got: {message}"
+                );
+            }
+            other => return Err(format!("expected per-item rejection, got {other:?}").into()),
+        }
+
+        assert!(
+            adapter.breakpoints.get_breakpoints(&source_path).is_empty(),
+            "a combined rejected entry must not mutate the store"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn test_set_breakpoints_mixed_request_stores_only_plain_entries()
     -> Result<(), Box<dyn std::error::Error>> {
         // #9578: replace semantics run over the plain subset only; the

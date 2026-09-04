@@ -215,51 +215,60 @@ pub(crate) const HOVER_UNSUPPORTED_MESSAGE: &str = "evaluate with context 'hover
 /// locally accepted condition is not proof the engine installed and enforced
 /// it, and a hit counter is not trustworthy before exact hit attribution.
 ///
-/// This gate deliberately consumes no catalog flag (`dap.core`,
+/// These gates deliberately consume no catalog flag (`dap.core`,
 /// `dap.breakpoints.*`), no backend capability, no maturity row, and no
-/// handler-presence signal. Flipping it to `true` requires the per-capability
-/// re-enable gates recorded on #9578, each from its own exact public behavior
-/// receipt: function #8645, conditional #8988, hit-condition #8994, logpoint
-/// #9000 (with the #7366 same-session false-path receipts). No capability
-/// inherits another's receipt and no combined cell widens a single component.
-pub(crate) const OPTIONAL_BREAKPOINT_CAPABILITIES_PROVEN: bool = false;
+/// handler-presence signal. Promoting one capability to `true` requires
+/// exactly its own re-enable gate recorded on #9578, from its own exact
+/// public behavior receipt: function #8645, conditional #8988, hit-condition
+/// #8994, logpoint #9000 (with the #7366 same-session false-path receipts).
+/// No capability inherits another's receipt and no combined cell widens a
+/// single component — each authority below is bound to exactly one accessor
+/// (`optional_breakpoint_authority_binding_is_per_capability` pins this).
+pub(crate) const OPTIONAL_FUNCTION_BREAKPOINTS_PROVEN: bool = false;
+pub(crate) const OPTIONAL_CONDITIONAL_BREAKPOINTS_PROVEN: bool = false;
+pub(crate) const OPTIONAL_HIT_CONDITIONAL_BREAKPOINTS_PROVEN: bool = false;
+pub(crate) const OPTIONAL_LOG_POINTS_PROVEN: bool = false;
 
 /// The single authority for the advertised `supportsFunctionBreakpoints` value.
 ///
-/// Derived from [`OPTIONAL_BREAKPOINT_CAPABILITIES_PROVEN`] alone (#9578); no
-/// catalog or backend signal may widen it.
+/// Derived from [`OPTIONAL_FUNCTION_BREAKPOINTS_PROVEN`] alone (#9578); no
+/// catalog or backend signal may widen it, and no sibling receipt
+/// (#8988/#8994/#9000) may promote it.
 #[must_use]
 pub(crate) const fn advertises_function_breakpoints() -> bool {
-    OPTIONAL_BREAKPOINT_CAPABILITIES_PROVEN
+    OPTIONAL_FUNCTION_BREAKPOINTS_PROVEN
 }
 
 /// The single authority for the advertised `supportsConditionalBreakpoints`
 /// value.
 ///
-/// Derived from [`OPTIONAL_BREAKPOINT_CAPABILITIES_PROVEN`] alone (#9578); no
-/// catalog or backend signal may widen it.
+/// Derived from [`OPTIONAL_CONDITIONAL_BREAKPOINTS_PROVEN`] alone (#9578); no
+/// catalog or backend signal may widen it, and no sibling receipt
+/// (#8645/#8994/#9000) may promote it.
 #[must_use]
 pub(crate) const fn advertises_conditional_breakpoints() -> bool {
-    OPTIONAL_BREAKPOINT_CAPABILITIES_PROVEN
+    OPTIONAL_CONDITIONAL_BREAKPOINTS_PROVEN
 }
 
 /// The single authority for the advertised `supportsHitConditionalBreakpoints`
 /// value.
 ///
-/// Derived from [`OPTIONAL_BREAKPOINT_CAPABILITIES_PROVEN`] alone (#9578); no
-/// catalog or backend signal may widen it.
+/// Derived from [`OPTIONAL_HIT_CONDITIONAL_BREAKPOINTS_PROVEN`] alone (#9578);
+/// no catalog or backend signal may widen it, and no sibling receipt
+/// (#8645/#8988/#9000) may promote it.
 #[must_use]
 pub(crate) const fn advertises_hit_conditional_breakpoints() -> bool {
-    OPTIONAL_BREAKPOINT_CAPABILITIES_PROVEN
+    OPTIONAL_HIT_CONDITIONAL_BREAKPOINTS_PROVEN
 }
 
 /// The single authority for the advertised `supportsLogPoints` value.
 ///
-/// Derived from [`OPTIONAL_BREAKPOINT_CAPABILITIES_PROVEN`] alone (#9578); no
-/// catalog or backend signal may widen it.
+/// Derived from [`OPTIONAL_LOG_POINTS_PROVEN`] alone (#9578); no catalog or
+/// backend signal may widen it, and no sibling receipt
+/// (#8645/#8988/#8994) may promote it.
 #[must_use]
 pub(crate) const fn advertises_log_points() -> bool {
-    OPTIONAL_BREAKPOINT_CAPABILITIES_PROVEN
+    OPTIONAL_LOG_POINTS_PROVEN
 }
 
 /// Deterministic refusal for `setFunctionBreakpoints` while the capability is
@@ -438,6 +447,88 @@ pub fn intersect_dap_capabilities(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Authority-binding contract (#9578 review): each `advertises_*`
+    /// accessor reads exactly its own per-capability proof authority, and the
+    /// old shared authority no longer exists. One capability's re-enable
+    /// receipt can therefore never promote a sibling. This is a source
+    /// contract, not a value assertion: the authorities are compile-time and
+    /// every one currently floors at `false`, so promoting any capability
+    /// requires flipping exactly its own constant and updating the floor pin
+    /// below.
+    #[test]
+    fn optional_breakpoint_authority_binding_is_per_capability() {
+        // Scan only the production half: this test module legitimately names
+        // the removed authority in its own assertions.
+        let source =
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/backend/capabilities.rs"));
+        let source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("module source always has a production half");
+
+        let bindings = [
+            ("advertises_function_breakpoints", "OPTIONAL_FUNCTION_BREAKPOINTS_PROVEN"),
+            ("advertises_conditional_breakpoints", "OPTIONAL_CONDITIONAL_BREAKPOINTS_PROVEN"),
+            (
+                "advertises_hit_conditional_breakpoints",
+                "OPTIONAL_HIT_CONDITIONAL_BREAKPOINTS_PROVEN",
+            ),
+            ("advertises_log_points", "OPTIONAL_LOG_POINTS_PROVEN"),
+        ];
+        for (accessor, authority) in bindings {
+            let body = accessor_body(source, accessor);
+            assert!(body.contains(authority), "{accessor} must read its own authority {authority}");
+            for (_, sibling) in bindings.iter().filter(|(_, a)| *a != authority) {
+                assert!(
+                    !body.contains(sibling),
+                    "{accessor} must not read sibling authority {sibling}"
+                );
+            }
+        }
+
+        assert!(
+            !source.contains("OPTIONAL_BREAKPOINT_CAPABILITIES_PROVEN"),
+            "the shared all-capsabilities authority must stay removed; per-capability              authorities are the only promotion path (#9578 review)"
+        );
+    }
+
+    /// Floor pin (#9578): every per-capability authority floors at `false`.
+    /// A promotion flips exactly one constant AND updates this pin together
+    /// with its own #9578 receipt, so a receipt can never silently widen a
+    /// sibling.
+    #[test]
+    fn every_optional_breakpoint_authority_floors_at_false() {
+        let source =
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/backend/capabilities.rs"));
+        let source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("module source always has a production half");
+        for authority in [
+            "OPTIONAL_FUNCTION_BREAKPOINTS_PROVEN",
+            "OPTIONAL_CONDITIONAL_BREAKPOINTS_PROVEN",
+            "OPTIONAL_HIT_CONDITIONAL_BREAKPOINTS_PROVEN",
+            "OPTIONAL_LOG_POINTS_PROVEN",
+        ] {
+            let declaration = format!("pub(crate) const {authority}: bool = false;");
+            assert!(
+                source.contains(&declaration),
+                "{authority} must floor at false until its own re-enable receipt lands;                  update this pin in the same commit as the promotion"
+            );
+        }
+    }
+
+    /// Extract the body of one `const fn` accessor from the module source.
+    fn accessor_body(source: &str, accessor: &str) -> String {
+        let signature = format!("fn {accessor}()");
+        let start = source
+            .find(&signature)
+            .unwrap_or_else(|| panic!("{accessor} must stay defined in capabilities.rs"));
+        let open = source[start..].find('{').expect("accessor body brace") + start;
+        let close = source[open..].find('}').expect("accessor body close") + open;
+        source[open..=close].to_string()
+    }
 
     fn all_catalog() -> CatalogDapFlags {
         CatalogDapFlags {
