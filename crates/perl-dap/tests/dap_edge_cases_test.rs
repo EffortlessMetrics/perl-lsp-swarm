@@ -107,6 +107,14 @@ say "Done";
             assert!(breakpoints[1].get("id").is_some(), "stored plain entry keeps its id");
             assert!(breakpoints[1].get("line").is_some());
             assert_eq!(breakpoints[2].get("verified").and_then(Value::as_bool), Some(false));
+            let rejected_message_late = breakpoints[2]
+                .get("message")
+                .and_then(Value::as_str)
+                .ok_or("third rejected entry must carry a message")?;
+            assert!(
+                rejected_message_late.contains("supportsConditionalBreakpoints"),
+                "expected the #9578 conditional floor refusal on the third entry, got                  {rejected_message_late:?}"
+            );
         }
         _ => return Err("Expected successful setBreakpoints response".into()),
     }
