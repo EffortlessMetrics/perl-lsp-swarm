@@ -773,6 +773,29 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         )
         self.assertNotIn("multiline-path-test-gate", gates)
 
+    def test_feature_gate_inventory_ignores_comment_path_and_prior_attribute(self) -> None:
+        self.write(
+            "crates/perl-parser/src/lib.rs",
+            '// #[path = "fake.rs"]\n'
+            '#[path = "old.rs"]\nmod old;\n'
+            '#[path = "support/fixtures.rs"]\n'
+            '// comment between valid attributes\n'
+            '#[cfg(test)]\nmod test_support;\n',
+        )
+        self.write(
+            "crates/perl-parser/src/support/fixtures.rs",
+            '#[cfg(feature = "comment-path-test-gate")]\nfn gated() {}\n',
+        )
+        self.write(
+            "crates/perl-parser/src/old.rs",
+            '#[cfg(feature = "old-path-test-gate")]\nfn gated() {}\n',
+        )
+        gates = feature_source_gates(
+            self.root / "crates/perl-parser", ("src",), skip_test_modules=True
+        )
+        self.assertNotIn("comment-path-test-gate", gates)
+        self.assertIn("old-path-test-gate", gates)
+
     def test_review_row_target_owner_must_be_actionable(self) -> None:
         row = next(r for r in self.ledger["features"] if r["disposition"] == "review")
         row["target_owner"] = "the parser team"
