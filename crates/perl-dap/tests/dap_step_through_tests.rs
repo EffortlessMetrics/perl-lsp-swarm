@@ -503,9 +503,10 @@ fn test_goto_targets_unsupported_for_valid_perl_source() -> Result<(), Box<dyn s
 }
 
 #[test]
-// AC:3535
-fn test_goto_targets_nonexistent_file_returns_empty_targets()
--> Result<(), Box<dyn std::error::Error>> {
+// AC:3535 — #9064 fail-closed: the gate refuses before any filesystem access,
+// so the empty-targets contract no longer exists; a nonexistent file gets the
+// explicit unsupported failure.
+fn test_goto_targets_nonexistent_file_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let args = json!({
         "source": { "path": "/nonexistent/file.pl" },
@@ -527,12 +528,13 @@ fn test_goto_targets_nonexistent_file_returns_empty_targets()
 }
 
 // ---------------------------------------------------------------------------
-// 6. goto with unknown target id
+// 6. goto while unadvertised (fail-closed; unknown-target lookup is unreachable)
 // ---------------------------------------------------------------------------
 
 #[test]
-// AC:3535
-fn test_goto_unknown_target_id_returns_failure() -> Result<(), Box<dyn std::error::Error>> {
+// AC:3535 — #9064 fail-closed: the `dap.goto` gate refuses before any target
+// lookup, so only the unsupported contract is exercised here.
+fn test_goto_unsupported_while_unadvertised() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let args = json!({ "threadId": 1, "targetId": 99999 });
     let response = adapter.handle_request(1, "goto", Some(args));

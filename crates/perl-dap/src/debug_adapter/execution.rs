@@ -534,6 +534,11 @@ impl DebugAdapter {
         // why its path is not evaluated) stays observable at this gate, which
         // refuses before path validation ever runs.
         if !catalog_has_feature("dap.goto_targets") {
+            // A refused request must not leave a previously armed `cancel`
+            // flag for the next unrelated request to trip over. The pre-gate
+            // handler reset the advisory flag in its line-scan loop, which
+            // this gate bypasses, so consume it at the request boundary.
+            self.cancel_requested.store(false, Ordering::Release);
             return DapMessage::Response {
                 seq,
                 request_seq,
@@ -669,6 +674,10 @@ impl DebugAdapter {
         // below is unreachable while the catalog row is unadvertised) and must
         // not run the intervening code between the current stop and the target.
         if !catalog_has_feature("dap.goto") {
+            // Consume a previously armed `cancel` flag at the request boundary
+            // so a refused goto cannot poison the next unrelated request (the
+            // gated line-scan loop used to reset it).
+            self.cancel_requested.store(false, Ordering::Release);
             return DapMessage::Response {
                 seq,
                 request_seq,

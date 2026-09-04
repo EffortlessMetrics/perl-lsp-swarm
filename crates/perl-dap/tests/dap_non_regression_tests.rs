@@ -810,12 +810,13 @@ fn test_cancel_followed_by_command_returns_valid_response() -> Result<(), Box<dy
     // reads during its inner loop. Verify that a subsequent command on the same
     // adapter still returns a well-formed Response and doesn't panic or hang.
     //
-    // Note: gotoTargets is fail-closed (#9064) and returns its unsupported
-    // response before reaching any cancel_requested check, so it can no longer
-    // reset the flag. breakpointLocations with a real source path still
-    // exercises the check and resets it. The non-existent path causes an early
-    // file-read error return, which is also fine — what matters is that a
-    // Response is returned and request_seq is echoed.
+    // Note: gotoTargets is fail-closed (#9064) and its gate consumes an armed
+    // cancel flag at the request boundary (proven by
+    // test_cancel_then_rejected_goto_targets_does_not_poison_next_request).
+    // breakpointLocations with a real source path still exercises the check
+    // and resets it. The non-existent path causes an early file-read error
+    // return, which is also fine — what matters is that a Response is
+    // returned and request_seq is echoed.
     let mut adapter = new_adapter();
 
     // First: cancel sets cancel_requested = true
@@ -857,6 +858,67 @@ fn test_cancel_followed_by_command_returns_valid_response() -> Result<(), Box<dy
         }
         other => {
             return Err(format!("threads after cancel: expected Response, got {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+// #9064 review repair: a fail-closed `gotoTargets` must consume a previously
+// armed `cancel` flag at the request boundary instead of leaving it for the
+// next unrelated request. If the flag were left armed, the following
+// `breakpointLocations` loop would abort on its first iteration and report an
+// empty location list for a file with executable lines.
+fn test_cancel_then_rejected_goto_targets_does_not_poison_next_request() -> TestResult<()> {
+    let mut adapter = new_adapter();
+
+    // Arm the shared advisory flag.
+    match adapter.handle_request(1, "cancel", None) {
+        DapMessage::Response { command, success, .. } => {
+            assert_eq!(command, "cancel");
+            assert!(success, "cancel must succeed");
+        }
+        other => return Err(format!("cancel: expected Response, got {other:?}").into()),
+    }
+
+    // The fail-closed gate refuses — and must consume the armed flag.
+    match adapter.handle_request(
+        2,
+        "gotoTargets",
+        Some(json!({"source": {"path": "script.pl"}, "line": 3})),
+    ) {
+        DapMessage::Response { command, success, .. } => {
+            assert_eq!(command, "gotoTargets");
+            assert!(!success, "gotoTargets must fail closed while unadvertised (#9064)");
+        }
+        other => return Err(format!("gotoTargets: expected Response, got {other:?}").into()),
+    }
+
+    // A real source with executable lines: if the cancel flag were still
+    // armed, breakpointLocations would break out with an empty list.
+    let dir = tempfile::tempdir()?;
+    let script_path = dir.path().join("cancel_probe.pl");
+    std::fs::write(&script_path, "my $x = 1;\nmy $y = 2;\nprint $x + $y;\n")?;
+    let path = script_path.to_str().ok_or("temp path is not valid UTF-8")?;
+
+    match adapter.handle_request(
+        3,
+        "breakpointLocations",
+        Some(json!({"source": {"path": path}, "line": 1, "endLine": 3})),
+    ) {
+        DapMessage::Response { command, success, body, .. } => {
+            assert_eq!(command, "breakpointLocations");
+            assert!(success, "breakpointLocations must succeed after a refused gotoTargets");
+            let body = body.ok_or("breakpointLocations must carry a body")?;
+            let breakpoints = body["breakpoints"].as_array().ok_or("breakpoints array missing")?;
+            assert!(
+                !breakpoints.is_empty(),
+                "an armed cancel flag must not survive the refused gotoTargets: \
+                 breakpointLocations aborted with an empty location list"
+            );
+        }
+        other => {
+            return Err(format!("breakpointLocations: expected Response, got {other:?}").into());
         }
     }
     Ok(())

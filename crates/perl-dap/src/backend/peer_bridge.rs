@@ -1513,6 +1513,28 @@ mod tests {
         Ok(())
     }
 
+    /// #9064: standard goto is native-only and fail-closed; a peer frontend
+    /// must never acknowledge a `goto`/`gotoTargets` request it cannot route
+    /// to a backend, whatever the native catalog says.
+    #[test]
+    fn native_only_goto_requests_fail_closed() -> Result<(), String> {
+        let mut b = bridge();
+        for (seq, command, args) in [
+            (17, "gotoTargets", json!({ "source": {"path": "s.pl"}, "line": 3 })),
+            (18, "goto", json!({ "threadId": 1, "targetId": 1 })),
+        ] {
+            let out = b.dispatch(seq, command, Some(args));
+            let (rcmd, success, body) = as_response(&out[0])?;
+            assert_eq!(rcmd, command);
+            assert!(!success, "{command}: peer-unavailable requests must not acknowledge success");
+            assert!(body.is_none(), "{command}: a refused request must not carry a response body");
+            if let DapMessage::Response { message, .. } = &out[0] {
+                assert!(message.as_deref().is_some_and(|message| !message.is_empty()));
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn step_in_with_target_id_fails_closed_and_never_reaches_the_backend() -> Result<(), String> {
         let calls = Arc::new(AtomicUsize::new(0));

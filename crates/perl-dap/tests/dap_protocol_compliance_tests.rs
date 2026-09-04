@@ -140,8 +140,9 @@ fn test_goto_missing_args_returns_failure() -> Result<(), Box<dyn std::error::Er
 }
 
 #[test]
-// AC:16
-fn test_goto_unknown_target_id_returns_failure() -> Result<(), Box<dyn std::error::Error>> {
+// AC:16 — #9064 fail-closed: the gate refuses before any target lookup, so
+// the unknown-target-id path is unreachable while unadvertised.
+fn test_goto_unsupported_while_unadvertised() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let args = json!({ "threadId": 1, "targetId": 9999 });
     let response = adapter.handle_request(1, "goto", Some(args));

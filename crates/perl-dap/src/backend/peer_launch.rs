@@ -1781,6 +1781,29 @@ mod tests {
         Ok(())
     }
 
+    /// #9064: standard goto is native-only and fail-closed; a mirror peer
+    /// must never acknowledge a `goto`/`gotoTargets` request it cannot route
+    /// to a backend, whatever the native catalog says.
+    #[test]
+    fn native_only_goto_requests_fail_closed() -> Result<(), String> {
+        let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
+        for (seq, command, args) in [
+            (17, "gotoTargets", json!({ "source": {"path": "s.pl"}, "line": 3 })),
+            (18, "goto", json!({ "threadId": 1, "targetId": 1 })),
+        ] {
+            let out = bridge.dispatch(seq, command, Some(args));
+            let first = out.first().ok_or_else(|| format!("{command} produced no response"))?;
+            let (rcmd, success, body) = as_response(first)?;
+            assert_eq!(rcmd, command);
+            assert!(!success, "{command}: peer-unavailable requests must not acknowledge success");
+            assert!(body.is_none(), "{command}: a refused request must not carry a response body");
+            if let DapMessage::Response { message, .. } = first {
+                assert!(message.as_deref().is_some_and(|message| !message.is_empty()));
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn setbreakpoints_before_handshake_queues_and_answers_pending() -> Result<(), String> {
         let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
