@@ -2132,6 +2132,9 @@ enum Commands {
     /// Check active install docs and release notes for stale install command drift.
     InstallSurfaceCheck,
 
+    /// Verify the standalone install transaction model invariants (#10243 child 1, #11099).
+    StandaloneTransactionCheck,
+
     /// Validate PR intent/title/body against changed paths and closeout evidence.
     IntentDiffGate {
         /// Pull request number to inspect via `gh pr view`.
@@ -6225,6 +6228,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
         Commands::DocClaims => doc_claims::run(),
         Commands::InstallSurfaceCheck => install_surface_check::run(),
+        Commands::StandaloneTransactionCheck => tasks::standalone_transaction::run_check(),
         Commands::IntentDiffGate { pr, fixture, receipt } => {
             intent_diff_gate::run(intent_diff_gate::IntentDiffGateConfig { pr, fixture, receipt })
         }
