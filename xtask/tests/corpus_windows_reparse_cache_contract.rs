@@ -5,8 +5,10 @@
 //! of the modeled selected-test mutation channels: direct assignment, element or
 //! array rewrites, unset/read/mapfile/declaration forms, `printf -v`, eval,
 //! nameref or variable-name indirection, shell-function or alias shadowing
-//! of the proof commands, and external shell-shaping step environment such as
-//! `BASHOPTS` or `BASH_ENV`. It remains a literal static oracle, not
+//! of the proof commands (including definitions hidden behind `source`/`.`),
+//! and external shell-shaping environment such as `BASHOPTS` or `BASH_ENV` at
+//! any scope inherited by the proof shells (workflow, job, or step). It remains
+//! a literal static oracle, not
 //! a shell parser: it does not prove runtime cache restore/save provenance,
 //! discovery of arbitrary unseen shell or local cache writers, obfuscated name
 //! construction beyond the named indirection forms, or trusted runner
@@ -141,6 +143,14 @@ fn validate_workflow(source: &str) -> Result<()> {
         "the workflow must grant contents read permission"
     );
     ensure!(permissions.len() == 1, "workflow permissions must not grant extra scopes");
+    // Workflow-level environment is inherited by every proof shell without
+    // appearing in the pinned script text: `BASH_ENV` would source an outside
+    // file and `BASHOPTS`/`SHELLOPTS` could enable alias expansion before the
+    // script runs, so the workflow must declare no environment at all.
+    ensure!(
+        workflow.get("env").is_none(),
+        "the workflow must not declare environment inherited by the proof shells"
+    );
     let jobs = workflow
         .get("jobs")
         .and_then(Value::as_mapping)
@@ -154,6 +164,13 @@ fn validate_workflow(source: &str) -> Result<()> {
         .and_then(Value::as_mapping)
         .ok_or_else(|| anyhow!("the workflow must declare the Windows reparse proof job"))?;
     ensure!(job.get("permissions").is_none(), "the proof job must not add permissions");
+    // Job-level environment reaches the topology step's bash process through
+    // the same inheritance channel as workflow-level environment, so the job
+    // must declare none either; the step-level pin is checked below.
+    ensure!(
+        job.get("env").is_none(),
+        "the proof job must not declare environment inherited by the proof shells"
+    );
     ensure!(
         job.get("runs-on").and_then(Value::as_str) == Some("windows-2022"),
         "the Windows proof must run on windows-2022"
@@ -417,13 +434,19 @@ fn validate_workflow(source: &str) -> Result<()> {
     // (`shopt -s "$opt"`, `alias "$cmd=..."`) then cannot bypass the check, and
     // no alias can expand without an enabling shopt. The `name()` check compares
     // a whitespace-stripped form so spacing like `cargo ( )` cannot hide the
-    // parentheses; `function name` keeps its normalized form.
+    // parentheses; `function name` keeps its normalized form. `source` and its
+    // `.` synonym would load checkout-controlled shell text whose function
+    // definitions never appear in this scanned script, so reject both builtins
+    // as (quote-stripped) word tokens; the production script sources nothing.
     ensure!(
         !topology_raw.lines().map(str::trim).any(|line| {
             let flat = normalized(&line.to_ascii_lowercase());
             let squeezed: String = flat.chars().filter(|c| !c.is_whitespace()).collect();
             flat.contains("alias")
                 || flat.contains("shopt")
+                || flat
+                    .split(' ')
+                    .any(|token| matches!(token.trim_matches(['"', '\'']), "source" | "."))
                 || ["cargo", "grep", "sed", "tee", "mktemp"].iter().any(|name| {
                     squeezed.starts_with(&format!("{name}()"))
                         || flat.starts_with(&format!("function {name}"))
@@ -611,6 +634,11 @@ fn static_contract_rejects_structural_cache_and_permission_mutations() -> Result
             "  windows-reparse-proof:\n    permissions:\n      id-token: write\n    name:",
         ),
         ("jobs:\n", "jobs:\n  hidden-cache-writer:\n    runs-on: ubuntu-latest\n    steps: []\n"),
+        ("concurrency:\n", "env:\n  BASH_ENV: ./proof-hooks.sh\n\nconcurrency:\n"),
+        (
+            "  windows-reparse-proof:\n    name:",
+            "  windows-reparse-proof:\n    env:\n      BASHOPTS: expand_aliases\n    name:",
+        ),
     ] {
         ensure!(
             validate_workflow(&replace_once(&source, from, to)?).is_err(),
@@ -746,6 +774,9 @@ fn static_contract_rejects_structural_proof_and_trigger_mutations() -> Result<()
         "alias -- cargo='printf running'",
         "alias_option=expand_aliases\n          shopt -s \"$alias_option\"",
         "command=cargo\n          alias \"$command=fake_cargo\"",
+        "source ./proof-hooks.sh",
+        ". ./proof-hooks.sh",
+        "\"source\" ./proof-hooks.sh",
     ] {
         let to = SELECTED_DECLARATION_END.replacen(
             ")\n\n",
