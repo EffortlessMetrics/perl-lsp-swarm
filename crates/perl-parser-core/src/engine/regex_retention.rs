@@ -71,7 +71,11 @@ pub fn parse_source_with_regex_analysis(source: &str) -> RegexParseOutput {
     let session = PendingGeometryGuard::begin(source);
     let mut parser = Parser::new(source);
     let parse_output = parser.parse_with_recovery();
-    finish_output(source, parse_output, session.finish())
+    finish_output(
+        source,
+        parse_output,
+        session.finish().unwrap_or_else(PendingGeometrySession::empty),
+    )
 }
 
 /// Parse source with cooperative cancellation and retain canonical regex analysis.
@@ -83,7 +87,11 @@ pub fn parse_source_with_cancellation_and_regex_analysis(
     let session = PendingGeometryGuard::begin(source);
     let mut parser = Parser::new_with_cancellation(source, cancellation_flag);
     let parse_output = parser.parse_with_recovery();
-    finish_output(source, parse_output, session.finish())
+    finish_output(
+        source,
+        parse_output,
+        session.finish().unwrap_or_else(PendingGeometrySession::empty),
+    )
 }
 
 /// Parse a caller-supplied token stream and retain canonical regex analysis.
@@ -94,7 +102,11 @@ pub fn parse_tokens_with_regex_analysis(tokens: Vec<Token>, source: &str) -> Reg
     let session = PendingGeometryGuard::begin(source);
     let mut parser = Parser::from_tokens(tokens, source);
     let parse_output = parser.parse_with_recovery();
-    finish_output(source, parse_output, session.finish())
+    finish_output(
+        source,
+        parse_output,
+        session.finish().unwrap_or_else(PendingGeometrySession::empty),
+    )
 }
 
 /// Retain canonical regex analysis around a parse the caller drives itself.
@@ -114,7 +126,7 @@ pub fn parse_tokens_with_regex_analysis(tokens: Vec<Token>, source: &str) -> Reg
 /// let session = RetainedRegexSession::begin(source);
 /// let mut parser = Parser::new(source);
 /// let mut ast = parser.parse().expect("clean parse");
-/// let table = session.finish(source, Some(&mut ast));
+/// let table = session.finish(Some(&mut ast));
 ///
 /// assert_eq!(table.records.len(), 1);
 /// assert!(table.source_matches(source));
@@ -124,36 +136,54 @@ pub fn parse_tokens_with_regex_analysis(tokens: Vec<Token>, source: &str) -> Reg
 /// exactly as it is for the whole-parse entry points, so the retained table is the
 /// only regex evidence produced for that parse.
 ///
-/// The session is thread-local and bound to the source it began with. Dropping it
-/// without calling [`RetainedRegexSession::finish`] releases it and retains nothing.
+/// # Binding the session to one source
+///
+/// The session borrows the source it began with and uses that same text to build
+/// the table, so the retained geometry and the table's digest cannot come from two
+/// different documents. That matters more than it looks: geometry is recorded
+/// against the parser's source by length, so a *different* document of the same
+/// length would otherwise contribute geometry to a table stamped with this
+/// document's digest — mis-anchored ranges that still pass every freshness check
+/// downstream. Holding the borrow makes that unrepresentable rather than merely
+/// validated.
+///
+/// The session is thread-local. Dropping it without calling
+/// [`RetainedRegexSession::finish`] releases it and retains nothing.
 #[derive(Debug)]
-pub struct RetainedRegexSession {
+pub struct RetainedRegexSession<'source> {
     guard: PendingGeometryGuard,
+    source: &'source str,
 }
 
-impl RetainedRegexSession {
+impl<'source> RetainedRegexSession<'source> {
     /// Begin retaining parser-owned geometry for a parse of `source`.
     #[must_use]
-    pub fn begin(source: &str) -> Self {
-        Self { guard: PendingGeometryGuard::begin(source) }
+    pub fn begin(source: &'source str) -> Self {
+        Self { guard: PendingGeometryGuard::begin(source), source }
     }
 
     /// Finish the session and build the canonical table for the parsed `ast`.
     ///
-    /// `source` must be the exact source the session began with; the returned table
-    /// binds its digest so a later consumer can prove freshness.
+    /// The table is built against the source this session began with, and binds its
+    /// digest so a later consumer can prove freshness.
     ///
     /// `ast` is `None` when the caller's parse produced no usable tree. That case
     /// returns an empty source-bound table rather than a fabricated clean one: no
     /// record is not the same claim as no finding, and the caller can still tell the
     /// two apart through [`RegexAnalysisTable::source_matches`].
     ///
+    /// A session finished out of order — while a session begun after it is still
+    /// active — retains nothing rather than consuming the other session's geometry.
+    /// An empty table is a claim this layer can honestly make; another document's
+    /// spans stamped with this document's digest is not.
+    ///
     /// The AST's compatibility flags (`has_embedded_code`) are refreshed from the
     /// table so they remain a projection of the canonical analysis rather than an
     /// independent scan result.
     #[must_use]
-    pub fn finish(self, source: &str, ast: Option<&mut Node>) -> RegexAnalysisTable {
-        let pending = self.guard.finish();
+    pub fn finish(self, ast: Option<&mut Node>) -> RegexAnalysisTable {
+        let source = self.source;
+        let pending = self.guard.finish().unwrap_or_else(PendingGeometrySession::empty);
         let Some(ast) = ast else {
             return RegexAnalysisTable::for_source(source);
         };
@@ -611,33 +641,66 @@ impl RetentionInput {
 
 #[derive(Debug)]
 struct PendingGeometrySession {
+    /// Identity of the guard that pushed this entry, so a session finished out of
+    /// order cannot pop and consume a different session's geometry.
+    id: u64,
     source_len: usize,
     geometries: Vec<RegexFamilyGeometry>,
 }
 
 impl PendingGeometrySession {
-    fn for_source(source: &str) -> Self {
-        Self { source_len: source.len(), geometries: Vec::new() }
+    fn for_source(id: u64, source: &str) -> Self {
+        Self { id, source_len: source.len(), geometries: Vec::new() }
     }
+
+    fn empty() -> Self {
+        Self { id: 0, source_len: 0, geometries: Vec::new() }
+    }
+}
+
+/// Source of session identities. Thread-local, so no two live sessions on a thread
+/// share an id and the counter never needs to be synchronized.
+fn next_session_id() -> u64 {
+    thread_local! {
+        static NEXT_SESSION_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+    }
+    NEXT_SESSION_ID.with(|next| {
+        let id = next.get();
+        next.set(id.saturating_add(1));
+        id
+    })
 }
 
 #[derive(Debug)]
 struct PendingGeometryGuard {
     active: bool,
+    id: u64,
 }
 
 impl PendingGeometryGuard {
     fn begin(source: &str) -> Self {
+        let id = next_session_id();
         ACTIVE_GEOMETRY_SESSIONS.with(|sessions| {
-            sessions.borrow_mut().push(PendingGeometrySession::for_source(source));
+            sessions.borrow_mut().push(PendingGeometrySession::for_source(id, source));
         });
-        Self { active: true }
+        Self { active: true, id }
     }
 
-    fn finish(mut self) -> PendingGeometrySession {
-        let pending = ACTIVE_GEOMETRY_SESSIONS.with(|sessions| sessions.borrow_mut().pop());
+    /// Pop this guard's own session, or `None` when it is not the active one.
+    ///
+    /// Returning `None` rather than the stack top is the whole point: an
+    /// out-of-order finish would otherwise hand this guard a *different* parse's
+    /// geometry, which the caller would then anchor against its own source.
+    fn finish(mut self) -> Option<PendingGeometrySession> {
         self.active = false;
-        pending.unwrap_or(PendingGeometrySession { source_len: 0, geometries: Vec::new() })
+        ACTIVE_GEOMETRY_SESSIONS.with(|sessions| {
+            let mut sessions = sessions.borrow_mut();
+            match sessions.last() {
+                Some(top) if top.id == self.id => sessions.pop(),
+                // Not ours. Leave it for its owner rather than consuming it.
+                _ => None,
+            }
+        })
     }
 }
 
@@ -645,7 +708,11 @@ impl Drop for PendingGeometryGuard {
     fn drop(&mut self) {
         if self.active {
             ACTIVE_GEOMETRY_SESSIONS.with(|sessions| {
-                let _ = sessions.borrow_mut().pop();
+                let mut sessions = sessions.borrow_mut();
+                // Same ownership rule as `finish`: only retire our own entry.
+                if sessions.last().is_some_and(|top| top.id == self.id) {
+                    let _ = sessions.pop();
+                }
             });
         }
     }
@@ -773,7 +840,7 @@ mod tests {
             // A different source length cannot belong to this session; accepting it
             // would bind geometry to bytes the table was not built from.
             assert!(!record_operator_geometry("my $x = /ab/;", 8));
-            let pending = session.finish();
+            let pending = session.finish().expect("the guard owns the active session");
             assert_eq!(pending.source_len, source.len());
         }
         // The session is popped on drop, so the next ordinary parse is unaffected.
@@ -786,7 +853,7 @@ mod tests {
         let session = PendingGeometryGuard::begin(source);
         assert!(record_operator_geometry(source, 8));
         assert!(record_operator_geometry(source, 8));
-        let pending = session.finish();
+        let pending = session.finish().expect("the guard owns the active session");
         assert_eq!(
             pending.geometries.len(),
             1,

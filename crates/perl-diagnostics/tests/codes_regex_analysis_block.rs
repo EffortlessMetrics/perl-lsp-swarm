@@ -33,6 +33,14 @@ fn every_regex_analysis_code_is_stable_and_round_trips() {
 fn every_regex_analysis_code_carries_catalog_metadata() {
     for (code, expected, severity) in REGEX_ANALYSIS_BLOCK {
         assert_eq!(code.severity(), severity, "{expected} severity is catalog-owned");
+        // The URL is published to clients as `codeDescription.href`, so a code that
+        // silently points at another code's page sends users to the wrong
+        // explanation. Assert the exact URL, not merely that one exists.
+        assert_eq!(
+            code.documentation_url(),
+            Some(format!("https://docs.perl-lsp.org/errors/{expected}").as_str()),
+            "{expected} must resolve to its own documentation page"
+        );
         assert_eq!(
             code.category(),
             DiagnosticCategory::RegexAnalysis,

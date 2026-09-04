@@ -1137,7 +1137,7 @@ fn process_job(
         let mut parser = perl_parser::Parser::new(code_text);
         match parser.parse() {
             Ok(mut ast) => {
-                let table = session.finish(code_text, Some(&mut ast));
+                let table = session.finish(Some(&mut ast));
                 let errors = parser.errors().to_vec();
                 let arc_ast = Arc::new(ast);
                 (Some(arc_ast), errors, Arc::new(table))
@@ -1146,7 +1146,7 @@ fn process_job(
             // to `DegradationTier::Minimal` inside `from_parse_result`, and
             // that failure snapshot still needs to reach the publish gate
             // below so it can correctly supersede an older successful one.
-            Err(e) => (None, vec![e], Arc::new(session.finish(code_text, None))),
+            Err(e) => (None, vec![e], Arc::new(session.finish(None))),
         }
     };
     let is_failure = ast.is_none();

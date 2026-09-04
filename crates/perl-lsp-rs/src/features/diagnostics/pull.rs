@@ -377,7 +377,7 @@ impl PullDiagnosticsProvider {
 
         match parser.parse() {
             Ok(mut ast) => {
-                let regex_analysis = std::sync::Arc::new(session.finish(code_text, Some(&mut ast)));
+                let regex_analysis = std::sync::Arc::new(session.finish(Some(&mut ast)));
                 // Retrieve any collected parse errors from error recovery
                 let parse_errors: Vec<ParseError> = parser.errors().to_vec();
                 let ast = std::sync::Arc::new(ast);

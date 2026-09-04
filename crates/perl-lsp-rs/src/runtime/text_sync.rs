@@ -312,7 +312,7 @@ impl LspServer {
                 };
                 match parser.parse() {
                     Ok(mut ast) => {
-                        let table = session.finish(code_text, Some(&mut ast));
+                        let table = session.finish(Some(&mut ast));
                         let errors = parser.errors().to_vec();
                         (Some(ast), errors, Arc::new(table))
                     }
@@ -320,7 +320,7 @@ impl LspServer {
                         tracing::debug!("Parse cancelled for {} — newer change pending", uri);
                         return Ok(());
                     }
-                    Err(e) => (None, vec![e], Arc::new(session.finish(code_text, None))),
+                    Err(e) => (None, vec![e], Arc::new(session.finish(None))),
                 }
             };
 
@@ -1063,7 +1063,7 @@ impl LspServer {
                     };
                     match parser.parse() {
                         Ok(mut ast) => {
-                            let table = session.finish(code_text, Some(&mut ast));
+                            let table = session.finish(Some(&mut ast));
                             let errors = parser.errors().to_vec();
                             (Some(ast), errors, Arc::new(table))
                         }
@@ -1082,7 +1082,7 @@ impl LspServer {
                             }
                             return Ok(());
                         }
-                        Err(e) => (None, vec![e], Arc::new(session.finish(code_text, None))),
+                        Err(e) => (None, vec![e], Arc::new(session.finish(None))),
                     }
                 };
                 let full_parse_ms = crate::runtime::timing::elapsed_ms(t_parse_start);

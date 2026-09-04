@@ -28,12 +28,12 @@ fn parse_with_retention(
     let mut parser = Parser::new(source);
     match parser.parse() {
         Ok(mut ast) => {
-            let table = session.finish(source, Some(&mut ast));
+            let table = session.finish(Some(&mut ast));
             let errors = parser.errors().to_vec();
             (Arc::new(ast), errors, Arc::new(table))
         }
         Err(error) => {
-            let table = session.finish(source, None);
+            let table = session.finish(None);
             (
                 Arc::new(perl_parser_core::Node::new(
                     perl_parser_core::ast::NodeKind::Program { statements: vec![] },
