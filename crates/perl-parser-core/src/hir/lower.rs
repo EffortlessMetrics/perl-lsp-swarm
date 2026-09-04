@@ -3164,8 +3164,7 @@ fn lower_body_from_ast(
     let mut root_block = HirBlock::default();
 
     for stmt_node in stmts {
-        let stmt_id = builder.lower_statement(stmt_node);
-        root_block.stmts.push(stmt_id);
+        builder.append_statement_nodes(stmt_node, &mut root_block);
     }
 
     let root_id = builder.alloc_block(root_block, root_range);
@@ -3188,9 +3187,9 @@ fn lower_body_from_ast(
 /// non-loop label returns a typed [`LoopControlResolution::NonLoopTarget`]
 /// disposition rather than silently falling back to the nearest loop.
 #[derive(Debug)]
-struct LoopRegionFrame {
-    region: HirLoopRegionId,
-    label: Option<String>,
+enum EnclosingLabel {
+    Loop { region: HirLoopRegionId, label: Option<String> },
+    NonLoop(String),
 }
 
 struct BodyBuilder2<'a> {
@@ -3214,12 +3213,11 @@ struct BodyBuilder2<'a> {
     next_loop_region_id: u32,
     /// Enclosing structured-loop regions in source order (top of stack is
     /// the innermost). Consumed by `HirStmt::LoopControl` resolution (#13249).
-    loop_region_stack: Vec<LoopRegionFrame>,
     /// Enclosing labelled non-loop constructs (labelled bare blocks) that
     /// consumed a pending label without allocating a loop region. Used to
     /// tell a labelled `last LABEL` targeting a non-loop from a genuinely
     /// unresolved label (#13249).
-    nonloop_label_stack: Vec<String>,
+    enclosing_label_stack: Vec<EnclosingLabel>,
     /// Label inherited from an immediately-enclosing `LABEL:` statement,
     /// consumed by the labelled construct as it is lowered. Distinct from
     /// [`Lowerer::pending_label`] (which drives the flat-HIR first pass).
@@ -3236,8 +3234,7 @@ impl<'a> BodyBuilder2<'a> {
             scope_graph,
             start_scope,
             next_loop_region_id: 0,
-            loop_region_stack: Vec::new(),
-            nonloop_label_stack: Vec::new(),
+            enclosing_label_stack: Vec::new(),
             body_pending_label: None,
         }
     }
@@ -3258,31 +3255,37 @@ impl<'a> BodyBuilder2<'a> {
         written_label: Option<&str>,
     ) -> (Option<HirLoopRegionId>, LoopControlResolution) {
         match written_label {
-            None => match self.loop_region_stack.last() {
-                Some(frame) => (Some(frame.region), LoopControlResolution::Resolved),
-                None => (None, LoopControlResolution::NoEnclosingLoop),
-            },
-            Some(label) => {
-                // Innermost matching loop region wins — nested same-spelled
-                // labels are distinct region IDs so the inner one is chosen
-                // for the same label spelling. This mirrors Perl's lexical
-                // enclosing-region rule.
-                if let Some(frame) =
-                    self.loop_region_stack.iter().rev().find(|f| f.label.as_deref() == Some(label))
-                {
-                    return (Some(frame.region), LoopControlResolution::Resolved);
-                }
-                // Labelled transfer whose label matches an enclosing labelled
-                // non-loop construct (labelled bare block etc.) — typed
-                // boundary rather than silent fallback to the nearest loop.
-                if self.nonloop_label_stack.iter().rev().any(|l| l == label) {
-                    return (
+            None => self
+                .enclosing_label_stack
+                .iter()
+                .rev()
+                .find_map(|frame| match frame {
+                    EnclosingLabel::Loop { region, .. } => {
+                        Some((Some(*region), LoopControlResolution::Resolved))
+                    }
+                    EnclosingLabel::NonLoop(_) => None,
+                })
+                .unwrap_or((None, LoopControlResolution::NoEnclosingLoop)),
+            Some(label) => self
+                .enclosing_label_stack
+                .iter()
+                .rev()
+                .find_map(|frame| match frame {
+                    EnclosingLabel::Loop { region, label: Some(candidate) }
+                        if candidate == label =>
+                    {
+                        Some((Some(*region), LoopControlResolution::Resolved))
+                    }
+                    EnclosingLabel::NonLoop(candidate) if candidate == label => Some((
                         None,
                         LoopControlResolution::NonLoopTarget { label: label.to_string() },
-                    );
-                }
-                (None, LoopControlResolution::UnresolvedLabel { label: label.to_string() })
-            }
+                    )),
+                    _ => None,
+                })
+                .unwrap_or((
+                    None,
+                    LoopControlResolution::UnresolvedLabel { label: label.to_string() },
+                )),
         }
     }
 
@@ -3384,15 +3387,30 @@ impl<'a> BodyBuilder2<'a> {
                     self.body_pending_label = saved;
                     stmt_id
                 } else {
-                    self.nonloop_label_stack.push(label.clone());
+                    self.enclosing_label_stack.push(EnclosingLabel::NonLoop(label.clone()));
                     let stmt_id = self.lower_statement(statement);
                     // Pop only the entry this LabeledStatement pushed. Any
                     // nested LabeledStatement inside `statement` popped its
                     // own entry before returning, so this pop always removes
                     // our own frame.
-                    self.nonloop_label_stack.pop();
+                    self.enclosing_label_stack.pop();
                     stmt_id
                 }
+            }
+
+            // A bare block has no standalone HIR expression yet, but its
+            // statements must still be lowered so loop controls inside a
+            // labelled block remain visible to resolution.
+            NodeKind::Block { statements } => {
+                let first = statements.first().map(|statement| self.lower_statement(statement));
+                for statement in statements.iter().skip(1) {
+                    let _ = self.lower_statement(statement);
+                }
+                first.unwrap_or_else(|| {
+                    let expr =
+                        self.alloc_expr(HirExpr::Opaque { ast_kind: "Block".to_string() }, range);
+                    self.alloc_stmt(HirStmt::Expr(expr), range)
+                })
             }
 
             NodeKind::LoopControl { op, label } => {
@@ -3411,37 +3429,9 @@ impl<'a> BodyBuilder2<'a> {
 
             NodeKind::StatementModifier { statement, modifier, condition } => {
                 let verb = statement_modifier_kind(modifier);
-                // Only loop-form modifiers act as loop targets; branch-form
-                // modifiers (`if`/`unless`) must not consume a pending label
-                // or allocate a region — otherwise `LABEL: STMT if COND;`
-                // would silently claim the label targets the `if`.
-                let is_loop_form = matches!(
-                    verb,
-                    StatementModifierKind::While
-                        | StatementModifierKind::Until
-                        | StatementModifierKind::Foreach
-                );
-                let (postfix_loop_region, postfix_label, frame_pushed) = if is_loop_form {
-                    let label = self.body_pending_label.take();
-                    let region = self.alloc_loop_region();
-                    self.loop_region_stack.push(LoopRegionFrame {
-                        region,
-                        label: label.as_ref().map(|l| l.name.clone()),
-                    });
-                    (Some(region), label, true)
-                } else {
-                    (None, None, false)
-                };
-                // Lower the nested statement WHILE the region is on the stack
-                // so any `next`/`last`/`redo` inside a `STMT while COND`
-                // resolves to this postfix loop. Perl semantics: `STMT while
-                // COND` executes STMT before testing COND, so the transfer
-                // sees the region as the innermost enclosing loop.
+                let (postfix_loop_region, postfix_label) = (None, None);
                 let statement_id = self.lower_statement(statement);
                 let condition_id = self.lower_expr(condition);
-                if frame_pushed {
-                    self.loop_region_stack.pop();
-                }
                 self.alloc_stmt(
                     HirStmt::PostfixCondition {
                         statement: statement_id,
@@ -3522,6 +3512,23 @@ impl<'a> BodyBuilder2<'a> {
                 let expr_id = self.lower_expr(node);
                 self.alloc_stmt(HirStmt::Expr(expr_id), range)
             }
+        }
+    }
+
+    /// Append every statement in a labelled bare block. Bare blocks are
+    /// transparent for body sequencing, but their label remains an enclosing
+    /// non-loop target while each child is lowered.
+    fn append_statement_nodes(&mut self, node: &Node, block: &mut HirBlock) {
+        if let NodeKind::LabeledStatement { label, statement } = &node.kind
+            && let NodeKind::Block { statements } = &statement.kind
+        {
+            self.enclosing_label_stack.push(EnclosingLabel::NonLoop(label.clone()));
+            for statement in statements {
+                block.stmts.push(self.lower_statement(statement));
+            }
+            self.enclosing_label_stack.pop();
+        } else {
+            block.stmts.push(self.lower_statement(node));
         }
     }
 
@@ -3651,7 +3658,7 @@ impl<'a> BodyBuilder2<'a> {
                 // Every loop kind allocates a region, labelled or not.
                 let label = self.body_pending_label.take();
                 let region_id = self.alloc_loop_region();
-                self.loop_region_stack.push(LoopRegionFrame {
+                self.enclosing_label_stack.push(EnclosingLabel::Loop {
                     region: region_id,
                     label: label.as_ref().map(|l| l.name.clone()),
                 });
@@ -3659,7 +3666,7 @@ impl<'a> BodyBuilder2<'a> {
                 let body_id = self.lower_nested_block(body);
                 let continue_id =
                     continue_block.as_deref().map(|block| self.lower_nested_block(block));
-                self.loop_region_stack.pop();
+                self.enclosing_label_stack.pop();
                 self.alloc_expr(
                     HirExpr::Loop {
                         kind,
@@ -3679,18 +3686,20 @@ impl<'a> BodyBuilder2<'a> {
             NodeKind::For { init, condition, update, body, continue_block } => {
                 let label = self.body_pending_label.take();
                 let region_id = self.alloc_loop_region();
-                self.loop_region_stack.push(LoopRegionFrame {
+                // Initializer statements execute before entering the loop;
+                // controls there must not see this loop as an enclosing target.
+                let init_id =
+                    init.as_deref().map(|initializer| self.lower_for_init_block(initializer));
+                self.enclosing_label_stack.push(EnclosingLabel::Loop {
                     region: region_id,
                     label: label.as_ref().map(|l| l.name.clone()),
                 });
-                let init_id =
-                    init.as_deref().map(|initializer| self.lower_for_init_block(initializer));
                 let condition_id = condition.as_deref().map(|expr| self.lower_expr(expr));
                 let body_id = self.lower_nested_block(body);
                 let continue_id =
                     continue_block.as_deref().map(|block| self.lower_nested_block(block));
                 let update_id = update.as_deref().map(|expr| self.lower_expr(expr));
-                self.loop_region_stack.pop();
+                self.enclosing_label_stack.pop();
                 self.alloc_expr(
                     HirExpr::Loop {
                         kind: LoopKind::CStyleFor,
@@ -3710,7 +3719,7 @@ impl<'a> BodyBuilder2<'a> {
             NodeKind::Foreach { variable, list, body, continue_block } => {
                 let label = self.body_pending_label.take();
                 let region_id = self.alloc_loop_region();
-                self.loop_region_stack.push(LoopRegionFrame {
+                self.enclosing_label_stack.push(EnclosingLabel::Loop {
                     region: region_id,
                     label: label.as_ref().map(|l| l.name.clone()),
                 });
@@ -3719,7 +3728,7 @@ impl<'a> BodyBuilder2<'a> {
                 let body_id = self.lower_nested_block(body);
                 let continue_id =
                     continue_block.as_deref().map(|block| self.lower_nested_block(block));
-                self.loop_region_stack.pop();
+                self.enclosing_label_stack.pop();
                 self.alloc_expr(
                     HirExpr::Loop {
                         kind: LoopKind::Foreach,
@@ -4253,7 +4262,7 @@ impl<'a> BodyBuilder2<'a> {
         };
         let mut block = HirBlock::default();
         for statement in statements {
-            block.stmts.push(self.lower_statement(statement));
+            self.append_statement_nodes(statement, &mut block);
         }
         self.start_scope = previous_scope;
         self.alloc_block(block, node.location)
@@ -4362,9 +4371,7 @@ fn is_loop_like_statement(node: &Node) -> bool {
     };
     match inner {
         NodeKind::While { .. } | NodeKind::For { .. } | NodeKind::Foreach { .. } => true,
-        NodeKind::StatementModifier { modifier, .. } => {
-            matches!(modifier.as_str(), "while" | "until" | "for" | "foreach")
-        }
+        NodeKind::StatementModifier { .. } => false,
         _ => false,
     }
 }

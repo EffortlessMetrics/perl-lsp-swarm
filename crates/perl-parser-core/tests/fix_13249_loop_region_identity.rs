@@ -28,6 +28,11 @@ type TestResult = Result<(), Box<dyn Error>>;
 fn parse(source: &str) -> HirFile {
     let mut parser = Parser::new(source);
     let output = parser.parse_with_recovery();
+    assert!(
+        output.diagnostics.is_empty(),
+        "fixture must parse cleanly: {source:?}: {:?}",
+        output.diagnostics
+    );
     lower_ast(&output.ast)
 }
 
@@ -340,16 +345,32 @@ fn labelled_non_loop_statement_reports_nonloop_target() -> TestResult {
 /// last`, and the body lowerer descends the outer block.
 #[test]
 fn nonloop_target_from_bare_block_when_enclosed() -> TestResult {
-    let file = parse("while ($x) { BLK: last BLK; }");
+    let file = parse("while ($x) { BLK: { last BLK; next BLK; } }");
     let body = root_body(&file)?;
     let controls = collect_loop_controls(body);
-    assert_eq!(controls.len(), 1);
+    assert_eq!(controls.len(), 2, "all statements in a bare block must be lowered");
     let (written, _, disposition) = loop_control(controls[0]);
     assert_eq!(written.as_deref(), Some("BLK"));
     assert!(
         matches!(disposition, LoopControlResolution::NonLoopTarget { label } if label == "BLK"),
         "must return `NonLoopTarget {{ BLK }}` even inside an enclosing loop, got {disposition:?}"
     );
+    Ok(())
+}
+
+#[test]
+fn labelled_bare_block_keeps_all_child_statements() -> TestResult {
+    let file = parse("while ($x) { BLK: { next BLK; last BLK; } }");
+    let body = root_body(&file)?;
+    let controls = collect_loop_controls(body);
+    assert_eq!(controls.len(), 2, "both transfers in the bare block must be lowered");
+    for control in controls {
+        let (_, resolved, disposition) = loop_control(control);
+        assert!(resolved.is_none());
+        assert!(
+            matches!(disposition, LoopControlResolution::NonLoopTarget { label } if label == "BLK")
+        );
+    }
     Ok(())
 }
 
@@ -401,10 +422,9 @@ fn branch_form_postfix_never_becomes_a_loop_target() -> TestResult {
     Ok(())
 }
 
-/// Falsifier 6: a loop-form postfix modifier must retain the enclosing
-/// label instead of dropping it.
+/// Loop-form postfix modifiers are not loop-control targets.
 #[test]
-fn labelled_loop_form_postfix_preserves_label_and_region() -> TestResult {
+fn labelled_loop_form_postfix_is_not_a_target() -> TestResult {
     let file = parse("LOOP: $x = 1 while $ready;");
     let body = root_body(&file)?;
     let block = root_block(body)?;
@@ -414,25 +434,16 @@ fn labelled_loop_form_postfix_preserves_label_and_region() -> TestResult {
         return Err(format!("expected postfix condition, got {stmt:?}").into());
     };
     assert!(matches!(verb, StatementModifierKind::While));
-    let region = postfix_loop_region
-        .ok_or_else(|| "loop-form postfix must allocate a region".to_string())?;
-    let label = postfix_label
-        .as_ref()
-        .ok_or_else(|| "labelled loop-form postfix must carry its label".to_string())?;
-    assert_eq!(label.name, "LOOP");
-    // The region should be distinct from any ordinary loop region — this
-    // fixture has exactly one loop region (the postfix), so the ID is 0.
-    assert_eq!(region.as_u32(), 0);
+    assert!(postfix_loop_region.is_none());
+    assert!(postfix_label.is_none());
     Ok(())
 }
 
-/// A `last LOOP;` transfer inside a labelled loop-form postfix must
-/// resolve to that postfix's region ID.
+/// A transfer inside a postfix modifier does not resolve to the modifier.
 #[test]
-fn last_inside_labelled_postfix_loop_resolves_to_the_postfix_region() -> TestResult {
-    // Statement-form of a labelled loop-form postfix. `last LOOP` inside
-    // the statement is lowered while the postfix loop's region is on the
-    // enclosing-region stack, so it resolves to that region.
+fn last_inside_labelled_postfix_loop_does_not_create_a_target() -> TestResult {
+    // A loop-form postfix is not an enclosing loop for its statement; the
+    // labelled transfer therefore remains a non-loop-target disposition.
     let file = parse("LOOP: last LOOP while $ready;");
     let body = root_body(&file)?;
     let block = root_block(body)?;
@@ -441,22 +452,56 @@ fn last_inside_labelled_postfix_loop_resolves_to_the_postfix_region() -> TestRes
     let HirStmt::PostfixCondition { postfix_loop_region, postfix_label, .. } = stmt else {
         return Err(format!("expected postfix condition, got {stmt:?}").into());
     };
-    let postfix_region = postfix_loop_region.ok_or("postfix loop region missing")?;
-    assert_eq!(
-        postfix_label.as_ref().map(|l| l.name.as_str()),
-        Some("LOOP"),
-        "labelled postfix must carry its label"
-    );
+    assert!(postfix_loop_region.is_none());
+    assert!(postfix_label.is_none());
     let controls = collect_loop_controls(body);
     assert_eq!(controls.len(), 1);
     let (written, resolved, disposition) = loop_control(controls[0]);
     assert_eq!(written.as_deref(), Some("LOOP"));
-    assert_eq!(
-        resolved,
-        Some(postfix_region),
-        "`last LOOP` must resolve to the labelled postfix-loop region"
+    assert!(resolved.is_none());
+    assert!(matches!(
+        disposition,
+        LoopControlResolution::NonLoopTarget { label } if label == "LOOP"
+    ));
+    assert!(resolved.is_none());
+    Ok(())
+}
+
+#[test]
+fn postfix_control_does_not_target_the_modifier() -> TestResult {
+    let file = parse("last while $ready;");
+    let body = root_body(&file)?;
+    let controls = collect_loop_controls(body);
+    assert_eq!(controls.len(), 1);
+    let (_, resolved, disposition) = loop_control(controls[0]);
+    assert!(resolved.is_none());
+    assert!(matches!(disposition, LoopControlResolution::NoEnclosingLoop));
+    Ok(())
+}
+
+#[test]
+fn c_style_initializer_control_is_outside_loop() -> TestResult {
+    let file = parse("for (last; 1; ) { }");
+    let body = root_body(&file)?;
+    let controls = collect_loop_controls(body);
+    assert_eq!(controls.len(), 1);
+    let (_, resolved, disposition) = loop_control(controls[0]);
+    assert!(resolved.is_none());
+    assert!(matches!(disposition, LoopControlResolution::NoEnclosingLoop));
+    Ok(())
+}
+
+#[test]
+fn inner_same_named_bare_block_shadows_outer_loop_label() -> TestResult {
+    let file = parse("OUTER: while ($x) { OUTER: { last OUTER; } }");
+    let body = root_body(&file)?;
+    let controls = collect_loop_controls(body);
+    assert_eq!(controls.len(), 1);
+    let (_, resolved, disposition) = loop_control(controls[0]);
+    assert!(resolved.is_none());
+    assert!(
+        matches!(disposition, LoopControlResolution::NonLoopTarget { label } if label == "OUTER")
     );
-    assert!(matches!(disposition, LoopControlResolution::Resolved));
     Ok(())
 }
 
