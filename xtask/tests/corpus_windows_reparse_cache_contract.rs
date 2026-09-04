@@ -317,11 +317,20 @@ fn validate_workflow(source: &str) -> Result<()> {
             normalized(run).contains(&normalized(command)),
             "proof step must run its exact production command: {name}"
         );
-        // A PowerShell function is visible to the whole parsed script, so a
-        // declaration after the proof command would still shadow it.
+        // A PowerShell function, filter, or alias is visible to the whole parsed
+        // script, so a declaration after the proof command would still shadow it;
+        // aliases resolve before external commands and `function:`/`alias:` drive
+        // writes replace the command directly.
         ensure!(
-            !lower_statements.iter().any(|line| line.starts_with("function ")),
-            "proof step must not shadow its production commands with functions: {name}"
+            !lower_statements.iter().any(|line| {
+                line.starts_with("function ")
+                    || line.starts_with("filter ")
+                    || line.starts_with("set-alias")
+                    || line.starts_with("new-alias")
+                    || line.contains("function:")
+                    || line.contains("alias:")
+            }),
+            "proof step must not shadow its production commands with functions or aliases: {name}"
         );
         ensure!(
             run.contains("$runningCount = @($output | Select-String")
@@ -400,14 +409,16 @@ fn validate_workflow(source: &str) -> Result<()> {
         "topology proof must not bypass execution with continue or false guards"
     );
     // A shadowing shell function keeps every anchor intact while faking the
-    // executed-test summaries, so reject declarations of the proof commands
-    // (whitespace-normalized so spacing cannot hide them).
+    // executed-test summaries, so reject declarations of the proof commands.
+    // The `name()` check compares a whitespace-stripped form so spacing like
+    // `cargo ( )` cannot hide the parentheses; `function name` keeps its
+    // normalized form.
     ensure!(
         !topology_raw.lines().map(str::trim).any(|line| {
             let flat = normalized(&line.to_ascii_lowercase());
+            let squeezed: String = flat.chars().filter(|c| !c.is_whitespace()).collect();
             ["cargo", "grep", "sed", "tee", "mktemp"].iter().any(|name| {
-                flat.starts_with(&format!("{name}()"))
-                    || flat.starts_with(&format!("{name} ()"))
+                squeezed.starts_with(&format!("{name}()"))
                     || flat.starts_with(&format!("function {name}"))
             })
         }),
@@ -610,6 +621,14 @@ fn static_contract_rejects_structural_proof_and_trigger_mutations() -> Result<()
             "          $output = cargo test --locked -p perl-corpus --test strict_sectioned_loading public_plain_loader_rejects_windows_reparse_point -- --exact --nocapture 2>&1\n          $exitCode = $LASTEXITCODE\n          $output | ForEach-Object { $_ }\n          function cargo { 'running 1 test' }\n",
         ),
         (
+            CORPUS_OUTPUT_REPLAY_ANCHOR,
+            "          $output = cargo test --locked -p perl-corpus --test strict_sectioned_loading public_plain_loader_rejects_windows_reparse_point -- --exact --nocapture 2>&1\n          $exitCode = $LASTEXITCODE\n          $output | ForEach-Object { $_ }\n          Set-Alias cargo Write-FakeOutput\n",
+        ),
+        (
+            CORPUS_OUTPUT_REPLAY_ANCHOR,
+            "          $output = cargo test --locked -p perl-corpus --test strict_sectioned_loading public_plain_loader_rejects_windows_reparse_point -- --exact --nocapture 2>&1\n          $exitCode = $LASTEXITCODE\n          $output | ForEach-Object { $_ }\n          Set-Item function:cargo { 'running 1 test' }\n",
+        ),
+        (
             "      - name: Verify exact candidate checkout\n",
             "      - name: Run non-skipping Windows reparse proof\n",
         ),
@@ -700,6 +719,7 @@ fn static_contract_rejects_structural_proof_and_trigger_mutations() -> Result<()
         "printf -v selected_tests \"%s\" \"api::topology::tests::symlinked_entries_fail_closed\"",
         "array_name=selected_tests\n          unset -v \"$array_name\"",
         "cargo() { printf 'running 1 test\\n'; }",
+        "cargo ( ) { printf 'running 1 test\\n'; }",
         "function grep { true; }",
     ] {
         let to = SELECTED_DECLARATION_END.replacen(
