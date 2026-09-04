@@ -226,6 +226,15 @@ impl<'a> PerlLexer<'a> {
         lexer
     }
 
+    /// Create a lexer with an explicit configuration that also emits heredoc
+    /// body tokens (#8779): the interpolation policy for interpolating
+    /// heredoc bodies is observable through this constructor.
+    pub fn with_config_and_body_tokens(input: &'a str, config: LexerConfig) -> Self {
+        let mut lexer = Self::with_config(input, config);
+        lexer.emit_heredoc_body_tokens = true;
+        lexer
+    }
+
     /// Set the lexer mode (for resetting state at statement boundaries)
     pub fn set_mode(&mut self, mode: LexerMode) {
         self.mode = mode;
@@ -325,20 +334,21 @@ impl<'a> PerlLexer<'a> {
             let mut found_terminator = false;
             if !self.pending_heredocs.is_empty() {
                 // Clone what we need to avoid holding a borrow
-                let (body_start, label, allow_indent) =
-                    if let Some(spec) = self.pending_heredocs.first() {
-                        if spec.body_start > 0
-                            && self.position >= spec.body_start
-                            && self.position < self.input.len()
-                        {
-                            (spec.body_start, spec.label.clone(), spec.allow_indent)
-                        } else {
-                            // Not in a heredoc body yet or at EOF
-                            (0, empty_arc(), false)
-                        }
+                let (body_start, label, allow_indent, interpolates) = if let Some(spec) =
+                    self.pending_heredocs.first()
+                {
+                    if spec.body_start > 0
+                        && self.position >= spec.body_start
+                        && self.position < self.input.len()
+                    {
+                        (spec.body_start, spec.label.clone(), spec.allow_indent, spec.interpolates)
                     } else {
-                        (0, empty_arc(), false)
-                    };
+                        // Not in a heredoc body yet or at EOF
+                        (0, empty_arc(), false, false)
+                    }
+                } else {
+                    (0, empty_arc(), false, false)
+                };
 
                 if body_start > 0 {
                     let mut body_indent: Option<Vec<u8>> = None;
@@ -398,8 +408,22 @@ impl<'a> PerlLexer<'a> {
                             }
 
                             if self.emit_heredoc_body_tokens {
+                                // #8779: interpolating heredoc bodies consume
+                                // the interpolation setting — segmented parts
+                                // when enabled, one opaque Literal part of
+                                // the whole body when disabled (the scanner
+                                // degrades uniformly). Non-interpolating
+                                // bodies stay `HeredocBody` (control
+                                // invariance).
+                                let token_type = if interpolates {
+                                    TokenType::InterpolatedHeredocBody(
+                                        self.segment_heredoc_body(body_start, line_start),
+                                    )
+                                } else {
+                                    TokenType::HeredocBody(empty_arc())
+                                };
                                 return Some(Token {
-                                    token_type: TokenType::HeredocBody(empty_arc()),
+                                    token_type,
                                     text: empty_arc(),
                                     start: body_start,
                                     end: line_start,
@@ -928,14 +952,24 @@ impl<'a> PerlLexer<'a> {
             false
         };
 
-        // Parse delimiter
+        // Parse delimiter. `quoted` records the interpolation disposition of
+        // a quoted delimiter (#8779): `"` interpolates, `'` and backtick do
+        // not (backtick is the intentional command boundary).
+        let mut quoted_interpolates: Option<bool> = None;
         let delimiter = if self.position < self.input.len() {
             match self.current_char() {
-                Some('"') if !backslashed => self.parse_quoted_heredoc_delimiter('"', &mut text)?,
+                Some('"') if !backslashed => {
+                    quoted_interpolates = Some(true);
+                    self.parse_quoted_heredoc_delimiter('"', &mut text)?
+                }
                 Some('\'') if !backslashed => {
+                    quoted_interpolates = Some(false);
                     self.parse_quoted_heredoc_delimiter('\'', &mut text)?
                 }
-                Some('`') if !backslashed => self.parse_quoted_heredoc_delimiter('`', &mut text)?,
+                Some('`') if !backslashed => {
+                    quoted_interpolates = Some(false);
+                    self.parse_quoted_heredoc_delimiter('`', &mut text)?
+                }
                 Some(c) if is_perl_identifier_start(c) => {
                     // Bare word delimiter
                     let mut delim = String::new();
@@ -981,11 +1015,15 @@ impl<'a> PerlLexer<'a> {
             });
         }
 
-        // Queue the heredoc spec with its label
+        // Queue the heredoc spec with its label. `interpolates` follows the
+        // #8779 disposition: bareword and `<<"EOF"` bodies interpolate;
+        // `<<'EOF'`, `<<\EOF`, and backtick bodies do not.
+        let interpolates = !backslashed && quoted_interpolates.unwrap_or(true);
         self.pending_heredocs.push(HeredocSpec {
             label: Arc::from(delimiter.as_str()),
             body_start: 0, // Will be set when we see the newline after this line
             allow_indent,
+            interpolates,
         });
 
         Some(Token {
@@ -2756,9 +2794,30 @@ impl<'a> PerlLexer<'a> {
                             if is_perl_identifier_start(ch)
                                 || (ch == ':' && self.peek_char(1) == Some(':')) =>
                         {
-                            self.consume_qualified_identifier_in_string();
+                            self.consume_qualified_identifier_in_string(Some('"'));
                             let part_text = &self.input[part_start..self.position];
                             parts.push(StringPart::Variable(Arc::from(part_text)));
+                            // Array and hash slices interpolate with the
+                            // array (`"@a[0]"` yields the slice element,
+                            // `@h{key}` the hash slice; verified against
+                            // real perl: `@a=(x,y); print "@a[0]"` prints
+                            // `x`). Consume the balanced tail as an
+                            // interpolation part instead of leaving it to
+                            // the literal bucket, mirroring the `$`-island
+                            // subscript tails and the qq/heredoc `@` arm.
+                            if self.current_char() == Some('[') {
+                                let tail_start = self.position;
+                                let _ = self.consume_balanced_segment_in_string('[', ']', '"');
+                                parts.push(StringPart::ArraySlice(Arc::from(
+                                    &self.input[tail_start..self.position],
+                                )));
+                            } else if self.current_char() == Some('{') {
+                                let tail_start = self.position;
+                                let _ = self.consume_balanced_segment_in_string('{', '}', '"');
+                                parts.push(StringPart::Expression(Arc::from(
+                                    &self.input[tail_start..self.position],
+                                )));
+                            }
                         }
                         // Array dereference: `@$ref`, `@$$ref`, `@$main::ref`.
                         // Perl interpolates the whole deref chain as one array
@@ -2775,7 +2834,7 @@ impl<'a> PerlLexer<'a> {
                             while self.current_char() == Some('$') {
                                 self.advance();
                             }
-                            self.consume_qualified_identifier_in_string();
+                            self.consume_qualified_identifier_in_string(Some('"'));
                             let part_text = &self.input[part_start..self.position];
                             parts.push(StringPart::Variable(Arc::from(part_text)));
                         }
@@ -2839,6 +2898,13 @@ impl<'a> PerlLexer<'a> {
                             }
 
                             if self.position > var_start {
+                                // Fold package-qualified segments (`::`,
+                                // old-style `'`) so `$Foo::bar` interpolates
+                                // as the one variable Perl interpolates.
+                                // Terminator precedence still applies: with
+                                // `:` or `'` as the quote delimiter the close
+                                // wins before a separator fold.
+                                self.consume_qualified_identifier_in_string(Some('"'));
                                 let var_name = &self.input[part_start..self.position];
                                 parts.push(StringPart::Variable(Arc::from(var_name)));
 
@@ -2980,7 +3046,7 @@ impl<'a> PerlLexer<'a> {
                                 while self.current_char() == Some('$') {
                                     self.advance();
                                 }
-                                self.consume_qualified_identifier_in_string();
+                                self.consume_qualified_identifier_in_string(Some('"'));
                             }
                             let part_text = &self.input[part_start..self.position];
                             parts.push(StringPart::Variable(Arc::from(part_text)));
@@ -3037,7 +3103,7 @@ impl<'a> PerlLexer<'a> {
                                 for _ in 0..dollar_run {
                                     self.advance();
                                 }
-                                self.consume_qualified_identifier_in_string();
+                                self.consume_qualified_identifier_in_string(Some('"'));
                                 let part_text = &self.input[part_start..self.position];
                                 parts.push(StringPart::Variable(Arc::from(part_text)));
 
@@ -3125,7 +3191,7 @@ impl<'a> PerlLexer<'a> {
                         // by the literal ":foo" -- which is exactly what the
                         // shared `::`-folding scan produces here.
                         Some(':') if self.peek_char(1) == Some(':') => {
-                            self.consume_qualified_identifier_in_string();
+                            self.consume_qualified_identifier_in_string(Some('"'));
                             let part_text = &self.input[part_start..self.position];
                             parts.push(StringPart::Variable(Arc::from(part_text)));
                         }
@@ -4235,6 +4301,11 @@ impl<'a> PerlLexer<'a> {
         self.current_quote_op = None;
 
         // Parse based on operator type; track whether all delimiters were closed.
+        // `qq` additionally carries the body's string parts (#8779): enabled
+        // interpolation segments the body during the original scan, disabled
+        // interpolation keeps one opaque Literal part, and the token stays
+        // `QuoteDouble` in both configurations.
+        let mut qq_parts: Option<Vec<StringPart>> = None;
         let closed = match operator.as_str() {
             "s" => {
                 return self.parse_substitution_with_delimiter(start, delimiter);
@@ -4256,8 +4327,20 @@ impl<'a> PerlLexer<'a> {
                 let (_body, body_closed) = self.read_qw_body(delimiter);
                 body_closed
             }
+            "qq" => {
+                let (parts, body_closed) = if self.config.interpolation_enabled() {
+                    self.read_delimited_body_with_parts(delimiter)
+                } else {
+                    let (body, body_closed) = self.read_delimited_body(delimiter);
+                    (vec![StringPart::Literal(Arc::from(body))], body_closed)
+                };
+                qq_parts = Some(parts);
+                body_closed
+            }
             _ => {
-                // q, qq, qx - no modifiers
+                // q, qx - no modifiers. q is non-interpolating and invariant
+                // under the setting; qx/backticks are the intentional command
+                // boundary (#8779) and stay opaque in every configuration.
                 let (_body, body_closed) = self.read_delimited_body(delimiter);
                 body_closed
             }
@@ -4281,7 +4364,11 @@ impl<'a> PerlLexer<'a> {
             });
         }
 
-        let token_type = quote_handler::get_quote_token_type(&operator);
+        let token_type = if operator == "qq" {
+            TokenType::QuoteDouble(qq_parts.take().unwrap_or_default())
+        } else {
+            quote_handler::get_quote_token_type(&operator)
+        };
         Some(Token { token_type, text: Arc::from(text), start, end: self.position })
     }
 }
