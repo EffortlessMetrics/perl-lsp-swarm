@@ -3,8 +3,9 @@
 //! This proves the declared YAML structure, pinned action identities, trigger and
 //! permission shape, cache inputs/order, non-vacuous command text, and rejection
 //! of the modeled selected-test mutation channels: direct assignment, element or
-//! array rewrites, unset/read/mapfile/declaration forms, `printf -v`, eval, and
-//! nameref or variable-name indirection. It remains a literal static oracle, not
+//! array rewrites, unset/read/mapfile/declaration forms, `printf -v`, eval,
+//! nameref or variable-name indirection, and shell-function shadowing of the
+//! proof commands. It remains a literal static oracle, not
 //! a shell parser: it does not prove runtime cache restore/save provenance,
 //! discovery of arbitrary unseen shell or local cache writers, obfuscated name
 //! construction beyond the named indirection forms, or trusted runner
@@ -36,6 +37,10 @@ const TOPOLOGY_EXECUTION_COMMAND_SOURCE_ANCHOR: &str =
     "            if ! cargo test --locked -p perl-corpus --lib \"$test_name\" \\\n";
 const TOPOLOGY_SHELL_SOURCE_ANCHOR: &str = "        shell: bash\n        run: |\n          set -euo pipefail\n\n          selected_tests=(";
 const TOPOLOGY_CARDINALITY_GUARD: &str = "          selected_test_count=\"${#selected_tests[@]}\"\n          if [[ \"$selected_test_count\" -ne 10 ]]; then\n            echo \"expected exactly 10 selected topology tests\" >&2\n            exit 1\n          fi\n\n";
+/// Anchor at the end of the `selected_tests` declaration; selected-tests
+/// mutation fixtures insert their line between the closing `)` and the
+/// `test_list` snapshot, so they build their target text from this constant.
+const SELECTED_DECLARATION_END: &str = "          )\n\n          test_list=\"$(mktemp)\"";
 
 const EXPECTED_TOPOLOGY_TESTS: [&str; 10] = [
     "api::topology::tests::binding_rejects_intermediate_runtime_root_symlink",
@@ -312,6 +317,12 @@ fn validate_workflow(source: &str) -> Result<()> {
             normalized(run).contains(&normalized(command)),
             "proof step must run its exact production command: {name}"
         );
+        // A PowerShell function is visible to the whole parsed script, so a
+        // declaration after the proof command would still shadow it.
+        ensure!(
+            !lower_statements.iter().any(|line| line.starts_with("function ")),
+            "proof step must not shadow its production commands with functions: {name}"
+        );
         ensure!(
             run.contains("$runningCount = @($output | Select-String")
                 && run.contains("$resultCount = @($output | Select-String")
@@ -387,6 +398,20 @@ fn validate_workflow(source: &str) -> Result<()> {
             && !topology_raw.contains("if false")
             && !topology_raw.contains("if [[ false"),
         "topology proof must not bypass execution with continue or false guards"
+    );
+    // A shadowing shell function keeps every anchor intact while faking the
+    // executed-test summaries, so reject declarations of the proof commands
+    // (whitespace-normalized so spacing cannot hide them).
+    ensure!(
+        !topology_raw.lines().map(str::trim).any(|line| {
+            let flat = normalized(&line.to_ascii_lowercase());
+            ["cargo", "grep", "sed", "tee", "mktemp"].iter().any(|name| {
+                flat.starts_with(&format!("{name}()"))
+                    || flat.starts_with(&format!("{name} ()"))
+                    || flat.starts_with(&format!("function {name}"))
+            })
+        }),
+        "topology proof must not shadow its production commands with shell functions"
     );
     for command in [
         "set -euo pipefail",
@@ -581,6 +606,10 @@ fn static_contract_rejects_structural_proof_and_trigger_mutations() -> Result<()
             "          $output = @('running 1 test', 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.0s')\n",
         ),
         (
+            CORPUS_OUTPUT_REPLAY_ANCHOR,
+            "          $output = cargo test --locked -p perl-corpus --test strict_sectioned_loading public_plain_loader_rejects_windows_reparse_point -- --exact --nocapture 2>&1\n          $exitCode = $LASTEXITCODE\n          $output | ForEach-Object { $_ }\n          function cargo { 'running 1 test' }\n",
+        ),
+        (
             "      - name: Verify exact candidate checkout\n",
             "      - name: Run non-skipping Windows reparse proof\n",
         ),
@@ -606,10 +635,6 @@ fn static_contract_rejects_structural_proof_and_trigger_mutations() -> Result<()
             "          $output = cargo test --locked -p perl-corpus --test strict_sectioned_loading public_plain_loader_rejects_windows_reparse_point -- --exact --nocapture 2>&1\n          $exitCode = $LASTEXITCODE\n          ./cache-writer.ps1\n",
         ),
         (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          selected_tests=()\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
             "          cargo test --locked -p perl-corpus --lib -- --list \\\n",
             "          continue\n          cargo test --locked -p perl-corpus --lib -- --list \\\n",
         ),
@@ -629,106 +654,6 @@ fn static_contract_rejects_structural_proof_and_trigger_mutations() -> Result<()
         (TOPOLOGY_EXECUTION_COMMAND_SOURCE_ANCHOR, "            if false; then\n"),
         ("          echo \"- $test_name\"\n", "          break\n"),
         (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          unset selected_tests\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          selected_tests+=(api::topology::tests::symlinked_entries_fail_closed)\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          selected_tests=(api::topology::tests::symlinked_entries_fail_closed)\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          selected_tests[0]=api::topology::tests::symlinked_entries_fail_closed\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          mapfile -t selected_tests < \"$test_list\"\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          declare -a selected_tests=(api::topology::tests::symlinked_entries_fail_closed)\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          typeset -a selected_tests=(api::topology::tests::symlinked_entries_fail_closed)\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          unset 'selected_tests[0]'\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          unset \"selected_tests[0]\"\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          unset selected_tests[0]\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          declare selected_tests=(api::topology::tests::symlinked_entries_fail_closed)\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          typeset selected_tests=(api::topology::tests::symlinked_entries_fail_closed)\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          readarray -t selected_tests < \"$test_list\"\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          echo noop; selected_tests=()\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          echo noop; unset -v selected_tests\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          read -r -a selected_tests <<< \"\"\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          unset -v \"selected_tests[@]\"\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          IFS= read -ra selected_tests <<< \"\"\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          array_name=selected_tests\n          eval \"${array_name}=(api::topology::tests::symlinked_entries_fail_closed)\"\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          declare -n alias=selected_tests\n          alias=(api::topology::tests::symlinked_entries_fail_closed)\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          typeset -n alias=selected_tests\n          alias=()\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          declare -- selected_tests=(api::topology::tests::symlinked_entries_fail_closed)\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          typeset -- selected_tests=(api::topology::tests::symlinked_entries_fail_closed)\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          printf -v selected_tests \"%s\" \"api::topology::tests::symlinked_entries_fail_closed\"\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
-            "          )\n\n          test_list=\"$(mktemp)\"",
-            "          )\n          array_name=selected_tests\n          unset -v \"$array_name\"\n\n          test_list=\"$(mktemp)\"",
-        ),
-        (
             TOPOLOGY_SHELL_SOURCE_ANCHOR,
             "        shell: bash\n        run: |\n          set -euo pipefail\n          declare  -n  alias=selected_tests\n\n          selected_tests=(",
         ),
@@ -742,6 +667,49 @@ fn static_contract_rejects_structural_proof_and_trigger_mutations() -> Result<()
         ensure!(
             validate_workflow(&replace_once(&source, from, to)?).is_err(),
             "realistic proof or trigger mutation must be rejected: {from}"
+        );
+    }
+    // Selected-tests mutations all insert their line between the closing `)` of
+    // the declaration and the `test_list` snapshot; build their target text
+    // from SELECTED_DECLARATION_END so an indentation change edits one place.
+    for mutation in [
+        "selected_tests=()",
+        "unset selected_tests",
+        "selected_tests+=(api::topology::tests::symlinked_entries_fail_closed)",
+        "selected_tests=(api::topology::tests::symlinked_entries_fail_closed)",
+        "selected_tests[0]=api::topology::tests::symlinked_entries_fail_closed",
+        "mapfile -t selected_tests < \"$test_list\"",
+        "declare -a selected_tests=(api::topology::tests::symlinked_entries_fail_closed)",
+        "typeset -a selected_tests=(api::topology::tests::symlinked_entries_fail_closed)",
+        "unset 'selected_tests[0]'",
+        "unset \"selected_tests[0]\"",
+        "unset selected_tests[0]",
+        "declare selected_tests=(api::topology::tests::symlinked_entries_fail_closed)",
+        "typeset selected_tests=(api::topology::tests::symlinked_entries_fail_closed)",
+        "readarray -t selected_tests < \"$test_list\"",
+        "echo noop; selected_tests=()",
+        "echo noop; unset -v selected_tests",
+        "read -r -a selected_tests <<< \"\"",
+        "unset -v \"selected_tests[@]\"",
+        "IFS= read -ra selected_tests <<< \"\"",
+        "array_name=selected_tests\n          eval \"${array_name}=(api::topology::tests::symlinked_entries_fail_closed)\"",
+        "declare -n alias=selected_tests\n          alias=(api::topology::tests::symlinked_entries_fail_closed)",
+        "typeset -n alias=selected_tests\n          alias=()",
+        "declare -- selected_tests=(api::topology::tests::symlinked_entries_fail_closed)",
+        "typeset -- selected_tests=(api::topology::tests::symlinked_entries_fail_closed)",
+        "printf -v selected_tests \"%s\" \"api::topology::tests::symlinked_entries_fail_closed\"",
+        "array_name=selected_tests\n          unset -v \"$array_name\"",
+        "cargo() { printf 'running 1 test\\n'; }",
+        "function grep { true; }",
+    ] {
+        let to = SELECTED_DECLARATION_END.replacen(
+            ")\n\n",
+            &(")\n          ".to_owned() + mutation + "\n\n"),
+            1,
+        );
+        ensure!(
+            validate_workflow(&replace_once(&source, SELECTED_DECLARATION_END, &to)?).is_err(),
+            "realistic selected-tests mutation must be rejected: {mutation}"
         );
     }
     Ok(())
