@@ -1534,31 +1534,21 @@ impl DebugAdapter {
                 "Debuggee watchdog: killing hung perl -d process after wall-clock timeout"
             );
 
-            // Reserve the timeout termination *before* kill so the output reader's
-            // EOF path cannot race in and emit `debugger_eof` first (#5149 review).
-            // Kill still runs before the blocking event send so a stalled client
-            // cannot leave the debuggee alive.
-            if !reserve_terminated_event(&termination_state, Some(session_generation)) {
-                tracing::debug!(
-                    "Debuggee watchdog: termination already reserved/emitted, skipping kill"
-                );
-                return;
-            }
-
             // Settle framed-query waiters before killing the process. The EOF
             // reader will also observe the death, but it may be blocked on a
             // partial frame; broker waiters must not remain pending until that
-            // path drains. The reservation above proves this is still the
-            // current session, so settling cannot affect a replacement.
-            if !operation_broker
-                .settle_all_if_current("debuggee_timeout", broker_session_generation)
-            {
-                tracing::debug!(
-                    session_generation,
-                    "Debuggee watchdog: session replaced before broker settlement, skipping kill"
-                );
-                return;
-            }
+            // path drains. If another reader already settled this generation,
+            // it owns the terminal reason and the watchdog must not reserve a
+            // timeout event over it.
+            let settled_by_watchdog = operation_broker
+                .settle_all_if_current("debuggee_timeout", broker_session_generation);
+
+            // Reserve the timeout termination before kill only when this
+            // watchdog performed the settlement. Kill still runs before the
+            // blocking event send so a stalled client cannot leave the
+            // debuggee alive.
+            let owns_timeout_event = settled_by_watchdog
+                && reserve_terminated_event(&termination_state, Some(session_generation));
 
             // Keep the termination-state lock while acquiring the session lock
             // and killing. Replacement teardown takes these locks in the same
@@ -1599,7 +1589,8 @@ impl DebugAdapter {
             // must not leak into a newer client conversation (#12092 review).
             // Blocking send is OK: the debuggee is already dead; the emitted
             // flag was set at reserve time.
-            if let Some(ref sender) = sender
+            if owns_timeout_event
+                && let Some(ref sender) = sender
                 && terminated_delivery_is_current(&termination_state, Some(session_generation))
             {
                 let _ = emit_event_safe(
