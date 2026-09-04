@@ -187,11 +187,12 @@ async function waitForReady(run, timeoutMs = 10000) {
  * @returns {import('./dev-supervisor').WatchChildSpec}
  */
 function readyChild(name, marker, extraEnv = {}) {
-  const dir = lastDir();
+  const script = writeFixture(`${name}-${marker}.cjs`, READY_AND_STAY);
+  const dir = path.dirname(script);
   return {
     name,
     command: process.execPath,
-    args: [writeFixture(`${name}-${marker}.cjs`, READY_AND_STAY)],
+    args: [script],
     cwd: dir,
     readyPattern: new RegExp(marker),
     env: {
@@ -210,6 +211,25 @@ function readyChild(name, marker, extraEnv = {}) {
  * @param {Array<number | null | undefined>} pids
  */
 function assertAllGone(pids) {
+  // Grandchild teardown can complete a beat after the supervisor's own
+  // child-exit bookkeeping, so poll briefly before asserting: the contract
+  // under test is "the tree is gone", not "it is gone synchronously".
+  const deadline = Date.now() + 3000;
+  const stillAlive = () =>
+    pids.filter((pid) => {
+      if (typeof pid !== 'number') {
+        return false;
+      }
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  while (Date.now() < deadline && stillAlive().length > 0) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+  }
   for (const pid of pids) {
     if (pid === null || pid === undefined) {
       continue;
@@ -286,13 +306,14 @@ void test('type watcher exiting before readiness is red and stops the bundle sib
 });
 
 void test('bundle watcher exiting before readiness is red and stops the type sibling', async () => {
+  const exitScript = writeFixture('bundle-exit.cjs', EXIT_BEFORE_READY);
   const run = runSupervisor(() => [
     readyChild('types', 'FIXTURE_READY_A'),
     {
       name: 'bundle',
       command: process.execPath,
-      args: [writeFixture('bundle-exit.cjs', EXIT_BEFORE_READY)],
-      cwd: lastDir(),
+      args: [exitScript],
+      cwd: path.dirname(exitScript),
       readyPattern: /NEVER_READY/,
       env: { ...process.env, FIXTURE_EXIT_CODE: '4' },
     },
@@ -394,12 +415,10 @@ void test('a stubborn child is killed by bounded escalation and its grandchild d
   await waitForReady(run);
   const result = await run.controller.stop('SIGTERM');
   assert.equal(result.code, 143, 'SIGTERM must exit 128+15');
-  if (!IS_WINDOWS) {
-    assert.ok(
-      result.escalations.includes('types'),
-      `the stubborn child must be recorded as escalated, got: ${result.escalations.join(' | ')}`,
-    );
-  }
+  assert.ok(
+    result.escalations.includes('types'),
+    `the stubborn child must be recorded as escalated, got: ${result.escalations.join(' | ')}`,
+  );
   const { child, grandchild } = JSON.parse(fs.readFileSync(pidsFile, 'utf8'));
   assertAllGone([...resultPids(result), child, grandchild]);
   assertAllGone(readPidFiles());

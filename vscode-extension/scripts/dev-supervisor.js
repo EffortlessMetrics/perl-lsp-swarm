@@ -444,6 +444,12 @@ function runDevSupervisor(input) {
       if (child.exit === undefined && child.proc !== null) {
         child.phase = 'stopping';
         await requestTermination(child, emit);
+        if (process.platform === 'win32' && child.exit === undefined && !result.escalations.includes(child.spec.name)) {
+          // On Windows requestTermination is already the forced tree kill
+          // (`taskkill /T /F`): record it as an escalation so the result
+          // reports the forced termination instead of a silent pass.
+          result.escalations.push(child.spec.name);
+        }
       }
     }
     // A watcher that exited ON ITS OWN may have left descendants in the
@@ -878,7 +884,7 @@ function main() {
   // Handlers stay installed for the whole shutdown: a repeated interrupt
   // must escalate inside the owned path, never restore Node's default
   // termination while watcher trees are still alive.
-  for (const signal of ['SIGINT', 'SIGTERM']) {
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
     process.on(signal, () => {
       void controller.stop(signal);
     });
