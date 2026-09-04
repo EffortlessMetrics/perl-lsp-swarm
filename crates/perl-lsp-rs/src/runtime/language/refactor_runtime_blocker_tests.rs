@@ -1950,8 +1950,20 @@ fn refactor_runtime_blocker_ux_package_local_live_pilot_real_workspace_false_all
     let updated_app = app.replace("helper($self->name);", "helper($self->name);\n    $self->name;");
     change_document(&server, REAL_BASELINE_APP_URI, 2, &updated_app)?;
 
+    // The inserted line shifts `sub name` down one row, so the second request
+    // must carry the position a real client computes against the updated
+    // document. Under the LF-delimited source-line contract (#4973) an
+    // out-of-range character clamps to the line content end instead of
+    // spilling onto the next line start, so reusing the pre-edit position
+    // would land on the closing brace line.
+    let (fresh_line, fresh_character) = position_of(&updated_app, "name {")?;
+    let fresh_rename_request = json!({
+        "textDocument": {"uri": REAL_BASELINE_APP_URI},
+        "position": {"line": fresh_line, "character": fresh_character},
+        "newName": "renamed_name"
+    });
     let fresh_live_result = server
-        .handle_rename_workspace(Some(rename_request))?
+        .handle_rename_workspace(Some(fresh_rename_request))?
         .ok_or("missing package-local fresh fallback result")?;
     let fresh_edit_count = workspace_edit_change_count(&fresh_live_result)?;
     assert!(
