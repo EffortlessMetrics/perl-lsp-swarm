@@ -180,6 +180,24 @@ impl<'source> RetainedRegexSession<'source> {
     /// The AST's compatibility flags (`has_embedded_code`) are refreshed from the
     /// table so they remain a projection of the canonical analysis rather than an
     /// independent scan result.
+    ///
+    /// # Caller contract
+    ///
+    /// `ast` must be the tree produced by parsing the source this session borrows.
+    /// That is the one part of the binding this type cannot enforce, so it is stated
+    /// rather than assumed.
+    ///
+    /// Geometry admission is bound to the exact buffer, so a foreign tree cannot
+    /// contribute another parse's spans. It can still influence the result in two
+    /// narrower ways: [`collect_ast_geometry`] may re-extract geometry from *this*
+    /// source at a foreign node's offsets when the ranges and pattern text happen to
+    /// be compatible, and the compile-time pragma environment — which supplies the
+    /// language/feature profile every record is analyzed under — is built from the
+    /// tree it is given. A foreign tree therefore yields analysis of this source
+    /// under another document's pragma state.
+    ///
+    /// Making that structural would need a parse result that carries its own session
+    /// identity, which is a wider API change than this seam; it is tracked separately.
     #[must_use]
     pub fn finish(self, ast: Option<&mut Node>) -> RegexAnalysisTable {
         let source = self.source;
