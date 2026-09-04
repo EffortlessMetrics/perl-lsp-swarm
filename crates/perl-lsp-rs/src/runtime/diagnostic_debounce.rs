@@ -19,6 +19,7 @@ enum DebounceMsg {
 
 pub(crate) struct DiagnosticDebouncer {
     tx: std::sync::mpsc::Sender<DebounceMsg>,
+    worker_handle: Option<thread::JoinHandle<()>>,
     #[allow(dead_code)] // Read by test/debug runtime pressure snapshots.
     pending_count: Arc<AtomicUsize>,
 }
@@ -31,13 +32,17 @@ impl DiagnosticDebouncer {
         let (tx, rx) = std::sync::mpsc::channel();
         let pending_count = Arc::new(AtomicUsize::new(0));
         let worker_pending_count = Arc::clone(&pending_count);
-        if let Err(e) = thread::Builder::new()
+        let worker_handle = match thread::Builder::new()
             .name("diag-debounce".into())
             .spawn(move || worker_loop(rx, interval, publish_fn, worker_pending_count))
         {
-            tracing::error!(error = %e, "diagnostic debounce thread spawn failed");
-        }
-        Self { tx, pending_count }
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                tracing::error!(error = %e, "diagnostic debounce thread spawn failed");
+                None
+            }
+        };
+        Self { tx, worker_handle, pending_count }
     }
 
     pub(crate) fn schedule(&self, uri: &str) -> bool {
@@ -54,7 +59,7 @@ impl DiagnosticDebouncer {
     pub(crate) fn unavailable_for_test() -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         drop(rx);
-        Self { tx, pending_count: Arc::new(AtomicUsize::new(0)) }
+        Self { tx, worker_handle: None, pending_count: Arc::new(AtomicUsize::new(0)) }
     }
 
     #[allow(dead_code)] // Read by test/debug runtime pressure snapshots.
@@ -67,6 +72,13 @@ impl Drop for DiagnosticDebouncer {
     fn drop(&mut self) {
         if let Err(e) = self.tx.send(DebounceMsg::Shutdown) {
             tracing::debug!(error = %e, "diagnostic debounce: channel closed on shutdown");
+        }
+        if let Some(handle) = self.worker_handle.take() {
+            if handle.thread().id() == thread::current().id() {
+                tracing::error!("diagnostic debounce worker attempted to join itself");
+            } else if handle.join().is_err() {
+                tracing::error!("diagnostic debounce worker panicked before shutdown");
+            }
         }
     }
 }
@@ -273,5 +285,21 @@ mod tests {
         drop(debouncer);
         thread::sleep(Duration::from_millis(50));
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn debouncer_drop_joins_worker_before_returning() {
+        let exited = Arc::new(AtomicUsize::new(0));
+        let callback_exited = Arc::clone(&exited);
+        let debouncer = DiagnosticDebouncer::with_interval(Duration::from_secs(5), move |_| {
+            callback_exited.fetch_add(1, Ordering::SeqCst);
+        });
+
+        debouncer.schedule("file:///test.pl");
+        drop(debouncer);
+
+        // Joining makes shutdown deterministic: the pending URI is published
+        // before Drop returns, rather than on an unjoined detached thread.
+        assert_eq!(exited.load(Ordering::SeqCst), 1);
     }
 }
