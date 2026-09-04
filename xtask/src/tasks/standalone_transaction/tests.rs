@@ -1768,13 +1768,20 @@ fn private_state_never_enters_durable_output() {
         "password=hunter2",
         "api_key=AKIAEXAMPLE",
         "Authorization: Basic dXNlcjpwYXNz",
+        "\"apikey\":\"AKIAEXAMPLE\"",
         "/tmp/perllsp-stage",
     ] {
         assert!(redaction_finding(leaking).is_some(), "privacy scan missed {leaking:?}");
     }
-    for benign in
-        ["perllsp", "first_party_posix", "release_archive", "tx-11099-test", "fixture/transport"]
-    {
+    for benign in [
+        "perllsp",
+        "first_party_posix",
+        "release_archive",
+        "tx-11099-test",
+        "fixture/transport",
+        "passwordless-helper",
+        "apiary",
+    ] {
         assert!(redaction_finding(benign).is_none(), "privacy scan false-positived on {benign:?}");
     }
 
