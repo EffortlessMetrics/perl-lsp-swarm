@@ -4,8 +4,9 @@
 //! permission shape, cache inputs/order, non-vacuous command text, and rejection
 //! of the modeled selected-test mutation channels: direct assignment, element or
 //! array rewrites, unset/read/mapfile/declaration forms, `printf -v`, eval,
-//! nameref or variable-name indirection, and shell-function or alias shadowing
-//! of the proof commands. It remains a literal static oracle, not
+//! nameref or variable-name indirection, shell-function or alias shadowing
+//! of the proof commands, and external shell-shaping step environment such as
+//! `BASHOPTS` or `BASH_ENV`. It remains a literal static oracle, not
 //! a shell parser: it does not prove runtime cache restore/save provenance,
 //! discovery of arbitrary unseen shell or local cache writers, obfuscated name
 //! construction beyond the named indirection forms, or trusted runner
@@ -410,20 +411,22 @@ fn validate_workflow(source: &str) -> Result<()> {
     );
     // A shadowing shell function or alias keeps every anchor intact while faking
     // the executed-test summaries, so reject declarations of the proof commands.
-    // The `name()` check compares a whitespace-stripped form so spacing like
-    // `cargo ( )` cannot hide the parentheses; `function name` keeps its
-    // normalized form. Bash aliases only expand in a non-interactive script when
-    // `shopt -s expand_aliases` is set, so reject the enabling shopt anywhere in
-    // the step and any `alias name=` definition of a protected command.
+    // The production script has no legitimate use of the `alias` or `shopt`
+    // builtins, so reject both tokens outright: quoting (`alias 'cargo=...'`),
+    // option forms (`alias -- cargo=...`), and computed arguments
+    // (`shopt -s "$opt"`, `alias "$cmd=..."`) then cannot bypass the check, and
+    // no alias can expand without an enabling shopt. The `name()` check compares
+    // a whitespace-stripped form so spacing like `cargo ( )` cannot hide the
+    // parentheses; `function name` keeps its normalized form.
     ensure!(
         !topology_raw.lines().map(str::trim).any(|line| {
             let flat = normalized(&line.to_ascii_lowercase());
             let squeezed: String = flat.chars().filter(|c| !c.is_whitespace()).collect();
-            flat.contains("expand_aliases")
+            flat.contains("alias")
+                || flat.contains("shopt")
                 || ["cargo", "grep", "sed", "tee", "mktemp"].iter().any(|name| {
                     squeezed.starts_with(&format!("{name}()"))
                         || flat.starts_with(&format!("function {name}"))
-                        || squeezed.contains(&format!("alias{name}="))
                 })
         }),
         "topology proof must not shadow its production commands with shell functions or aliases"
@@ -551,13 +554,20 @@ fn validate_workflow(source: &str) -> Result<()> {
             .contains("if [[ \"$running_count\" -ne 1 || \"$result_count\" -ne 1 ]]; then"),
         "topology proof must fail on skipped or multiply-run tests"
     );
+    // Step-level environment reaches the bash process without touching the
+    // pinned script text: `BASHOPTS: expand_aliases` would enable alias
+    // expansion and `BASH_ENV` would source an outside file, so the step may
+    // carry only its privilege requirement.
+    let topology_env = topology
+        .get("env")
+        .and_then(Value::as_mapping)
+        .ok_or_else(|| anyhow!("topology proof must declare its privilege environment"))?;
     ensure!(
-        topology
-            .get("env")
-            .and_then(Value::as_mapping)
-            .and_then(|env| env.get("PLSW_REQUIRE_SYMLINK_PRIVILEGE"))
-            .and_then(Value::as_str)
-            == Some("1"),
+        topology_env.len() == 1,
+        "topology proof must not add external shell-shaping environment such as BASHOPTS or BASH_ENV"
+    );
+    ensure!(
+        topology_env.get("PLSW_REQUIRE_SYMLINK_PRIVILEGE").and_then(Value::as_str) == Some("1"),
         "topology proof must require real Windows symlink privilege"
     );
     Ok(())
@@ -686,6 +696,10 @@ fn static_contract_rejects_structural_proof_and_trigger_mutations() -> Result<()
             "if [[ \"$selected_test_count\" -ne 9 ]]; then",
         ),
         (TOPOLOGY_EXECUTION_SOURCE_ANCHOR, ""),
+        (
+            "      - name: Run exact non-skipping perl-corpus topology proofs\n        env:\n",
+            "      - name: Run exact non-skipping perl-corpus topology proofs\n        env:\n          BASHOPTS: expand_aliases\n",
+        ),
     ] {
         ensure!(
             validate_workflow(&replace_once(&source, from, to)?).is_err(),
@@ -728,6 +742,10 @@ fn static_contract_rejects_structural_proof_and_trigger_mutations() -> Result<()
         "shopt -s expand_aliases\n          alias cargo='printf \"running 1 test\\n\"'",
         "alias sed='true'",
         "shopt -s expand_aliases",
+        "alias 'cargo=printf running'",
+        "alias -- cargo='printf running'",
+        "alias_option=expand_aliases\n          shopt -s \"$alias_option\"",
+        "command=cargo\n          alias \"$command=fake_cargo\"",
     ] {
         let to = SELECTED_DECLARATION_END.replacen(
             ")\n\n",
