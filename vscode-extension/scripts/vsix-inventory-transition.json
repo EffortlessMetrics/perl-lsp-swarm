@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 14624,
-  "reason": "Preserves typed provider settlement outcomes and failure-safe middleware behavior (#14624), growing the bundled out/extension.js from 1615152 to 1615556 bytes. The measured 29-file package remains size-only: no file additions, removals, or permission loosening.",
-  "base_baseline_file_sha256": "c10baf7bd1d62390aeacebfb54510dddee90e4a6ddc1f538533b3b834537c56a",
-  "candidate_baseline_file_sha256": "d200b7ad9adf7454cdad533ec4b75974d10115fa656ec8709c11d5ab954fd055",
-  "base_inventory_sha256": "4ff8fc287eaa5524348eb4afa96f6a8923ba1c9cd183ff5d3094f1b962cac6a3",
-  "candidate_inventory_sha256": "5209c4f839313135073453570ca7ecaf9c495e8ae0a9c4bef2e94a957ba982eb"
+  "owner_issue": 14718,
+  "reason": "Corrects a stale size-only row. rolldown 1.2.6 (#14702) emits out/extension.js at 1636669 bytes where 1.2.5 emitted 1636125; the baseline landed in #14680 was measured against 1.2.5 and the two changes crossed. Measured twice from a clean npm ci at the current main. The 29-file package is unchanged: no file additions, removals, or permission loosening.",
+  "base_baseline_file_sha256": "ead549f99a68d55a78f83a3b94d6e95cfc860be529d79813b6bc6ff13e070a75",
+  "candidate_baseline_file_sha256": "a966dac61b30ed8f950dc9910b5dfaf354ff131cf797dcd7ea24f6b1fa756c2a",
+  "base_inventory_sha256": "a526f424818662c8ec573c84cd9360eccfff0e3ee7a56d7123c4df047fdc02df",
+  "candidate_inventory_sha256": "71c92a4b4282c160e4db6417312fa3622a9ba9a8266bce7fbe6172b9ad5004f1"
 }

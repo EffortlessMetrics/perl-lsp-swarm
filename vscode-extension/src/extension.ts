@@ -167,6 +167,8 @@ import {
   ExtensionActivationOwner,
   _setActivationPhaseFailureInjectorForTest,
 } from './activationOwner';
+import type { ClientResourceMeasurement } from './clientMeasurement';
+import { extensionOwnedResourceMeasurements } from './extensionOwnedResourceCensus';
 
 // Compatibility projections for existing command/provider code. Lifecycle
 // ownership lives in `languageClientLifecycle`; these values are synchronized
@@ -252,6 +254,27 @@ export function getFeatureActivationMetrics(): FeatureActivationMetricsSnapshot 
 
 export function getActiveDocumentReadiness(): ActiveDocumentReadinessSnapshot {
   return activeDocumentReadiness.snapshot();
+}
+
+/**
+ * Production producer for the `extension_owned_*` counters of
+ * `vscode_client_measurement.v1` (#14678, parent #7866).
+ *
+ * Sourced from the activation ownership registry, so it reports only resources
+ * this extension registered. Counters the registry cannot distinguish, and
+ * shared extension-host memory, stay `not_proven` rather than `0`. This is a
+ * separate authority from {@link getLanguageClientStartupMetrics}, which owns
+ * startup milestone and server timing and carries no resource counts.
+ *
+ * Scope: the census is **attempt-scoped**. `extensionActivation` is replaced on
+ * each activation, so this reports the current attempt's ownership only and
+ * cannot see a resource a previous attempt failed to release. Within one
+ * attempt a failed release stays visible; detecting retention *across* a reload
+ * needs terminal censuses aggregated outside the attempt, which is part of
+ * #7866's restart/reload work, not this claim.
+ */
+export function getExtensionOwnedResourceMeasurements(): ClientResourceMeasurement[] {
+  return extensionOwnedResourceMeasurements(extensionActivation?.resourceCensus() ?? null);
 }
 
 export function markLanguageClientStartupMilestone(
@@ -1250,6 +1273,7 @@ async function runExtensionActivation(
       getLanguageClientStartupMetrics,
       getFeatureActivationMetrics,
       getActiveDocumentReadiness,
+      getExtensionOwnedResourceMeasurements,
       markLanguageClientStartupMilestone,
       waitForActiveDocumentReady,
       stop: stopLanguageClientForActivationApi,
@@ -1299,6 +1323,7 @@ async function runExtensionActivation(
     getLanguageClientStartupMetrics,
     getFeatureActivationMetrics,
     getActiveDocumentReadiness,
+    getExtensionOwnedResourceMeasurements,
     markLanguageClientStartupMilestone,
     waitForActiveDocumentReady,
     stop: stopLanguageClientForActivationApi,
