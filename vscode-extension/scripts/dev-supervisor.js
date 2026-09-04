@@ -179,6 +179,9 @@ function exitedMessage(code, reason) {
  *   forcibly (taskkill) and does not use this grace.
  * @property {boolean} stopWhenReady Proof harness: perform the owned
  *   shutdown as soon as readiness is reached (exit 0).
+ * @property {boolean} forwardOutput Forward each watcher's stdout/stderr to
+ *   the supervisor's visible streams so build diagnostics stay visible.
+ *   Fixture tests opt out; `npm run dev` always forwards.
  */
 
 /**
@@ -347,6 +350,7 @@ function runDevSupervisor(input) {
     readinessTimeoutMs: 300_000,
     shutdownGraceMs: 5_000,
     stopWhenReady: false,
+    forwardOutput: true,
     ...input.options,
   };
 
@@ -442,6 +446,32 @@ function runDevSupervisor(input) {
         await requestTermination(child, emit);
       }
     }
+    // A watcher that exited ON ITS OWN may have left descendants in the
+    // process group it led. The supervisor still owns that group: on POSIX
+    // the group id survives while any member lives, so it is terminated
+    // exactly like a live child's group. On Windows there is no way to
+    // enumerate (or force-kill) the descendants of an already-exited leader,
+    // so the residual is named loudly instead of being silently dropped.
+    for (const child of children) {
+      if (child.exit !== undefined && child.phase === 'failed') {
+        const pid = child.proc?.pid;
+        if (typeof pid === 'number') {
+          if (process.platform === 'win32') {
+            result.failures.push(
+              `watcher "${child.spec.name}" exited on its own — any descendants it left behind cannot be force-killed from Windows after the leader exited`,
+            );
+          } else {
+            emit(
+              childTerminationMessage(
+                child.spec.name,
+                'SIGTERM sent (orphaned process group of the exited watcher)',
+              ),
+            );
+            killGroup(pid, 'SIGTERM', emit);
+          }
+        }
+      }
+    }
     const graceDeadline = Date.now() + (process.platform === 'win32' ? 0 : options.shutdownGraceMs);
     await waitForExits(graceDeadline);
 
@@ -452,6 +482,21 @@ function runDevSupervisor(input) {
           result.escalations.push(child.spec.name);
         }
         await escalateTermination(child, emit);
+      } else if (
+        child.exit !== undefined &&
+        child.phase === 'failed' &&
+        process.platform !== 'win32'
+      ) {
+        const pid = child.proc?.pid;
+        if (typeof pid === 'number') {
+          emit(
+            childTerminationMessage(
+              child.spec.name,
+              'SIGKILL sent (orphaned process group, escalation)',
+            ),
+          );
+          killGroup(pid, 'SIGKILL', emit);
+        }
       }
     }
     await waitForExits(Date.now() + FORCE_KILL_WAIT_MS);
@@ -504,8 +549,10 @@ function runDevSupervisor(input) {
   }
 
   /**
-   * Marker scan over a rolling decoded tail. A child flips to ready exactly
-   * once; the overall edge fires only when ALL children are ready.
+   * Marker scan over a rolling decoded tail, plus raw diagnostics
+   * passthrough: a dev service that swallowed tsc/Rolldown output would be
+   * unusable, so each chunk is forwarded to the supervisor's matching
+   * visible stream (opt-out for fixture tests via `forwardOutput`).
    *
    * @param {ChildState} child
    * @param {'stdout' | 'stderr'} stream
@@ -514,6 +561,10 @@ function runDevSupervisor(input) {
   function onChildOutput(child, stream, chunk) {
     const decoder = stream === 'stdout' ? child.stdoutDecoder : child.stderrDecoder;
     const text = decoder.write(chunk);
+    if (options.forwardOutput) {
+      const sink = stream === 'stdout' ? process.stdout : process.stderr;
+      sink.write(chunk);
+    }
     if (child.phase === 'pending') {
       const tailKey = stream === 'stdout' ? 'stdoutTail' : 'stderrTail';
       const tail = `${child[tailKey]}${text}`.slice(-STREAM_TAIL_LIMIT);
@@ -605,12 +656,31 @@ function runDevSupervisor(input) {
    * Stops the service through the owned shutdown path. A Node signal name
    * produces the governed interrupt result (128 + signal number).
    *
+   * Repeated stops are deliberately NOT ignored: a second interrupt arriving
+   * during the graceful phase immediately escalates the live watchers
+   * instead of falling back to Node's default termination, which would kill
+   * the supervisor and orphan the watcher trees. The handler stays
+   * installed for the whole shutdown.
+   *
    * @param {NodeJS.Signals | string} [cause]
    * @returns {Promise<SupervisorResult>}
    */
   function stop(cause = STOP_REASONS.REQUESTED) {
     const isSignal = typeof cause === 'string' && cause.startsWith('SIG');
     const code = isSignal ? signalExitCode(/** @type {NodeJS.Signals} */ (cause)) : 0;
+    if (shutdownStarted) {
+      emit(`escalating on repeated stop request (${cause})`);
+      for (const child of children) {
+        if (child.exit === undefined && child.proc !== null) {
+          if (!child.escalated) {
+            child.escalated = true;
+            result.escalations.push(child.spec.name);
+          }
+          void escalateTermination(child, emit);
+        }
+      }
+      return exitPromise;
+    }
     void shutdown(
       isSignal ? `${STOP_REASONS.SIGNAL}:${cause}` : /** @type {string} */ (cause),
       code,
@@ -675,7 +745,13 @@ function parseSupervisorConfig(source, origin) {
     throw new Error(`${origin}: config must be a JSON object`);
   }
   const config = /** @type {Record<string, unknown>} */ (parsed);
-  const allowed = new Set(['children', 'readinessTimeoutMs', 'shutdownGraceMs', 'stopWhenReady']);
+  const allowed = new Set([
+    'children',
+    'readinessTimeoutMs',
+    'shutdownGraceMs',
+    'stopWhenReady',
+    'forwardOutput',
+  ]);
   for (const key of Object.keys(config)) {
     if (!allowed.has(key)) {
       throw new Error(
@@ -760,6 +836,12 @@ function parseSupervisorConfig(source, origin) {
     }
     options.stopWhenReady = config.stopWhenReady;
   }
+  if (config.forwardOutput !== undefined) {
+    if (typeof config.forwardOutput !== 'boolean') {
+      throw new Error(`${origin}: "forwardOutput" must be a boolean`);
+    }
+    options.forwardOutput = config.forwardOutput;
+  }
   return { children, options };
 }
 
@@ -793,8 +875,11 @@ function main() {
     reporter,
     options: config.options,
   });
+  // Handlers stay installed for the whole shutdown: a repeated interrupt
+  // must escalate inside the owned path, never restore Node's default
+  // termination while watcher trees are still alive.
   for (const signal of ['SIGINT', 'SIGTERM']) {
-    process.once(signal, () => {
+    process.on(signal, () => {
       void controller.stop(signal);
     });
   }

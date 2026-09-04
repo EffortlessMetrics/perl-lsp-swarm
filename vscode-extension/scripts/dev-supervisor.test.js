@@ -146,9 +146,35 @@ function runSupervisor(specs, options = {}) {
       info: (message) => infos.push(message),
       error: (message) => errors.push(message),
     },
-    options: { readinessTimeoutMs: 5000, shutdownGraceMs: 250, ...options },
+    options: {
+      readinessTimeoutMs: 5000,
+      shutdownGraceMs: 250,
+      // Fixture suites keep the test output clean; the real smoke opts in to
+      // prove diagnostics passthrough.
+      forwardOutput: false,
+      ...options,
+    },
   });
   return { controller, exit: controller.waitForExit(), infos, errors };
+}
+
+/**
+ * Polls until the supervisor reported the combined ready edge (or fails the
+ * test). Never a fixed sleep: readiness under load is not time-shaped.
+ *
+ * @param {Run} run
+ * @param {number} [timeoutMs]
+ * @returns {Promise<void>}
+ */
+async function waitForReady(run, timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (run.infos.includes('ready (2/2 watchers healthy)')) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.fail(`readiness edge never appeared; got: ${run.infos.join(' | ')}`);
 }
 
 /**
@@ -215,7 +241,7 @@ void test('both watchers reach readiness, then a SIGINT stop exits with the gove
     readyChild('types', 'FIXTURE_READY_A'),
     readyChild('bundle', 'FIXTURE_READY_B'),
   ]);
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  await waitForReady(run);
   const result = await run.controller.stop('SIGINT');
   assert.equal(result.code, 130, 'SIGINT must exit 128+2');
   assert.match(result.reason, /signal:SIGINT/);
@@ -365,7 +391,7 @@ void test('a stubborn child is killed by bounded escalation and its grandchild d
     },
     readyChild('bundle', 'FIXTURE_READY_B'),
   ]);
-  await new Promise((resolve) => setTimeout(resolve, 400));
+  await waitForReady(run);
   const result = await run.controller.stop('SIGTERM');
   assert.equal(result.code, 143, 'SIGTERM must exit 128+15');
   if (!IS_WINDOWS) {
@@ -396,7 +422,7 @@ void test('paths containing spaces and non-ASCII characters keep argv intact', a
     },
     readyChild('bundle', 'FIXTURE_READY_B'),
   ]);
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  await waitForReady(run);
   const result = await run.controller.stop();
   assert.equal(result.code, 0);
   const argv = JSON.parse(fs.readFileSync(argvFile, 'utf8'));
@@ -636,10 +662,14 @@ void test(
   'bounded real-loop smoke: real watchers reach readiness and the owned stop leaves no tree',
   { skip: process.env.PERL_LSP_DEV_SUPERVISOR_REAL_SMOKE !== '1' },
   async () => {
+    // Self-sufficient: creates its own fixture state so it runs standalone
+    // under --test-name-pattern as well as in the full suite.
+    tempDirs.push(fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-dev-supervisor-real-')));
     const run = runSupervisor(() => createDefaultWatchChildren(extensionRoot), {
       readinessTimeoutMs: 180000,
       shutdownGraceMs: 2000,
       stopWhenReady: true,
+      forwardOutput: true,
     });
     const result = await run.exit;
     assert.equal(
@@ -648,10 +678,124 @@ void test(
       `expected the real smoke to stop green, got: ${JSON.stringify(result)}`,
     );
     assert.ok(
-      run.infos.includes(`ready (2/2 watchers healthy)`),
+      run.infos.includes('ready (2/2 watchers healthy)'),
       `expected the real combined ready line, got: ${run.infos.join(' | ')}`,
     );
     assertAllGone(resultPids(result));
+  },
+);
+
+/* ---------------------------------------------------------------------- */
+/* Exited-leader descendants and repeated interrupts                       */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * A watcher that exits non-zero on its own while leaving a long-lived
+ * grandchild in the process group it led — the daemonizing-watcher control.
+ */
+const EXIT_WITH_LIVE_GRANDCHILD = `
+const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+const grandchild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'ignore' });
+fs.writeFileSync(process.env.FIXTURE_PIDS_FILE, JSON.stringify({ child: process.pid, grandchild: grandchild.pid }));
+setTimeout(() => process.exit(Number(process.env.FIXTURE_EXIT_CODE ?? '5')), 120);
+setInterval(() => {}, 1000);
+`;
+
+void test(
+  'a watcher that exits leaving a live grandchild has its whole group terminated (POSIX)',
+  { skip: IS_WINDOWS },
+  async () => {
+    tempDirs.push(fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-dev-supervisor-orphan-')));
+    const pidsFile = path.join(lastDir(), 'orphan.pids.json');
+    const run = runSupervisor(() => [
+      {
+        name: 'types',
+        command: process.execPath,
+        args: [writeFixture('orphan-exit.cjs', EXIT_WITH_LIVE_GRANDCHILD)],
+        cwd: lastDir(),
+        readyPattern: /NEVER_READY/,
+        env: { ...process.env, FIXTURE_PIDS_FILE: pidsFile, FIXTURE_EXIT_CODE: '5' },
+      },
+      readyChild('bundle', 'FIXTURE_READY_B'),
+    ]);
+    const result = await run.exit;
+    assert.equal(result.code, 5);
+    assert.match(result.reason, /child-failure:types/);
+    assert.ok(
+      run.infos.some((m) => m.includes('orphaned process group')),
+      `expected the orphaned-group termination receipt, got: ${run.infos.join(' | ')}`,
+    );
+    const { child, grandchild } = JSON.parse(fs.readFileSync(pidsFile, 'utf8'));
+    assertAllGone([...resultPids(result), child, grandchild]);
+  },
+);
+
+void test(
+  'the CLI keeps repeated interrupts inside the owned shutdown path (POSIX)',
+  { skip: IS_WINDOWS },
+  async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-dev-supervisor-dblsig-'));
+    tempDirs.push(dir);
+    const pidsFile = path.join(dir, 'pids.json');
+    const fixture = path.join(dir, 'stubborn.cjs');
+    fs.writeFileSync(fixture, STUBBORN_WITH_GRANDCHILD);
+    const configFile = path.join(dir, 'config.json');
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        children: [
+          {
+            name: 'one',
+            command: process.execPath,
+            args: [fixture],
+            readyPattern: 'FIXTURE_READY',
+            env: { FIXTURE_IGNORE_TERM: '1', FIXTURE_PIDS_FILE: pidsFile },
+          },
+        ],
+        readinessTimeoutMs: 15000,
+        shutdownGraceMs: 5000,
+      }),
+    );
+    const exitCode = await new Promise((resolve) => {
+      const child = spawn(
+        process.execPath,
+        [path.join(extensionRoot, 'scripts', 'dev-supervisor.js')],
+        {
+          env: { ...process.env, [CONFIG_ENV]: configFile },
+          stdio: ['ignore', 'ignore', 'ignore'],
+          windowsHide: true,
+        },
+      );
+      let signalsSent = 0;
+      const poll = setInterval(() => {
+        if (!fs.existsSync(pidsFile)) {
+          return;
+        }
+        clearInterval(poll);
+        process.kill(child.pid ?? 0, 'SIGINT');
+        signalsSent += 1;
+        // Second interrupt while the graceful shutdown is still in flight:
+        // it must escalate inside the owned path, never kill the supervisor
+        // with watchers still alive.
+        setTimeout(() => {
+          if (signalsSent === 1) {
+            process.kill(child.pid ?? 0, 'SIGINT');
+          }
+        }, 100);
+      }, 50);
+      child.once('exit', (code) => {
+        clearInterval(poll);
+        resolve(/** @type {number | null} */ (code));
+      });
+    });
+    assert.equal(
+      exitCode,
+      130,
+      'repeated SIGINT must still exit 128+2, not die to the default handler',
+    );
+    const pids = JSON.parse(fs.readFileSync(pidsFile, 'utf8'));
+    assertAllGone([pids.child, pids.grandchild]);
   },
 );
 
