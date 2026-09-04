@@ -3399,7 +3399,7 @@ pub fn perl_dap::tcp_attach::TcpAttachSession::disconnect(&mut self) -> anyhow::
 pub fn perl_dap::tcp_attach::TcpAttachSession::is_connected(&self) -> bool
 pub fn perl_dap::tcp_attach::TcpAttachSession::new() -> Self
 pub fn perl_dap::tcp_attach::TcpAttachSession::send_message(&mut self, message: &str) -> anyhow::Result<()>
-pub fn perl_dap::tcp_attach::TcpAttachSession::set_event_sender(&mut self, sender: std::sync::mpsc::Sender<perl_dap::tcp_attach::DapEvent>)
+pub fn perl_dap::tcp_attach::TcpAttachSession::set_event_sender(&mut self, sender: std::sync::mpsc::SyncSender<perl_dap::tcp_attach::DapEvent>)
 pub fn perl_dap::tcp_attach::TcpAttachSession::start_reader(&mut self) -> anyhow::Result<()>
 pub fn perl_dap::tcp_attach::TcpAttachSession::default() -> Self
 pub fn perl_dap::tcp_attach::TcpAttachSession::drop(&mut self)

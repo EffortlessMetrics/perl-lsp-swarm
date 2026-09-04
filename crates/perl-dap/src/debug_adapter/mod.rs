@@ -22,6 +22,7 @@ mod regexes;
 pub(crate) mod safe_eval;
 mod session;
 mod sync_utils;
+mod tcp_attach_forwarder;
 mod transport;
 pub mod var_ref;
 mod variable_cache;

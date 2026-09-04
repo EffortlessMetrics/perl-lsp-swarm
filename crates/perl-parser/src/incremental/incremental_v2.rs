@@ -948,7 +948,7 @@ impl IncrementalParserV2 {
                         TokenType::StringLiteral
                             | TokenType::InterpolatedString(_)
                             | TokenType::QuoteSingle
-                            | TokenType::QuoteDouble
+                            | TokenType::QuoteDouble(_)
                     )
                 }) {
                     return None;
