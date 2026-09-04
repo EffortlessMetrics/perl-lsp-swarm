@@ -437,7 +437,10 @@ fn validate_workflow(source: &str) -> Result<()> {
     // parentheses; `function name` keeps its normalized form. `source` and its
     // `.` synonym would load checkout-controlled shell text whose function
     // definitions never appear in this scanned script, so reject both builtins
-    // as (quote-stripped) word tokens; the production script sources nothing.
+    // as (quote-stripped) word tokens, treating shell control operators
+    // (`;`, `&`, `|`, `(`, `)`, `<`, `>`, backquote) as token boundaries so
+    // operator-adjacent forms like `true&&source ./f` cannot bypass the scan;
+    // the production script sources nothing.
     ensure!(
         !topology_raw.lines().map(str::trim).any(|line| {
             let flat = normalized(&line.to_ascii_lowercase());
@@ -445,7 +448,7 @@ fn validate_workflow(source: &str) -> Result<()> {
             flat.contains("alias")
                 || flat.contains("shopt")
                 || flat
-                    .split(' ')
+                    .split([' ', ';', '&', '|', '(', ')', '<', '>', '`'])
                     .any(|token| matches!(token.trim_matches(['"', '\'']), "source" | "."))
                 || ["cargo", "grep", "sed", "tee", "mktemp"].iter().any(|name| {
                     squeezed.starts_with(&format!("{name}()"))
@@ -777,6 +780,9 @@ fn static_contract_rejects_structural_proof_and_trigger_mutations() -> Result<()
         "source ./proof-hooks.sh",
         ". ./proof-hooks.sh",
         "\"source\" ./proof-hooks.sh",
+        "true&&source ./proof-hooks.sh",
+        "true&&. ./proof-hooks.sh",
+        "echo noop;source ./proof-hooks.sh",
     ] {
         let to = SELECTED_DECLARATION_END.replacen(
             ")\n\n",
