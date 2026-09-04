@@ -2025,6 +2025,12 @@ mod tests {
         use std::sync::Arc;
 
         let server = LspServer::new();
+        // Bare-CR sources are deliberately absent: the formatter's
+        // `SourceGeometry`/`true_eof_position` still admits bare CR as a
+        // separator, which is a legacy provider surface outside the #4973
+        // LF-delimited source-line contract and owned by the downstream
+        // geometry migration issues. Parity is asserted only where both
+        // authorities share the LF contract.
         let sources =
             ["", "package Foo;", "package Foo;\n", "a\r\n", "#!/usr/bin/perl😀", "x\n\r\nz"];
         for (idx, content) in sources.iter().enumerate() {
