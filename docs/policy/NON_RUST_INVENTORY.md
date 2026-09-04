@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12708 |
+| Total tracked files | 12709 |
 | Rust-family files | 3961 |
-| Non-Rust files | 8747 |
-| Allowlisted | 6508 |
+| Non-Rust files | 8748 |
+| Allowlisted | 6509 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -20,7 +20,7 @@
 | documentation | 2852 |
 | generated | 2 |
 | production | 357 |
-| test | 2110 |
+| test | 2111 |
 | tooling | 685 |
 | unclassified | 2239 |
 
@@ -4257,6 +4257,7 @@
 | `crates/perl-position-tracking/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-position-tracking/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-position-tracking/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-position-tracking/tests/line_starts_cache_fuzz.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
 | `crates/perl-pragma/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-pragma/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-pragma/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
