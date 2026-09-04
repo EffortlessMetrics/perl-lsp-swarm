@@ -419,36 +419,28 @@ def cfg_test_module_paths(path: Path, source: str) -> set[Path]:
         # `#[path = "..."]` changes the module file location. Recover only
         # an attribute immediately adjacent to this declaration; a broad
         # lookback can incorrectly borrow a path from an unrelated module.
-        raw_prefix = source[: match.start()]
-        masked_prefix = masked[: match.start()]
-        raw_lines = raw_prefix.splitlines(keepends=True)
-        masked_lines = masked_prefix.splitlines(keepends=True)
-        attributes: list[str] = []
-        bracket_depth = 0
-        for raw_line, masked_line in zip(reversed(raw_lines), reversed(masked_lines)):
-            stripped = masked_line.strip()
-            if bracket_depth:
-                attributes.append(raw_line)
-                bracket_depth += masked_line.count("[") - masked_line.count("]")
-                continue
-            if not stripped:
-                attributes.append(raw_line)
-                continue
-            if stripped.startswith("]"):
-                # A multiline attribute may close on its own line; retain it
-                # while walking back to the opening `#[...` line.
-                attributes.append(raw_line)
-                continue
-            if stripped.startswith("#"):
-                attributes.append(raw_line)
-                bracket_depth += masked_line.count("[") - masked_line.count("]")
-                continue
-            break
-        path_match = re.findall(
-            r"#\[\s*path\s*=\s*\"([^\"]+)\"\s*\]",
-            "".join(reversed(attributes)),
-            flags=re.DOTALL,
+        # Search only the masked source: comments, literals, and raw strings
+        # cannot impersonate attributes there. A candidate path is associated
+        # only when everything between it and this declaration is whitespace
+        # or complete attributes, preventing a prior module's path from
+        # crossing an intervening item.
+        path_candidates = list(
+            re.finditer(r"#\[\s*path\s*=.*?\]", masked[: match.start()], flags=re.DOTALL)
         )
+        path_match: list[str] = []
+        for candidate in reversed(path_candidates):
+            between = masked[candidate.end() : match.start()]
+            if not re.fullmatch(r"(?:\s|#\[.*?\])*", between, flags=re.DOTALL):
+                continue
+            raw_attribute = source[candidate.start() : candidate.end()]
+            values = re.findall(
+                r"#\[\s*path\s*=\s*\"([^\"]+)\"\s*\]",
+                raw_attribute,
+                flags=re.DOTALL,
+            )
+            if values:
+                path_match = [values[-1]]
+                break
         if path_match:
             # An explicit path is relative to the declaring source file,
             # including when that source is a non-mod.rs module.
