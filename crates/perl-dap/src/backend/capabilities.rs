@@ -477,14 +477,14 @@ mod tests {
             ("advertises_log_points", "OPTIONAL_LOG_POINTS_PROVEN"),
         ];
         for (accessor, authority) in bindings {
-            let body = accessor_body(source, accessor);
-            assert!(body.contains(authority), "{accessor} must read its own authority {authority}");
-            for (_, sibling) in bindings.iter().filter(|(_, a)| *a != authority) {
-                assert!(
-                    !body.contains(sibling),
-                    "{accessor} must not read sibling authority {sibling}"
-                );
-            }
+            // The body must reduce to exactly its own authority atom after
+            // comment stripping, so neither comments nor extra expressions can
+            // satisfy the binding.
+            let atom = accessor_return_atom(source, accessor);
+            assert_eq!(
+                atom, *authority,
+                "{accessor} must return exactly its own authority {authority}"
+            );
         }
 
         assert!(
@@ -519,15 +519,53 @@ mod tests {
         }
     }
 
-    /// Extract the body of one `const fn` accessor from the module source.
-    fn accessor_body(source: &str, accessor: &str) -> String {
+    /// Extract the single return atom of one `const fn` accessor from the
+    /// module source: body text with comments stripped, the `return` keyword
+    /// removed, and whitespace collapsed. Any additional expression in the
+    /// body breaks the exact-atom equality.
+    fn accessor_return_atom(source: &str, accessor: &str) -> String {
         let signature = format!("fn {accessor}()");
         let start = source
             .find(&signature)
             .unwrap_or_else(|| panic!("{accessor} must stay defined in capabilities.rs"));
         let open = source[start..].find('{').expect("accessor body brace") + start;
         let close = source[open..].find('}').expect("accessor body close") + open;
-        source[open..=close].to_string()
+        let body = &source[open + 1..close];
+
+        let mut stripped = String::with_capacity(body.len());
+        let mut in_block_comment = false;
+        for line in body.lines() {
+            let mut rest = line;
+            while !rest.is_empty() {
+                let line_comment = rest.find("//");
+                let block_comment = rest.find("/*");
+                let block_first = block_comment.is_some_and(|b| line_comment.is_none_or(|l| b < l));
+                match (block_first, line_comment) {
+                    // A block comment starting before any line comment: skip
+                    // to its terminator (which may live on a later line).
+                    (true, _) => {
+                        // `block_first` implies the block marker exists.
+                        let block_comment = block_comment.unwrap_or_default();
+                        stripped.push_str(&rest[..block_comment]);
+                        rest = &rest[block_comment + 2..];
+                        in_block_comment = true;
+                    }
+                    // A line comment (or a line comment preceding a block
+                    // comment start): the rest of the line is commentary.
+                    (false, Some(line_comment)) => {
+                        stripped.push_str(&rest[..line_comment]);
+                        rest = "";
+                    }
+                    (false, None) => {
+                        stripped.push_str(rest);
+                        rest = "";
+                    }
+                }
+            }
+            stripped.push(' ');
+        }
+
+        stripped.replace("return", " ").split_whitespace().collect::<String>()
     }
 
     fn all_catalog() -> CatalogDapFlags {
