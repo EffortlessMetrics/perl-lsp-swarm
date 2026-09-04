@@ -70,6 +70,10 @@ pub fn project_canonical_regex_diagnostics(table: &RegexAnalysisTable) -> Vec<Di
     diagnostics
 }
 
+/// Project one record's findings, in source order within the record.
+///
+/// Modifier findings are emitted even when the body was not analyzed as a regex:
+/// `tr/a-z/A-Z/r` has no regex body, but `r` is still wrong on it.
 fn project_record(record: &RegexAnalysisRecord, diagnostics: &mut Vec<Diagnostic>) {
     if let Some(pattern) = &record.pattern {
         project_structural(record, pattern, diagnostics);
@@ -93,6 +97,10 @@ fn project_record(record: &RegexAnalysisRecord, diagnostics: &mut Vec<Diagnostic
     }
 }
 
+/// Project the pattern-body findings, the only ones whose spans are body-relative.
+///
+/// Each is mapped back to original source through the record's geometry; a span
+/// that cannot be mapped is dropped rather than anchored at a guessed offset.
 fn project_structural(
     record: &RegexAnalysisRecord,
     pattern: &RetainedRegexPatternAnalysis,
@@ -112,6 +120,10 @@ fn project_structural(
     }
 }
 
+/// Project capture findings, which already carry original-source spans.
+///
+/// `analyze_pattern_controls` is given the body's start offset and resolves its
+/// ranges against it, so these must not be mapped a second time.
 fn project_captures(pattern: &RetainedRegexPatternAnalysis, diagnostics: &mut Vec<Diagnostic>) {
     for diagnostic in &pattern.controls.captures.diagnostics {
         let (code, message) = match diagnostic.code {
