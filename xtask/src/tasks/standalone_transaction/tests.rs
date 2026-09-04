@@ -1295,12 +1295,18 @@ fn timeout_and_not_proven_terminate_distinctly() {
 }
 
 /// A failed receipt must name a failure reason family; borrowing the
-/// dedicated cancelled or timeout families would fold a cancellation or
-/// timeout as a plain failure.
+/// dedicated cancelled, timeout, or not-proven families would fold a
+/// cancellation, timeout, or unproven evidence as a plain failure.
 #[test]
 fn failed_receipt_cannot_borrow_cancelled_or_timeout_reasons() {
     let (_, subject_digest) = resolved_archive(&base_intent());
-    for reason in [ReasonFamily::Cancelled, ReasonFamily::Timeout] {
+    for reason in [
+        ReasonFamily::Cancelled,
+        ReasonFamily::Timeout,
+        ReasonFamily::NotProven,
+        ReasonFamily::InstrumentFailure,
+        ReasonFamily::MissingEvidence,
+    ] {
         let mut receipt =
             succeeded_receipt("tx", "attempt-1", &subject_digest, StageId::Transport, &[]);
         receipt.result = StageResult::Failed;

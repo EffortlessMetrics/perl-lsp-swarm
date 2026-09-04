@@ -1335,12 +1335,19 @@ impl StageReceipt {
                 self.reason == ReasonFamily::None && self.next_action == ActionClass::None
             }
             StageResult::Failed => {
-                // Cancellation and timeouts stay distinct: a failed receipt
-                // must name a failure reason, never the dedicated cancelled
-                // or timeout families that belong to their own results.
+                // Cancellation, timeouts, and unproven evidence stay
+                // distinct: a failed receipt names a failure family, never
+                // the dedicated cancelled/timeout/not-proven families that
+                // belong to their own results. Instrument failure or missing
+                // evidence is NOT_PROVEN, never a red failure.
                 !matches!(
                     self.reason,
-                    ReasonFamily::None | ReasonFamily::Cancelled | ReasonFamily::Timeout
+                    ReasonFamily::None
+                        | ReasonFamily::Cancelled
+                        | ReasonFamily::Timeout
+                        | ReasonFamily::NotProven
+                        | ReasonFamily::InstrumentFailure
+                        | ReasonFamily::MissingEvidence
                 ) && self.next_action != ActionClass::None
             }
             StageResult::Cancelled => {
