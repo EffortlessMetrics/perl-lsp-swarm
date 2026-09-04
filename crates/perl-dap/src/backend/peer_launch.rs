@@ -689,8 +689,27 @@ impl MirrorPeerBridge {
                 }
             }
             None | Some(_) => {
-                tracing::warn!(command, "mirror bridge: unhandled DAP request");
-                out.push(self.response(request_seq, command, true, None, None));
+                if DapRequestRoute::from_command(command).is_some() {
+                    // A catalog route that exists but is unavailable in this
+                    // frontend must fail closed: acknowledging it would report
+                    // success for work no backend performed (#9069).
+                    tracing::warn!(
+                        command,
+                        "mirror bridge: request is unavailable in this frontend"
+                    );
+                    out.push(self.response(
+                        request_seq,
+                        command,
+                        false,
+                        None,
+                        Some("request is unavailable in the mirror peer frontend".to_string()),
+                    ));
+                } else {
+                    // Lenient: acknowledge unrecognized requests so a client is not
+                    // wedged, but carry no body. (mirror-MVP behavior.)
+                    tracing::warn!(command, "mirror bridge: unhandled DAP request");
+                    out.push(self.response(request_seq, command, true, None, None));
+                }
             }
         }
         out.extend(self.poll_events());
@@ -1743,6 +1762,21 @@ mod tests {
             if let DapMessage::Response { message, .. } = &out[0] {
                 assert!(message.as_deref().unwrap_or("").contains("mirror mode"));
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_only_step_in_targets_fails_closed() -> Result<(), String> {
+        let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
+        let out = bridge.dispatch(17, "stepInTargets", Some(json!({ "frameId": 1 })));
+        let first = out.first().ok_or_else(|| "stepInTargets produced no response".to_string())?;
+        let (command, success, body) = as_response(first)?;
+        assert_eq!(command, "stepInTargets");
+        assert!(!success, "peer-unavailable requests must not acknowledge success");
+        assert!(body.is_none(), "a refused request must not carry a response body");
+        if let DapMessage::Response { message, .. } = first {
+            assert!(message.as_deref().is_some_and(|message| !message.is_empty()));
         }
         Ok(())
     }

@@ -52,7 +52,6 @@ catalog:
   - dap.restart
   - dap.set_expression
   - dap.source
-  - dap.step_in_targets
   - dap.threads
   - experimental.perlInlineCompletionStream
   - lsp.apply_edit
