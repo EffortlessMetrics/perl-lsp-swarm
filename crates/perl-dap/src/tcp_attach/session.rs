@@ -105,17 +105,21 @@ impl TcpAttachSession {
 
     /// Disconnect from the debugger
     ///
-    /// The reader epoch is bumped before the socket shuts down, so a reader
-    /// parked in cancellation-aware admission for this connection retires
-    /// instead of later delivering stale events or overwriting the shared
-    /// connection state of a replacement connection (#9521).
+    /// The reader is retired before the socket shuts down, so a reader parked
+    /// in cancellation-aware admission for this connection retires instead of
+    /// later delivering stale events or overwriting the shared connection
+    /// state of a replacement connection (#9521). The connected flag is
+    /// cleared unconditionally after cleanup — a failed socket shutdown does
+    /// not make the session live, and no retired reader remains authorized to
+    /// clear the flag — while the shutdown error is still preserved and
+    /// returned.
     pub fn disconnect(&mut self) -> Result<()> {
         self.reader_retirement.retire();
-        if let Some(stream) = self.stream.take() {
-            stream.shutdown(std::net::Shutdown::Both)?;
-            tracing::info!("Disconnected from Perl debugger");
-        }
+        let shutdown_result =
+            self.stream.take().map(|stream| stream.shutdown(std::net::Shutdown::Both)).transpose();
         self.set_connected(false);
+        shutdown_result?;
+        tracing::info!("Disconnected from Perl debugger");
         Ok(())
     }
 
