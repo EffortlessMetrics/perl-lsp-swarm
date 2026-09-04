@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "description": "Registry of known-flaky or known-blocked UX scenario tests. Active entries inform CI triage and quarantine; resolved entries retain a terminal disposition, executable replacement mapping, and verification route as institutional memory. Verified dispositions are bound to an exact verified_sha plus the replacement-source blob at that commit; crates/perl-lsp-ux-tests/tests/quarantine_registry_contract.rs re-verifies the binding and fails on fabrication or artifact drift. Schema: .ci/schemas/ux-flakes.schema.json",
+  "description": "Registry of known-flaky or known-blocked UX scenario tests. Active entries inform CI triage and quarantine; resolved entries retain a terminal disposition, executable replacement mapping, and verification route as institutional memory. Verified dispositions are bound to an exact verified_sha plus the replacement-source blob at that commit and to the concrete verification_pr that carried the evidence run; crates/perl-lsp-ux-tests/tests/quarantine_registry_contract.rs re-verifies both bindings and fails on fabrication, artifact drift, or tampered provenance. Schema: .ci/schemas/ux-flakes.schema.json",
   "entries": [
     {
       "test": "ux_scenario_14_inc_conformance::scenario_14_relative_include_path",
