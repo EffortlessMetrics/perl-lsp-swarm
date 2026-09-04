@@ -513,3 +513,128 @@ fn test_tcp_attach_parked_reader_retires_on_disconnect_without_clobbering() {
     must(server1.join().map_err(|_| "Server 1 thread panicked".to_string()));
     must(server2.join().map_err(|_| "Server 2 thread panicked".to_string()));
 }
+
+/// #9521 review: after `disconnect` retires the reader, its still-buffered
+/// socket frames must never be admitted into the fan-in queue a replacement
+/// connection reuses. The eight pre-disconnect outputs are legitimately
+/// queued; the twelve late frames written by the stale server after the
+/// disconnect are refused by the retirement check.
+#[test]
+fn test_tcp_attach_retired_reader_does_not_admit_late_buffered_output() {
+    let listener1 = must(TcpListener::bind(("127.0.0.1", 0)));
+    let port1 = must(listener1.local_addr()).port();
+    let server1 = thread::spawn(move || -> std::io::Result<()> {
+        use std::io::Write;
+        let (mut socket, _) = listener1.accept()?;
+
+        let output_frame = |seq: i64| {
+            frame(
+                serde_json::json!({
+                    "type": "event",
+                    "seq": seq,
+                    "event": "output",
+                    "body": { "category": "console", "output": format!("out {seq}") }
+                })
+                .to_string()
+                .as_bytes(),
+            )
+        };
+
+        // Eight frames exactly fill the capacity-8 fan-in queue.
+        let mut first = Vec::new();
+        for seq in 1..=TEST_ATTACH_EVENT_CAPACITY as i64 {
+            first.extend_from_slice(&output_frame(seq));
+        }
+        socket.write_all(&first)?;
+        socket.flush()?;
+
+        // Hold the connection while the session disconnects, then send a
+        // late burst the retired reader must refuse.
+        thread::sleep(Duration::from_millis(400));
+        let mut late = Vec::new();
+        for seq in
+            (TEST_ATTACH_EVENT_CAPACITY as i64 + 1)..=(TEST_ATTACH_EVENT_CAPACITY as i64 + 12)
+        {
+            late.extend_from_slice(&output_frame(seq));
+        }
+        socket.write_all(&late)?;
+        socket.flush()?;
+        thread::sleep(Duration::from_millis(600));
+        Ok(())
+    });
+
+    let listener2 = must(TcpListener::bind(("127.0.0.1", 0)));
+    let port2 = must(listener2.local_addr()).port();
+    let server2 = thread::spawn(move || {
+        let (_socket, _) = must(listener2.accept());
+        thread::sleep(Duration::from_millis(1400));
+    });
+
+    let mut session = TcpAttachSession::new();
+    let (event_tx, event_rx) = sync_channel::<DapEvent>(TEST_ATTACH_EVENT_CAPACITY);
+    session.set_event_sender(event_tx);
+
+    let mut config1 = TcpAttachConfig::new("127.0.0.1".to_string(), port1).with_timeout(2000);
+    must(session.connect(&mut config1));
+    must(session.start_reader());
+
+    // Let the reader admit the first burst, then disconnect: the reader is
+    // retired while the late burst is still unwritten.
+    thread::sleep(Duration::from_millis(250));
+    must(session.disconnect());
+
+    let mut config2 = TcpAttachConfig::new("127.0.0.1".to_string(), port2).with_timeout(2000);
+    must(session.connect(&mut config2));
+    must(session.start_reader());
+    assert!(session.is_connected());
+
+    // Drain: exactly the eight pre-disconnect outputs may be queued. The
+    // twelve late frames written after the disconnect must never join them,
+    // even as this drain frees queue room.
+    let mut outputs = 0usize;
+    let deadline = std::time::Instant::now() + Duration::from_millis(1200);
+    loop {
+        match event_rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(DapEvent::Output { .. }) => {
+                outputs += 1;
+                if std::time::Instant::now() > deadline {
+                    must(Err::<(), _>("drain exceeded its deadline".to_string()));
+                }
+            }
+            Ok(other) => {
+                must(Err::<(), _>(format!(
+                    "only pre-disconnect outputs may be queued, got {other:?}"
+                )));
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                must(Err::<(), _>("the fan-in queue must stay alive".to_string()));
+            }
+        }
+    }
+    assert_eq!(
+        outputs, TEST_ATTACH_EVENT_CAPACITY,
+        "exactly the pre-disconnect outputs may be admitted; late buffered frames          from the retired reader must be refused"
+    );
+
+    // Give the stale server's late burst time to have been read by the
+    // retired reader, then prove nothing extra was admitted.
+    thread::sleep(Duration::from_millis(500));
+    match event_rx.recv_timeout(Duration::from_millis(200)) {
+        Ok(event) => {
+            must(Err::<(), _>(format!(
+                "a retired reader must not admit late buffered output, got {event:?}"
+            )));
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            must(Err::<(), _>("the fan-in queue must stay alive".to_string()));
+        }
+    }
+    assert!(session.is_connected(), "the replacement connection stays live");
+
+    let _ = session.disconnect();
+
+    must(server1.join().map_err(|_| "Server 1 thread panicked".to_string()));
+    must(server2.join().map_err(|_| "Server 2 thread panicked".to_string()));
+}

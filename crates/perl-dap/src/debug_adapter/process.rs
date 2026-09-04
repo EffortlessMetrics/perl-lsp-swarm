@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::sync_channel;
 
+use super::sync_utils::{GuardedDispatchResult, dispatch_event_generation_guarded};
 use super::tcp_attach_forwarder::{TCP_ATTACH_EVENT_CAPACITY, spawn_tcp_attach_event_forwarder};
 
 mod perl_info;
@@ -2402,6 +2403,33 @@ pub(super) fn emit_terminated_event(
     expected_generation: Option<u64>,
     body: Option<Value>,
 ) -> bool {
+    emit_terminated_event_guarded(
+        sender,
+        seq,
+        termination_state,
+        expected_generation,
+        body,
+        &|| false,
+    )
+}
+
+/// [`emit_terminated_event`] with a staleness hook for the generation-aware
+/// TCP-attach forwarder (#9521).
+///
+/// Reservation and delivery-currentness are unchanged; the final send is
+/// generation-aware across the ENTIRE queue wait: a `terminated` event that
+/// cannot be enqueued immediately re-validates the generation before every
+/// commit attempt, so a replacement session retires a blocked stale terminal
+/// event instead of an unbounded blocking send publishing it into the
+/// replacement's conversation after validation passed.
+pub(super) fn emit_terminated_event_guarded(
+    sender: &SyncSender<DapMessage>,
+    seq: &Mutex<i64>,
+    termination_state: &Mutex<TerminationState>,
+    expected_generation: Option<u64>,
+    body: Option<Value>,
+    stale: &dyn Fn() -> bool,
+) -> bool {
     if !reserve_terminated_event(termination_state, expected_generation) {
         return false;
     }
@@ -2411,7 +2439,10 @@ pub(super) fn emit_terminated_event(
         // terminal event into a newer client conversation (#12092 review).
         return false;
     }
-    emit_event_safe(sender, seq, "terminated", body)
+    !matches!(
+        dispatch_event_generation_guarded(sender, seq, "terminated", body, stale),
+        GuardedDispatchResult::Disconnected
+    )
 }
 
 #[cfg(test)]

@@ -96,6 +96,13 @@ pub(crate) fn admit_event_until(
     accounting: &TcpOutputDropAccounting,
     retired: &dyn Fn() -> bool,
 ) -> EventAdmission {
+    // Retirement governs both families before any admission: a retired
+    // producer must not enqueue buffered frames into a queue a replacement
+    // connection reuses, not even loss-eligible ones — the drop-on-full
+    // policy governs pressure, not staleness (#9521 review).
+    if retired() {
+        return EventAdmission::Retired;
+    }
     if matches!(event, DapEvent::Output { .. }) {
         match sender.try_send(event) {
             Ok(()) => EventAdmission::Accepted,
@@ -209,10 +216,7 @@ fn run_reader(
     loop {
         let bytes_read = match reader.read(&mut read_buf) {
             Ok(0) => {
-                if retired() {
-                    return;
-                }
-                mark_disconnected(&connected);
+                mark_disconnected_if_current(&connected, &reader_epoch, reader_id);
                 send_event(
                     &event_sender,
                     &accounting,
@@ -224,10 +228,7 @@ fn run_reader(
             }
             Ok(n) => n,
             Err(error) => {
-                if retired() {
-                    return;
-                }
-                mark_disconnected(&connected);
+                mark_disconnected_if_current(&connected, &reader_epoch, reader_id);
                 send_event(
                     &event_sender,
                     &accounting,
@@ -243,10 +244,9 @@ fn run_reader(
         if !drain_frames(&mut framer, &event_sender, &accounting, &retired) {
             // Forwarding side gone, or the session retired this reader: stop
             // reading. Session teardown observes the disconnect through
-            // `connected`/channel loss (#9521).
-            if !retired() {
-                mark_disconnected(&connected);
-            }
+            // `connected`/channel loss (#9521). The synchronized mark keeps a
+            // retired reader from clearing a replacement connection's state.
+            mark_disconnected_if_current(&connected, &reader_epoch, reader_id);
             return;
         }
     }
@@ -329,8 +329,20 @@ fn send_event(
     }
 }
 
-fn mark_disconnected(connected: &Arc<Mutex<bool>>) {
-    *connected.lock().unwrap_or_else(|error| error.into_inner()) = false;
+/// Epoch validation and the connected-state update as one synchronized
+/// operation: the check happens under the connection lock immediately before
+/// the write, so a disconnect+reconnect that completes after a retired
+/// reader's epoch check can no longer be clobbered by that reader's late
+/// `connected = false` (#9521 review).
+fn mark_disconnected_if_current(
+    connected: &Arc<Mutex<bool>>,
+    reader_epoch: &Arc<AtomicU64>,
+    reader_id: u64,
+) {
+    let mut guard = connected.lock().unwrap_or_else(|error| error.into_inner());
+    if reader_epoch.load(Ordering::SeqCst) == reader_id {
+        *guard = false;
+    }
 }
 
 #[cfg(test)]
@@ -539,5 +551,28 @@ mod tests {
         }
         assert!(rx.try_recv().is_err(), "a retired producer must not deliver its stale event");
         Ok(())
+    }
+
+    /// Epoch validation and the connected-state write are one synchronized
+    /// operation: a stale reader id cannot clear the flag; a current one can
+    /// (#9521 review).
+    #[test]
+    fn mark_disconnected_is_epoch_conditional() {
+        let connected = Arc::new(Mutex::new(true));
+        let epoch = Arc::new(AtomicU64::new(1));
+
+        mark_disconnected_if_current(&connected, &epoch, 0);
+        assert_eq!(
+            *connected.lock().unwrap_or_else(|error| error.into_inner()),
+            true,
+            "a stale reader id must not clear the connection state"
+        );
+
+        mark_disconnected_if_current(&connected, &epoch, 1);
+        assert_eq!(
+            *connected.lock().unwrap_or_else(|error| error.into_inner()),
+            false,
+            "the current reader id marks the connection disconnected"
+        );
     }
 }

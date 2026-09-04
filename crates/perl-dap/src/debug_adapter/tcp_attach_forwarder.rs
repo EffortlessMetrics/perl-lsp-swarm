@@ -24,7 +24,7 @@
 //!   operations) and exits when the reader side disappears or the session
 //!   generation is replaced.
 
-use super::process::emit_terminated_event;
+use super::process::emit_terminated_event_guarded;
 use super::sync_utils::{
     GuardedDispatchResult, dispatch_event_generation_guarded, lock_or_recover,
 };
@@ -67,15 +67,33 @@ pub(super) fn spawn_tcp_attach_event_forwarder(
             {
                 break;
             }
+            // Staleness hook shared by every publication branch: a
+            // replacement attach, termination, or disconnect advances the
+            // generation, and any event still waiting for outbound queue room
+            // must retire instead of committing into the replacement's
+            // stream (#9521 review).
+            let stale = || {
+                lock_or_recover(&termination_state, "debug_adapter.termination_state").generation
+                    != session_generation
+            };
             match event {
                 DapEvent::Terminated { reason } => {
                     if let Some(ref sender) = event_sender {
-                        emit_terminated_event(
+                        // Terminal publication is generation-aware across the
+                        // ENTIRE queue wait: the once-per-generation
+                        // reservation is unchanged, and the final send
+                        // re-validates the generation before every commit
+                        // attempt, so a replacement session retires a blocked
+                        // stale terminated event instead of an unbounded
+                        // blocking send publishing it after validation
+                        // passed (#9521 review).
+                        emit_terminated_event_guarded(
                             sender,
                             &seq_counter,
                             &termination_state,
                             Some(session_generation),
                             Some(json!({"reason": reason})),
+                            &stale,
                         );
                     }
                 }
@@ -99,11 +117,6 @@ pub(super) fn spawn_tcp_attach_event_forwarder(
                         // re-validates the generation before every commit
                         // attempt, so the replacement retires the stale event
                         // instead (#9521 review).
-                        let stale = || {
-                            lock_or_recover(&termination_state, "debug_adapter.termination_state")
-                                .generation
-                                != session_generation
-                        };
                         if dispatch_event_generation_guarded(
                             sender,
                             &seq_counter,
@@ -323,6 +336,54 @@ mod tests {
         assert!(
             out_rx.try_recv().is_err(),
             "a stale-generation event blocked on a full queue must never publish"
+        );
+        Ok(())
+    }
+
+    /// Race falsifier (#9521 review): a TERMINATED event blocked on a FULL
+    /// outbound queue must not publish into a replacement session. The
+    /// once-per-generation reservation is unchanged; the final send
+    /// re-validates the generation before every commit attempt.
+    #[test]
+    fn blocked_terminated_event_is_retired_when_generation_advances() -> Result<(), String> {
+        let (tx, rx) = sync_channel::<DapEvent>(8);
+        let (out_tx, out_rx) = sync_channel::<DapMessage>(1);
+        let state = termination_state_at_generation_one();
+
+        let handle = spawn_tcp_attach_event_forwarder(
+            rx,
+            Some(out_tx),
+            Arc::new(Mutex::new(0)),
+            Arc::clone(&state),
+            1,
+        );
+
+        // Fill the outbound queue with a live-generation stopped event (the
+        // forwarder commits it), then send terminated, which parks in the
+        // guarded terminal send. The park window makes the staging
+        // deterministic: the first event is provably committed, the terminal
+        // is provably still waiting, and only then does the generation move.
+        tx.send(DapEvent::Stopped { reason: "live".into(), thread_id: 1 })
+            .map_err(|e| format!("send stopped: {e}"))?;
+        tx.send(DapEvent::Terminated { reason: "stale-terminal".into() })
+            .map_err(|e| format!("send terminated: {e}"))?;
+        thread::sleep(Duration::from_millis(100));
+        lock_or_recover(&state, "test.termination_state").generation = 2;
+
+        // Retire the producer side so the forwarder's recv loop can end once
+        // the stale terminal has been discarded.
+        drop(tx);
+        handle.join().map_err(|_| "forwarder panicked".to_string())?;
+        let published = out_rx
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|e| format!("the live-generation event must publish: {e}"))?;
+        match published {
+            DapMessage::Event { event, .. } if event == "stopped" => {}
+            other => return Err(format!("expected the live stopped event, got {other:?}")),
+        }
+        assert!(
+            out_rx.try_recv().is_err(),
+            "a stale terminated event blocked on a full queue must never publish"
         );
         Ok(())
     }
