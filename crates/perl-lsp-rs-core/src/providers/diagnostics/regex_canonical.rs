@@ -179,41 +179,45 @@ fn project_incompleteness(
 /// [`modifier_code`] — but the match stays total so a new canonical code has to be
 /// classified deliberately rather than defaulting into a wrong class.
 fn structural_code(code: RegexDiagnosticCode) -> Option<DiagnosticCode> {
-    Some(match code {
+    match code {
         // Executable pattern code keeps its established security identity.
         RegexDiagnosticCode::EmbeddedCodeImmediate | RegexDiagnosticCode::EmbeddedCodeDeferred => {
-            DiagnosticCode::SecurityEmbeddedRegexCode
+            Some(DiagnosticCode::SecurityEmbeddedRegexCode)
         }
-        RegexDiagnosticCode::NestedQuantifierRisk => DiagnosticCode::RegexBacktrackingRisk,
+        RegexDiagnosticCode::NestedQuantifierRisk => Some(DiagnosticCode::RegexBacktrackingRisk),
         RegexDiagnosticCode::UnicodePropertyLimit
         | RegexDiagnosticCode::LookbehindNestingLimit
         | RegexDiagnosticCode::BranchResetNestingLimit
-        | RegexDiagnosticCode::BranchResetBranchLimit => DiagnosticCode::RegexAnalysisLimit,
+        | RegexDiagnosticCode::BranchResetBranchLimit => Some(DiagnosticCode::RegexAnalysisLimit),
         RegexDiagnosticCode::UnknownModifier
         | RegexDiagnosticCode::ModifierNotAllowedForOperator
         | RegexDiagnosticCode::ConflictingCharacterSetModifiers
         | RegexDiagnosticCode::RepeatedCharacterSetModifier
         | RegexDiagnosticCode::ModifierHasNoEffect
         | RegexDiagnosticCode::ModifierRequiresPerlVersion
-        | RegexDiagnosticCode::ModifierRequiresFeature => return modifier_code(code),
-        _ => return None,
-    })
+        | RegexDiagnosticCode::ModifierRequiresFeature => modifier_code(code),
+        _ => None,
+    }
 }
 
 /// Map a canonical modifier finding onto its stable client-facing identity.
 fn modifier_code(code: RegexDiagnosticCode) -> Option<DiagnosticCode> {
-    Some(match code {
+    match code {
         RegexDiagnosticCode::UnknownModifier
         | RegexDiagnosticCode::ModifierNotAllowedForOperator
         | RegexDiagnosticCode::ConflictingCharacterSetModifiers
-        | RegexDiagnosticCode::RepeatedCharacterSetModifier => DiagnosticCode::RegexModifierInvalid,
-        RegexDiagnosticCode::ModifierHasNoEffect => DiagnosticCode::RegexModifierNoEffect,
+        | RegexDiagnosticCode::RepeatedCharacterSetModifier => {
+            Some(DiagnosticCode::RegexModifierInvalid)
+        }
+        RegexDiagnosticCode::ModifierHasNoEffect => Some(DiagnosticCode::RegexModifierNoEffect),
         RegexDiagnosticCode::ModifierRequiresPerlVersion
-        | RegexDiagnosticCode::ModifierRequiresFeature => DiagnosticCode::RegexModifierUnavailable,
+        | RegexDiagnosticCode::ModifierRequiresFeature => {
+            Some(DiagnosticCode::RegexModifierUnavailable)
+        }
         // A structural finding carried on the modifier analysis would be a model
         // change, not a modifier problem; classify it deliberately when that happens.
-        _ => return None,
-    })
+        _ => None,
+    }
 }
 
 /// Build one provider diagnostic, taking severity from the catalog.

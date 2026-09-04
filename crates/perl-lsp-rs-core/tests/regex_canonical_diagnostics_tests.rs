@@ -72,7 +72,7 @@ fn compatibility_diagnostics(source: &str) -> Vec<Diagnostic> {
 }
 
 fn with_code<'a>(diagnostics: &'a [Diagnostic], code: &str) -> Vec<&'a Diagnostic> {
-    diagnostics.iter().filter(|diagnostic| diagnostic.code.as_deref() == Some(code)).collect()
+    diagnostics.iter().filter(|&diagnostic| diagnostic.code.as_deref() == Some(code)).collect()
 }
 
 /// Every identity the canonical projection can publish.
@@ -246,40 +246,78 @@ fn the_compatibility_path_is_unchanged_without_a_table() {
     }
 }
 
-/// A deliberate, user-visible consequence of moving regex findings off the parser
-/// error channel.
+/// The user-visible identity change: a backtracking risk stops being reported under
+/// the generic parse-error code and gets its own.
 ///
-/// The provider suppresses lint and scope analysis whenever a *blocking* parse error
-/// is present, because a salvaged AST produces cascading false positives (#5089).
-/// The legacy scan reported an unknown regex modifier as a blocking `SyntaxError`, so
-/// one stray modifier character silenced every lint in the file. A modifier typo does
-/// not damage the AST, so that suppression was collateral, not caution.
+/// The legacy route turned the parser's advisory into a diagnostic by matching its
+/// message text; no pattern matched, so it fell back to `PL001` — the same code a
+/// syntax error gets. The finding was real and correctly placed, but its identity
+/// carried no information, so it could not be filtered, documented, or suppressed
+/// as a distinct class.
 ///
-/// Under canonical analysis the same defect is published as `PL1002` with the exact
-/// offending character, and the rest of the file's diagnostics survive. This test
-/// pins both halves so the change is a recorded decision, not a side effect.
+/// Both routes name the same bytes. Only the identity improves.
 #[test]
-fn a_bad_modifier_no_longer_silences_every_other_diagnostic() {
+fn a_backtracking_risk_moves_off_the_generic_parse_error_code() {
+    let source = "my $re = qr/(a+)+b/;\nmy $y = $re;\n";
+
+    let legacy = compatibility_diagnostics(source);
+    let legacy_generic = with_code(&legacy, "PL001");
+    assert_eq!(
+        legacy_generic.len(),
+        1,
+        "legacy behavior being pinned: the advisory arrives as generic PL001: {legacy:#?}"
+    );
+    assert!(
+        with_code(&legacy, "PL1000").is_empty(),
+        "and carries no canonical identity without a retained table"
+    );
+
+    let canonical = canonical_diagnostics(source);
+    let canonical_risk = with_code(&canonical, "PL1000");
+    assert_eq!(canonical_risk.len(), 1, "canonically it is PL1000: {canonical:#?}");
+    assert!(
+        with_code(&canonical, "PL001").is_empty(),
+        "and is not also published under the generic code"
+    );
+    assert_eq!(
+        canonical_risk[0].range, legacy_generic[0].range,
+        "the finding names the same bytes either way; only its identity changed"
+    );
+}
+
+/// An unknown regex modifier reached the client as nothing at all: the legacy
+/// per-operator scan does not inspect modifiers, so `m/foo/zz` published no
+/// diagnostic. Canonical analysis reports each offending character.
+///
+/// This direction is purely additive — no previously published finding is replaced —
+/// and the negative half is what proves it.
+#[test]
+fn an_unknown_modifier_is_reported_where_nothing_was_reported_before() {
     let source = "my $x = 1;\nif ($s =~ m/foo/zz) { }\n";
 
     let legacy = compatibility_diagnostics(source);
+    for code in CANONICAL_REGEX_CODES {
+        assert!(
+            with_code(&legacy, code).is_empty(),
+            "legacy behavior being pinned: no regex diagnostic at all, found {code}: {legacy:#?}"
+        );
+    }
     assert!(
-        with_code(&legacy, "PL100").is_empty(),
-        "legacy behavior being pinned: a blocking regex SyntaxError suppressed the \
-         missing-`use strict` lint entirely: {legacy:#?}"
+        with_code(&legacy, "PL001").is_empty(),
+        "and no generic parse-error diagnostic either: {legacy:#?}"
     );
 
     let canonical = canonical_diagnostics(source);
     assert_eq!(
         with_code(&canonical, "PL1002").len(),
         2,
-        "the modifier defect is still reported, per character: {canonical:#?}"
+        "each unknown modifier character is reported: {canonical:#?}"
     );
-    assert_eq!(
-        with_code(&canonical, "PL100").len(),
-        1,
-        "and the unrelated lint the parse error used to hide is now published"
-    );
+
+    // Unrelated diagnostics are untouched in both directions — this change adds a
+    // finding, it does not gate or suppress anything else.
+    assert_eq!(with_code(&legacy, "PL100").len(), with_code(&canonical, "PL100").len());
+    assert_eq!(with_code(&legacy, "PL102").len(), with_code(&canonical, "PL102").len());
 }
 
 /// A clean pattern publishes nothing. Without this, every assertion above could be
@@ -290,7 +328,7 @@ fn a_clean_pattern_publishes_no_regex_diagnostic() {
     let regex_codes: Vec<_> = diagnostics
         .iter()
         .filter_map(|diagnostic| diagnostic.code.as_deref())
-        .filter(|code| is_canonical_regex_code(code))
+        .filter(|&code| is_canonical_regex_code(code))
         .collect();
     assert!(regex_codes.is_empty(), "clean pattern must stay silent, got {regex_codes:?}");
 }
@@ -303,7 +341,7 @@ fn transliteration_publishes_no_pattern_finding() {
     let regex_codes: Vec<_> = diagnostics
         .iter()
         .filter_map(|diagnostic| diagnostic.code.as_deref())
-        .filter(|code| is_canonical_regex_code(code))
+        .filter(|&code| is_canonical_regex_code(code))
         .collect();
     assert!(regex_codes.is_empty(), "transliteration must publish nothing, got {regex_codes:?}");
 }
@@ -315,7 +353,7 @@ fn canonical_findings_are_emitted_in_source_order() {
     let diagnostics = canonical_diagnostics(MIXED);
     let canonical: Vec<_> = diagnostics
         .iter()
-        .filter(|diagnostic| diagnostic.code.as_deref().is_some_and(is_canonical_regex_code))
+        .filter(|&diagnostic| diagnostic.code.as_deref().is_some_and(is_canonical_regex_code))
         .map(|diagnostic| diagnostic.range.0)
         .collect();
 
