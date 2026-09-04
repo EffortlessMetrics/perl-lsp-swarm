@@ -588,8 +588,12 @@ do
   batches = drain(server, "textDocument/didChange")
   ok(batch_version(batches[1]) == 3,
     "case4: redo keeps increasing despite change-id revisiting prior values")
-  ok(batch_version(batches[1]) ~= doc:get_change_id(),
-    "case4: the protocol version is not the editor change id")
+  -- Deliberately NOT asserted here: `version ~= doc:get_change_id()`. Two
+  -- independent counters may legitimately coincide, so that oracle would
+  -- fail a correct implementation on an accident of fixture arithmetic. The
+  -- discrimination this case needs comes from the two controls above (the
+  -- change id verifiably moved backward, then revisited a used value) while
+  -- the version stream did neither.
   local session = get_session(lsp, doc, server)
   ok(session ~= nil and session.server_generation ~= nil,
     "case4: session exposes explicit server generation identity")
@@ -814,8 +818,11 @@ do
   local opened = drain(server, "textDocument/didOpen")
   ok(opened[1].params.textDocument.version == 0,
     "api: didOpen ignores a nonzero editor clean_change_id as version source")
-  ok(opened[1].params.textDocument.version ~= doc:get_change_id(),
-    "api: didOpen ignores get_change_id()/undo_stack.idx as version source")
+  -- Instrument control rather than a second `version ~= change_id` oracle:
+  -- pin that the fixture really did seed both editor identities away from
+  -- the session origin, which is what makes the assertion above meaningful.
+  ok(doc:get_change_id() == 17 and doc.clean_change_id == 42,
+    "api: both editor identities were seeded away from the session origin")
   local session = get_session(lsp, doc, server)
   ok(session ~= nil and type(session.version) == "number" and session.version == 0,
     "api: session owns the version field explicitly")
