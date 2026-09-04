@@ -136,14 +136,39 @@ fn interpolation_switch_has_an_exact_legacy_segmentation_contract() -> R {
 }
 
 #[test]
-fn interpolation_switch_does_not_claim_opaque_quote_like_bodies() {
+fn interpolation_switch_governs_qq_bodies_without_changing_their_identity() {
+    // #8779 corrected contract: the setting used to skip quote-like bodies
+    // (the switch's claim was misleading). Enabled segmentation and disabled
+    // opacity now differ in PARTS while the token kind, text, and geometry
+    // stay identical.
     let input = "qq{hello $name}";
     let enabled = signatures(input, LexerConfig::default());
     let disabled =
         signatures(input, LexerConfig { parse_interpolation: false, ..LexerConfig::default() });
 
-    assert_eq!(enabled, disabled);
-    assert!(matches!(enabled.first().map(|token| &token.0), Some(TokenType::QuoteDouble)));
+    assert!(
+        matches!(enabled.first().map(|token| &token.0), Some(TokenType::QuoteDouble(parts))
+        if parts == &vec![
+            StringPart::Literal(Arc::from("hello ")),
+            StringPart::Variable(Arc::from("$name")),
+        ]),
+        "enabled qq must segment its islands: {enabled:?}"
+    );
+    assert!(
+        matches!(disabled.first().map(|token| &token.0), Some(TokenType::QuoteDouble(parts))
+            if parts == &vec![StringPart::Literal(Arc::from("hello $name"))]),
+        "disabled qq must keep one opaque literal part: {disabled:?}"
+    );
+    // Token identity is stable across the setting: same kind, text, geometry.
+    let strip = |tokens: &[(TokenType, Arc<str>, usize, usize)]| {
+        tokens
+            .iter()
+            .map(|(kind, text, start, end)| {
+                (std::mem::discriminant(kind), text.clone(), *start, *end)
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(strip(&enabled), strip(&disabled), "identity must not move");
 }
 
 #[test]
