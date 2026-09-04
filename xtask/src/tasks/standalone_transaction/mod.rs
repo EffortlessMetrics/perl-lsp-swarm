@@ -591,7 +591,7 @@ fn domain_digest(domain: &[u8], bytes: &[u8]) -> String {
 /// user/system paths, home/env interpolations, environment dumps, and
 /// credential shapes are forbidden in any durable projection.
 pub fn redaction_finding(text: &str) -> Option<&'static str> {
-    const PATTERNS: [(&str, &str); 12] = [
+    const PATTERNS: [(&str, &str); 18] = [
         ("/usr/", "unix system path"),
         ("/home/", "unix home path"),
         ("/root/", "unix root path"),
@@ -604,6 +604,12 @@ pub fn redaction_finding(text: &str) -> Option<&'static str> {
         ("bearer ", "bearer credential"),
         ("begin private key", "private key material"),
         ("token=", "inline token"),
+        ("password", "password credential"),
+        ("passwd", "password credential"),
+        ("api_key", "api key credential"),
+        ("api-key", "api key credential"),
+        ("apikey", "api key credential"),
+        ("authorization:", "authorization header"),
     ];
     let lowered = text.to_ascii_lowercase();
     PATTERNS.iter().find(|(needle, _)| lowered.contains(needle)).map(|(_, kind)| *kind)

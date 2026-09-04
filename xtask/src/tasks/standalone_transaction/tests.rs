@@ -1765,6 +1765,9 @@ fn private_state_never_enters_durable_output() {
         "Bearer abc123",
         "-----BEGIN PRIVATE KEY-----",
         "token=supersecret",
+        "password=hunter2",
+        "api_key=AKIAEXAMPLE",
+        "Authorization: Basic dXNlcjpwYXNz",
         "/tmp/perllsp-stage",
     ] {
         assert!(redaction_finding(leaking).is_some(), "privacy scan missed {leaking:?}");
