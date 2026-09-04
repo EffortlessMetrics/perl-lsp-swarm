@@ -117,13 +117,24 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             sample_category: Some(ErrorCategory::Infra),
             sample_disposition: Some(disposition_for(ErrorCategory::Infra)),
         },
+        // `JsonRpcError` implements `ErrorClass` in `protocol/jsonrpc.rs`, mapping
+        // JSON-RPC codes to categories. The row previously read `false` with a
+        // "needs type refinement (#4978)" note; #4978 has since closed and the
+        // impl is present, so the row was stale. Its category varies by code —
+        // `Protocol` for parse/invalid-request, `UserError` for
+        // method-not-found/invalid-params, `Bug` for internal and unknown codes,
+        // `Transient` for cancellation/content-modified, `Infra` for
+        // server-not-initialized — so the sample below is representative only,
+        // matching the first arm. #4978 notes that `RequestFailed` ideally
+        // carries its originating category rather than inferring one from the
+        // code; that refinement is not this row's to make.
         ErrorInventoryEntry {
             type_name: "JsonRpcError",
             crate_name: "perl-lsp-rs-core",
-            has_error_class: false, // Needs type refinement (#4978)
-            classification_route: ClassificationRoute::Unclassified,
-            sample_category: None,
-            sample_disposition: None,
+            has_error_class: true,
+            classification_route: ClassificationRoute::TraitImpl,
+            sample_category: Some(ErrorCategory::Protocol),
+            sample_disposition: Some(disposition_for(ErrorCategory::Protocol)),
         },
         // ── perl-dap (DAP boundary) ──
         ErrorInventoryEntry {
@@ -272,13 +283,57 @@ mod tests {
     }
 
     #[test]
-    fn unclassified_types_are_jsonrpc_and_origin_ambiguous_parse_errors() {
+    fn unclassified_types_are_only_the_origin_ambiguous_parse_errors() {
         let unclassified = unclassified_types();
         assert_eq!(
             unclassified,
-            vec!["JsonRpcError", "StackParseError", "VariableParseError"],
-            "JsonRpcError needs type refinement (#4978); stack/variable parse enums stay unclassified without origin"
+            vec!["StackParseError", "VariableParseError"],
+            "stack/variable parse enums stay unclassified without origin; JsonRpcError is classified in protocol::jsonrpc"
         );
+    }
+
+    #[test]
+    fn jsonrpc_error_is_inventoried_as_classified_because_it_implements_the_trait() {
+        // Regression guard for a row that had drifted: the inventory recorded
+        // `has_error_class: false` for `JsonRpcError` long after
+        // `impl ErrorClass for JsonRpcError` landed in `protocol/jsonrpc.rs`,
+        // which made both the gap list and the classified/unclassified counts
+        // wrong. Bind the row to the trait rather than to a hand-maintained bool.
+        const _: () = assert!(
+            ErrorClassProbe::<crate::protocol::JsonRpcError>::IMPLEMENTS_ERROR_CLASS,
+            "JsonRpcError implements ErrorClass; the inventory row must say so"
+        );
+
+        let inv = error_type_inventory();
+        let rows: Vec<_> = inv.iter().filter(|e| e.type_name == "JsonRpcError").collect();
+        assert_eq!(rows.len(), 1, "JsonRpcError must remain inventoried exactly once");
+
+        for row in rows {
+            assert!(row.has_error_class, "JsonRpcError implements ErrorClass");
+            assert_eq!(row.classification_route, ClassificationRoute::TraitImpl);
+            assert!(
+                row.sample_category.is_some(),
+                "a classified row must record a representative category"
+            );
+        }
+        assert!(!unclassified_types().contains(&"JsonRpcError"));
+    }
+
+    /// Compile-time "does `T` implement `ErrorClass`?" probe.
+    ///
+    /// Inherent associated items win over trait ones, but only where the
+    /// inherent impl applies — so the bound below selects `true` exactly when
+    /// `T: ErrorClass`, and the blanket trait impl answers otherwise.
+    struct ErrorClassProbe<T>(core::marker::PhantomData<T>);
+
+    trait ErrorClassProbeFallback {
+        const IMPLEMENTS_ERROR_CLASS: bool = false;
+    }
+
+    impl<T> ErrorClassProbeFallback for ErrorClassProbe<T> {}
+
+    impl<T: perl_parser_core::ErrorClass> ErrorClassProbe<T> {
+        const IMPLEMENTS_ERROR_CLASS: bool = true;
     }
 
     #[test]
