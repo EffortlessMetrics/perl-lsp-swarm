@@ -796,6 +796,22 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         self.assertNotIn("comment-path-test-gate", gates)
         self.assertIn("old-path-test-gate", gates)
 
+    def test_feature_gate_inventory_accepts_nested_attribute_and_path_comment(self) -> None:
+        self.write(
+            "crates/perl-parser/src/lib.rs",
+            '#[path = /* path comment */ "support/fixtures.rs"]\n'
+            '#[cfg_attr(feature = "nested", any())]\n'
+            '#[cfg(test)]\nmod test_support;\n',
+        )
+        self.write(
+            "crates/perl-parser/src/support/fixtures.rs",
+            '#[cfg(feature = "nested-attribute-test-gate")]\nfn gated() {}\n',
+        )
+        gates = feature_source_gates(
+            self.root / "crates/perl-parser", ("src",), skip_test_modules=True
+        )
+        self.assertNotIn("nested-attribute-test-gate", gates)
+
     def test_review_row_target_owner_must_be_actionable(self) -> None:
         row = next(r for r in self.ledger["features"] if r["disposition"] == "review")
         row["target_owner"] = "the parser team"

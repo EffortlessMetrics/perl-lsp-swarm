@@ -430,11 +430,34 @@ def cfg_test_module_paths(path: Path, source: str) -> set[Path]:
         path_match: list[str] = []
         for candidate in reversed(path_candidates):
             between = masked[candidate.end() : match.start()]
-            if not re.fullmatch(r"(?:\s|#\[.*?\])*", between, flags=re.DOTALL):
+            cursor = 0
+            valid = True
+            while cursor < len(between):
+                if between[cursor].isspace():
+                    cursor += 1
+                    continue
+                if between.startswith("#[", cursor):
+                    depth = 0
+                    while cursor < len(between):
+                        if between[cursor] == "[":
+                            depth += 1
+                        elif between[cursor] == "]":
+                            depth -= 1
+                            if depth == 0:
+                                cursor += 1
+                                break
+                        cursor += 1
+                    if depth != 0:
+                        valid = False
+                        break
+                    continue
+                valid = False
+                break
+            if not valid:
                 continue
             raw_attribute = source[candidate.start() : candidate.end()]
             values = re.findall(
-                r"#\[\s*path\s*=\s*\"([^\"]+)\"\s*\]",
+                r"#\[\s*path\s*=\s*(?:(?://[^\n]*|/\*.*?\*/)\s*)*\"([^\"]+)\"\s*\]",
                 raw_attribute,
                 flags=re.DOTALL,
             )
