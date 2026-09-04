@@ -59,8 +59,9 @@ export class LanguageClientLifecycleError extends Error {
   constructor(
     message: string,
     readonly reason: 'server-path-unresolved' | 'cleanup-incomplete' | 'lifecycle',
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
     this.name = 'LanguageClientLifecycleError';
   }
 }
@@ -270,10 +271,19 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
         return undefined;
       }
 
-      this.error = error;
+      // When tearing down the failed startup also left client cleanup
+      // incomplete, the lifecycle is replacement-blocked: surface that block
+      // instead of the startup error, so callers present reload remediation
+      // rather than retry guidance for a lifecycle that can never admit a
+      // replacement. The startup error stays attached as diagnostic `cause`.
+      const surfaced =
+        this.replacementBlockedError !== undefined
+          ? this.replacementBlockedFailure(error)
+          : error;
+      this.error = surfaced;
       this.transition('failed', startGeneration);
       this.notifyCallback('failed', this.hooks.onFailed, this.snapshot);
-      throw error;
+      throw surfaced;
     }
   }
 
@@ -414,7 +424,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
       );
   }
 
-  private replacementBlockedFailure(): LanguageClientLifecycleError {
+  private replacementBlockedFailure(cause?: unknown): LanguageClientLifecycleError {
     const detail =
       this.replacementBlockedError instanceof Error && this.replacementBlockedError.message
         ? `: ${this.replacementBlockedError.message}`
@@ -422,6 +432,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
     return new LanguageClientLifecycleError(
       `Language client cleanup is incomplete; replacement startup is blocked${detail}`,
       'cleanup-incomplete',
+      cause === undefined ? undefined : { cause },
     );
   }
 

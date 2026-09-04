@@ -142,4 +142,39 @@ describe('LanguageClientLifecycle client cleanup admission', () => {
       expect(controller.snapshot.state).toBe('failed');
     },
   );
+
+  test('a startup failure whose teardown also fails surfaces the cleanup block, not the startup error', async () => {
+    const startupError = new Error('simulated startup failure');
+    const cleanupError = new Error('simulated cleanup failure');
+    const client = new FakeClient();
+    client.start.mockRejectedValue(startupError);
+    client.stop.mockRejectedValue(cleanupError);
+    const clients: FakeClient[] = [];
+    const controller = new LanguageClientLifecycle<FakeClient>({
+      resolveServerPath: async () => '/server/perllsp',
+      createClient: () => {
+        clients.push(client);
+        return client;
+      },
+    });
+
+    const rejection = await controller.start().then(
+      () => {
+        throw new Error('start unexpectedly succeeded');
+      },
+      (error: unknown) => error,
+    );
+
+    // The lifecycle is replacement-blocked, so the surfaced rejection is the
+    // cleanup block; the startup error remains as diagnostic cause.
+    expect(rejection).toBeInstanceOf(LanguageClientLifecycleError);
+    expect((rejection as LanguageClientLifecycleError).reason).toBe('cleanup-incomplete');
+    expect((rejection as Error).cause).toBe(startupError);
+    expect(controller.snapshot.state).toBe('failed');
+
+    // The block is sticky: no later start or restart may construct a client.
+    await expect(controller.start()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+    await expect(controller.restart()).rejects.toMatchObject({ reason: 'cleanup-incomplete' });
+    expect(clients).toHaveLength(1);
+  });
 });
