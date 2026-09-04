@@ -4,8 +4,8 @@
 //! permission shape, cache inputs/order, non-vacuous command text, and rejection
 //! of the modeled selected-test mutation channels: direct assignment, element or
 //! array rewrites, unset/read/mapfile/declaration forms, `printf -v`, eval,
-//! nameref or variable-name indirection, and shell-function shadowing of the
-//! proof commands. It remains a literal static oracle, not
+//! nameref or variable-name indirection, and shell-function or alias shadowing
+//! of the proof commands. It remains a literal static oracle, not
 //! a shell parser: it does not prove runtime cache restore/save provenance,
 //! discovery of arbitrary unseen shell or local cache writers, obfuscated name
 //! construction beyond the named indirection forms, or trusted runner
@@ -408,21 +408,25 @@ fn validate_workflow(source: &str) -> Result<()> {
             && !topology_raw.contains("if [[ false"),
         "topology proof must not bypass execution with continue or false guards"
     );
-    // A shadowing shell function keeps every anchor intact while faking the
-    // executed-test summaries, so reject declarations of the proof commands.
+    // A shadowing shell function or alias keeps every anchor intact while faking
+    // the executed-test summaries, so reject declarations of the proof commands.
     // The `name()` check compares a whitespace-stripped form so spacing like
     // `cargo ( )` cannot hide the parentheses; `function name` keeps its
-    // normalized form.
+    // normalized form. Bash aliases only expand in a non-interactive script when
+    // `shopt -s expand_aliases` is set, so reject the enabling shopt anywhere in
+    // the step and any `alias name=` definition of a protected command.
     ensure!(
         !topology_raw.lines().map(str::trim).any(|line| {
             let flat = normalized(&line.to_ascii_lowercase());
             let squeezed: String = flat.chars().filter(|c| !c.is_whitespace()).collect();
-            ["cargo", "grep", "sed", "tee", "mktemp"].iter().any(|name| {
-                squeezed.starts_with(&format!("{name}()"))
-                    || flat.starts_with(&format!("function {name}"))
-            })
+            flat.contains("expand_aliases")
+                || ["cargo", "grep", "sed", "tee", "mktemp"].iter().any(|name| {
+                    squeezed.starts_with(&format!("{name}()"))
+                        || flat.starts_with(&format!("function {name}"))
+                        || squeezed.contains(&format!("alias{name}="))
+                })
         }),
-        "topology proof must not shadow its production commands with shell functions"
+        "topology proof must not shadow its production commands with shell functions or aliases"
     );
     for command in [
         "set -euo pipefail",
@@ -721,6 +725,9 @@ fn static_contract_rejects_structural_proof_and_trigger_mutations() -> Result<()
         "cargo() { printf 'running 1 test\\n'; }",
         "cargo ( ) { printf 'running 1 test\\n'; }",
         "function grep { true; }",
+        "shopt -s expand_aliases\n          alias cargo='printf \"running 1 test\\n\"'",
+        "alias sed='true'",
+        "shopt -s expand_aliases",
     ] {
         let to = SELECTED_DECLARATION_END.replacen(
             ")\n\n",
