@@ -46,14 +46,16 @@ fn collect_lexer_literal_regions(source: &str) -> Vec<SourceRegion> {
             // `SourceRegionKind::RecoveryAmbiguous`.
             TokenType::Error(_) | TokenType::UnknownRest => SourceRegionKind::RecoveryAmbiguous,
             TokenType::QuoteSingle
-            | TokenType::QuoteDouble
+            | TokenType::QuoteDouble(_)
             | TokenType::QuoteWords
             | TokenType::QuoteCommand => SourceRegionKind::QuoteLike,
             TokenType::RegexMatch
             | TokenType::Substitution
             | TokenType::Transliteration
             | TokenType::QuoteRegex => SourceRegionKind::RegexLike,
-            TokenType::HeredocStart | TokenType::HeredocBody(_) => SourceRegionKind::Heredoc,
+            TokenType::HeredocStart
+            | TokenType::HeredocBody(_)
+            | TokenType::InterpolatedHeredocBody(_) => SourceRegionKind::Heredoc,
             TokenType::Pod => SourceRegionKind::Pod,
             TokenType::DataMarker(_) | TokenType::DataBody(_) => SourceRegionKind::DataSection,
             TokenType::Comment(_) => SourceRegionKind::LineComment,
