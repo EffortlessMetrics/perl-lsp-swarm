@@ -85,7 +85,12 @@ impl DebugAdapter {
         // instead of moving the next statement).  The catalog row is
         // `not_proven`/unadvertised (#9064), so this flag stays `false` until a
         // backend proves a real next-statement relocation primitive.
-        let supports_goto_targets = catalog_has_feature("dap.goto_targets");
+        // Advertising requires the complete contract: targets that can never
+        // be executed (`dap.goto` unadvertised) must not be published, so a
+        // one-row promotion of `dap.goto_targets` alone cannot expose
+        // selectable-but-dead targets.
+        let supports_goto_targets =
+            catalog_has_feature("dap.goto_targets") && catalog_has_feature("dap.goto");
 
         let mut filters = Vec::new();
         if supports_exceptions {

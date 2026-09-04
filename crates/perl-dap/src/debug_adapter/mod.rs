@@ -1246,8 +1246,10 @@ print "result: $final\n";
             (
                 "supportsGotoTargetsRequest",
                 // Run-to-line is not standard goto; fail closed on the catalog
-                // row (#9064).
-                crate::feature_catalog::has_feature("dap.goto_targets"),
+                // rows (#9064). Advertisement requires the complete contract:
+                // targets that `dap.goto` cannot execute must not be published.
+                crate::feature_catalog::has_feature("dap.goto_targets")
+                    && crate::feature_catalog::has_feature("dap.goto"),
             ),
             (
                 "supportsRestartFrame",

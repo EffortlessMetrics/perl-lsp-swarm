@@ -130,8 +130,9 @@ mod capability_tests {
 
         assert_eq!(
             capability(&caps, "supportsGotoTargetsRequest")?,
-            perl_dap::feature_catalog::has_feature("dap.goto_targets"),
-            "supportsGotoTargetsRequest must mirror the dap.goto_targets catalog entry"
+            perl_dap::feature_catalog::has_feature("dap.goto_targets")
+                && perl_dap::feature_catalog::has_feature("dap.goto"),
+            "supportsGotoTargetsRequest must require the complete dap.goto_targets + dap.goto contract"
         );
         assert!(
             !capability(&caps, "supportsGotoTargetsRequest")?,

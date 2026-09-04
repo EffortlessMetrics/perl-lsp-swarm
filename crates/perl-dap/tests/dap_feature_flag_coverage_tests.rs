@@ -1182,8 +1182,8 @@ fn test_capability_dap_goto_targets_not_advertised_in_initialize() -> TestResult
         body.get("supportsGotoTargetsRequest").and_then(|v| v.as_bool()).unwrap_or(false);
     assert_eq!(
         supports_goto,
-        has_feature("dap.goto_targets"),
-        "supportsGotoTargetsRequest must mirror the dap.goto_targets catalog entry"
+        has_feature("dap.goto_targets") && has_feature("dap.goto"),
+        "supportsGotoTargetsRequest must require the complete dap.goto_targets + dap.goto contract"
     );
     assert!(
         !supports_goto,

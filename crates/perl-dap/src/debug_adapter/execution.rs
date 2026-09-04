@@ -532,8 +532,11 @@ impl DebugAdapter {
         // The deterministic refusal also names parent-directory paths so the
         // #4638 message contract (a rejected gotoTargets source path must say
         // why its path is not evaluated) stays observable at this gate, which
-        // refuses before path validation ever runs.
-        if !catalog_has_feature("dap.goto_targets") {
+        // refuses before path validation ever runs. Publishing targets
+        // requires the complete contract: with `dap.goto` unadvertised the
+        // targets could never be executed, so a one-row promotion of
+        // `dap.goto_targets` alone still fails closed here.
+        if !(catalog_has_feature("dap.goto_targets") && catalog_has_feature("dap.goto")) {
             // A refused request must not leave a previously armed `cancel`
             // flag for the next unrelated request to trip over. The pre-gate
             // handler reset the advisory flag in its line-scan loop, which
