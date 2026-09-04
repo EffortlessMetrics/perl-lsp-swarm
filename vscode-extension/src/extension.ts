@@ -145,6 +145,7 @@ import {
   syncPerlCriticConfiguration as syncPerlCriticConfigurationFromConfig,
 } from './languageClientConfiguration';
 export { buildDisabledFeaturesFromConfig } from './languageClientConfiguration';
+import { perlConfigurationMiddleware } from './configurationPull';
 import {
   classifyStartupError,
   formatStartupFailureDialog,
@@ -166,6 +167,8 @@ import {
   ExtensionActivationOwner,
   _setActivationPhaseFailureInjectorForTest,
 } from './activationOwner';
+import type { ClientResourceMeasurement } from './clientMeasurement';
+import { extensionOwnedResourceMeasurements } from './extensionOwnedResourceCensus';
 
 // Compatibility projections for existing command/provider code. Lifecycle
 // ownership lives in `languageClientLifecycle`; these values are synchronized
@@ -251,6 +254,27 @@ export function getFeatureActivationMetrics(): FeatureActivationMetricsSnapshot 
 
 export function getActiveDocumentReadiness(): ActiveDocumentReadinessSnapshot {
   return activeDocumentReadiness.snapshot();
+}
+
+/**
+ * Production producer for the `extension_owned_*` counters of
+ * `vscode_client_measurement.v1` (#14678, parent #7866).
+ *
+ * Sourced from the activation ownership registry, so it reports only resources
+ * this extension registered. Counters the registry cannot distinguish, and
+ * shared extension-host memory, stay `not_proven` rather than `0`. This is a
+ * separate authority from {@link getLanguageClientStartupMetrics}, which owns
+ * startup milestone and server timing and carries no resource counts.
+ *
+ * Scope: the census is **attempt-scoped**. `extensionActivation` is replaced on
+ * each activation, so this reports the current attempt's ownership only and
+ * cannot see a resource a previous attempt failed to release. Within one
+ * attempt a failed release stays visible; detecting retention *across* a reload
+ * needs terminal censuses aggregated outside the attempt, which is part of
+ * #7866's restart/reload work, not this claim.
+ */
+export function getExtensionOwnedResourceMeasurements(): ClientResourceMeasurement[] {
+  return extensionOwnedResourceMeasurements(extensionActivation?.resourceCensus() ?? null);
 }
 
 export function markLanguageClientStartupMilestone(
@@ -592,6 +616,15 @@ export async function setPerlCriticSeverity(
 
   const severity = Number(selection.label);
   const config = vscode.workspace.getConfiguration('perl-lsp', resourceUri);
+  // `critic.severity` is declared `resource`, but the server keeps one
+  // session-global Critic state and only learns it through the unscoped
+  // `didChangeConfiguration` push (#8253; see CRITIC_SESSION_STATE_DEFECT in
+  // configurationOwnership.ts). Startup calls syncLanguageClientConfiguration
+  // with no scope, and an unscoped read cannot see a workspaceFolderValue — so
+  // writing the owning folder here would make the chosen severity work for the
+  // current session and then silently vanish on restart. Keep the write at a
+  // scope the session-global push can actually read until Critic becomes
+  // folder-owned server-side.
   const target =
     vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0
       ? vscode.ConfigurationTarget.Workspace
@@ -1240,6 +1273,7 @@ async function runExtensionActivation(
       getLanguageClientStartupMetrics,
       getFeatureActivationMetrics,
       getActiveDocumentReadiness,
+      getExtensionOwnedResourceMeasurements,
       markLanguageClientStartupMilestone,
       waitForActiveDocumentReady,
       stop: stopLanguageClientForActivationApi,
@@ -1289,6 +1323,7 @@ async function runExtensionActivation(
     getLanguageClientStartupMetrics,
     getFeatureActivationMetrics,
     getActiveDocumentReadiness,
+    getExtensionOwnedResourceMeasurements,
     markLanguageClientStartupMilestone,
     waitForActiveDocumentReady,
     stop: stopLanguageClientForActivationApi,
@@ -2008,7 +2043,11 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
   }
 }
 
-function createLanguageClient(serverPath: string): LanguageClient {
+/**
+ * Exported so the configuration-transport wiring contract can execute the real
+ * client options rather than asserting on source text (#14447).
+ */
+export function createLanguageClient(serverPath: string): LanguageClient {
   const generation = activeDocumentReadiness.beginGeneration();
   healthWidget?.seedIndexReadinessState('building');
   const serverOptions: ServerOptions = {
@@ -2040,6 +2079,13 @@ function createLanguageClient(serverPath: string): LanguageClient {
     outputChannel,
     traceOutputChannel: outputChannel,
     middleware: {
+      // The server pulls `section: "perl"` once unscoped and once per workspace
+      // folder. Without this adapter the language client would resolve those
+      // against the `perl.*` namespace, which this extension does not
+      // contribute, and every folder item would come back null (#14447).
+      workspace: {
+        configuration: perlConfigurationMiddleware(),
+      },
       provideCompletionItem: async (document, position, context, token, next) => {
         if (languageClientLifecycle?.snapshot.state !== 'running') {
           return null;

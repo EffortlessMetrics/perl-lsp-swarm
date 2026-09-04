@@ -1,4 +1,4 @@
-# contract-version: 5
+# contract-version: 6
 name: Non-Rust policy
 
 on:
@@ -133,7 +133,7 @@ jobs:
           # trusted environment declarations, while direct interpolation in a
           # command would allow candidate-controlled code or refs to reach the
           # evaluator.  Keeping the pattern in a variable also prevents this
-          # guard from matching its own source text.
+          # guard from matching its own run text.
           python3 - "$workflow" <<'PY'
           import re
           import sys

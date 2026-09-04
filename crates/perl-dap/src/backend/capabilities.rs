@@ -203,6 +203,101 @@ const HOVER_EVALUATE_CONTEXT: &str = "hover";
 pub(crate) const HOVER_UNSUPPORTED_MESSAGE: &str = "evaluate with context 'hover' is not supported: supportsEvaluateForHovers is advertised \
      false because perl-dap has no pure selected-frame inspection path yet (#9573)";
 
+/// The optional breakpoint capabilities fail closed (#9578).
+///
+/// `supportsFunctionBreakpoints`, `supportsConditionalBreakpoints`,
+/// `supportsHitConditionalBreakpoints`, and `supportsLogPoints` name runtime
+/// contracts — engine-installed function resolution, condition enforcement,
+/// attributed hit counting with serialized auto-continue, and correlated
+/// logpoint output — that the native `perl5db` seam has not proven. The
+/// repository has parsers, stores, and handler registration for parts of these
+/// features, but a syntactically valid name is not runtime resolution, a
+/// locally accepted condition is not proof the engine installed and enforced
+/// it, and a hit counter is not trustworthy before exact hit attribution.
+///
+/// These gates deliberately consume no catalog flag (`dap.core`,
+/// `dap.breakpoints.*`), no backend capability, no maturity row, and no
+/// handler-presence signal. Promoting one capability to `true` requires
+/// exactly its own re-enable gate recorded on #9578, from its own exact
+/// public behavior receipt: function #8645, conditional #8988, hit-condition
+/// #8994, logpoint #9000 (with the #7366 same-session false-path receipts).
+/// No capability inherits another's receipt and no combined cell widens a
+/// single component — each authority below is bound to exactly one accessor
+/// (`optional_breakpoint_authority_binding_is_per_capability` pins this).
+pub(crate) const OPTIONAL_FUNCTION_BREAKPOINTS_PROVEN: bool = false;
+pub(crate) const OPTIONAL_CONDITIONAL_BREAKPOINTS_PROVEN: bool = false;
+pub(crate) const OPTIONAL_HIT_CONDITIONAL_BREAKPOINTS_PROVEN: bool = false;
+pub(crate) const OPTIONAL_LOG_POINTS_PROVEN: bool = false;
+
+/// The single authority for the advertised `supportsFunctionBreakpoints` value.
+///
+/// Derived from [`OPTIONAL_FUNCTION_BREAKPOINTS_PROVEN`] alone (#9578); no
+/// catalog or backend signal may widen it, and no sibling receipt
+/// (#8988/#8994/#9000) may promote it.
+#[must_use]
+pub(crate) const fn advertises_function_breakpoints() -> bool {
+    OPTIONAL_FUNCTION_BREAKPOINTS_PROVEN
+}
+
+/// The single authority for the advertised `supportsConditionalBreakpoints`
+/// value.
+///
+/// Derived from [`OPTIONAL_CONDITIONAL_BREAKPOINTS_PROVEN`] alone (#9578); no
+/// catalog or backend signal may widen it, and no sibling receipt
+/// (#8645/#8994/#9000) may promote it.
+#[must_use]
+pub(crate) const fn advertises_conditional_breakpoints() -> bool {
+    OPTIONAL_CONDITIONAL_BREAKPOINTS_PROVEN
+}
+
+/// The single authority for the advertised `supportsHitConditionalBreakpoints`
+/// value.
+///
+/// Derived from [`OPTIONAL_HIT_CONDITIONAL_BREAKPOINTS_PROVEN`] alone (#9578);
+/// no catalog or backend signal may widen it, and no sibling receipt
+/// (#8645/#8988/#9000) may promote it.
+#[must_use]
+pub(crate) const fn advertises_hit_conditional_breakpoints() -> bool {
+    OPTIONAL_HIT_CONDITIONAL_BREAKPOINTS_PROVEN
+}
+
+/// The single authority for the advertised `supportsLogPoints` value.
+///
+/// Derived from [`OPTIONAL_LOG_POINTS_PROVEN`] alone (#9578); no catalog or
+/// backend signal may widen it, and no sibling receipt
+/// (#8645/#8988/#8994) may promote it.
+#[must_use]
+pub(crate) const fn advertises_log_points() -> bool {
+    OPTIONAL_LOG_POINTS_PROVEN
+}
+
+/// Deterministic refusal for `setFunctionBreakpoints` while the capability is
+/// floored (#9578). Every request shape receives this exact message, and no
+/// rejected request resolves a name, writes a debugger command, or mutates the
+/// function-breakpoint registry.
+pub(crate) const FUNCTION_BREAKPOINTS_UNSUPPORTED_MESSAGE: &str = "setFunctionBreakpoints is not supported: supportsFunctionBreakpoints is advertised \
+     false until exact runtime resolution and engine install/hit proof exists (#9578; re-enable gate #8645)";
+
+/// Deterministic per-item refusal for a `setBreakpoints` entry carrying a
+/// `condition` while conditional support is floored (#9578). The condition is
+/// never silently stripped and an unconditional breakpoint is never installed
+/// in its place.
+pub(crate) const CONDITION_UNSUPPORTED_MESSAGE: &str = "condition is not supported: supportsConditionalBreakpoints is advertised \
+     false until exact condition installation and enforcement proof exists (#9578; re-enable gate #8988)";
+
+/// Deterministic per-item refusal for a `setBreakpoints` entry carrying a
+/// `hitCondition` while hit-condition support is floored (#9578). The entry is
+/// never installed as an unconditional breakpoint and the expression is never
+/// counted locally.
+pub(crate) const HIT_CONDITION_UNSUPPORTED_MESSAGE: &str = "hitCondition is not supported: supportsHitConditionalBreakpoints is advertised \
+     false until exact attributed-hit counting and serialized auto-continue proof exists (#9578; re-enable gate #8994)";
+
+/// Deterministic per-item refusal for a `setBreakpoints` entry carrying a
+/// `logMessage` while logpoint support is floored (#9578). The entry is never
+/// converted into an ordinary stopping breakpoint and no output is simulated.
+pub(crate) const LOG_MESSAGE_UNSUPPORTED_MESSAGE: &str = "logMessage is not supported: supportsLogPoints is advertised \
+     false until exact install/hit/output/continue proof exists (#9578; re-enable gate #9000)";
+
 /// Whether an `evaluate` request's `context` selects hover.
 ///
 /// Matched ASCII-case-insensitively. The DAP-standard spelling is lowercase
@@ -352,6 +447,126 @@ pub fn intersect_dap_capabilities(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Authority-binding contract (#9578 review): each `advertises_*`
+    /// accessor reads exactly its own per-capability proof authority, and the
+    /// old shared authority no longer exists. One capability's re-enable
+    /// receipt can therefore never promote a sibling. This is a source
+    /// contract, not a value assertion: the authorities are compile-time and
+    /// every one currently floors at `false`, so promoting any capability
+    /// requires flipping exactly its own constant and updating the floor pin
+    /// below.
+    #[test]
+    fn optional_breakpoint_authority_binding_is_per_capability() {
+        // Scan only the production half: this test module legitimately names
+        // the removed authority in its own assertions.
+        let source =
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/backend/capabilities.rs"));
+        let source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("module source always has a production half");
+
+        let bindings = [
+            ("advertises_function_breakpoints", "OPTIONAL_FUNCTION_BREAKPOINTS_PROVEN"),
+            ("advertises_conditional_breakpoints", "OPTIONAL_CONDITIONAL_BREAKPOINTS_PROVEN"),
+            (
+                "advertises_hit_conditional_breakpoints",
+                "OPTIONAL_HIT_CONDITIONAL_BREAKPOINTS_PROVEN",
+            ),
+            ("advertises_log_points", "OPTIONAL_LOG_POINTS_PROVEN"),
+        ];
+        for (accessor, authority) in bindings {
+            // The body must reduce to exactly its own authority atom after
+            // comment stripping, so neither comments nor extra expressions can
+            // satisfy the binding.
+            let atom = accessor_return_atom(source, accessor);
+            assert_eq!(
+                atom, *authority,
+                "{accessor} must return exactly its own authority {authority}"
+            );
+        }
+
+        assert!(
+            !source.contains("OPTIONAL_BREAKPOINT_CAPABILITIES_PROVEN"),
+            "the shared all-capsabilities authority must stay removed; per-capability              authorities are the only promotion path (#9578 review)"
+        );
+    }
+
+    /// Floor pin (#9578): every per-capability authority floors at `false`.
+    /// A promotion flips exactly one constant AND updates this pin together
+    /// with its own #9578 receipt, so a receipt can never silently widen a
+    /// sibling.
+    #[test]
+    fn every_optional_breakpoint_authority_floors_at_false() {
+        let source =
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/backend/capabilities.rs"));
+        let source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("module source always has a production half");
+        for authority in [
+            "OPTIONAL_FUNCTION_BREAKPOINTS_PROVEN",
+            "OPTIONAL_CONDITIONAL_BREAKPOINTS_PROVEN",
+            "OPTIONAL_HIT_CONDITIONAL_BREAKPOINTS_PROVEN",
+            "OPTIONAL_LOG_POINTS_PROVEN",
+        ] {
+            let declaration = format!("pub(crate) const {authority}: bool = false;");
+            assert!(
+                source.contains(&declaration),
+                "{authority} must floor at false until its own re-enable receipt lands;                  update this pin in the same commit as the promotion"
+            );
+        }
+    }
+
+    /// Extract the single return atom of one `const fn` accessor from the
+    /// module source: body text with comments stripped, the `return` keyword
+    /// removed, and whitespace collapsed. Any additional expression in the
+    /// body breaks the exact-atom equality.
+    fn accessor_return_atom(source: &str, accessor: &str) -> String {
+        let signature = format!("fn {accessor}()");
+        let start = source
+            .find(&signature)
+            .unwrap_or_else(|| panic!("{accessor} must stay defined in capabilities.rs"));
+        let open = source[start..].find('{').expect("accessor body brace") + start;
+        let close = source[open..].find('}').expect("accessor body close") + open;
+        let body = &source[open + 1..close];
+
+        let mut stripped = String::with_capacity(body.len());
+        let mut in_block_comment = false;
+        for line in body.lines() {
+            let mut rest = line;
+            while !rest.is_empty() {
+                let line_comment = rest.find("//");
+                let block_comment = rest.find("/*");
+                let block_first = block_comment.is_some_and(|b| line_comment.is_none_or(|l| b < l));
+                match (block_first, line_comment) {
+                    // A block comment starting before any line comment: skip
+                    // to its terminator (which may live on a later line).
+                    (true, _) => {
+                        // `block_first` implies the block marker exists.
+                        let block_comment = block_comment.unwrap_or_default();
+                        stripped.push_str(&rest[..block_comment]);
+                        rest = &rest[block_comment + 2..];
+                        in_block_comment = true;
+                    }
+                    // A line comment (or a line comment preceding a block
+                    // comment start): the rest of the line is commentary.
+                    (false, Some(line_comment)) => {
+                        stripped.push_str(&rest[..line_comment]);
+                        rest = "";
+                    }
+                    (false, None) => {
+                        stripped.push_str(rest);
+                        rest = "";
+                    }
+                }
+            }
+            stripped.push(' ');
+        }
+
+        stripped.replace("return", " ").split_whitespace().collect::<String>()
+    }
 
     fn all_catalog() -> CatalogDapFlags {
         CatalogDapFlags {
