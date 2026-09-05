@@ -47,7 +47,9 @@
 //! an `ident` fragment could expand the same token into an import. `syn` does not
 //! expand macros, so the audit resolves the tie toward not inventing a consumer
 //! and records the gap here. Determinate forms — a multi-segment path, `use`, or
-//! `extern crate` — are still detected. See `single_ident_is_a_path`.
+//! `extern crate` — are still detected, because a macro body is parsed and walked
+//! by the same visitor as ordinary source. See `ApiUseVisitor::bare_paths_count`,
+//! which is where the tie is broken.
 //!
 //! Recorded shape vs. breaking change. The shape is the declaration as written,
 //! which is deliberately broader than the semver-breaking surface: renaming a
@@ -1787,7 +1789,7 @@ pub fn references_package_api_in_code(text: &str, path: &str) -> bool {
 /// found actually code", where not knowing must not let a real consumer hide.
 pub fn parsed_api_use(text: &str) -> Option<bool> {
     let file = syn::parse_file(text).ok()?;
-    let mut visitor = ApiUseVisitor { found: false, doc_block: Vec::new() };
+    let mut visitor = ApiUseVisitor { found: false, doc_block: Vec::new(), bare_paths_count: true };
     syn::visit::visit_file(&mut visitor, &file);
     // Inner docs (`//!`) belong to the file, not to any item, so nothing has
     // flushed them.
@@ -1872,6 +1874,16 @@ fn doctest_reaches_package(code: &str) -> bool {
 /// Collects any path, `use` tree, or doc attribute that reaches the package.
 struct ApiUseVisitor {
     found: bool,
+    /// Whether a single-segment path counts on its own.
+    ///
+    /// True for ordinary source, where a bare `perl_ast_v2` path is only ever
+    /// written as part of using the crate. False inside a macro body, where the
+    /// same token may be data: `stringify!(perl_ast_v2)` binds nothing while
+    /// `import_from!(perl_ast_v2)` may expand to an import, and the two are
+    /// token-identical. Bindings — `use` and `extern crate` — are unaffected,
+    /// because those arrive through their own visits with the item's meaning
+    /// already established.
+    bare_paths_count: bool,
     /// Doc lines of the item currently being visited, in order.
     ///
     /// A doctest is written one `#[doc = "..."]` attribute per line, so judging
@@ -1927,187 +1939,64 @@ impl ApiUseVisitor {
 
 /// Whether a macro's token stream writes a path into the audited package.
 ///
-/// Token-level, deliberately. `syn` hands a macro body over as an unparsed
-/// stream, and rendering it back to text would put string literals — which is
-/// what the instrument's own fixtures and assertion messages are made of — back
-/// in scope. A `Literal` token is skipped whatever it spells, so
-/// `"use perl_ast_v2 as v2;"` does not register while
-/// `some_macro!(perl_ast_v2::Node)` does.
+/// `syn` hands a macro body over unparsed, so this parses it and runs the same
+/// [`ApiUseVisitor`] used for ordinary source. That is the point: the previous
+/// implementation hand-rolled Rust path syntax over raw tokens and took six
+/// passes to model grouped imports, aliases, casts and absolute paths, four of
+/// its defects introduced by the fix before. Parsing gets all of them right by
+/// construction — `use perl_ast::{Node as v2}` renders as `perl_ast::Node`
+/// because `flatten_use_tree` reads the original ident, and
+/// `value as ::perl_ast_v2::Node` is simply a cast expression containing a path.
 ///
-/// Path-shaped sequences are rebuilt and handed to `names_package_directly`, so
-/// what counts as "into the package" has one owner rather than a second opinion
-/// living here.
+/// Bodies are tried as items, then as a comma-separated expression list, then as
+/// a type. Custom syntax that is none of those is descended into group by group,
+/// so a parseable fragment inside it is still seen.
+///
+/// String literals stay invisible throughout, which is what makes this usable on
+/// files whose fixtures spell the package in prose.
 fn macro_tokens_name_package(tokens: &proc_macro2::TokenStream) -> bool {
-    scan_macro_path_tokens(tokens, &[])
-}
+    use syn::parse::Parser as _;
 
-/// The recursive half, carrying the path a group hangs off.
-///
-/// `prefix` is what preceded the enclosing group, so `perl_ast::{v2, Node}`
-/// tests `perl_ast::v2` and `perl_ast::Node` rather than a bare `v2` and `Node`.
-/// Descending into a group without it dropped the crate name at the brace and
-/// made every grouped import invisible — the same prefix-lost-at-a-boundary
-/// mistake this candidate made in re-export matching, in a different shape.
-fn scan_macro_path_tokens(tokens: &proc_macro2::TokenStream, prefix: &[String]) -> bool {
-    // A comma, or anything else that is not a path, restarts the path — back to
-    // the enclosing prefix rather than to nothing, since inside `{a, b}` each
-    // element hangs off the same one.
-    let restart = |segments: &mut Vec<String>| {
-        segments.clear();
-        segments.extend_from_slice(prefix);
+    let mut visitor = ApiUseVisitor {
+        found: false,
+        doc_block: Vec::new(),
+        // A lone identifier inside a macro is not decidable — see
+        // `ApiUseVisitor::bare_paths_count` and the module's limitations.
+        bare_paths_count: false,
     };
-    let trees: Vec<proc_macro2::TokenTree> = tokens.clone().into_iter().collect();
-    let mut segments: Vec<String> = prefix.to_vec();
-    let mut after_ident = false;
-    // `as` renames what was just imported, so the identifier following it is a
-    // new local name rather than another segment. Without this the generic
-    // restart-on-adjacent-identifier rule rebuilt the path from the prefix at
-    // both `as` and the alias, synthesising `perl_ast::v2` out of
-    // `perl_ast::{Node as v2}` — inventing a consumer from an alias that never
-    // touches the package.
-    let mut alias_name_next = false;
-    for (index, tree) in trees.iter().enumerate() {
-        match tree {
-            proc_macro2::TokenTree::Group(group) => {
-                // A group straight after `::` continues the path; one anywhere
-                // else is an unrelated block and starts clean.
-                let matched = if !after_ident && !segments.is_empty() {
-                    scan_macro_path_tokens(&group.stream(), &segments)
-                } else {
-                    scan_macro_path_tokens(&group.stream(), &[])
-                };
-                if matched {
-                    return true;
-                }
-                restart(&mut segments);
-                after_ident = false;
-            }
-            proc_macro2::TokenTree::Ident(ident) => {
-                let spelled = ident.to_string();
-                if alias_name_next {
-                    // The local name an import was renamed to. It is not part of
-                    // any path into the package.
-                    alias_name_next = false;
-                    restart(&mut segments);
-                    after_ident = true;
-                    continue;
-                }
-                if spelled == "as" {
-                    // `as` is a rename only in a use tree. In a cast —
-                    // `value as perl_ast_v2::Node` — what follows is a type
-                    // path, and suppressing it hid a real reference. The two
-                    // are told apart by what comes after the identifier: a
-                    // rename ends there, a path continues with `::`.
-                    alias_name_next = !ident_is_followed_by_path_separator(&trees, index + 1);
-                    restart(&mut segments);
-                    after_ident = false;
-                    continue;
-                }
-                // Two idents in a row are two paths, not one: `use perl_ast_v2`
-                // must not compose into `use::perl_ast_v2`.
-                if after_ident {
-                    restart(&mut segments);
-                }
-                segments.push(spelled);
-                if names_package_directly(&segments.join("::"))
-                    && single_ident_is_a_path(&segments, prefix, &trees, index)
-                {
-                    return true;
-                }
-                after_ident = true;
-            }
-            proc_macro2::TokenTree::Punct(punct) if punct.as_char() == ':' => {
-                after_ident = false;
-            }
-            _ => {
-                restart(&mut segments);
-                after_ident = false;
-            }
+    let stream = tokens.clone();
+
+    if let Ok(file) = syn::parse2::<syn::File>(stream.clone()) {
+        syn::visit::visit_file(&mut visitor, &file);
+        return visitor.found;
+    }
+    let expressions = syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
+    if let Ok(list) = expressions.parse2(stream.clone()) {
+        for expression in &list {
+            syn::visit::visit_expr(&mut visitor, expression);
         }
+        return visitor.found;
     }
-    false
-}
+    if let Ok(ty) = syn::parse2::<syn::Type>(stream.clone()) {
+        syn::visit::visit_type(&mut visitor, &ty);
+        return visitor.found;
+    }
 
-/// Whether the identifier at `index` is followed by `::`.
-///
-/// This is what separates a use-tree rename from a cast after `as`:
-/// `use perl_ast::{Node as v2}` ends the path at `v2`, while
-/// `value as perl_ast_v2::Node` continues into one.
-fn ident_is_followed_by_path_separator(trees: &[proc_macro2::TokenTree], index: usize) -> bool {
-    if !matches!(trees.get(index), Some(proc_macro2::TokenTree::Ident(_))) {
-        return false;
-    }
-    matches!(
-        (trees.get(index + 1), trees.get(index + 2)),
-        (
-            Some(proc_macro2::TokenTree::Punct(first)),
-            Some(proc_macro2::TokenTree::Punct(second))
-        ) if first.as_char() == ':' && second.as_char() == ':'
-    )
-}
-
-/// Whether a lone package identifier in a macro is being *used* rather than
-/// merely mentioned.
-///
-/// Inside a macro body an identifier is not yet syntax: `stringify!(perl_ast_v2)`
-/// and `some_macro!(name = perl_ast_v2)` pass the crate's name as data and bind
-/// nothing. Accepting the bare ident invented a consumer out of them — the audit
-/// reporting API use where there is none, which is the direction that fires on
-/// other people's PRs rather than merely missing something.
-///
-/// A single identifier therefore has to look like a path or a binding:
-/// `perl_ast_v2::…` traverses it, and `use perl_ast_v2` / `extern crate
-/// perl_ast_v2` bind it. Anything with more than one segment already contains a
-/// `::` and needs no extra evidence.
-///
-/// **Recorded limitation, and the reason this is where the scan stops.** A
-/// `macro_rules!` taking the crate name as an `ident` or `path` fragment can
-/// expand a bare argument into a real import, so a bare identifier is not
-/// provably data either. The two readings are in genuine opposition:
-/// `stringify!(perl_ast_v2)` binds nothing, and `import_from!(perl_ast_v2)`
-/// might bind everything, and the tokens are identical. Deciding it needs macro
-/// expansion, which `syn` does not do and which this issue's ceiling does not
-/// authorize.
-///
-/// The tie is broken toward *not* inventing a consumer, because a false
-/// positive here fails other people's PRs while the false negative is confined
-/// to a package path that only ever appears inside a macro, in this module's own
-/// two files. That residue is recorded rather than papered over: it is the one
-/// place the consumer denominator is knowingly incomplete.
-fn single_ident_is_a_path(
-    segments: &[String],
-    prefix: &[String],
-    trees: &[proc_macro2::TokenTree],
-    index: usize,
-) -> bool {
-    if segments.len() > 1 || !prefix.is_empty() {
-        return true;
-    }
-    let traverses = matches!(
-        (trees.get(index + 1), trees.get(index + 2)),
-        (
-            Some(proc_macro2::TokenTree::Punct(first)),
-            Some(proc_macro2::TokenTree::Punct(second))
-        ) if first.as_char() == ':' && second.as_char() == ':'
-    );
-    let binds =
-        index.checked_sub(1).and_then(|previous| trees.get(previous)).is_some_and(
-            |tree| match tree {
-                proc_macro2::TokenTree::Ident(ident) => {
-                    let spelled = ident.to_string();
-                    spelled == "use" || spelled == "crate"
-                }
-                _ => false,
-            },
-        );
-    traverses || binds
+    // Not Rust this parser recognises. Descend, so a parseable fragment nested
+    // inside custom syntax is not lost with the syntax around it.
+    stream.into_iter().any(|tree| match tree {
+        proc_macro2::TokenTree::Group(group) => macro_tokens_name_package(&group.stream()),
+        _ => false,
+    })
 }
 
 impl<'ast> syn::visit::Visit<'ast> for ApiUseVisitor {
     fn visit_path(&mut self, node: &'ast syn::Path) {
-        let rendered =
-            node.segments.iter().map(|s| s.ident.to_string()).collect::<Vec<_>>().join("::");
-        self.consider(&rendered);
+        if self.bare_paths_count || node.segments.len() > 1 {
+            let rendered =
+                node.segments.iter().map(|s| s.ident.to_string()).collect::<Vec<_>>().join("::");
+            self.consider(&rendered);
+        }
         syn::visit::visit_path(self, node);
     }
 

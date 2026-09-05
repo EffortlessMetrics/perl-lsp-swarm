@@ -1014,6 +1014,11 @@ fn the_instruments_own_files_are_classified_by_parser_not_exempted() -> Result<(
             "fn f() { some_macro!(value as perl_ast_v2::Node); }",
             "fn f() { some_macro!(x as perl_ast::v2::Node); }",
             "fn f() { some_macro!(a as u8, b as perl_ast_v2::Node); }",
+            // An absolute path: the token after `as` is `::`, not the crate
+            // name. This is the form that finally retired the hand-rolled
+            // scanner in favour of parsing the body.
+            "fn f() { some_macro!(value as ::perl_ast_v2::Node); }",
+            "fn f() { some_macro!(x as ::perl_ast::v2::Node); }",
         ] {
             assert!(
                 reaches_audited_package(cast, instrument_file),
