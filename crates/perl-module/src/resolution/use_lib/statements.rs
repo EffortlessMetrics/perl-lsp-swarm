@@ -160,14 +160,20 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
 /// as data, while `__ENDS__ = 1;` is still compiled as code — so requiring
 /// whitespace would leave a punctuated marker's payload scanned as code.
 ///
-/// `::` is the one punctuation that does not end the token: `__END__::foo()` is
-/// a package-qualified call that Perl compiles and runs, so treating it as a
-/// marker would drop every pragma below it.
+/// A colon is the one punctuation that does not end the token, in either form.
+/// `__END__:` is a *label* and `__END__::foo()` a package-qualified call; Perl
+/// compiles and runs the code after both. Verified by running each:
+/// `__END__;` and `__END__ trailing words` print only the line above them,
+/// while `__END__:` and `__DATA__:` print the line below as well.
 fn is_data_section_marker(rest: &str) -> bool {
     ["__END__", "__DATA__"].iter().any(|marker| {
         rest.strip_prefix(marker).is_some_and(|tail| {
-            !tail.starts_with("::")
-                && tail.chars().next().is_none_or(|ch| !(ch.is_ascii_alphanumeric() || ch == '_'))
+            if tail.chars().next().is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+                return false;
+            }
+            // Only spaces and tabs, so a colon opening the *next* line is not
+            // mistaken for a label on this one.
+            !tail.trim_start_matches([' ', '\t']).starts_with(':')
         })
     })
 }

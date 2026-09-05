@@ -492,7 +492,6 @@ fn data_section_markers_end_the_scanned_region() {
         // accepts `__END__;` and `__END__ trailing words` alike and treats the
         // rest of the file as data.
         "use lib 'real';\n__END__;\nprose; use lib 'phantom_punctuated';\n",
-        "use lib 'real';\n__DATA__:\nrow; use lib 'phantom_colon';\n",
         "use lib 'real';\n__END__ trailing words\nprose; use lib 'phantom_trailing';\n",
     ];
 
@@ -504,6 +503,53 @@ fn data_section_markers_end_the_scanned_region() {
                 from_findbin: false,
             }])],
             "text below a data-section marker reached the rail: {source:?}"
+        );
+    }
+}
+
+/// A colon after the marker makes it a *label*, so the code region continues.
+///
+/// Measured by running each form: `__END__;` and `__END__ trailing words` print
+/// only the line above them, but `__END__:` and `__DATA__:` print the line
+/// below as well — the colon turns the token into `LABEL:` rather than a
+/// data-section marker. An earlier version of this suite listed `__DATA__:`
+/// among the markers, asserting the opposite of the interpreter.
+///
+/// The residual boundary is shared with every label, not specific to these two:
+/// a pragma that shares a statement slice with its label is absorbed, because
+/// `split_perl_statements` cuts on semicolons and a label carries none. That is
+/// the same class as an empty block opener, and it behaves identically for an
+/// ordinary `MYLOOP:` on `main`. What matters here is that the scan is no
+/// longer *truncated* — everything below the colon form stays reachable.
+#[test]
+fn colon_suffixed_markers_are_labels_and_do_not_truncate_the_scan() {
+    for marker in ["__END__", "__DATA__", "MYLOOP"] {
+        let source = format!("use lib 'real';\n{marker}:\n1;\nuse lib 'still_code';\n");
+
+        assert_eq!(
+            extract_use_lib_operations(&source),
+            vec![
+                UseLibAction::Add(vec![UseLibPath {
+                    path: "real".to_string(),
+                    from_findbin: false
+                }]),
+                UseLibAction::Add(vec![UseLibPath {
+                    path: "still_code".to_string(),
+                    from_findbin: false,
+                }]),
+            ],
+            "{marker}: truncated the scan instead of acting as a label"
+        );
+
+        // The shared boundary: same slice as the label, so absorbed.
+        let same_slice = format!("use lib 'real';\n{marker}:\nuse lib 'absorbed';\n");
+        assert_eq!(
+            extract_use_lib_operations(&same_slice),
+            vec![UseLibAction::Add(vec![UseLibPath {
+                path: "real".to_string(),
+                from_findbin: false
+            }])],
+            "{marker}: unexpectedly delimited a same-slice pragma"
         );
     }
 }
