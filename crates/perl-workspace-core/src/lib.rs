@@ -73,6 +73,7 @@ mod sha2;
 pub mod shard;
 pub mod symbol;
 pub mod test;
+pub mod test_command;
 pub mod test_item;
 pub mod test_item_discovery;
 
@@ -113,6 +114,13 @@ pub use relation::{RelationFact, RelationKind};
 pub use shard::{ProjectDelta, ProjectFactShard, ProjectShardState, ShardError};
 pub use symbol::{SymbolFactKind, SymbolRecord, Visibility};
 pub use test::TestFact;
+pub use test_command::{
+    GeneratedArtifact, GeneratedStateEvidence, GeneratedStateFreshness, GeneratedStateObservation,
+    GeneratedStateRequirement, PublicGeneratedStateRequirement, PublicTestCommandCandidate,
+    PublicTestCommandPlan, TEST_COMMAND_PLAN_SCHEMA_VERSION, TestCommandAdmission,
+    TestCommandCandidate, TestCommandPlan, TestCommandPlanError, TestIncludeMode, TestRunnerKind,
+    plan_test_commands,
+};
 pub use test_item::{
     SOURCE_IDENTITY_REF_SCHEMA_VERSION, SourceIdentityRef, TEST_ITEM_SCHEMA_VERSION,
     TestFrameworkIdentity, TestItem, TestItemCapabilities, TestItemDelta, TestItemDeltaError,
