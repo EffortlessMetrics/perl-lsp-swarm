@@ -129,13 +129,13 @@ impl<'a> Parser<'a> {
                 }
 
                 Some(TokenKind::Arrow) => {
-                    self.tokens.next()?; // consume ->
+                    self.consume_token()?; // consume -> (advances the recovery span)
 
                     // Check for postfix dereference operators
                     match self.peek_kind() {
                         Some(TokenKind::ArraySigil) => {
                             // ->@*, ->@[...], or ->@{...}
-                            self.tokens.next()?; // consume @
+                            self.consume_token()?; // consume @
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 // ->@*
@@ -195,7 +195,7 @@ impl<'a> Parser<'a> {
 
                         Some(TokenKind::HashSigil) => {
                             // ->%* or ->%{...}
-                            self.tokens.next()?; // consume %
+                            self.consume_token()?; // consume %
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 // ->%*
@@ -238,9 +238,33 @@ impl<'a> Parser<'a> {
 
                         Some(TokenKind::ScalarSigil) => {
                             // ->$*
-                            self.tokens.next()?; // consume $
+                            self.consume_token()?; // consume $
 
-                            if self.peek_kind() == Some(TokenKind::Star) {
+                            if self.peek_kind() == Some(TokenKind::LeftBrace) {
+                                // ->${ expr }: dynamic method call with a braced
+                                // method-name expression (`$obj->${method}()`),
+                                // valid Perl since 5.8. Not a truncated chain.
+                                let brace_start = self.previous_position();
+                                self.consume_token()?; // consume {
+                                self.parse_expression()?;
+                                self.expect_closing_delimiter(TokenKind::RightBrace)?;
+                                let method = String::from_utf8_lossy(
+                                    &self.src_bytes[brace_start - 1..self.previous_position()],
+                                )
+                                .into_owned();
+                                let args = if self.peek_kind() == Some(TokenKind::LeftParen) {
+                                    self.parse_args()?
+                                } else {
+                                    Vec::new()
+                                };
+                                let start = expr.location.start;
+                                let end = self.previous_position();
+                                record_postfix_layer()?;
+                                expr = Node::new(
+                                    NodeKind::MethodCall { object: Box::new(expr), method, args },
+                                    SourceLocation { start, end },
+                                );
+                            } else if self.peek_kind() == Some(TokenKind::Star) {
                                 let star = self.consume_token()?; // consume *
                                 let start = expr.location.start;
                                 let end = star.end();
@@ -261,7 +285,7 @@ impl<'a> Parser<'a> {
 
                         Some(TokenKind::SubSigil | TokenKind::BitwiseAnd) => {
                             // ->&* (code dereference)
-                            self.tokens.next()?; // consume &
+                            self.consume_token()?; // consume &
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 let star = self.consume_token()?; // consume *
@@ -284,7 +308,7 @@ impl<'a> Parser<'a> {
 
                         Some(TokenKind::Star) => {
                             // ->** (glob dereference)
-                            self.tokens.next()?; // consume first *
+                            self.consume_token()?; // consume first *
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 let star = self.consume_token()?; // consume second *
@@ -331,13 +355,13 @@ impl<'a> Parser<'a> {
                             }
 
                             if self.tokens.peek().is_ok_and(|t| t.text.as_ref() == "$#") {
-                                self.tokens.next()?; // consume the incomplete `$#`
+                                self.consume_token()?; // consume the incomplete `$#`
                                 expr = self.recover_truncated_arrow(expr);
                                 break;
                             }
 
                             if self.tokens.peek().is_ok_and(|t| t.text.as_ref() == "$") {
-                                self.tokens.next()?; // consume the incomplete `$` sigil
+                                self.consume_token()?; // consume the incomplete `$` sigil
                                 expr = self.recover_truncated_arrow(expr);
                                 break;
                             }
