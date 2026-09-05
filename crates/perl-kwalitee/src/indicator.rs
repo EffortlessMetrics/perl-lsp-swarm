@@ -476,6 +476,32 @@ mod tests {
         }
     }
 
+    /// The release-input binding in `evaluator::external_outcome` refuses a
+    /// release-only indicator when the release profile supplies no `dist_dir`
+    /// (#13067). That guard sits on the `External` arm of `obtain_outcome`, so
+    /// it only reaches release-only indicators that are externally sourced.
+    ///
+    /// Every release-only indicator is externally sourced today, which makes the
+    /// guard total — but nothing pinned it. A release-only indicator added with
+    /// `Repo` or `NightlyReceipt` would route around the binding and could report
+    /// `Pass` with no staged distribution, reintroducing the defect one indicator
+    /// over. This keeps the guard's coverage a checked invariant rather than a
+    /// coincidence of the current catalog.
+    #[test]
+    fn release_only_indicators_are_externally_sourced() {
+        for spec in CATALOG {
+            if spec.is_release_only() {
+                assert_eq!(
+                    spec.source,
+                    EvalSource::External,
+                    "{} is release_only, so it must be externally sourced: the release \
+                     dist-input guard in evaluator::external_outcome only covers that arm",
+                    spec.id
+                );
+            }
+        }
+    }
+
     #[test]
     fn every_id_is_explainable() {
         for id in indicator_ids() {
