@@ -191,6 +191,46 @@ fn every_public_reexport_path_is_inventoried() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn the_reexport_derivation_finds_those_paths_in_the_real_tree() -> Result<()> {
+    // Non-vacuity for the widened check. Reconciliation passing proves nothing
+    // on its own if the derivation returns empty for every file, so the exact
+    // `(file, alias)` pairs the whole scan set yields are pinned here. Any new
+    // public path to the package anywhere under the scan roots moves this set,
+    // and so does any inventoried one that stops being public.
+    let root = repo_root_for_tests()?;
+    let mut derived: BTreeSet<(String, String)> = BTreeSet::new();
+    for file in derive_reference_files(&root)? {
+        if !file.ends_with(".rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(root.join(&file))
+            .with_context(|| format!("failed to re-read scanned file {file}"))?;
+        for (alias, _) in derive_public_reexports(&text) {
+            derived.insert((file.clone(), alias));
+        }
+    }
+
+    let expected: BTreeSet<(String, String)> = [
+        ("crates/perl-ast/src/lib.rs", "v2"),
+        ("crates/perl-parser-core/src/engine/mod.rs", "ast_v2"),
+        ("crates/perl-parser-core/src/lib.rs", "ast_v2"),
+        ("crates/perl-parser-core/src/lib.rs", "DiagnosticId"),
+        ("crates/perl-parser-core/src/lib.rs", "MissingKind"),
+        ("crates/perl-parser/src/lib.rs", "ast_v2"),
+        ("crates/perl-parser/src/compat.rs", "ast_v2"),
+    ]
+    .into_iter()
+    .map(|(file, alias)| (file.to_string(), alias.to_string()))
+    .collect();
+
+    assert_eq!(
+        derived, expected,
+        "the public re-exports derived from the current tree are not the inventoried ones"
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Falsifier 5: the unique ErrorRef / MissingKind / NodeId propositions are lost
 // under "abbreviated".
@@ -1101,6 +1141,133 @@ fn a_new_public_reexport_alias_must_move_the_inventory() -> Result<()> {
 
     // A private `use` is not a re-export and must not be derived.
     assert!(derive_public_reexports("use perl_ast_v2 as internal;").is_empty());
+    Ok(())
+}
+
+/// Build re-export rows from `(id, path, site)` triples, so the two directions
+/// of the inventory law can be falsified without a fixture repository.
+fn reexport_rows(rows: &[(&str, &str, &str)]) -> Result<Vec<ReexportRow>> {
+    rows.iter()
+        .map(|(id, path, site)| {
+            serde_json::from_value(serde_json::json!({
+                "reexport_id": id,
+                "path": path,
+                "site": site,
+                "exposes": "whole package",
+                "consumer_id": "c:test",
+                "compatibility_obligation": "a test row",
+            }))
+            .with_context(|| "a test re-export row failed to deserialize")
+        })
+        .collect()
+}
+
+fn sources(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
+    entries.iter().map(|(path, text)| ((*path).to_string(), (*text).to_string())).collect()
+}
+
+#[test]
+fn a_public_reexport_in_an_uninventoried_file_moves_the_inventory() -> Result<()> {
+    // The first version of this check only looked inside files a row already
+    // named, which made it circular: it could find a second alias beside a
+    // recorded one, but a first public path in any other file — a new crate
+    // forwarding the package, or a compatibility shim added during absorption —
+    // changed no checked set. The scan set is now the candidate set.
+    let rows = reexport_rows(&[("rx:known", "perl_ast::v2", "crates/perl-ast/src/lib.rs:93")])?;
+    let live = sources(&[
+        ("crates/perl-ast/src/lib.rs", "pub use perl_ast_v2 as v2;"),
+        ("crates/other/src/lib.rs", "// nothing public here\nuse perl_ast_v2 as internal;"),
+    ]);
+    reconcile_reexport_inventory(&rows, &live)?;
+
+    let drifted = sources(&[
+        ("crates/perl-ast/src/lib.rs", "pub use perl_ast_v2 as v2;"),
+        ("crates/other/src/lib.rs", "pub use perl_ast_v2 as forwarded;"),
+    ]);
+    let Err(err) = reconcile_reexport_inventory(&rows, &drifted) else {
+        bail!("a public re-export in an uninventoried file must be rejected");
+    };
+    let rendered = format!("{err:?}");
+    assert!(
+        rendered.contains("crates/other/src/lib.rs") && rendered.contains("forwarded"),
+        "the rejection must name the new public path: {rendered}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_reexport_that_stops_being_public_cannot_stay_inventoried() -> Result<()> {
+    // The reverse direction, and the one `reconcile_reexport_sites` cannot see:
+    // it only asks whether the named line still mentions the package, so
+    // `pub use perl_ast_v2 as v2;` becoming `pub(crate)` — or being renamed —
+    // leaves the row green while the compatibility obligation attached to it
+    // describes a path consumers can no longer write.
+    let rows = reexport_rows(&[("rx:known", "perl_ast::v2", "crates/perl-ast/src/lib.rs:93")])?;
+
+    for (label, text, needle) in [
+        ("demoted to crate-private", "pub(crate) use perl_ast_v2 as v2;", "binds that name"),
+        // A rename fails on the forward direction first: the new name is a
+        // public path with no row of its own.
+        ("renamed", "pub use perl_ast_v2 as v_two;", "v_two"),
+        ("deleted", "// pub use perl_ast_v2 as v2;", "binds that name"),
+    ] {
+        let drifted = sources(&[("crates/perl-ast/src/lib.rs", text)]);
+        let Err(err) = reconcile_reexport_inventory(&rows, &drifted) else {
+            bail!("a re-export {label} must not leave the inventory green");
+        };
+        let rendered = format!("{err:?}");
+        assert!(
+            rendered.contains(needle),
+            "a re-export {label} must be rejected for that reason: {rendered}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_public_reexport_inside_a_public_module_is_a_public_path() -> Result<()> {
+    // `pub mod compat { pub use perl_ast_v2 as ast_v2; }` publishes the package
+    // exactly as a top-level `pub use` does. A top-level-only walk called such a
+    // file re-export-free, which is the same blind spot in a different shape.
+    let derived = derive_public_reexports("pub mod compat { pub use perl_ast_v2 as ast_v2; }");
+    let aliases: BTreeSet<&str> = derived.iter().map(|(alias, _)| alias.as_str()).collect();
+    assert!(aliases.contains("ast_v2"), "a public module's re-export is public: {aliases:?}");
+
+    // A private module publishes nothing outside the crate, so it is not one.
+    assert!(
+        derive_public_reexports("mod internal { pub use perl_ast_v2 as ast_v2; }").is_empty(),
+        "a private module's re-export is not a public path"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_grouped_reexport_row_claims_each_name_it_lists() -> Result<()> {
+    // `perl_parser_core::{DiagnosticId, MissingKind}` is one row carrying two
+    // public names. The earlier coverage test was a substring search over the
+    // whole row path, which would call an alias covered because its letters
+    // happened to appear somewhere in the text; the row now resolves to the
+    // exact set of names it publishes, and both must stay live.
+    let rows = reexport_rows(&[(
+        "rx:types",
+        "perl_parser_core::{DiagnosticId, MissingKind}",
+        "crates/perl-parser-core/src/lib.rs:97",
+    )])?;
+    let both = sources(&[(
+        "crates/perl-parser-core/src/lib.rs",
+        "pub use ast_v2::{DiagnosticId, MissingKind};",
+    )]);
+    reconcile_reexport_inventory(&rows, &both)?;
+
+    let halved =
+        sources(&[("crates/perl-parser-core/src/lib.rs", "pub use ast_v2::{DiagnosticId};")]);
+    let Err(err) = reconcile_reexport_inventory(&rows, &halved) else {
+        bail!("dropping one name of a grouped row must be rejected");
+    };
+    assert!(
+        format!("{err:?}").contains("MissingKind"),
+        "the rejection must name the dropped type: {err:?}"
+    );
     Ok(())
 }
 

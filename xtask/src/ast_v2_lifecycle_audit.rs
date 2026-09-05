@@ -1954,11 +1954,17 @@ fn reconcile_with_source(m: &Manifest, repo_root: &Path) -> Result<()> {
         }
     }
 
+    // One scan feeds both the consumer denominator and the re-export
+    // derivation. They ask different questions of the same file set, and
+    // walking the roots twice would double the cost of the cheapest check in
+    // the suite for no additional evidence.
+    let scanned = derive_reference_files(repo_root)?;
+
     reconcile_public_items(m, repo_root)?;
     reconcile_parity_counterparts(m, repo_root)?;
-    reconcile_consumers(m, repo_root)?;
+    reconcile_consumers(m, repo_root, &scanned)?;
     reconcile_reexport_sites(m, repo_root)?;
-    reconcile_derived_reexports(m, repo_root)?;
+    reconcile_derived_reexports(m, repo_root, &scanned)?;
     reconcile_package_surface_sites(m, repo_root)?;
     Ok(())
 }
@@ -2030,15 +2036,14 @@ fn reconcile_parity_counterparts(m: &Manifest, repo_root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn reconcile_consumers(m: &Manifest, repo_root: &Path) -> Result<()> {
-    let scanned = derive_reference_files(repo_root)?;
+fn reconcile_consumers(m: &Manifest, repo_root: &Path, scanned: &BTreeSet<String>) -> Result<()> {
     let all_files: BTreeSet<&str> = m.consumers.iter().map(|row| row.file.as_str()).collect();
 
     // Direction one: nothing may reference the package without being inventoried.
     // The row's *role* then decides what the reference means — classification is
     // the audit's job, and excluding a file from the scan to avoid classifying it
     // would be the audit lying to itself.
-    for file in &scanned {
+    for file in scanned {
         if !all_files.contains(file.as_str()) {
             bail!(
                 "`{file}` references the audited package but has no consumer row. A new direct \
@@ -2155,24 +2160,166 @@ pub fn derive_public_reexports(text: &str) -> Vec<(String, String)> {
         return Vec::new();
     };
     let mut found = Vec::new();
-    for item in &file.items {
-        let syn::Item::Use(item_use) = item else {
-            continue;
+    collect_public_reexports(&file.items, &mut found);
+    found
+}
+
+/// Walk one item list for public re-exports of the audited package, descending
+/// into public inline modules.
+///
+/// The descent matters because a public path is a public path: `pub mod compat {
+/// pub use perl_ast_v2 as ast_v2; }` publishes the package exactly as a
+/// top-level `pub use` does, and a top-level-only walk would have called that
+/// file re-export-free. A private inline module is skipped, because nothing
+/// outside the crate can name what it re-exports.
+fn collect_public_reexports(items: &[syn::Item], found: &mut Vec<(String, String)>) {
+    for item in items {
+        match item {
+            syn::Item::Use(item_use) => {
+                if !is_public(&item_use.vis) {
+                    continue;
+                }
+                let mut paths = Vec::new();
+                flatten_use_tree(&item_use.tree, "", &mut paths);
+                let mut aliases = Vec::new();
+                collect_use_aliases(&item_use.tree, "", &mut aliases);
+                for (alias, rendered) in aliases.into_iter().zip(paths) {
+                    if API_USE_FORM.is_match(&format!("{rendered}::")) {
+                        found.push((alias, rendered));
+                    }
+                }
+            }
+            syn::Item::Mod(item_mod) if is_public(&item_mod.vis) => {
+                if let Some((_, inner)) = &item_mod.content {
+                    collect_public_reexports(inner, found);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The alias names one authored re-export row claims to publish.
+///
+/// The row's `path` is the public path a consumer writes, so its leaf is the
+/// name the re-export binds: `perl_ast::v2` claims `v2`, and the grouped
+/// `perl_parser_core::{DiagnosticId, MissingKind}` claims both type names. This
+/// replaces an earlier substring test over the whole row path, which could call
+/// an alias covered because it happened to appear somewhere in the text.
+fn row_reexport_aliases(row: &ReexportRow) -> Result<BTreeSet<String>> {
+    let path = row.path.trim();
+    let aliases: BTreeSet<String> = if let Some(open) = path.find('{') {
+        let Some(close) = path.rfind('}') else {
+            bail!(
+                "re-export {} declares path `{}`, which opens a group it never closes",
+                row.reexport_id,
+                row.path
+            );
         };
-        if !is_public(&item_use.vis) {
+        if close < open {
+            bail!(
+                "re-export {} declares path `{}`, whose group braces are inverted",
+                row.reexport_id,
+                row.path
+            );
+        }
+        path[open + 1..close]
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .collect()
+    } else {
+        path.rsplit("::")
+            .next()
+            .map(str::trim)
+            .filter(|leaf| !leaf.is_empty())
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    };
+
+    if aliases.is_empty() {
+        bail!(
+            "re-export {} declares path `{}`, from which no public name can be read",
+            row.reexport_id,
+            row.path
+        );
+    }
+    Ok(aliases)
+}
+
+/// Reconcile the authored re-export inventory against what the sources actually
+/// publish, in both directions.
+///
+/// Kept pure over an in-memory `path -> text` map so the two directions can be
+/// falsified directly, without a fixture repository the read-only proof
+/// contract would not allow this module's tests to build.
+fn reconcile_reexport_inventory(
+    rows: &[ReexportRow],
+    sources: &BTreeMap<String, String>,
+) -> Result<()> {
+    let mut derived_by_file: BTreeMap<&str, Vec<(String, String)>> = BTreeMap::new();
+    for (file, text) in sources {
+        if !file.ends_with(".rs") {
             continue;
         }
-        let mut paths = Vec::new();
-        flatten_use_tree(&item_use.tree, "", &mut paths);
-        let mut aliases = Vec::new();
-        collect_use_aliases(&item_use.tree, "", &mut aliases);
-        for (alias, rendered) in aliases.into_iter().zip(paths) {
-            if API_USE_FORM.is_match(&format!("{rendered}::")) {
-                found.push((alias, rendered));
+        derived_by_file.insert(file.as_str(), derive_public_reexports(text));
+    }
+
+    let mut claimed_by_file: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for row in rows {
+        let (file, _) = split_site(&row.site, &row.reexport_id)?;
+        claimed_by_file.entry(file).or_default().extend(row_reexport_aliases(row)?);
+    }
+
+    // Direction one: nothing may publish the package publicly without a row.
+    // The earlier form only looked inside files a row already named, so a first
+    // public re-export in any other file — a new crate forwarding the package,
+    // or a compatibility shim added during absorption — moved no checked set.
+    for (file, derived) in &derived_by_file {
+        for (alias, rendered) in derived {
+            let covered = claimed_by_file.get(*file).is_some_and(|set| set.contains(alias));
+            if !covered {
+                bail!(
+                    "`{file}` publicly re-exports the audited package as `{alias}` (from \
+                     `{rendered}`) with no matching re-export row. A new public path to the \
+                     package must move the compatibility inventory."
+                );
             }
         }
     }
-    found
+
+    // Direction two: a row claims a live public path, and the compatibility
+    // obligations attached to these rows are the whole point of the ruling. A
+    // `pub use` that became `pub(crate)`, was renamed, or was deleted still
+    // leaves `reconcile_reexport_sites` green whenever the line it names merely
+    // still mentions the package, so the inventory could outlive the path.
+    for row in rows {
+        let (file, _) = split_site(&row.site, &row.reexport_id)?;
+        let Some(derived) = derived_by_file.get(file.as_str()) else {
+            bail!(
+                "re-export {} names site {}, whose source is not available to the re-export \
+                 derivation",
+                row.reexport_id,
+                row.site
+            );
+        };
+        let live: BTreeSet<&str> = derived.iter().map(|(alias, _)| alias.as_str()).collect();
+        for alias in row_reexport_aliases(row)? {
+            if !live.contains(alias.as_str()) {
+                bail!(
+                    "re-export {} claims `{file}` publishes the audited package as `{alias}`, but \
+                     no public re-export there binds that name any more. A path that became \
+                     private, was renamed, or was removed is a compatibility change and must move \
+                     the inventory.",
+                    row.reexport_id
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Collect the name each leaf of a `use` tree binds, in the same order as
@@ -2193,39 +2340,40 @@ fn collect_use_aliases(tree: &syn::UseTree, prefix: &str, out: &mut Vec<String>)
 
 /// Every public re-export the sources expose must have a row, and every row must
 /// still describe a live one.
-fn reconcile_derived_reexports(m: &Manifest, repo_root: &Path) -> Result<()> {
-    let mut files: BTreeSet<String> = BTreeSet::new();
-    for row in &m.reexport_paths {
-        let (file, _) = split_site(&row.site, &row.reexport_id)?;
-        files.insert(file);
-    }
-
-    for file in &files {
-        let Ok(text) = std::fs::read_to_string(repo_root.join(file)) else {
+///
+/// The candidate file set is the whole reference scan, not the files the rows
+/// already name. Restricting it to inventoried files made the check circular:
+/// it could only ever find a re-export next to one already recorded.
+fn reconcile_derived_reexports(
+    m: &Manifest,
+    repo_root: &Path,
+    scanned: &BTreeSet<String>,
+) -> Result<()> {
+    let mut sources: BTreeMap<String, String> = BTreeMap::new();
+    for file in scanned {
+        if !file.ends_with(".rs") {
             continue;
-        };
-        for (alias, rendered) in derive_public_reexports(&text) {
-            let covered = m.reexport_paths.iter().any(|row| {
-                let Ok((row_file, _)) = split_site(&row.site, &row.reexport_id) else {
-                    return false;
-                };
-                &row_file == file
-                    && (row.path.ends_with(&format!("::{alias}"))
-                        || row.path.contains(&format!("{{{alias}"))
-                        || row.path.contains(&format!(" {alias}"))
-                        || row.path.contains(&format!("::{alias},"))
-                        || row.path.ends_with(&alias))
-            });
-            if !covered {
-                bail!(
-                    "`{file}` publicly re-exports the audited package as `{alias}` (from \
-                     `{rendered}`) with no matching re-export row. A new public alias in an \
-                     already-inventoried file must still move the inventory."
-                );
-            }
+        }
+        // Read failures here are not silent losses: the scan already read this
+        // path successfully, and a row whose own file cannot be read is caught
+        // below by its absence from the map.
+        if let Ok(text) = std::fs::read_to_string(repo_root.join(file)) {
+            sources.insert(file.clone(), text);
         }
     }
-    Ok(())
+    // A row's file that no longer reaches the package at all is not in the scan,
+    // and it is exactly the case direction two has to report.
+    for row in &m.reexport_paths {
+        let (file, _) = split_site(&row.site, &row.reexport_id)?;
+        if sources.contains_key(&file) {
+            continue;
+        }
+        if let Ok(text) = std::fs::read_to_string(repo_root.join(&file)) {
+            sources.insert(file, text);
+        }
+    }
+
+    reconcile_reexport_inventory(&m.reexport_paths, &sources)
 }
 
 fn reconcile_package_surface_sites(m: &Manifest, repo_root: &Path) -> Result<()> {
