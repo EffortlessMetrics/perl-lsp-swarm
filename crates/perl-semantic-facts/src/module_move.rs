@@ -2,9 +2,25 @@
 //!
 //! This module consumes already-authorized canonical facts.  It does not read a
 //! workspace, inspect disk, parse source, or produce protocol edit types.
+//!
+//! Three propositions are kept apart and checked against each other:
+//!
+//! * **Currentness** is per file.  A cross-file reference lives in its own
+//!   document with its own generation, so currentness is proven against an
+//!   admitted per-file generation snapshot, never against the moved file's
+//!   generation.
+//! * **Refusal and edit are mutually exclusive.**  An occurrence that raises a
+//!   blocker contributes no edit, so `edits` never contradicts `blockers`.
+//! * **A complete plan is a checked property, not a tag.**  [`ModuleMovePlan`]
+//!   is publicly constructible and `Deserialize`, so
+//!   [`ModuleMovePlan::is_complete`] re-derives the invariants and the
+//!   fingerprint rather than trusting `disposition`.
 
 use crate::{AnchorId, EntityId, FileId, OccurrenceId, OccurrenceKind, SourceGeneration};
 use serde::{Deserialize, Serialize};
+
+/// Current plan schema version.  A plan carrying any other version is refused.
+pub const MODULE_MOVE_SCHEMA_VERSION: u16 = 1;
 
 /// The target form supplied by a move request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -13,6 +29,18 @@ pub enum ModuleMoveTarget {
     Package(String),
     /// A workspace-relative source path such as `lib/New/Name.pm`.
     RelativePath(String),
+}
+
+/// The admitted current generation of one file the plan depends on.
+///
+/// Every occurrence file needs an entry.  Absence is not "current"; it is an
+/// explicit missing-evidence state and blocks the plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModuleMoveFileGeneration {
+    /// Canonical file identity.
+    pub file_id: FileId,
+    /// The generation the producer proves is current for that file.
+    pub generation: SourceGeneration,
 }
 
 /// Canonical source facts admitted by the conventional move profile.
@@ -67,7 +95,10 @@ pub struct ModuleMoveOccurrence {
     pub file_generation: SourceGeneration,
     /// True when the occurrence is not fully statically known.
     pub dynamic: bool,
-    /// True when the occurrence is not current with the source.
+    /// True when the producer marks the occurrence not current.
+    ///
+    /// This is the producer's own claim.  It is an additional refusal input,
+    /// never a substitute for the generation comparison.
     pub stale: bool,
     /// True when the producer cannot prove this projection is supported.
     pub unsupported: bool,
@@ -78,7 +109,7 @@ pub struct ModuleMoveOccurrence {
 pub struct ModuleMoveEdit {
     /// Source document identity.
     pub file_id: FileId,
-    /// Source generation precondition.
+    /// Source generation precondition for that document.
     pub generation: SourceGeneration,
     /// Semantic occurrence identity.
     pub occurrence_id: OccurrenceId,
@@ -112,30 +143,64 @@ pub struct ModuleMoveResourceTransition {
 }
 
 /// Why a module move cannot be authorized.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ModuleMoveBlocker {
     /// The source identity is incomplete or contradictory.
     InvalidSource,
-    /// The source generation is unknown or an occurrence is from another generation.
+    /// A generation is unknown, or an occurrence is not at its file's current generation.
     StaleOrUnknownGeneration,
+    /// No known current generation is admitted for a file the plan depends on,
+    /// or the admitted snapshot contradicts itself.
+    MissingFileGeneration,
     /// A target package/path is invalid or escapes its root.
     UnsafeTarget,
     /// The target already has a resource.
     TargetCollision,
-    /// The source has multiple primary packages.
+    /// The source has multiple primary packages, or more than one primary
+    /// package declaration was admitted for it.
     AmbiguousSourcePackage,
     /// A relevant occurrence is dynamic.
     DynamicBoundary,
     /// A relevant occurrence is not fully supported.
     UnsupportedProjection,
-    /// The source package declaration is not present in the denominator.
+    /// The moved file's own package declaration is not present in the denominator.
     MissingPackageDeclaration,
     /// An occurrence range is not exactly the byte length of its old text.
     InvalidAnchor,
+    /// An anchor contains the source identity at more than one substitution site.
+    AmbiguousAnchor,
+    /// Two admitted occurrences share an occurrence or anchor identity in one file.
+    DuplicateOccurrence,
+    /// Two planned edits in one file cover overlapping bytes.
+    OverlappingEdits,
     /// The admitted semantic denominator is incomplete.
     IncompleteOccurrences,
     /// The target does not remain in the same authorized root.
     CrossRoot,
+}
+
+impl ModuleMoveBlocker {
+    /// Stable wire tag, independent of `Debug` formatting.
+    #[must_use]
+    pub const fn tag(self) -> &'static str {
+        match self {
+            Self::InvalidSource => "invalid-source",
+            Self::StaleOrUnknownGeneration => "stale-or-unknown-generation",
+            Self::MissingFileGeneration => "missing-file-generation",
+            Self::UnsafeTarget => "unsafe-target",
+            Self::TargetCollision => "target-collision",
+            Self::AmbiguousSourcePackage => "ambiguous-source-package",
+            Self::DynamicBoundary => "dynamic-boundary",
+            Self::UnsupportedProjection => "unsupported-projection",
+            Self::MissingPackageDeclaration => "missing-package-declaration",
+            Self::InvalidAnchor => "invalid-anchor",
+            Self::AmbiguousAnchor => "ambiguous-anchor",
+            Self::DuplicateOccurrence => "duplicate-occurrence",
+            Self::OverlappingEdits => "overlapping-edits",
+            Self::IncompleteOccurrences => "incomplete-occurrences",
+            Self::CrossRoot => "cross-root",
+        }
+    }
 }
 
 /// Whether the pure plan can be materialized as a complete operation.
@@ -145,6 +210,48 @@ pub enum ModuleMoveDisposition {
     Complete,
     /// The operation must be refused with its blockers.
     Blocked,
+}
+
+impl ModuleMoveDisposition {
+    /// Stable wire tag, independent of `Debug` formatting.
+    #[must_use]
+    pub const fn tag(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
+/// Why a plan value cannot be trusted as a checked plan.
+///
+/// A plan can arrive by deserialization or public field construction, so no
+/// caller may read `disposition` as authorization without clearing these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ModuleMoveInvalidPlan {
+    /// The plan does not carry [`MODULE_MOVE_SCHEMA_VERSION`].
+    UnknownSchemaVersion,
+    /// `disposition` and `blockers` disagree about refusal.
+    DispositionDisagreesWithBlockers,
+    /// Blockers are not in canonical sorted, deduplicated order.
+    BlockersNotCanonical,
+    /// A complete plan carries no edit.
+    CompletePlanWithoutEdits,
+    /// An edit's range, text, or generation is malformed.
+    MalformedEdit,
+    /// Edits are not in canonical order.
+    EditsNotCanonical,
+    /// Two edits in one file share an occurrence or anchor identity.
+    DuplicateEdit,
+    /// Two edits in one file cover overlapping bytes.
+    OverlappingEdits,
+    /// The resource transition does not follow from the source identity.
+    ResourceTransitionInconsistent,
+    /// A complete plan does not rename the moved file's own package declaration.
+    MissingPackageDeclaration,
+    /// The fingerprint does not identify this payload.
+    FingerprintMismatch,
 }
 
 /// Pure, deterministic module-move plan.  It contains no mutable workspace state.
@@ -160,35 +267,53 @@ pub struct ModuleMovePlan {
     pub edits: Vec<ModuleMoveEdit>,
     /// Typed refusal reasons, empty for a complete plan.
     pub blockers: Vec<ModuleMoveBlocker>,
-    /// Plan disposition.
+    /// Plan disposition.  Not authorization on its own — see [`Self::is_complete`].
     pub disposition: ModuleMoveDisposition,
-    /// Deterministic identity over the full plan payload.
+    /// Deterministic identity over every load-bearing field of the plan.
     pub fingerprint: String,
 }
 
 impl ModuleMovePlan {
     /// Build a plan from canonical facts without reading or mutating anything.
+    ///
+    /// `current_generations` admits the generation the producer proves current
+    /// for each file the denominator touches, including the moved file itself.
+    #[must_use]
     pub fn build(
         source: ModuleMoveSource,
         target: ModuleMoveTarget,
         occurrences: Vec<ModuleMoveOccurrence>,
+        current_generations: Vec<ModuleMoveFileGeneration>,
         target_exists: bool,
     ) -> Self {
         let mut blockers = Vec::new();
+        let root = source.root.trim_end_matches('/').to_string();
+
+        let generations = CurrentGenerations::admit(current_generations);
+        if generations.contradictory {
+            blockers.push(ModuleMoveBlocker::MissingFileGeneration);
+        }
+        match generations.current(source.file_id) {
+            None => blockers.push(ModuleMoveBlocker::MissingFileGeneration),
+            Some(current) if *current != source.generation => {
+                blockers.push(ModuleMoveBlocker::StaleOrUnknownGeneration);
+            }
+            Some(_) => {}
+        }
+
         let target_package = match target {
             ModuleMoveTarget::Package(value) => value,
-            ModuleMoveTarget::RelativePath(value) => {
-                let prefix = format!("{}/", source.root.trim_end_matches('/'));
-                value.strip_prefix(&prefix).and_then(package_from_path).unwrap_or_default()
-            }
+            ModuleMoveTarget::RelativePath(value) => value
+                .strip_prefix(&format!("{root}/"))
+                .and_then(package_from_path)
+                .unwrap_or_default(),
         };
-        let target_path = module_path(&target_package)
-            .map(|path| format!("{}/{path}", source.root.trim_end_matches('/')))
-            .unwrap_or_default();
-        let expected_source_path = module_path(&source.module)
-            .map(|path| format!("{}/{path}", source.root.trim_end_matches('/')));
+        let target_path =
+            module_path(&target_package).map(|path| format!("{root}/{path}")).unwrap_or_default();
+        let expected_source_path = module_path(&source.module).map(|path| format!("{root}/{path}"));
+
         if source.workspace.trim().is_empty()
-            || source.root.trim().is_empty()
+            || root.is_empty()
             || source.source_uri.trim().is_empty()
             || source.relative_path.trim().is_empty()
             || !valid_package(&source.package)
@@ -208,53 +333,85 @@ impl ModuleMovePlan {
         if !source.occurrences_complete {
             blockers.push(ModuleMoveBlocker::IncompleteOccurrences);
         }
-        if !source.generation.is_known() || target_package.is_empty() || target_path.is_empty() {
-            blockers.push(if target_package.is_empty() {
-                ModuleMoveBlocker::UnsafeTarget
-            } else {
-                ModuleMoveBlocker::StaleOrUnknownGeneration
-            });
+        if !source.generation.is_known() {
+            blockers.push(ModuleMoveBlocker::StaleOrUnknownGeneration);
+        }
+        if target_package.is_empty() || target_path.is_empty() {
+            blockers.push(ModuleMoveBlocker::UnsafeTarget);
         }
         if target_exists || target_path == source.relative_path {
             blockers.push(ModuleMoveBlocker::TargetCollision);
         }
-        if !target_path.starts_with(&format!("{}/", source.root.trim_end_matches('/'))) {
+        if !target_path.starts_with(&format!("{root}/")) {
             blockers.push(ModuleMoveBlocker::CrossRoot);
         }
+
         let mut edits = Vec::new();
-        let mut has_package_declaration = false;
+        let mut primary_declarations = 0_u32;
         for occurrence in occurrences {
-            if occurrence.file_generation != source.generation {
-                blockers.push(ModuleMoveBlocker::StaleOrUnknownGeneration);
+            // Collected per occurrence so refusal and edit stay mutually
+            // exclusive: any refusal at all withdraws this occurrence's edit.
+            let mut refusals: Vec<ModuleMoveBlocker> = Vec::new();
+
+            // Currentness is proven per occurrence file, never against the
+            // moved file's generation: a cross-file reference has its own.
+            match generations.current(occurrence.file_id) {
+                None => refusals.push(ModuleMoveBlocker::MissingFileGeneration),
+                Some(current) if !current.is_known() => {
+                    refusals.push(ModuleMoveBlocker::MissingFileGeneration);
+                }
+                Some(current) if *current != occurrence.file_generation => {
+                    refusals.push(ModuleMoveBlocker::StaleOrUnknownGeneration);
+                }
+                Some(_) => {}
+            }
+            if occurrence.stale {
+                refusals.push(ModuleMoveBlocker::StaleOrUnknownGeneration);
             }
             if occurrence.dynamic || occurrence.kind == OccurrenceKind::DynamicBoundary {
-                blockers.push(ModuleMoveBlocker::DynamicBoundary);
+                refusals.push(ModuleMoveBlocker::DynamicBoundary);
             }
             if occurrence.unsupported {
-                blockers.push(ModuleMoveBlocker::UnsupportedProjection);
+                refusals.push(ModuleMoveBlocker::UnsupportedProjection);
             }
-            if occurrence.kind == OccurrenceKind::Definition
-                && occurrence.old_text.trim_start().starts_with("package ")
-                && replace_identity(&occurrence.old_text, &source.package, &target_package)
-                    .is_some()
-            {
-                has_package_declaration = true;
-            }
-            let range_len =
-                u64::from(occurrence.end_byte).saturating_sub(u64::from(occurrence.start_byte));
-            if occurrence.stale
-                || occurrence.old_text.is_empty()
+            if occurrence.old_text.is_empty()
                 || occurrence.end_byte <= occurrence.start_byte
-                || range_len != occurrence.old_text.len() as u64
+                || u64::from(occurrence.end_byte) - u64::from(occurrence.start_byte)
+                    != occurrence.old_text.len() as u64
             {
-                if range_len != occurrence.old_text.len() as u64 {
-                    blockers.push(ModuleMoveBlocker::InvalidAnchor);
-                }
-                blockers.push(ModuleMoveBlocker::StaleOrUnknownGeneration);
+                refusals.push(ModuleMoveBlocker::InvalidAnchor);
             }
-            if let Some(new_text) =
-                replace_identity(&occurrence.old_text, &source.package, &target_package)
+
+            let sites = identity_sites(&occurrence.old_text, &source.package);
+            let new_text = match sites.as_slice() {
+                [] => {
+                    refusals.push(ModuleMoveBlocker::UnsupportedProjection);
+                    None
+                }
+                [start] => {
+                    Some(substitute(&occurrence.old_text, *start, &source.package, &target_package))
+                }
+                _ => {
+                    // A multi-statement anchor has more than one substitution
+                    // site; one exact-old-text edit cannot express it.
+                    refusals.push(ModuleMoveBlocker::AmbiguousAnchor);
+                    None
+                }
+            };
+
+            // The declaration must be the moved file's own, bound to its file
+            // identity — a dependent file's `package Old::Name` is a reference.
+            if occurrence.kind == OccurrenceKind::Definition
+                && occurrence.file_id == source.file_id
+                && occurrence.old_text.trim_start().starts_with("package ")
+                && sites.len() == 1
             {
+                primary_declarations += 1;
+            }
+
+            let refused = !refusals.is_empty();
+            blockers.append(&mut refusals);
+            if let (false, Some(new_text)) = (refused, new_text) {
                 edits.push(ModuleMoveEdit {
                     file_id: occurrence.file_id,
                     generation: occurrence.file_generation,
@@ -267,43 +424,279 @@ impl ModuleMovePlan {
                     start_byte: occurrence.start_byte,
                     end_byte: occurrence.end_byte,
                 });
-            } else {
-                blockers.push(ModuleMoveBlocker::UnsupportedProjection);
             }
         }
-        if !has_package_declaration {
-            blockers.push(ModuleMoveBlocker::MissingPackageDeclaration);
+
+        match primary_declarations {
+            0 => blockers.push(ModuleMoveBlocker::MissingPackageDeclaration),
+            1 => {}
+            _ => blockers.push(ModuleMoveBlocker::AmbiguousSourcePackage),
         }
-        edits.sort_by_key(|edit| (edit.file_id, edit.start_byte, edit.occurrence_id));
-        blockers.sort_unstable_by_key(|blocker| *blocker as u8);
+
+        edits.sort_by(edit_order);
+        blockers.extend(edit_set_conflicts(&edits));
+        blockers.sort_unstable();
         blockers.dedup();
+
         let resource = ModuleMoveResourceTransition {
             source_path: source.relative_path.clone(),
             target_path,
             source_module: source.module.clone(),
-            target_module: target_package.clone(),
+            target_module: target_package,
         };
         let disposition = if blockers.is_empty() {
             ModuleMoveDisposition::Complete
         } else {
             ModuleMoveDisposition::Blocked
         };
-        let fingerprint =
-            crate::semantic_identity::SemanticIdentityFingerprint::new("module-move-plan-v1")
-                .field("source", &source.source_uri)
-                .field("generation", &format!("{:?}", source.generation))
-                .field("target", &resource.target_module)
-                .field("path", &resource.target_path)
-                .field("disposition", &format!("{disposition:?}"))
-                .field("edits", &format!("{edits:?}"))
-                .field("blockers", &format!("{blockers:?}"))
-                .finish();
-        Self { schema_version: 1, source, resource, edits, blockers, disposition, fingerprint }
+        let fingerprint = fingerprint_of(
+            MODULE_MOVE_SCHEMA_VERSION,
+            &source,
+            &resource,
+            &edits,
+            &blockers,
+            disposition,
+        );
+        Self {
+            schema_version: MODULE_MOVE_SCHEMA_VERSION,
+            source,
+            resource,
+            edits,
+            blockers,
+            disposition,
+            fingerprint,
+        }
     }
 
-    /// A complete plan is the only plan eligible for materialization.
-    pub const fn is_complete(&self) -> bool {
-        matches!(self.disposition, ModuleMoveDisposition::Complete)
+    /// Re-derive every invariant this plan asserts about itself.
+    ///
+    /// The fields are public and the type is `Deserialize`, so a plan value is
+    /// untrusted input.  This is the trust boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first invariant the plan fails.
+    pub fn validate(&self) -> Result<(), ModuleMoveInvalidPlan> {
+        if self.schema_version != MODULE_MOVE_SCHEMA_VERSION {
+            return Err(ModuleMoveInvalidPlan::UnknownSchemaVersion);
+        }
+        let claims_complete = matches!(self.disposition, ModuleMoveDisposition::Complete);
+        if claims_complete != self.blockers.is_empty() {
+            return Err(ModuleMoveInvalidPlan::DispositionDisagreesWithBlockers);
+        }
+        if !self.blockers.windows(2).all(|pair| pair[0] < pair[1]) {
+            return Err(ModuleMoveInvalidPlan::BlockersNotCanonical);
+        }
+        for edit in &self.edits {
+            if edit.old_text.is_empty()
+                || edit.end_byte <= edit.start_byte
+                || u64::from(edit.end_byte) - u64::from(edit.start_byte)
+                    != edit.old_text.len() as u64
+                || edit.new_text == edit.old_text
+                || !edit.generation.is_known()
+            {
+                return Err(ModuleMoveInvalidPlan::MalformedEdit);
+            }
+        }
+        if !self.edits.windows(2).all(|pair| edit_order(&pair[0], &pair[1]).is_lt()) {
+            return Err(ModuleMoveInvalidPlan::EditsNotCanonical);
+        }
+        if let Some(conflict) = edit_set_conflicts(&self.edits).first() {
+            return Err(match conflict {
+                ModuleMoveBlocker::OverlappingEdits => ModuleMoveInvalidPlan::OverlappingEdits,
+                _ => ModuleMoveInvalidPlan::DuplicateEdit,
+            });
+        }
+        if self.fingerprint
+            != fingerprint_of(
+                self.schema_version,
+                &self.source,
+                &self.resource,
+                &self.edits,
+                &self.blockers,
+                self.disposition,
+            )
+        {
+            return Err(ModuleMoveInvalidPlan::FingerprintMismatch);
+        }
+        if !claims_complete {
+            return Ok(());
+        }
+        if self.edits.is_empty() {
+            return Err(ModuleMoveInvalidPlan::CompletePlanWithoutEdits);
+        }
+        let root = self.source.root.trim_end_matches('/');
+        let expected_target = module_path(&self.resource.target_module)
+            .map(|path| format!("{root}/{path}"))
+            .unwrap_or_default();
+        if self.resource.source_path != self.source.relative_path
+            || self.resource.source_module != self.source.module
+            || self.resource.target_path != expected_target
+            || expected_target.is_empty()
+            || self.resource.target_path == self.resource.source_path
+            || !self.resource.target_path.starts_with(&format!("{root}/"))
+        {
+            return Err(ModuleMoveInvalidPlan::ResourceTransitionInconsistent);
+        }
+        let declarations = self
+            .edits
+            .iter()
+            .filter(|edit| {
+                edit.file_id == self.source.file_id
+                    && edit.kind == OccurrenceKind::Definition
+                    && edit.old_text.trim_start().starts_with("package ")
+                    && identity_sites(&edit.old_text, &self.source.package).len() == 1
+            })
+            .count();
+        if declarations != 1 {
+            return Err(ModuleMoveInvalidPlan::MissingPackageDeclaration);
+        }
+        Ok(())
+    }
+
+    /// A checked complete plan is the only plan eligible for materialization.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        matches!(self.disposition, ModuleMoveDisposition::Complete) && self.validate().is_ok()
+    }
+}
+
+/// The admitted per-file generation snapshot, canonicalized once.
+struct CurrentGenerations {
+    entries: Vec<ModuleMoveFileGeneration>,
+    contradictory: bool,
+}
+
+impl CurrentGenerations {
+    fn admit(mut entries: Vec<ModuleMoveFileGeneration>) -> Self {
+        entries.sort_by_key(|entry| entry.file_id);
+        // Two entries for one file that disagree leave no current generation
+        // to compare against; that is missing evidence, not a tie-break.
+        let contradictory = entries.windows(2).any(|pair| {
+            pair[0].file_id == pair[1].file_id && pair[0].generation != pair[1].generation
+        });
+        Self { entries, contradictory }
+    }
+
+    fn current(&self, file_id: FileId) -> Option<&SourceGeneration> {
+        if self.contradictory {
+            return None;
+        }
+        self.entries.iter().find(|entry| entry.file_id == file_id).map(|entry| &entry.generation)
+    }
+}
+
+fn edit_order(a: &ModuleMoveEdit, b: &ModuleMoveEdit) -> core::cmp::Ordering {
+    (a.file_id, a.start_byte, a.end_byte, a.occurrence_id, a.anchor_id).cmp(&(
+        b.file_id,
+        b.start_byte,
+        b.end_byte,
+        b.occurrence_id,
+        b.anchor_id,
+    ))
+}
+
+/// Conflicts that make an edit set unapplicable as one exact-old-text
+/// transition.  Expects `edits` in [`edit_order`].
+fn edit_set_conflicts(edits: &[ModuleMoveEdit]) -> Vec<ModuleMoveBlocker> {
+    let mut conflicts = Vec::new();
+    for (index, edit) in edits.iter().enumerate() {
+        for other in &edits[index + 1..] {
+            if other.file_id != edit.file_id {
+                continue;
+            }
+            if other.occurrence_id == edit.occurrence_id || other.anchor_id == edit.anchor_id {
+                conflicts.push(ModuleMoveBlocker::DuplicateOccurrence);
+            }
+            if other.start_byte < edit.end_byte && edit.start_byte < other.end_byte {
+                conflicts.push(ModuleMoveBlocker::OverlappingEdits);
+            }
+        }
+    }
+    conflicts
+}
+
+/// Identity over every load-bearing field, in schema order.
+///
+/// Fields are mixed individually under stable labels and stable enum tags, so
+/// no `Debug` formatting is load-bearing and no two distinct plans collide by
+/// omission.
+fn fingerprint_of(
+    schema_version: u16,
+    source: &ModuleMoveSource,
+    resource: &ModuleMoveResourceTransition,
+    edits: &[ModuleMoveEdit],
+    blockers: &[ModuleMoveBlocker],
+    disposition: ModuleMoveDisposition,
+) -> String {
+    let mut acc = crate::semantic_identity::SemanticIdentityFingerprint::new("module-move-plan-v1")
+        .field("schema-version", &schema_version.to_string())
+        .field("workspace", &source.workspace)
+        .field("root", &source.root)
+        .field("source-file-id", &source.file_id.0.to_string())
+        .field("source-relative-path", &source.relative_path)
+        .field("source-uri", &source.source_uri)
+        .field("source-package", &source.package)
+        .field("source-module", &source.module)
+        .field("source-generation", &generation_tag(&source.generation))
+        .field("source-editable", bool_tag(source.editable))
+        .field("source-restricted", bool_tag(source.restricted))
+        .field("primary-package-count", &source.primary_package_count.to_string())
+        .field("occurrences-complete", bool_tag(source.occurrences_complete))
+        .field("resource-source-path", &resource.source_path)
+        .field("resource-target-path", &resource.target_path)
+        .field("resource-source-module", &resource.source_module)
+        .field("resource-target-module", &resource.target_module)
+        .field("disposition", disposition.tag())
+        .field("edit-count", &edits.len().to_string());
+    for edit in edits {
+        acc = acc
+            .field("edit-file-id", &edit.file_id.0.to_string())
+            .field("edit-generation", &generation_tag(&edit.generation))
+            .field("edit-occurrence-id", &edit.occurrence_id.0.to_string())
+            .field("edit-kind", occurrence_kind_tag(edit.kind))
+            .field("edit-entity-id", &edit.entity_id.0.to_string())
+            .field("edit-anchor-id", &edit.anchor_id.0.to_string())
+            .field("edit-old-text", &edit.old_text)
+            .field("edit-new-text", &edit.new_text)
+            .field("edit-start-byte", &edit.start_byte.to_string())
+            .field("edit-end-byte", &edit.end_byte.to_string());
+    }
+    acc = acc.field("blocker-count", &blockers.len().to_string());
+    for blocker in blockers {
+        acc = acc.field("blocker", blocker.tag());
+    }
+    acc.finish()
+}
+
+const fn bool_tag(value: bool) -> &'static str {
+    if value { "true" } else { "false" }
+}
+
+fn generation_tag(generation: &SourceGeneration) -> String {
+    match generation {
+        SourceGeneration::Known(value) => format!("known:{value}"),
+        SourceGeneration::Unknown => "unknown".to_string(),
+    }
+}
+
+const fn occurrence_kind_tag(kind: OccurrenceKind) -> &'static str {
+    match kind {
+        OccurrenceKind::Definition => "definition",
+        OccurrenceKind::Reference => "reference",
+        OccurrenceKind::Read => "read",
+        OccurrenceKind::Write => "write",
+        OccurrenceKind::Call => "call",
+        OccurrenceKind::MethodCall => "method-call",
+        OccurrenceKind::StaticMethodCall => "static-method-call",
+        OccurrenceKind::CoderefReference => "coderef-reference",
+        OccurrenceKind::TypeglobReference => "typeglob-reference",
+        OccurrenceKind::Import => "import",
+        OccurrenceKind::Export => "export",
+        OccurrenceKind::Inheritance => "inheritance",
+        OccurrenceKind::RoleComposition => "role-composition",
+        OccurrenceKind::GeneratedUse => "generated-use",
+        OccurrenceKind::DynamicBoundary => "dynamic-boundary",
     }
 }
 
@@ -327,26 +720,45 @@ fn package_from_path(path: &str) -> Option<String> {
     valid_package(&package).then_some(package)
 }
 
-fn replace_identity(old: &str, source: &str, target: &str) -> Option<String> {
-    let start = old.find(source)?;
-    let end = start + source.len();
-    let before = old.as_bytes().get(start.wrapping_sub(1)).copied();
-    let after = old.as_bytes().get(end).copied();
+/// Every identifier-boundary-clean start offset of `identity` within `text`.
+fn identity_sites(text: &str, identity: &str) -> Vec<usize> {
+    if identity.is_empty() {
+        return Vec::new();
+    }
     let boundary = |byte: Option<u8>| {
         byte.is_none_or(|value| !(value.is_ascii_alphanumeric() || value == b'_'))
     };
-    (boundary(before) && boundary(after))
-        .then(|| format!("{}{}{}", &old[..start], target, &old[end..]))
+    text.match_indices(identity)
+        .filter(|(start, _)| {
+            let end = start + identity.len();
+            // A `::`-separated identity must not be a suffix or prefix of a
+            // longer package path either.
+            boundary(start.checked_sub(1).and_then(|index| text.as_bytes().get(index).copied()))
+                && !text[..*start].ends_with(':')
+                && boundary(text.as_bytes().get(end).copied())
+                && !text[end..].starts_with(':')
+        })
+        .map(|(start, _)| start)
+        .collect()
+}
+
+fn substitute(text: &str, start: usize, identity: &str, replacement: &str) -> String {
+    let end = start + identity.len();
+    format!("{}{replacement}{}", &text[..start], &text[end..])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SOURCE_FILE: FileId = FileId(1);
+    const DEPENDENT_FILE: FileId = FileId(2);
+
     fn source() -> ModuleMoveSource {
         ModuleMoveSource {
             workspace: "w".into(),
             root: "lib".into(),
-            file_id: FileId(1),
+            file_id: SOURCE_FILE,
             relative_path: "lib/Old/Name.pm".into(),
             source_uri: "file:///w/lib/Old/Name.pm".into(),
             package: "Old::Name".into(),
@@ -358,9 +770,24 @@ mod tests {
             occurrences_complete: true,
         }
     }
+
+    fn generation(file_id: FileId, value: &str) -> ModuleMoveFileGeneration {
+        ModuleMoveFileGeneration { file_id, generation: SourceGeneration::known(value) }
+    }
+
+    /// The moved file at `g1` alone.
+    fn source_only_snapshot() -> Vec<ModuleMoveFileGeneration> {
+        vec![generation(SOURCE_FILE, "g1")]
+    }
+
+    /// The moved file at `g1` and a dependent file at its own `g2`.
+    fn cross_file_snapshot() -> Vec<ModuleMoveFileGeneration> {
+        vec![generation(SOURCE_FILE, "g1"), generation(DEPENDENT_FILE, "g2")]
+    }
+
     fn occurrence(text: &str, kind: OccurrenceKind) -> ModuleMoveOccurrence {
         ModuleMoveOccurrence {
-            file_id: FileId(1),
+            file_id: SOURCE_FILE,
             occurrence_id: OccurrenceId(1),
             anchor_id: AnchorId(2),
             entity_id: EntityId(3),
@@ -375,53 +802,411 @@ mod tests {
         }
     }
 
-    #[test]
-    fn plans_exact_prefix_and_preserves_imported_member() {
-        let plan = ModuleMovePlan::build(
+    /// The moved file's own `package Old::Name`, which every complete plan needs.
+    fn declaration() -> ModuleMoveOccurrence {
+        occurrence("package Old::Name", OccurrenceKind::Definition)
+    }
+
+    /// An occurrence in a different file, at that file's own generation.
+    fn dependent(text: &str, kind: OccurrenceKind, ids: u64) -> ModuleMoveOccurrence {
+        ModuleMoveOccurrence {
+            file_id: DEPENDENT_FILE,
+            occurrence_id: OccurrenceId(ids),
+            anchor_id: AnchorId(ids + 100),
+            entity_id: EntityId(3),
+            file_generation: SourceGeneration::known("g2"),
+            start_byte: 10,
+            end_byte: 10 + text.len() as u32,
+            ..occurrence(text, kind)
+        }
+    }
+
+    fn plan(
+        occurrences: Vec<ModuleMoveOccurrence>,
+        generations: Vec<ModuleMoveFileGeneration>,
+    ) -> ModuleMovePlan {
+        ModuleMovePlan::build(
             source(),
             ModuleMoveTarget::Package("New::Name".into()),
-            vec![
-                occurrence("package Old::Name", OccurrenceKind::Definition),
-                occurrence("use Old::Name qw(run)", OccurrenceKind::Import),
-            ],
+            occurrences,
+            generations,
             false,
+        )
+    }
+
+    // --- positive path -----------------------------------------------------
+
+    #[test]
+    fn plans_the_declaration_and_preserves_an_imported_member() {
+        let plan = plan(
+            vec![declaration(), occurrence_at("use Old::Name qw(run)", 40, 4)],
+            source_only_snapshot(),
         );
-        assert!(plan.is_complete());
+        assert!(plan.is_complete(), "{:?}", plan.blockers);
+        assert!(plan.edits.iter().any(|edit| edit.new_text == "package New::Name"));
         assert!(plan.edits.iter().any(|edit| edit.new_text == "use New::Name qw(run)"));
         assert_eq!(plan.resource.target_path, "lib/New/Name.pm");
     }
 
+    /// The primary multi-file case: a reference in another file, current at
+    /// *that* file's generation, must plan rather than read as stale.
     #[test]
-    fn blocks_dynamic_and_generation_mismatch() {
-        let mut item = occurrence("require Old::Name", OccurrenceKind::Reference);
-        item.dynamic = true;
-        item.file_generation = SourceGeneration::known("g2");
-        let plan = ModuleMovePlan::build(
-            source(),
-            ModuleMoveTarget::Package("New::Name".into()),
-            vec![item],
-            false,
+    fn a_dependent_file_reference_at_its_own_generation_is_current() {
+        let plan = plan(
+            vec![declaration(), dependent("use Old::Name", OccurrenceKind::Import, 4)],
+            cross_file_snapshot(),
         );
+        assert!(plan.is_complete(), "{:?}", plan.blockers);
+        assert_eq!(plan.edits.len(), 2);
+        let dependent_edit = plan
+            .edits
+            .iter()
+            .find(|edit| edit.file_id == DEPENDENT_FILE)
+            .map(|edit| (edit.new_text.as_str(), edit.generation.clone()));
+        assert_eq!(dependent_edit, Some(("use New::Name", SourceGeneration::known("g2"))));
+    }
+
+    // --- per-file currentness (thread: track currentness per occurrence file)
+
+    /// Mutation: comparing the dependent occurrence to the *moved file's*
+    /// generation is exactly the defect this test exists to catch.
+    #[test]
+    fn a_dependent_occurrence_off_its_own_files_current_generation_is_refused() {
+        let mut item = dependent("use Old::Name", OccurrenceKind::Import, 4);
+        item.file_generation = SourceGeneration::known("g2-held");
+        let plan = plan(vec![declaration(), item], cross_file_snapshot());
         assert!(!plan.is_complete());
-        assert!(plan.blockers.contains(&ModuleMoveBlocker::DynamicBoundary));
         assert!(plan.blockers.contains(&ModuleMoveBlocker::StaleOrUnknownGeneration));
+        assert_eq!(plan.edits.len(), 1, "the refused occurrence contributes no edit");
     }
 
     #[test]
-    fn refuses_same_text_in_an_unrelated_projection() {
-        let mut item = occurrence("Old::Name", OccurrenceKind::Reference);
-        item.unsupported = true;
-        let plan = ModuleMovePlan::build(
-            source(),
-            ModuleMoveTarget::Package("New::Name".into()),
-            vec![item],
-            false,
+    fn an_occurrence_file_with_no_admitted_generation_is_missing_evidence() {
+        let plan = plan(
+            vec![declaration(), dependent("use Old::Name", OccurrenceKind::Import, 4)],
+            source_only_snapshot(),
+        );
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::MissingFileGeneration));
+        assert!(!plan.blockers.contains(&ModuleMoveBlocker::StaleOrUnknownGeneration));
+    }
+
+    #[test]
+    fn an_unknown_admitted_generation_is_not_a_current_generation() {
+        let snapshot = vec![
+            generation(SOURCE_FILE, "g1"),
+            ModuleMoveFileGeneration {
+                file_id: DEPENDENT_FILE,
+                generation: SourceGeneration::Unknown,
+            },
+        ];
+        let mut item = dependent("use Old::Name", OccurrenceKind::Import, 4);
+        item.file_generation = SourceGeneration::Unknown;
+        let plan = plan(vec![declaration(), item], snapshot);
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::MissingFileGeneration));
+    }
+
+    #[test]
+    fn a_snapshot_that_contradicts_itself_leaves_no_current_generation() {
+        let snapshot = vec![generation(SOURCE_FILE, "g1"), generation(SOURCE_FILE, "g9")];
+        let plan = plan(vec![declaration()], snapshot);
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::MissingFileGeneration));
+        assert!(!plan.is_complete());
+    }
+
+    /// A contradictory snapshot blocks the plan, but it must also withhold the
+    /// edit: no entry in a self-contradictory snapshot is a current generation,
+    /// so no occurrence in that file may be treated as current.
+    #[test]
+    fn a_contradicted_file_authorizes_no_edit_even_at_a_listed_generation() {
+        let snapshot = vec![
+            generation(SOURCE_FILE, "g1"),
+            generation(DEPENDENT_FILE, "g2"),
+            generation(DEPENDENT_FILE, "g9"),
+        ];
+        let plan = plan(
+            vec![declaration(), dependent("use Old::Name", OccurrenceKind::Import, 4)],
+            snapshot,
         );
         assert!(!plan.is_complete());
         assert!(
-            plan.edits.is_empty()
-                || plan.blockers.contains(&ModuleMoveBlocker::UnsupportedProjection)
+            plan.edits.is_empty(),
+            "a contradicted snapshot authorized edits: {:?}",
+            plan.edits
         );
+    }
+
+    #[test]
+    fn the_source_files_admitted_generation_must_agree_with_the_source_fact() {
+        let plan = plan(vec![declaration()], vec![generation(SOURCE_FILE, "g9")]);
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::StaleOrUnknownGeneration));
+    }
+
+    /// The producer's own `stale` flag is an additional refusal input, not a
+    /// substitute for the generation comparison.
+    #[test]
+    fn a_producer_stale_flag_still_refuses_a_generation_current_occurrence() {
+        let mut item = declaration();
+        item.stale = true;
+        let plan = plan(vec![item], source_only_snapshot());
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::StaleOrUnknownGeneration));
+        assert!(plan.edits.is_empty());
+    }
+
+    // --- primary declaration identity (thread: require the source declaration)
+
+    #[test]
+    fn a_declaration_in_a_dependent_file_does_not_satisfy_the_source_declaration() {
+        let mut item = dependent("package Old::Name", OccurrenceKind::Definition, 4);
+        item.old_text = "package Old::Name".into();
+        item.end_byte = item.start_byte + item.old_text.len() as u32;
+        let plan = plan(vec![item], cross_file_snapshot());
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::MissingPackageDeclaration));
+        assert!(!plan.is_complete());
+    }
+
+    #[test]
+    fn an_import_only_denominator_has_no_package_declaration() {
+        let plan =
+            plan(vec![occurrence("use Old::Name", OccurrenceKind::Import)], source_only_snapshot());
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::MissingPackageDeclaration));
+    }
+
+    #[test]
+    fn an_empty_denominator_cannot_rename_the_moved_file() {
+        let plan = plan(Vec::new(), source_only_snapshot());
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::MissingPackageDeclaration));
+        assert!(!plan.is_complete());
+    }
+
+    #[test]
+    fn two_primary_declarations_in_the_source_file_are_ambiguous() {
+        let second = ModuleMoveOccurrence {
+            occurrence_id: OccurrenceId(7),
+            anchor_id: AnchorId(8),
+            start_byte: 60,
+            end_byte: 60 + "package Old::Name".len() as u32,
+            ..declaration()
+        };
+        let plan = plan(vec![declaration(), second], source_only_snapshot());
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::AmbiguousSourcePackage));
+    }
+
+    // --- refusal/edit consistency (thread: unsupported occurrence still edits)
+
+    #[test]
+    fn an_unsupported_occurrence_contributes_no_edit() {
+        let mut item = occurrence_at("Old::Name", 40, 4);
+        item.unsupported = true;
+        let plan = plan(vec![declaration(), item], source_only_snapshot());
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::UnsupportedProjection));
+        assert_eq!(plan.edits.len(), 1, "only the declaration survives");
+        assert!(plan.edits.iter().all(|edit| edit.occurrence_id != OccurrenceId(4)));
+    }
+
+    #[test]
+    fn a_dynamic_occurrence_contributes_no_edit() {
+        let mut item = occurrence_at("require Old::Name", 40, 4);
+        item.dynamic = true;
+        let plan = plan(vec![declaration(), item], source_only_snapshot());
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::DynamicBoundary));
+        assert_eq!(plan.edits.len(), 1);
+    }
+
+    #[test]
+    fn a_dynamic_boundary_kind_is_refused_without_the_flag() {
+        let item = occurrence_at("Old::Name", 40, 4);
+        let plan = plan(
+            vec![
+                declaration(),
+                ModuleMoveOccurrence { kind: OccurrenceKind::DynamicBoundary, ..item },
+            ],
+            source_only_snapshot(),
+        );
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::DynamicBoundary));
+        assert_eq!(plan.edits.len(), 1);
+    }
+
+    /// Every blocked plan must be internally consistent: no plan carries both
+    /// a refusal and an edit for the same occurrence.
+    #[test]
+    fn no_refused_occurrence_ever_appears_in_the_edit_set() {
+        for mutate in [
+            (|item: &mut ModuleMoveOccurrence| item.unsupported = true) as fn(&mut _),
+            |item: &mut ModuleMoveOccurrence| item.dynamic = true,
+            |item: &mut ModuleMoveOccurrence| item.stale = true,
+            |item: &mut ModuleMoveOccurrence| item.end_byte -= 1,
+            |item: &mut ModuleMoveOccurrence| {
+                item.file_generation = SourceGeneration::known("elsewhere");
+            },
+        ] {
+            let mut item = occurrence_at("use Old::Name", 40, 4);
+            mutate(&mut item);
+            let plan = plan(vec![declaration(), item], source_only_snapshot());
+            assert!(!plan.is_complete());
+            assert!(
+                plan.edits.iter().all(|edit| edit.occurrence_id != OccurrenceId(4)),
+                "a refused occurrence produced an edit: {:?}",
+                plan.blockers
+            );
+        }
+    }
+
+    // --- anchor geometry (thread: verify byte range covers old_text)
+
+    #[test]
+    fn a_range_that_does_not_equal_the_old_text_bytes_is_refused() {
+        let mut item = declaration();
+        item.end_byte -= 1;
+        let plan = plan(vec![item], source_only_snapshot());
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::InvalidAnchor));
+        assert!(!plan.is_complete());
+    }
+
+    #[test]
+    fn an_inverted_or_empty_range_is_refused() {
+        for (start, end) in [(5_u32, 5_u32), (9, 4)] {
+            let mut item = declaration();
+            item.start_byte = start;
+            item.end_byte = end;
+            let plan = plan(vec![item], source_only_snapshot());
+            assert!(plan.blockers.contains(&ModuleMoveBlocker::InvalidAnchor));
+        }
+    }
+
+    // --- multi-match anchors (thread: replace_identity replaces first only)
+
+    #[test]
+    fn an_anchor_with_two_substitution_sites_is_refused_rather_than_half_edited() {
+        let item = occurrence_at("package Old::Name; use Old::Name;", 40, 4);
+        let plan = plan(vec![declaration(), item], source_only_snapshot());
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::AmbiguousAnchor));
+        assert!(
+            plan.edits.iter().all(|edit| !edit.new_text.contains("Old::Name")),
+            "no edit may leave the old identity behind"
+        );
+    }
+
+    /// The declaration counter must not accept a multi-site anchor either.
+    #[test]
+    fn a_multi_site_declaration_anchor_does_not_satisfy_the_declaration_requirement() {
+        let mut item = declaration();
+        item.old_text = "package Old::Name; use Old::Name;".into();
+        item.end_byte = item.old_text.len() as u32;
+        let plan = plan(vec![item], source_only_snapshot());
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::MissingPackageDeclaration));
+    }
+
+    #[test]
+    fn a_longer_package_path_is_not_the_source_identity() {
+        for text in ["use Old::Name::Deep", "use Prefix::Old::Name", "use Old::NameExtra"] {
+            let item = occurrence_at(text, 40, 4);
+            let plan = plan(vec![declaration(), item], source_only_snapshot());
+            assert!(
+                plan.blockers.contains(&ModuleMoveBlocker::UnsupportedProjection),
+                "{text} was treated as the source identity"
+            );
+        }
+    }
+
+    // --- duplicate and overlapping edits (thread: sorting is not validation)
+
+    #[test]
+    fn two_occurrences_sharing_an_identity_in_one_file_are_refused() {
+        let first = occurrence_at("use Old::Name", 40, 4);
+        let second = ModuleMoveOccurrence { start_byte: 80, end_byte: 93, ..first.clone() };
+        let plan = plan(vec![declaration(), first, second], source_only_snapshot());
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::DuplicateOccurrence));
+        assert!(!plan.is_complete());
+    }
+
+    #[test]
+    fn partially_overlapping_edits_in_one_file_are_refused() {
+        let first = occurrence_at("use Old::Name", 40, 4);
+        let second = ModuleMoveOccurrence {
+            occurrence_id: OccurrenceId(5),
+            anchor_id: AnchorId(6),
+            start_byte: 45,
+            end_byte: 58,
+            ..first.clone()
+        };
+        let plan = plan(vec![declaration(), first, second], source_only_snapshot());
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::OverlappingEdits));
+        assert!(!plan.is_complete());
+    }
+
+    /// The same byte range in *different* files is not a conflict.
+    #[test]
+    fn identical_ranges_in_different_files_do_not_conflict() {
+        let mut item = dependent("use Old::Name", OccurrenceKind::Import, 4);
+        item.start_byte = 0;
+        item.end_byte = "use Old::Name".len() as u32;
+        let plan = plan(vec![declaration(), item], cross_file_snapshot());
+        assert!(plan.is_complete(), "{:?}", plan.blockers);
+    }
+
+    // --- source and target identity ---------------------------------------
+
+    #[test]
+    fn a_package_that_disagrees_with_its_module_is_an_invalid_source() {
+        let mut input = source();
+        input.module = "Other::Name".into();
+        let plan = ModuleMovePlan::build(
+            input,
+            ModuleMoveTarget::Package("New::Name".into()),
+            vec![declaration()],
+            source_only_snapshot(),
+            false,
+        );
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::InvalidSource));
+        assert!(!plan.is_complete());
+    }
+
+    #[test]
+    fn a_path_that_disagrees_with_the_module_is_an_invalid_source() {
+        let mut input = source();
+        input.relative_path = "lib/Somewhere/Else.pm".into();
+        let plan = ModuleMovePlan::build(
+            input,
+            ModuleMoveTarget::Package("New::Name".into()),
+            vec![declaration()],
+            source_only_snapshot(),
+            false,
+        );
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::InvalidSource));
+    }
+
+    #[test]
+    fn restricted_or_uneditable_source_cannot_authorize_edits() {
+        for mutate in [
+            (|input: &mut ModuleMoveSource| input.editable = false) as fn(&mut _),
+            |input: &mut ModuleMoveSource| input.restricted = true,
+        ] {
+            let mut input = source();
+            mutate(&mut input);
+            let plan = ModuleMovePlan::build(
+                input,
+                ModuleMoveTarget::Package("New::Name".into()),
+                vec![declaration()],
+                source_only_snapshot(),
+                false,
+            );
+            assert!(plan.blockers.contains(&ModuleMoveBlocker::InvalidSource));
+        }
+    }
+
+    #[test]
+    fn an_incomplete_denominator_blocks_even_with_a_well_formed_edit_set() {
+        let mut input = source();
+        input.occurrences_complete = false;
+        let plan = ModuleMovePlan::build(
+            input,
+            ModuleMoveTarget::Package("New::Name".into()),
+            vec![declaration()],
+            source_only_snapshot(),
+            false,
+        );
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::IncompleteOccurrences));
+        assert!(!plan.is_complete());
     }
 
     #[test]
@@ -429,7 +1214,8 @@ mod tests {
         let plan = ModuleMovePlan::build(
             source(),
             ModuleMoveTarget::RelativePath("lib/../New.pm".into()),
-            Vec::new(),
+            vec![declaration()],
+            source_only_snapshot(),
             true,
         );
         assert!(!plan.is_complete());
@@ -438,53 +1224,271 @@ mod tests {
     }
 
     #[test]
-    fn requires_package_declaration_occurrence() {
+    fn a_relative_path_target_inside_the_root_derives_its_package() {
         let plan = ModuleMovePlan::build(
             source(),
-            ModuleMoveTarget::Package("New::Name".into()),
-            vec![occurrence("use Old::Name", OccurrenceKind::Import)],
+            ModuleMoveTarget::RelativePath("lib/New/Name.pm".into()),
+            vec![declaration()],
+            source_only_snapshot(),
             false,
         );
-        assert!(plan.blockers.contains(&ModuleMoveBlocker::MissingPackageDeclaration));
+        assert!(plan.is_complete(), "{:?}", plan.blockers);
+        assert_eq!(plan.resource.target_module, "New::Name");
     }
 
     #[test]
-    fn requires_consistent_package_and_module_identity() {
-        let mut input = source();
-        input.module = "Other::Name".into();
+    fn a_target_identical_to_the_source_is_a_collision() {
         let plan = ModuleMovePlan::build(
-            input,
-            ModuleMoveTarget::Package("New::Name".into()),
-            vec![occurrence("package Old::Name", OccurrenceKind::Definition)],
+            source(),
+            ModuleMoveTarget::Package("Old::Name".into()),
+            vec![declaration()],
+            source_only_snapshot(),
             false,
         );
-        assert!(plan.blockers.contains(&ModuleMoveBlocker::InvalidSource));
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::TargetCollision));
+    }
+
+    // --- checked plan acceptance (thread: forged serialized plan) ----------
+
+    #[test]
+    fn a_built_complete_plan_validates() {
+        let plan = plan(vec![declaration()], source_only_snapshot());
+        assert_eq!(plan.validate(), Ok(()));
+        assert!(plan.is_complete());
     }
 
     #[test]
-    fn binds_each_occurrence_to_its_file_generation() {
-        let mut item = occurrence("package Old::Name", OccurrenceKind::Definition);
-        item.file_generation = SourceGeneration::known("dependent-generation");
-        let plan = ModuleMovePlan::build(
-            source(),
-            ModuleMoveTarget::Package("New::Name".into()),
-            vec![item],
-            false,
-        );
-        assert!(plan.blockers.contains(&ModuleMoveBlocker::StaleOrUnknownGeneration));
-    }
-
-    #[test]
-    fn rejects_ranges_that_do_not_equal_old_text_bytes() {
-        let mut item = occurrence("package Old::Name", OccurrenceKind::Definition);
-        item.end_byte -= 1;
-        let plan = ModuleMovePlan::build(
-            source(),
-            ModuleMoveTarget::Package("New::Name".into()),
-            vec![item],
-            false,
-        );
-        assert!(plan.blockers.contains(&ModuleMoveBlocker::InvalidAnchor));
+    fn a_built_blocked_plan_also_validates_as_an_honest_refusal() {
+        let plan = plan(Vec::new(), source_only_snapshot());
+        assert_eq!(plan.validate(), Ok(()));
         assert!(!plan.is_complete());
+    }
+
+    #[test]
+    fn a_plan_forged_complete_through_the_public_wire_is_not_accepted()
+    -> Result<(), serde_json::Error> {
+        let mut forged = plan(Vec::new(), source_only_snapshot());
+        forged.disposition = ModuleMoveDisposition::Complete;
+        let wire = serde_json::to_string(&forged)?;
+        let received: ModuleMovePlan = serde_json::from_str(&wire)?;
+        assert_eq!(
+            received.validate(),
+            Err(ModuleMoveInvalidPlan::DispositionDisagreesWithBlockers)
+        );
+        assert!(!received.is_complete(), "a forged tag authorized materialization");
+        Ok(())
+    }
+
+    #[test]
+    fn a_forged_plan_that_also_clears_its_blockers_fails_on_its_fingerprint() {
+        let mut forged = plan(Vec::new(), source_only_snapshot());
+        forged.disposition = ModuleMoveDisposition::Complete;
+        forged.blockers.clear();
+        forged.edits = plan(vec![declaration()], source_only_snapshot()).edits;
+        assert_eq!(forged.validate(), Err(ModuleMoveInvalidPlan::FingerprintMismatch));
+        assert!(!forged.is_complete());
+    }
+
+    #[test]
+    fn an_unknown_schema_version_is_refused_before_anything_else() {
+        let mut forged = plan(vec![declaration()], source_only_snapshot());
+        forged.schema_version = 0;
+        assert_eq!(forged.validate(), Err(ModuleMoveInvalidPlan::UnknownSchemaVersion));
+        assert!(!forged.is_complete());
+    }
+
+    #[test]
+    fn a_complete_plan_without_edits_is_refused() {
+        let mut forged = plan(vec![declaration()], source_only_snapshot());
+        forged.edits.clear();
+        forged.fingerprint = rebuild_fingerprint(&forged);
+        assert_eq!(forged.validate(), Err(ModuleMoveInvalidPlan::CompletePlanWithoutEdits));
+    }
+
+    #[test]
+    fn a_complete_plan_whose_edits_omit_the_declaration_is_refused() {
+        let mut forged = plan(
+            vec![declaration(), occurrence_at("use Old::Name", 40, 4)],
+            source_only_snapshot(),
+        );
+        forged.edits.retain(|edit| edit.occurrence_id == OccurrenceId(4));
+        forged.fingerprint = rebuild_fingerprint(&forged);
+        assert_eq!(forged.validate(), Err(ModuleMoveInvalidPlan::MissingPackageDeclaration));
+    }
+
+    #[test]
+    fn a_malformed_edit_range_is_refused_even_with_a_matching_fingerprint() {
+        let mut forged = plan(vec![declaration()], source_only_snapshot());
+        forged.edits[0].end_byte -= 1;
+        forged.fingerprint = rebuild_fingerprint(&forged);
+        assert_eq!(forged.validate(), Err(ModuleMoveInvalidPlan::MalformedEdit));
+    }
+
+    #[test]
+    fn a_no_op_edit_is_refused() {
+        let mut forged = plan(vec![declaration()], source_only_snapshot());
+        forged.edits[0].new_text = forged.edits[0].old_text.clone();
+        forged.fingerprint = rebuild_fingerprint(&forged);
+        assert_eq!(forged.validate(), Err(ModuleMoveInvalidPlan::MalformedEdit));
+    }
+
+    #[test]
+    fn an_unknown_edit_generation_is_refused() {
+        let mut forged = plan(vec![declaration()], source_only_snapshot());
+        forged.edits[0].generation = SourceGeneration::Unknown;
+        forged.fingerprint = rebuild_fingerprint(&forged);
+        assert_eq!(forged.validate(), Err(ModuleMoveInvalidPlan::MalformedEdit));
+    }
+
+    #[test]
+    fn an_out_of_order_edit_set_is_refused() {
+        let mut forged = plan(
+            vec![declaration(), occurrence_at("use Old::Name", 40, 4)],
+            source_only_snapshot(),
+        );
+        forged.edits.reverse();
+        forged.fingerprint = rebuild_fingerprint(&forged);
+        assert_eq!(forged.validate(), Err(ModuleMoveInvalidPlan::EditsNotCanonical));
+    }
+
+    #[test]
+    fn a_forged_overlapping_edit_set_is_refused() {
+        let mut forged = plan(vec![declaration()], source_only_snapshot());
+        let mut clash = forged.edits[0].clone();
+        clash.occurrence_id = OccurrenceId(9);
+        clash.anchor_id = AnchorId(9);
+        clash.start_byte += 1;
+        clash.end_byte += 1;
+        clash.old_text = "ackage Old::Name;".into();
+        clash.new_text = "ackage New::Name;".into();
+        forged.edits.push(clash);
+        forged.fingerprint = rebuild_fingerprint(&forged);
+        assert_eq!(forged.validate(), Err(ModuleMoveInvalidPlan::OverlappingEdits));
+    }
+
+    #[test]
+    fn uncanonical_blockers_are_refused() {
+        let mut forged = plan(Vec::new(), source_only_snapshot());
+        forged.blockers =
+            vec![ModuleMoveBlocker::MissingPackageDeclaration, ModuleMoveBlocker::InvalidSource];
+        forged.fingerprint = rebuild_fingerprint(&forged);
+        assert_eq!(forged.validate(), Err(ModuleMoveInvalidPlan::BlockersNotCanonical));
+    }
+
+    #[test]
+    fn a_resource_transition_that_does_not_follow_from_the_source_is_refused() {
+        for mutate in [
+            (|plan: &mut ModuleMovePlan| plan.resource.target_path = "lib/Other.pm".into())
+                as fn(&mut _),
+            |plan: &mut ModuleMovePlan| plan.resource.source_path = "lib/Other.pm".into(),
+            |plan: &mut ModuleMovePlan| plan.resource.source_module = "Other".into(),
+            |plan: &mut ModuleMovePlan| plan.resource.target_module = "..".into(),
+        ] {
+            let mut forged = plan(vec![declaration()], source_only_snapshot());
+            mutate(&mut forged);
+            forged.fingerprint = rebuild_fingerprint(&forged);
+            assert_eq!(
+                forged.validate(),
+                Err(ModuleMoveInvalidPlan::ResourceTransitionInconsistent)
+            );
+        }
+    }
+
+    // --- fingerprint identity (thread: fingerprint omits most of the payload)
+
+    /// Every load-bearing field must move the fingerprint.  Each closure
+    /// mutates one field a `Debug`-blob fingerprint over `source_uri`,
+    /// generation, target, path, disposition, edits and blockers would miss.
+    #[test]
+    fn every_load_bearing_field_moves_the_fingerprint() {
+        let baseline = plan(vec![declaration()], source_only_snapshot());
+        let mutations: Vec<(&str, fn(&mut ModuleMovePlan))> = vec![
+            ("schema-version", |plan| plan.schema_version = 2),
+            ("workspace", |plan| plan.source.workspace = "other".into()),
+            ("root", |plan| plan.source.root = "blib".into()),
+            ("file-id", |plan| plan.source.file_id = FileId(99)),
+            ("relative-path", |plan| plan.source.relative_path = "lib/Other.pm".into()),
+            ("package", |plan| plan.source.package = "Other".into()),
+            ("module", |plan| plan.source.module = "Other".into()),
+            ("editable", |plan| plan.source.editable = false),
+            ("restricted", |plan| plan.source.restricted = true),
+            ("primary-package-count", |plan| plan.source.primary_package_count = 2),
+            ("occurrences-complete", |plan| plan.source.occurrences_complete = false),
+            ("resource-source-path", |plan| plan.resource.source_path = "lib/Other.pm".into()),
+            ("resource-source-module", |plan| plan.resource.source_module = "Other".into()),
+            ("edit-entity-id", |plan| plan.edits[0].entity_id = EntityId(99)),
+            ("edit-anchor-id", |plan| plan.edits[0].anchor_id = AnchorId(99)),
+            ("edit-occurrence-id", |plan| plan.edits[0].occurrence_id = OccurrenceId(99)),
+            ("edit-file-id", |plan| plan.edits[0].file_id = FileId(99)),
+            ("edit-kind", |plan| plan.edits[0].kind = OccurrenceKind::Reference),
+            ("edit-generation", |plan| {
+                plan.edits[0].generation = SourceGeneration::known("g9");
+            }),
+            ("edit-new-text", |plan| plan.edits[0].new_text = "package Other".into()),
+            ("edit-start-byte", |plan| plan.edits[0].start_byte = 4),
+        ];
+        for (label, mutate) in mutations {
+            let mut mutated = baseline.clone();
+            mutate(&mut mutated);
+            assert_ne!(
+                rebuild_fingerprint(&mutated),
+                baseline.fingerprint,
+                "{label} does not reach the fingerprint"
+            );
+        }
+    }
+
+    #[test]
+    fn the_fingerprint_is_deterministic_for_unchanged_facts() {
+        let first = plan(vec![declaration()], source_only_snapshot());
+        let second = plan(vec![declaration()], source_only_snapshot());
+        assert_eq!(first.fingerprint, second.fingerprint);
+        assert_ne!(first.fingerprint, plan(Vec::new(), source_only_snapshot()).fingerprint);
+    }
+
+    /// Field boundaries must not be forgeable by shifting content between
+    /// adjacent labelled fields.
+    #[test]
+    fn adjacent_field_content_cannot_shift_across_a_boundary() {
+        let mut left = plan(vec![declaration()], source_only_snapshot());
+        let mut right = left.clone();
+        left.source.package = "Ab".into();
+        left.source.module = "c".into();
+        right.source.package = "A".into();
+        right.source.module = "bc".into();
+        assert_ne!(rebuild_fingerprint(&left), rebuild_fingerprint(&right));
+    }
+
+    #[test]
+    fn a_plan_round_trips_through_json_unchanged() -> Result<(), serde_json::Error> {
+        let built = plan(vec![declaration()], source_only_snapshot());
+        let wire = serde_json::to_string(&built)?;
+        let received: ModuleMovePlan = serde_json::from_str(&wire)?;
+        assert_eq!(received, built);
+        assert!(received.is_complete());
+        Ok(())
+    }
+
+    // --- helpers -----------------------------------------------------------
+
+    fn occurrence_at(text: &str, start: u32, ids: u64) -> ModuleMoveOccurrence {
+        ModuleMoveOccurrence {
+            occurrence_id: OccurrenceId(ids),
+            anchor_id: AnchorId(ids + 100),
+            start_byte: start,
+            end_byte: start + text.len() as u32,
+            ..occurrence(text, OccurrenceKind::Import)
+        }
+    }
+
+    fn rebuild_fingerprint(plan: &ModuleMovePlan) -> String {
+        fingerprint_of(
+            plan.schema_version,
+            &plan.source,
+            &plan.resource,
+            &plan.edits,
+            &plan.blockers,
+            plan.disposition,
+        )
     }
 }
