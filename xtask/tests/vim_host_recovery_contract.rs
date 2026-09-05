@@ -198,7 +198,7 @@ fn complete_recovery_events(digest: &str) -> Vec<DriverEvent> {
             &[
                 ("replay_index", "1"),
                 ("initialize_generation", "2"),
-                ("document", "main.pl"),
+                ("document", "workspace/project/main.pl"),
                 ("root", "workspace/project"),
                 ("did_open_replayed", "1"),
                 ("client_init_events", "2"),
@@ -244,7 +244,7 @@ fn complete_recovery_events(digest: &str) -> Vec<DriverEvent> {
             &[
                 ("replay_index", "2"),
                 ("initialize_generation", "3"),
-                ("document", "main.pl"),
+                ("document", "workspace/project/main.pl"),
                 ("root", "workspace/project"),
                 ("did_open_replayed", "1"),
                 ("client_init_events", "3"),
@@ -290,7 +290,7 @@ fn complete_recovery_events(digest: &str) -> Vec<DriverEvent> {
             &[
                 ("replay_index", "3"),
                 ("initialize_generation", "4"),
-                ("document", "main.pl"),
+                ("document", "workspace/project/main.pl"),
                 ("root", "workspace/project"),
                 ("did_open_replayed", "1"),
                 ("client_init_events", "4"),

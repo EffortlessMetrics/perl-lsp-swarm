@@ -1370,7 +1370,7 @@ fn replay_ok(replays: &[&DriverEvent], recovery_wire: &RecoveryWire, restart_cou
         return false;
     }
     if !replays.iter().all(|event| {
-        event.details.get("document") == Some(&MAIN_TOKEN.to_string())
+        event.details.get("document") == Some(&OPENED_FILE_REL.to_string())
             && event.details.get("root") == Some(&GOVERNED_ROOT_REL.to_string())
             && event.details.get("did_open_replayed") == Some(&"1".to_string())
     }) {

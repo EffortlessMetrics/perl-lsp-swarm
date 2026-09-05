@@ -528,12 +528,20 @@ endif
 " pending, and the host exits inside the pending state
 
 if empty(s:failures)
+  " The pending state is "the serving generation died and nothing replaced
+  " it", so bind it to the counters observed immediately before the final
+  " stimulus rather than to a literal generation number. A hardcoded count
+  " silently stops meaning "no replacement started" the moment the journey
+  " gains or loses a generation.
+  let s:pending_init_before = VimLspHostServerInitCount()
+  let s:pending_enabled_before = VimLspHostBufferEnabledCount()
   if s:ApplyStimulus(3, 4)
-    if VimLspHostServerInitCount() == 3
-          \ && VimLspHostBufferEnabledCount() == 3
+    if VimLspHostServerInitCount() == s:pending_init_before
+          \ && VimLspHostBufferEnabledCount() == s:pending_enabled_before
       call s:Emit('shutdown_during_pending_observed', {
             \ 'old_generation_dead': '1',
             \ 'new_generation_started': '0',
+            \ 'observed_init_events': string(s:pending_init_before),
             \ 'recovery_route': 'pending_manual_reopen',
             \ })
     else
