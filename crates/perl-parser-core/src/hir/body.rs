@@ -26,8 +26,8 @@
 use crate::SourceLocation;
 
 use super::model::{
-    BranchKeyword, ControlTransferKind, LoopKind, ReadlineSource, StatementModifierKind,
-    glob_pattern_interpolates,
+    BranchKeyword, ControlTransferKind, HirBindingId, LoopKind, ReadlineSource,
+    StatementModifierKind, glob_pattern_interpolates,
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -242,6 +242,38 @@ pub struct HirVariable {
     pub kind: VariableKind,
     /// How this node uses the variable.
     pub access: AccessMode,
+    /// Canonical [`HirBindingId`] this occurrence resolves to, when a binding is
+    /// visible in the enclosing scope chain (#14166, family #6659).
+    ///
+    /// This is the file's source-backed binding authority from
+    /// [`ScopeGraph`](super::model::ScopeGraph) — not an identity reconstructed
+    /// from `(body, sigil, name)` or a source range. Two same-spelling lexicals
+    /// declared in nested scopes of one body therefore stay distinguishable
+    /// here. Resolution walks the enclosing scope chain by name; it is not yet
+    /// position-sensitive within a scope, so the binding named here is the
+    /// scope-chain resolution, which differs from the binding Perl would see
+    /// in four documented cases (tracked by #14173):
+    ///
+    /// - self-referential initializer: in `my $x = $x` the read resolves to the
+    ///   binding being declared, not the outer one;
+    /// - same-scope redeclaration: a read between `my $x = 1;` and `my $x = 2;`
+    ///   resolves to the later declaration;
+    /// - `foreach my $i` iterator: recorded in the enclosing scope rather than a
+    ///   loop-private one, so a post-loop read of `$i` captures the loop binding;
+    /// - package-scope descent: declarations at `package NAME;` top level are
+    ///   `None` when resolved from the program root.
+    ///
+    /// Declaration occurrences are exempt from the first two cases: each names
+    /// the binding it introduces, matched by declaration span.
+    ///
+    /// `None` means no binding was visible — an unresolved package global such
+    /// as `$Foo::bar`, a variable with no declaration in scope, or the
+    /// package-scope case above. It is never a fabricated stand-in identity.
+    ///
+    /// Only the canonical [`lower_ast`](super::lower_ast) path populates this.
+    /// The test-only [`lower_body`] builder has no scope graph and leaves it
+    /// `None`.
+    pub binding: Option<HirBindingId>,
 }
 
 /// Aggregate flavour of a subscript element access.
@@ -533,6 +565,16 @@ pub enum HirStmt {
         /// initializer — so PIR lowering anchors declarations at the variable,
         /// matching the legacy find-references provider (#2643 range parity).
         binding_range: SourceLocation,
+        /// Canonical [`HirBindingId`] introduced by this declaration, when the
+        /// scope graph recorded one (#14166, family #6659).
+        ///
+        /// Carries the same authority as [`HirVariable::binding`]: nested
+        /// same-spelling declarations in one body keep distinct identities, and
+        /// `my` / `state` / `our` / `local` declarations of one spelling stay
+        /// separable through their bindings' `StorageClass`.
+        ///
+        /// `None` on the test-only [`lower_body`] path, which has no scope graph.
+        binding: Option<HirBindingId>,
     },
 
     /// Loop-control transfer (`next`, `last`, or `redo`).
@@ -735,6 +777,9 @@ fn lower_statement(builder: &mut BodyBuilder, node: &Node) -> HirStmtId {
                     name: var_name.clone(),
                     kind: VariableKind::Lexical,
                     access: AccessMode::Write,
+                    // This test-only builder has no scope graph, so it has no
+                    // binding authority to project (#14166).
+                    binding: None,
                 });
                 let place_id = builder.alloc_expr(place_expr, variable.location);
 
@@ -766,6 +811,8 @@ fn lower_statement(builder: &mut BodyBuilder, node: &Node) -> HirStmtId {
                     storage,
                     init: init_expr_id,
                     binding_range: binding_node.location,
+                    // No scope graph on this test-only path (#14166).
+                    binding: None,
                 },
                 range,
             )
@@ -841,8 +888,14 @@ fn lower_place(
 ) -> HirExprId {
     match &node.kind {
         NodeKind::Variable { sigil, name } => {
-            let var =
-                HirVariable { sigil: Sigil::from_str(sigil), name: name.clone(), kind, access };
+            // The mirror has no scope-graph binding authority to project (#14166).
+            let var = HirVariable {
+                sigil: Sigil::from_str(sigil),
+                name: name.clone(),
+                kind,
+                access,
+                binding: None,
+            };
             builder.alloc_expr(HirExpr::Variable(var), node.location)
         }
         _ => lower_expr(builder, node),
@@ -879,6 +932,8 @@ fn lower_expr(builder: &mut BodyBuilder, node: &Node) -> HirExprId {
                 name: name.clone(),
                 kind: VariableKind::Lexical,
                 access: AccessMode::Read,
+                // No scope graph on this test-only path (#14166).
+                binding: None,
             };
             builder.alloc_expr(HirExpr::Variable(var), range)
         }

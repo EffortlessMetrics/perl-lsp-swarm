@@ -1029,7 +1029,10 @@ impl BodyLowerer {
             None => return,
         };
         match stmt {
-            HirStmt::Let { name, sigil, storage, init, binding_range } => {
+            // `binding` (#14166) is deliberately not consumed here yet: threading
+            // canonical binding identity and storage class into PIR facts is
+            // #6659 item 2, a separate slice.
+            HirStmt::Let { name, sigil, storage, init, binding_range, binding: _ } => {
                 // Emit exactly ONE Write op for the declaration target.
                 // `storage` determines whether this is a lexical (my/state) or
                 // package (our) slot. Ignoring `storage` was the root cause of
