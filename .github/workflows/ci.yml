@@ -1641,10 +1641,15 @@ jobs:
       # suite on purpose — that suite also carries inventory ratchets which are
       # red on main today, so enabling it wholesale would gate this surface on
       # other lanes' work.
+      # One invocation with both filters, not two runs: libtest ORs positional
+      # filters and runs each match once, so `check_malformed_changie_yaml_is_
+      # instrument_failure_exit2` — the one name containing both words — is not
+      # executed twice. Kept as substring filters rather than exact module
+      # paths on purpose: they also pick up the `merge_ready` changelog fan-in
+      # tests and the `file_policy` changie-rule tests, which exact paths would
+      # drop from this surface.
       - name: Changelog fragment gate contract (required merge surface)
-        run: |
-          cargo test -p xtask --bin xtask --locked changelog -- --nocapture
-          cargo test -p xtask --bin xtask --locked changie -- --nocapture
+        run: cargo test -p xtask --bin xtask --locked -- --nocapture changelog changie
 
   lsp-memory-smoke:
     name: LSP Memory Smoke
