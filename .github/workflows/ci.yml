@@ -1548,9 +1548,13 @@ jobs:
       # whether what would actually land still compiles. Other jobs in this
       # workflow deliberately keep exact-head checkout for head-pinned receipts;
       # this one is a merge-surface gate and must not.
+      # Full history: the non-Rust file policy contract below runs the real
+      # `non-rust inventory --check`, whose newly-added-path ratchet needs
+      # `origin/main` (or `HEAD^`) to resolve and fails closed in CI otherwise.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
