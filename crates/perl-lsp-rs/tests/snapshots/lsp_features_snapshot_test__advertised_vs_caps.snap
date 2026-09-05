@@ -1,6 +1,5 @@
 ---
 source: crates/perl-lsp-rs/tests/lsp_features_snapshot_test.rs
-assertion_line: 37
 expression: "&snapshot_data"
 ---
 caps:
@@ -43,16 +42,12 @@ catalog:
   - dap.core
   - dap.exceptions.die
   - dap.exceptions.warn
-  - dap.goto
-  - dap.goto_targets
-  - dap.inline_values
   - dap.loaded_sources
   - dap.modules
   - dap.pause
   - dap.restart
   - dap.set_expression
   - dap.source
-  - dap.step_in_targets
   - dap.threads
   - experimental.perlInlineCompletionStream
   - lsp.apply_edit
