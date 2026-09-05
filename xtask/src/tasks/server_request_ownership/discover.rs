@@ -529,8 +529,11 @@ pub(super) fn scan_emission(
 
         // `path#symbol` cannot distinguish two same-named functions in one
         // file, so record the collision rather than letting one stand for both.
+        // Only definitions collide: a trait declares a method and implements it
+        // in the same file often enough -- `OutboundSink` does -- and counting
+        // the bodyless declaration made every such emitter unciteable.
         let mut seen: BTreeSet<&str> = BTreeSet::new();
-        for facts in &collector.functions {
+        for facts in collector.functions.iter().filter(|facts| facts.has_body) {
             if !seen.insert(facts.name.as_str()) {
                 ambiguous.insert(format!("{relative}#{}", facts.name));
             }

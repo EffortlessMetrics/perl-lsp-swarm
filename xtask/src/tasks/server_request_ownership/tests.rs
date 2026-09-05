@@ -815,6 +815,78 @@ impl Unrelated {
     Ok(())
 }
 
+/// A trait that declares a method and implements it in the same file is the
+/// ordinary shape here -- `OutboundSink` is exactly that. Counting the bodyless
+/// declaration as a second definition made `path#symbol` ambiguous, so a row
+/// citing that emitter was rejected as `emitter-ambiguous` although only one
+/// definition existed.
+#[test]
+fn a_same_file_trait_declaration_does_not_make_its_impl_unciteable()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let runtime = dir.path().join("src").join("runtime");
+    std::fs::create_dir_all(&runtime)?;
+    std::fs::write(
+        runtime.join("outbound.rs"),
+        r#"
+pub(crate) trait Sink {
+    fn emit_refresh(&self) -> io::Result<()>;
+}
+impl Sink for Server {
+    fn emit_refresh(&self) -> io::Result<()> {
+        self.send_request(id, "workspace/codeLens/refresh", params)
+    }
+}
+"#,
+    )?;
+
+    let constants = BTreeMap::new();
+    let (emitted, ambiguous, findings) = scan_emission(dir.path(), "src", &constants)?;
+
+    assert_eq!(emitted.get("workspace/codeLens/refresh").map(Vec::len), Some(1), "{emitted:?}");
+    assert!(
+        ambiguous.is_empty(),
+        "one definition and its declaration are not a collision: {ambiguous:?}"
+    );
+    assert!(findings.is_empty(), "{findings:?}");
+    Ok(())
+}
+
+/// Two real definitions sharing a name in one file are still a collision, so
+/// the exclusion above cannot reopen what `an_ambiguous_emitter_symbol_fails`
+/// exists to catch.
+#[test]
+fn two_bodied_definitions_sharing_a_name_are_still_ambiguous()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let runtime = dir.path().join("src").join("runtime");
+    std::fs::create_dir_all(&runtime)?;
+    std::fs::write(
+        runtime.join("twice.rs"),
+        r#"
+impl First {
+    fn emit_refresh(&self) -> io::Result<()> {
+        self.send_request(id, "workspace/codeLens/refresh", params)
+    }
+}
+impl Second {
+    fn emit_refresh(&self) -> io::Result<()> {
+        self.send_request(id, "workspace/inlayHint/refresh", params)
+    }
+}
+"#,
+    )?;
+
+    let constants = BTreeMap::new();
+    let (_emitted, ambiguous, _findings) = scan_emission(dir.path(), "src", &constants)?;
+
+    assert!(
+        ambiguous.contains("src/runtime/twice.rs#emit_refresh"),
+        "two bodies under one name remain unciteable: {ambiguous:?}"
+    );
+    Ok(())
+}
+
 /// `#[cfg(test)] mod tests;` leaves its code in another file, and that file,
 /// parsed alone, shows no sign of having been gated. Skipping by filename could
 /// not recover it: `tests.rs` does not end in `_tests.rs`, so a send there was
