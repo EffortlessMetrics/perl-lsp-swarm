@@ -6,17 +6,102 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+/// PATH components a parent-process preflight can resolve coherently with a
+/// child that runs under a selected `current_dir`.
+///
+/// Every wrapper in this module launches with `Command::current_dir(repo_root)`
+/// while [`command_exists`] runs in the parent. A *relative* PATH component is
+/// therefore resolved against two different directories: the parent's current
+/// directory when probing, and `repo_root` when launching. An *empty* component
+/// is the same defect in disguise — Unix `execvp` treats a zero-length entry as
+/// the current directory, so it silently names `repo_root` at launch and the
+/// parent's directory at probe time.
+///
+/// Only absolute components name the same directory from both processes, so
+/// only absolute components are admitted. Dropping the rest also keeps a
+/// repository-controlled file sitting in `repo_root` from being discovered — or
+/// launched — as though it were an installed developer tool.
+///
+/// `Path::new("").is_absolute()` is false, so empty components are dropped by
+/// the same rule that drops relative ones.
+fn admissible_search_paths(path: Option<&OsStr>) -> Vec<PathBuf> {
+    let Some(path) = path else {
+        return Vec::new();
+    };
+    env::split_paths(path).filter(|dir| dir.is_absolute()).collect()
+}
+
+/// Bind the child's PATH to exactly the components [`command_exists`] searched,
+/// so discovery and launch traverse one identical, cwd-independent list.
+///
+/// Without this the two disagree even when the probe is honest: with
+/// `PATH=".:/usr/bin"` the probe admits `/usr/bin/tool` while a bare-name launch
+/// under `current_dir(repo_root)` runs `repo_root/tool` instead.
+///
+/// When nothing is admissible the variable is *removed* rather than set to an
+/// empty value: an empty PATH means the current directory on Unix, which is the
+/// `repo_root` candidate this policy refuses. Removing it leaves the platform's
+/// own absolute default search path, which cannot name the workspace.
+fn apply_admissible_search_path(child: &mut Command, path: Option<&OsStr>) {
+    match env::join_paths(admissible_search_paths(path)) {
+        Ok(joined) if !joined.is_empty() => {
+            child.env("PATH", joined);
+        }
+        // Either there is no admissible component, or one could not be
+        // re-joined (a component containing the list separator). Fail closed.
+        _ => {
+            child.env_remove("PATH");
+        }
+    }
+}
+
+/// Shared child construction for every wrapper in this module.
+///
+/// Caller-supplied `env_vars` are applied last, so an explicitly configured
+/// `PATH` keeps its own trust and identity policy instead of being overridden
+/// by the bare-name search policy above.
+fn configure_child(
+    command: &str,
+    repo_root: &Path,
+    args: &[&str],
+    env_vars: &[(&str, &str)],
+) -> Command {
+    let mut child = Command::new(command);
+    child.current_dir(repo_root).args(args);
+    apply_admissible_search_path(&mut child, env::var_os("PATH").as_deref());
+    for (key, value) in env_vars {
+        child.env(key, value);
+    }
+    child
+}
+
+/// Whether `command` is a bare name that the launch APIs will PATH-search.
+///
+/// A name carrying a path separator is resolved directly by `execvp` and by
+/// `std`'s Windows `resolve_exe`, so no PATH traversal happens and the probe has
+/// nothing to answer for. Backslash is a separator on Windows only; it is an
+/// ordinary filename byte on Unix.
+fn is_bare_name(command: &str) -> bool {
+    if command.is_empty() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        !command.contains(['\\', '/'])
+    }
+    #[cfg(not(windows))]
+    {
+        !command.contains('/')
+    }
+}
+
 pub(crate) fn command_with_output(
     repo_root: &Path,
     command: &str,
     args: &[&str],
     env_vars: &[(&str, &str)],
 ) -> Result<String> {
-    let mut child = Command::new(command);
-    child.current_dir(repo_root).args(args);
-    for (key, value) in env_vars {
-        child.env(key, value);
-    }
+    let mut child = configure_child(command, repo_root, args, env_vars);
     child.stdout(Stdio::piped()).stderr(Stdio::piped());
     let output = child.output().wrap_err_with(|| format!("running {command}"))?;
     let status = output.status.code().unwrap_or(1);
@@ -36,11 +121,7 @@ pub(crate) fn command_with_output_all(
     args: &[&str],
     env_vars: &[(&str, &str)],
 ) -> Result<String> {
-    let mut child = Command::new(command);
-    child.current_dir(repo_root).args(args);
-    for (key, value) in env_vars {
-        child.env(key, value);
-    }
+    let mut child = configure_child(command, repo_root, args, env_vars);
     child.stdout(Stdio::piped()).stderr(Stdio::piped());
     let output = child.output().wrap_err_with(|| format!("running {command}"))?;
     let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -63,11 +144,7 @@ pub(crate) fn command_with_input_with_status(
     env_vars: &[(&str, &str)],
     stdin_payload: &str,
 ) -> Result<(i32, String)> {
-    let mut child = Command::new(command);
-    child.current_dir(repo_root).args(args);
-    for (key, value) in env_vars {
-        child.env(key, value);
-    }
+    let mut child = configure_child(command, repo_root, args, env_vars);
     child.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let mut child = child.spawn().wrap_err_with(|| format!("running {command}"))?;
@@ -95,11 +172,7 @@ pub(crate) fn command_output_with_status(
     args: &[&str],
     env_vars: &[(&str, &str)],
 ) -> Result<(i32, String)> {
-    let mut child = Command::new(command);
-    child.current_dir(repo_root).args(args);
-    for (key, value) in env_vars {
-        child.env(key, value);
-    }
+    let mut child = configure_child(command, repo_root, args, env_vars);
     child.stdout(Stdio::piped()).stderr(Stdio::piped());
     let output = child.output().wrap_err_with(|| format!("running {command}"))?;
     let status = output.status.code().unwrap_or(1);
@@ -113,11 +186,7 @@ pub(crate) fn command_timed_status(
     args: &[&str],
     env_vars: &[(&str, &str)],
 ) -> Result<(i32, Duration)> {
-    let mut child = Command::new(command);
-    child.current_dir(repo_root).args(args);
-    for (key, value) in env_vars {
-        child.env(key, value);
-    }
+    let mut child = configure_child(command, repo_root, args, env_vars);
     child.stdout(Stdio::null()).stderr(Stdio::null());
     let start = Instant::now();
     let status = child.status().wrap_err_with(|| format!("running {command}"))?;
@@ -131,11 +200,7 @@ pub(crate) fn command_with_output_allow_empty_match(
     args: &[&str],
     env_vars: &[(&str, &str)],
 ) -> Result<String> {
-    let mut child = Command::new(command);
-    child.current_dir(repo_root).args(args);
-    for (key, value) in env_vars {
-        child.env(key, value);
-    }
+    let mut child = configure_child(command, repo_root, args, env_vars);
     child.stdout(Stdio::piped()).stderr(Stdio::piped());
     let output = child.output().wrap_err_with(|| format!("running {command}"))?;
     let status = output.status.code().unwrap_or(1);
@@ -154,11 +219,7 @@ pub(crate) fn command_with_output_allow_failure(
     args: &[&str],
     env_vars: &[(&str, &str)],
 ) -> Result<String> {
-    let mut child = Command::new(command);
-    child.current_dir(repo_root).args(args);
-    for (key, value) in env_vars {
-        child.env(key, value);
-    }
+    let mut child = configure_child(command, repo_root, args, env_vars);
     child.stdout(Stdio::piped()).stderr(Stdio::piped());
     let output = child.output().wrap_err_with(|| format!("running {command}"))?;
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
@@ -170,11 +231,7 @@ pub(crate) fn command_status(
     args: &[&str],
     env_vars: &[(&str, &str)],
 ) -> Result<i32> {
-    let mut child = Command::new(command);
-    child.current_dir(repo_root).args(args);
-    for (key, value) in env_vars {
-        child.env(key, value);
-    }
+    let mut child = configure_child(command, repo_root, args, env_vars);
     let status = child.status().wrap_err_with(|| format!("running {command}"))?;
     Ok(status.code().unwrap_or(1))
 }
@@ -192,12 +249,33 @@ pub(crate) fn command_status_strict(
     Ok(())
 }
 
+/// Whether a bare command name resolves on the admissible search path.
+///
+/// The answer is coherent with the launches this module performs: discovery and
+/// every wrapper traverse the same absolute-only component list (see
+/// [`admissible_search_paths`] and [`apply_admissible_search_path`]), so the
+/// probe cannot certify one candidate while the child runs another.
+///
+/// Advisory limitations that remain, by design:
+///
+/// - The probe is not a guarantee. A candidate can be removed, replaced, or
+///   lose permission between discovery and spawn; the real launch stays
+///   authoritative for that race and for lifecycle failure.
+/// - A relative or empty PATH component is never admitted, so a tool reachable
+///   *only* through one is reported absent. Callers degrade to their
+///   tool-unavailable branch, which is the honest answer for a component this
+///   process cannot resolve to the same directory the child would.
+/// - Explicit configured paths are not bare names and are always rejected here;
+///   they carry their own trust and identity policy at the call site.
 pub(crate) fn command_exists(command: &str) -> bool {
     let path = env::var_os("PATH");
     command_exists_in_path(command, path.as_deref())
 }
 
 fn command_exists_in_path(command: &str, path: Option<&OsStr>) -> bool {
+    if !is_bare_name(command) {
+        return false;
+    }
     let Some(path) = path else {
         return false;
     };
@@ -220,7 +298,11 @@ fn command_exists_in_path(command: &str, path: Option<&OsStr>) -> bool {
     }
     #[cfg(not(windows))]
     {
-        env::split_paths(path).any(|dir| dir.join(command).is_file())
+        // Only admissible (absolute) components are searched: a relative or
+        // empty component would be resolved here against the *parent's*
+        // current directory while the eventual launch resolves it against the
+        // child's `current_dir`.
+        admissible_search_paths(Some(path)).into_iter().any(|dir| dir.join(command).is_file())
     }
 }
 
@@ -237,7 +319,10 @@ fn command_exists_in_path(command: &str, path: Option<&OsStr>) -> bool {
 ///   `Command::new` reaches a script (std then routes it through `cmd.exe`).
 /// - A bare name without `.` is searched only as `<name>.exe`. `PATHEXT` is
 ///   never consulted by `Command::new`, so it is not authority here either.
-/// - Empty PATH entries are skipped.
+/// - Only the admissible (absolute) PATH components are searched. std skips
+///   empty entries itself; relative entries are dropped by
+///   [`admissible_search_paths`] because they would name the parent's current
+///   directory here and the child's `current_dir` at launch.
 /// - A name carrying a path separator is not PATH-searched by the launch API
 ///   at all, so the probe fails closed (no candidates) for it.
 ///
@@ -259,8 +344,8 @@ fn windows_command_candidates(command: &str, path: &OsStr) -> Vec<PathBuf> {
         return Vec::new();
     }
     let has_extension = command.contains('.');
-    env::split_paths(path)
-        .filter(|dir| !dir.as_os_str().is_empty())
+    admissible_search_paths(Some(path))
+        .into_iter()
         .map(|dir| {
             let candidate = dir.join(command);
             if has_extension { candidate } else { candidate.with_extension("exe") }

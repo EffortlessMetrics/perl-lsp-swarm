@@ -1,12 +1,13 @@
 use super::{
-    command_exists_in_path, command_output_lines, command_output_with_status, command_status,
-    command_status_strict, command_timed_status, command_with_input_with_status,
-    command_with_output, command_with_output_all, command_with_output_allow_empty_match,
+    admissible_search_paths, apply_admissible_search_path, command_exists_in_path,
+    command_output_lines, command_output_with_status, command_status, command_status_strict,
+    command_timed_status, command_with_input_with_status, command_with_output,
+    command_with_output_all, command_with_output_allow_empty_match,
     command_with_output_allow_failure, windows_command_candidates,
 };
 use std::env;
 use std::error::Error;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -476,6 +477,20 @@ fn windows_candidates_skip_empty_path_entries() -> TestResult {
 }
 
 #[test]
+fn windows_candidates_skip_relative_path_entries() -> TestResult {
+    let temp = TempDir::new("candidates-relative-entry")?;
+    let path = joined_path(&[Path::new("reldir"), temp.path(), Path::new(".")])?;
+
+    let candidates = windows_command_candidates("probe-tool", path.as_os_str());
+
+    // A relative entry resolves against this process's directory here and
+    // against the child's `current_dir` at launch, so the Windows probe drops
+    // it for the same reason the Unix branch does.
+    assert_eq!(candidates, vec![temp.path().join("probe-tool.exe")]);
+    Ok(())
+}
+
+#[test]
 fn windows_candidates_preserve_spaces_and_non_ascii_path_entries() -> TestResult {
     let temp = TempDir::new("candidates-unicode")?;
     let spaced = temp.path().join("dir with spaces");
@@ -760,6 +775,311 @@ mod windows_launch_parity {
             canonical_lower(Path::new(&launched))?,
             canonical_lower(&probe)?,
             "a later PATH candidate won despite the launch API selecting the earlier one"
+        );
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #14150 — relative/empty PATH discovery must be coherent with the child cwd.
+//
+// `command_exists` runs in the parent while every wrapper here launches with
+// `Command::current_dir(repo_root)`. A relative PATH component names the
+// parent's directory when probing and `repo_root` when launching; an empty
+// component means "current directory" to Unix `execvp`, so it does the same
+// thing implicitly. These rows pin the admission policy and then prove, with
+// real launches, that discovery and launch select one identical subject.
+// ---------------------------------------------------------------------------
+
+/// Pure policy rows. Platform-independent: the rule is `Path::is_absolute`.
+#[test]
+fn admissible_search_paths_without_a_path_variable_is_empty() {
+    assert!(admissible_search_paths(None).is_empty());
+}
+
+#[test]
+fn admissible_search_paths_drops_empty_components_in_every_position() -> TestResult {
+    let absolute = TempDir::new("admissible-empty")?;
+    let absolute_display = absolute.path().to_string_lossy().into_owned();
+    let separator = if cfg!(windows) { ';' } else { ':' };
+
+    for raw in [
+        format!("{separator}{absolute_display}"),
+        format!("{absolute_display}{separator}{separator}{absolute_display}"),
+        format!("{absolute_display}{separator}"),
+    ] {
+        let admitted = admissible_search_paths(Some(OsString::from(&raw).as_os_str()));
+        assert!(
+            admitted.iter().all(|dir| dir.is_absolute() && !dir.as_os_str().is_empty()),
+            "empty component survived admission for PATH={raw:?}: {admitted:?}"
+        );
+        assert!(!admitted.is_empty(), "the absolute component was lost for PATH={raw:?}");
+    }
+
+    // An entirely empty PATH value is a single empty component, i.e. "the
+    // current directory" at launch — nothing is admissible.
+    assert!(admissible_search_paths(Some(OsStr::new(""))).is_empty());
+    Ok(())
+}
+
+#[test]
+fn admissible_search_paths_drops_relative_components_and_keeps_absolute_order() -> TestResult {
+    let first = TempDir::new("admissible-first")?;
+    let second = TempDir::new("admissible-second")?;
+    let separator = if cfg!(windows) { ';' } else { ':' };
+    let raw = format!(
+        "{}{separator}reldir{separator}.{separator}..{separator}./nested{separator}{}",
+        first.path().display(),
+        second.path().display()
+    );
+
+    assert_eq!(
+        admissible_search_paths(Some(OsString::from(raw).as_os_str())),
+        vec![first.path().to_path_buf(), second.path().to_path_buf()],
+        "only absolute components are admissible, in PATH order"
+    );
+    Ok(())
+}
+
+#[test]
+fn admissible_search_paths_preserve_spaces_and_non_ascii_absolute_components() -> TestResult {
+    let spaced = TempDir::new("admissible dir with spaces")?;
+    let unicode = TempDir::new("admissible-ünïcødé")?;
+    let path = joined_path(&[spaced.path(), unicode.path()])?;
+
+    assert_eq!(
+        admissible_search_paths(Some(path.as_os_str())),
+        vec![spaced.path().to_path_buf(), unicode.path().to_path_buf()]
+    );
+    Ok(())
+}
+
+#[test]
+fn command_exists_in_path_rejects_candidates_reachable_only_relatively() -> TestResult {
+    let temp = TempDir::new("relative-only")?;
+    let command = "ci-hygiene-probe";
+    fs::write(temp.path().join(command_candidate_name(command)), b"")?;
+
+    // The very same directory admits the candidate when named absolutely, so
+    // the rejection below is the admission policy and not a missing fixture.
+    let absolute = joined_path(&[temp.path()])?;
+    assert!(command_exists_in_path(command, Some(absolute.as_os_str())));
+
+    for relative in [".", "reldir", "./reldir", ""] {
+        assert!(
+            !command_exists_in_path(command, Some(OsStr::new(relative))),
+            "PATH component {relative:?} is not resolvable to the child's directory \
+             and must not admit a candidate"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn command_exists_in_path_rejects_explicit_paths_on_every_platform() -> TestResult {
+    let temp = TempDir::new("explicit-path")?;
+    let command = "ci-hygiene-probe";
+    let candidate = temp.path().join(command_candidate_name(command));
+    fs::write(&candidate, b"")?;
+    let path = joined_path(&[temp.path()])?;
+
+    assert!(command_exists_in_path(command, Some(path.as_os_str())));
+    // Separator-bearing names are not PATH-searched by the launch APIs, so the
+    // probe has nothing to answer for and fails closed rather than joining them
+    // onto every component.
+    assert!(!command_exists_in_path("", Some(path.as_os_str())));
+    assert!(!command_exists_in_path(&format!("./{command}"), Some(path.as_os_str())));
+    assert!(!command_exists_in_path(&candidate.to_string_lossy(), Some(path.as_os_str())));
+    Ok(())
+}
+
+/// Real-launch coherence oracle.
+///
+/// Unix-only instrument: the probes are `#!/bin/sh` scripts that print their own
+/// identity, which is the cheapest way to prove *which* candidate ran. The
+/// admission policy itself is platform-independent and covered by the pure rows
+/// above; the equivalent Windows launch rows are not proven here.
+#[cfg(unix)]
+mod child_cwd_launch_coherence {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+
+    const PROBE: &str = "ci-hygiene-cwd-coherence-probe";
+
+    fn plant(dir: &Path, marker: &str) -> TestResult {
+        let candidate = dir.join(PROBE);
+        fs::write(&candidate, format!("#!/bin/sh\necho {marker}\n"))?;
+        fs::set_permissions(&candidate, fs::Permissions::from_mode(0o755))?;
+        Ok(())
+    }
+
+    /// Launch `PROBE` under `child_cwd` with `path` as the *inherited* PATH,
+    /// applying the production admission policy, and report what actually ran.
+    fn launch_with_policy(child_cwd: &Path, path: &OsStr) -> TestResult<String> {
+        let mut child = Command::new(PROBE);
+        child.current_dir(child_cwd);
+        apply_admissible_search_path(&mut child, Some(path));
+        Ok(match child.output() {
+            Ok(output) => String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+            Err(error) => format!("<{}>", error.kind()),
+        })
+    }
+
+    /// The same launch without the policy — the pre-#14150 behavior. Present so
+    /// each row proves the policy is load-bearing rather than vacuous.
+    fn launch_without_policy(child_cwd: &Path, path: &OsStr) -> TestResult<String> {
+        let output = Command::new(PROBE).current_dir(child_cwd).env("PATH", path).output()?;
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    fn mixed_path(prefix: &str, installed: &Path) -> OsString {
+        OsString::from(format!("{prefix}:{}", installed.display()))
+    }
+
+    #[test]
+    fn an_ambiguous_component_cannot_hide_the_admitted_installed_candidate() -> TestResult {
+        let workspace = TempDir::new("coherence-workspace")?;
+        let installed = TempDir::new("coherence-installed")?;
+        plant(workspace.path(), "WORKSPACE")?;
+        plant(installed.path(), "INSTALLED")?;
+
+        // Each prefix reaches the child's own directory at launch time: "."
+        // and a bare relative name explicitly, an empty component implicitly.
+        for prefix in [".", "", "reldir"] {
+            if prefix == "reldir" {
+                let nested = workspace.path().join("reldir");
+                fs::create_dir_all(&nested)?;
+                plant(&nested, "WORKSPACE")?;
+            }
+            let path = mixed_path(prefix, installed.path());
+
+            assert!(
+                command_exists_in_path(PROBE, Some(path.as_os_str())),
+                "the absolute component still admits the installed tool ({prefix:?})"
+            );
+            assert_eq!(
+                launch_with_policy(workspace.path(), path.as_os_str())?,
+                "INSTALLED",
+                "discovery admitted the installed candidate, so the launch must run it \
+                 and not the workspace copy reached through PATH component {prefix:?}"
+            );
+            // Negative control: without the policy the child's own directory
+            // wins, which is precisely the incoherence #14150 reports.
+            assert_eq!(
+                launch_without_policy(workspace.path(), path.as_os_str())?,
+                "WORKSPACE",
+                "fixture no longer reproduces the defect for PATH component {prefix:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_wholly_ambiguous_path_admits_nothing_and_launches_nothing_from_the_workspace() -> TestResult
+    {
+        let workspace = TempDir::new("coherence-workspace-only")?;
+        plant(workspace.path(), "WORKSPACE")?;
+
+        for raw in [".", "", ":", ".:"] {
+            let path = OsString::from(raw);
+
+            assert!(
+                !command_exists_in_path(PROBE, Some(path.as_os_str())),
+                "PATH={raw:?} has no admissible component and must report the tool absent"
+            );
+            // PATH is removed rather than emptied, so the launch falls back to
+            // the platform's absolute default search path — never the
+            // workspace. An empty PATH *value* would have meant the workspace.
+            assert_eq!(
+                launch_with_policy(workspace.path(), path.as_os_str())?,
+                "<entity not found>",
+                "an unadmitted PATH must not reach the workspace candidate (PATH={raw:?})"
+            );
+            assert_eq!(
+                launch_without_policy(workspace.path(), path.as_os_str())?,
+                "WORKSPACE",
+                "fixture no longer reproduces the defect for PATH={raw:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_explicitly_configured_path_variable_overrides_the_bare_name_policy() -> TestResult {
+        let workspace = TempDir::new("coherence-explicit")?;
+        let installed = TempDir::new("coherence-explicit-installed")?;
+        plant(installed.path(), "INSTALLED")?;
+
+        // `configure_child` applies caller `env_vars` after the policy, so a
+        // caller that configures PATH deliberately keeps its own semantics.
+        let output = command_with_output(
+            workspace.path(),
+            PROBE,
+            &[],
+            &[("PATH", &installed.path().to_string_lossy())],
+        )?;
+        assert_eq!(output.trim(), "INSTALLED");
+        Ok(())
+    }
+
+    // End-to-end wiring proof.
+    //
+    // `configure_child` reads this process's own `PATH`, so proving the
+    // wrappers actually apply the policy needs a parent whose PATH carries an
+    // ambiguous component. That is process-global state, so it is established
+    // in an exact child process rather than mutated in a parallel in-process
+    // test — the same re-exec fixture shape `process_fixture_child` uses.
+
+    const WIRING_SCENARIO_ENV: &str = "PERL_CI_HYGIENE_WIRING_WORKSPACE";
+    const WIRING_FILTER: &str = "process::tests::child_cwd_launch_coherence::wrapper_wiring_child";
+    const WIRING_MARKER: &str = "__PERL_CI_HYGIENE_WIRING_LAUNCHED__";
+
+    /// Runs inside the re-exec'd child, whose inherited PATH begins with an
+    /// ambiguous component that reaches the workspace directory. Reports which
+    /// candidate the production wrapper actually launched.
+    #[test]
+    fn wrapper_wiring_child() -> TestResult {
+        let Ok(workspace) = env::var(WIRING_SCENARIO_ENV) else {
+            return Ok(());
+        };
+        let launched = match command_with_output(Path::new(&workspace), PROBE, &[], &[]) {
+            Ok(stdout) => stdout.trim().to_owned(),
+            Err(error) => format!("<error: {error}>"),
+        };
+        let mut stdout = io::stdout().lock();
+        writeln!(stdout, "{WIRING_MARKER}:{launched}")?;
+        stdout.flush()?;
+        Ok(())
+    }
+
+    #[test]
+    fn wrappers_apply_the_policy_to_the_launch_they_perform() -> TestResult {
+        let workspace = TempDir::new("coherence-wiring-workspace")?;
+        let installed = TempDir::new("coherence-wiring-installed")?;
+        plant(workspace.path(), "WORKSPACE")?;
+        plant(installed.path(), "INSTALLED")?;
+
+        // The child inherits a PATH whose first component is the current
+        // directory. Under `current_dir(workspace)` that names the planted
+        // decoy, so an unbound wrapper launches WORKSPACE.
+        let output = Command::new(env::current_exe()?)
+            .args([WIRING_FILTER, "--exact", "--nocapture"])
+            .env("PATH", mixed_path(".", installed.path()))
+            .env(WIRING_SCENARIO_ENV, workspace.path())
+            .output()?;
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let launched = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{WIRING_MARKER}:")))
+            .ok_or_else(|| {
+                io::Error::other(format!("wiring child reported no launch: {stdout}"))
+            })?;
+
+        assert_eq!(
+            launched, "INSTALLED",
+            "the wrappers must launch the candidate discovery admitted, not the \
+             workspace copy reached through the inherited `.` PATH component"
         );
         Ok(())
     }
