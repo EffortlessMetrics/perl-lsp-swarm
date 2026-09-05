@@ -608,12 +608,11 @@ impl FilePirLexicalContributionV1 {
         if producer.producer.is_empty() {
             return Err(ContributionError::EmptyIdentityField { field: "producer" });
         }
-        if let Some(join) = &semantic_snapshot_join {
-            if join.generation != subject.accepted_generation
-                || join.parser_input_digest != subject.parser_input_digest
-            {
-                return Err(ContributionError::ForeignSemanticJoin);
-            }
+        if let Some(join) = &semantic_snapshot_join
+            && (join.generation != subject.accepted_generation
+                || join.parser_input_digest != subject.parser_input_digest)
+        {
+            return Err(ContributionError::ForeignSemanticJoin);
         }
 
         let mut seen_binding_ids = BTreeSet::new();

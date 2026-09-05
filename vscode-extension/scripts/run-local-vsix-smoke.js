@@ -153,6 +153,7 @@ function writeJsonAtomic(destination, value) {
  *   behavior_safe?: boolean,
  *   transition_state?: string,
  *   violations?: string[],
+ *   post_host_exit_processes?: string[],
  *   transition?: unknown,
  * }} SmokeStage
  */
@@ -165,6 +166,7 @@ function writeJsonAtomic(destination, value) {
  *   platform: string,
  *   architecture: string,
  *   vscode_version: string,
+ *   observed_vscode_version: string | null,
  *   source_label: string,
  *   server: { source_sha: string | null, path: string | null, sha256: string | null },
  *   vsix: { path: string | null, sha256: string | null },
@@ -196,6 +198,10 @@ function initialReceipt(revision) {
     // One default across receipt and child check: the extension-host child
     // records 'stable' when the matrix version is unset, so we do too.
     vscode_version: (process.env.PERL_LSP_VSCODE_VERSION || '').trim() || 'stable',
+    // The launched runtime version observed by the extension-host child; null
+    // until a bound first-hour receipt reports it. Consumers must treat null
+    // as unobserved, never as agreement with the requested selector.
+    observed_vscode_version: null,
     source_label: (process.env.PERL_LSP_SMOKE_SOURCE_LABEL || '').trim() || 'local-current-source',
     server: {
       source_sha: serverSourceRevision || null,
@@ -587,6 +593,22 @@ function validateChildSmokeReceipt({
       `first-hour receipt VS Code version ${JSON.stringify(environment.requested_vscode_version)} is not this matrix leg`,
     );
   }
+  // The requested selector alone never proves the launched host: the child
+  // must record the actual runtime version, and on a concrete leg that
+  // runtime must equal the request.
+  const runtimeVersion = environment.vscode_version;
+  if (typeof runtimeVersion !== 'string' || !/^\d+\.\d+\.\d+$/.test(runtimeVersion)) {
+    violations.push(
+      `first-hour receipt does not record a concrete launched VS Code runtime version, got ${JSON.stringify(runtimeVersion)}`,
+    );
+  } else if (
+    /^\d+\.\d+\.\d+$/.test(expectedVscodeVersion) &&
+    runtimeVersion !== expectedVscodeVersion
+  ) {
+    violations.push(
+      `first-hour receipt launched VS Code ${JSON.stringify(runtimeVersion)} but this matrix leg requested the concrete ${JSON.stringify(expectedVscodeVersion)}`,
+    );
+  }
   if (environment.extension_id !== 'EffortlessMetrics.perl-lsp-rs') {
     violations.push(
       `first-hour receipt extension id ${JSON.stringify(environment.extension_id)} is not the packaged extension`,
@@ -599,6 +621,107 @@ function validateChildSmokeReceipt({
   }
 
   return violations.length > 0 ? { ok: false, violations } : { ok: true, receipt };
+}
+
+/** Must match `HOST_RESOLUTION_FAILURE_RECEIPT_NAME` in vscodeHostResolution.ts. */
+const HOST_RESOLUTION_FAILURE_RECEIPT = 'vscode_host_resolution_failure.json';
+
+function hostResolutionFailurePath(root = receiptsRoot()) {
+  return path.join(root, HOST_RESOLUTION_FAILURE_RECEIPT);
+}
+
+/**
+ * @param {string} [root]
+ * @param {{
+ *   exists?: ((file: string) => boolean) | undefined,
+ *   readFile?: ((file: string) => string) | undefined,
+ * }} [io]
+ * @returns {{ kind: 'absent' } | { kind: 'invalid' } | { kind: 'present', receipt: Record<string, unknown> }}
+ */
+function readHostResolutionFailureReceipt(
+  root = receiptsRoot(),
+  {
+    exists = (file) => fs.existsSync(file),
+    readFile = (file) => fs.readFileSync(file, 'utf8'),
+  } = {},
+) {
+  const receiptFile = hostResolutionFailurePath(root);
+  if (!exists(receiptFile)) {
+    return { kind: 'absent' };
+  }
+  try {
+    const receipt = JSON.parse(readFile(receiptFile));
+    if (receipt && typeof receipt === 'object') {
+      return { kind: 'present', receipt: /** @type {Record<string, unknown>} */ (receipt) };
+    }
+  } catch {
+    // Invalid JSON is still a host-resolution boundary: do not relabel as product smoke.
+  }
+  return { kind: 'invalid' };
+}
+
+/**
+ * A failed VS Code host-version resolution is not a product smoke failure.
+ * The structured receipt is the visible boundary; `published_extension_smoke_failed`
+ * is reserved for journeys that actually reached the extension host.
+ *
+ * @param {{
+ *   status?: number | null,
+ *   spawnError?: Error | undefined,
+ *   receiptsRoot?: string,
+ *   exists?: ((file: string) => boolean) | undefined,
+ *   readFile?: ((file: string) => string) | undefined,
+ * }} input
+ * @returns {{
+ *   status: string,
+ *   exit_code: number | null,
+ *   reason: string,
+ *   host_resolution?: Record<string, unknown>,
+ * }}
+ */
+function interpretBehavioralSmokeExit({
+  status = null,
+  spawnError,
+  receiptsRoot: root = receiptsRoot(),
+  exists,
+  readFile,
+}) {
+  const hostFailure = readHostResolutionFailureReceipt(root, { exists, readFile });
+  if (hostFailure.kind === 'present') {
+    const rawDisposition = hostFailure.receipt.disposition;
+    const disposition =
+      rawDisposition === 'unavailable' ||
+      rawDisposition === 'network' ||
+      rawDisposition === 'cache' ||
+      rawDisposition === 'runner'
+        ? rawDisposition
+        : 'runner';
+    return {
+      status: disposition === 'unavailable' ? 'not_proven' : 'failed',
+      exit_code: status ?? null,
+      reason: `vscode_host_resolution_${disposition}`,
+      host_resolution: hostFailure.receipt,
+    };
+  }
+  if (hostFailure.kind === 'invalid') {
+    return {
+      status: 'not_proven',
+      exit_code: status ?? null,
+      reason: 'vscode_host_resolution_receipt_invalid',
+    };
+  }
+  if (spawnError) {
+    return {
+      status: 'not_proven',
+      exit_code: null,
+      reason: spawnError.message,
+    };
+  }
+  return {
+    status: 'failed',
+    exit_code: status ?? null,
+    reason: 'published_extension_smoke_failed',
+  };
 }
 
 function exitCodeFor(overall) {
@@ -1479,6 +1602,7 @@ function runActivationFailureJourneyAttempt(baseEnv, context, paths) {
       exit_codes: legExitCodes,
       reason: 'activation_failure_journey_leg_did_not_exit_cleanly',
       recovery_verdict: joined.verdict,
+      post_host_exit_processes: postHostExitProcesses,
     };
   }
   if (!validation.ok) {
@@ -1488,6 +1612,7 @@ function runActivationFailureJourneyAttempt(baseEnv, context, paths) {
       reason: 'journey child receipts did not bind this run',
       violations: validation.violations,
       recovery_verdict: joined.verdict,
+      post_host_exit_processes: postHostExitProcesses,
     };
   }
   return {
@@ -1495,6 +1620,7 @@ function runActivationFailureJourneyAttempt(baseEnv, context, paths) {
     exit_codes: legExitCodes,
     recovery_verdict: joined.verdict,
     receipt: path.relative(repoRoot, joinedReceiptFile).replaceAll('\\', '/'),
+    post_host_exit_processes: postHostExitProcesses,
   };
 }
 
@@ -1700,6 +1826,7 @@ function runCrashRecoveryJourneyAttempt(baseEnv, context, paths) {
         exit_codes: legExitCodes,
         reason: 'crash_recovery_journey_leg_observed_failure',
         recovery_verdict: joined.verdict,
+        post_host_exit_processes: postHostExitProcesses,
       };
     }
     // Aligned with the composer: a leg that did not exit cleanly is an
@@ -1709,6 +1836,7 @@ function runCrashRecoveryJourneyAttempt(baseEnv, context, paths) {
       exit_codes: legExitCodes,
       reason: 'crash_recovery_journey_leg_did_not_exit_cleanly',
       recovery_verdict: joined.verdict,
+      post_host_exit_processes: postHostExitProcesses,
     };
   }
   if (!validation.ok) {
@@ -1718,6 +1846,7 @@ function runCrashRecoveryJourneyAttempt(baseEnv, context, paths) {
       reason: 'journey child receipts did not bind this run',
       violations: validation.violations,
       recovery_verdict: joined.verdict,
+      post_host_exit_processes: postHostExitProcesses,
     };
   }
   return {
@@ -1728,6 +1857,7 @@ function runCrashRecoveryJourneyAttempt(baseEnv, context, paths) {
       joined.verdict === 'pass' ? 'pass' : joined.verdict === 'failed' ? 'failed' : 'not_proven',
     exit_codes: legExitCodes,
     recovery_verdict: joined.verdict,
+    post_host_exit_processes: postHostExitProcesses,
     receipt: path.relative(repoRoot, joinedReceiptFile).replaceAll('\\', '/'),
   };
 }
@@ -1937,6 +2067,7 @@ function main() {
         const childReceiptFile = childReceiptPath();
         try {
           fs.rmSync(childReceiptFile, { force: true });
+          fs.rmSync(hostResolutionFailurePath(), { force: true });
         } catch (error) {
           receipt.stages.behavioral_smoke = {
             status: 'not_proven',
@@ -1950,12 +2081,12 @@ function main() {
         }
 
         const smokeResult = runNpm(['run', 'test:published'], smokeEnv);
-        if (smokeResult.error) {
-          receipt.stages.behavioral_smoke = {
-            status: 'not_proven',
-            exit_code: null,
-            reason: smokeResult.error.message,
-          };
+        if (smokeResult.error || smokeResult.status !== 0) {
+          receipt.stages.behavioral_smoke = interpretBehavioralSmokeExit({
+            status: smokeResult.status,
+            spawnError: smokeResult.error,
+            receiptsRoot: receiptsRoot(),
+          });
         } else if (smokeResult.status === 0) {
           const childReceipt = validateChildSmokeReceipt({
             receiptFile: childReceiptFile,
@@ -1975,12 +2106,12 @@ function main() {
                 reason: 'child_receipt_did_not_bind_this_run',
                 violations: childReceipt.violations,
               };
-        } else {
-          receipt.stages.behavioral_smoke = {
-            status: 'failed',
-            exit_code: smokeResult.status ?? null,
-            reason: 'published_extension_smoke_failed',
-          };
+          if (childReceipt.ok) {
+            // Propagate the launched runtime version the bound child
+            // observed; downstream exactness claims must bind to this, never
+            // to the requested selector alone.
+            receipt.observed_vscode_version = childReceipt.receipt.environment.vscode_version;
+          }
         }
       } else {
         receipt.stages.behavioral_smoke = {
@@ -2069,7 +2200,9 @@ module.exports = {
   crashRecoveryLegEnv,
   finalizeSmokeRun,
   initialReceipt,
+  interpretBehavioralSmokeExit,
   interpretTransitionResult,
+  readHostResolutionFailureReceipt,
   receiptPath,
   scanBundledServerProcesses,
   shouldRunActivationFailureJourney,

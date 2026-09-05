@@ -56,6 +56,9 @@ pub struct DistMetadataFacts {
 
 /// The prereq relations recognized in cpanfile / META.json.
 const RELATIONS: &[&str] = &["requires", "recommends", "suggests", "conflicts"];
+/// META 1.x phase-specific top-level prerequisite keys → canonical phase.
+const META_V1_PHASED_REQUIRES: &[(&str, &str)] =
+    &[("configure_requires", "configure"), ("build_requires", "build")];
 /// cpanfile statement keywords → (relation, phase).
 const CPANFILE_KEYWORDS: &[(&str, &str, &str)] = &[
     ("configure_requires", "requires", "configure"),
@@ -89,20 +92,29 @@ pub fn parse_meta_json(file_id: FileId, content: &str) -> Option<DistMetadataFac
     };
 
     let mut prereqs = Vec::new();
+    let mut recovered_v2_entries = false;
     // v2: prereqs[phase][relation] = { module: version }.
     if let Some(serde_json::Value::Object(phases)) = value.get("prereqs") {
         for (phase, relations) in phases {
             let serde_json::Value::Object(relations) = relations else { continue };
             for (relation, modules) in relations {
-                collect_modules(modules, phase, relation, &mut prereqs);
+                if !RELATIONS.contains(&relation.as_str()) {
+                    continue;
+                }
+                recovered_v2_entries |= collect_modules(modules, phase, relation, &mut prereqs);
             }
         }
     }
-    // v1.4 flat fallback: top-level requires/recommends/... = { module: version }.
-    if prereqs.is_empty() {
+    // v1.4 flat fallback: phase-specific *_requires plus runtime relations.
+    if !recovered_v2_entries {
+        for &(key, phase) in META_V1_PHASED_REQUIRES {
+            if let Some(modules) = value.get(key) {
+                let _ = collect_modules(modules, phase, "requires", &mut prereqs);
+            }
+        }
         for relation in RELATIONS {
             if let Some(modules) = value.get(relation) {
-                collect_modules(modules, "runtime", relation, &mut prereqs);
+                let _ = collect_modules(modules, "runtime", relation, &mut prereqs);
             }
         }
     }
@@ -221,16 +233,20 @@ fn collect_modules(
     phase: &str,
     relation: &str,
     out: &mut Vec<Prereq>,
-) {
-    let serde_json::Value::Object(map) = modules else { return };
+) -> bool {
+    let serde_json::Value::Object(map) = modules else { return false };
+    let mut recovered = false;
     for (module, version) in map {
+        let Some(version) = json_scalar_string(version) else { continue };
         out.push(Prereq {
             module: module.clone(),
-            version: json_scalar_string(version),
+            version: Some(version),
             phase: phase.to_string(),
             relation: relation.to_string(),
         });
+        recovered = true;
     }
+    recovered
 }
 
 /// A JSON value as a string, only if it *is* a string.
@@ -341,6 +357,109 @@ mod tests {
             facts.prereqs.iter().any(|p| p.module == "Carp" && p.relation == "requires"),
             "flat top-level requires read as fallback"
         );
+    }
+
+    #[test]
+    fn v1_4_phase_specific_prereqs_are_retained() {
+        let content = r#"{
+            "configure_requires": {"ExtUtils::MakeMaker": "6.64"},
+            "build_requires": {"Test::More": "0.88"},
+            "requires": {"Carp": "0"}
+        }"#;
+        let facts = parse_meta_json(fid(), content).unwrap();
+        let mapped = facts
+            .prereqs
+            .iter()
+            .map(|p| {
+                (p.module.as_str(), p.version.as_deref(), p.phase.as_str(), p.relation.as_str())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            mapped,
+            vec![
+                ("Test::More", Some("0.88"), "build", "requires"),
+                ("ExtUtils::MakeMaker", Some("6.64"), "configure", "requires"),
+                ("Carp", Some("0"), "runtime", "requires"),
+            ],
+            "META 1.x prerequisite keys retain phase, relation, version, and deterministic order"
+        );
+    }
+
+    #[test]
+    fn v2_prereqs_take_precedence_over_flat_v1_fields() {
+        let facts = parse_meta_json(
+            fid(),
+            r#"{
+                "prereqs": {"runtime": {"requires": {"V2::Only": "1"}}},
+                "configure_requires": {"V1::Only": "1"},
+                "requires": {"V1::Runtime": "1"}
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            facts.prereqs,
+            vec![Prereq {
+                module: "V2::Only".to_string(),
+                version: Some("1".to_string()),
+                phase: "runtime".to_string(),
+                relation: "requires".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn empty_or_malformed_v2_prereqs_fall_back_to_flat_v1_fields() {
+        for v2 in [r#"{}"#, r#"{"runtime": []}"#, r#"{"runtime": "bad"}"#] {
+            let content =
+                format!(r#"{{"prereqs": {v2}, "configure_requires": {{"V1::Only": "1"}}}}"#);
+            let facts = parse_meta_json(fid(), &content).unwrap();
+            assert_eq!(facts.prereqs.len(), 1, "v2={v2}");
+            assert_eq!(facts.prereqs[0].module, "V1::Only", "v2={v2}");
+            assert_eq!(facts.prereqs[0].phase, "configure", "v2={v2}");
+        }
+    }
+
+    #[test]
+    fn malformed_phase_maps_do_not_fabricate_prereqs_or_panic() {
+        let facts = parse_meta_json(
+            fid(),
+            r#"{
+                "prereqs": {
+                    "runtime": [],
+                    "test": "not a relation map",
+                    "develop": null,
+                    "build": {"requires": ["not", "a", "module map"]}
+                },
+                "configure_requires": [],
+                "build_requires": "not a module map",
+                "requires": null
+            }"#,
+        )
+        .unwrap();
+
+        assert!(facts.prereqs.is_empty());
+    }
+
+    #[test]
+    fn malformed_v2_relations_are_ignored_without_fabricated_facts() {
+        let facts = parse_meta_json(
+            fid(),
+            r#"{
+                "prereqs": {
+                    "runtime": {
+                        "unknown_relation": {"Fabricated::Fact": "1"},
+                        "requires": null,
+                        "recommends": {"Real::Fact": "2"}
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(facts.prereqs.len(), 1);
+        assert_eq!(facts.prereqs[0].module, "Real::Fact");
+        assert!(!facts.prereqs.iter().any(|p| p.module == "Fabricated::Fact"));
     }
 
     #[test]

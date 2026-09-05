@@ -125,6 +125,8 @@ pub mod config;
 mod error_class;
 /// Safe expression evaluation validation (from perl-dap-eval).
 pub mod eval;
+/// Caller-supplied origin for stack/variable parser inputs (#8746).
+pub mod parse_origin;
 /// Cross-platform utilities for Perl path resolution and environment setup (from perl-dap-platform).
 pub mod platform;
 /// Security validation and hardening (from perl-dap-security).

@@ -218,17 +218,17 @@ fn test_recovery_on_sub_keyword_in_unclosed_block() {
         );
 
         // foo's body should contain bar as a nested named sub
-        if let NodeKind::Subroutine { body, .. } = &statements[0].kind {
-            if let NodeKind::Block { statements: body_stmts } = &body.kind {
-                let has_bar = body_stmts.iter().any(|s| {
+        if let NodeKind::Subroutine { body, .. } = &statements[0].kind
+            && let NodeKind::Block { statements: body_stmts } = &body.kind
+        {
+            let has_bar = body_stmts.iter().any(|s| {
                     matches!(&s.kind, NodeKind::Subroutine { name, .. } if name.as_deref() == Some("bar"))
                 });
-                assert!(
-                    has_bar,
-                    "foo's body should contain nested sub bar. Got: {:?}",
-                    body_stmts.iter().map(|s| s.kind.kind_name()).collect::<Vec<_>>()
-                );
-            }
+            assert!(
+                has_bar,
+                "foo's body should contain nested sub bar. Got: {:?}",
+                body_stmts.iter().map(|s| s.kind.kind_name()).collect::<Vec<_>>()
+            );
         }
     } else {
         panic!("Expected Program node");

@@ -9,7 +9,8 @@ use crate::TokenKind;
 ///
 /// This struct is `#[non_exhaustive]`: additional fields may be added later
 /// without a breaking change. Downstream crates must not rely on struct
-/// literals or exhaustive field patterns.
+/// literals or exhaustive field patterns. That marker is the #2898 evolution
+/// disposition for [`TokenSpan`].
 ///
 /// ```compile_fail
 /// use perl_token::TokenSpan;
@@ -49,9 +50,15 @@ impl TokenSpan {
 
     /// Crate-private constructor for spans already proven ordered.
     ///
-    /// Callers must guarantee `end >= start`. This is the residual unchecked
-    /// path after public constructors were sealed; it is not part of the
-    /// public API and must not be re-exported.
+    /// Callers must guarantee `end >= start`. This is the residual E02
+    /// unchecked path after public constructors were sealed; it is not part of
+    /// the public API and must not be re-exported. Workspace-wide constructor
+    /// migration remains #8660.
+    ///
+    /// ```compile_fail
+    /// use perl_token::TokenSpan;
+    /// let _ = TokenSpan::from_ordered(0, 1);
+    /// ```
     pub(crate) const fn from_ordered(start: usize, end: usize) -> Self {
         debug_assert!(end >= start);
         Self { start, end }
@@ -138,7 +145,8 @@ const fn max_usize(left: usize, right: usize) -> usize {
 ///
 /// This enum is `#[non_exhaustive]`: new invariant failures may be added as
 /// constructors gain source-geometry checks. Downstream matches must include a
-/// wildcard arm.
+/// wildcard arm. That marker is the #2898 evolution disposition for
+/// [`TokenSpanError`].
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenSpanError {
@@ -156,6 +164,17 @@ pub enum TokenSpanError {
         /// Byte offset where the empty span was constructed.
         at: usize,
     },
+    /// Token text byte length does not equal the span width.
+    TextLengthMismatch {
+        /// `text` length in bytes.
+        text_len: usize,
+        /// `end - start` span width in bytes.
+        span_len: usize,
+        /// Start byte offset that was supplied.
+        start: usize,
+        /// End byte offset that was supplied.
+        end: usize,
+    },
 }
 
 impl std::fmt::Display for TokenSpanError {
@@ -166,6 +185,12 @@ impl std::fmt::Display for TokenSpanError {
             }
             Self::EmptySpanNotAllowed { kind, at } => {
                 write!(f, "empty span not allowed for token kind {kind:?} at byte {at}")
+            }
+            Self::TextLengthMismatch { text_len, span_len, start, end } => {
+                write!(
+                    f,
+                    "token text length ({text_len}) != span width ({span_len}) at {start}..{end}"
+                )
             }
         }
     }
@@ -187,6 +212,23 @@ pub(crate) const fn validate_non_empty_span(
 ) -> Result<(), TokenSpanError> {
     if is_empty && !allows_empty_span(kind) {
         return Err(TokenSpanError::EmptySpanNotAllowed { kind, at: start });
+    }
+
+    Ok(())
+}
+
+#[inline]
+pub(crate) fn validate_text_span_width(
+    text_len: usize,
+    span: TokenSpan,
+) -> Result<(), TokenSpanError> {
+    if text_len != span.len() {
+        return Err(TokenSpanError::TextLengthMismatch {
+            text_len,
+            span_len: span.len(),
+            start: span.start(),
+            end: span.end(),
+        });
     }
 
     Ok(())

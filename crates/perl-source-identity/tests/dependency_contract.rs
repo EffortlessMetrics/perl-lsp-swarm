@@ -13,6 +13,7 @@
 // Failing closed is the point of this file: an unavailable instrument must
 // abort the test rather than return a passing verdict.
 #![allow(clippy::panic)]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use std::process::Command;
 

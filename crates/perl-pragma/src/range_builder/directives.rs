@@ -102,15 +102,11 @@ pub(super) fn apply_no_directive(
             state.locale_scope = None;
             push_state(range, state, ranges);
         }
-        "feature" => {
-            if apply_feature_state(state, args, false) {
-                push_state(range, state, ranges);
-            }
+        "feature" if apply_feature_state(state, args, false) => {
+            push_state(range, state, ranges);
         }
-        "experimental" => {
-            if apply_feature_state(state, args, false) {
-                push_state(range, state, ranges);
-            }
+        "experimental" if apply_feature_state(state, args, false) => {
+            push_state(range, state, ranges);
         }
         "builtin" => {}
         _ => {}

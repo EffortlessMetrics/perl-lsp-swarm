@@ -9,7 +9,7 @@
 use crate::build::{effective_selection, find_target};
 use crate::model::UpstreamTargetMatrix;
 use crate::observed_discovery::build::{
-    discovery_payload_digest, required_limitations, sha256_json,
+    discovery_payload_digest, required_limitations, sha256_json, validate_sha256_field,
 };
 use crate::observed_discovery::decode::{
     decode_malformed, decode_stream, derive_observation_state, work_from_rows,
@@ -196,6 +196,13 @@ fn validate_payload_fields(payload: &DiscoveryPayload) -> Result<(), String> {
     if expected != payload.invocation.environment.sha256 {
         return Err("environment identity digest does not bind the retained variables".to_string());
     }
+    // The intake law binds deserialized receipts too, not only construction:
+    // a caller that retags the artifact digest and recomputes the payload
+    // digest cannot launder an alternate spelling through validation (#7725).
+    validate_sha256_field(
+        &payload.invocation.runner_artifact.content_sha256,
+        "runner artifact content digest",
+    )?;
     let sequential_from_zero = payload.rows.first().is_none_or(|row| row.ordinal == 0)
         && payload.rows.windows(2).all(|pair| pair[1].ordinal == pair[0].ordinal + 1);
     if !sequential_from_zero {

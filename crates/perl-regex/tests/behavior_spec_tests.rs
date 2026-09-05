@@ -3,6 +3,7 @@
 //! These scenarios capture externally observable behavior with
 //! Given/When/Then structure so consumers can reason about validator
 //! and analyzer contracts at a higher level than unit-level edge cases.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_regex::{RegexAnalyzer, RegexError, RegexValidator};
 

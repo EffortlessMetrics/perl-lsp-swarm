@@ -76,8 +76,56 @@ impl LspServer {
                 if let Some((function_name, active_param)) =
                     self.find_function_context(&doc.text, offset)
                 {
-                    // Try to get signature from user-defined functions first (if AST exists)
+                    // Canonical Dancer2 route-DSL signatures (#8928):
+                    // version-authoritative forms for the supported static
+                    // route keywords under exact activation. Several forms
+                    // are reported distinctly, never flattened; a locally
+                    // declared sub keeps the ordinary signature paths.
                     let parsed = doc.current_parsed();
+                    if let Some(snapshot) = parsed.as_ref()
+                        && let Some(ast) = snapshot.ast()
+                        && let Some((context, package)) = self.dancer2_package_at(
+                            uri,
+                            &doc.text,
+                            snapshot.content_hash(),
+                            ast,
+                            offset,
+                        )
+                    {
+                        use perl_lsp_rs_core::providers::dancer2::route_keyword_signature_forms;
+                        use perl_semantic_facts::framework_adapters::dancer2::Dancer2KeywordState;
+                        let declared =
+                            crate::runtime::language::completion::dancer2_declared_sub_names(ast);
+                        let Some(activation) = context.activations.for_package(&package) else {
+                            return Ok(None);
+                        };
+                        let keyword_imported = activation.facts.keywords.iter().any(|keyword| {
+                            keyword.keyword == function_name
+                                && keyword.state == Dancer2KeywordState::Imported
+                        });
+                        let package_scoped_declared =
+                            declared.contains(&(package.clone(), function_name.clone()));
+                        if keyword_imported
+                            && !package_scoped_declared
+                            && let Some(forms) = route_keyword_signature_forms(&function_name)
+                        {
+                            return Ok(Some(json!({
+                                "signatures": forms
+                                    .iter()
+                                    .map(|form| {
+                                        json!({
+                                            "label": form.parameters,
+                                            "documentation": form.description,
+                                        })
+                                    })
+                                    .collect::<Vec<_>>(),
+                                "activeSignature": active_signature,
+                                "activeParameter": active_param
+                            })));
+                        }
+                    }
+
+                    // Try to get signature from user-defined functions first (if AST exists)
                     if let Some(ast) = parsed.as_ref().and_then(|p| p.ast())
                         && let Some(signature) =
                             self.get_user_function_signature(ast, &function_name)
@@ -238,10 +286,8 @@ impl LspServer {
                     }
                     depth -= 1;
                 }
-                '[' | '{' => {
-                    if depth > 0 {
-                        depth -= 1;
-                    }
+                '[' | '{' if depth > 0 => {
+                    depth -= 1;
                 }
                 _ => {}
             }
@@ -423,13 +469,11 @@ impl LspServer {
         name: &str,
     ) -> Option<&'a Node> {
         match &node.kind {
-            NodeKind::Subroutine { name: sub_name, .. } => {
-                if let Some(sub_name) = sub_name {
-                    let (_, sub_bare) = perl_parser::qualified_name::split_qualified_name(sub_name);
-                    let (_, name_bare) = perl_parser::qualified_name::split_qualified_name(name);
-                    if sub_bare == name_bare {
-                        return Some(node);
-                    }
+            NodeKind::Subroutine { name: Some(sub_name), .. } => {
+                let (_, sub_bare) = perl_parser::qualified_name::split_qualified_name(sub_name);
+                let (_, name_bare) = perl_parser::qualified_name::split_qualified_name(name);
+                if sub_bare == name_bare {
+                    return Some(node);
                 }
             }
             NodeKind::Method { name: method_name, .. } => {

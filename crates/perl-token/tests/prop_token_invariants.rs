@@ -12,6 +12,7 @@
 //! - Equality reflexivity for `TokenSpan`
 //! - `TokenKind::from_keyword` / `from_operator` / `from_delimiter` / `from_sigil` round-trip:
 //!   each spelled entry maps back to the correct kind
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_token::{
     DELIMITER_SPELLINGS, KEYWORD_SPELLINGS, OPERATOR_SPELLINGS, SIGIL_SPELLINGS, TokenKind,
@@ -188,7 +189,8 @@ proptest! {
         (start, end) in ordered_span(),
         kind in any_token_kind(),
     ) {
-        let result = TokenRef::try_new(kind, "x", start, end);
+        let text = "x".repeat(end - start);
+        let result = TokenRef::try_new(kind, &text, start, end);
         if start == end && !matches!(kind, TokenKind::Eof | TokenKind::Unknown) {
             prop_assert_eq!(
                 result,
@@ -208,6 +210,7 @@ proptest! {
         };
         prop_assert_eq!(r.start(), start);
         prop_assert_eq!(r.end(), end);
+        prop_assert_eq!(r.text.len(), end - start);
     }
 
     /// `TokenRef::try_new` rejects inverted spans.
@@ -232,8 +235,30 @@ proptest! {
         kind in any_token_kind(),
     ) {
         prop_assume!(start < end || matches!(kind, TokenKind::Eof | TokenKind::Unknown));
-        let r = TokenRef::new_checked(kind, "x", start, end).expect("valid token");
+        let text = "x".repeat(end - start);
+        let r = TokenRef::new_checked(kind, &text, start, end).expect("valid token");
         prop_assert_eq!(r.len(), end - start);
+    }
+
+    /// `TokenRef::try_new` rejects source text whose byte length differs from span width.
+    #[test]
+    fn token_ref_try_new_rejects_text_length_mismatch(
+        (start, end) in ordered_span(),
+        kind in any_token_kind(),
+        extra in 1usize..8,
+    ) {
+        prop_assume!(start < end || matches!(kind, TokenKind::Eof | TokenKind::Unknown));
+        let text = "x".repeat(end - start + extra);
+        let result = TokenRef::try_new(kind, &text, start, end);
+        prop_assert_eq!(
+            result,
+            Err(TokenSpanError::TextLengthMismatch {
+                text_len: end - start + extra,
+                span_len: end - start,
+                start,
+                end,
+            })
+        );
     }
 }
 

@@ -11,6 +11,7 @@ const {
   computeOverallStatus,
   crashRecoveryLegEnv,
   finalizeSmokeRun,
+  interpretBehavioralSmokeExit,
   interpretTransitionResult,
   shouldRunBehavioralSmoke,
   shouldRunCrashRecoveryJourney,
@@ -431,6 +432,9 @@ function childReceipt(overrides = {}, environmentOverrides = {}) {
       server_source_revision: CHILD_SUBJECT.expectedServerSourceSha,
       vsix_sha256: CHILD_SUBJECT.expectedVsixSha256,
       requested_vscode_version: CHILD_SUBJECT.expectedVscodeVersion,
+      // The launched runtime identity the extension host actually observed;
+      // the requested selector alone never proves the host.
+      vscode_version: '1.130.2',
       extension_id: 'EffortlessMetrics.perl-lsp-rs',
       ...environmentOverrides,
     },
@@ -488,6 +492,39 @@ void test('a child receipt from another matrix leg is rejected', () => {
   assert.match(result.violations.join('; '), /VS Code version .* is not this matrix leg/);
 });
 
+void test('a child receipt without the launched runtime version is rejected', () => {
+  const result = validateChild(childReceipt({}, { vscode_version: undefined }));
+  assert.equal(result.ok, false);
+  assert.match(result.violations.join('; '), /launched VS Code runtime version/);
+});
+
+void test('a concrete leg rejects a different launched runtime version', () => {
+  const concrete = {
+    ...CHILD_SUBJECT,
+    expectedVscodeVersion: '1.125.0',
+    receiptFile: '/fixture/first_hour_vscode_receipt.json',
+    exists: () => true,
+  };
+  const mismatched = validateChildSmokeReceipt({
+    ...concrete,
+    readFile: () =>
+      JSON.stringify(
+        childReceipt({}, { requested_vscode_version: '1.125.0', vscode_version: '1.126.0' }),
+      ),
+  });
+  assert.equal(mismatched.ok, false);
+  assert.match(mismatched.violations.join('; '), /launched VS Code .* requested the concrete/);
+
+  const matched = validateChildSmokeReceipt({
+    ...concrete,
+    readFile: () =>
+      JSON.stringify(
+        childReceipt({}, { requested_vscode_version: '1.125.0', vscode_version: '1.125.0' }),
+      ),
+  });
+  assert.equal(matched.ok, true);
+});
+
 void test('a non-terminal or failing child receipt is rejected', () => {
   const incomplete = validateChild(childReceipt({ outcome: 'aborted' }));
   assert.equal(incomplete.ok, false);
@@ -507,6 +544,123 @@ void test('a malformed child receipt is rejected rather than parsed optimistical
   });
   assert.equal(result.ok, false);
   assert.match(result.violations.join('; '), /was not valid JSON/);
+});
+
+void test('an unavailable host-resolution receipt is not a product smoke failure', () => {
+  const hostFailure = {
+    schema_version: 1,
+    outcome: 'blocked',
+    stage: 'vscode_host_resolution',
+    requested_version: '1.125.0',
+    platform: 'linux',
+    arch: 'x64',
+    disposition: 'unavailable',
+    error: 'VS Code release 1.125.0 was not found',
+  };
+  const result = interpretBehavioralSmokeExit({
+    status: 1,
+    receiptsRoot: '/fixture',
+    exists: (file) => file.endsWith('vscode_host_resolution_failure.json'),
+    readFile: () => JSON.stringify(hostFailure),
+  });
+  assert.equal(result.status, 'not_proven');
+  assert.equal(result.reason, 'vscode_host_resolution_unavailable');
+  assert.equal(result.reason.includes('published_extension_smoke_failed'), false);
+  assert.ok(result.host_resolution);
+  assert.equal(result.host_resolution.requested_version, '1.125.0');
+  assert.equal(result.host_resolution.requested_version, hostFailure.requested_version);
+  assert.notEqual(result.host_resolution.requested_version, 'stable');
+});
+
+void test('network, cache, and runner host failures keep the host-resolution boundary', () => {
+  for (const disposition of ['network', 'cache', 'runner']) {
+    const result = interpretBehavioralSmokeExit({
+      status: 1,
+      receiptsRoot: '/fixture',
+      exists: (file) => file.endsWith('vscode_host_resolution_failure.json'),
+      readFile: () =>
+        JSON.stringify({
+          schema_version: 1,
+          outcome: 'blocked',
+          stage: 'vscode_host_resolution',
+          requested_version: 'stable',
+          disposition,
+          error: `${disposition} failure`,
+        }),
+    });
+    assert.equal(result.status, 'failed');
+    assert.equal(result.reason, `vscode_host_resolution_${disposition}`);
+    assert.ok(result.host_resolution);
+    assert.equal(result.host_resolution.requested_version, 'stable');
+  }
+});
+
+void test('a smoke failure without a host-resolution receipt remains a product failure', () => {
+  const result = interpretBehavioralSmokeExit({
+    status: 1,
+    receiptsRoot: '/fixture',
+    exists: () => false,
+    readFile: () => {
+      throw new Error('host receipt should not be read when absent');
+    },
+  });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.reason, 'published_extension_smoke_failed');
+  assert.equal('host_resolution' in result, false);
+});
+
+void test('1.125.0 and stable host-resolution receipts keep independent requested identity', () => {
+  const readDisposition = (requested) =>
+    interpretBehavioralSmokeExit({
+      status: 1,
+      receiptsRoot: '/fixture',
+      exists: () => true,
+      readFile: () =>
+        JSON.stringify({
+          schema_version: 1,
+          outcome: 'blocked',
+          stage: 'vscode_host_resolution',
+          requested_version: requested,
+          disposition: 'unavailable',
+          error: `${requested} was not found`,
+        }),
+    });
+  const minimum = readDisposition('1.125.0');
+  const stable = readDisposition('stable');
+  assert.ok(minimum.host_resolution);
+  assert.ok(stable.host_resolution);
+  assert.equal(minimum.host_resolution.requested_version, '1.125.0');
+  assert.equal(stable.host_resolution.requested_version, 'stable');
+  assert.notEqual(
+    minimum.host_resolution.requested_version,
+    stable.host_resolution.requested_version,
+  );
+});
+
+void test('an unavailable host-resolution stage is not an overall product failure', () => {
+  assert.equal(
+    computeOverallStatus({
+      package_creation: { status: 'pass' },
+      package_inventory: { status: 'pass', classification: 'pass' },
+      behavioral_smoke: {
+        status: 'not_proven',
+        reason: 'vscode_host_resolution_unavailable',
+      },
+    }),
+    'not_proven',
+  );
+});
+
+void test('a malformed host-resolution receipt stays a host boundary, not a product failure', () => {
+  const result = interpretBehavioralSmokeExit({
+    status: 1,
+    receiptsRoot: '/fixture',
+    exists: () => true,
+    readFile: () => 'not json',
+  });
+  assert.equal(result.status, 'not_proven');
+  assert.equal(result.reason, 'vscode_host_resolution_receipt_invalid');
+  assert.equal(result.reason.includes('published_extension_smoke_failed'), false);
 });
 
 void test('a child receipt without environment identity is rejected', () => {

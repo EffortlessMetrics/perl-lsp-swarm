@@ -7,6 +7,7 @@
 //! false failure — the contract is also documented in the crate README and the
 //! Cargo.toml comment.
 #![allow(clippy::print_stderr)]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use std::process::Command;
 

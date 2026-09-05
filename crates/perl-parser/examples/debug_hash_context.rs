@@ -37,11 +37,11 @@ fn debug_hash_context(node: &Node, parent_map: &HashMap<*const Node, &Node>) -> 
         );
 
         match &parent.kind {
-            NodeKind::Binary { op, left: _, right } if op == "{}" => {
-                if std::ptr::eq(right.as_ref(), current) {
-                    println!("    -> Found hash key context at depth {}", depth);
-                    return true;
-                }
+            NodeKind::Binary { op, left: _, right }
+                if op == "{}" && std::ptr::eq(right.as_ref(), current) =>
+            {
+                println!("    -> Found hash key context at depth {}", depth);
+                return true;
             }
             _ => {}
         }

@@ -48,6 +48,8 @@
 
 mod capabilities;
 #[cfg(test)]
+mod effective_surface_parity_tests;
+#[cfg(test)]
 mod final_surface_census;
 pub(crate) mod inc_context;
 pub mod module_resolution;

@@ -1,0 +1,113 @@
+{
+  "schema_version": "authority_transfer_programme_fixture.v1",
+  "description": "Static rejection: a declared artifact names another KNOWN node as owner; ownership binds to the declaring node, so cross-node declarations are foreign even when the named node exists.",
+  "expected_code": "ARTIFACT_OWNER_MISMATCH",
+  "graph": {
+    "schema_version": "authority_transfer_programme_graph.v1",
+    "programme_issue": 11696,
+    "rails": [
+      "control_plane"
+    ],
+    "operation_profiles": [
+      "op.programme-controller.v1",
+      "op.static-contract.v1"
+    ],
+    "evidence_profiles": [
+      "ev.not-applicable.v1",
+      "ev.static-validator.v1"
+    ],
+    "first_falsifiers": [
+      {
+        "id": "FF02",
+        "statement": "Governance becomes buildable."
+      },
+      {
+        "id": "FF08",
+        "statement": "Unordered exclusive writers."
+      },
+      {
+        "id": "FF09",
+        "statement": "File-only serialization."
+      },
+      {
+        "id": "FF12",
+        "statement": "Artifact ownership decouples from the declaring node."
+      }
+    ],
+    "nodes": [
+      {
+        "node_id": "K0",
+        "issue": 900001,
+        "controller": null,
+        "rail": "control_plane",
+        "phase": "fixture",
+        "kind": "controller",
+        "buildable": false,
+        "observation_optional": false,
+        "edges": {
+          "hard": [],
+          "evidence": [],
+          "optional": [],
+          "parallel_after": [],
+          "fan_in": []
+        },
+        "operation_profile": "op.programme-controller.v1",
+        "evidence_profile": "ev.not-applicable.v1",
+        "authority_inputs": [],
+        "authority_outputs": [],
+        "conflicts": {
+          "exclusive": [],
+          "shared": []
+        },
+        "claim_ceiling": "Governance roof.",
+        "non_claims": [
+          "None beyond the claim ceiling."
+        ],
+        "first_falsifier": "FF02",
+        "artifacts": [],
+        "predecessor_exit": null,
+        "handoff": null,
+        "terminal_relation": "advance_controller"
+      },
+      {
+        "node_id": "L1",
+        "issue": 910001,
+        "controller": null,
+        "rail": "control_plane",
+        "phase": "fixture",
+        "kind": "contract",
+        "buildable": true,
+        "observation_optional": false,
+        "edges": {
+          "hard": [],
+          "evidence": [],
+          "optional": [],
+          "parallel_after": [],
+          "fan_in": []
+        },
+        "operation_profile": "op.static-contract.v1",
+        "evidence_profile": "ev.static-validator.v1",
+        "authority_inputs": [],
+        "authority_outputs": [],
+        "conflicts": {
+          "exclusive": [],
+          "shared": []
+        },
+        "claim_ceiling": "One bounded proposition.",
+        "non_claims": [
+          "None beyond the claim ceiling."
+        ],
+        "first_falsifier": "FF12",
+        "artifacts": [
+          {
+            "id": "a.x",
+            "owner": "K0"
+          }
+        ],
+        "predecessor_exit": null,
+        "handoff": "K0",
+        "terminal_relation": "close_leaf"
+      }
+    ]
+  }
+}

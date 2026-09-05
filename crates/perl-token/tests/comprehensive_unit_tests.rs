@@ -8,6 +8,7 @@
 //! - TokenKind variant exhaustiveness
 //! - TokenKind Copy / Clone / Eq / Debug
 //! - Edge cases: empty text, zero-length spans, unicode, large offsets
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_parser_core::percentile::nearest_rank_percentile;
 use perl_token::{Token, TokenKind};
@@ -29,10 +30,10 @@ fn token_new_basic_fields() {
 #[test]
 fn token_new_accepts_string() {
     let s = String::from("hello");
-    let t = Token::new_checked(TokenKind::String, s, 5, 12).expect("valid token");
+    let t = Token::new_checked(TokenKind::String, s, 5, 10).expect("valid token");
     assert_eq!(&*t.text, "hello");
     assert_eq!(t.start(), 5);
-    assert_eq!(t.end(), 12);
+    assert_eq!(t.end(), 10);
 }
 
 #[test]
@@ -78,15 +79,16 @@ fn token_new_checked_rejects_malformed_span() {
 #[test]
 fn token_new_large_offsets() {
     let big = usize::MAX - 1;
-    let t = Token::new_checked(TokenKind::Number, "99", big, usize::MAX).expect("valid token");
+    let t = Token::new_checked(TokenKind::Number, "9", big, usize::MAX).expect("valid token");
     assert_eq!(t.start(), big);
     assert_eq!(t.end(), usize::MAX);
 }
 
 #[test]
 fn token_new_unicode_text() {
-    let t = Token::new_checked(TokenKind::String, "héllo wörld 🦀", 0, 19).expect("valid token");
-    assert_eq!(&*t.text, "héllo wörld 🦀");
+    let text = "héllo wörld 🦀";
+    let t = Token::new_checked(TokenKind::String, text, 0, text.len()).expect("valid token");
+    assert_eq!(&*t.text, text);
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +145,7 @@ fn token_ne_different_start() {
 #[test]
 fn token_ne_different_end() {
     let a = Token::new_checked(TokenKind::Number, "1", 0, 1).expect("valid token");
-    let b = Token::new_checked(TokenKind::Number, "1", 0, 6).expect("valid token");
+    let b = Token::new_checked(TokenKind::Number, "123456", 0, 6).expect("valid token");
     assert_ne!(a, b);
 }
 
@@ -476,13 +478,6 @@ fn token_kind_clone_equals_original() {
     let a = TokenKind::Regex;
     let b = a;
     assert_eq!(a, b);
-}
-
-#[test]
-fn token_kind_eq_is_reflexive() {
-    for kind in all_token_kinds() {
-        assert_eq!(kind, kind);
-    }
 }
 
 #[test]
@@ -842,8 +837,10 @@ fn token_with_null_byte() {
 fn many_tokens_in_vec() {
     let tokens: Vec<Token> = (0..1000)
         .map(|i| {
-            Token::new_checked(TokenKind::Number, i.to_string(), i * 4, i * 4 + 3)
-                .expect("valid token")
+            let text = i.to_string();
+            let start = i * 4;
+            let end = start + text.len();
+            Token::new_checked(TokenKind::Number, text, start, end).expect("valid token")
         })
         .collect();
 

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/EffortlessMetrics/perl-lsp/.ci/schemas/ux-flakes.schema.json",
   "title": "perl-lsp UX flake ledger",
-  "description": "Registry of known-flaky or known-blocked UX scenario tests with quarantine support and accountability metadata.",
+  "description": "Registry of known-flaky or known-blocked UX scenario tests with quarantine support, terminal dispositions, and evidence-backed replacement mappings.",
   "type": "object",
   "required": [
     "schema_version",
@@ -12,7 +12,7 @@
   "additionalProperties": false,
   "properties": {
     "schema_version": {
-      "const": 1
+      "const": 2
     },
     "description": {
       "type": "string"
@@ -28,6 +28,143 @@
     }
   },
   "$defs": {
+    "disposition": {
+      "enum": [
+        "still_failing",
+        "stabilized",
+        "resolved_by_intent",
+        "folded",
+        "not_proven"
+      ],
+      "description": "Terminal reconciliation result for the historical failure claim."
+    },
+    "evidence": {
+      "type": "object",
+      "required": [
+        "command",
+        "verification_state",
+        "verification_pr",
+        "verified_sha",
+        "verified_artifact_blob",
+        "unverified_reason",
+        "replacement_tests"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Hard-fail command used to verify the maintained executable contract."
+        },
+        "verification_state": {
+          "enum": [
+            "verified",
+            "unverified"
+          ],
+          "description": "Whether an exact-head verification run actually justifies the disposition. `unverified` is the honest classification for rows with no binding verifying commit; null is never acceptable."
+        },
+        "verification_pr": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "description": "Pull request carrying the exact-head verification run. Required (non-null) when verification_state is verified; quarantine_registry_contract re-verifies this binding and fails on a null, non-integer, or placeholder identity."
+        },
+        "verified_sha": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{40}$",
+          "description": "Exact 40-hex commit whose evidence run justified the disposition. Required (non-null) when verification_state is verified; must be null when unverified."
+        },
+        "verified_artifact_blob": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{40}$",
+          "description": "Git blob id of the replacement-test source at verified_sha. The quarantine contract test re-verifies this binding and fails when the artifact drifts or the sha does not carry the recorded blob."
+        },
+        "unverified_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "description": "Named reason no verifying commit exists yet. Required (non-null) when verification_state is unverified; must be null when verified."
+        },
+        "replacement_tests": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Maintained executable tests that now own the historical intent."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "verification_state": {
+                "const": "verified"
+              }
+            },
+            "required": [
+              "verification_state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "verification_pr": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "verified_sha": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "verified_artifact_blob": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "unverified_reason": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "verification_state": {
+                "const": "unverified"
+              }
+            },
+            "required": [
+              "verification_state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "verified_sha": {
+                "type": "null"
+              },
+              "verified_artifact_blob": {
+                "type": "null"
+              },
+              "unverified_reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    },
     "flakeEntry": {
       "type": "object",
       "required": [
@@ -35,24 +172,32 @@
         "crate",
         "subsystem",
         "state",
+        "disposition",
         "failure_mode",
         "failure_class",
         "component",
+        "issue",
+        "owner",
         "first_seen",
         "scope",
-        "quarantine_effect"
+        "quarantine_effect",
+        "expires_after_days",
+        "resolved_in",
+        "resolved_at",
+        "evidence",
+        "notes"
       ],
       "additionalProperties": false,
       "properties": {
         "test": {
           "type": "string",
           "minLength": 1,
-          "description": "Fully qualified test name (module::function)."
+          "description": "Fully qualified historical test name (module::function)."
         },
         "crate": {
           "type": "string",
           "minLength": 1,
-          "description": "Crate containing the test."
+          "description": "Crate containing the test or replacement contract."
         },
         "subsystem": {
           "type": "string",
@@ -60,13 +205,19 @@
           "description": "Subsystem owner for triage routing."
         },
         "state": {
-          "enum": ["active", "resolved"],
-          "description": "Whether the flake is currently active or has been resolved."
+          "enum": [
+            "active",
+            "resolved"
+          ],
+          "description": "Whether a current failure remains actionable."
+        },
+        "disposition": {
+          "$ref": "#/$defs/disposition"
         },
         "failure_mode": {
           "type": "string",
           "minLength": 1,
-          "description": "Human-readable description of the failure behavior."
+          "description": "Historical failure behavior."
         },
         "failure_class": {
           "enum": [
@@ -96,79 +247,131 @@
           "description": "UxComponent enum value identifying the subsystem exercised."
         },
         "issue": {
-          "type": ["integer", "null"],
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 1,
-          "description": "GitHub issue number tracking the flake. Required for active entries."
+          "description": "Current GitHub issue for active failures; null when no current failure remains."
         },
         "owner": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "minLength": 1,
-          "description": "GitHub handle of the responsible party. Required for active entries."
+          "description": "Current responsible party for active failures; null when no current failure remains."
         },
         "first_seen": {
           "type": "string",
           "format": "date",
-          "description": "ISO-8601 date when the flake was first observed."
+          "description": "ISO-8601 date when the failure was first observed."
         },
         "scope": {
-          "enum": ["pr", "nightly", "release"],
-          "description": "CI tier scope where the flake manifests."
+          "enum": [
+            "pr",
+            "nightly",
+            "release"
+          ],
+          "description": "CI tier where the historical failure manifested."
         },
         "quarantine_effect": {
-          "enum": ["non_blocking_pr", "release_blocking", "advisory"],
-          "description": "How the quarantine affects CI gating."
+          "enum": [
+            "non_blocking_pr",
+            "release_blocking",
+            "advisory"
+          ],
+          "description": "Historical quarantine effect."
         },
         "expires_after_days": {
-          "type": ["integer", "null"],
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 1,
-          "description": "Optional auto-expiry in days from first_seen. Null means no auto-expiry."
+          "description": "Optional auto-expiry for active entries."
         },
         "resolved_in": {
-          "type": ["integer", "null"],
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 1,
-          "description": "PR number that resolved the flake. Null while active."
+          "description": "PR that recorded the terminal disposition."
         },
         "resolved_at": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "format": "date",
-          "description": "ISO-8601 date when the flake was resolved. Null while active."
+          "description": "Date the terminal disposition was recorded."
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
         },
         "notes": {
-          "type": ["string", "null"],
-          "description": "Optional free-form notes about the flake."
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Rationale preserving the distinction between stabilization and changed intent."
         }
       },
-      "if": {
-        "properties": {
-          "state": { "const": "active" }
-        }
-      },
-      "then": {
-        "properties": {
-          "issue": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "owner": {
-            "type": "string",
-            "minLength": 1
-          },
-          "failure_class": {
-            "enum": [
-              "provider_regression",
-              "server_crash",
-              "timeout",
-              "test_race",
-              "infra",
-              "matrix_drift",
-              "baseline_drift",
-              "new_test_bug",
-              "unknown"
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "active"
+              }
+            },
+            "required": [
+              "state"
             ]
+          },
+          "then": {
+            "properties": {
+              "disposition": {
+                "enum": [
+                  "still_failing",
+                  "not_proven"
+                ]
+              },
+              "issue": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "owner": {
+                "type": "string",
+                "minLength": 1
+              },
+              "resolved_in": {
+                "type": "null"
+              },
+              "resolved_at": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "disposition": {
+                "enum": [
+                  "stabilized",
+                  "resolved_by_intent",
+                  "folded",
+                  "not_proven"
+                ]
+              },
+              "resolved_at": {
+                "type": "string",
+                "format": "date"
+              }
+            }
           }
-        },
-        "required": ["issue", "owner", "failure_class"]
-      }
+        }
+      ]
     },
     "summary": {
       "type": "object",
@@ -176,32 +379,62 @@
         "total",
         "active",
         "resolved",
-        "by_subsystem"
+        "by_subsystem",
+        "by_disposition"
       ],
       "additionalProperties": false,
       "properties": {
         "total": {
           "type": "integer",
-          "minimum": 0,
-          "description": "Total number of entries in the ledger."
+          "minimum": 0
         },
         "active": {
           "type": "integer",
-          "minimum": 0,
-          "description": "Number of entries with state 'active'."
+          "minimum": 0
         },
         "resolved": {
           "type": "integer",
-          "minimum": 0,
-          "description": "Number of entries with state 'resolved'."
+          "minimum": 0
         },
         "by_subsystem": {
           "type": "object",
           "additionalProperties": {
             "type": "integer",
             "minimum": 0
-          },
-          "description": "Entry counts grouped by subsystem."
+          }
+        },
+        "by_disposition": {
+          "type": "object",
+          "required": [
+            "still_failing",
+            "stabilized",
+            "resolved_by_intent",
+            "folded",
+            "not_proven"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "still_failing": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "stabilized": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "resolved_by_intent": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "folded": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "not_proven": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
         }
       }
     }

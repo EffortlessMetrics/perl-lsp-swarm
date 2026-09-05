@@ -18,6 +18,8 @@ perl-ast-v2 = { workspace = true }
 perl-position-tracking = { workspace = true }
 perl-token = { workspace = true }
 strum = { workspace = true }
+# sha2: domain-separated structural schema identity (#8429). Not exposed in the public API.
+sha2 = { workspace = true }
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]

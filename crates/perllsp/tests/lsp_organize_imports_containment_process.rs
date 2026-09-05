@@ -8,6 +8,7 @@
 //! `context.only: ["source.organizeImports"]` request, and not through
 //! `codeAction/resolve` of a forged action. They also pin that the initialize
 //! response no longer advertises `source.organizeImports`.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 #[path = "support/real_process.rs"]
 mod real_process;

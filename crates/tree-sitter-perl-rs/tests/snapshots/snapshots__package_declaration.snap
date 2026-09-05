@@ -2,4 +2,4 @@
 source: crates/tree-sitter-perl-rs/tests/snapshots.rs
 expression: sexp
 ---
-(source_file (package My::Module) (use strict) (use warnings))
+(source_file (statements (package (name My::Module))) (statements (use (module strict))) (statements (use (module warnings))))

@@ -455,6 +455,26 @@ duplicate_of = ["nightly:mutation"]
 review_after = "2026-06-07"
 expires = "2026-08-07"
 
+[[lane]]
+id = "ripr_infra_retry"
+workflow = ".github/workflows/ripr-infra-retry.yml"
+job = "retry-on-eviction"
+tier = "support"
+kind = "control"
+blocking = false
+default_pr = true
+runner = "ubuntu_latest"
+base_lem = 1
+owner = "testing"
+intent = "Bounded automatic same-head retry when the gate classifies a ripr lane kill as infra-no-proof (#6807, #12563, #12771)."
+failure_mode = "A runner eviction otherwise false-reds the required ripr+ New Gap Gate with no terminal evidence for the SHA."
+proof_obligation = "Consume the gate's ripr-gate-classification artifact strictly as data; rerun-failed-jobs exactly once while run_attempt == 1; attempt >= 2 surfaces NOT_PROVEN loudly."
+evidence = []
+allowed_triggers = ["workflow_run"]
+labels = ["ripr", "ci-reliability"]
+expensive = false
+blocking_promotion_allowed = false
+
 # =============================================================================
 # Nightly / branch-gated deep lanes
 # =============================================================================
@@ -493,12 +513,12 @@ default_pr = false
 runner = "ubuntu_24_04"
 base_lem = 45
 owner = "testing"
-intent = "Measure execution surface; also provides the required Codecov / Patch 95 check on merge_group runs."
+intent = "Measure execution surface; Codecov / Patch 95 is advisory on explicit nightly or manual runs."
 failure_mode = "Coverage drops or important code becomes unexecuted."
 proof_obligation = "Run cargo-llvm-cov and upload report."
 evidence = ["lcov.info", "Codecov"]
-allowed_triggers = ["schedule", "workflow_dispatch", "pull_request:labeled", "merge_group", "pull_request"]
-labels = ["ci:coverage", "coverage", "full-ci"]
+allowed_triggers = ["schedule", "workflow_dispatch"]
+labels = []
 expensive = true
 duplicate_of = []
 review_after = "2026-06-07"
@@ -915,7 +935,7 @@ base_lem = 3
 owner = "ci"
 intent = "Regenerate repository-scoped public Shields endpoint JSON for README badges."
 failure_mode = "Public badge endpoint JSON drifts from the checked badge generator."
-proof_obligation = "Run cargo xtask badges and open a refresh PR only when badge JSON changes."
+proof_obligation = "Run python3 scripts/generate-badges.py against the full repository and open a refresh PR only when badge JSON changes."
 evidence = ["badges/*.json", "refresh PR diff"]
 allowed_triggers = ["push", "workflow_dispatch"]
 expensive = false
@@ -1186,3 +1206,24 @@ expensive = false
 duplicate_of = []
 review_after = "2026-08-10"
 expires = "2026-12-10"
+
+[[lane]]
+id = "critic_rule_proof"
+workflow = ".github/workflows/critic-rule-proof.yml"
+job = "validate"
+tier = "frontdoor"
+kind = "hygiene"
+blocking = false
+default_pr = false
+runner = "ubuntu_24_04"
+base_lem = 8
+owner = "native-critic"
+intent = "Path-filtered checker for the versioned critic rule-proof manifest, fixture digests, identity/remediation authorities, live critic propositions, and generated status (#6973)."
+failure_mode = "Rule-proof schema, fixture digest, identity/alias, suppression, remediation, or live critic proposition drift lands without failing --check."
+proof_obligation = "Run cargo test -p xtask --locked --test critic_rule_proof and cargo xtask critic-rule-proof check."
+evidence = ["job output"]
+allowed_triggers = ["pull_request", "workflow_dispatch"]
+expensive = false
+duplicate_of = []
+review_after = "2026-11-26"
+expires = "2026-12-26"

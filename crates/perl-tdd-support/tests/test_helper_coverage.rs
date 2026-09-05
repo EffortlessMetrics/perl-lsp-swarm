@@ -3,6 +3,7 @@
 //! Focuses on: must/must_some/must_err edge cases, panic message formatting,
 //! #[track_caller] behavior, governance quality scoring edge cases,
 //! TDD workflow state transitions, and coverage tracker boundaries.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_tdd_support::governance::*;
 use perl_tdd_support::tdd_basic::{
@@ -1082,52 +1083,30 @@ fn test_validation_fails_without_issue_reference() -> Result<(), Box<dyn std::er
 
 #[test]
 fn test_trend_direction_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(TrendDirection::Increasing, TrendDirection::Increasing);
-    assert_eq!(TrendDirection::Decreasing, TrendDirection::Decreasing);
-    assert_eq!(TrendDirection::Stable, TrendDirection::Stable);
-    assert_eq!(TrendDirection::Unknown, TrendDirection::Unknown);
     assert_ne!(TrendDirection::Increasing, TrendDirection::Decreasing);
     Ok(())
 }
 
 #[test]
 fn test_report_format_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(ReportFormat::Json, ReportFormat::Json);
-    assert_eq!(ReportFormat::Markdown, ReportFormat::Markdown);
-    assert_eq!(ReportFormat::Html, ReportFormat::Html);
-    assert_eq!(ReportFormat::Csv, ReportFormat::Csv);
     assert_ne!(ReportFormat::Json, ReportFormat::Csv);
     Ok(())
 }
 
 #[test]
 fn test_complexity_level_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(ComplexityLevel::Low, ComplexityLevel::Low);
-    assert_eq!(ComplexityLevel::Medium, ComplexityLevel::Medium);
-    assert_eq!(ComplexityLevel::High, ComplexityLevel::High);
-    assert_eq!(ComplexityLevel::Critical, ComplexityLevel::Critical);
     assert_ne!(ComplexityLevel::Low, ComplexityLevel::Critical);
     Ok(())
 }
 
 #[test]
 fn test_test_category_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(TestCategory::CriticalLsp, TestCategory::CriticalLsp);
-    assert_eq!(TestCategory::Infrastructure, TestCategory::Infrastructure);
-    assert_eq!(TestCategory::AdvancedSyntax, TestCategory::AdvancedSyntax);
-    assert_eq!(TestCategory::EdgeCases, TestCategory::EdgeCases);
     assert_ne!(TestCategory::CriticalLsp, TestCategory::EdgeCases);
     Ok(())
 }
 
 #[test]
 fn test_lsp_workflow_stage_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(LspWorkflowStage::Parse, LspWorkflowStage::Parse);
-    assert_eq!(LspWorkflowStage::Index, LspWorkflowStage::Index);
-    assert_eq!(LspWorkflowStage::Navigate, LspWorkflowStage::Navigate);
-    assert_eq!(LspWorkflowStage::Complete, LspWorkflowStage::Complete);
-    assert_eq!(LspWorkflowStage::Analyze, LspWorkflowStage::Analyze);
-    assert_eq!(LspWorkflowStage::CrossCutting, LspWorkflowStage::CrossCutting);
     assert_ne!(LspWorkflowStage::Parse, LspWorkflowStage::Analyze);
     Ok(())
 }
@@ -1166,8 +1145,6 @@ fn test_test_status_debug() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_test_status_equality() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(TestStatus::Passed, TestStatus::Passed);
-    assert_eq!(TestStatus::Failed, TestStatus::Failed);
     assert_ne!(TestStatus::Passed, TestStatus::Failed);
     assert_ne!(TestStatus::Skipped, TestStatus::Errored);
     Ok(())

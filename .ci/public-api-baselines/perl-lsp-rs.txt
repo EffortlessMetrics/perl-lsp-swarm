@@ -137,6 +137,7 @@ pub fn perl_lsp::features::diagnostics::pull::DiagnosticData::fmt(&self, f: &mut
 pub fn perl_lsp::features::diagnostics::pull::DiagnosticData::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_lsp::features::diagnostics::pull::DiagnosticData::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_lsp::features::diagnostics::pull::PullDiagnosticsContext
+pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::configuration_generation: core::option::Option<u64>
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::critic_engine: perl_lsp_rs_core::config::CriticEngine
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::facts_generation: core::option::Option<u64>
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::identity_root_key: core::option::Option<alloc::string::String>
@@ -148,6 +149,7 @@ pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::native_critic
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::perlcritic_enabled: bool
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::perlcritic_profile: core::option::Option<alloc::string::String>
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::perlcritic_severity: i32
+pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::project_version: core::option::Option<alloc::string::String>
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::projection: perl_lsp::features::diagnostics::report_identity::DiagnosticProjectionFragment
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::workspace_index: core::option::Option<alloc::sync::Arc<perl_workspace::workspace::workspace_index::WorkspaceIndex>>
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::workspace_root: core::option::Option<std::path::PathBuf>
@@ -215,6 +217,7 @@ pub fn perl_lsp::features::diagnostics::report_identity::DiagnosticProjectionFra
 pub fn perl_lsp::features::diagnostics::report_identity::DiagnosticProjectionFragment::eq(&self, other: &perl_lsp::features::diagnostics::report_identity::DiagnosticProjectionFragment) -> bool
 pub fn perl_lsp::features::diagnostics::report_identity::DiagnosticProjectionFragment::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lsp::features::diagnostics::PullDiagnosticsContext
+pub perl_lsp::features::diagnostics::PullDiagnosticsContext::configuration_generation: core::option::Option<u64>
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::critic_engine: perl_lsp_rs_core::config::CriticEngine
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::facts_generation: core::option::Option<u64>
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::identity_root_key: core::option::Option<alloc::string::String>
@@ -226,6 +229,7 @@ pub perl_lsp::features::diagnostics::PullDiagnosticsContext::native_critic_profi
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::perlcritic_enabled: bool
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::perlcritic_profile: core::option::Option<alloc::string::String>
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::perlcritic_severity: i32
+pub perl_lsp::features::diagnostics::PullDiagnosticsContext::project_version: core::option::Option<alloc::string::String>
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::projection: perl_lsp::features::diagnostics::report_identity::DiagnosticProjectionFragment
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::workspace_index: core::option::Option<alloc::sync::Arc<perl_workspace::workspace::workspace_index::WorkspaceIndex>>
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::workspace_root: core::option::Option<std::path::PathBuf>
@@ -345,15 +349,11 @@ pub mod perl_lsp::features::linked_editing
 pub use perl_lsp::features::linked_editing::<<perl_lsp_rs_core::providers::lsp_compat::linked_editing::*>>
 pub mod perl_lsp::features::lsp_document_link
 pub fn perl_lsp::features::lsp_document_link::collect_document_links(text: &str, uri: &url::Url) -> core::result::Result<alloc::vec::Vec<lsp_types::document_link::DocumentLink>, alloc::string::String>
-pub mod perl_lsp::features::lsp_on_type_formatting
-pub fn perl_lsp::features::lsp_on_type_formatting::format_on_type(text: &str, _uri: lsp_types::uri::Uri, ch: alloc::string::String, position: lsp_types::Position, tab_size: usize, insert_spaces: bool) -> alloc::vec::Vec<lsp_types::TextEdit>
 pub mod perl_lsp::features::lsp_selection_range
 pub use perl_lsp::features::lsp_selection_range::<<perl_lsp_rs_core::providers::selection_range::*>>
 pub mod perl_lsp::features::map
 pub use perl_lsp::features::map::caps_from_feature_ids
 pub use perl_lsp::features::map::feature_ids_from_caps
-pub mod perl_lsp::features::on_type_formatting
-pub use perl_lsp::features::on_type_formatting::<<perl_lsp_rs_core::providers::lsp_compat::on_type_formatting::*>>
 pub mod perl_lsp::features::references
 pub use perl_lsp::features::references::<<perl_lsp_rs_core::providers::navigation::*>>
 pub mod perl_lsp::features::rename
@@ -473,10 +473,10 @@ pub fn perl_lsp::runtime::LspServer::try_begin_request_progress(&self, prefix: &
 pub fn perl_lsp::runtime::LspServer::did_open(&self, params: serde_json::value::Value) -> core::result::Result<(), perl_lsp_rs_core::protocol::jsonrpc::JsonRpcError>
 pub fn perl_lsp::runtime::LspServer::handle_did_change_with_cancellation(&self, params: core::option::Option<serde_json::value::Value>, cancellation_token: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>) -> core::result::Result<(), perl_lsp_rs_core::protocol::jsonrpc::JsonRpcError>
 pub fn perl_lsp::runtime::LspServer::handle_did_open_with_cancellation(&self, params: core::option::Option<serde_json::value::Value>, cancellation_token: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>) -> core::result::Result<(), perl_lsp_rs_core::protocol::jsonrpc::JsonRpcError>
-pub fn perl_lsp::runtime::LspServer::handle_message<R: std::io::Read>(&self, reader: &mut R) -> core::io::error::Result<()>
+pub fn perl_lsp::runtime::LspServer::handle_message<R: alloc::io::read::Read>(&self, reader: &mut R) -> core::io::error::Result<()>
 pub fn perl_lsp::runtime::LspServer::is_initialized(&self) -> bool
 pub fn perl_lsp::runtime::LspServer::run(&self) -> core::io::error::Result<()>
-pub fn perl_lsp::runtime::LspServer::serve(&self, reader: &mut dyn std::io::BufRead) -> core::io::error::Result<()>
+pub fn perl_lsp::runtime::LspServer::serve(&self, reader: &mut dyn alloc::io::buf_read::BufRead) -> core::io::error::Result<()>
 pub async fn perl_lsp::runtime::LspServer::serve_async(self: alloc::sync::Arc<Self>, rx: tokio::sync::mpsc::bounded::Receiver<perl_lsp_rs_core::protocol::jsonrpc::JsonRpcRequest>)
 pub fn perl_lsp::runtime::LspServer::handle_request(&self, request: perl_lsp_rs_core::protocol::jsonrpc::JsonRpcRequest) -> core::option::Option<perl_lsp_rs_core::protocol::jsonrpc::JsonRpcResponse>
 pub fn perl_lsp::runtime::LspServer::new() -> Self
@@ -484,12 +484,12 @@ pub fn perl_lsp::runtime::LspServer::new_with_feature_profile(feature_profile: p
 pub fn perl_lsp::runtime::LspServer::new_with_feature_profile_and_tuning(feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile, runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> Self
 pub fn perl_lsp::runtime::LspServer::new_with_tuning(runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> Self
 pub fn perl_lsp::runtime::LspServer::set_incremental_eager(&self, enabled: bool)
-pub fn perl_lsp::runtime::LspServer::with_io<R, W>(reader: alloc::boxed::Box<R>, writer: alloc::boxed::Box<W>) -> Self where R: std::io::Read + core::marker::Send + 'static, W: std::io::Write + core::marker::Send + 'static
-pub fn perl_lsp::runtime::LspServer::with_io_and_feature_profile<R, W>(reader: alloc::boxed::Box<R>, writer: alloc::boxed::Box<W>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile) -> Self where R: std::io::Read + core::marker::Send + 'static, W: std::io::Write + core::marker::Send + 'static
-pub fn perl_lsp::runtime::LspServer::with_io_feature_profile_and_tuning<R, W>(reader: alloc::boxed::Box<R>, writer: alloc::boxed::Box<W>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile, runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> Self where R: std::io::Read + core::marker::Send + 'static, W: std::io::Write + core::marker::Send + 'static
-pub fn perl_lsp::runtime::LspServer::with_output(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn std::io::Write + core::marker::Send)>>>) -> Self
-pub fn perl_lsp::runtime::LspServer::with_output_and_feature_profile(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn std::io::Write + core::marker::Send)>>>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile) -> Self
-pub fn perl_lsp::runtime::LspServer::with_output_feature_profile_and_tuning(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn std::io::Write + core::marker::Send)>>>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile, runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> Self
+pub fn perl_lsp::runtime::LspServer::with_io<R, W>(reader: alloc::boxed::Box<R>, writer: alloc::boxed::Box<W>) -> Self where R: alloc::io::read::Read + core::marker::Send + 'static, W: core::io::write::Write + core::marker::Send + 'static
+pub fn perl_lsp::runtime::LspServer::with_io_and_feature_profile<R, W>(reader: alloc::boxed::Box<R>, writer: alloc::boxed::Box<W>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile) -> Self where R: alloc::io::read::Read + core::marker::Send + 'static, W: core::io::write::Write + core::marker::Send + 'static
+pub fn perl_lsp::runtime::LspServer::with_io_feature_profile_and_tuning<R, W>(reader: alloc::boxed::Box<R>, writer: alloc::boxed::Box<W>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile, runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> Self where R: alloc::io::read::Read + core::marker::Send + 'static, W: core::io::write::Write + core::marker::Send + 'static
+pub fn perl_lsp::runtime::LspServer::with_output(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn core::io::write::Write + core::marker::Send)>>>) -> Self
+pub fn perl_lsp::runtime::LspServer::with_output_and_feature_profile(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn core::io::write::Write + core::marker::Send)>>>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile) -> Self
+pub fn perl_lsp::runtime::LspServer::with_output_feature_profile_and_tuning(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn core::io::write::Write + core::marker::Send)>>>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile, runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> Self
 pub fn perl_lsp::runtime::LspServer::offset_to_position(&self, content: &str, offset: usize) -> (u32, u32)
 pub fn perl_lsp::runtime::LspServer::position_to_offset(&self, content: &str, line: u32, character: u32) -> usize
 pub fn perl_lsp::runtime::LspServer::request_code_lens_refresh(&self) -> core::io::error::Result<()>
@@ -664,10 +664,10 @@ pub fn perl_lsp::runtime::LspServer::try_begin_request_progress(&self, prefix: &
 pub fn perl_lsp::runtime::LspServer::did_open(&self, params: serde_json::value::Value) -> core::result::Result<(), perl_lsp_rs_core::protocol::jsonrpc::JsonRpcError>
 pub fn perl_lsp::runtime::LspServer::handle_did_change_with_cancellation(&self, params: core::option::Option<serde_json::value::Value>, cancellation_token: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>) -> core::result::Result<(), perl_lsp_rs_core::protocol::jsonrpc::JsonRpcError>
 pub fn perl_lsp::runtime::LspServer::handle_did_open_with_cancellation(&self, params: core::option::Option<serde_json::value::Value>, cancellation_token: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>) -> core::result::Result<(), perl_lsp_rs_core::protocol::jsonrpc::JsonRpcError>
-pub fn perl_lsp::runtime::LspServer::handle_message<R: std::io::Read>(&self, reader: &mut R) -> core::io::error::Result<()>
+pub fn perl_lsp::runtime::LspServer::handle_message<R: alloc::io::read::Read>(&self, reader: &mut R) -> core::io::error::Result<()>
 pub fn perl_lsp::runtime::LspServer::is_initialized(&self) -> bool
 pub fn perl_lsp::runtime::LspServer::run(&self) -> core::io::error::Result<()>
-pub fn perl_lsp::runtime::LspServer::serve(&self, reader: &mut dyn std::io::BufRead) -> core::io::error::Result<()>
+pub fn perl_lsp::runtime::LspServer::serve(&self, reader: &mut dyn alloc::io::buf_read::BufRead) -> core::io::error::Result<()>
 pub async fn perl_lsp::runtime::LspServer::serve_async(self: alloc::sync::Arc<Self>, rx: tokio::sync::mpsc::bounded::Receiver<perl_lsp_rs_core::protocol::jsonrpc::JsonRpcRequest>)
 pub fn perl_lsp::runtime::LspServer::handle_request(&self, request: perl_lsp_rs_core::protocol::jsonrpc::JsonRpcRequest) -> core::option::Option<perl_lsp_rs_core::protocol::jsonrpc::JsonRpcResponse>
 pub fn perl_lsp::runtime::LspServer::new() -> Self
@@ -675,12 +675,12 @@ pub fn perl_lsp::runtime::LspServer::new_with_feature_profile(feature_profile: p
 pub fn perl_lsp::runtime::LspServer::new_with_feature_profile_and_tuning(feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile, runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> Self
 pub fn perl_lsp::runtime::LspServer::new_with_tuning(runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> Self
 pub fn perl_lsp::runtime::LspServer::set_incremental_eager(&self, enabled: bool)
-pub fn perl_lsp::runtime::LspServer::with_io<R, W>(reader: alloc::boxed::Box<R>, writer: alloc::boxed::Box<W>) -> Self where R: std::io::Read + core::marker::Send + 'static, W: std::io::Write + core::marker::Send + 'static
-pub fn perl_lsp::runtime::LspServer::with_io_and_feature_profile<R, W>(reader: alloc::boxed::Box<R>, writer: alloc::boxed::Box<W>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile) -> Self where R: std::io::Read + core::marker::Send + 'static, W: std::io::Write + core::marker::Send + 'static
-pub fn perl_lsp::runtime::LspServer::with_io_feature_profile_and_tuning<R, W>(reader: alloc::boxed::Box<R>, writer: alloc::boxed::Box<W>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile, runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> Self where R: std::io::Read + core::marker::Send + 'static, W: std::io::Write + core::marker::Send + 'static
-pub fn perl_lsp::runtime::LspServer::with_output(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn std::io::Write + core::marker::Send)>>>) -> Self
-pub fn perl_lsp::runtime::LspServer::with_output_and_feature_profile(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn std::io::Write + core::marker::Send)>>>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile) -> Self
-pub fn perl_lsp::runtime::LspServer::with_output_feature_profile_and_tuning(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn std::io::Write + core::marker::Send)>>>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile, runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> Self
+pub fn perl_lsp::runtime::LspServer::with_io<R, W>(reader: alloc::boxed::Box<R>, writer: alloc::boxed::Box<W>) -> Self where R: alloc::io::read::Read + core::marker::Send + 'static, W: core::io::write::Write + core::marker::Send + 'static
+pub fn perl_lsp::runtime::LspServer::with_io_and_feature_profile<R, W>(reader: alloc::boxed::Box<R>, writer: alloc::boxed::Box<W>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile) -> Self where R: alloc::io::read::Read + core::marker::Send + 'static, W: core::io::write::Write + core::marker::Send + 'static
+pub fn perl_lsp::runtime::LspServer::with_io_feature_profile_and_tuning<R, W>(reader: alloc::boxed::Box<R>, writer: alloc::boxed::Box<W>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile, runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> Self where R: alloc::io::read::Read + core::marker::Send + 'static, W: core::io::write::Write + core::marker::Send + 'static
+pub fn perl_lsp::runtime::LspServer::with_output(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn core::io::write::Write + core::marker::Send)>>>) -> Self
+pub fn perl_lsp::runtime::LspServer::with_output_and_feature_profile(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn core::io::write::Write + core::marker::Send)>>>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile) -> Self
+pub fn perl_lsp::runtime::LspServer::with_output_feature_profile_and_tuning(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn core::io::write::Write + core::marker::Send)>>>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile, runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> Self
 pub fn perl_lsp::runtime::LspServer::offset_to_position(&self, content: &str, offset: usize) -> (u32, u32)
 pub fn perl_lsp::runtime::LspServer::position_to_offset(&self, content: &str, line: u32, character: u32) -> usize
 pub fn perl_lsp::runtime::LspServer::request_code_lens_refresh(&self) -> core::io::error::Result<()>
@@ -886,10 +886,10 @@ pub fn perl_lsp::runtime::LspServer::try_begin_request_progress(&self, prefix: &
 pub fn perl_lsp::runtime::LspServer::did_open(&self, params: serde_json::value::Value) -> core::result::Result<(), perl_lsp_rs_core::protocol::jsonrpc::JsonRpcError>
 pub fn perl_lsp::runtime::LspServer::handle_did_change_with_cancellation(&self, params: core::option::Option<serde_json::value::Value>, cancellation_token: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>) -> core::result::Result<(), perl_lsp_rs_core::protocol::jsonrpc::JsonRpcError>
 pub fn perl_lsp::runtime::LspServer::handle_did_open_with_cancellation(&self, params: core::option::Option<serde_json::value::Value>, cancellation_token: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>) -> core::result::Result<(), perl_lsp_rs_core::protocol::jsonrpc::JsonRpcError>
-pub fn perl_lsp::runtime::LspServer::handle_message<R: std::io::Read>(&self, reader: &mut R) -> core::io::error::Result<()>
+pub fn perl_lsp::runtime::LspServer::handle_message<R: alloc::io::read::Read>(&self, reader: &mut R) -> core::io::error::Result<()>
 pub fn perl_lsp::runtime::LspServer::is_initialized(&self) -> bool
 pub fn perl_lsp::runtime::LspServer::run(&self) -> core::io::error::Result<()>
-pub fn perl_lsp::runtime::LspServer::serve(&self, reader: &mut dyn std::io::BufRead) -> core::io::error::Result<()>
+pub fn perl_lsp::runtime::LspServer::serve(&self, reader: &mut dyn alloc::io::buf_read::BufRead) -> core::io::error::Result<()>
 pub async fn perl_lsp::runtime::LspServer::serve_async(self: alloc::sync::Arc<Self>, rx: tokio::sync::mpsc::bounded::Receiver<perl_lsp_rs_core::protocol::jsonrpc::JsonRpcRequest>)
 pub fn perl_lsp::runtime::LspServer::handle_request(&self, request: perl_lsp_rs_core::protocol::jsonrpc::JsonRpcRequest) -> core::option::Option<perl_lsp_rs_core::protocol::jsonrpc::JsonRpcResponse>
 pub fn perl_lsp::runtime::LspServer::new() -> Self
@@ -897,12 +897,12 @@ pub fn perl_lsp::runtime::LspServer::new_with_feature_profile(feature_profile: p
 pub fn perl_lsp::runtime::LspServer::new_with_feature_profile_and_tuning(feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile, runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> Self
 pub fn perl_lsp::runtime::LspServer::new_with_tuning(runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> Self
 pub fn perl_lsp::runtime::LspServer::set_incremental_eager(&self, enabled: bool)
-pub fn perl_lsp::runtime::LspServer::with_io<R, W>(reader: alloc::boxed::Box<R>, writer: alloc::boxed::Box<W>) -> Self where R: std::io::Read + core::marker::Send + 'static, W: std::io::Write + core::marker::Send + 'static
-pub fn perl_lsp::runtime::LspServer::with_io_and_feature_profile<R, W>(reader: alloc::boxed::Box<R>, writer: alloc::boxed::Box<W>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile) -> Self where R: std::io::Read + core::marker::Send + 'static, W: std::io::Write + core::marker::Send + 'static
-pub fn perl_lsp::runtime::LspServer::with_io_feature_profile_and_tuning<R, W>(reader: alloc::boxed::Box<R>, writer: alloc::boxed::Box<W>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile, runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> Self where R: std::io::Read + core::marker::Send + 'static, W: std::io::Write + core::marker::Send + 'static
-pub fn perl_lsp::runtime::LspServer::with_output(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn std::io::Write + core::marker::Send)>>>) -> Self
-pub fn perl_lsp::runtime::LspServer::with_output_and_feature_profile(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn std::io::Write + core::marker::Send)>>>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile) -> Self
-pub fn perl_lsp::runtime::LspServer::with_output_feature_profile_and_tuning(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn std::io::Write + core::marker::Send)>>>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile, runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> Self
+pub fn perl_lsp::runtime::LspServer::with_io<R, W>(reader: alloc::boxed::Box<R>, writer: alloc::boxed::Box<W>) -> Self where R: alloc::io::read::Read + core::marker::Send + 'static, W: core::io::write::Write + core::marker::Send + 'static
+pub fn perl_lsp::runtime::LspServer::with_io_and_feature_profile<R, W>(reader: alloc::boxed::Box<R>, writer: alloc::boxed::Box<W>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile) -> Self where R: alloc::io::read::Read + core::marker::Send + 'static, W: core::io::write::Write + core::marker::Send + 'static
+pub fn perl_lsp::runtime::LspServer::with_io_feature_profile_and_tuning<R, W>(reader: alloc::boxed::Box<R>, writer: alloc::boxed::Box<W>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile, runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> Self where R: alloc::io::read::Read + core::marker::Send + 'static, W: core::io::write::Write + core::marker::Send + 'static
+pub fn perl_lsp::runtime::LspServer::with_output(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn core::io::write::Write + core::marker::Send)>>>) -> Self
+pub fn perl_lsp::runtime::LspServer::with_output_and_feature_profile(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn core::io::write::Write + core::marker::Send)>>>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile) -> Self
+pub fn perl_lsp::runtime::LspServer::with_output_feature_profile_and_tuning(output: alloc::sync::Arc<parking_lot::mutex::Mutex<alloc::boxed::Box<(dyn core::io::write::Write + core::marker::Send)>>>, feature_profile: perl_lsp_rs_core::features::policy::FeatureProfile, runtime_tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning) -> Self
 pub fn perl_lsp::runtime::LspServer::offset_to_position(&self, content: &str, offset: usize) -> (u32, u32)
 pub fn perl_lsp::runtime::LspServer::position_to_offset(&self, content: &str, line: u32, character: u32) -> usize
 pub fn perl_lsp::runtime::LspServer::request_code_lens_refresh(&self) -> core::io::error::Result<()>

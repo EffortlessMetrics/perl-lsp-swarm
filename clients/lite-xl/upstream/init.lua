@@ -531,45 +531,103 @@ end
 ---@param list table<integer, table>
 ---@param parent? string
 local function get_symbol_lists(list, parent)
+  -- Local patch (#11198): rendered display strings are presentation, not
+  -- identity. Rows are stored under one collision-free internal key per
+  -- returned item - the first occurrence of a rendered path keeps it as the
+  -- internal key, later occurrences gain a deterministic source-order
+  -- suffix - array results are traversed in numeric order, and every row
+  -- retains its own protocol facts so duplicate names/kinds stay
+  -- independently selectable. The user-visible text is derived from the key
+  -- without the disambiguation segment, so visible symbol names never
+  -- change and protocol objects are never mutated by identity.
+  --
+  -- Review adoption (PR #12670): two follow-up seams. First, the opaque
+  -- disambiguation ordinal lives only inside the internal key; fuzzy search
+  -- runs over the suffix-free rendered subject, so hidden ordinals can
+  -- never leak into scoring, ordering, or query hits. Second, every row
+  -- carries immutable identity metadata (unique row id, originating parent
+  -- row id, complete source index path) beside - never inside - its display
+  -- and result fields: children of duplicate parents keep distinguishable
+  -- identity even though their rendered container string is identical.
   local symbols = {}
   local symbol_names = {}
+  local search_subjects = {}
   parent = parent or ""
   parent = #parent > 0 and (parent .. "/") or parent
 
-  for _, symbol in pairs(list) do
-    -- Include symbol kind to be able to filter by it
-    local symbol_name = parent
-      .. symbol.name
-      .. "||" .. Server.get_symbol_kind(symbol.kind)
+  ---Deep-first traversal that flattens one branch of returned symbols into
+  ---the shared namespace of rows, keeping every row's facts attached to its
+  ---own collision-free key. One flattening pass mints keys exactly once, so
+  ---the suffix counter stays deterministic across duplicate branches.
+  local function visit(items, display_parent, parent_row_id, index_prefix)
+    local display_scope = #display_parent > 0 and (display_parent .. "/") or ""
+    for index, symbol in ipairs(items) do
+      -- Include symbol kind to be able to filter by it
+      local display_name = display_scope
+        .. symbol.name
+        .. "||" .. Server.get_symbol_kind(symbol.kind)
 
-    table.insert(symbol_names, symbol_name)
+      local row = {
+        kind = symbol.kind,
+        name = symbol.name,
+        result_index = index,
+        container = #display_scope > 0
+          and string.sub(display_scope, 1, -2) or nil,
+      }
+      if symbol.detail then row.detail = symbol.detail end
+      if symbol.deprecated ~= nil then row.deprecated = symbol.deprecated end
+      if symbol.tags then row.tags = symbol.tags end
 
-    symbols[symbol_name] = { kind = symbol.kind }
-
-    if symbol.location then
-      symbols[symbol_name].location = symbol.location
-    else
-      if symbol.range then
-        symbols[symbol_name].range = symbol.range
+      if symbol.location then
+        row.location = symbol.location
+      else
+        if symbol.range then
+          row.range = symbol.range
+        end
+        if symbol.selectionRange then
+          row.selectionRange = symbol.selectionRange
+        end
+        if symbol.uri then
+          row.uri = symbol.uri
+        end
       end
-      if symbol.uri then
-        symbols[symbol_name].uri = symbol.uri
+
+      local key = display_name
+      if symbols[key] then
+        local occurrence = 2
+        while symbols[display_name .. "#" .. occurrence] do
+          occurrence = occurrence + 1
+        end
+        key = display_name .. "#" .. occurrence
       end
-    end
 
-    if symbol.children and #symbol.children > 0 then
-      local child_symbols, child_names = get_symbol_lists(
-        symbol.children, parent .. symbol.name
-      )
+      -- Immutable identity metadata, kept apart from presentation fields.
+      local index_path = {}
+      for path_depth = 1, #index_prefix do
+        index_path[path_depth] = index_prefix[path_depth]
+      end
+      index_path[#index_path + 1] = index
 
-      for _, name in pairs(child_names) do
-        table.insert(symbol_names, name)
-        symbols[name] = child_symbols[name]
+      symbols[key] = row
+      table.insert(symbol_names, key)
+      table.insert(search_subjects, display_name)
+
+      row.key = key
+      row.row_id = #symbol_names
+      row.parent_row_id = parent_row_id
+      row.source_index_path = index_path
+
+      if symbol.children and #symbol.children > 0 then
+        visit(
+          symbol.children, display_scope .. symbol.name, row.row_id, index_path
+        )
       end
     end
   end
 
-  return symbols, symbol_names
+  visit(list, "", nil, {})
+
+  return symbols, symbol_names, search_subjects
 end
 
 local function log(server, message, ...)
@@ -2663,9 +2721,20 @@ end
 function lsp.request_references(doc, line, col)
   if not doc.lsp_open then return end
 
-  for _, name in pairs(lsp.get_active_servers(doc.filename, true)) do
+  -- get_active_servers returns an ordered array. Preserve that order here so
+  -- a non-provider is observably considered before a later provider; using
+  -- pairs would make the regression depend on hash traversal order.
+  for _, name in ipairs(lsp.get_active_servers(doc.filename, true)) do
     local server = lsp.servers_running[name]
-    if server.capabilities.hoverProvider then
+    -- Local patch (#9019): gate references on the standard
+    -- referencesProvider capability, not hoverProvider; hover support says
+    -- nothing about textDocument/references. A server without
+    -- referencesProvider must not terminate the scan either: the first
+    -- active server that lacks it must not make a later valid references
+    -- provider unreachable solely because of iteration order
+    -- (complementary ungrouped servers; exclusive-group selection stays
+    -- with #10660).
+    if server.capabilities.referencesProvider then
       local request_params = get_buffer_position_params(doc, line, col)
       -- Local patch (#11165): no wire identity means no request.
       if not request_params then
@@ -2717,9 +2786,10 @@ function lsp.request_references(doc, line, col)
           end
         end
       })
+      -- Local patch (#9019): first references-capable server serves; the
+      -- scan continues past servers without referencesProvider.
       break
     end
-    break
   end
 end
 
@@ -2946,7 +3016,8 @@ function lsp.request_document_symbols(doc)
             return
           end
           if response.result and response.result and #response.result > 0 then
-            local symbols, symbol_names = get_symbol_lists(response.result)
+            local symbols, symbol_names, search_subjects =
+              get_symbol_lists(response.result)
             core.command_view:enter("Find Symbol", {
               submit = function(text, item)
                 if item then
@@ -2960,27 +3031,52 @@ function lsp.request_document_symbols(doc)
                     )
                     return
                   end
-                  local symbol = symbols[item.name]
-                  -- The lsp may return a location object with range
-                  -- and uri inside of it or just range as part of
-                  -- the symbol it self.
-                  symbol = symbol.location and symbol.location or symbol
-                  if not symbol.uri then
-                    local line1, col1 = util.toselection(symbol.range, doc)
+                  -- Local patch (#11198): navigate the exact retained row,
+                  -- so duplicate display rows can never alias one target.
+                  local row = symbols[item.name]
+                  local target = row.location and row.location or row
+                  if not target.uri then
+                    -- DocumentSymbol navigation prefers selectionRange -
+                    -- the precise symbol anchor - when present; range
+                    -- remains the broader extent for servers without it.
+                    local line1, col1 = util.toselection(
+                      target.selectionRange or target.range, doc)
                     doc:set_selection(line1, col1, line1, col1)
                   else
-                    lsp.goto_location(symbol)
+                    lsp.goto_location(target)
                   end
                 end
               end,
               suggest = function(text)
-                local res = common.fuzzy_match(symbol_names, text)
-                for i, name in ipairs(res) do
-                  res[i] = {
-                    text = util.split(name, "||")[1],
-                    info = Server.get_symbol_kind(symbols[name].kind),
-                    name = name
-                  }
+                -- Review adoption (PR #12670): fuzzy matching runs over the
+                -- disambiguation-free rendered subjects only, so hidden
+                -- row ordinals can never score, rank, or match a query.
+                -- Matched subjects re-attach their opaque keys through
+                -- deterministic first-in-source-order pairing; duplicate
+                -- subjects each resolve to their own retained row.
+                local matched_subjects =
+                  common.fuzzy_match(search_subjects, text)
+                local pending_keys_by_subject = {}
+                for subject_index, key in ipairs(symbol_names) do
+                  local subject = search_subjects[subject_index]
+                  local pending = pending_keys_by_subject[subject]
+                  if not pending then
+                    pending = {}
+                    pending_keys_by_subject[subject] = pending
+                  end
+                  table.insert(pending, key)
+                end
+                local res = {}
+                for _, subject in ipairs(matched_subjects) do
+                  local pending = pending_keys_by_subject[subject]
+                  if pending and #pending > 0 then
+                    local key = table.remove(pending, 1)
+                    res[#res + 1] = {
+                      text = util.split(key, "||")[1],
+                      info = Server.get_symbol_kind(symbols[key].kind),
+                      name = key
+                    }
+                  end
                 end
                 return res
               end
@@ -3818,4 +3914,3 @@ end
 
 
 return lsp
-
