@@ -175,10 +175,16 @@ fn declare_foreach_iterator<'a>(
             true,
             context,
         );
+        analyzer.mark_initialized(variable, loop_scope, context);
+    } else if matches!(&variable.kind, NodeKind::VariableDeclaration { .. }) {
+        analyzer.analyze_node(variable, loop_scope, ancestors, issues, context);
+        analyzer.mark_initialized(variable, loop_scope, context);
     } else {
+        // Bare `for $x (LIST)` aliases the outer binding. The list supplies the
+        // value, so a use of `$x` here is not an uninitialized read.
+        analyzer.mark_initialized(variable, loop_scope, context);
         analyzer.analyze_node(variable, loop_scope, ancestors, issues, context);
     }
-    analyzer.mark_initialized(variable, loop_scope, context);
 }
 
 /// Inner body shared by `handle_subroutine` and `handle_method`.

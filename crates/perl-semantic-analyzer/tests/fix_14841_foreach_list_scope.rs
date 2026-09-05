@@ -203,6 +203,10 @@ fn has_unused(issues: &[ScopeIssue], var_name: &str) -> bool {
     issues.iter().any(|i| i.kind == IssueKind::UnusedVariable && i.variable_name == var_name)
 }
 
+fn has_uninitialized(issues: &[ScopeIssue], var_name: &str) -> bool {
+    issues.iter().any(|i| i.kind == IssueKind::UninitializedVariable && i.variable_name == var_name)
+}
+
 /// `my $x; for $x (my $x = 1) { print $x; }` — perl aliases the iterator to
 /// the outer pad (`enteriter[$x:outer]`) even though the body reads the list
 /// lexical. The outer binding is therefore used.
@@ -211,8 +215,10 @@ fn foreach_bare_iterator_keeps_outer_binding_used() {
     let code = "use strict; my $x; for $x (my $x = 1) { print $x; }";
     let issues = scope_issues(code);
     assert!(
-        !has_unused(&issues, "$x") && !has_undeclared(&issues, "$x"),
-        "`my $x; for $x (my $x = 1)` must not report UnusedVariable or UndeclaredVariable for $x; got: {issues:?}"
+        !has_unused(&issues, "$x")
+            && !has_undeclared(&issues, "$x")
+            && !has_uninitialized(&issues, "$x"),
+        "`my $x; for $x (my $x = 1)` must not report UnusedVariable, UndeclaredVariable, or UninitializedVariable for $x; got: {issues:?}"
     );
 }
 
@@ -222,7 +228,22 @@ fn foreach_keyword_bare_iterator_keeps_outer_binding_used() {
     let code = "use strict; my $x; foreach $x (my $x = 1) { print $x; }";
     let issues = scope_issues(code);
     assert!(
-        !has_unused(&issues, "$x") && !has_undeclared(&issues, "$x"),
-        "`my $x; foreach $x (my $x = 1)` must not report UnusedVariable or UndeclaredVariable for $x; got: {issues:?}"
+        !has_unused(&issues, "$x")
+            && !has_undeclared(&issues, "$x")
+            && !has_uninitialized(&issues, "$x"),
+        "`my $x; foreach $x (my $x = 1)` must not report UnusedVariable, UndeclaredVariable, or UninitializedVariable for $x; got: {issues:?}"
+    );
+}
+
+/// `my $x; for $x (1) { print $x; }` — the loop assigns the list value, so
+/// the iterator token is not an uninitialized read. perl 5.38.2: syntax OK
+/// and `perl -w` does not warn.
+#[test]
+fn foreach_bare_iterator_is_initialized_by_the_list() {
+    let code = "use strict; my $x; for $x (1) { print $x; }";
+    let issues = scope_issues(code);
+    assert!(
+        !has_uninitialized(&issues, "$x") && !has_undeclared(&issues, "$x"),
+        "`my $x; for $x (1) {{ print $x; }}` must not report UninitializedVariable; got: {issues:?}"
     );
 }
