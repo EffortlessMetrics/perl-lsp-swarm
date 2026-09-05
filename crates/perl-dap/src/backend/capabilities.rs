@@ -378,6 +378,66 @@ pub(crate) fn peer_bridge_hover_admission(
 /// profile cannot advertise one thing and enforce another.
 pub(crate) const MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS: bool = false;
 
+/// Whether the custom inline-values extension has a proven, versioned
+/// negotiation contract (#9089).
+///
+/// DAP's `supportsInlineValues` is a *standard* capability promise. The
+/// `inlineValues` request this crate routes is a Perl-specific custom extension:
+/// per the protocol-authority table it is the one `Extension`-class row, not a
+/// request the pinned upstream schema defines. Advertising the standard flag
+/// from the `dap.inline_values` catalog row made ordinary DAP clients see a
+/// faux-standard capability and conflated "a variable occurrence exists in the
+/// source text" with "the runtime debugger observes a current value for it".
+///
+/// Flipping this to `true` requires the re-enable gate recorded on #9089: a
+/// collision-resistant, versioned, explicitly negotiated extension identity
+/// kept outside standard DAP capability and conformance accounting, with
+/// session-bound opt-in and separate static/runtime response modes. Until then
+/// the extension stays disabled: unnegotiated clients — which is every client —
+/// receive an explicit refusal, and no standard capability cell advertises it.
+pub const INLINE_VALUES_EXTENSION_NEGOTIATION_PROVEN: bool = false;
+
+/// The single authority for the advertised inline-values extension value.
+///
+/// This deliberately consumes no catalog flag, backend flag, or handler-presence
+/// signal. The extension is gated on a negotiation contract that does not exist
+/// yet, so the value is derived from
+/// [`INLINE_VALUES_EXTENSION_NEGOTIATION_PROVEN`] alone (#9089).
+#[must_use]
+pub const fn advertises_inline_values_extension() -> bool {
+    INLINE_VALUES_EXTENSION_NEGOTIATION_PROVEN
+}
+
+/// Refusal message used when the custom `inlineValues` request is declined
+/// (#9089).
+///
+/// Deterministic and input-independent: every unnegotiated request — whatever
+/// its source, range, or format — receives this exact message, so the gate's
+/// output cannot leak anything about the input it refused.
+pub const INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE: &str = "inlineValues is not supported: \
+     the perl-dap inline-values extension is disabled because no versioned negotiation \
+     contract has been proven yet (#9089)";
+
+/// Whether a mode must refuse this custom `inlineValues` request.
+///
+/// The invariant every mode holds: **a mode serves the extension exactly when
+/// it advertises it.** `advertised_inline_values` is the value that *this* mode
+/// puts on the wire, so admission and advertisement can never disagree.
+///
+/// This matters at promotion time, not just today. If the refusal ignored the
+/// advertised value, flipping [`INLINE_VALUES_EXTENSION_NEGOTIATION_PROVEN`]
+/// would advertise the extension while the handler still rejected every
+/// request — the same capability-versus-behaviour contradiction #9089 exists to
+/// remove, only pointing the other way.
+///
+/// Modes stay independent: each passes its own advertised value, so promoting
+/// the native gate does not silently open a mirror or external-peer path that
+/// has no negotiation of its own.
+#[must_use]
+pub(crate) fn refuse_inline_values_extension(advertised_inline_values: bool) -> bool {
+    !advertised_inline_values
+}
+
 /// Whether the exact setExpression proof-and-promotion gate has passed (#9568).
 ///
 /// DAP's `supportsSetExpression` promises that a `setExpression` request can
@@ -866,6 +926,54 @@ mod tests {
     fn control_mode_defaults_to_mirror() {
         assert_eq!(ControlMode::default(), ControlMode::Mirror);
         assert_eq!(DebugBackendCapabilities::none().control_mode, ControlMode::Mirror);
+    }
+
+    /// The #9089 floor: the single inline-values extension authority is closed
+    /// until a versioned negotiation contract is proven, and it consumes no
+    /// catalog signal.
+    #[test]
+    fn inline_values_extension_authority_is_closed_until_negotiation_is_proven() {
+        assert!(
+            !advertises_inline_values_extension(),
+            "the inline-values extension must stay disabled until #9089's negotiation \
+             gate passes"
+        );
+        // The authority is a constant function of the promotion constant only;
+        // assert both spellings agree so a future edit cannot decouple them.
+        assert_eq!(
+            advertises_inline_values_extension(),
+            INLINE_VALUES_EXTENSION_NEGOTIATION_PROVEN
+        );
+    }
+
+    /// #9089 promotion safety: refusal follows advertisement in BOTH directions.
+    ///
+    /// The gate constant is `false` today, so testing only the current value
+    /// would leave the promotion path unproven. Passing `advertised` explicitly
+    /// exercises the flipped state without mutating the constant: when a mode
+    /// advertises the extension it must stop refusing it; when it does not, it
+    /// must refuse.
+    #[test]
+    fn inline_values_refusal_tracks_the_advertised_value_in_both_directions() {
+        assert!(
+            refuse_inline_values_extension(false),
+            "a mode that does not advertise the extension must refuse it"
+        );
+        assert!(
+            !refuse_inline_values_extension(true),
+            "a mode that advertises the extension must stop refusing it, or promotion \
+             would advertise a request the handler still rejects"
+        );
+    }
+
+    /// #9089: the refusal message is input-independent by construction.
+    #[test]
+    fn inline_values_refusal_message_is_deterministic() {
+        assert_eq!(
+            INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE,
+            "inlineValues is not supported: the perl-dap inline-values extension is \
+             disabled because no versioned negotiation contract has been proven yet (#9089)"
+        );
     }
 
     /// The #9568 floor: the single setExpression authority is closed until the
