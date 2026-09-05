@@ -508,7 +508,19 @@ impl PullDiagnosticsProvider {
                     .collect()
             }
             Err(error) => {
-                vec![self.parse_error_to_diagnostic_with_context(uri, content, &error, context)]
+                // Finish the session even with no tree: it retains the geometry the
+                // parser recorded before failing, and dropping it here would discard
+                // findings the suppressed legacy scan is no longer producing (#7024).
+                let regex_analysis = session.finish(None);
+                let mut diagnostics = vec![
+                    self.parse_error_to_diagnostic_with_context(uri, content, &error, context),
+                ];
+                diagnostics.extend(self.canonical_regex_lsp_diagnostics(
+                    uri,
+                    content,
+                    Some(&regex_analysis),
+                ));
+                diagnostics
             }
         }
     }
@@ -963,7 +975,10 @@ impl PullDiagnosticsProvider {
         } else if parsed.parse_errors().is_empty() {
             Vec::new()
         } else {
-            parsed
+            // No AST, so the full pipeline cannot run — but the snapshot still carries
+            // the table `finish(None)` retained, and those findings are the only regex
+            // evidence left once the legacy scan is suppressed (#7024).
+            let mut diagnostics: Vec<LspDiagnostic> = parsed
                 .parse_errors()
                 .iter()
                 .map(|error| {
@@ -974,7 +989,13 @@ impl PullDiagnosticsProvider {
                         context,
                     )
                 })
-                .collect()
+                .collect();
+            diagnostics.extend(self.canonical_regex_lsp_diagnostics(
+                uri,
+                &doc_state.text,
+                parsed.regex_analysis().map(std::sync::Arc::as_ref),
+            ));
+            diagnostics
         }
     }
 
@@ -1033,6 +1054,35 @@ impl PullDiagnosticsProvider {
                 )
             }
         }
+    }
+
+    /// Canonical regex findings for a document whose parse produced no AST (#7024).
+    ///
+    /// `finish(None)` retains the geometry the parser recorded before a fatal failure,
+    /// but retention alone publishes nothing: the AST-less branches below report parse
+    /// errors and stop. Since the session has already suppressed the legacy
+    /// per-operator scan, a finding that reaches neither route is simply lost —
+    /// measured end-to-end, a document with a nested quantifier followed by a fatal
+    /// construct published only `PL001`.
+    ///
+    /// Freshness is checked exactly as the full path checks it, against the code slice
+    /// rather than whole document text.
+    fn canonical_regex_lsp_diagnostics(
+        &self,
+        uri: &Uri,
+        text: &str,
+        regex_analysis: Option<&perl_parser_core::RegexAnalysisTable>,
+    ) -> Vec<LspDiagnostic> {
+        let Some(table) = regex_analysis.filter(|table| table.source_matches(code_slice(text)))
+        else {
+            return Vec::new();
+        };
+        perl_lsp_rs_core::providers::diagnostics::regex_canonical::project_canonical_regex_diagnostics(
+            table,
+        )
+        .into_iter()
+        .map(|diagnostic| self.to_lsp_diagnostic(uri, text, diagnostic))
+        .collect()
     }
 
     fn to_lsp_diagnostic(

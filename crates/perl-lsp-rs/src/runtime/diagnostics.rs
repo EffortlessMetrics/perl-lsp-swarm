@@ -1074,8 +1074,12 @@ impl LspServer {
                 })
                 .collect()
         } else {
-            // No AST available (parse failed completely), just report parse errors
-            parse_errors
+            // No AST available (parse failed completely), so the full pipeline cannot
+            // run. Parse errors are not the whole account though: the snapshot still
+            // carries the table `finish(None)` retained, and with the legacy scan
+            // suppressed those are the only regex findings left (#7024). They are
+            // appended after this map.
+            let mut fallback: Vec<Value> = parse_errors
                 .iter()
                 .map(|e| {
                     let base_message = parse_error_base_message(e);
@@ -1105,7 +1109,14 @@ impl LspServer {
                         json!(message),
                     )
                 })
-                .collect()
+                .collect();
+            fallback.extend(Self::canonical_regex_items(
+                regex_analysis.as_deref(),
+                &text,
+                &line_starts,
+                false,
+            ));
+            fallback
         };
 
         tracing::debug!(
@@ -1168,9 +1179,13 @@ impl LspServer {
     /// publishing this still produces an empty `publishDiagnostics` payload,
     /// which is how LSP signals "the parse cleared". This is what makes the
     /// `syntax_only_clears_when_parse_errors_clear` acceptance case work.
-    /// Canonical regex findings for the syntax-only paths (#7024).
+    /// Canonical regex findings for the paths that publish `parse_errors` alone (#7024).
     ///
-    /// Syntax-only publishes `parse_errors` and nothing else. That was a complete
+    /// Two callers need this. Syntax-only mode publishes `parse_errors` and nothing
+    /// else by design, and the push fallback below does so because a fatal parse left
+    /// no AST to run the full pipeline over. Both were complete accounts of regex
+    /// findings only while the legacy per-operator scan emitted them as parser
+    /// `Advisory` entries; a `RetainedRegexSession` suppresses that scan. That was a complete
     /// account of regex findings only while the legacy per-operator scan emitted them
     /// as parser `Advisory` entries. A `RetainedRegexSession` suppresses that scan, so
     /// without this projection the mode loses those findings outright — measured, a
@@ -1185,7 +1200,7 @@ impl LspServer {
     /// Freshness is checked exactly as the full provider checks it, against the code
     /// slice rather than the whole document, because the parser never sees past
     /// `__DATA__` / `__END__`.
-    fn syntax_only_regex_items(
+    fn canonical_regex_items(
         regex_analysis: Option<&perl_parser_core::RegexAnalysisTable>,
         text: &str,
         line_starts: &perl_parser::position::LineStartsCache,
@@ -1284,7 +1299,7 @@ impl LspServer {
                     )
                 })
                 .collect();
-        items.extend(Self::syntax_only_regex_items(
+        items.extend(Self::canonical_regex_items(
             regex_analysis,
             text,
             line_starts,
@@ -6426,6 +6441,45 @@ print \"unreachable\\n\";\n";
     ///
     /// Measured with the session active and no projection, `parse_errors` for this
     /// document is empty; without the session it carries exactly one advisory.
+    /// A fatal parse must still publish its regex findings (#7024).
+    ///
+    /// Retaining the geometry in `finish(None)` is only half the route: the AST-less
+    /// pull branches reported parse errors and stopped, so the retained table reached
+    /// no client. With the legacy per-operator scan suppressed by the session, that
+    /// finding was lost. Measured before the fix, this document published only
+    /// `["PL001"]`.
+    #[test]
+    fn a_fatal_parse_still_publishes_canonical_regex_findings() {
+        let source = format!("my $re = qr/(a+)+b/;\n{}\n", "if (1) {".repeat(3000));
+        let tuning = perl_lsp_rs_core::runtime::tuning::RuntimeTuning::normal_defaults();
+        let server = message_union_server(tuning, false);
+        let uri = message_union_uri("7024_fatal_parse_regex.pl");
+        server.test_apply_did_open(&uri, &source, 1).expect("didOpen should succeed");
+        let report = server
+            .test_handle_document_diagnostic(Some(json!({ "textDocument": { "uri": uri } })))
+            .expect("pull should not error");
+        let items = report
+            .and_then(|r| r.get("items").and_then(Value::as_array).cloned())
+            .unwrap_or_default();
+        let codes: Vec<&str> =
+            items.iter().filter_map(|i| i.get("code").and_then(Value::as_str)).collect();
+
+        // Control: the fatal parse error must still be reported, so this cannot pass by
+        // having replaced one loss with another.
+        assert!(codes.contains(&"PL001"), "the parse error must survive: {codes:?}");
+        assert!(
+            codes.contains(&"PL1000"),
+            "the backtracking risk must survive a fatal parse: {codes:?}"
+        );
+
+        // The push path and the state-based pull branch carry the same fix, but are
+        // NOT asserted here. Push publication can land asynchronously relative to the
+        // parse in this harness — an assertion on it passed alone and failed in the
+        // full suite — and the state branch was not reachable from any pull this
+        // harness could drive. Both are proven only by symmetry with the text path
+        // above, which is stated in the commit rather than implied by a green test.
+    }
+
     #[test]
     fn syntax_only_pull_publishes_canonical_regex_findings() {
         const BACKTRACKING_DOCUMENT: &str = "my $re = qr/(a+)+b/;\n";
