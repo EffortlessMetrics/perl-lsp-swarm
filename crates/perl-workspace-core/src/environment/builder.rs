@@ -424,6 +424,13 @@ impl WorkspaceEnvironmentDeclaration {
                 // are conditional on there being entries to contribute.
                 let fingerprints: Vec<String> =
                     entries.iter().map(|root| root.normalized.clone()).collect();
+                // `ExplicitEnvironment` is precedence class 6 of the #4833
+                // contract — "explicitly enabled environment activation" — and is
+                // deliberately distinct from class 7 ambient. The ambient labelling
+                // PLSP-SPEC-0022 requires is carried by the `Disabled` arm above
+                // (Ambient + Denied). `source_id` names where the *activation
+                // policy* came from, which is client settings; the entry values
+                // themselves remain process-environment material.
                 let input = EnvironmentInput::new(
                     "include.perl5lib",
                     EnvironmentInputAuthority::ExplicitEnvironment,
@@ -533,6 +540,14 @@ impl WorkspaceEnvironmentDeclaration {
                     "interpreter_selection_not_supplied",
                 );
                 limitations.push(interpreter_unavailable_limitation(&input.id, "not_supplied"));
+                // `NotSupplied` names a placeholder candidate and `Unavailable`
+                // names none, on purpose. "No interpreter has been selected yet"
+                // mirrors main's default `perl`-on-`PATH` fallback, so naming the
+                // candidate is the honest report; "selection was attempted and
+                // failed" has no candidate to name, and inventing one would claim
+                // a fallback that was already ruled out. The candidate is never
+                // active either way — its governing input is `Unavailable` — so
+                // this changes what is explained, not what is resolved.
                 tool_candidates.push(ToolCandidate::new(
                     ToolCandidateRole::Perl,
                     "perl",
@@ -568,6 +583,16 @@ impl WorkspaceEnvironmentDeclaration {
                         "interpreter_selected_convention",
                     )
                 };
+                // Two digests describe this selection, and the split is
+                // deliberate. The input's `value_fingerprint` hashes the selected
+                // path because the behaviour-bearing value for precedence and
+                // deterministic-equivalent collapse is *which executable was
+                // chosen*: two producers that select the same binary must collapse
+                // even when their probe evidence differs, which hashing
+                // `evidence_fingerprint` here would wrongly turn into a conflict.
+                // The bounded probe's own digest stays on
+                // `InterpreterIdentityRef::evidence_fingerprint`, which is the
+                // durable record of what the producer actually attested.
                 let input = EnvironmentInput::new(
                     "interpreter.selected",
                     authority,
@@ -724,11 +749,7 @@ impl EnvironmentSnapshotReceipts {
                 semantic_key: input.semantic_key.clone(),
                 authority: input.authority,
                 explanation_code: input.explanation_code.clone(),
-                rejection: if input.state.is_active() {
-                    None
-                } else {
-                    Some(rejection_reason(snapshot, input))
-                },
+                rejection: rejection_reason(snapshot, input),
             };
             if receipt.rejection.is_none() {
                 selected.push(receipt);
@@ -752,22 +773,31 @@ impl EnvironmentSnapshotReceipts {
     }
 }
 
+/// The typed reason one input is not active authority, or `None` when it is.
+///
+/// Returning `Option` keeps the "only inactive inputs have a rejection reason"
+/// precondition in the signature rather than in the caller's guard. The
+/// previous shape mapped `Accepted` onto `DeniedByPolicy`, which was
+/// unreachable behind the guard but was the most misleading of the five
+/// reasons if a later caller ever bypassed it.
 fn rejection_reason(
     snapshot: &ProjectEnvironmentSnapshot,
     input: &EnvironmentInput,
-) -> EnvironmentRejectionReason {
+) -> Option<EnvironmentRejectionReason> {
     match input.state {
-        EnvironmentInputState::Denied => EnvironmentRejectionReason::DeniedByPolicy,
-        EnvironmentInputState::Ambient => EnvironmentRejectionReason::AmbientObservationOnly,
-        EnvironmentInputState::Unavailable => EnvironmentRejectionReason::Unavailable,
-        EnvironmentInputState::Conflicting => EnvironmentRejectionReason::Conflicting,
+        EnvironmentInputState::Accepted => None,
+        EnvironmentInputState::Denied => Some(EnvironmentRejectionReason::DeniedByPolicy),
+        EnvironmentInputState::Ambient => Some(EnvironmentRejectionReason::AmbientObservationOnly),
+        EnvironmentInputState::Unavailable => Some(EnvironmentRejectionReason::Unavailable),
+        EnvironmentInputState::Conflicting => Some(EnvironmentRejectionReason::Conflicting),
         EnvironmentInputState::Superseded => {
             let winner = snapshot.inputs.iter().find(|candidate| {
                 candidate.state.is_active() && candidate.semantic_key == input.semantic_key
             });
-            EnvironmentRejectionReason::SupersededBy(winner.map(|candidate| candidate.id.clone()))
+            Some(EnvironmentRejectionReason::SupersededBy(
+                winner.map(|candidate| candidate.id.clone()),
+            ))
         }
-        EnvironmentInputState::Accepted => EnvironmentRejectionReason::DeniedByPolicy,
     }
 }
 
@@ -823,7 +853,15 @@ pub fn rejected_include_entries(
 /// configuration generation it was compiled from; readers either accept the
 /// current tag or require an exact generation match, so stale consumers fail
 /// closed instead of silently using a superseded environment.
-#[derive(Debug, Clone, Default)]
+/// Deliberately not `Clone`. A cloned slot keeps its own `generation` and
+/// `Arc`, so installing a newer snapshot into one holder leaves every clone
+/// reporting its older snapshot as current — indefinitely, and without ever
+/// failing closed, because each clone stays internally coherent. Since the
+/// slot's whole purpose is to be the single authority on which snapshot is
+/// current, ownership must stay singular. S7 needs multi-reader access it
+/// should choose an explicit shared owner rather than inherit copy semantics
+/// by accident.
+#[derive(Debug, Default)]
 pub struct EnvironmentSnapshotSlot {
     generation: u64,
     snapshot: Option<Arc<ProjectEnvironmentSnapshot>>,
@@ -1318,6 +1356,116 @@ mod tests {
             !keys.contains(&"include.configured") && !keys.contains(&"include.external"),
             "an unconfigured include slot must not claim a receipt"
         );
+        Ok(())
+    }
+
+    /// The slot is the single authority on which snapshot is current, so it must
+    /// not be copyable into a second holder that can drift. A clone would keep its
+    /// own generation and `Arc`, stay internally coherent, and therefore report a
+    /// superseded snapshot as current forever without ever failing closed — the
+    /// exact failure the type exists to prevent.
+    ///
+    /// Proven against the embedded self-source for the same reason the deny-fs
+    /// proof is: the property is the absence of a derive, which a value-level
+    /// assertion cannot observe.
+    #[test]
+    fn the_snapshot_slot_is_not_clonable() {
+        let derive = BUILDER_SOURCE
+            .split("pub struct EnvironmentSnapshotSlot")
+            .next()
+            .and_then(|before| before.rsplit("#[derive(").next())
+            .map(|tail| tail.split(')').next().unwrap_or_default().to_string())
+            .unwrap_or_default();
+        assert!(!derive.is_empty(), "the slot must carry a derive list to check");
+        assert!(
+            !derive.contains("Clone"),
+            "EnvironmentSnapshotSlot must not derive Clone; found derive({derive})"
+        );
+    }
+
+    /// Replacement through the single owner is the supported route, and it fails
+    /// the superseded generation closed. This is the behaviour a clone would have
+    /// silently broken, so it is pinned next to the no-`Clone` proof.
+    #[test]
+    fn installing_a_newer_snapshot_fails_the_superseded_generation_closed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let older =
+            WorkspaceEnvironmentDeclaration::new("workspace:s1", 7, WorkspaceTrust::Trusted)
+                .compile()?;
+        let newer =
+            WorkspaceEnvironmentDeclaration::new("workspace:s1", 8, WorkspaceTrust::Trusted)
+                .compile()?;
+
+        let mut slot = EnvironmentSnapshotSlot::new();
+        slot.install(std::sync::Arc::new(older));
+        assert!(slot.current_for_generation(7).is_some());
+
+        slot.install(std::sync::Arc::new(newer));
+        assert_eq!(slot.generation(), Some(8));
+        assert!(
+            slot.current_for_generation(7).is_none(),
+            "the superseded generation must fail closed after replacement"
+        );
+        Ok(())
+    }
+
+    /// The `NotSupplied` / `Unavailable` interpreter asymmetry is intended, so it
+    /// is pinned rather than left to read as an accident: a selection that was
+    /// never made names main's default `perl`-on-`PATH` candidate, and one that was
+    /// attempted and failed names none. Neither is active authority.
+    #[test]
+    fn only_an_unmade_interpreter_selection_names_a_fallback_candidate()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let not_supplied =
+            WorkspaceEnvironmentDeclaration::new("workspace:s1", 2, WorkspaceTrust::Trusted)
+                .with_interpreter(InterpreterDeclaration::NotSupplied)
+                .compile()?;
+        let unavailable =
+            WorkspaceEnvironmentDeclaration::new("workspace:s1", 2, WorkspaceTrust::Trusted)
+                .with_interpreter(InterpreterDeclaration::Unavailable {
+                    reason_code: "interpreter_probe_failed".to_string(),
+                })
+                .compile()?;
+
+        assert_eq!(
+            not_supplied.tool_candidates.len(),
+            1,
+            "an unmade selection names the default fallback candidate"
+        );
+        assert!(
+            unavailable.tool_candidates.is_empty(),
+            "a failed selection must not invent a fallback it already ruled out"
+        );
+
+        // Both report the same governing state, so the candidate is explanatory
+        // only and never resolves to active authority.
+        for snapshot in [&not_supplied, &unavailable] {
+            let governing = snapshot
+                .inputs
+                .iter()
+                .find(|input| input.semantic_key == "interpreter.selected")
+                .ok_or("the interpreter slot must always be reported")?;
+            assert!(!governing.state.is_active());
+            assert!(
+                snapshot.limitations.iter().any(|item| item.code == "interpreter_unavailable"),
+                "an unresolved interpreter must be a named limitation"
+            );
+        }
+        Ok(())
+    }
+
+    /// `rejection_reason` now encodes its own precondition: an active input has no
+    /// rejection reason at all, rather than being mapped onto a misleading one.
+    #[test]
+    fn an_active_input_has_no_rejection_reason() -> Result<(), Box<dyn std::error::Error>> {
+        let snapshot = feed_by_order(&[0, 1, 2, 3, 4, 5, 6]).compile()?;
+        for input in &snapshot.inputs {
+            assert_eq!(
+                super::rejection_reason(&snapshot, input).is_none(),
+                input.state.is_active(),
+                "rejection reason must be present exactly when the input is inactive"
+            );
+        }
         Ok(())
     }
 
