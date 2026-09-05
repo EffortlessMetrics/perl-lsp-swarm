@@ -1948,9 +1948,10 @@ fn scan_macro_path_tokens(tokens: &proc_macro2::TokenStream, prefix: &[String]) 
         segments.clear();
         segments.extend_from_slice(prefix);
     };
+    let trees: Vec<proc_macro2::TokenTree> = tokens.clone().into_iter().collect();
     let mut segments: Vec<String> = prefix.to_vec();
     let mut after_ident = false;
-    for tree in tokens.clone() {
+    for (index, tree) in trees.iter().enumerate() {
         match tree {
             proc_macro2::TokenTree::Group(group) => {
                 // A group straight after `::` continues the path; one anywhere
@@ -1973,7 +1974,9 @@ fn scan_macro_path_tokens(tokens: &proc_macro2::TokenStream, prefix: &[String]) 
                     restart(&mut segments);
                 }
                 segments.push(ident.to_string());
-                if names_package_directly(&segments.join("::")) {
+                if names_package_directly(&segments.join("::"))
+                    && single_ident_is_a_path(&segments, prefix, &trees, index)
+                {
                     return true;
                 }
                 after_ident = true;
@@ -1988,6 +1991,48 @@ fn scan_macro_path_tokens(tokens: &proc_macro2::TokenStream, prefix: &[String]) 
         }
     }
     false
+}
+
+/// Whether a lone package identifier in a macro is being *used* rather than
+/// merely mentioned.
+///
+/// Inside a macro body an identifier is not yet syntax: `stringify!(perl_ast_v2)`
+/// and `some_macro!(name = perl_ast_v2)` pass the crate's name as data and bind
+/// nothing. Accepting the bare ident invented a consumer out of them — the audit
+/// reporting API use where there is none, which is the direction that fires on
+/// other people's PRs rather than merely missing something.
+///
+/// A single identifier therefore has to look like a path or a binding:
+/// `perl_ast_v2::…` traverses it, and `use perl_ast_v2` / `extern crate
+/// perl_ast_v2` bind it. Anything with more than one segment already contains a
+/// `::` and needs no extra evidence.
+fn single_ident_is_a_path(
+    segments: &[String],
+    prefix: &[String],
+    trees: &[proc_macro2::TokenTree],
+    index: usize,
+) -> bool {
+    if segments.len() > 1 || !prefix.is_empty() {
+        return true;
+    }
+    let traverses = matches!(
+        (trees.get(index + 1), trees.get(index + 2)),
+        (
+            Some(proc_macro2::TokenTree::Punct(first)),
+            Some(proc_macro2::TokenTree::Punct(second))
+        ) if first.as_char() == ':' && second.as_char() == ':'
+    );
+    let binds =
+        index.checked_sub(1).and_then(|previous| trees.get(previous)).is_some_and(
+            |tree| match tree {
+                proc_macro2::TokenTree::Ident(ident) => {
+                    let spelled = ident.to_string();
+                    spelled == "use" || spelled == "crate"
+                }
+                _ => false,
+            },
+        );
+    traverses || binds
 }
 
 impl<'ast> syn::visit::Visit<'ast> for ApiUseVisitor {

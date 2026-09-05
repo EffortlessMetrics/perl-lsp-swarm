@@ -951,6 +951,36 @@ fn the_instruments_own_files_are_classified_by_parser_not_exempted() -> Result<(
             "a block after an identifier is not a path continuation in {instrument_file}"
         );
 
+        // A bare identifier inside a macro is data, not syntax. Accepting it
+        // invented a consumer — the audit reporting API use where there is
+        // none, which fires on other people's PRs rather than merely missing
+        // something.
+        for mention in [
+            "fn f() { let s = stringify!(perl_ast_v2); }",
+            "fn f() { some_macro!(name = perl_ast_v2); }",
+            "fn f() { some_macro!(perl_ast_v2, other); }",
+        ] {
+            assert!(
+                !reaches_audited_package(mention, instrument_file),
+                "a bare identifier passed as macro data in {instrument_file} is not a use: \
+                 {mention}"
+            );
+        }
+        // The binding and traversing forms a lone identifier *can* take are
+        // still seen, so the guard did not simply switch the single-segment
+        // case off.
+        for real in [
+            "fn f() { some_macro!(use perl_ast_v2;); }",
+            "fn f() { some_macro!(use perl_ast_v2 as v2;); }",
+            "fn f() { some_macro!(extern crate perl_ast_v2;); }",
+            "fn f() { some_macro!(perl_ast_v2::Node); }",
+        ] {
+            assert!(
+                reaches_audited_package(real, instrument_file),
+                "a real binding or traversal in {instrument_file} must be seen: {real}"
+            );
+        }
+
         // And the distinction that makes the token scan usable here at all: a
         // string literal inside a macro is what this module's own fixtures and
         // assertion messages are made of, and must not register.
