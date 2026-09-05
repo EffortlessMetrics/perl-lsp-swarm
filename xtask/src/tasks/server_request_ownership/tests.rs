@@ -1250,6 +1250,39 @@ impl Server {
     Ok(())
 }
 
+/// A helper may take `method: &str`, never hand it to a sender, and still send
+/// a method of its own. Promoting it on the strength of the parameter alone let
+/// its callers' unrelated arguments enter discovery as emitted methods, with no
+/// finding to mark the guess.
+#[test]
+fn a_helper_that_sends_without_forwarding_its_parameter_does_not_promote_callers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (emitted, findings) = scan_synthetic(
+        r#"
+impl Server {
+    fn log_and_send(&self, method: &str, params: Value) -> io::Result<()> {
+        record(method);
+        self.send_request("real/method", params)
+    }
+    fn caller(&self) -> io::Result<()> {
+        self.log_and_send("phantom/method", Value::Null)
+    }
+}
+"#,
+    )?;
+
+    assert!(
+        !emitted.contains_key("phantom/method"),
+        "a caller argument is not an emitted method when the helper never forwards it: {emitted:?}"
+    );
+    assert!(
+        emitted.contains_key("real/method"),
+        "the helper's own send is still discovered: {emitted:?}"
+    );
+    assert!(findings.is_empty(), "{findings:?}");
+    Ok(())
+}
+
 /// `other_method: &str` contains `method: &str`, so a helper that forwards
 /// nothing of the kind was read as a forwarder.
 #[test]

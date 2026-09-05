@@ -479,11 +479,15 @@ pub(super) fn scan_emission(
     }
 
     // ── Forwarding closure, across the whole scan root ───────────────────
-    // A helper that takes the method from its caller *and* reaches a sender
-    // forwards a request, so its own callers are send sites too. Requiring the
-    // body keeps every helper that merely inspects a method name — such as
-    // `is_lifecycle_method` — from being read as a request emitter. Computing
-    // it per file left a wrapper and its caller in different files unconnected.
+    // A helper forwards a request only when it takes the method from its caller
+    // *and* hands that same parameter to a sender. Requiring the parameter to
+    // reach the sender — not merely that the body contains one — keeps a helper
+    // that inspects or logs a method while sending some unrelated method of its
+    // own from making its callers' arguments look like emitted methods.
+    // Requiring a body at all keeps every helper that merely inspects a method
+    // name — such as `is_lifecycle_method` — from being read as a request
+    // emitter. Computing it per file left a wrapper and its caller in different
+    // files unconnected.
     let mut senders: BTreeSet<String> =
         REQUEST_SENDERS.iter().map(|name| (*name).to_string()).collect();
     loop {
@@ -493,7 +497,11 @@ pub(super) fn scan_emission(
                 if !facts.forwards_method || senders.contains(&facts.name) {
                     continue;
                 }
-                if facts.sites.iter().any(|site| senders.contains(&site.callee)) {
+                if facts
+                    .sites
+                    .iter()
+                    .any(|site| senders.contains(&site.callee) && site.forwards_parameter)
+                {
                     senders.insert(facts.name.clone());
                     grew = true;
                 }
