@@ -666,14 +666,14 @@ impl TestResult {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::print_stdout,
+    reason = "the hermetic-command tests re-exec themselves as child processes and print a marker the parent asserts on"
+)]
 mod tests {
     use super::*;
     use crate::SourceLocation;
     use crate::parser::Parser;
-    use std::sync::{LazyLock, Mutex};
-
-    static ENV_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
     #[test]
     fn test_discover_test_functions() {
         let code = r#"
@@ -1011,30 +1011,51 @@ pass();
     ///
     /// Skipped automatically when Perl is not on PATH.
     #[test]
-    // SAFETY-LINT: this test intentionally mutates process env under ENV_MUTEX.
-    #[allow(unsafe_code)]
-    fn hermetic_perl_command_strips_perl5lib() {
+    fn hermetic_perl_command_strips_perl5lib() -> Result<(), Box<dyn std::error::Error>> {
+        const MARKER: &str = "TDD_HERMETIC_PERL5LIB_CHILD";
+        const CHILD_SELECTOR: &str =
+            "tdd::test_runner::tests::hermetic_perl_command_strips_perl5lib";
+        const CHILD_OUTPUT: &str = "TDD_HERMETIC_PERL5LIB_CHILD_REACHED";
+        if std::env::var_os(MARKER).is_none() {
+            let before = std::env::var_os("PERL5LIB");
+            let mut child = std::process::Command::new(std::env::current_exe()?);
+            child.args([CHILD_SELECTOR, "--exact", "--nocapture"]);
+            child.env(MARKER, "1");
+            child.env("PERL5LIB", "/hermetic-test-poison-perl5lib");
+            let output = child.output()?;
+            assert!(output.status.success(), "isolated child failed: {output:?}");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let child_report = format!("test {CHILD_SELECTOR} ... ok");
+            assert!(
+                stdout.contains("running 1 test") || stderr.contains("running 1 test"),
+                "child selector matched zero or multiple tests: stdout={stdout:?}, stderr={stderr:?}"
+            );
+            assert!(
+                stdout.contains(CHILD_OUTPUT)
+                    || stderr.contains(CHILD_OUTPUT)
+                    || stdout.contains(&child_report)
+                    || stderr.contains(&child_report),
+                "child selector did not execute the intended test: stdout={stdout:?}, stderr={stderr:?}"
+            );
+            assert_eq!(std::env::var_os("PERL5LIB"), before, "parent environment changed");
+            return Ok(());
+        }
         let perl = which_perl();
-        let Some(perl) = perl else { return };
-        let Ok(_env_guard) = ENV_MUTEX.lock() else { return };
+        let Some(perl) = perl else { return Ok(()) };
+        println!("{CHILD_OUTPUT}");
 
         let runner = TestRunner::new("".to_string(), "".to_string());
 
-        // Temporarily set a poisoned PERL5LIB in the parent process.
-        let poison = "/hermetic-test-poison-perl5lib";
-        // SAFETY: ENV_MUTEX serializes test-local environment mutation.
-        unsafe { std::env::set_var("PERL5LIB", poison) };
         let mut cmd = runner.hermetic_perl_command(&perl);
         cmd.args(["-e", "print $ENV{PERL5LIB} // 'UNSET'"]);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         let out = cmd.output();
-        // SAFETY: ENV_MUTEX serializes test-local environment mutation.
-        unsafe { std::env::remove_var("PERL5LIB") };
 
         let out = match out {
             Ok(o) => o,
-            Err(_) => return, // Perl not found; skip
+            Err(_) => return Ok(()), // Perl not found; skip
         };
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert_eq!(
@@ -1042,33 +1063,57 @@ pass();
             "UNSET",
             "PERL5LIB must be stripped by hermetic_perl_command; got: {stdout:?}",
         );
+        Ok(())
     }
 
     /// `hermetic_perl_command` strips PERL5OPT — ambient runtime injection
     /// must not reach TDD fixture subprocesses.
     #[test]
-    // SAFETY-LINT: this test intentionally mutates process env under ENV_MUTEX.
-    #[allow(unsafe_code)]
-    fn hermetic_perl_command_strips_perl5opt() {
+    fn hermetic_perl_command_strips_perl5opt() -> Result<(), Box<dyn std::error::Error>> {
+        const MARKER: &str = "TDD_HERMETIC_PERL5OPT_CHILD";
+        const CHILD_SELECTOR: &str =
+            "tdd::test_runner::tests::hermetic_perl_command_strips_perl5opt";
+        const CHILD_OUTPUT: &str = "TDD_HERMETIC_PERL5OPT_CHILD_REACHED";
+        if std::env::var_os(MARKER).is_none() {
+            let before = std::env::var_os("PERL5OPT");
+            let mut child = std::process::Command::new(std::env::current_exe()?);
+            child.args([CHILD_SELECTOR, "--exact", "--nocapture"]);
+            child.env(MARKER, "1");
+            child.env("PERL5OPT", "-Mstrict");
+            let output = child.output()?;
+            assert!(output.status.success(), "isolated child failed: {output:?}");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let child_report = format!("test {CHILD_SELECTOR} ... ok");
+            assert!(
+                stdout.contains("running 1 test") || stderr.contains("running 1 test"),
+                "child selector matched zero or multiple tests: stdout={stdout:?}, stderr={stderr:?}"
+            );
+            assert!(
+                stdout.contains(CHILD_OUTPUT)
+                    || stderr.contains(CHILD_OUTPUT)
+                    || stdout.contains(&child_report)
+                    || stderr.contains(&child_report),
+                "child selector did not execute the intended test: stdout={stdout:?}, stderr={stderr:?}"
+            );
+            assert_eq!(std::env::var_os("PERL5OPT"), before, "parent environment changed");
+            return Ok(());
+        }
         let perl = which_perl();
-        let Some(perl) = perl else { return };
-        let Ok(_env_guard) = ENV_MUTEX.lock() else { return };
+        let Some(perl) = perl else { return Ok(()) };
+        println!("{CHILD_OUTPUT}");
 
         let runner = TestRunner::new("".to_string(), "".to_string());
 
-        // SAFETY: ENV_MUTEX serializes test-local environment mutation.
-        unsafe { std::env::set_var("PERL5OPT", "-Mstrict") };
         let mut cmd = runner.hermetic_perl_command(&perl);
         cmd.args(["-e", "print $ENV{PERL5OPT} // 'UNSET'"]);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         let out = cmd.output();
-        // SAFETY: ENV_MUTEX serializes test-local environment mutation.
-        unsafe { std::env::remove_var("PERL5OPT") };
 
         let out = match out {
             Ok(o) => o,
-            Err(_) => return,
+            Err(_) => return Ok(()),
         };
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert_eq!(
@@ -1076,6 +1121,7 @@ pass();
             "UNSET",
             "PERL5OPT must be stripped by hermetic_perl_command; got: {stdout:?}",
         );
+        Ok(())
     }
 
     /// `hermetic_perl_command` preserves PATH so the interpreter can resolve

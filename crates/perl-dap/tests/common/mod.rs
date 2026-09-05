@@ -14,7 +14,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -1286,7 +1286,6 @@ struct DebuggeePerlResolution {
 
 static DEBUGGEE_PERL: OnceLock<DebuggeePerlResolution> = OnceLock::new();
 #[cfg(test)]
-static LAST_PROBE_PID: AtomicU32 = AtomicU32::new(0);
 #[cfg(test)]
 static ACTIVE_PROBE_READERS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(all(test, unix))]
@@ -1356,7 +1355,15 @@ struct ProbeFailure {
 /// resolver retries once on a transient-class failure before caching a
 /// negative result ([`resolved_debuggee_perl_or_reason`]).
 fn probe_debuggee_perl(binary: &Path) -> Result<DebuggeePerl, ProbeFailure> {
-    probe_debuggee_perl_with_options(binary, DEBUGGEE_PROBE_BUDGET, false, None, CleanupFault::None)
+    probe_debuggee_perl_with_options_and_barrier(
+        binary,
+        DEBUGGEE_PROBE_BUDGET,
+        false,
+        None,
+        CleanupFault::None,
+        None,
+        false,
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1405,8 +1412,16 @@ pub(crate) fn probe_debuggee_perl_for_test(
     budget: Duration,
     simulate_wait_error: bool,
 ) -> Result<DebuggeePerl, String> {
-    probe_debuggee_perl_with_options(binary, budget, simulate_wait_error, None, CleanupFault::None)
-        .map_err(|failure| failure.reason)
+    probe_debuggee_perl_with_options_and_barrier(
+        binary,
+        budget,
+        simulate_wait_error,
+        None,
+        CleanupFault::None,
+        None,
+        false,
+    )
+    .map_err(|failure| failure.reason)
 }
 
 #[cfg(test)]
@@ -1415,13 +1430,35 @@ pub(crate) fn probe_debuggee_perl_for_test_with_descendant_pid(
     budget: Duration,
     simulate_wait_error: bool,
     descendant_pid_file: &Path,
+    descendant_binary: &Path,
 ) -> Result<DebuggeePerl, String> {
-    probe_debuggee_perl_with_options(
+    probe_debuggee_perl_with_options_and_barrier(
         binary,
         budget,
         simulate_wait_error,
         Some(descendant_pid_file),
         CleanupFault::None,
+        Some(descendant_binary),
+        false,
+    )
+    .map_err(|failure| failure.reason)
+}
+
+#[cfg(test)]
+pub(crate) fn probe_debuggee_perl_for_test_with_descendant_pid_publication_barrier(
+    binary: &Path,
+    budget: Duration,
+    descendant_pid_file: &Path,
+    descendant_binary: &Path,
+) -> Result<DebuggeePerl, String> {
+    probe_debuggee_perl_with_options_and_barrier(
+        binary,
+        budget,
+        false,
+        Some(descendant_pid_file),
+        CleanupFault::None,
+        Some(descendant_binary),
+        true,
     )
     .map_err(|failure| failure.reason)
 }
@@ -1431,13 +1468,16 @@ pub(crate) fn probe_debuggee_perl_for_test_with_termination_failure(
     binary: &Path,
     budget: Duration,
     descendant_pid_file: &Path,
+    descendant_binary: &Path,
 ) -> Result<DebuggeePerl, String> {
-    probe_debuggee_perl_with_options(
+    probe_debuggee_perl_with_options_and_barrier(
         binary,
         budget,
         false,
         Some(descendant_pid_file),
         CleanupFault::TerminationOperations,
+        Some(descendant_binary),
+        false,
     )
     .map_err(|failure| failure.reason)
 }
@@ -1447,8 +1487,16 @@ pub(crate) fn probe_debuggee_perl_for_test_with_workspace_cleanup_failure(
     binary: &Path,
     budget: Duration,
 ) -> Result<DebuggeePerl, String> {
-    probe_debuggee_perl_with_options(binary, budget, false, None, CleanupFault::WorkspaceRemoval)
-        .map_err(|failure| failure.reason)
+    probe_debuggee_perl_with_options_and_barrier(
+        binary,
+        budget,
+        false,
+        None,
+        CleanupFault::WorkspaceRemoval,
+        None,
+        false,
+    )
+    .map_err(|failure| failure.reason)
 }
 
 #[cfg(test)]
@@ -1456,14 +1504,17 @@ pub(crate) fn probe_debuggee_perl_for_test_with_thread_spawn_failure(
     binary: &Path,
     budget: Duration,
     descendant_pid_file: &Path,
+    descendant_binary: &Path,
     stage: ProbeThreadSpawnFailure,
 ) -> Result<DebuggeePerl, String> {
-    probe_debuggee_perl_with_options(
+    probe_debuggee_perl_with_options_and_barrier(
         binary,
         budget,
         false,
         Some(descendant_pid_file),
         CleanupFault::ThreadSpawn(stage),
+        Some(descendant_binary),
+        false,
     )
     .map_err(|failure| failure.reason)
 }
@@ -1507,13 +1558,16 @@ pub(crate) fn probe_debuggee_perl_for_test_with_job_assignment_failure(
     binary: &Path,
     budget: Duration,
     descendant_pid_file: &Path,
+    descendant_binary: &Path,
 ) -> Result<DebuggeePerl, String> {
-    probe_debuggee_perl_with_options(
+    probe_debuggee_perl_with_options_and_barrier(
         binary,
         budget,
         false,
         Some(descendant_pid_file),
         CleanupFault::JobAssignment,
+        Some(descendant_binary),
+        false,
     )
     .map_err(|failure| failure.reason)
 }
@@ -1634,11 +1688,8 @@ fn wait_for_spawn_failure_control(descendant_pid_file: &Path) -> Result<(), Stri
 }
 
 #[cfg(test)]
-pub(crate) fn last_probe_pid_for_test() -> Option<u32> {
-    match LAST_PROBE_PID.load(Ordering::Acquire) {
-        0 => None,
-        pid => Some(pid),
-    }
+pub(crate) fn probe_pid_file_for_test(descendant_pid_file: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.probe", descendant_pid_file.display()))
 }
 
 #[cfg(test)]
@@ -1651,12 +1702,14 @@ fn defer_probe_child_for_test(child: Child) {
     children.push(child);
 }
 
-fn probe_debuggee_perl_with_options(
+fn probe_debuggee_perl_with_options_and_barrier(
     binary: &Path,
     probe_budget: Duration,
     mut simulate_wait_error: bool,
     descendant_pid_file: Option<&Path>,
     cleanup_fault: CleanupFault,
+    descendant_binary: Option<&Path>,
+    publication_barrier: bool,
 ) -> Result<DebuggeePerl, ProbeFailure> {
     let fail = |reason: String| ProbeFailure { reason, transient: false };
     // The workspace is explicitly closed after the probe body so recursive
@@ -1692,6 +1745,9 @@ fn probe_debuggee_perl_with_options(
                 "PERL_LSP_DAP_TEST_DESCENDANT_READY_FILE",
                 format!("{}.ready", descendant_pid_file.display()),
             );
+            if let Some(descendant_binary) = descendant_binary {
+                command.env("PERL_LSP_DAP_TEST_DESCENDANT_BINARY", descendant_binary);
+            }
         }
         // A dedicated process group lets cleanup terminate descendants on Unix;
         // Windows uses a Job Object and taskkill's process-tree fallback. These
@@ -1707,10 +1763,61 @@ fn probe_debuggee_perl_with_options(
             command.creation_flags(CREATE_SUSPENDED_FLAG);
         }
         let mut child = command.spawn().map_err(|e| fail(format!("cannot spawn: {e}")))?;
+        #[cfg(all(test, windows))]
+        if publication_barrier {
+            if let Err(error) = resume_suspended_probe_process(&child) {
+                let cleanup =
+                    terminate_probe_process_tree(&mut child, descendant_pid_file, cleanup_fault);
+                return Err(fail(format!(
+                    "cannot resume probe process for publication barrier: {error}{}",
+                    cleanup
+                        .err()
+                        .map_or_else(String::new, |error| format!("; cleanup failed: {error}"))
+                )));
+            }
+        }
         #[cfg(test)]
-        // Record before Windows job assignment so the assignment-failure
-        // control can observe and verify cleanup of the suspended child.
-        LAST_PROBE_PID.store(child.id(), Ordering::Release);
+        if let Some(descendant_pid_file) = descendant_pid_file {
+            if publication_barrier {
+                let child_pid_file =
+                    PathBuf::from(format!("{}.child", descendant_pid_file.display()));
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !child_pid_file.is_file() {
+                    if Instant::now() >= deadline {
+                        let cleanup = terminate_probe_process_tree(
+                            &mut child,
+                            Some(descendant_pid_file),
+                            cleanup_fault,
+                        );
+                        return Err(fail(format!(
+                            "publication barrier did not start probe child{}",
+                            cleanup.err().map_or_else(String::new, |error| format!(
+                                "; cleanup failed: {error}"
+                            ))
+                        )));
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            if let Err(error) =
+                fs::write(probe_pid_file_for_test(descendant_pid_file), child.id().to_string())
+            {
+                // The child is already running at this point. Preserve the
+                // publication error, but close the owned process-tree boundary
+                // before returning so a receipt failure cannot leak a probe.
+                let cleanup = terminate_probe_process_tree(
+                    &mut child,
+                    Some(descendant_pid_file),
+                    cleanup_fault,
+                );
+                return Err(fail(format!(
+                    "cannot publish probe child PID: {error}{}",
+                    cleanup
+                        .err()
+                        .map_or_else(String::new, |error| format!("; cleanup failed: {error}"))
+                )));
+            }
+        }
         #[cfg(windows)]
         let _probe_job = if cleanup_fault.termination_failed() {
             // Leave the owned process tree live for the termination-failure
@@ -1762,7 +1869,7 @@ fn probe_debuggee_perl_with_options(
             )
         };
         #[cfg(windows)]
-        if let Err(error) = resume_suspended_probe_process(&child) {
+        if !publication_barrier && let Err(error) = resume_suspended_probe_process(&child) {
             let cleanup =
                 terminate_probe_process_tree(&mut child, descendant_pid_file, cleanup_fault);
             return Err(fail(format!(
