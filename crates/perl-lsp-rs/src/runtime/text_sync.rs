@@ -19,11 +19,9 @@ use super::{
 };
 use crate::protocol::invalid_params;
 use crate::state::{DegradationTier, FIRST_ACCEPTED_DOCUMENT_GENERATION, ParsedSnapshot};
-#[cfg(feature = "workspace")]
-use perl_parser::workspace_index::{IndexPhase, IndexState};
 use perl_parser_core::source_file::is_binary_content;
 #[cfg(feature = "workspace")]
-use perl_workspace::workspace_index::{SourceCommit, SourceCommitOutcome};
+use perl_workspace::workspace_index::{IndexPhase, IndexState, SourceCommit, SourceCommitOutcome};
 
 mod document_state;
 mod lifecycle;

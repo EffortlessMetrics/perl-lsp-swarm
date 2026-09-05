@@ -43,7 +43,9 @@
 //! ```
 
 #[cfg(feature = "workspace")]
-use perl_parser::workspace_index::{DegradationReason, IndexCoordinator, IndexPhase, IndexState};
+use perl_workspace::workspace_index::{
+    DegradationReason, IndexCoordinator, IndexPhase, IndexState,
+};
 #[cfg(feature = "workspace")]
 use std::sync::Arc;
 

@@ -195,6 +195,19 @@ coverage_filters = [
 ]
 
 [[pack]]
+id = "patch-coverage-xtask-parser-workspace-index-facade-guard"
+lcov = false
+files = [
+  "xtask/tests/parser_workspace_index_facade_consumers.rs",
+]
+commands = [
+  "cargo test -p xtask --test parser_workspace_index_facade_consumers --profile agent --locked -- --nocapture",
+]
+coverage_filters = [
+  "parser_workspace_index_facade_consumers",
+]
+
+[[pack]]
 id = "patch-coverage-xtask-parser-tdd-facade-guard"
 lcov = false
 files = [

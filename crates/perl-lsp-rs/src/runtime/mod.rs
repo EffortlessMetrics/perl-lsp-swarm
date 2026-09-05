@@ -149,11 +149,11 @@ use std::sync::{
 use url::Url;
 
 #[cfg(feature = "workspace")]
-use perl_parser::workspace_index::{
+use perl_position_tracking::{WireLocation, WirePosition, WireRange};
+#[cfg(feature = "workspace")]
+use perl_workspace::workspace_index::{
     IndexCoordinator, LspWorkspaceSymbol, WorkspaceIndex, uri_to_fs_path,
 };
-#[cfg(feature = "workspace")]
-use perl_position_tracking::{WireLocation, WirePosition, WireRange};
 
 #[cfg(feature = "workspace")]
 use crate::fallback::text::extract_text_based_symbols;

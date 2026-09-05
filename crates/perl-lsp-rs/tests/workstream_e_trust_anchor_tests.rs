@@ -577,7 +577,7 @@ mod windows_uri_path_tests {
 
     use crate::support::env_guard::EnvGuard;
     use perl_lsp::LspServer;
-    use perl_parser::workspace_index::{fs_path_to_uri, uri_to_fs_path};
+    use perl_workspace::workspace_index::{fs_path_to_uri, uri_to_fs_path};
     use serde_json::json;
     use serial_test::serial;
     use std::sync::Arc;
@@ -816,10 +816,10 @@ sub process {
 // ============================================================================
 #[cfg(test)]
 mod workspace_index_unit_tests {
-    use perl_parser::workspace_index::{
+    use perl_tdd_support::must;
+    use perl_workspace::workspace_index::{
         DegradationReason, IndexCoordinator, IndexResourceLimits, IndexState, ResourceKind,
     };
-    use perl_tdd_support::must;
 
     // =========================================================================
     // Test: IndexCoordinator query dispatch based on state

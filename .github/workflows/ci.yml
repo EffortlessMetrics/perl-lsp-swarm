@@ -1593,6 +1593,12 @@ jobs:
       - name: Publish-provenance contract (required merge surface)
         run: cargo test -p xtask --test post_publish_smoke_version_provenance --locked -- --nocapture
 
+      # Same reasoning as the contracts above: the #11389 workspace/index
+      # facade recurrence guard otherwise only executes through diff-routed
+      # advisory lanes, so stale facade imports could merge without it ever
+      # running.
+      - name: Workspace/index facade consumer contract (required merge surface)
+        run: cargo test -p xtask --test parser_workspace_index_facade_consumers --locked -- --nocapture
       # Same reasoning as the contracts above: the #11382 TDD-facade
       # recurrence guard otherwise only executes through diff-routed advisory
       # lanes, so stale facade imports could merge without it ever running.

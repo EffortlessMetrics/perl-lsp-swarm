@@ -1,5 +1,5 @@
 use perl_lsp::{JsonRpcRequest, LspServer};
-use perl_parser::workspace_index::WorkspaceIndex;
+use perl_workspace::workspace_index::WorkspaceIndex;
 use serde_json::json;
 use url::Url;
 

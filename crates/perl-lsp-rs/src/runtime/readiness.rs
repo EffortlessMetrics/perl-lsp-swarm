@@ -1,6 +1,6 @@
 use crate::runtime::LspServer;
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
-use perl_parser::workspace_index::IndexCoordinator;
+use perl_workspace::workspace_index::IndexCoordinator;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
@@ -669,7 +669,7 @@ mod tests {
         set_index_ready_wait_entered_observer,
     };
     use anyhow::{Result, anyhow};
-    use perl_parser::workspace_index::{DegradationReason, IndexCoordinator};
+    use perl_workspace::workspace_index::{DegradationReason, IndexCoordinator};
     use serde_json::json;
     use std::sync::{
         Arc,

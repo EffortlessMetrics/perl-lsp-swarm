@@ -33,10 +33,6 @@ use perl_lsp_rs_core::config::{
 use perl_module::file_path_to_module_name;
 use perl_module::plan_module_rename_edits;
 #[cfg(feature = "workspace")]
-use perl_parser::workspace_index::{
-    DegradationReason, EarlyExitReason, IndexState, ResourceKind, SymbolKind,
-};
-#[cfg(feature = "workspace")]
 use perl_parser_core::source_file::is_perl_source_path;
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 use perl_semantic_facts::{
@@ -45,6 +41,10 @@ use perl_semantic_facts::{
 use perl_workspace::folder::extract_workspace_folder_change;
 #[cfg(feature = "workspace")]
 use perl_workspace::ignore::is_skipped_dir_name;
+#[cfg(feature = "workspace")]
+use perl_workspace::workspace_index::{
+    DegradationReason, EarlyExitReason, IndexState, ResourceKind, SymbolKind,
+};
 use std::collections::{HashMap, HashSet};
 #[cfg(feature = "workspace")]
 use std::io::Read;
@@ -3195,7 +3195,7 @@ impl LspServer {
 
 #[cfg(feature = "workspace")]
 fn collect_delete_target_module_names(
-    index: &perl_parser::workspace_index::WorkspaceIndex,
+    index: &perl_workspace::workspace_index::WorkspaceIndex,
     uri: &str,
 ) -> std::collections::BTreeSet<String> {
     let mut module_names = std::collections::BTreeSet::new();
@@ -3220,11 +3220,11 @@ fn collect_delete_target_module_names(
 
 #[cfg(feature = "workspace")]
 fn collect_cross_file_delete_dependents(
-    index: &perl_parser::workspace_index::WorkspaceIndex,
+    index: &perl_workspace::workspace_index::WorkspaceIndex,
     uri: &str,
     deleting_uris: &std::collections::HashSet<String>,
 ) -> std::collections::BTreeSet<String> {
-    let normalized_uri = perl_parser::workspace_index::uri_key(uri);
+    let normalized_uri = perl_workspace::workspace_index::uri_key(uri);
     let module_names = collect_delete_target_module_names(index, uri);
     let mut dependents = std::collections::BTreeSet::new();
     for module_name in module_names {
@@ -3240,17 +3240,17 @@ fn collect_cross_file_delete_dependents(
 
 #[cfg(feature = "workspace")]
 fn collect_open_document_delete_dependents(
-    index: &perl_parser::workspace_index::WorkspaceIndex,
+    index: &perl_workspace::workspace_index::WorkspaceIndex,
     uri: &str,
     deleting_uris: &std::collections::HashSet<String>,
     open_documents: &[(String, String)],
 ) -> std::collections::BTreeSet<String> {
-    let normalized_uri = perl_parser::workspace_index::uri_key(uri);
+    let normalized_uri = perl_workspace::workspace_index::uri_key(uri);
     let module_names = collect_delete_target_module_names(index, uri);
     let mut dependents = std::collections::BTreeSet::new();
 
     for (doc_uri, text) in open_documents {
-        let normalized_doc_uri = perl_parser::workspace_index::uri_key(doc_uri);
+        let normalized_doc_uri = perl_workspace::workspace_index::uri_key(doc_uri);
         if normalized_doc_uri == normalized_uri || deleting_uris.contains(&normalized_doc_uri) {
             continue;
         }
@@ -3267,11 +3267,11 @@ fn collect_open_document_delete_dependents(
 
 #[cfg(feature = "workspace")]
 fn collect_symbol_reference_delete_dependents(
-    index: &perl_parser::workspace_index::WorkspaceIndex,
+    index: &perl_workspace::workspace_index::WorkspaceIndex,
     uri: &str,
     deleting_uris: &std::collections::HashSet<String>,
 ) -> std::collections::BTreeSet<String> {
-    let normalized_uri = perl_parser::workspace_index::uri_key(uri);
+    let normalized_uri = perl_workspace::workspace_index::uri_key(uri);
     let mut dependents = std::collections::BTreeSet::new();
 
     for symbol in index.file_symbols(uri) {
@@ -3287,7 +3287,7 @@ fn collect_symbol_reference_delete_dependents(
 
         for symbol_name in names {
             for reference in index.find_references(&symbol_name) {
-                let reference_uri = perl_parser::workspace_index::uri_key(&reference.uri);
+                let reference_uri = perl_workspace::workspace_index::uri_key(&reference.uri);
                 if reference_uri != normalized_uri && !deleting_uris.contains(&reference_uri) {
                     dependents.insert(reference_uri);
                 }
@@ -3381,7 +3381,7 @@ mod tests {
     use parking_lot::Mutex;
     use perl_lsp_rs_core::transport::framing::ContentLengthFramer;
     #[cfg(feature = "workspace")]
-    use perl_parser::workspace_index::{
+    use perl_workspace::workspace_index::{
         DegradationReason, IndexCoordinator, IndexPerformanceCaps, IndexResourceLimits, IndexState,
     };
     use serde_json::{Value, json};

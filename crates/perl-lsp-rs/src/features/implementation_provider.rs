@@ -9,7 +9,7 @@ use crate::util::uri::parse_uri;
 use lsp_types::LocationLink;
 use lsp_types::{Position as LspPosition, Range as LspRange};
 use perl_parser::ast::{Node, NodeKind};
-use perl_parser::workspace_index::WorkspaceIndex;
+use perl_workspace::workspace_index::WorkspaceIndex;
 use std::collections::HashMap;
 
 /// Provider for finding implementations of types and interfaces in Perl code
@@ -58,7 +58,7 @@ impl ImplementationProvider {
     ///
     /// // With workspace indexing (cross-file inheritance)
     /// # use std::sync::Arc;
-    /// # use perl_parser::workspace_index::WorkspaceIndex;
+    /// # use perl_workspace::workspace_index::WorkspaceIndex;
     /// # let workspace_index = Arc::new(WorkspaceIndex::new());
     /// let provider = ImplementationProvider::new(Some(workspace_index));
     /// ```
