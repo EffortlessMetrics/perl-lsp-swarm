@@ -1454,11 +1454,21 @@ impl LspServer {
     }
 
     /// Install the diagnostic debouncer (called from Scheduler::new after Arc wrapping).
+    ///
+    /// The previous debouncer, if any, is released *after* the lock. Its `Drop`
+    /// joins the debounce worker, and that worker's `publish_fn` re-enters
+    /// `LspServer`; dropping it in place would hold this server-wide mutex
+    /// across a thread join. Today's production callback happens not to take
+    /// this lock, but nothing enforces that -- a callback reaching
+    /// `runtime_pressure_snapshot` or `publish_diagnostics_debounced` would
+    /// deadlock. Ordering the release out of the critical section removes the
+    /// invariant instead of relying on it.
     pub(crate) fn install_diagnostic_debouncer(
         &self,
         debouncer: diagnostic_debounce::DiagnosticDebouncer,
     ) {
-        *self.diagnostic_debouncer.lock() = Some(debouncer);
+        let previous = self.diagnostic_debouncer.lock().replace(debouncer);
+        drop(previous);
     }
 
     /// Install the production diagnostic debouncer (called from
@@ -1516,14 +1526,17 @@ impl LspServer {
             self.publish_diagnostics(uri);
             return;
         }
-        let mut guard = self.diagnostic_debouncer.lock();
-        if let Some(debouncer) = guard.as_ref() {
-            if debouncer.schedule(uri) {
+        // Evict outside the lock for the same reason as
+        // `install_diagnostic_debouncer`: releasing a debouncer joins its
+        // worker thread, which must not happen under this mutex.
+        let evicted = {
+            let mut guard = self.diagnostic_debouncer.lock();
+            if guard.as_ref().is_some_and(|debouncer| debouncer.schedule(uri)) {
                 return;
             }
-            *guard = None;
-        }
-        drop(guard);
+            guard.take()
+        };
+        drop(evicted);
         self.publish_diagnostics(uri);
     }
 

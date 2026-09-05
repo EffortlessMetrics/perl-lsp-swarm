@@ -74,12 +74,29 @@ impl Drop for DiagnosticDebouncer {
             tracing::debug!(error = %e, "diagnostic debounce: channel closed on shutdown");
         }
         if let Some(handle) = self.worker_handle.take() {
-            if handle.thread().id() == thread::current().id() {
-                tracing::error!("diagnostic debounce worker attempted to join itself");
-            } else if handle.join().is_err() {
-                tracing::error!("diagnostic debounce worker panicked before shutdown");
-            }
+            join_worker(handle);
         }
+    }
+}
+
+/// Join the debounce worker, tolerating the self-join teardown race.
+///
+/// Mirrors `file_watcher_debounce::join_worker` (#8064), the accepted pattern
+/// for the sibling debouncer. Self-join would panic ("a thread cannot join
+/// itself"). It happens when the publish callback's upgraded `Arc<LspServer>`
+/// is the last strong owner: the server -- and therefore this `Drop` -- then
+/// runs ON the worker thread. Dropping the handle detaches, and the worker
+/// finishes naturally once its own call stack returns. That is an expected
+/// shutdown ordering, not a fault, so it is not logged as one.
+fn join_worker(handle: thread::JoinHandle<()>) {
+    if handle.thread().id() == thread::current().id() {
+        drop(handle);
+        return;
+    }
+    if handle.join().is_err() {
+        // The panic itself is already reported by the runtime panic hook; this
+        // only records that shutdown observed it.
+        tracing::debug!("diagnostic debounce worker panicked before shutdown");
     }
 }
 
