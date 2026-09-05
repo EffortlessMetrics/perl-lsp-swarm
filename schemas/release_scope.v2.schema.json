@@ -1,0 +1,272 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/release_scope.v2.schema.json",
+  "title": "perl_lsp.release_scope.v2",
+  "description": "Structural contract for one final v0.18 public-beta product freeze. It can represent exact freeze inputs and invalidation but cannot observe GitHub, decide readiness, prepare a release, or authorize publication.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "check",
+    "schema_version",
+    "event",
+    "verdict",
+    "release",
+    "track",
+    "phase",
+    "observation_sha",
+    "frozen_product_sha",
+    "prepared_swarm_sha",
+    "observed_pull_requests",
+    "blockers",
+    "known_limitations",
+    "product_claims",
+    "topology",
+    "installed_acceptance",
+    "release_integrity",
+    "lineage",
+    "freeze_rules",
+    "invalidation"
+  ],
+  "properties": {
+    "check": {"const": "release-scope-v2"},
+    "schema_version": {"const": "perl_lsp.release_scope.v2"},
+    "event": {"enum": ["local", "push"]},
+    "verdict": {"const": "pass"},
+    "release": {"const": "0.18.0"},
+    "track": {"const": "public-beta"},
+    "phase": {"const": "final-frozen"},
+    "observation_sha": {"$ref": "#/$defs/sha"},
+    "frozen_product_sha": {"$ref": "#/$defs/sha"},
+    "prepared_swarm_sha": {
+      "oneOf": [
+        {"$ref": "#/$defs/sha"},
+        {"type": "null"}
+      ]
+    },
+    "observed_pull_requests": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/observedPullRequest"}
+    },
+    "blockers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/blockerBinding"}
+    },
+    "known_limitations": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/knownLimitation"}
+    },
+    "product_claims": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/productClaim"}
+    },
+    "topology": {"$ref": "#/$defs/topologyBinding"},
+    "installed_acceptance": {"$ref": "#/$defs/subjectEvidence"},
+    "release_integrity": {"$ref": "#/$defs/subjectEvidence"},
+    "lineage": {"$ref": "#/$defs/subjectEvidence"},
+    "freeze_rules": {"$ref": "#/$defs/freezeRules"},
+    "invalidation": {"$ref": "#/$defs/invalidation"}
+  },
+  "$defs": {
+    "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$"
+    },
+    "evidenceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "ref", "digest"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "github_issue",
+            "github_issue_comment",
+            "github_pull",
+            "github_review",
+            "github_check",
+            "repository_blob",
+            "repository_receipt"
+          ]
+        },
+        "ref": {"type": "string", "minLength": 1},
+        "digest": {"$ref": "#/$defs/digest"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "github_issue"}}, "required": ["kind"]},
+          "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/issues/[1-9][0-9]*$"}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "github_issue_comment"}}, "required": ["kind"]},
+          "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/issues/[1-9][0-9]*#issuecomment-[1-9][0-9]*$"}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "github_pull"}}, "required": ["kind"]},
+          "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/pull/[1-9][0-9]*$"}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "github_review"}}, "required": ["kind"]},
+          "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/pull/[1-9][0-9]*#pullrequestreview-[1-9][0-9]*$"}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "github_check"}}, "required": ["kind"]},
+          "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/[1-9][0-9]*/job/[1-9][0-9]*$"}}}
+        },
+        {
+          "if": {"properties": {"kind": {"enum": ["repository_blob", "repository_receipt"]}}, "required": ["kind"]},
+          "then": {"properties": {"ref": {"pattern": "^repo:[^@\\s]+@[0-9a-f]{40}$"}}}
+        }
+      ]
+    },
+    "observedPullRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["number", "head_sha", "state", "is_draft", "disposition", "controlling_issue", "evidence"],
+      "properties": {
+        "number": {"type": "integer", "minimum": 1},
+        "head_sha": {"$ref": "#/$defs/sha"},
+        "state": {"enum": ["open", "closed", "merged"]},
+        "is_draft": {"type": "boolean"},
+        "disposition": {
+          "enum": [
+            "0.18-blocker",
+            "0.18-candidate",
+            "post-0.18",
+            "superseded",
+            "already-included"
+          ]
+        },
+        "controlling_issue": {
+          "oneOf": [
+            {"type": "integer", "minimum": 1},
+            {"type": "null"}
+          ]
+        },
+        "evidence": {"$ref": "#/$defs/evidenceRef"}
+      }
+    },
+    "blockerBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blocker_id", "status", "proof"],
+      "properties": {
+        "blocker_id": {"$ref": "#/$defs/identifier"},
+        "status": {"enum": ["resolved", "bounded_limitation"]},
+        "proof": {"$ref": "#/$defs/evidenceRef"}
+      }
+    },
+    "knownLimitation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "statement", "evidence"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "statement": {"type": "string", "minLength": 1},
+        "evidence": {"$ref": "#/$defs/evidenceRef"}
+      }
+    },
+    "productClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "strength", "statement", "evidence"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "strength": {"enum": ["full", "bounded"]},
+        "statement": {"type": "string", "minLength": 1},
+        "evidence": {"$ref": "#/$defs/evidenceRef"}
+      }
+    },
+    "subjectEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject_sha", "evidence"],
+      "properties": {
+        "subject_sha": {"$ref": "#/$defs/sha"},
+        "evidence": {"$ref": "#/$defs/evidenceRef"}
+      }
+    },
+    "topologyBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject_sha", "digest", "evidence"],
+      "properties": {
+        "subject_sha": {"$ref": "#/$defs/sha"},
+        "digest": {"$ref": "#/$defs/digest"},
+        "evidence": {"$ref": "#/$defs/evidenceRef"}
+      }
+    },
+    "freezeRules": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["feature_intake_closed", "allowed_changes"],
+      "properties": {
+        "feature_intake_closed": {"const": true},
+        "allowed_changes": {
+          "const": [
+            "release-blocker",
+            "regression-fix",
+            "release-proof",
+            "packaging",
+            "version-notes-status",
+            "release-integrity",
+            "release-lineage"
+          ]
+        }
+      }
+    },
+    "invalidationClass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class", "invalidates"],
+      "properties": {
+        "class": {"enum": ["product-change", "release-metadata-change"]},
+        "invalidates": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": ["freeze", "preparation", "publication-sync", "candidate", "authorization"]
+          }
+        }
+      }
+    },
+    "invalidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["product_change", "release_metadata_change"],
+      "properties": {
+        "product_change": {
+          "allOf": [
+            {"$ref": "#/$defs/invalidationClass"},
+            {
+              "properties": {
+                "class": {"const": "product-change"},
+                "invalidates": {"const": ["freeze", "preparation", "publication-sync", "candidate", "authorization"]}
+              }
+            }
+          ]
+        },
+        "release_metadata_change": {
+          "allOf": [
+            {"$ref": "#/$defs/invalidationClass"},
+            {
+              "properties": {
+                "class": {"const": "release-metadata-change"},
+                "invalidates": {"const": ["preparation", "publication-sync", "candidate", "authorization"]}
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
