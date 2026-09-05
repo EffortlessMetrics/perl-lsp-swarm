@@ -370,6 +370,31 @@ pub fn compose_builder_packet(
     profile: &str,
     live: Option<&LiveObservation>,
 ) -> Result<Value, Refusal> {
+    compose_packet_document(root, inputs, subject, profile, live, CodingAuthority::Granted)
+}
+
+/// Whether the composed document will actually carry repository-write authority.
+///
+/// The review and reconciliation routes compose a builder document under a
+/// coding profile purely as scaffolding, then override the profile to
+/// `read_only_reviewer` / `reconciliation_only` and the write boundary to
+/// `none`.  Those documents never direct a writer, so the live-candidate gate
+/// below must not apply to them; it applies only when the emitted packet keeps
+/// its coding authority.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CodingAuthority {
+    Granted,
+    Withheld,
+}
+
+fn compose_packet_document(
+    root: &Path,
+    inputs: &AdapterInputs,
+    subject: &str,
+    profile: &str,
+    live: Option<&LiveObservation>,
+    authority: CodingAuthority,
+) -> Result<Value, Refusal> {
     let node = resolve_train_node(inputs, subject).map_err(|error| {
         Refusal::new(subject, profile, "NODE_RESOLUTION_FAILED", error.to_string())
     })?;
@@ -487,6 +512,41 @@ pub fn compose_builder_packet(
              admitted"
                 .to_string(),
         ));
+    }
+
+    // #11719: a coding packet may never assume vacancy.  Absence of a live
+    // observation, and an explicit `not_observed`, are both statements that
+    // nothing was looked at -- neither is evidence that no candidate owns this
+    // claim.  Admitting on either can direct a second writer at a node whose
+    // work is already owned by an open PR or a dirty unique checkout, so both
+    // refuse rather than recording the gap as prose in `unproven[]`.
+    //
+    // Boundary: the shared #10872 contract's `candidate_state` vocabulary is
+    // exactly {not_observed, observed}, and `candidate_identity` is forbidden
+    // when `not_observed`.  A *complete* observation that found no candidate is
+    // therefore inexpressible without changing the shared schema, which this
+    // adapter does not own.  Until #10872 carries that third state, a node with
+    // no live candidate cannot be admitted here at all; refusing is the safe
+    // direction, and the vocabulary gap is recorded against #10872/#10930.
+    if is_coding && authority == CodingAuthority::Granted {
+        let observed_identity =
+            live.filter(|live| live.candidate_state == "observed").and_then(|live| {
+                live.candidate_identity.as_deref().filter(|identity| !identity.trim().is_empty())
+            });
+        if observed_identity.is_none() {
+            let detail = match live {
+                None => "no live candidate observation was supplied; a coding packet may never \
+                         assume vacancy (#11719)"
+                    .to_string(),
+                Some(live) => format!(
+                    "the supplied live observation is `{}`; absence of knowledge is never \
+                     vacancy, so a coding packet requires an `observed` candidate identity \
+                     (#11719)",
+                    live.candidate_state
+                ),
+            };
+            return Err(Refusal::new(&node.node_id, profile, "NO_LIVE_OBSERVATION", detail));
+        }
     }
 
     let mut unproven = vec![
@@ -610,6 +670,8 @@ fn node_kind_of(node: &TrainNode) -> &'static str {
 }
 
 fn proposition_id(node: &TrainNode) -> String {
+    // Every non-alphanumeric character maps to a single `-`, so splitting on
+    // `-` and dropping empty segments both trims the ends and collapses runs.
     let slug: String =
         node.one_pr_outcome
             .chars()
@@ -617,20 +679,8 @@ fn proposition_id(node: &TrainNode) -> String {
                 if character.is_ascii_alphanumeric() { character.to_ascii_lowercase() } else { '-' }
             })
             .collect();
-    let trimmed = slug.trim_matches('-').to_string();
-    let mut compact = String::new();
-    let mut previous_dash = false;
-    for character in trimmed.chars() {
-        if character == '-' {
-            if !previous_dash {
-                compact.push('-');
-            }
-            previous_dash = true;
-        } else {
-            compact.push(character);
-            previous_dash = false;
-        }
-    }
+    let compact =
+        slug.split('-').filter(|segment| !segment.is_empty()).collect::<Vec<_>>().join("-");
     let compact = if compact.is_empty() { node.node_id.to_lowercase() } else { compact };
     format!("P_{}", truncate_chars(&compact, 48))
 }
@@ -641,6 +691,20 @@ fn truncate_chars(value: &str, max: usize) -> String {
 
 fn short(hex: &str, characters: usize) -> String {
     hex.chars().take(characters).collect()
+}
+
+/// Deterministic text for a non-string candidate `facts` value.
+///
+/// `serde_json::Map` is a `BTreeMap` here (the `preserve_order` feature is not
+/// enabled), so object keys serialize in sorted order and the same input always
+/// produces the same bytes.
+fn canonical_json_string(value: &Value) -> String {
+    match serde_json::to_string(value) {
+        Ok(text) => text,
+        // A `Value` that came from `serde_json` cannot fail to re-serialize;
+        // fall back to the debug form rather than panicking.
+        Err(_) => format!("{value:?}"),
+    }
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -1061,10 +1125,43 @@ pub fn compose_review_packet(
     const PROFILE: &str = "read_only_reviewer";
     // The reviewer packet anchors the builder packet it challenges: compose
     // it first and propagate its refusal honestly.
-    let builder_doc = compose_builder_packet(root, inputs, subject, "coding_agent_bounded", None)
-        .or_else(|_| {
-        compose_builder_packet(root, inputs, subject, "coding_agent_strong", None)
-    })?;
+    // Bounded first, strong as a fallback only for a node where bounded is
+    // profile-not-permitted.  Both attempts compose scaffolding for a
+    // read-only reviewer document, so coding authority is withheld and the
+    // live-candidate gate does not apply.  When both refuse, the chain is
+    // reported so the caller can see which profile refused for what -- the
+    // earlier form dropped the bounded refusal on the floor and surfaced only
+    // the strong one.
+    let builder_doc = match compose_packet_document(
+        root,
+        inputs,
+        subject,
+        "coding_agent_bounded",
+        None,
+        CodingAuthority::Withheld,
+    ) {
+        Ok(doc) => doc,
+        Err(bounded) => compose_packet_document(
+            root,
+            inputs,
+            subject,
+            "coding_agent_strong",
+            None,
+            CodingAuthority::Withheld,
+        )
+        .map_err(|strong| {
+            Refusal::new(
+                &strong.node_id,
+                PROFILE,
+                strong.code,
+                format!(
+                    "no coding profile is eligible as review scaffolding: bounded refused {} ({}); \
+                     strong refused {} ({})",
+                    bounded.code, bounded.detail, strong.code, strong.detail
+                ),
+            )
+        })?,
+    };
     let node = resolve_train_node(inputs, subject).map_err(|error| {
         Refusal::new(subject, PROFILE, "NODE_RESOLUTION_FAILED", error.to_string())
     })?;
@@ -1240,16 +1337,20 @@ pub fn compose_review_packet(
                     "identity": format!("sha256:{}", short(&inputs.specs_digest, 16)),
                 },
             ],
+            // One anchor per file. Recording only `files[0]` would let a
+            // reviewer believe a multi-file bundle is current when only one of
+            // its files is actually bound.
             "fixture_expectation_manifests": context
                 .checked_specs
                 .iter()
-                .map(|checked| json!({
-                    "ref": checked.bundle,
-                    "identity": format!(
-                        "sha256:{}",
-                        short(&checked.files.first().map(|file| file.sha256.clone()).unwrap_or_default(), 16)
-                    ),
-                }))
+                .flat_map(|checked| {
+                    checked.files.iter().map(move |file| {
+                        json!({
+                            "ref": format!("{}::{}", checked.bundle, file.path),
+                            "identity": format!("sha256:{}", short(&file.sha256, 16)),
+                        })
+                    })
+                })
                 .collect::<Vec<_>>(),
             "tests_mutations": context
                 .tests
@@ -1532,7 +1633,25 @@ pub fn compose_reconcile_packet(
             "candidate facts must be a JSON array of {identity, state, facts}".to_string(),
         ));
     };
+    if entries.is_empty() {
+        return Err(Refusal::new(
+            &node.node_id,
+            PROFILE,
+            "MALFORMED_CANDIDATE_FACTS",
+            "reconciliation requires at least one supplied candidate; an empty set is not an \
+             observation of vacancy"
+                .to_string(),
+        ));
+    }
+    // The reviewer must adjudicate keep/rewrite/drop/transfer over the *exact*
+    // supplied facts, so every candidate's facts are carried into its blocking
+    // edge and into the frontier digest.  Discarding `facts` would render two
+    // candidates with contradictory dirty/unpushed, stack, base, ownership or
+    // salvage state as byte-identical packets, leaving the output not
+    // content-addressed to its live input.
     let mut blocking_edges = Vec::new();
+    let mut seen_identities: Vec<String> = Vec::new();
+    let mut candidate_digest_source = String::new();
     for entry in entries {
         let identity = entry.get("identity").and_then(Value::as_str).unwrap_or_default();
         if identity.trim().is_empty() {
@@ -1543,32 +1662,77 @@ pub fn compose_reconcile_packet(
                 "every supplied candidate fact requires a non-empty exact identity".to_string(),
             ));
         }
+        if seen_identities.iter().any(|seen| seen == identity.trim()) {
+            return Err(Refusal::new(
+                &node.node_id,
+                PROFILE,
+                "MALFORMED_CANDIDATE_FACTS",
+                format!(
+                    "candidate identity {} is supplied more than once; reconciliation needs a \
+                     unique candidate set",
+                    identity.trim()
+                ),
+            ));
+        }
+        seen_identities.push(identity.trim().to_string());
         let state = entry.get("state").and_then(Value::as_str).unwrap_or("state_unspecified");
+        let facts = match entry.get("facts") {
+            Some(Value::String(text)) if !text.trim().is_empty() => text.trim().to_string(),
+            Some(Value::Null) | None => {
+                return Err(Refusal::new(
+                    &node.node_id,
+                    PROFILE,
+                    "MALFORMED_CANDIDATE_FACTS",
+                    format!(
+                        "candidate {} supplies no facts; keep/rewrite/drop/transfer cannot be \
+                         adjudicated from an identity alone",
+                        identity.trim()
+                    ),
+                ));
+            }
+            Some(other) => canonical_json_string(other),
+        };
+        candidate_digest_source.push_str(identity.trim());
+        candidate_digest_source.push('\u{1f}');
+        candidate_digest_source.push_str(state);
+        candidate_digest_source.push('\u{1f}');
+        candidate_digest_source.push_str(&facts);
+        candidate_digest_source.push('\u{1e}');
         blocking_edges.push(json!({
-            "edge": identity,
-            "reason": format!("supplied candidate fact ({state}) requires explicit keep/rewrite/drop/transfer adjudication before any coding packet"),
+            "edge": identity.trim(),
+            "reason": format!(
+                "supplied candidate fact ({state}) requires explicit keep/rewrite/drop/transfer \
+                 adjudication before any coding packet; observed facts: {facts}"
+            ),
         }));
     }
+    let candidates_digest = sha256_hex(candidate_digest_source.as_bytes());
 
     // The reconciliation packet is a shared-contract document: it carries no
     // coding authority (write boundary none) and blocks coding until exact
     // candidate ownership is resolved.
     let mut doc =
-        compose_builder_packet(root, inputs, subject, PROFILE, None).map_err(|mut refusal| {
-            // The only acceptable refusal class here is a coding eligibility
-            // rule that does not apply to a non-coding reconciliation packet.
-            refusal.profile = PROFILE.to_string();
-            refusal
-        })?;
+        compose_packet_document(root, inputs, subject, PROFILE, None, CodingAuthority::Withheld)
+            .map_err(|mut refusal| {
+                // The only acceptable refusal class here is a coding eligibility
+                // rule that does not apply to a non-coding reconciliation packet.
+                refusal.profile = PROFILE.to_string();
+                refusal
+            })?;
     if let Some(object) = doc.as_object_mut() {
         object.insert(
             "frontier".to_string(),
             json!({
                 "decision": "blocked",
+                // Binding the candidate-set digest makes the packet
+                // content-addressed to its live input: changing only a
+                // candidate's `facts` changes this digest and the rendered
+                // bytes.
                 "digest": format!(
-                    "reconcile:emacs-train:{}:{}:supplied",
+                    "reconcile:emacs-train:{}:{}:supplied:sha256:{}",
                     short(&inputs.engine.manifest_digest, 12),
-                    node.node_id
+                    node.node_id,
+                    short(&candidates_digest, 16)
                 ),
                 "blocking_edges": blocking_edges,
             }),
@@ -1620,6 +1784,7 @@ fn is_eligibility_refusal(code: &str) -> bool {
             | "CONTEXT_MAPPING_GAP"
             | "HARD_DEPENDENCY_NOT_CURRENT"
             | "NO_WRITE_SURFACE"
+            | "NO_LIVE_OBSERVATION"
     )
 }
 
@@ -1627,9 +1792,16 @@ fn run_packets_check(root: &Path) -> Result<()> {
     let inputs = load_adapter_inputs(root)?;
     let mut rendered = 0usize;
     let mut refused = 0usize;
+    // A node whose every input-plane gate passes and which is blocked only on a
+    // live candidate observation is reported separately. Folding it into
+    // `refused` would hide the input-plane denominator this check exists to
+    // measure; counting it as `rendered` would claim a packet that is
+    // deliberately not issued.
+    let mut live_pending = 0usize;
     let mut refusal_lines = Vec::new();
     for node in &inputs.engine.manifest.nodes {
         let mut node_rendered = false;
+        let mut node_live_pending = false;
         for profile in ["coding_agent_bounded", "coding_agent_strong"] {
             match compose_builder_packet(root, &inputs, &node.node_id, profile, None) {
                 Ok(doc) => {
@@ -1662,6 +1834,9 @@ fn run_packets_check(root: &Path) -> Result<()> {
                 }
                 Err(refusal) => {
                     if is_eligibility_refusal(refusal.code) {
+                        if refusal.code == "NO_LIVE_OBSERVATION" {
+                            node_live_pending = true;
+                        }
                         refusal_lines.push(refusal.line());
                     } else {
                         // Instrument/shared-contract failures are not typed
@@ -1678,6 +1853,8 @@ fn run_packets_check(root: &Path) -> Result<()> {
         }
         if node_rendered {
             rendered += 1;
+        } else if node_live_pending {
+            live_pending += 1;
         } else {
             refused += 1;
         }
@@ -1686,7 +1863,8 @@ fn run_packets_check(root: &Path) -> Result<()> {
         println!("{line}");
     }
     println!(
-        "EMU_PACKETS_CHECK=OK rendered={rendered} refused={refused} total={} \
+        "EMU_PACKETS_CHECK=OK rendered={rendered} refused={refused} \
+         live_observation_pending={live_pending} total={} \
          manifest_sha256={} spec_ledger_sha256={} tree={}",
         inputs.engine.manifest.nodes.len(),
         inputs.engine.manifest_digest,

@@ -18,6 +18,22 @@ use serde_json::{Value, json};
 use super::test_support::{disposition_record, specs_ledger, write_json, write_text};
 use super::*;
 use crate::tasks::agent_implementation_packet::PacketProjection;
+
+/// An explicit live observation for the coding happy paths.
+///
+/// #11719 forbids a coding packet that assumes vacancy, so every admitted
+/// coding packet must be bound to an observed candidate identity. Tests that
+/// exercise a *rendering* law supply this; the fail-closed law itself is
+/// asserted by `coding_packet_without_live_observation_refuses_fail_closed`.
+fn observed_candidate() -> LiveObservation {
+    LiveObservation {
+        candidate_state: "observed".to_string(),
+        digest: "sha256:0badc0de0badc0de".to_string(),
+        candidate_identity: Some("PR #11719 (tooling/emacs-actor-packets)".to_string()),
+        collision_state: Some("sole writer on the observed checkout".to_string()),
+    }
+}
+
 use crate::tasks::emacs_train_context::digest::title_fingerprint;
 use crate::tasks::emacs_train_context::resolve::{
     LEDGER_RELATIVE_PATH, MANIFEST_RELATIVE_PATH, MAPPING_RELATIVE_PATH, load_inputs_with_git,
@@ -286,21 +302,41 @@ fn default_fixture(root: &Path) -> Result<AdapterInputs> {
 fn complete_node_renders_shared_contract_packet_deterministically() -> Result<()> {
     let root = fixture_tree("happy")?;
     let inputs = default_fixture(&root)?;
-    let doc = compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", None)
-        .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    let doc = compose_builder_packet(
+        &root,
+        &inputs,
+        "SUB",
+        "coding_agent_bounded",
+        Some(&observed_candidate()),
+    )
+    .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
     assert_eq!(doc["schema"], BUILDER_CONTRACT, "the payload must be the shared #10872 contract");
     let first = render_builder_packet(&doc, PacketProjection::Machine)?;
     let second = render_builder_packet(&doc, PacketProjection::Machine)?;
     assert_eq!(first, second, "identical inputs must produce byte-identical packets");
     // Re-composition from the same inputs is byte-stable too.
-    let doc_again = compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", None)
-        .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    let doc_again = compose_builder_packet(
+        &root,
+        &inputs,
+        "SUB",
+        "coding_agent_bounded",
+        Some(&observed_candidate()),
+    )
+    .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
     assert_eq!(first, render_builder_packet(&doc_again, PacketProjection::Machine)?);
     // Emacs supplies fields only: no Emacs-local schema identity anywhere.
     assert!(first.find("emacs_packet").is_none());
     assert!(first.find("emacs-local").is_none());
-    // Honest offline observation: no live_observation fabricated.
-    assert!(doc.get("live_observation").is_none());
+    // Honest observation: the packet binds exactly the supplied observation and
+    // invents nothing. Nothing here is fabricated on the adapter's behalf.
+    let supplied = observed_candidate();
+    assert_eq!(doc["live_observation"]["candidate_state"], "observed");
+    assert_eq!(doc["live_observation"]["digest"], supplied.digest);
+    assert_eq!(
+        doc["live_observation"]["candidate_identity"],
+        json!(supplied.candidate_identity.clone()),
+        "the packet must carry the caller's exact candidate identity"
+    );
     assert_eq!(doc["work"]["profile_decision"]["selected_value"], "ISSUE_PLAN_SUFFICIENT");
     Ok(())
 }
@@ -612,8 +648,14 @@ fn landed_contract_hard_dependency_admits_the_packet() -> Result<()> {
             disposition_record("DEP", 9101, "EXISTING_CONTRACT_SUFFICIENT"),
         ],
     )?;
-    let doc = compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", None)
-        .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    let doc = compose_builder_packet(
+        &root,
+        &inputs,
+        "SUB",
+        "coding_agent_bounded",
+        Some(&observed_candidate()),
+    )
+    .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
     assert_eq!(doc["frontier"]["decision"], "ready");
     Ok(())
 }
@@ -702,5 +744,187 @@ fn e06_consumer_fixture_round_trips_through_the_adapter_entry() -> Result<()> {
     let compact = render_builder_packet(&doc, PacketProjection::Compact)?;
     assert!(machine.contains("agent_implementation_packet.v1"));
     assert!(!markdown.is_empty() && !compact.is_empty());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// #11719: a coding packet may never assume vacancy.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn coding_packet_without_live_observation_refuses_fail_closed() -> Result<()> {
+    let root = fixture_tree("no-live")?;
+    let inputs = default_fixture(&root)?;
+    for profile in ["coding_agent_bounded", "coding_agent_strong"] {
+        let refusal = compose_builder_packet(&root, &inputs, "SUB", profile, None)
+            .expect_err("a coding packet without a live observation must refuse");
+        assert_eq!(refusal.code, "NO_LIVE_OBSERVATION");
+        assert!(refusal.detail.contains("assume vacancy"));
+    }
+    Ok(())
+}
+
+#[test]
+fn not_observed_is_not_evidence_of_no_candidate() -> Result<()> {
+    let root = fixture_tree("not-observed")?;
+    let inputs = default_fixture(&root)?;
+    // An explicit `not_observed` states that nothing was looked at. Treating it
+    // as vacancy would direct a second writer at a node an open PR may own.
+    let live = LiveObservation {
+        candidate_state: "not_observed".to_string(),
+        digest: "sha256:feedface".to_string(),
+        candidate_identity: None,
+        collision_state: None,
+    };
+    let refusal =
+        compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", Some(&live))
+            .expect_err("`not_observed` must not admit a coding packet");
+    assert_eq!(refusal.code, "NO_LIVE_OBSERVATION");
+    assert!(refusal.detail.contains("never vacancy"));
+    Ok(())
+}
+
+#[test]
+fn review_and_reconcile_scaffolding_is_exempt_from_the_live_candidate_gate() -> Result<()> {
+    // The review and reconciliation routes compose a builder document under a
+    // coding profile purely as scaffolding, then withhold coding authority.
+    // Those documents never direct a writer, so the gate above must not fire
+    // for them -- otherwise both routes become unreachable.
+    let root = fixture_tree("scaffolding")?;
+    let inputs = default_fixture(&root)?;
+    let candidates = json!([
+        {"identity": "PR #8800 (tooling/sub-claim)", "state": "open", "facts": "dirty unique work"}
+    ]);
+    let doc = compose_reconcile_packet(&root, &inputs, "SUB", Some(&candidates))
+        .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    assert_eq!(doc["actor"]["write_boundary"], "none");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Reconciliation binds the exact supplied candidate facts (#11719 falsifier 14).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn changing_only_candidate_facts_changes_the_reconcile_packet_and_digest() -> Result<()> {
+    let root = fixture_tree("reconcile-facts")?;
+    let inputs = default_fixture(&root)?;
+    let render = |facts: &str| -> Result<(String, String, String)> {
+        let candidates = json!([
+            {"identity": "PR #8800 (tooling/sub-claim)", "state": "open_stale_base", "facts": facts}
+        ]);
+        let doc = compose_reconcile_packet(&root, &inputs, "SUB", Some(&candidates))
+            .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+        let bytes = render_builder_packet(&doc, PacketProjection::Machine)?;
+        let digest = doc["frontier"]["digest"].as_str().unwrap_or_default().to_string();
+        let reason =
+            doc["frontier"]["blocking_edges"][0]["reason"].as_str().unwrap_or_default().to_string();
+        Ok((bytes, digest, reason))
+    };
+
+    let (bytes_a, digest_a, reason_a) = render("dirty unique work, unpushed")?;
+    let (bytes_b, digest_b, _) = render("clean, fully pushed, stacked on #8700")?;
+
+    assert!(
+        reason_a.contains("dirty unique work, unpushed"),
+        "the reviewer must see the exact supplied facts, not just an identity"
+    );
+    assert_ne!(
+        digest_a, digest_b,
+        "the frontier digest must be content-addressed to the supplied candidate facts"
+    );
+    assert_ne!(
+        bytes_a, bytes_b,
+        "two candidates differing only in facts must not render byte-identical packets"
+    );
+
+    // Same facts must still be byte-stable.
+    let (bytes_a_again, digest_a_again, _) = render("dirty unique work, unpushed")?;
+    assert_eq!(bytes_a, bytes_a_again);
+    assert_eq!(digest_a, digest_a_again);
+    Ok(())
+}
+
+#[test]
+fn malformed_candidate_facts_refuse_per_class() -> Result<()> {
+    let root = fixture_tree("malformed-candidates")?;
+    let inputs = default_fixture(&root)?;
+    let cases = vec![
+        (json!({"identity": "PR #1"}), "a non-array candidate set"),
+        (json!([]), "an empty candidate set"),
+        (json!([{"identity": "   ", "facts": "x"}]), "a blank identity"),
+        (json!([{"identity": "PR #1"}]), "a candidate with no facts"),
+        (
+            json!([
+                {"identity": "PR #1", "facts": "a"},
+                {"identity": "PR #1", "facts": "b"}
+            ]),
+            "a duplicated identity",
+        ),
+    ];
+    for (candidates, description) in cases {
+        let refusal = compose_reconcile_packet(&root, &inputs, "SUB", Some(&candidates))
+            .expect_err(description);
+        assert_eq!(
+            refusal.code, "MALFORMED_CANDIDATE_FACTS",
+            "{description} must refuse as malformed candidate facts"
+        );
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Guards that previously had no invocation site.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn review_packet_without_a_test_obligation_refuses() -> Result<()> {
+    // `MISSING_TEST_OBLIGATION` is enforced on the review route: a reviewer
+    // cannot adjudicate a candidate that carries no test obligation at all.
+    //
+    // Two asymmetries are reported rather than changed here. The builder route
+    // does not apply this guard, so a coding packet is still issued for a
+    // mapped node whose `tests` array is empty. And `NO_WRITE_SURFACE` has no
+    // test at all because it is unreachable: it needs both an empty write set
+    // and no production component, and the upstream E04 population mapping
+    // (laws L06-L09) rejects such a document before this layer sees it.
+    let root = fixture_tree("review-no-test-obligation")?;
+    let inputs = load_fixture_inputs(
+        &root,
+        &[make_node("SUB", 9001, "implementation", "ISSUE_PLAN_SUFFICIENT")],
+        &[mapped_node_entry("SUB", false)],
+        &[disposition_record("SUB", 9001, "ISSUE_PLAN_SUFFICIENT")],
+    )?;
+    let facts = ReviewFacts {
+        base: "base0".into(),
+        head: fixture_head(),
+        diff: "sha256:dd".into(),
+        controls: complete_controls(),
+    };
+    let refusal = compose_review_packet(&root, &inputs, "SUB", &facts)
+        .expect_err("a node with no test obligation must refuse a review packet");
+    assert_eq!(refusal.code, "MISSING_TEST_OBLIGATION");
+    Ok(())
+}
+
+#[test]
+fn control_with_a_missing_criterion_refuses_as_incomplete() -> Result<()> {
+    let root = fixture_tree("incomplete-criterion")?;
+    let inputs = default_fixture(&root)?;
+    let mut controls = complete_controls();
+    // A present falsifier row missing one criterion is incomplete, which is a
+    // different law from an entirely uncovered falsifier.
+    if let Some(row) = controls.get_mut("F_first") {
+        row.remove("alternate_subject_exclusion");
+    }
+    let facts = ReviewFacts {
+        base: "base0".into(),
+        head: fixture_head(),
+        diff: "sha256:dd".into(),
+        controls,
+    };
+    let refusal = compose_review_packet(&root, &inputs, "SUB", &facts)
+        .expect_err("a control row missing a criterion must refuse");
+    assert_eq!(refusal.code, "CONTROL_CRITERION_INCOMPLETE");
     Ok(())
 }

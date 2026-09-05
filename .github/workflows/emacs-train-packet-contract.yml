@@ -49,17 +49,52 @@ jobs:
       - name: Validate the packet denominator (fail-closed typed refusals)
         run: cargo run -p xtask --locked -- integration emacs train packets --check
 
+      # A coding packet may never assume vacancy (#11719), so the determinism
+      # proof must declare an observation before any packet can render. The
+      # fixture asserts nothing about a real candidate.
       - name: Determinism proof on the real tree (two renders must match)
         run: |
-          cargo run -p xtask --locked -- integration emacs train packet CTXENG --profile coding_agent_bounded > /tmp/pkt-a.json
-          cargo run -p xtask --locked -- integration emacs train packet CTXENG --profile coding_agent_bounded > /tmp/pkt-b.json
+          # Declared inline rather than checked in: it asserts nothing about any
+          # real candidate and exists only so a packet can render at all.
+          OBS=/tmp/ci-live-observation.json
+          cat > "$OBS" <<'JSON'
+          {
+            "candidate_state": "observed",
+            "digest": "sha256:c1f1c7u4e0b5e2v4t10n00000000000000000000000000000000000000000000",
+            "candidate_identity": "ci-fixture/emacs-train-packet-contract",
+            "collision_state": "ci fixture: sole declared writer"
+          }
+          JSON
+          cargo run -p xtask --locked -- integration emacs train packet CTXENG --profile coding_agent_bounded --live-observation "$OBS" > /tmp/pkt-a.json
+          cargo run -p xtask --locked -- integration emacs train packet CTXENG --profile coding_agent_bounded --live-observation "$OBS" > /tmp/pkt-b.json
           diff /tmp/pkt-a.json /tmp/pkt-b.json
 
+      - name: A coding packet without a live observation refuses fail-closed
+        run: |
+          set -o pipefail
+          cargo run -p xtask --locked -- integration emacs train packet CTXENG --profile coding_agent_bounded 2>&1 | tee /tmp/no-live.txt && exit 1
+          test "${PIPESTATUS[0]}" -eq 3 || { echo "expected exit 3"; exit 1; }
+          grep -q 'code=NO_LIVE_OBSERVATION' /tmp/no-live.txt
+
+      # Asserting exit 3 alone would pass on any typed refusal, including a
+      # wrong one; each route asserts its own `code=`.
       - name: Offline review and reconcile routes refuse fail-closed
         run: |
-          set -e
-          cargo run -p xtask --locked -- integration emacs train review-packet CTXENG && exit 1 || test $? -eq 3
-          cargo run -p xtask --locked -- integration emacs train reconcile-packet CTXENG && exit 1 || test $? -eq 3
+          set -o pipefail
+          assert_refusal() {
+            expected="$1"; shift
+            out="/tmp/refusal-$expected.txt"
+            status=0
+            cargo run -p xtask --locked -- "$@" > "$out" 2>&1 || status=$?
+            if [ "$status" -ne 3 ]; then
+              echo "expected exit 3 from '$*', got $status"; cat "$out"; exit 1
+            fi
+            if ! grep -q "code=$expected" "$out"; then
+              echo "expected code=$expected from '$*'"; cat "$out"; exit 1
+            fi
+          }
+          assert_refusal MISSING_CANDIDATE_IDENTITY integration emacs train review-packet CTXENG
+          assert_refusal NO_LIVE_OBSERVATION integration emacs train reconcile-packet CTXENG
 
       - name: Shared contract checks stay green (zero drift)
         run: |
