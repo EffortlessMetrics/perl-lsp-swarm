@@ -775,6 +775,14 @@ fn check_timing(timing: &ObservationTiming) -> Result<(), String> {
 /// `gates` CLI spells them kebab-case, so the command is emitted in the CLI
 /// spelling; `cargo xtask gates --tier <tier> --gate <gate>` re-runs exactly
 /// this row's gate.
+///
+/// Scope: this reproduces the **gate**, deliberately not the routed
+/// emission. It omits `--route-plan`/`--subject` because re-running the
+/// publication additionally requires the plan file, a matching subject
+/// receipt, a clean tree, and a HEAD equal to the plan's subject SHA — so a
+/// routed spelling would refuse on almost every checkout where someone is
+/// triaging a red gate. The routed emission stays reproducible from the
+/// plan itself, which this record identifies by fingerprint and row.
 fn build_reproduce_command(native_tier: &str, gate_id: &str, base: &str) -> Result<String, String> {
     // This command is published for a person or tool to run, so nothing
     // interpolated into it may carry shell metacharacters. The plan schema
