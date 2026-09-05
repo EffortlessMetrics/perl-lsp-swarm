@@ -23,7 +23,7 @@ use super::model::{CatalogRow, Discovered, RegistryKind, Violation};
 use color_eyre::eyre::{Result, WrapErr};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use syn::visit::Visit;
 
 /// Method names whose call emits a server-initiated request.
@@ -81,13 +81,31 @@ fn is_test_gated(attrs: &[syn::Attribute]) -> bool {
 /// it rather than assuming the file is production.
 type PathAttr = Option<Result<PathBuf, ()>>;
 
+/// `a/b/../c` and `a/c` name one file but are two different `Path`s, and the
+/// walker only ever produces the second. Resolved lexically rather than with
+/// `canonicalize`, which also follows symlinks and would therefore stop
+/// matching the very paths the walker yields.
+fn lexically_normal(path: &Path) -> PathBuf {
+    let mut normal = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normal.pop();
+            }
+            component => normal.push(component),
+        }
+    }
+    normal
+}
+
 fn declared_path(parent: &Path, attrs: &[syn::Attribute]) -> PathAttr {
     let attr = attrs.iter().find(|attr| attr.path().is_ident("path"))?;
     let syn::Meta::NameValue(meta) = &attr.meta else { return Some(Err(())) };
     let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(literal), .. }) = &meta.value else {
         return Some(Err(()));
     };
-    Some(parent.parent().map_or(Err(()), |dir| Ok(dir.join(literal.value()))))
+    Some(parent.parent().map_or(Err(()), |dir| Ok(lexically_normal(&dir.join(literal.value())))))
 }
 
 /// The files a `mod name;` declaration inside `parent` can resolve to.

@@ -854,6 +854,47 @@ impl Server {
     Ok(())
 }
 
+/// `#[path = "../tests/x.rs"]` names the same file as `tests/x.rs`, but only the
+/// second is the spelling the walker produces. Storing the target unnormalized
+/// meant the exclusion never matched, and the test module's sends were read as
+/// production -- the exact failure the attribute handling was added to prevent.
+#[test]
+fn a_parent_relative_module_path_is_matched_against_scanned_files()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let runtime = dir.path().join("src").join("runtime");
+    std::fs::create_dir_all(runtime.join("dispatch"))?;
+    std::fs::create_dir_all(runtime.join("tests"))?;
+    std::fs::write(
+        runtime.join("dispatch").join("owner.rs"),
+        r#"
+#[cfg(test)]
+#[path = "../tests/moved_up.rs"]
+mod moved_up;
+"#,
+    )?;
+    std::fs::write(
+        runtime.join("tests").join("moved_up.rs"),
+        r#"
+impl Server {
+    fn exercise(&self) -> io::Result<()> {
+        self.send_request(id, "test-only/parent-relative", params)
+    }
+}
+"#,
+    )?;
+
+    let constants = BTreeMap::new();
+    let (emitted, _ambiguous, findings) = scan_emission(dir.path(), "src", &constants)?;
+
+    assert!(
+        !emitted.contains_key("test-only/parent-relative"),
+        "the target is one file however its path is spelled: {emitted:?}"
+    );
+    assert!(findings.is_empty(), "{findings:?}");
+    Ok(())
+}
+
 /// `#[path = concat!(..)]` is legal, and this repository's own fixtures carry
 /// it. Its target cannot be known without expanding macros, so the reader must
 /// say so rather than treat whatever file it names as production.
