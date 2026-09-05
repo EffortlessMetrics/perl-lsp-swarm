@@ -10,6 +10,7 @@ use super::{
     io, log_response, scheduler,
 };
 use crate::protocol::JsonRpcId;
+use crate::transport::IncomingMessageError;
 
 const CANCELLED_SET_CAP: usize = 256;
 
@@ -29,15 +30,21 @@ impl LspServer {
 
         loop {
             // Read LSP message using transport module
-            match message_reader.read_next(reader)? {
-                Some(request) => {
+            match message_reader.read_next_outcome(reader)? {
+                Some(Ok(request)) => {
                     tracing::trace!(method = %request.method, "Received request");
 
-                    // Handle the request
                     if let Some(response) = self.handle_request(request) {
-                        // Log and send response via outbound channel
                         log_response(&response);
                         self.outbound_sink().send_response(response)?;
+                    }
+                }
+                Some(Err(error)) => {
+                    let terminal = error.is_terminal_at_eof();
+                    log_incoming_error(&error, "runtime serving ingress");
+                    if terminal {
+                        tracing::info!("LSP server: truncated input, shutting down");
+                        break;
                     }
                 }
                 None => {
@@ -102,15 +109,32 @@ impl LspServer {
         sched.shutdown().await;
     }
 
-    /// Handle a message from any reader (for testing)
+    /// Handle a message from any reader (for testing).
+    ///
+    /// The local [`BufReader`] is retained for the whole recovery loop, so a
+    /// malformed frame cannot discard a following valid frame that was read
+    /// into the buffer. Responses are queued on the server's outbound writer;
+    /// dropping the server provides the flush/join boundary for callers that
+    /// need to observe the emitted bytes synchronously.
     pub fn handle_message<R: Read>(&self, reader: &mut R) -> io::Result<()> {
         let mut buf_reader = BufReader::new(reader);
         let mut message_reader = ContentLengthMessageReader::new();
-        if let Some(request) = message_reader.read_next(&mut buf_reader)?
-            && let Some(response) = self.handle_request(request)
-        {
-            // Send response via outbound channel
-            self.outbound.send_response(response)?;
+        loop {
+            match message_reader.read_next_outcome(&mut buf_reader)? {
+                Some(Ok(request)) => {
+                    if let Some(response) = self.handle_request(request) {
+                        self.outbound.send_response(response)?;
+                    }
+                    break;
+                }
+                Some(Err(error)) => {
+                    log_incoming_error(&error, "runtime message helper");
+                    if error.is_terminal_at_eof() {
+                        break;
+                    }
+                }
+                None => break,
+            }
         }
         Ok(())
     }
@@ -168,5 +192,133 @@ impl LspServer {
     /// global cancellation registry.
     pub(crate) fn register_progress_request(&self, token: &str, request_id: JsonRpcId) {
         self.progress_token_to_request.lock().insert(token.to_string(), request_id);
+    }
+}
+
+fn log_incoming_error(error: &IncomingMessageError, ingress: &'static str) {
+    tracing::warn!(
+        ingress,
+        error_kind = error.kind(),
+        %error,
+        "incoming JSON-RPC message rejected"
+    );
+}
+
+#[cfg(test)]
+mod strict_ingress_tests {
+    use super::*;
+    use parking_lot::Mutex;
+    use std::error::Error;
+    use std::io::{self, Cursor, Write};
+
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn frame(body: &[u8]) -> Vec<u8> {
+        let header = format!("Content-Length: {}\r\n\r\n", body.len());
+        let mut framed = header.into_bytes();
+        framed.extend_from_slice(body);
+        framed
+    }
+
+    #[test]
+    fn serving_ingress_rejects_malformed_frames_and_reaches_valid_request()
+    -> Result<(), Box<dyn Error>> {
+        let mut invalid_utf8 =
+            br#"{"jsonrpc":"2.0","id":1,"method":"shutdown","params":{"ignored":"safe"}}"#.to_vec();
+        let string_end = invalid_utf8.iter().rposition(|byte| *byte == b'"').ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "missing string terminator")
+        })?;
+        invalid_utf8.insert(string_end, 0xff);
+        let malformed_json = br#"{"jsonrpc":"2.0","method":"invalid""#;
+        let invalid_version = br#"{"jsonrpc":"1.0","id":1,"method":"invalid","params":{}}"#;
+        let batch = br#"[{"jsonrpc":"2.0","id":1,"method":"invalid","params":{}}]"#;
+        let valid_initialize = br#"{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"processId":null,"capabilities":{},"rootUri":null}}"#;
+
+        let mut stream = frame(&invalid_utf8);
+        stream.extend(frame(malformed_json));
+        stream.extend(frame(invalid_version));
+        stream.extend(frame(batch));
+        stream.extend(frame(valid_initialize));
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let writer: Arc<Mutex<Box<dyn Write + Send>>> =
+            Arc::new(Mutex::new(Box::new(Capture(Arc::clone(&captured)))));
+        let server = LspServer::with_output(writer);
+        let mut input = io::BufReader::new(Cursor::new(stream));
+        server.serve(&mut input)?;
+
+        if server.shutdown_received.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid UTF-8 shutdown request was dispatched",
+            )
+            .into());
+        }
+        if !server.initialize_requested.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "valid initialize request was not reached after malformed frames",
+            )
+            .into());
+        }
+        drop(server);
+        if captured.lock().is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "serving ingress produced no initialize response",
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn message_helper_recovers_after_malformed_frame_in_buffered_input()
+    -> Result<(), Box<dyn Error>> {
+        let mut invalid_utf8 =
+            br#"{"jsonrpc":"2.0","id":1,"method":"invalid","params":{"text":"safe"}}"#.to_vec();
+        let string_end = invalid_utf8.iter().rposition(|byte| *byte == b'"').ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "missing string terminator")
+        })?;
+        invalid_utf8.insert(string_end, 0xff);
+        let valid_initialize =
+            br#"{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"processId":null,"capabilities":{},"rootUri":null}}"#;
+
+        let mut stream = frame(&invalid_utf8);
+        stream.extend(frame(valid_initialize));
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let writer: Arc<Mutex<Box<dyn Write + Send>>> =
+            Arc::new(Mutex::new(Box::new(Capture(Arc::clone(&captured)))));
+        let server = LspServer::with_output(writer);
+        let mut input = Cursor::new(stream);
+        server.handle_message(&mut input)?;
+
+        if !server.initialize_requested.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "message helper lost valid input after malformed frame",
+            )
+            .into());
+        }
+        drop(server);
+        if captured.lock().is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "message helper produced no response for recovered initialize",
+            )
+            .into());
+        }
+        Ok(())
     }
 }

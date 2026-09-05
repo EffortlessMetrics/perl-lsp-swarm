@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Security
+body: "Reject invalid UTF-8 in the long-running LSP transport reader instead of replacing bytes, expose typed framing/encoding/JSON/message-shape outcomes, and keep rejection diagnostics free of message body contents. The runtime skips recoverable rejected frames and processes the next valid message. Input that ends with a truncated frame now stops the ingress loop."
+time: 2026-08-28T02:27:42Z
+custom:
+  PR: "13146"
+  Slug: strict-incoming-transport-decoding
+  Breaking: "no"

@@ -197,12 +197,25 @@ fn spawn_reader_thread<R: std::io::Read + Send + 'static>(
         let mut msg_reader = ContentLengthMessageReader::new();
         let mut buf_reader = std::io::BufReader::new(reader);
         loop {
-            match msg_reader.read_next(&mut buf_reader) {
-                Ok(Some(request)) => {
-                    if tx.blocking_send(request).is_err() {
-                        break;
+            match msg_reader.read_next_outcome(&mut buf_reader) {
+                Ok(Some(request)) => match request {
+                    Ok(request) => {
+                        if tx.blocking_send(request).is_err() {
+                            break;
+                        }
                     }
-                }
+                    Err(error) => {
+                        let terminal = error.is_terminal_at_eof();
+                        tracing::warn!(
+                            error_kind = error.kind(),
+                            %error,
+                            "incoming JSON-RPC message rejected by CLI ingress"
+                        );
+                        if terminal {
+                            break;
+                        }
+                    }
+                },
                 Ok(None) => break,
                 Err(error) => {
                     tracing::debug!(
@@ -214,6 +227,51 @@ fn spawn_reader_thread<R: std::io::Read + Send + 'static>(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod strict_ingress_tests {
+    use super::spawn_reader_thread;
+    use std::error::Error;
+    use std::io::{self, Cursor};
+
+    fn frame(body: &[u8]) -> Vec<u8> {
+        let header = format!("Content-Length: {}\r\n\r\n", body.len());
+        let mut framed = header.into_bytes();
+        framed.extend_from_slice(body);
+        framed
+    }
+
+    #[test]
+    fn cli_reader_rejects_malformed_frames_before_forwarding_valid_input()
+    -> Result<(), Box<dyn Error>> {
+        let mut invalid_utf8 =
+            br#"{"jsonrpc":"2.0","id":1,"method":"invalid","params":{"text":"safe"}}"#.to_vec();
+        let string_end = invalid_utf8.iter().rposition(|byte| *byte == b'"').ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "missing string terminator")
+        })?;
+        invalid_utf8.insert(string_end, 0xff);
+        let malformed_json = br#"{"jsonrpc":"2.0","method":"invalid""#;
+        let valid = br#"{"jsonrpc":"2.0","id":2,"method":"shutdown","params":{}}"#;
+
+        let mut stream = frame(&invalid_utf8);
+        stream.extend(frame(malformed_json));
+        stream.extend(frame(valid));
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        spawn_reader_thread(Cursor::new(stream), tx);
+        let request = rx.blocking_recv().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::UnexpectedEof, "CLI reader closed before valid input")
+        })?;
+        if request.method != "shutdown" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected shutdown after rejected frames, got {}", request.method),
+            )
+            .into());
+        }
+        Ok(())
+    }
 }
 
 fn run_check(command_name: &str, files: &[String]) -> i32 {
