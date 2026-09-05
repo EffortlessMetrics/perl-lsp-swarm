@@ -33,6 +33,7 @@ import {
   previewPackageRenameCommand,
   previewSafeDeleteCommand,
   runPerlCriticOnActiveFile,
+  settleFormattingProviderCall,
   setPerlCriticSeverity,
   syncPerlCriticConfiguration,
   workspaceTrustClientRuntimeState,
@@ -70,6 +71,20 @@ describe('formatting provider experience projection', () => {
       action: 'Check the formatter configuration or run the Health Check.',
       reasonCode: 'range_formatting_error',
     });
+  });
+
+  test('formatting middleware preserves fallback for an unstringifiable rejection', async () => {
+    const error = {
+      toString() {
+        throw new Error('cannot stringify provider failure');
+      },
+    };
+
+    await expect(
+      settleFormattingProviderCall(async () => {
+        throw error;
+      }, null),
+    ).resolves.toBeNull();
   });
 });
 
@@ -1461,10 +1476,12 @@ describe('suggestDiscoveredIncludePaths (#1633)', () => {
 
     await suggestDiscoveredIncludePaths(asExtensionContext(context));
 
+    // Folder-owned resource setting, so the discovered path is written to the
+    // owning folder rather than published workspace-wide (#14447).
     expect(update).toHaveBeenCalledWith(
       'includePaths',
       expect.arrayContaining(['lib', 'local/lib/perl5', 'vendor']),
-      vscode.ConfigurationTarget.Workspace,
+      vscode.ConfigurationTarget.WorkspaceFolder,
     );
   });
 
