@@ -6,7 +6,7 @@
 use super::super::{
     Arc, DocumentState, GLOBAL_CANCELLATION_REGISTRY, ImplementationProvider, JsonRpcError,
     JsonRpcId, LspServer, ParentMap, Parser, PerlLspCancellationToken, REQUEST_CANCELLED, Value,
-    json, location_from_path,
+    json,
 };
 use crate::cancellation::RequestCleanupGuard;
 use crate::protocol::{req_position, req_uri};
@@ -15,6 +15,11 @@ use perl_lsp_rs_core::providers::ProviderDecisionFreshness;
 use perl_parser_core::source_file::is_binary_content;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
+
+// Only the test-fallbacks compatibility handler (`on_definition`) needs this
+// helper; production definition dispatch is a transparent adapter (#5108).
+#[cfg(any(test, feature = "test-fallbacks"))]
+use super::super::location_from_path;
 
 /// Serialize a slice of typed values to a JSON array (#4995).
 fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
@@ -113,6 +118,28 @@ fn lsp_location_count(value: Option<&Value>) -> usize {
         Some(Value::Array(items)) => items.len(),
         Some(Value::Object(obj)) if obj.contains_key("uri") || obj.contains_key("targetUri") => 1,
         _ => 0,
+    }
+}
+
+/// Naive comment-only heuristic for the goto-definition and completion
+/// guards (#5066/#5408/#5411): `true` when a `#` appears earlier on the
+/// same line.
+///
+/// This is deliberately NOT the rename candidate classifier and is
+/// deliberately not string-aware: a `#` inside a string literal still reads
+/// as a comment to this guard, and that trade-off is pinned by the guard
+/// regression tests. Rename's edit policy uses the generation-bound
+/// `SourceRegionIndex` instead (#4964).
+pub(crate) fn is_in_comment_naive(position: usize, source: &str) -> bool {
+    let line_start =
+        if position == 0 { 0 } else { source[..position].rfind('\n').map_or(0, |p| p + 1) };
+    let line = &source[line_start..];
+
+    if let Some(comment_pos) = line.find('#') {
+        let comment_absolute = line_start + comment_pos;
+        position >= comment_absolute
+    } else {
+        false
     }
 }
 
@@ -352,7 +379,7 @@ fn type_definition_receipt_freshness(fact_source: &'static str) -> ProviderDecis
 }
 
 #[cfg(feature = "workspace")]
-fn get_fqn_regex() -> Result<&'static regex::Regex, JsonRpcError> {
+pub(super) fn get_fqn_regex() -> Result<&'static regex::Regex, JsonRpcError> {
     FQN_RE
         .get_or_init(|| regex::Regex::new(r"([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)"))
         .as_ref()
@@ -959,15 +986,32 @@ fn cursor_in_regex_capture(regex: &regex::Regex, text: &str, cursor: usize, grou
         .any(|cap| cap.get(group).is_some_and(|m| cursor >= m.start() && cursor <= m.end()))
 }
 
+/// Which `::`-separated component of a fully-qualified name the cursor is on.
+///
+/// Shared with `references.rs` so go-to-definition and find-references answer the
+/// same question with one implementation instead of two drifting copies (#1849).
 #[cfg(feature = "workspace")]
 #[derive(Debug, PartialEq, Eq)]
-enum FqnCursorComponent {
+pub(super) enum FqnCursorComponent {
+    /// The cursor is on a package component or on a `::` separator -- not on the
+    /// final component, so the match does not name the sub the caller is after.
     Prefix,
+    /// The cursor is on the final component, which names the sub.
     Final { package: String, name: String },
 }
 
+/// Resolve which component of the fully-qualified name under `cursor` the cursor
+/// is on, or `None` when the cursor is not inside a `::`-qualified match.
+///
+/// `text` must contain the *complete* qualified name around `cursor`. The final
+/// component is identified by the last `::` in the match, so a `text` that clips
+/// the name partway through a component makes that component look final and
+/// reports `Final` where the truth is `Prefix`. Pass a whole line
+/// (`util::line_window_around_offset`) rather than a fixed-radius window: a Perl
+/// qualified name cannot span a line break, but it can easily be longer than a
+/// radius.
 #[cfg(feature = "workspace")]
-fn fqn_component_at_cursor(
+pub(super) fn fqn_component_at_cursor(
     regex: &regex::Regex,
     text: &str,
     cursor: usize,
@@ -1307,7 +1351,7 @@ impl LspServer {
                     // also classified as a string.  This now blocks whenever the
                     // offset is inside a comment.
                     let text = &doc.text;
-                    if perl_lsp_rs_core::providers::rename::is_in_comment(offset, text) {
+                    if is_in_comment_naive(offset, text) {
                         return Ok(None);
                     }
 
@@ -2703,6 +2747,11 @@ impl LspServer {
     }
 
     /// Non-blocking definition handler with fallback
+    ///
+    /// Production definition dispatch is a transparent adapter over the
+    /// canonical handler, so this compatibility handler is compiled only for
+    /// the test-fallbacks path (#5108).
+    #[cfg(any(test, feature = "test-fallbacks"))]
     pub(crate) fn on_definition(
         &self,
         params: serde_json::Value,

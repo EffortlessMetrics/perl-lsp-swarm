@@ -20,17 +20,17 @@ pub(crate) enum CliCommand {
     Preflight,
     /// Run cargo test with concurrency caps for Rust tasks.
     TestCapped {
-        #[arg(trailing_var_arg = true)]
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         cargo_args: Vec<String>,
     },
     /// Run E2E test subset with a shared lock to cap parallel invocations.
     E2eGate {
-        #[arg(trailing_var_arg = true)]
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         cargo_args: Vec<String>,
     },
     /// Run preflight checks then E2E lock-gated cargo test.
     TestE2ECapped {
-        #[arg(trailing_var_arg = true)]
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         cargo_args: Vec<String>,
     },
     /// Verify stacker behavior in release/debug modes.
@@ -139,6 +139,22 @@ pub(crate) enum CliCommand {
         #[arg(long, value_name = "PATH", conflicts_with = "inventory")]
         identity_registry: Option<PathBuf>,
     },
+    /// Enforce that a `.expect("…")` migrated to a `must*` helper keeps its assertion context.
+    CheckMustContext {
+        /// Base ref to diff `HEAD` against. Defaults to `$CI_SCOPE_BASE`,
+        /// `$GITHUB_BASE_REF`, `origin/main`, `main`, then `HEAD~1`.
+        #[arg(long, value_name = "REF")]
+        base: Option<String>,
+    },
+    /// Enforce `#[serial]`-style serialization on parallel-unsafe tests against `ci/serial_test_identities.json` (#1269).
+    CheckSerialTest {
+        /// Emit the parallel-unsafe test identity inventory without applying the registry gate.
+        #[arg(long)]
+        inventory: bool,
+        /// Validate the inventory against an accepted identity registry.
+        #[arg(long, value_name = "PATH", conflicts_with = "inventory")]
+        identity_registry: Option<PathBuf>,
+    },
     /// Enforce no raw print macros in library source (println!/eprintln! belong in tracing).
     CheckPrintInLib,
     /// Enforce regex constructors live in LazyLock/OnceLock statics, never per-call.
@@ -202,6 +218,30 @@ mod tests {
                 &["--fail-on-regression", "--threshold=-0.5", "baseline.json", "candidate.json",]
             )
         );
+        Ok(())
+    }
+
+    #[test]
+    fn must_context_parses_optional_base() -> Result<()> {
+        let default_cli = Cli::try_parse_from(["perl-ci-hygiene", "check-must-context"])?;
+        let CliCommand::CheckMustContext { base } = default_cli.command else {
+            return Err(eyre!("expected check-must-context command"));
+        };
+        assert_eq!(
+            base, None,
+            "omitted --base must stay None so the resolver tries its candidates"
+        );
+
+        let explicit_cli = Cli::try_parse_from([
+            "perl-ci-hygiene",
+            "check-must-context",
+            "--base",
+            "origin/main",
+        ])?;
+        let CliCommand::CheckMustContext { base } = explicit_cli.command else {
+            return Err(eyre!("expected check-must-context command"));
+        };
+        assert_eq!(base.as_deref(), Some("origin/main"));
         Ok(())
     }
 

@@ -40,28 +40,29 @@ use tasks::{
     ci_audit_workflows, ci_contract, ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics,
     ci_policy, ci_pr_summary, ci_route, ci_scope, clean, clippy_cost_measure, command_evidence,
     compare, compat_inventory, compiler_lexical_cutline, corpus_audit, count_ratchet, cpan_corpus,
-    dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc,
-    doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs, features,
-    finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates,
-    generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
+    critic_rule_proof, dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor,
+    devex_plan, doc, doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs,
+    features, finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts,
+    gates, generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
     ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
     inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
     issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
     merge_ready, methodology_gate, metrics, module_train, module_train_live, native_critic,
     native_format, native_neovim_train, native_product_surface, native_tooling,
-    oracle_fixture_manifest, oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep,
-    parser_matrix, parser_ratchet, perl_core_harness, perl_kwalitee, populate_book, pre_push_plan,
-    prep_crates_io_launch, product_health_rail_contract, product_health_status,
-    protocol_type_substrate_matrix, provider_confidence_matrix, provider_promotion_ledger,
-    publication_facts, publish, publish_closure, publish_manifest_check, publish_receipts,
-    quality_baseline, quality_gate, queue_health, queue_snapshot, receipts, release,
-    release_artifact_check, release_evidence, release_notes, release_turnkey, repo_hygiene,
-    repository_topology, ripr_evidence, rust_small_proof, seam_diff, semantic_inline_next_edit,
-    semantic_inline_receipts, semantic_scorecard, semantic_shadow_compare, semantic_token_classes,
-    session_receipt, shadow_parity, srp_microcrates, supported_editor_inline_smoke,
-    swarm_agent_roster, swarm_summary, sync_release_docs, targeted_checks, test, test_lsp,
-    train_edge_contract, unwired_scan, update_homebrew, update_status, ux_regression_receipt,
-    ux_scorecard, validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
+    oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
+    parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
+    perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
+    product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
+    provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
+    publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
+    queue_health, queue_snapshot, receipts, release, release_artifact_check, release_evidence,
+    release_notes, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
+    rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
+    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
+    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
+    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
+    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
     workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
@@ -146,6 +147,14 @@ enum Commands {
         /// Operation to run against the manifest.
         #[command(subcommand)]
         command: tasks::compiler_lexical_cutline::CompilerLexicalCutlineSubcommand,
+    },
+
+    /// Validate the versioned critic rule-proof manifest, live fixture
+    /// propositions, and generated status (`critic_rule_proof.v1`, #6973).
+    CriticRuleProof {
+        /// Operation to run against the rule-proof manifest.
+        #[command(subcommand)]
+        command: tasks::critic_rule_proof::CriticRuleProofSubcommand,
     },
 
     /// Validate differential real-Perl oracle receipt schema.
@@ -287,6 +296,17 @@ enum Commands {
     /// Generate or check the selected LSP 3.18 conformance matrix.
     #[command(name = "generate-lsp-318-matrix")]
     GenerateLsp318Matrix {
+        /// Check that the checked-in matrix matches generated content.
+        #[arg(long)]
+        check: bool,
+    },
+
+    /// Generate or check the Perl command-line analysis capability matrix.
+    ///
+    /// Fails when a declared capability row claims support without fixture
+    /// evidence in the command-line conformance corpus.
+    #[command(name = "oneliner-capability-matrix")]
+    OnelinerCapabilityMatrix {
         /// Check that the checked-in matrix matches generated content.
         #[arg(long)]
         check: bool,
@@ -2871,6 +2891,27 @@ enum VimEditorCompatCommand {
 
 #[derive(Subcommand)]
 enum NonRustCommand {
+    /// Compare immutable Git trees and enforce only newly introduced policy debt.
+    ExactTree {
+        /// Base commit object to compare against.
+        #[arg(long)]
+        base_sha: String,
+        /// Candidate or merge-group commit object to evaluate.
+        #[arg(long)]
+        subject_sha: String,
+        /// Optional pull-request head which must be contained by the subject.
+        #[arg(long)]
+        pr_head_sha: Option<String>,
+        /// Exact-tree JSON receipt path.
+        #[arg(long, default_value = "target/policy/non-rust-policy-exact-tree.json")]
+        receipt: PathBuf,
+        /// Event name recorded in the receipt.
+        #[arg(long)]
+        event_name: Option<String>,
+        /// Repository recorded in the receipt.
+        #[arg(long)]
+        repository: Option<String>,
+    },
     /// Walk `git ls-files`, classify tracked files against the allowlist,
     /// and emit `target/policy/non-rust-inventory.{md,json}`.
     ///
@@ -4835,6 +4876,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
+        Commands::CriticRuleProof { command } => critic_rule_proof::run(command),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
         Commands::CheckNativeNeovimTrain => native_neovim_train::run(),
@@ -5138,6 +5180,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckSemanticTokenClasses => semantic_token_classes::run(),
         Commands::CheckLsp318Claims => lsp_318_claims::run(),
         Commands::GenerateLsp318Matrix { check } => lsp_318_matrix::run(check),
+        Commands::OnelinerCapabilityMatrix { check } => oneliner_capability_matrix::run(check),
         Commands::RepoTopology { check } => repository_topology::run(check),
         Commands::CompatInventory { check } => compat_inventory::run(check),
         Commands::GenerateProtocolTypeSubstrateMatrix { check } => {
@@ -6565,6 +6608,25 @@ fn run_cli(cli: Cli) -> Result<()> {
             } => generated_files::check(receipt, fixture, generator_receipt, allow_manual_edits),
         },
         Commands::NonRust { command } => match command {
+            NonRustCommand::ExactTree {
+                base_sha,
+                subject_sha,
+                pr_head_sha,
+                receipt,
+                event_name,
+                repository,
+            } => {
+                let root = utils::project_root()?;
+                tasks::file_policy::non_rust_exact_tree(
+                    &root,
+                    &base_sha,
+                    &subject_sha,
+                    pr_head_sha.as_deref(),
+                    &receipt,
+                    event_name.as_deref(),
+                    repository.as_deref(),
+                )
+            }
             NonRustCommand::Inventory { check, write } => {
                 let root = utils::project_root()?;
                 if check {
