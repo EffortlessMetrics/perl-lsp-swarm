@@ -217,30 +217,51 @@ fn follows_complete_term(source: &str, start: usize) -> bool {
         .last()
         .map_or(0, |(index, _)| index);
 
-    // A bare number is a term; a sigiled variable ends one; anything else is a
-    // bareword, which in this position is a function call.
-    before[run_start..].chars().all(|ch| ch.is_ascii_digit())
-        || matches!(before[..run_start].chars().next_back(), Some('$' | '@' | '%' | '&'))
+    // A bare number ends a term.
+    if before[run_start..].chars().all(|ch| ch.is_ascii_digit()) {
+        return true;
+    }
+
+    let before_run = before[..run_start].trim_end_matches([' ', '\t']);
+    let Some(sigil) = before_run.chars().next_back().filter(|ch| "$@%&".contains(*ch)) else {
+        // A bareword here is a function call, which leaves `<<` in term position.
+        return false;
+    };
+
+    // A sigiled variable usually ends a term — but not when it is itself an
+    // argument to a preceding bareword. Perl's indirect filehandle syntax puts
+    // `<<` in term position there: `print $fh <<'EOF'` is a heredoc, which
+    // `perl -c` confirms by demanding the terminator.
+    let before_sigil =
+        before_run[..before_run.len() - sigil.len_utf8()].trim_end_matches([' ', '\t']);
+    !before_sigil.chars().next_back().is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 /// Recognize a heredoc opener at `start`, returning
 /// `(end, tag, strip_indent, requires_terminator)`.
 ///
-/// `requires_terminator` marks the openers that are ambiguous with ordinary
-/// expressions and must be confirmed by a matching terminator line before their
-/// body is treated as non-code:
+/// Position decides first: after a complete term this is the left-shift
+/// operator and no heredoc is reported at all.
 ///
-/// - a bareword tag (`<<EOF`) collides with the left-shift operator;
-/// - a *spaced* quoted tag (`<< 'EOF'`) collides with a shift by a string
-///   literal (`1 << 'EOF'`).
-///
-/// A tight quoted tag (`<<'EOF'`) is unambiguous, so it is honored even while
-/// the body is still being typed and no terminator exists yet. That direction
-/// matters: an unconfirmed opener suppresses later text, whereas refusing to
-/// recognize one lets heredoc prose be scanned as code and *invent* an `@INC`
-/// root the program never adds.
+/// In term position, `requires_terminator` is set only for a bareword tag
+/// (`<<EOF`), which is indistinguishable from incidental text such as a regex
+/// body and so must be confirmed by a matching terminator line. A quoted or
+/// backslash-escaped tag is honored immediately, even while the body is still
+/// being typed and no terminator exists yet. That direction matters: an
+/// unconfirmed opener suppresses later text, whereas refusing to recognize one
+/// lets heredoc prose be scanned as code and *invent* an `@INC` root the
+/// program never adds.
 fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bool, bool)> {
     if source.get(start..start + 2)? != "<<" {
+        return None;
+    }
+
+    // Perl decides heredoc-versus-shift by lexer position, not by the delimiter
+    // form, and never revisits that choice. `perl -c` accepts `my $x = 1 <<'EOF';`
+    // and `my $x = 1 <<\EOF;` with no terminator anywhere, and running the latter
+    // shows the body parsed as code. So a terminator that happens to appear later
+    // must not be allowed to reclassify a shift as a heredoc.
+    if follows_complete_term(source, start) {
         return None;
     }
 
@@ -276,13 +297,11 @@ fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bo
         if tag_end == tag_start_after_escape {
             return None;
         }
-        let requires_terminator =
-            spaced_tag_start != tag_start || follows_complete_term(source, start);
         return Some((
             tag_end,
             source[tag_start_after_escape..tag_end].to_string(),
             strip_indent,
-            requires_terminator,
+            false,
         ));
     }
 
@@ -295,9 +314,7 @@ fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bo
         if tag.contains('\n') {
             return None;
         }
-        let requires_terminator =
-            spaced_tag_start != tag_start || follows_complete_term(source, start);
-        return Some((quote_end + 1, tag.to_string(), strip_indent, requires_terminator));
+        return Some((quote_end + 1, tag.to_string(), strip_indent, false));
     }
 
     if spaced_tag_start != tag_start || !(first.is_ascii_alphabetic() || first == b'_') {

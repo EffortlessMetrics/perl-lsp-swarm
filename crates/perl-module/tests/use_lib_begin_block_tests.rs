@@ -392,3 +392,44 @@ fn conditional_pragma_below_its_block_opener_is_an_ordinary_candidate() {
         }])]
     );
 }
+
+/// Perl's indirect filehandle syntax leaves `<<` in term position, so
+/// `print $fh <<'EOF'` is a heredoc even though a sigiled variable precedes it.
+///
+/// `perl -c` proves it: with no terminator the file fails with "Can't find
+/// string terminator". Classifying the filehandle as a shift operand meant the
+/// body was scanned as code while the heredoc was still being typed.
+#[test]
+fn filehandle_heredoc_bodies_do_not_create_lib_operations() {
+    let terminated = "print $fh <<'EOF';\nuse lib 'phantom_fh';\nEOF\nuse lib 'real';\n";
+    let still_being_typed = "print $fh <<'EOF';\nuse lib 'phantom_typing';\n";
+
+    assert_eq!(
+        extract_use_lib_operations(terminated),
+        vec![UseLibAction::Add(vec![UseLibPath { path: "real".to_string(), from_findbin: false }])]
+    );
+    assert!(extract_use_lib_operations(still_being_typed).is_empty());
+}
+
+/// `<<` after a complete term is the shift operator, and Perl never revisits
+/// that choice — so a terminator appearing later must not reclassify it.
+///
+/// `perl -c` accepts `my $x = 1 <<\EOF;` with no terminator anywhere, and
+/// running it prints `x=[0]` while parsing the following lines as code. Both
+/// delimiter forms must therefore stay visible-through, terminator or not.
+#[test]
+fn shift_is_not_reclassified_by_a_later_terminator_line() {
+    let backslash = "my $x = 1 <<\\EOF;\nuse lib 'real';\nEOF\n";
+    let quoted = "my $x = 1 <<'EOF';\nuse lib 'real';\nEOF\n";
+
+    for source in [backslash, quoted] {
+        assert_eq!(
+            extract_use_lib_operations(source),
+            vec![UseLibAction::Add(vec![UseLibPath {
+                path: "real".to_string(),
+                from_findbin: false,
+            }])],
+            "a later terminator line reclassified a shift as a heredoc: {source:?}"
+        );
+    }
+}
