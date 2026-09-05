@@ -3616,6 +3616,9 @@ mod tests {
         // text and related information. This server-initiated workspace
         // surface is the push renderer that appends twin suggestions.
         let (server, _buf) = make_server_with_capture();
+        // Coordinate-bearing diagnostics require the server-owned encoding
+        // authority, which only exists inside an initialized session.
+        server.handle_initialize(Some(json!({"capabilities": {}})))?;
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
         server.test_configure_native_critic_profile("strict");
         let uri = "file:///overlap_remediation_push_test.pl";
@@ -3828,6 +3831,9 @@ mod tests {
     fn native_critic_engine_adds_native_workspace_diagnostics()
     -> Result<(), Box<dyn std::error::Error>> {
         let (server, _buf) = make_server_with_capture();
+        // Coordinate-bearing diagnostics require the server-owned encoding
+        // authority, which only exists inside an initialized session.
+        server.handle_initialize(Some(json!({"capabilities": {}})))?;
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
         server.test_configure_native_critic_profile("strict");
         let uri = "file:///native_critic_workspace_test.pl";
@@ -4603,6 +4609,9 @@ print \"unreachable\\n\";\n";
     fn pull_diagnostic_boundary_discriminator_current_gen_ne_gen_at_snapshot()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = StdArc::new(LspServer::new());
+        // Coordinate-bearing diagnostics require the server-owned encoding
+        // authority, which only exists inside an initialized session.
+        server.handle_initialize(Some(json!({"capabilities": {}})))?;
         let uri = "file:///stale_pull_boundary.pl";
         server.test_handle_did_open(Some(json!({
             "textDocument": {
@@ -5004,6 +5013,9 @@ print \"unreachable\\n\";\n";
     fn pull_diagnostic_skips_stale_workspace_dead_code_tier()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::default();
+        // Coordinate-bearing diagnostics require the server-owned encoding
+        // authority, which only exists inside an initialized session.
+        server.handle_initialize(Some(json!({"capabilities": {}})))?;
         let uri = "file:///workspace/stale_dead_code_pull.pl";
         make_document_index_stale_for_diagnostics(
             &server,
