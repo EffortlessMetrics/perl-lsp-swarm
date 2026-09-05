@@ -1454,11 +1454,60 @@ impl LspServer {
     }
 
     /// Install the diagnostic debouncer (called from Scheduler::new after Arc wrapping).
+    ///
+    /// The previous debouncer, if any, is released *after* the lock. Its `Drop`
+    /// joins the debounce worker, and that worker's `publish_fn` re-enters
+    /// `LspServer`; dropping it in place would hold this server-wide mutex
+    /// across a thread join. Today's production callback happens not to take
+    /// this lock, but nothing enforces that -- a callback reaching
+    /// `runtime_pressure_snapshot` or `publish_diagnostics_debounced` would
+    /// deadlock. Ordering the release out of the critical section removes the
+    /// invariant instead of relying on it.
     pub(crate) fn install_diagnostic_debouncer(
         &self,
         debouncer: diagnostic_debounce::DiagnosticDebouncer,
     ) {
-        *self.diagnostic_debouncer.lock() = Some(debouncer);
+        let previous = self.diagnostic_debouncer.lock().replace(debouncer);
+        drop(previous);
+    }
+
+    /// Install the production diagnostic debouncer (called from
+    /// `Scheduler::new` after `Arc` wrapping).
+    ///
+    /// Requires `Arc<Self>` because the debounce worker's `publish_fn` calls
+    /// back into `LspServer` from its own thread -- the same shape as
+    /// `install_default_parse_worker` below, and for the same reason.
+    ///
+    /// The callback captures `Weak<Self>`, not `Arc<Self>` (#14539). The
+    /// debouncer is owned by the server, so a strong capture would close an
+    /// ownership cycle -- `LspServer -> diagnostic_debouncer ->
+    /// DiagnosticDebouncer -> worker thread closure -> Arc<LspServer>` --
+    /// that no teardown path can break: the worker only stops on
+    /// `DiagnosticDebouncer::drop`, which is only reachable through the
+    /// server's own drop. `install_file_watcher_debouncer`'s callback is
+    /// weak for the identical reason (#8064).
+    ///
+    /// Because the callback is weak, the worker's shutdown drain is a clean
+    /// no-op during real server teardown: by the time this debouncer is
+    /// dropped as a field of `LspServer`, the strong count is already zero
+    /// and `upgrade()` returns `None`. Pending diagnostics are discarded
+    /// rather than published at teardown, which is the intended boundary --
+    /// there is no live server left to publish to.
+    ///
+    /// The interval comes from the active `RuntimeTuning` so e2e mode
+    /// (debounce=0) and user-tuned CLI/env values take effect.
+    pub(crate) fn install_default_diagnostic_debouncer(self: &Arc<Self>) {
+        let cb_server = Arc::downgrade(self);
+        let interval = self.runtime_tuning().diagnostic_debounce();
+        let debouncer =
+            diagnostic_debounce::DiagnosticDebouncer::with_interval(interval, move |uri| {
+                // Break the Arc cycle: if the server has been dropped
+                // (shutdown path), skip the publication cleanly.
+                if let Some(server) = cb_server.upgrade() {
+                    server.publish_diagnostics(uri);
+                }
+            });
+        self.install_diagnostic_debouncer(debouncer);
     }
 
     /// Publish diagnostics with trailing-edge debouncing.
@@ -1477,14 +1526,17 @@ impl LspServer {
             self.publish_diagnostics(uri);
             return;
         }
-        let mut guard = self.diagnostic_debouncer.lock();
-        if let Some(debouncer) = guard.as_ref() {
-            if debouncer.schedule(uri) {
+        // Evict outside the lock for the same reason as
+        // `install_diagnostic_debouncer`: releasing a debouncer joins its
+        // worker thread, which must not happen under this mutex.
+        let evicted = {
+            let mut guard = self.diagnostic_debouncer.lock();
+            if guard.as_ref().is_some_and(|debouncer| debouncer.schedule(uri)) {
                 return;
             }
-            *guard = None;
-        }
-        drop(guard);
+            guard.take()
+        };
+        drop(evicted);
         self.publish_diagnostics(uri);
     }
 

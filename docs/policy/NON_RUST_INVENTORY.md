@@ -6,8 +6,8 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12727 |
-| Rust-family files | 3977 |
+| Total tracked files | 12726 |
+| Rust-family files | 3976 |
 | Non-Rust files | 8750 |
 | Allowlisted | 6511 |
 | Unclassified | 2239 |
@@ -16,12 +16,12 @@
 
 | Category | Count |
 |---|---|
-| config | 503 |
+| config | 502 |
 | documentation | 2853 |
 | generated | 2 |
 | production | 357 |
 | test | 2111 |
-| tooling | 685 |
+| tooling | 686 |
 | unclassified | 2239 |
 
 ## Unclassified files
@@ -3568,6 +3568,7 @@
 | `benchmarks/scripts/test_benchmark_targets.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `benchmarks/scripts/test_extract_criterion.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `benchmarks/scripts/test_regression.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
+| `benchmarks/scripts/validate-native-pipeline-sidecar.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `book/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 | `book/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `book/src/SUMMARY.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -6465,7 +6466,6 @@
 | `policy/review-surfaces.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/ripr-suppressions.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/semantic-token-classes.toml` | config | `non-rust-policy-ledgers` | release/ci |
-| `policy/server-request-ownership.v1.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/skill-provider-parity.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/standalone-archive-safety.v1.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/tree-sitter-compat-inventory.toml` | config | `non-rust-policy-ledgers` | release/ci |
