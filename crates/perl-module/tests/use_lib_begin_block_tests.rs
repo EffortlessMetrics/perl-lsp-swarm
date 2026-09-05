@@ -614,6 +614,40 @@ fn escaped_quote_in_a_heredoc_delimiter_is_read_whole() {
     );
 }
 
+/// A backslash inside a quoted heredoc delimiter is literal unless it escapes
+/// that delimiter's own quote.
+///
+/// Verified against `perl -c`: `<<'E\OF'` terminates on `E\OF`, and `<<'E\\OF'`
+/// terminates on `E\\OF` with both backslashes intact — Perl does not collapse
+/// `\\` here the way it would inside an ordinary single-quoted string. Dropping
+/// the backslash produced a tag that never matched, suppressing everything below.
+#[test]
+fn a_backslash_before_a_non_quote_stays_in_the_heredoc_delimiter() {
+    let single = "my $s = <<'E\\OF';\nuse lib 'phantom';\nE\\OF\nuse lib 'single';\n";
+    assert_eq!(
+        extract_use_lib_operations(single),
+        vec![UseLibAction::Add(vec![UseLibPath {
+            path: "single".to_string(),
+            from_findbin: false
+        }])]
+    );
+
+    let doubled = "my $s = <<'E\\\\OF';\nuse lib 'phantom';\nE\\\\OF\nuse lib 'doubled';\n";
+    assert_eq!(
+        extract_use_lib_operations(doubled),
+        vec![UseLibAction::Add(vec![UseLibPath {
+            path: "doubled".to_string(),
+            from_findbin: false
+        }])]
+    );
+
+    let double_quoted = "my $s = <<\"E\\\"OF\";\nuse lib 'phantom';\nE\"OF\nuse lib 'dq';\n";
+    assert_eq!(
+        extract_use_lib_operations(double_quoted),
+        vec![UseLibAction::Add(vec![UseLibPath { path: "dq".to_string(), from_findbin: false }])]
+    );
+}
+
 /// A column-zero `=cut` opens POD even with no POD before it, so the rest of the
 /// file is documentation.
 ///

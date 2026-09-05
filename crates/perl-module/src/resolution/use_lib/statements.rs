@@ -303,7 +303,19 @@ fn read_quoted_delimiter(source: &str, start: usize, quote: char) -> Option<(Str
         match ch {
             // A delimiter never spans lines.
             '\n' => return None,
-            '\\' => tag.push(chars.next()?.1),
+            // A backslash escapes only the delimiter's own quote. Everywhere
+            // else Perl keeps it literally, `\\` included: `<<'E\\OF'`
+            // terminates on `E\\OF`, not on `E\OF`.
+            '\\' => {
+                let (_, escaped) = chars.next()?;
+                if escaped == '\n' {
+                    return None;
+                }
+                if escaped != quote {
+                    tag.push('\\');
+                }
+                tag.push(escaped);
+            }
             _ if ch == quote => return Some((tag, start + offset)),
             _ => tag.push(ch),
         }
