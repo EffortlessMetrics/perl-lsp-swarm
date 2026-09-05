@@ -1694,7 +1694,7 @@ language = "json"
 surface = "dap"
 classification = "config"
 owner = "dap"
-reason = "JSON Schema for the kubernetes_dap_workspace_profile.v1 contract; reason-code enum parity with the typed validator is ratcheted by the profile validator tests."
+reason = "JSON Schema for the kubernetes_dap_workspace_profile.v1 contract; reason-code enum parity with the typed validator is ratcheted, and the committed contract is validated against this schema, by the kubernetes-dap-profiles gate."
 covered_by = [
   "cargo run -p xtask --bin kubernetes-dap-profiles -- --check",
 ]

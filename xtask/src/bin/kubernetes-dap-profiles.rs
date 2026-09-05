@@ -1192,9 +1192,17 @@ impl ProfileDocument {
                         ),
                     );
                 }
-                let source_digest = match source_identity_digest(&artifact.source_identity) {
-                    Some(digest) => digest,
-                    None => "",
+                // `is_bound_source_identity` above already established the
+                // `<source>@<digest>` shape, so a missing digest here is
+                // unreachable rather than a value to default.
+                let Some(source_digest) = source_identity_digest(&artifact.source_identity) else {
+                    return rejection(
+                        RejectionReason::InjectionSourceUnbound,
+                        why(format!(
+                            "injection source {:?} carries no digest to compare",
+                            artifact.source_identity
+                        )),
+                    );
                 };
                 if source_digest != artifact.artifact_digest.as_str()
                     || source_digest != artifact.copied_digest.as_str()
