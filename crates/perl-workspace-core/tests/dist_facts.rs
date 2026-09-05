@@ -198,3 +198,29 @@ fn builder_keeps_postfix_conditions_out_of_distribution_facts() {
             && p.version.as_deref() == Some("2")));
     }
 }
+
+#[test]
+fn builder_refuses_runtime_selected_callbacks_and_escaped_names() {
+    let model = build(
+        "cpan-runtime-selected",
+        &[(
+            "cpanfile",
+            r#"
+                on 'test' => $enabled ? sub { requires 'Leak::First'; } : sub { requires 'Leak::Second'; };
+                requires "Foo\x3a\x3aBar";
+                my $note = q#a { brace#;
+                requires 'Kept::Runtime', '1';
+                on test => sub { recommends 'Kept::Test'; };
+            "#,
+        )],
+        FactClasses::FILES | FactClasses::DIST,
+    );
+    let extracted = model.dist_metadata.iter().flat_map(|facts| &facts.prereqs).collect::<Vec<_>>();
+    assert_eq!(
+        extracted.len(),
+        2,
+        "run-time selected callbacks and escaped names are not facts: {extracted:?}"
+    );
+    assert!(extracted.iter().any(|p| p.module == "Kept::Runtime" && p.phase == "runtime"));
+    assert!(extracted.iter().any(|p| p.module == "Kept::Test" && p.phase == "test"));
+}

@@ -158,12 +158,39 @@ const CPANFILE_STATEMENT_MODIFIERS: &[&str] =
 /// Quote-like operators this scanner recognizes, with how many delimited parts
 /// each takes. Order matters: the longest word must come first, so `qq`, `qw`,
 /// `qr`, and `tr` are not read as `q` or `t`.
-const CPANFILE_QUOTE_LIKE: &[(&str, usize)] =
-    &[("qq", 1), ("qw", 1), ("qr", 1), ("tr", 2), ("q", 1), ("m", 1), ("s", 2), ("y", 2)];
-/// Delimiters accepted after a quote-like operator. Deliberately narrow: a
-/// wider set would read ordinary syntax such as `s => 1` as a substitution.
-const CPANFILE_QUOTE_LIKE_DELIMITERS: &[char] =
-    &['/', '{', '(', '[', '<', '|', '!', '~', '^', '\'', '"'];
+const CPANFILE_QUOTE_LIKE: &[(&str, usize)] = &[
+    ("qq", 1),
+    ("qw", 1),
+    ("qr", 1),
+    ("qx", 1),
+    ("tr", 2),
+    ("q", 1),
+    ("m", 1),
+    ("s", 2),
+    ("y", 2),
+];
+
+/// Whether `open` may delimit a quote-like literal that starts at `cursor`,
+/// `adjacent` to its operator or separated from it by whitespace.
+///
+/// Perl accepts any non-word, non-space character. Three shapes are refused
+/// because in a cpanfile they are ordinary syntax that happens to follow a
+/// quote-like word: a fat comma (`s => 1` is a hash key), an argument
+/// separator (`, ;`), and a closing bracket (`sub { m }`). `#` opens a
+/// literal only when it touches the operator; with whitespace before it,
+/// Perl reads a comment.
+fn opens_quote_like_literal(chars: &[char], cursor: usize, adjacent: bool) -> bool {
+    let Some(&open) = chars.get(cursor) else { return false };
+    if is_identifier_char(open) || open.is_whitespace() {
+        return false;
+    }
+    match open {
+        '=' => chars.get(cursor + 1) != Some(&'>'),
+        ',' | ';' | ')' | ']' | '}' | '>' => false,
+        '#' => adjacent,
+        _ => true,
+    }
+}
 
 /// What one character of cpanfile text is, once comments and string literals
 /// are recognized.
@@ -245,10 +272,10 @@ fn quote_like_literal_end(chars: &[char], word: &str, word_end: usize) -> Option
     while chars.get(cursor).is_some_and(|ch| ch.is_whitespace()) {
         cursor += 1;
     }
-    let open = *chars.get(cursor)?;
-    if !CPANFILE_QUOTE_LIKE_DELIMITERS.contains(&open) {
+    if !opens_quote_like_literal(chars, cursor, cursor == word_end) {
         return None;
     }
+    let open = *chars.get(cursor)?;
     let mut end = skip_delimited(chars, cursor)?;
     if parts == 2 {
         end = if closing_delimiter(open) == open {
@@ -612,6 +639,13 @@ fn parse_on_phase(buf: &str) -> Option<String> {
     let header = rest.trim_start();
     let header = header.strip_prefix('(').unwrap_or(header);
     let arguments = split_cpanfile_arguments(header);
+    // The block opening here must be the callback itself: exactly
+    // `on PHASE => sub {`. In `on 'test' => $enabled ? sub { ... } : sub { ... }`
+    // the run-time expression picks a callback, so the first block is not the
+    // phase's declarations even though its phase literal is plain.
+    if arguments.len() != 2 || arguments[1].trim() != "sub" {
+        return None;
+    }
     let first = arguments.first()?;
     // The bareword must be the whole argument, not a prefix of it: `on test()`
     // decides its phase by calling `test`, so accepting the leading `test`
@@ -731,27 +765,19 @@ fn sole_plain_literal(slice: &str) -> Option<String> {
         return None;
     }
     let content = &chars[1..end - 1];
+    // An escape changes the run-time value: `"Foo\x3a\x3aBar"` names
+    // `Foo::Bar`, and `'It\'s'` drops its backslash. Publishing the source
+    // characters would name a module the cpanfile never declared, so any
+    // escape leaves the literal unreadable here.
+    if content.contains(&'\\') {
+        return None;
+    }
     // A double-quoted literal interpolates, so `"Foo::$variant"` names its
-    // module only at run time. Single quotes do not interpolate, and an
-    // escaped sigil is ordinary text.
-    if delimiter == '"' && interpolates(content) {
+    // module only at run time. Single quotes do not interpolate.
+    if delimiter == '"' && content.iter().any(|ch| matches!(ch, '$' | '@')) {
         return None;
     }
     Some(content.iter().collect())
-}
-
-/// Whether double-quoted content carries an unescaped interpolation sigil.
-fn interpolates(content: &[char]) -> bool {
-    let mut index = 0;
-    while index < content.len() {
-        match content[index] {
-            '\\' => index += 1,
-            '$' | '@' => return true,
-            _ => {}
-        }
-        index += 1;
-    }
-    false
 }
 
 /// The module and version a prereq call declares, when its argument shape is
@@ -1581,17 +1607,109 @@ mod tests {
 
     #[test]
     fn cpanfile_non_interpolating_literals_are_still_read() {
-        // Single quotes never interpolate, and an escaped sigil is ordinary
-        // text: neither may be mistaken for a computed value.
+        // Single quotes never interpolate: a sigil inside them is fixed text
+        // and must not be mistaken for a computed value.
         for (declaration, module) in [
             ("requires \"Static::Name\";", "Static::Name"),
             ("requires 'Foo::$variant';", "Foo::$variant"),
-            ("requires \"Foo\\$literal\";", "Foo\\$literal"),
         ] {
             let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), declaration);
             assert!(
                 facts.prereqs.iter().any(|p| p.module == module),
                 "{declaration} is fixed text: {:?}",
+                facts.prereqs
+            );
+        }
+    }
+
+    #[test]
+    fn cpanfile_escaped_literals_are_not_module_names() {
+        // `"Foo\x3a\x3aBar"` declares `Foo::Bar` at run time and `"Foo\$x"`
+        // declares `Foo$x`; the source characters name modules that do not
+        // exist. An escape makes the literal unreadable here, never a fact.
+        for declaration in [
+            "requires \"Foo\\x3a\\x3aBar\";",
+            "requires \"Foo\\$literal\";",
+            "requires 'Foo\\'s::Module';",
+            "requires \"Foo\\\\Bar\";",
+        ] {
+            let content = format!("{declaration}\nrequires 'Kept';\n");
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), &content);
+            assert!(
+                facts.prereqs.iter().all(|p| p.module == "Kept"),
+                "{declaration} carries an escape and must not publish a name: {:?}",
+                facts.prereqs
+            );
+            assert!(
+                facts.prereqs.iter().any(|p| p.module == "Kept"),
+                "{declaration}: {:?}",
+                facts.prereqs
+            );
+        }
+    }
+
+    #[test]
+    fn cpanfile_ternary_selected_callbacks_are_not_phase_blocks() {
+        // The phase literal is plain, but the callback is chosen at run time:
+        // the first `sub { ... }` may never run, so its declarations are not
+        // the phase's. Both blocks stay unsupported; the file still closes.
+        for header in [
+            "on 'test' => $enabled ? sub",
+            "on test => $enabled ? sub",
+            "on('test', $enabled ? sub",
+            "on 'test' => maybe(sub",
+        ] {
+            let content = format!(
+                "{header} {{ requires 'Leak'; }} : sub {{ requires 'Other::Leak'; }};\nrequires 'Moo';\n"
+            );
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), &content);
+            assert!(
+                !facts.prereqs.iter().any(|p| p.module.ends_with("Leak")),
+                "{header} picks its callback at run time: {:?}",
+                facts.prereqs
+            );
+            assert!(
+                facts.prereqs.iter().any(|p| p.module == "Moo" && p.phase == "runtime"),
+                "the blocks still close: {:?}",
+                facts.prereqs
+            );
+        }
+        // The plain form is unchanged.
+        let facts = parse_cpanfile(
+            FileId::new("cpanfile", &Digest::of("x")),
+            "on 'test' => sub { requires 'Kept::Test'; };\non(develop => sub { requires 'Kept::Dev'; });\n",
+        );
+        assert!(facts.prereqs.iter().any(|p| p.module == "Kept::Test" && p.phase == "test"));
+        assert!(facts.prereqs.iter().any(|p| p.module == "Kept::Dev" && p.phase == "develop"));
+    }
+
+    #[test]
+    fn cpanfile_any_legal_quote_like_delimiter_stays_literal() {
+        // Perl accepts any non-word delimiter. A brace inside such a literal
+        // must not change block scope and discard later declarations.
+        for literal in [
+            "q#{#", "qq?}?", "m+{+", "s-{-}-", "y%{%x%", "qx#{#", "qr'{'", "q={=", "tr.{.x.",
+            "qw @{@",
+        ] {
+            let content = format!("my $x = {literal};\nrequires 'Path::Tiny';\n");
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), &content);
+            assert!(
+                facts.prereqs.iter().any(|p| p.module == "Path::Tiny" && p.phase == "runtime"),
+                "literal {literal} must not suppress later declarations: {:?}",
+                facts.prereqs
+            );
+        }
+        // Ordinary syntax after a quote-like word is not a literal: a fat-comma
+        // key, a comment after whitespace, and a closing bracket.
+        for content in [
+            "my %h = (s => 1, y => 2, q => 3);\nrequires 'Path::Tiny';\n",
+            "my $m = q # comment {\n;\nrequires 'Path::Tiny';\n",
+            "on test => sub { requires 'Kept::Test'; m };\nrequires 'Path::Tiny';\n",
+        ] {
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+            assert!(
+                facts.prereqs.iter().any(|p| p.module == "Path::Tiny" && p.phase == "runtime"),
+                "{content:?} is ordinary syntax: {:?}",
                 facts.prereqs
             );
         }
