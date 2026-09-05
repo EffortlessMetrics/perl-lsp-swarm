@@ -65,7 +65,6 @@ use perl_lexer::LexerMode;
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::time::Instant;
 
 mod operation;
 use operation::ParserOperationContext;
@@ -146,8 +145,6 @@ pub struct Parser<'a> {
     /// Delimiter from an unrecognised heredoc introducer whose body leaked into
     /// the ordinary token stream.  Only the matching bareword may be exempted.
     heredoc_recovery_tag: Option<String>,
-    /// Start time of parsing for timeout enforcement (specifically heredocs)
-    heredoc_start_time: Option<Instant>,
     /// Collection of parse errors encountered during parsing (for error recovery)
     errors: Vec<ParseError>,
     /// Live production operation context. Fresh counters, terminal state, and
@@ -232,7 +229,6 @@ impl<'a> Parser<'a> {
             src_bytes: source.as_bytes(),
             byte_cursor: 0,
             heredoc_recovery_tag: None,
-            heredoc_start_time: None,
             errors: Vec::new(),
             operation: ParserOperationContext::new(config, cancellation),
             #[cfg(test)]
