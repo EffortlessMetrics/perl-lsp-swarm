@@ -289,6 +289,29 @@ fn ends_with_filehandle_builtin(text: &str) -> bool {
     })
 }
 
+/// Read a quoted heredoc delimiter, honoring backslash escapes, and return the
+/// unescaped tag with the byte offset of its closing quote.
+///
+/// Perl accepts `<<'E\'OF'`, whose terminator line is `E'OF` — `perl -c`
+/// confirms it. Stopping at the first quote would take `E\` as the tag, never
+/// match the real terminator, and suppress every pragma below the heredoc.
+fn read_quoted_delimiter(source: &str, start: usize, quote: char) -> Option<(String, usize)> {
+    let mut tag = String::new();
+    let mut chars = source.get(start..)?.char_indices();
+
+    while let Some((offset, ch)) = chars.next() {
+        match ch {
+            // A delimiter never spans lines.
+            '\n' => return None,
+            '\\' => tag.push(chars.next()?.1),
+            _ if ch == quote => return Some((tag, start + offset)),
+            _ => tag.push(ch),
+        }
+    }
+
+    None
+}
+
 /// Recognize a heredoc opener at `start`, returning
 /// `(end, tag, strip_indent, requires_terminator)`.
 ///
@@ -359,14 +382,8 @@ fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bo
 
     if first == b'\'' || first == b'"' || first == b'`' {
         let quote = first as char;
-        let content_start = spaced_tag_start + 1;
-        let quote_offset = source[content_start..].find(quote)?;
-        let quote_end = content_start + quote_offset;
-        let tag = &source[content_start..quote_end];
-        if tag.contains('\n') {
-            return None;
-        }
-        return Some((quote_end + 1, tag.to_string(), strip_indent, false));
+        let (tag, quote_end) = read_quoted_delimiter(source, spaced_tag_start + 1, quote)?;
+        return Some((quote_end + quote.len_utf8(), tag, strip_indent, false));
     }
 
     if spaced_tag_start != tag_start || !(first.is_ascii_alphabetic() || first == b'_') {

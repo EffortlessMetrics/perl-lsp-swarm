@@ -598,3 +598,38 @@ fn data_marker_inside_a_quote_like_literal_is_a_known_truncation() {
         "boundary changed: update the documented q{{}} limitation if this now resolves"
     );
 }
+
+/// A quoted heredoc delimiter may contain a backslash-escaped quote.
+///
+/// `perl -c` accepts `my $s = <<'E\'OF';` with terminator line `E'OF`. Stopping
+/// the delimiter scan at the escaped quote took `E\` as the tag, so the real
+/// terminator never matched and everything below the heredoc was suppressed.
+#[test]
+fn escaped_quote_in_a_heredoc_delimiter_is_read_whole() {
+    let source = "my $s = <<'E\\'OF';\nuse lib 'phantom';\nE'OF\nuse lib 'real';\n";
+
+    assert_eq!(
+        extract_use_lib_operations(source),
+        vec![UseLibAction::Add(vec![UseLibPath { path: "real".to_string(), from_findbin: false }])]
+    );
+}
+
+/// A column-zero `=cut` opens POD even with no POD before it, so the rest of the
+/// file is documentation.
+///
+/// This matches Perl exactly, which is why it is pinned rather than "fixed":
+/// `print "before\n";\n=cut\nprint "after\n";` prints only `before`. A review
+/// reading claimed Perl resumes code after a standalone `=cut`; the oracle says
+/// otherwise, and the scanner already agrees with the oracle.
+#[test]
+fn standalone_pod_terminator_opens_pod_like_perl_does() {
+    let source = "use lib 'first';\n=cut\nuse lib 'after_cut';\n";
+
+    assert_eq!(
+        extract_use_lib_operations(source),
+        vec![UseLibAction::Add(vec![UseLibPath {
+            path: "first".to_string(),
+            from_findbin: false
+        }])]
+    );
+}
