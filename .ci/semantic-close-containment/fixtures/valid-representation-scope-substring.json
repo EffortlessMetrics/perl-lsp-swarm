@@ -19,7 +19,7 @@
       "repository": "effortlessmetrics/perl-lsp-swarm",
       "number": 9000701,
       "title": "fix(hir): keep the HIR representation honest",
-      "body": "## Acceptance\n\nThe named representation is emitted and neighboring long words are not treated as required-work scope."
+      "body": "## Acceptance\n\nThe named HIR shape is emitted and neighboring long words are not treated as required-work scope."
     }
   ],
   "expected": {
