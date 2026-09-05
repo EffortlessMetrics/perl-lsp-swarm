@@ -1904,6 +1904,62 @@ mod tests {
         );
     }
 
+    /// An edit admitted by the real parse worker must carry pending readiness
+    /// for its own generation before the job can publish; otherwise the
+    /// worker's `mark_active_document_parser_accepted` finds no matching entry
+    /// and the client never receives the edit's ready notification (#11675).
+    /// Fails when the per-generation install in `handle_did_change_with_cancellation`
+    /// is removed: the readiness table then holds no entry for the changed
+    /// generation.
+    #[test]
+    fn admitted_async_edit_carries_readiness_for_its_generation() {
+        let server = Arc::new(LspServer::new());
+        server.install_default_parse_worker();
+        assert!(server.parse_worker().is_some(), "default parse worker must install");
+
+        let uri = "file:///async-readiness.pl";
+        server
+            .test_apply_did_open(uri, "my $x = 1;\n", 1)
+            .expect("didOpen must establish the document");
+        assert!(
+            server.test_wait_for_parse_worker_settled(uri, std::time::Duration::from_secs(5)),
+            "didOpen parse must settle"
+        );
+        server
+            .test_apply_did_change(uri, "my $x = 2;\n", 2)
+            .expect("didChange must be admitted by the running worker");
+        assert!(
+            server.test_wait_for_parse_worker_settled(uri, std::time::Duration::from_secs(5)),
+            "didChange parse must settle"
+        );
+
+        let changed_generation = crate::state::FIRST_ACCEPTED_DOCUMENT_GENERATION.get() + 1;
+        let normalized = server.normalize_uri_key(uri);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let observed = loop {
+            let observed = server.test_active_document_readiness(&normalized);
+            match observed {
+                Some((state, generation, _))
+                    if generation == changed_generation && state != "pending_parser" =>
+                {
+                    break Some((state, generation));
+                }
+                _ if std::time::Instant::now() >= deadline => {
+                    break observed.map(|(state, generation, _)| (state, generation));
+                }
+                _ => std::thread::yield_now(),
+            }
+        };
+        let (state, generation) =
+            observed.expect("the admitted edit must own a readiness entry for its generation");
+        assert_eq!(generation, changed_generation, "readiness must track the admitted generation");
+        assert_ne!(
+            state, "pending_parser",
+            "the worker's accepted parse must advance readiness past pending"
+        );
+        assert_ne!(state, "unavailable_terminal", "a clean parse must not be terminal");
+    }
+
     #[test]
     fn next_edit_runtime_boundary_defaults_disabled() {
         let server = LspServer::new();
