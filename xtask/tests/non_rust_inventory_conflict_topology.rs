@@ -86,8 +86,8 @@ fn independent_candidates_do_not_share_the_inventory_snapshot_write() -> Result<
     let repo = fixture.path();
     git(repo, &["init", "--quiet"])?;
     git(repo, &["branch", "-M", "main"])?;
-    git(repo, &["config", "user.name", "xtask hook tests"])?;
-    git(repo, &["config", "user.email", "topology@example.invalid"])?;
+    git(repo, &["config", "user.name", "Topology Fixture"])?;
+    git(repo, &["config", "user.email", "topology@example.com"])?;
 
     fs::create_dir_all(repo.join("docs/policy"))?;
     fs::create_dir_all(repo.join("policy"))?;
