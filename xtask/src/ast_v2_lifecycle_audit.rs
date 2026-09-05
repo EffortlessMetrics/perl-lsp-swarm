@@ -1460,8 +1460,19 @@ fn render_fields(
         syn::Fields::Unnamed(unnamed) => {
             let mut parts = Vec::new();
             for field in &unnamed.unnamed {
+                // A tuple field's *visibility* is contract in a way a named
+                // field's is not: the position is the name, so `pub struct
+                // T(pub u8)` lets a consumer construct and destructure `T`
+                // while `pub struct T(u8)` does not. Rendering only the type
+                // made that removal invisible. Private tuple fields keep their
+                // type for the same auto-trait reason named fields do.
+                let visibility = if context == FieldContext::Struct && !is_public(&field.vis) {
+                    "non-pub "
+                } else {
+                    ""
+                };
                 parts.push(format!(
-                    "{}{}",
+                    "{visibility}{}{}",
                     render_type(&field.ty)?,
                     render_contract_attrs(&field.attrs)?
                 ));
@@ -1815,12 +1826,20 @@ fn rust_doctest_code(block: &str) -> String {
     let mut inside_other = false;
     for line in block.lines() {
         let trimmed = line.trim_start();
-        if let Some(info) = trimmed.strip_prefix("```") {
+        // `rustdoc` follows Markdown, which opens a fenced block with either
+        // three-or-more backticks or three-or-more tildes. Only backticks were
+        // recognised, so a doctest in a `~~~` fence was compiled by `rustdoc`
+        // and invisible here.
+        let fence = ["```", "~~~"].into_iter().find_map(|marker| trimmed.strip_prefix(marker));
+        if let Some(info) = fence {
             if inside_rust || inside_other {
                 inside_rust = false;
                 inside_other = false;
                 continue;
             }
+            // A longer run of the fence character is still the same fence, and
+            // its info string starts after it.
+            let info = info.trim_start_matches(['`', '~']);
             let info = info.trim();
             // An empty info string is Rust; otherwise every comma-separated
             // word must be one `rustdoc` recognises as Rust.
@@ -2931,13 +2950,43 @@ fn reconcile_with_source(m: &Manifest, repo_root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Index derived items by public path, refusing a duplicate rather than keeping
+/// one of them.
+///
+/// A map built with `collect` silently keeps the last value for a repeated key.
+/// Two `#[cfg]`-gated declarations publishing the same path — a platform pair,
+/// say — would have one contract reconciled while the other drifted unchecked,
+/// and nothing would say so. This audit records one contract per public path, so
+/// a second declaration is a shape it does not model, and an unmodelled shape
+/// stops it.
+///
+/// Separate from `reconcile_public_items` so a control can exercise the rule
+/// directly: that function reads the real crate source, where no such duplicate
+/// exists to construct.
+fn index_derived_by_path(derived: &[DerivedItem]) -> Result<BTreeMap<&str, &DerivedItem>> {
+    let mut by_path: BTreeMap<&str, &DerivedItem> = BTreeMap::new();
+    for item in derived {
+        if let Some(existing) = by_path.insert(item.path.as_str(), item) {
+            bail!(
+                "public path `{}` is declared more than once in \
+                 {V2_SOURCE_RELATIVE_PATH}, with shapes\n  {}\n  {}\nThe audit records one \
+                 contract per public path, so a conditional or duplicated declaration must be \
+                 modelled explicitly rather than have one of its shapes silently win.",
+                item.path,
+                existing.shape,
+                item.shape
+            );
+        }
+    }
+    Ok(by_path)
+}
+
 fn reconcile_public_items(m: &Manifest, repo_root: &Path) -> Result<()> {
     let source = std::fs::read_to_string(repo_root.join(V2_SOURCE_RELATIVE_PATH))
         .with_context(|| format!("failed to read {V2_SOURCE_RELATIVE_PATH}"))?;
     let derived = derive_public_items(&source)?;
 
-    let derived_by_path: BTreeMap<&str, &DerivedItem> =
-        derived.iter().map(|item| (item.path.as_str(), item)).collect();
+    let derived_by_path = index_derived_by_path(&derived)?;
     let row_by_path: BTreeMap<&str, &PublicItemRow> =
         m.public_items.iter().map(|row| (row.path.as_str(), row)).collect();
 

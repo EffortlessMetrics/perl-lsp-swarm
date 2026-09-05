@@ -1658,6 +1658,122 @@ fn field_order_is_contract_only_where_the_representation_makes_it_so() -> Result
 }
 
 #[test]
+fn a_tuple_fields_visibility_is_contract_because_its_position_is_its_name() -> Result<()> {
+    // A named field's privacy is already visible through the name being elided.
+    // A tuple field has no name — the position is the name — so `pub struct
+    // T(pub u8)` lets a consumer construct and destructure `T` while
+    // `pub struct T(u8)` does not. Rendering only the type made that removal
+    // invisible, which is a breaking change with an unmoved row.
+    let shape_of = |src: &str| -> Result<String> {
+        derive_public_items(src)?
+            .iter()
+            .find(|item| item.kind == "struct")
+            .map(|item| item.shape.clone())
+            .ok_or_else(|| color_eyre::eyre::eyre!("no struct derived from {src}"))
+    };
+    assert_ne!(
+        shape_of("pub struct T(pub u8);")?,
+        shape_of("pub struct T(u8);")?,
+        "removing `pub` from a tuple field removes construction access and must move the shape"
+    );
+    assert_ne!(
+        shape_of("pub struct T(pub u8, pub u16);")?,
+        shape_of("pub struct T(pub u8, u16);")?,
+        "a single tuple field losing `pub` must move the shape"
+    );
+    // The type is still carried for private tuple fields, for the same
+    // auto-trait reason named ones are.
+    assert_ne!(
+        shape_of("pub struct T(u8);")?,
+        shape_of("pub struct T(std::rc::Rc<u8>);")?,
+        "a private tuple field's type still decides the auto traits"
+    );
+    // Enum variants have no per-field visibility, so nothing changes there.
+    let variant_shape = |src: &str| -> Result<String> {
+        derive_public_items(src)?
+            .iter()
+            .find(|item| item.kind == "enum_variant")
+            .map(|item| item.shape.clone())
+            .ok_or_else(|| color_eyre::eyre::eyre!("no enum variant derived from {src}"))
+    };
+    assert!(
+        !variant_shape("pub enum E { V(u8) }")?.contains("non-pub"),
+        "an enum variant's fields carry the enum's visibility and must not be marked private"
+    );
+    Ok(())
+}
+
+#[test]
+fn two_declarations_of_one_public_path_stop_the_audit() -> Result<()> {
+    // A map built with `collect` keeps the last value for a repeated key, so two
+    // `#[cfg]`-gated declarations publishing the same path had one contract
+    // reconciled while the other drifted unchecked. Exercised through
+    // `index_derived_by_path`, the rule the reconciliation actually calls —
+    // asserting on `derive_public_items` instead would test a helper beside the
+    // change, since the real crate source holds no such duplicate to construct.
+    let source = "#[cfg(unix)]\npub type Only = u8;\n#[cfg(windows)]\npub type Only = u16;";
+    let derived = derive_public_items(source)?;
+    let conditional: Vec<&DerivedItem> =
+        derived.iter().filter(|item| item.path.ends_with("::Only")).collect();
+    assert_eq!(conditional.len(), 2, "both cfg-gated declarations must be derived");
+    assert_ne!(
+        conditional[0].shape, conditional[1].shape,
+        "the two declarations differ, which is why keeping one silently loses a contract"
+    );
+
+    let Err(err) = index_derived_by_path(&derived) else {
+        bail!("two declarations of one public path must stop the audit");
+    };
+    let rendered = format!("{err:?}");
+    assert!(
+        rendered.contains("declared more than once") && rendered.contains("Only"),
+        "the rejection must name the duplicated path: {rendered}"
+    );
+
+    // A single declaration per path is the ordinary case and must still index.
+    let ordinary = derive_public_items("pub type Only = u8;\npub type Other = u16;")?;
+    let indexed = index_derived_by_path(&ordinary)?;
+    assert_eq!(indexed.len(), ordinary.len(), "distinct paths must all be indexed");
+    Ok(())
+}
+
+#[test]
+fn a_tilde_fenced_doctest_is_code_like_a_backtick_fenced_one() -> Result<()> {
+    // `rustdoc` follows Markdown, which opens a fenced block with backticks *or*
+    // tildes. Only backticks were recognised, so a doctest in a `~~~` fence was
+    // compiled by `rustdoc` and invisible to this audit.
+    assert_eq!(
+        parsed_api_use("/// ~~~\n/// use perl_ast::{v2, Node};\n/// ~~~\npub fn f() {}"),
+        Some(true),
+        "a tilde-fenced doctest is compiled and its imports count"
+    );
+    assert_eq!(
+        parsed_api_use("/// ~~~rust\n/// use perl_ast_v2::Node;\n/// ~~~\npub fn f() {}"),
+        Some(true),
+        "a tilde fence carrying the `rust` info word counts"
+    );
+    // A longer run is the same fence.
+    assert_eq!(
+        parsed_api_use("/// ~~~~\n/// use perl_ast_v2::Node;\n/// ~~~~\npub fn f() {}"),
+        Some(true),
+        "a four-tilde fence is still a fence"
+    );
+    // And a non-Rust info word still excludes it, in either fence character, so
+    // this widened which fences are read and not what counts as Rust.
+    assert_eq!(
+        parsed_api_use("/// ~~~text\n/// use perl_ast_v2::Node;\n/// ~~~\npub fn f() {}"),
+        Some(false),
+        "a tilde-fenced `text` block is not compiled"
+    );
+    assert_eq!(
+        parsed_api_use("/// ```text\n/// use perl_ast_v2::Node;\n/// ```\npub fn f() {}"),
+        Some(false),
+        "a backtick-fenced `text` block is still not compiled"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_private_fields_type_is_contract_even_though_its_name_is_not() -> Result<()> {
     // Private fields were counted, not typed: the shape said `+1 non-public`
     // whatever that field held. But the auto traits a struct offers — `Send`,
