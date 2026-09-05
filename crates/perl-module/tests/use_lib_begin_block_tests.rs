@@ -183,3 +183,99 @@ fn begin_lookalikes_do_not_create_lib_operations() {
     assert!(extract_use_lib_operations(identifier).is_empty());
     assert!(extract_use_lib_operations(quoted).is_empty());
 }
+
+/// A top-level pragma that follows a block must stay visible and stay *after*
+/// the block-scoped one.
+///
+/// The slice following a block opens with that block's closing brace, which is
+/// not part of the statement. Before the brace trim the scanner reported only
+/// the `BEGIN`-scoped root; `lexical_paths` then front-inserted that single
+/// root and moved the lexically-later `second` ahead of it in the effective
+/// `@INC`, which is the ordering defect this pins.
+#[test]
+fn top_level_pragma_after_a_block_keeps_lexical_order() {
+    let source = "BEGIN {\n    use lib 'first';\n}\nuse lib 'second';\nuse Recovered;\n";
+
+    assert_eq!(
+        extract_use_lib_operations(source),
+        vec![
+            UseLibAction::Add(vec![UseLibPath { path: "first".to_string(), from_findbin: false }]),
+            UseLibAction::Add(vec![UseLibPath { path: "second".to_string(), from_findbin: false }]),
+        ]
+    );
+}
+
+/// The brace trim is not special to `BEGIN`: a top-level pragma after any block
+/// is real code. The pragma *inside* a conditional block stays out of the rail,
+/// because the peel is only applied to a leading `BEGIN` header.
+#[test]
+fn top_level_pragma_after_a_conditional_block_is_scanned() {
+    let source = "if (1) {\n    use lib 'conditional';\n}\nuse lib 'top_level';\n";
+
+    assert_eq!(
+        extract_use_lib_operations(source),
+        vec![UseLibAction::Add(vec![UseLibPath {
+            path: "top_level".to_string(),
+            from_findbin: false,
+        }])]
+    );
+}
+
+/// Consecutive blocks stack closing braces in front of the next slice.
+#[test]
+fn stacked_block_closers_do_not_hide_later_pragmas() {
+    let source = "BEGIN {\n    use lib 'a';\n}\nBEGIN {\n    use lib 'b';\n}\nuse lib 'c';\n";
+
+    let paths: Vec<String> = extract_use_lib_operations(source)
+        .into_iter()
+        .map(|action| match action {
+            UseLibAction::Add(paths) => paths[0].path.clone(),
+            UseLibAction::Remove(paths) => paths[0].path.clone(),
+        })
+        .collect();
+
+    assert_eq!(paths, vec!["a", "b", "c"]);
+}
+
+/// Perl allows whitespace between `<<`/`<<~` and a *quoted* delimiter, so those
+/// bodies are prose and must not reach the rail.
+#[test]
+fn spaced_quoted_heredoc_bodies_do_not_create_lib_operations() {
+    let ordinary =
+        "my $s = << 'EOF';\nBEGIN { use lib 'phantom_spaced'; }\nEOF\nuse Local::Thing;\n";
+    let indented =
+        "my $s = <<~ 'EOF';\n  BEGIN { use lib 'phantom_indent'; }\n  EOF\nuse Local::Thing;\n";
+    let double = "my $s = << \"EOF\";\nuse lib 'phantom_double';\nEOF\nuse Local::Thing;\n";
+
+    assert!(extract_use_lib_operations(ordinary).is_empty());
+    assert!(extract_use_lib_operations(indented).is_empty());
+    assert!(extract_use_lib_operations(double).is_empty());
+}
+
+/// A spaced quoted opener is ambiguous with a shift by a string literal, so it
+/// only counts as a heredoc when a terminator line confirms it. Without that
+/// confirmation the following pragma must stay visible.
+#[test]
+fn spaced_shift_expression_does_not_hide_later_pragmas() {
+    let source = "my $n = 1 << 'EOF';\nuse lib 'real';\n";
+
+    assert_eq!(
+        extract_use_lib_operations(source),
+        vec![UseLibAction::Add(vec![UseLibPath { path: "real".to_string(), from_findbin: false }])]
+    );
+}
+
+/// `<< EOF` with a bareword delimiter is the left-shift operator, never a
+/// heredoc, so nothing after it may be swallowed.
+#[test]
+fn spaced_bareword_is_not_a_heredoc_opener() {
+    let source = "my $n = $bits << SHIFT;\nuse lib 'still_scanned';\nSHIFT\n";
+
+    assert_eq!(
+        extract_use_lib_operations(source),
+        vec![UseLibAction::Add(vec![UseLibPath {
+            path: "still_scanned".to_string(),
+            from_findbin: false,
+        }])]
+    );
+}

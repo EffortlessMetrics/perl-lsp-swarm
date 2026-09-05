@@ -6,10 +6,13 @@ use std::collections::VecDeque;
 /// semicolons inside simple quoted strings, line comments, POD, or heredoc
 /// bodies as terminators.
 ///
-/// The compatibility scanner also exposes the first statement inside a leading
-/// `BEGIN { ... }` block as a source subslice. Without that bounded prefix peel,
-/// the block opener hides an otherwise ordinary `use lib` or `no lib` pragma
-/// from the prefix recognizer.
+/// Because the split is semicolon-driven, each slice is then normalized by
+/// [`strip_statement_prefix`]: leading closing braces from blocks that already
+/// ended are dropped, and one leading `BEGIN { ... }` header is peeled. Without
+/// the peel the block opener hides an otherwise ordinary `use lib` / `no lib`
+/// pragma; without the brace trim the *next* top-level pragma stays hidden, so
+/// a block-scoped root would be reported while the later file-level root that
+/// should outrank it is not.
 pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
     let mut statements = Vec::new();
     let mut start = 0;
@@ -72,9 +75,10 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
         if ch == '<'
             && !in_single
             && !in_double
-            && let Some((heredoc_end, tag, strip_indent, quoted)) =
+            && let Some((heredoc_end, tag, strip_indent, requires_terminator)) =
                 parse_heredoc_opener(source, idx)
-            && (quoted || has_heredoc_terminator(source, heredoc_end, &tag, strip_indent))
+            && (!requires_terminator
+                || has_heredoc_terminator(source, heredoc_end, &tag, strip_indent))
         {
             pending_heredocs.push_back((tag, strip_indent));
             has_content = true;
@@ -166,6 +170,22 @@ fn skip_pod_section(source: &str, start: usize) -> usize {
     source.len()
 }
 
+/// Recognize a heredoc opener at `start`, returning
+/// `(end, tag, strip_indent, requires_terminator)`.
+///
+/// `requires_terminator` marks the openers that are ambiguous with ordinary
+/// expressions and must be confirmed by a matching terminator line before their
+/// body is treated as non-code:
+///
+/// - a bareword tag (`<<EOF`) collides with the left-shift operator;
+/// - a *spaced* quoted tag (`<< 'EOF'`) collides with a shift by a string
+///   literal (`1 << 'EOF'`).
+///
+/// A tight quoted tag (`<<'EOF'`) is unambiguous, so it is honored even while
+/// the body is still being typed and no terminator exists yet. That direction
+/// matters: an unconfirmed opener suppresses later text, whereas refusing to
+/// recognize one lets heredoc prose be scanned as code and *invent* an `@INC`
+/// root the program never adds.
 fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bool, bool)> {
     if source.get(start..start + 2)? != "<<" {
         return None;
@@ -177,20 +197,29 @@ fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bo
         tag_start += 1;
     }
 
-    let first = *source.as_bytes().get(tag_start)?;
+    // Perl allows whitespace between `<<`/`<<~` and a *quoted* delimiter, but
+    // not before a bareword one: `<< EOF` is the left-shift operator while
+    // `<< 'EOF'` is a heredoc.
+    let spaced_tag_start = tag_start
+        + source.as_bytes()[tag_start..]
+            .iter()
+            .take_while(|byte| matches!(byte, b' ' | b'\t'))
+            .count();
+
+    let first = *source.as_bytes().get(spaced_tag_start)?;
     if first == b'\'' || first == b'"' || first == b'`' {
         let quote = first as char;
-        let content_start = tag_start + 1;
+        let content_start = spaced_tag_start + 1;
         let quote_offset = source[content_start..].find(quote)?;
         let quote_end = content_start + quote_offset;
         let tag = &source[content_start..quote_end];
         if tag.is_empty() || tag.contains('\n') {
             return None;
         }
-        return Some((quote_end + 1, tag.to_string(), strip_indent, true));
+        return Some((quote_end + 1, tag.to_string(), strip_indent, spaced_tag_start != tag_start));
     }
 
-    if !(first.is_ascii_alphabetic() || first == b'_') {
+    if spaced_tag_start != tag_start || !(first.is_ascii_alphabetic() || first == b'_') {
         return None;
     }
 
@@ -202,7 +231,7 @@ fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bo
         tag_end += 1;
     }
 
-    Some((tag_end, source[tag_start..tag_end].to_string(), strip_indent, false))
+    Some((tag_end, source[tag_start..tag_end].to_string(), strip_indent, true))
 }
 
 fn has_heredoc_terminator(source: &str, start: usize, tag: &str, strip_indent: bool) -> bool {
@@ -262,9 +291,27 @@ fn skip_heredoc_bodies(
 }
 
 fn push_statement<'a>(statements: &mut Vec<&'a str>, statement: &'a str) {
-    let trimmed = statement.trim_start();
-    let statement = strip_leading_begin_block_prefix(trimmed).unwrap_or(statement);
-    statements.push(statement);
+    statements.push(strip_statement_prefix(statement));
+}
+
+/// Trim block punctuation that belongs to *preceding* code off the front of a
+/// statement slice.
+///
+/// `split_perl_statements` cuts on semicolons only, so a slice routinely opens
+/// with the closing braces of blocks that ended before it (`}\nuse lib 'x';`),
+/// and a block-leading pragma opens with its own `BEGIN {` header. Neither is
+/// part of the statement the prefix recognizers are asked about, and both are
+/// trimmed here so the same normalization applies whether or not a `BEGIN`
+/// block is present.
+///
+/// The result stays a subslice of the original source, so the statement end —
+/// the activation rail used by `activation_offset` — is unchanged.
+fn strip_statement_prefix(statement: &str) -> &str {
+    let mut rest = skip_leading_whitespace_and_comments(statement);
+    while let Some(after_close) = rest.strip_prefix('}') {
+        rest = skip_leading_whitespace_and_comments(after_close);
+    }
+    strip_leading_begin_block_prefix(rest).unwrap_or(rest)
 }
 
 /// Return the first statement body inside a leading `BEGIN { ... }` block.
