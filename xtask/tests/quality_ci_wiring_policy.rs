@@ -334,7 +334,17 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
         "Codecov rollout checklist must keep patch coverage advisory"
     );
     must(coverage_rollout_docs_contract(&codecov_rollout));
-    let stale_codecov_rollout = codecov_rollout.replacen("origin/main", "origin/master", 1);
+    // The contract only inspects lines that mention coverage or Codecov, so the
+    // negative control must mutate such a line: the Codecov badge URL.
+    let stale_codecov_rollout = codecov_rollout.replacen(
+        "/branch/main/graph/badge.svg",
+        "/branch/master/graph/badge.svg",
+        1,
+    );
+    assert!(
+        stale_codecov_rollout != codecov_rollout,
+        "negative control must mutate a Codecov badge line in the rollout doc"
+    );
     assert!(
         coverage_rollout_docs_contract(&stale_codecov_rollout).is_err(),
         "Codecov rollout documentation contract must reject stale master guidance"
@@ -766,6 +776,8 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
             && !coverage_job.contains("github.event_name == 'push'")
             && !coverage_job.contains("ci:coverage")
             && !coverage_job.contains("github.event_name == 'merge_group'")
+            // The shared workflow keeps a top-level `pull_request:` trigger for
+            // its label-gated sibling jobs; only the coverage job is restricted.
             && workflow.contains("\n  pull_request:"),
         "patch coverage must be advisory: only the coverage job is schedule/workflow_dispatch-only"
     );
@@ -1413,9 +1425,7 @@ fn is_direct_route_token(token: &str) -> bool {
 
 fn route_prose_clauses(normalized: &str) -> Vec<&str> {
     let mut clauses = Vec::new();
-    for punctuation_clause in
-        normalized.split(|character: char| matches!(character, '.' | ',' | ';' | ':' | '!' | '?'))
-    {
+    for punctuation_clause in normalized.split(['.', ',', ';', ':', '!', '?']) {
         let mut remaining = punctuation_clause;
         loop {
             let Some((separator, separator_text)) =
@@ -1522,9 +1532,12 @@ fn has_negative_route_prose(normalized: &str) -> bool {
         || (has_route_context && (has_negative_token || has_negative_phrase || has_no_route_phrase))
 }
 
-fn has_positive_stale_route_claim_in_context(text: &str, coverage_context: bool) -> bool {
-    if has_positive_stale_route_claim(text) || !coverage_context {
-        return has_positive_stale_route_claim(text);
+/// Stricter detector for lines that sit in coverage context (the line itself
+/// or its predecessor mentions coverage), where a bare PR/label/merge-queue
+/// route verb is already a stale claim.
+fn has_positive_stale_route_claim_in_context(text: &str) -> bool {
+    if has_positive_stale_route_claim(text) {
+        return true;
     }
     let normalized = text.to_ascii_lowercase().replace(['_', '-'], " ");
     if has_negative_route_prose(&normalized) {
@@ -1613,12 +1626,10 @@ fn coverage_reference_rows_contract(document: &str, context: &str) -> Result<()>
         let second_line = window[1].trim_start();
         let first_word = first_line
             .split(|character: char| !character.is_ascii_alphanumeric())
-            .filter(|word| !word.is_empty())
-            .next_back();
+            .rfind(|word: &&str| !word.is_empty());
         let second_first_word = second_line
             .split(|character: char| !character.is_ascii_alphanumeric())
-            .filter(|word| !word.is_empty())
-            .next();
+            .find(|word: &&str| !word.is_empty());
         let first_line_continues =
             matches!(first_word, Some("but" | "and" | "or" | "without" | "never"));
         let connector_starts_second_line =
@@ -1644,12 +1655,10 @@ fn coverage_reference_rows_contract(document: &str, context: &str) -> Result<()>
         let second_line = window[1].trim_end();
         let first_word = first_line
             .split(|character: char| !character.is_ascii_alphanumeric())
-            .filter(|word| !word.is_empty())
-            .next_back();
+            .rfind(|word: &&str| !word.is_empty());
         let second_first_word = window[1]
             .split(|character: char| !character.is_ascii_alphanumeric())
-            .filter(|word| !word.is_empty())
-            .next();
+            .find(|word: &&str| !word.is_empty());
         let first_line_continues =
             matches!(first_word, Some("but" | "and" | "or" | "without" | "never"));
         let connector_starts_second_line =
@@ -1746,7 +1755,7 @@ fn coverage_risk_pack_docs_contract(document: &str) -> Result<()> {
         let lower = line.to_ascii_lowercase();
         let coverage_context =
             lower.contains("coverage") || lower.contains("codecov") || previous_coverage_line;
-        if coverage_context && has_positive_stale_route_claim_in_context(line, coverage_context) {
+        if coverage_context && has_positive_stale_route_claim_in_context(line) {
             ensure!(false, "risk-pack docs contain stale coverage route wording: {line}");
         }
         previous_coverage_line = !line.trim().is_empty()
@@ -1760,8 +1769,7 @@ fn coverage_risk_pack_docs_contract(document: &str) -> Result<()> {
 fn coverage_rollout_docs_contract(document: &str) -> Result<()> {
     let has_stale_coverage_branch = document.lines().any(|line| {
         let lower = line.to_ascii_lowercase();
-        lower.contains("master")
-            && (lower.contains("coverage") || lower.contains("codecov"))
+        lower.contains("master") && (lower.contains("coverage") || lower.contains("codecov"))
     });
     ensure!(
         !has_stale_coverage_branch,
