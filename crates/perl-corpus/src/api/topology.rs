@@ -1307,6 +1307,14 @@ mod tests {
                 "crates/perl-corpus/fuzz/crash-nested/case.pl",
                 "crates/perl-corpus/fuzz/crash-nested",
             ),
+            // Classifying grandparent under an ordinary immediate parent. Without
+            // this, checking only `path.parent()` satisfies every other case here
+            // while reintroducing the divergence one level further down.
+            (
+                CorpusAssetLayer::TestCorpus,
+                "test_corpus/container.pl/subdir/case.pm",
+                "test_corpus/container.pl",
+            ),
         ];
 
         for (layer, relative_path, classifying_directory) in cases {
