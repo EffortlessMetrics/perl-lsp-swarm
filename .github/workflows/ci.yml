@@ -1157,7 +1157,7 @@ jobs:
 
       - name: Upload non-Rust inventory evidence
         if: always() && matrix.name == 'policy'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: non-rust-inventory-${{ github.sha }}
           path: |
