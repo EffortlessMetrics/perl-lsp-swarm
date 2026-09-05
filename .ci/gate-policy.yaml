@@ -1066,11 +1066,14 @@ gates:
       --test pull_diagnostics_freshness_tests
       -- --test-threads=2
     timeout_seconds: 240
-    # retry_count: 0 deliberately. The three concurrent cells synchronise with a
-    # 2ms sleep, well inside CI scheduler jitter, so a retry would record a
-    # timing-dependent miss as a flake instead of a result. The gate-1 suites
-    # keep retry_count: 1 because they synchronise with hooks, not sleeps.
-    retry_count: 0
+    # retry_count only re-runs a gate that hit `timeout_seconds`:
+    # run_shell_command_with_retries retries on `execution.timed_out` and
+    # returns immediately on any other non-zero exit (xtask/src/tasks/gates.rs).
+    # It therefore cannot re-roll a failed assertion, so it does not mask this
+    # suite's sleep-synchronised cells; what it does cover is a cold compile of
+    # the expose_lsp_test_api feature combination exceeding 240s, which is why
+    # every unit_* merge-gate entry carries it.
+    retry_count: 1
     budgets:
       max_duration_ms: 210000
     quarantine: false
@@ -1351,8 +1354,8 @@ gates:
     #   tree-sitter-perl-rs           8
     # The command is retried once only after a watchdog timeout. Two attempts
     # at 450s plus the Linux watchdog's 75s TERM/KILL grace per attempt consume
-    # 1050s, leaving 150s inside the workflow's 1200s shard watchdog for the
-    # terminal gate receipt, summary, and process cleanup. Do not increase this
+    # 1050s, leaving ample room inside the workflow's 1800s shard watchdog for
+    # the terminal gate receipt, summary, and cleanup. Do not increase this
     # ceiling without revisiting that outer watchdog contract.
     # Claim boundary: on Linux `#[cfg(windows)]` removes the Windows-only
     # pause test before compilation, so this row runs only non-Windows tests
@@ -1423,8 +1426,8 @@ gates:
     # of child budgets (3 x 2 x 300s retrying
     # compiles + 6 x 120s behavior = 2520s worst case): this gate runs third
     # in the `lsp` CI Gate shard behind unit_lsp_core_full and unit_lsp_full
-    # (typically 173-243s each) under the shard runner's 1200s inner watchdog
-    # (scripts/ci/run_gate_shard.py + the `timeout 1200s` step guard), leaving
+    # (typically 173-243s each) under the shard runner's 1800s inner watchdog
+    # (scripts/ci/run_gate_shard.py + the `timeout 1800s` step guard), leaving
     # lsp_smoke roughly 720s in a typical hosted run. If either the gate guard
     # or the shard watchdog pre-empts the suite, the child receipt — persisted
     # after every child — retains completed children and marks the
@@ -2368,7 +2371,7 @@ version_history:
     changes:
       - "Add pending_parse_freshness and pull_diagnostics_freshness merge_gate entries (#11933): wire workspace+expose_lsp_test_api and expose_lsp_test_api feature combinations into mandatory CI so gap-simulation suites cannot rot silently"
       - "Both gate descriptions were narrowed to compile/panic regression coverage after review: the pull-diagnostic concurrent cells assert only a well-formed result and cannot prove stale-snapshot rejection. .ci/GATE_REGISTRY.toml and gate-policy.yaml now carry the same narrowed wording; neither is an optimistic claim over the other. Restoring a stale-rejection claim requires the barrier work under #13346."
-      - "pull_diagnostics_freshness set to retry_count: 0 — its cells are sleep-synchronised, so a retry would mask a timing-dependent regression as a flake."
+      - "pull_diagnostics_freshness keeps retry_count: 1. A review round set it to 0 on the theory that a retry could re-roll its sleep-synchronised cells; the shard runner only retries on watchdog timeout and returns immediately on any other non-zero exit, so retry cannot mask an assertion failure. It covers cold compilation of the feature combination, which is why every unit_* merge-gate entry carries it."
   - version: "1.1.0"
     date: "2026-08-10"
     changes:
