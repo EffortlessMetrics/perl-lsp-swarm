@@ -282,8 +282,17 @@ fn obtain_outcome(spec: &IndicatorSpec, options: &KwaliteeOptions) -> Outcome {
     }
 }
 
-/// Resolve an external indicator from the supplied results, or fall back to a
-/// profile-aware unverified/failed default.
+/// Resolve an external indicator in three stages, in this order:
+///
+/// 1. refuse a release-only indicator outright when the release profile
+///    supplies no `dist_dir` (#13067) — the release input is a precondition on
+///    accepting external evidence, not a fallback after it;
+/// 2. otherwise return the caller-supplied result when one exists;
+/// 3. otherwise fall back to a profile-aware unverified default.
+///
+/// Stage 1 must stay ahead of stage 2. Behind it, a caller could supply `Pass`
+/// for every `release.*` row with no staged distribution and obtain passing
+/// release evidence detached from any artifact.
 fn external_outcome(spec: &IndicatorSpec, options: &KwaliteeOptions) -> Outcome {
     // Release-scoped evidence is meaningful only when the evaluation is bound
     // to a staged distribution input. Enforce that before accepting a supplied
