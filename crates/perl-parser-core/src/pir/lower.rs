@@ -957,29 +957,19 @@ impl BodyLowerer {
             HirStmt::Let { name, sigil, storage, init, binding_range } => {
                 if *storage == DeclStorageClass::Unknown {
                     // Parser-shaped legacy calls (for example `field $x = 1`)
-                    // do not bind a lexical declaration. Their argument still
-                    // has ordinary assignment/read effects, so retain the full
-                    // assignment or model a bare package-variable read.
+                    // do not bind a lexical declaration. For `Unknown` storage
+                    // the `init` slot carries the call's argument expression —
+                    // the assignment for `field $x = 1`, the read for the bare
+                    // `field $x` — and HIR has already resolved that target
+                    // against the visible scope. Lower it plainly; assuming a
+                    // package slot here would drop a preceding lexical's
+                    // call-site reference, which `extract_lexical_facts` only
+                    // sees as a `LexicalRead`/`LexicalWrite`.
                     // Keep the call boundary visible to completeness consumers:
                     // the callee's runtime behavior remains unmodeled.
                     *self.unsupported.entry("LegacyFieldCall").or_insert(0) += 1;
-                    if let Some(init_id) = init {
-                        self.lower_expr(body, *init_id, file);
-                    } else {
-                        let anchor = self.make_body_anchor(*binding_range);
-                        self.push_body_node(
-                            anchor,
-                            PirOperation::StashRead {
-                                symbol: SymbolName {
-                                    sigil: sigil_str(sigil),
-                                    name: name.clone(),
-                                    package: package_from_name(name),
-                                },
-                            },
-                            PirContext::Unknown,
-                            None,
-                            file,
-                        );
+                    if let Some(arg_id) = init {
+                        self.lower_expr(body, *arg_id, file);
                     }
                     return;
                 }

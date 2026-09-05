@@ -53,8 +53,8 @@
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
-    BodyOwnerKind, DynamicBoundaryKind as HirDynamicBoundaryKind, HirBody, HirExpr, HirExprId,
-    HirFile, HirItem, HirKind, HirScopeId, ScopeKind, lower_ast,
+    BodyOwnerKind, DeclStorageClass, DynamicBoundaryKind as HirDynamicBoundaryKind, HirBody,
+    HirExpr, HirExprId, HirFile, HirItem, HirKind, HirScopeId, HirStmt, ScopeKind, lower_ast,
 };
 use perl_parser_core::pir::{PirNode, PirOperation, lower_single_body};
 use perl_semantic_facts::interprocedural::{
@@ -427,7 +427,7 @@ fn map_boundary_link(kind: HirDynamicBoundaryKind) -> BoundaryLink {
     BoundaryLink::new(None, kind, BoundaryDisposition::Degrade, reason)
 }
 
-/// Count HIR body expressions the per-body PIR lowering does not model.
+/// Count HIR body constructs the per-body PIR lowering does not model.
 /// These are declared `missing` evidence in the Place/Effect facets so an
 /// unmodeled body can never report those facets Complete (law 7).
 fn count_unmodeled(body: &HirBody) -> u32 {
@@ -440,6 +440,17 @@ fn count_unmodeled(body: &HirBody) -> u32 {
             | HirExpr::Readline { .. }
             | HirExpr::Glob { .. } => count = count.saturating_add(1),
             _ => {}
+        }
+    }
+    // Declaration-shaped legacy calls (`field $x = 1`) parse as a declaration
+    // but invoke an arbitrary subroutine. PIR lowers the argument effects and
+    // records the callee as unsupported, but that receipt does not reach this
+    // path: `lower_single_body` returns nodes only. Counting the statement
+    // here is what keeps Result/Place/Effect from reporting Complete over a
+    // call whose behaviour is not modelled at all.
+    for stmt in body.stmts.iter() {
+        if matches!(stmt, HirStmt::Let { storage: DeclStorageClass::Unknown, .. }) {
+            count = count.saturating_add(1);
         }
     }
     count

@@ -3334,6 +3334,13 @@ impl<'a> BodyBuilder2<'a> {
                 let sigil = sigil_from_str(sigil_str);
                 let storage = storage_class_for_decl(declarator);
 
+                // For a declaration-shaped legacy call (`field $x`), `storage`
+                // is `Unknown` and this slot carries the call's *argument*
+                // expression rather than a declaration initializer: the
+                // assignment for `field $x = 1`, the resolved read for the
+                // bare `field $x`. Both resolve their target against the
+                // visible scope, so PIR never has to assume a storage class.
+                let is_legacy_call = storage == DeclStorageClass::Unknown;
                 let init_expr_id = initializer.as_ref().map(|init_node| {
                     // Allocate the write-place for the declared variable.
                     // Declaration-shaped legacy calls (such as `field $x = 1`)
@@ -3369,6 +3376,25 @@ impl<'a> BodyBuilder2<'a> {
                     let assign_expr =
                         HirExpr::Assign { lhs: place_id, rhs: rhs_id, mode: AssignMode::Simple };
                     self.alloc_expr(assign_expr, assign_range)
+                });
+
+                // A bare legacy call still reads its argument before invoking
+                // the callee: `my $x; field $x;` reads that lexical. Resolve it
+                // like any other variable expression so the read lands on the
+                // visible binding. Without this the argument fell through to an
+                // unconditional package read, which `extract_lexical_facts`
+                // discards — losing the call-site reference entirely.
+                let init_expr_id = init_expr_id.or_else(|| {
+                    if !is_legacy_call {
+                        return None;
+                    }
+                    let read_expr = HirExpr::Variable(HirVariable {
+                        sigil: sigil_from_str(sigil_str),
+                        name: var_name.clone(),
+                        kind: self.resolve_variable_kind(sigil_str, &var_name),
+                        access: AccessMode::Read,
+                    });
+                    Some(self.alloc_expr(read_expr, binding_node.location))
                 });
 
                 self.alloc_stmt(

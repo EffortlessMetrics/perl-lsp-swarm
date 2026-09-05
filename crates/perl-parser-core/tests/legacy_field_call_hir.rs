@@ -115,3 +115,30 @@ fn legacy_field_call_reuses_existing_lexical_target() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn bare_field_argument_reuses_existing_lexical_target() -> TestResult {
+    // `field $x;` after `my $x` reads that lexical before invoking the callee.
+    // Lowering it as an unconditional package read hid the call-site reference
+    // from `extract_lexical_facts`, which only collects lexical operations.
+    let source = "my $x; field $x;\n";
+    let mut parser = Parser::new(source);
+    let parsed = parser.parse_with_recovery();
+    let file = lower_ast(&parsed.ast);
+    let body = file.bodies.first().ok_or("program body is required")?;
+    let nodes = lower_single_body(body, HirBodyId(0), &file);
+
+    assert!(
+        nodes.iter().any(|node| {
+            matches!(node.operation, PirOperation::LexicalRead { .. })
+                && node.source_anchor.range.map(|range| (range.start, range.end)) == Some((13, 15))
+        }),
+        "bare legacy field call must read the existing lexical at the field \
+         argument anchor: {nodes:?}"
+    );
+    assert!(
+        nodes.iter().all(|node| !matches!(node.operation, PirOperation::StashRead { .. })),
+        "a visible lexical target must not be read as a package symbol: {nodes:?}"
+    );
+    Ok(())
+}
