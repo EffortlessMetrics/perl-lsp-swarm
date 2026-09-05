@@ -94,13 +94,13 @@ fn a_real_failed_run_is_rejected_even_though_it_is_well_formed() -> Result<(), B
     let envelope = failed_run_envelope()?;
 
     // It is a complete, structurally valid envelope: the denominator survived.
-    for family in REQUIRED_FILE_FAMILIES {
+    for (family, _) in REQUIRED_FILE_FAMILIES {
         assert!(
             envelope["file_families"].get(*family).is_some(),
             "the failed run should still carry family `{family}`"
         );
     }
-    for cell in REQUIRED_ROOT_CELLS {
+    for (cell, _) in REQUIRED_ROOT_CELLS {
         assert!(
             envelope["roots"].get(*cell).is_some(),
             "the failed run should still carry root cell `{cell}`"
@@ -131,11 +131,10 @@ fn a_real_failed_run_is_rejected_even_though_it_is_well_formed() -> Result<(), B
 #[test]
 fn every_required_file_family_is_present_in_the_captured_run() -> Result<(), Box<dyn Error>> {
     let envelope = valid_envelope()?;
-    for family in REQUIRED_FILE_FAMILIES {
-        assert!(
-            envelope["file_families"].get(*family).is_some(),
-            "captured run is missing required file family `{family}`"
-        );
+    for (family, fixture) in REQUIRED_FILE_FAMILIES {
+        let row = &envelope["file_families"][*family];
+        assert!(!row.is_null(), "captured run is missing required file family `{family}`");
+        assert_eq!(row["fixture"], json!(fixture), "`{family}` should be about `{fixture}`");
     }
     Ok(())
 }
@@ -143,10 +142,57 @@ fn every_required_file_family_is_present_in_the_captured_run() -> Result<(), Box
 #[test]
 fn every_required_root_cell_is_present_in_the_captured_run() -> Result<(), Box<dyn Error>> {
     let envelope = valid_envelope()?;
-    for cell in REQUIRED_ROOT_CELLS {
-        assert!(
-            envelope["roots"].get(*cell).is_some(),
-            "captured run is missing required root cell `{cell}`"
+    for (cell, marker) in REQUIRED_ROOT_CELLS {
+        let row = &envelope["roots"][*cell];
+        assert!(!row.is_null(), "captured run is missing required root cell `{cell}`");
+        assert_eq!(row["marker"], json!(marker), "`{cell}` should be about `{marker}`");
+    }
+    Ok(())
+}
+
+/// A complete-looking denominator can also be fabricated by copying one passing
+/// row under every required identifier, so each identifier is bound to the
+/// fixture and marker it is about.
+#[test]
+fn a_relabelled_row_cannot_stand_in_for_a_required_identifier() -> Result<(), Box<dyn Error>> {
+    let mut families = valid_envelope()?;
+    let passing = families["file_families"]["source.pl"].clone();
+    families["file_families"]["template.tt"] = passing;
+    assert_eq!(
+        rejection(validate_envelope(&families))?,
+        "envelope.file_families.template.tt.fixture: expected `template.tt`, found `sample.pl`"
+    );
+
+    let mut roots = valid_envelope()?;
+    let winner = roots["roots"]["marker.build_pl"].clone();
+    roots["roots"]["marker.dist_ini"] = winner;
+    assert_eq!(
+        rejection(validate_envelope(&roots))?,
+        "envelope.roots.marker.dist_ini.marker: expected `dist.ini`, found `Build.PL`"
+    );
+    Ok(())
+}
+
+/// Prefix containment is only sound on normalized roles: `root/../elsewhere`
+/// starts with `root/` while resolving outside it.
+#[test]
+fn a_dot_segment_cannot_smuggle_a_target_out_of_the_selected_root() -> Result<(), Box<dyn Error>> {
+    for escaping in [
+        "fixture:roots/marker-dist/../outside/lib/RootProbe.pm",
+        "fixture:roots/marker-dist/./lib/RootProbe.pm",
+        "fixture:roots/marker-dist//lib/RootProbe.pm",
+    ] {
+        let mut envelope = valid_envelope()?;
+        envelope["roots"]["marker.dist_ini"]["semantic"]["observed_target_role"] = json!(escaping);
+        envelope["roots"]["marker.dist_ini"]["semantic"]["expected_target_role"] = json!(escaping);
+
+        assert_eq!(
+            rejection(validate_envelope(&envelope))?,
+            format!(
+                "envelope.roots.marker.dist_ini.semantic.expected_target_role: `{escaping}` is \
+                 not normalized; a dot or empty segment can escape the root it appears to be \
+                 inside"
+            )
         );
     }
     Ok(())
@@ -292,7 +338,7 @@ fn the_observation_cell_cannot_become_a_single_file_root_claim() -> Result<(), B
     borrowed_marker["roots"][cell]["marker"] = json!("cpanfile");
     assert_eq!(
         rejection(validate_envelope(&borrowed_marker))?,
-        format!("envelope.roots.{cell}.marker: the observation cell must record `none`")
+        format!("envelope.roots.{cell}.marker: expected `none`, found `cpanfile`")
     );
     Ok(())
 }
@@ -386,11 +432,15 @@ fn a_required_family_that_failed_to_establish_itself_is_rejected() -> Result<(),
 fn the_harness_cannot_test_a_marker_the_canonical_config_does_not_declare()
 -> Result<(), Box<dyn Error>> {
     let mut envelope = valid_envelope()?;
-    envelope["roots"]["marker.build_pl"]["marker"] = json!("META.json");
+    // Required cells now have their marker pinned by identity, so the
+    // config-membership rule is exercised on an extra cell.
+    let mut extra = envelope["roots"]["marker.build_pl"].clone();
+    extra["marker"] = json!("META.json");
+    envelope["roots"]["extra.meta_json"] = extra;
 
     assert_eq!(
         rejection(validate_envelope(&envelope))?,
-        "envelope.roots.marker.build_pl.marker: `META.json` is not one of the configured root \
+        "envelope.roots.extra.meta_json.marker: `META.json` is not one of the configured root \
          markers"
     );
     Ok(())

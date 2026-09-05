@@ -21,43 +21,47 @@ use std::fmt::{Display, Formatter};
 
 pub const SCHEMA_VERSION: &str = "neovim_activation_root_envelope.v1";
 
-/// File families that must appear in every envelope.
+/// File families that must appear in every envelope, each bound to the fixture
+/// it is about.
 ///
 /// A missing row cannot be allowed to shrink the denominator silently, so the
 /// population is fixed here rather than inferred from whatever the harness
-/// happened to emit.
-pub const REQUIRED_FILE_FAMILIES: &[&str] = &[
-    "adjacent.pod",
-    "adjacent.xs",
-    "metadata.cpanfile",
-    "shebang.bin_tool",
-    "shebang.cgi",
-    "shebang.fcgi",
-    "shebang.script_tool",
-    "source.PL",
-    "source.pl",
-    "source.pm",
-    "source.psgi",
-    "source.t",
-    "suffix_only.cgi",
-    "template.ep",
-    "template.mason",
-    "template.tt",
-    "template.tt2",
+/// happened to emit. Binding the fixture is what stops the opposite trick:
+/// copying one passing row under every required identifier would otherwise
+/// produce a complete-looking denominator out of a single observation.
+pub const REQUIRED_FILE_FAMILIES: &[(&str, &str)] = &[
+    ("adjacent.pod", "Doc.pod"),
+    ("adjacent.xs", "Native.xs"),
+    ("metadata.cpanfile", "cpanfile"),
+    ("shebang.bin_tool", "bin/tool"),
+    ("shebang.cgi", "handler.cgi"),
+    ("shebang.fcgi", "handler.fcgi"),
+    ("shebang.script_tool", "script/tool"),
+    ("source.PL", "legacy.PL"),
+    ("source.pl", "sample.pl"),
+    ("source.pm", "Sample.pm"),
+    ("source.psgi", "app.psgi"),
+    ("source.t", "basic.t"),
+    ("suffix_only.cgi", "plain.cgi"),
+    ("template.ep", "view.ep"),
+    ("template.mason", "view.mason"),
+    ("template.tt", "template.tt"),
+    ("template.tt2", "template.tt2"),
 ];
 
-/// Root cells that must appear in every envelope.
-pub const REQUIRED_ROOT_CELLS: &[&str] = &[
-    "boundary.no_marker_single_file",
-    "conflict.competing_markers_at_depth",
-    "conflict.nearest_perl_marker_beats_farther",
-    "conflict.perl_marker_beats_git",
-    "fallback.git_file_linked_worktree",
-    "fallback.git_only",
-    "isolation.sibling_same_relative_path",
-    "marker.build_pl",
-    "marker.dist_ini",
-    "marker.perl_lsp_toml",
+/// Root cells that must appear in every envelope, each bound to the marker it
+/// is about, for the same reason as the file families above.
+pub const REQUIRED_ROOT_CELLS: &[(&str, &str)] = &[
+    ("boundary.no_marker_single_file", "none"),
+    ("conflict.competing_markers_at_depth", "cpanfile"),
+    ("conflict.nearest_perl_marker_beats_farther", "Makefile.PL"),
+    ("conflict.perl_marker_beats_git", "cpanfile"),
+    ("fallback.git_file_linked_worktree", ".git"),
+    ("fallback.git_only", ".git"),
+    ("isolation.sibling_same_relative_path", "cpanfile"),
+    ("marker.build_pl", "Build.PL"),
+    ("marker.dist_ini", "dist.ini"),
+    ("marker.perl_lsp_toml", ".perl-lsp.toml"),
 ];
 
 /// Root cells whose whole point is that an identically-spelled fact exists in a
@@ -287,10 +291,19 @@ fn validate_config(root: &Map<String, Value>) -> Result<RecordedConfig, Envelope
 fn validate_file_families(root: &Map<String, Value>, config: &RecordedConfig) -> Validated {
     let families = require_object(root, "file_families", "envelope.file_families")?;
 
-    for required in REQUIRED_FILE_FAMILIES {
-        if !families.contains_key(*required) {
+    for (required, fixture) in REQUIRED_FILE_FAMILIES {
+        let Some(row) = families.get(*required) else {
             return Err(EnvelopeValidationError::new(format!(
                 "envelope.file_families: required family `{required}` is missing"
+            )));
+        };
+        // The identifier names a specific fixture. Without this, one passing row
+        // copied under every required key would satisfy the denominator.
+        let recorded = row.get("fixture").and_then(Value::as_str).unwrap_or_default();
+        if recorded != *fixture {
+            return Err(EnvelopeValidationError::new(format!(
+                "envelope.file_families.{required}.fixture: expected `{fixture}`, found \
+                 `{recorded}`"
             )));
         }
     }
@@ -361,7 +374,7 @@ fn validate_file_families(root: &Map<String, Value>, config: &RecordedConfig) ->
         // below: they say the run did not establish the row, not what the
         // project intends for that family.
         if FAILED_DISPOSITIONS.contains(&disposition) {
-            if REQUIRED_FILE_FAMILIES.contains(&id.as_str()) {
+            if REQUIRED_FILE_FAMILIES.iter().any(|(name, _)| *name == id.as_str()) {
                 return Err(EnvelopeValidationError::new(format!(
                     "{path}.disposition: required family `{id}` is `{disposition}`; the run did \
                      not establish it"
@@ -434,10 +447,16 @@ fn validate_file_families(root: &Map<String, Value>, config: &RecordedConfig) ->
 fn validate_roots(root: &Map<String, Value>, config: &RecordedConfig) -> Validated {
     let roots = require_object(root, "roots", "envelope.roots")?;
 
-    for required in REQUIRED_ROOT_CELLS {
-        if !roots.contains_key(*required) {
+    for (required, marker) in REQUIRED_ROOT_CELLS {
+        let Some(row) = roots.get(*required) else {
             return Err(EnvelopeValidationError::new(format!(
                 "envelope.roots: required root cell `{required}` is missing"
+            )));
+        };
+        let recorded = row.get("marker").and_then(Value::as_str).unwrap_or_default();
+        if recorded != *marker {
+            return Err(EnvelopeValidationError::new(format!(
+                "envelope.roots.{required}.marker: expected `{marker}`, found `{recorded}`"
             )));
         }
     }
@@ -600,7 +619,9 @@ fn validate_roots(root: &Map<String, Value>, config: &RecordedConfig) -> Validat
             // Marker coverage alone cannot carry this: several cells share one
             // marker, so a degraded conflict or isolation cell would otherwise
             // hide behind a sibling cell that happens to name the same marker.
-            if REQUIRED_ROOT_CELLS.contains(&id.as_str()) && id != OBSERVATION_ONLY_ROOT_CELL {
+            if REQUIRED_ROOT_CELLS.iter().any(|(name, _)| *name == id.as_str())
+                && id != OBSERVATION_ONLY_ROOT_CELL
+            {
                 return Err(EnvelopeValidationError::new(format!(
                     "{semantic_path}.outcome: required root cell `{id}` is `{outcome}`; it must \
                      reach `proven` on its own evidence"
@@ -654,6 +675,13 @@ fn validate_identity(root: &Map<String, Value>, key: &str, fields: &[&str]) -> V
 /// A durable envelope carries normalized identities, so the producing machine's
 /// own paths must be rejected wherever they could appear. Both call sites share
 /// this predicate so the two surfaces cannot drift apart.
+/// A role must be a normalized identity. Dot segments or empty segments would
+/// let a target that escapes the selected root still satisfy the prefix
+/// containment check below.
+fn has_non_normalized_segment(value: &str) -> bool {
+    value.split('/').skip(1).any(|segment| segment.is_empty() || segment == "." || segment == "..")
+}
+
 fn is_absolute_or_uri(value: &str) -> bool {
     if value.starts_with('/') || value.starts_with('\\') || value.contains("://") {
         return true;
@@ -676,6 +704,12 @@ fn require_role<'a>(
     if is_absolute_or_uri(value) {
         return Err(EnvelopeValidationError::new(format!(
             "{path}: `{value}` is an absolute path; roles must be normalized identities"
+        )));
+    }
+    if has_non_normalized_segment(value) {
+        return Err(EnvelopeValidationError::new(format!(
+            "{path}: `{value}` is not normalized; a dot or empty segment can escape the root it \
+             appears to be inside"
         )));
     }
     Ok(value)

@@ -425,9 +425,24 @@ local function evaluate_root_case(case)
   })
   -- `textDocument/definition` may answer with a single Location, an array of
   -- Location, or LocationLink entries that name the target as `targetUri`.
-  local location = definition and (definition[1] or definition) or nil
-  local target_uri = location and (location.uri or location.targetUri) or nil
-  local definition_uri = target_uri and normalize(vim.uri_to_fname(target_uri)) or ''
+  -- Anything else is a malformed success and must not be indexed blindly.
+  local definition_uri = ''
+  local malformed = nil
+  if definition ~= nil and type(definition) ~= 'table' then
+    malformed = ('textDocument/definition returned %s, not a Location'):format(type(definition))
+  else
+    local location = definition and (definition[1] or definition) or nil
+    if location ~= nil and type(location) ~= 'table' then
+      malformed = ('textDocument/definition returned a %s entry'):format(type(location))
+    else
+      local target_uri = location and (location.uri or location.targetUri) or nil
+      if target_uri ~= nil and type(target_uri) ~= 'string' then
+        malformed = 'textDocument/definition target uri is not a string'
+      elseif target_uri then
+        definition_uri = normalize(vim.uri_to_fname(target_uri))
+      end
+    end
+  end
 
   -- Content oracle: the indexed symbol names which root actually won. The
   -- identically-named `probe_marker` exists in every candidate root, so only
@@ -435,10 +450,19 @@ local function evaluate_root_case(case)
   local symbols, symbol_error = request(client, 0, 'workspace/symbol', { query = 'probe_' })
   local observed_symbols = {}
   local observed_marker = ''
-  for _, symbol in ipairs(symbols or {}) do
-    observed_symbols[symbol.name] = true
-    if symbol.name == 'probe_' .. case.marker_value then
-      observed_marker = case.marker_value
+  if symbols ~= nil and type(symbols) ~= 'table' then
+    malformed = malformed
+      or ('workspace/symbol returned %s, not a symbol list'):format(type(symbols))
+  else
+    for _, symbol in ipairs(symbols or {}) do
+      if type(symbol) == 'table' and type(symbol.name) == 'string' then
+        observed_symbols[symbol.name] = true
+        if symbol.name == 'probe_' .. case.marker_value then
+          observed_marker = case.marker_value
+        end
+      else
+        malformed = malformed or 'workspace/symbol returned an entry with no name'
+      end
     end
   end
 
@@ -453,7 +477,10 @@ local function evaluate_root_case(case)
 
   local outcome = 'proven'
   local reason = nil
-  if actual_root ~= expected_root then
+  if malformed then
+    outcome = 'not_proven'
+    reason = malformed
+  elseif actual_root ~= expected_root then
     outcome = 'not_proven'
     reason = ('selected root %s; expected %s'):format(role_of(actual_root), role_of(expected_root))
   elseif leaked then

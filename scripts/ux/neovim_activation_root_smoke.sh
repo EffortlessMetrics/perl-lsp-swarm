@@ -239,21 +239,24 @@ done
 mkdir -p "${fixture_root}/worktree-source"
 (
   cd "${fixture_root}/worktree-source"
-  # No --initial-branch: the default branch name is irrelevant here because
-  # the worktree branch is created explicitly below, and the flag would
-  # impose a needless Git 2.28+ requirement.
-  git init --quiet .
+  # `git -c init.defaultBranch=...` is ignored by Git versions that predate the
+  # setting, so this pins the source branch without raising the version floor,
+  # and keeps it distinct from the worktree branch created below.
+  git -c init.defaultBranch=perllsp-fixture-source init --quiet .
   git config user.email 'fixture@example.invalid'
   git config user.name 'Fixture'
   echo 'source root' >README.md
   git add README.md
   git commit --quiet -m 'fixture'
-  git branch --quiet linked
 ) >/dev/null 2>&1
 write_probe_module "${fixture_root}/worktree-source" worktreesource
 (
   cd "${fixture_root}/worktree-source"
-  git worktree add --quiet "${fixture_root}/roots/worktree-linked" linked
+  # Create the branch as part of adding the worktree: pre-creating a fixed
+  # branch name fails outright when it collides with the user's configured
+  # default branch.
+  git worktree add --quiet -b perllsp-fixture-linked \
+    "${fixture_root}/roots/worktree-linked" HEAD
 ) >/dev/null 2>&1
 write_probe_module "${fixture_root}/roots/worktree-linked" worktreelinked
 write_probe_entry "${fixture_root}/roots/worktree-linked"
