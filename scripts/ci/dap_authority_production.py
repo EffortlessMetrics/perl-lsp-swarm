@@ -59,6 +59,11 @@ def _request_routes(row: Mapping[str, str]) -> list[dict[str, str]]:
         }
     ]
     explicit = row["availability"] == "all_frontends"
+    # A native-only row is still a known catalog route, so the pinned peer
+    # fallback (EXPECTED_PEER_FALLBACKS, #9527/#9069) refuses it fail-closed
+    # with success: false. The success-empty acknowledgement applies only to
+    # commands outside the catalog, which have no row here; that policy is
+    # projected separately under `fallback_policies`.
     for frontend, owner, selector in (
         ("external_peer", PEER_DISPATCH_PATHS[0], "--external-peer"),
         ("mirror_peer", PEER_DISPATCH_PATHS[1], "--external-peer-listen"),
@@ -71,10 +76,10 @@ def _request_routes(row: Mapping[str, str]) -> list[dict[str, str]]:
                 "handler": (
                     f"{'DapPeerBridge' if frontend == 'external_peer' else 'MirrorPeerBridge'}::dispatch"
                     if explicit
-                    else "dynamic_compatibility_ack_success_empty"
+                    else "fail_closed_unavailable_in_frontend"
                 ),
                 "condition": selector,
-                "disposition": "handler_present" if explicit else "not_proven",
+                "disposition": "handler_present" if explicit else "fail_closed",
             }
         )
     return routes

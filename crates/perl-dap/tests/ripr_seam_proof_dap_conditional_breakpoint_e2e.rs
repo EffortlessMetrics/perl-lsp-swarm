@@ -1,11 +1,30 @@
-//! Live DAP seam proof for conditional line breakpoints.
+//! Live DAP seam proof for conditional line breakpoints (#9578 floor).
 //!
-//! The adapter should persist and forward conditions to `perl -d`; it should
-//! not simulate Perl condition semantics in Rust.
+//! # What changed and why
+//!
+//! This suite previously proved the fail-open conditional path: the adapter
+//! persisted the condition, forwarded it to `perl -d`, and execution stopped
+//! only when Perl's own condition semantics were true. #9578 floors that
+//! advertisement: `supportsConditionalBreakpoints` is advertised false and a
+//! `setBreakpoints` entry carrying `condition` is refused per item, because an
+//! adapter-accepted condition is not yet an accepted receipt that the engine
+//! installed and enforced it (the #8988 re-enable gate owns that proof and
+//! #7366 owns the same-session false-path evidence for promotion).
+//!
+//! The test keeps the live-session discipline — real `perl -d`, real stdio
+//! boundary — and now discriminates the floor on it:
+//!
+//! * the conditional entry must come back `verified: false` with the exact
+//!   #9578 conditional refusal, on a live initialized session;
+//! * the debuggee must then run to `terminated` with **no** `stopped` event:
+//!   if the condition had been silently stripped and the breakpoint installed
+//!   unconditionally, the loop would stop at the conditional line — the
+//!   precise fail-open behavior this floor forbids.
 
 mod common;
 
 use common::{DapWorkflowSession, perl_available, workflow_timeout};
+use perl_dap::debug_adapter::DapMessage;
 use serde_json::{Value, json};
 use std::fs::write;
 use tempfile::tempdir;
@@ -18,43 +37,12 @@ fn conditional_breakpoint_script_content() -> &'static str {
     "use strict;\nuse warnings;\n\nfor my $x (1..3) {\n    my $observed = $x;\n    print \"$observed\\n\";\n}\n"
 }
 
-fn set_conditional_breakpoint_checked(
-    session: &mut DapWorkflowSession,
-    source_path: &str,
-    line: u64,
-    condition: &str,
-) -> Result<i64, String> {
-    let response = session.request(
-        "setBreakpoints",
-        Some(json!({
-            "source": { "path": source_path },
-            "breakpoints": [{
-                "line": line,
-                "condition": condition
-            }]
-        })),
-    );
-    let body = session
-        .expect_success(&response, "setBreakpoints")?
-        .ok_or("setBreakpoints returned no body")?;
-    let breakpoints = body
-        .get("breakpoints")
-        .and_then(Value::as_array)
-        .ok_or("setBreakpoints response missing `breakpoints` array")?;
-    let breakpoint =
-        breakpoints.first().ok_or("setBreakpoints response returned no breakpoints")?;
-    let verified = breakpoint.get("verified").and_then(Value::as_bool).unwrap_or(false);
-    if !verified {
-        let message = breakpoint.get("message").and_then(Value::as_str).unwrap_or("<no message>");
-        return Err(format!("conditional breakpoint at line {line} was not verified: {message}"));
-    }
-    let resolved_line = breakpoint.get("line").and_then(Value::as_i64).unwrap_or(line as i64);
-    Ok(resolved_line)
-}
-
 #[test]
-fn conditional_breakpoint_stops_when_perl_condition_is_true() -> TestResult {
+fn conditional_breakpoint_entry_is_refused_and_never_installs_on_live_session() -> TestResult {
     if !perl_available() {
+        eprintln!(
+            "Skipping conditional_breakpoint_entry_is_refused_and_never_installs - perl not available"
+        );
         return Ok(());
     }
 
@@ -66,34 +54,73 @@ fn conditional_breakpoint_stops_when_perl_condition_is_true() -> TestResult {
 
     let mut session = DapWorkflowSession::new(workflow_timeout())?;
     session.launch(&script_str)?;
-    let resolved_line = set_conditional_breakpoint_checked(
-        &mut session,
-        &script_str,
-        CONDITIONAL_BP_LINE,
-        "$x > 2",
-    )?;
+
+    let response = session.request(
+        "setBreakpoints",
+        Some(json!({
+            "source": { "path": script_str },
+            "breakpoints": [{
+                "line": CONDITIONAL_BP_LINE,
+                "condition": "$x > 2"
+            }]
+        })),
+    );
+    let body = session
+        .expect_success(&response, "setBreakpoints")?
+        .ok_or("setBreakpoints returned no body")?;
+    let breakpoints = body
+        .get("breakpoints")
+        .and_then(Value::as_array)
+        .ok_or("setBreakpoints response missing `breakpoints` array")?;
+    assert_eq!(breakpoints.len(), 1, "one response breakpoint per input");
+    let breakpoint =
+        breakpoints.first().ok_or("setBreakpoints response returned no breakpoints")?;
+
+    let verified = breakpoint.get("verified").and_then(Value::as_bool).unwrap_or(true);
+    assert!(
+        !verified,
+        "a conditional entry must be refused while supportsConditionalBreakpoints is floored (#9578)"
+    );
+    let message = breakpoint
+        .get("message")
+        .and_then(Value::as_str)
+        .ok_or("the refused conditional entry must carry a message")?;
+    assert!(
+        message.contains("supportsConditionalBreakpoints") && message.contains("#9578"),
+        "expected the #9578 conditional floor refusal, got {message:?}"
+    );
+
     session.configuration_done()?;
 
-    let stopped = session.wait_stopped_with_frame()?;
-    assert_eq!(
-        stopped.reason, "breakpoint",
-        "conditional breakpoint stop reason must be `breakpoint`, got `{}`",
-        stopped.reason
-    );
-    assert_eq!(
-        stopped.line, resolved_line,
-        "conditional breakpoint stopped at line {}, expected adapter-resolved line {}",
-        stopped.line, resolved_line
-    );
+    // The refused entry must never install: an unconditional install would
+    // stop the loop at the conditional line on the first iteration.
+    let deadline = std::time::Instant::now() + session.timeout;
+    let mut saw_stopped = false;
+    let mut saw_terminated = false;
+    while std::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let Ok(msg) = session.rx.recv_timeout(remaining) else {
+            break;
+        };
+        if let DapMessage::Event { event, .. } = &msg {
+            if event == "terminated" {
+                saw_terminated = true;
+                break;
+            }
+            if event == "stopped" {
+                saw_stopped = true;
+                continue;
+            }
+        }
+    }
 
-    let (x_value, _) = session.evaluate_expression("$x", stopped.frame_id)?;
+    assert!(saw_terminated, "the debuggee must run to termination after the refusal");
     assert!(
-        x_value.contains('3'),
-        "conditional breakpoint `$x > 2` should stop on the third loop iteration, got `$x`={x_value:?}"
+        !saw_stopped,
+        "a refused conditional entry must not install unconditionally; the loop at line \
+         {CONDITIONAL_BP_LINE} must never stop"
     );
 
-    session.continue_exec(stopped.thread_id)?;
-    let _ = session.drain_until_event("terminated");
     session.disconnect()?;
 
     Ok(())

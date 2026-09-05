@@ -8,10 +8,7 @@
 //! they can never satisfy a dedicated postfix expectation.
 //!
 //! Span contracts are recorded per row. Slice forms span their full text. The
-//! arrow star-form Unary nodes currently span exactly their operand because the
-//! postfix parser reads a stale `last_end_position` for them; that defect is
-//! pinned here as evidence and stays owned by a bounded parser-fix child, not
-//! by this corpus claim.
+//! arrow star-form Unary nodes span their full operator-plus-operand text.
 
 use perl_parser::{Node, NodeKind, Parser};
 use std::fs;
@@ -24,10 +21,6 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 enum SpanContract {
     /// The node spans the operator and its operand.
     Full,
-    /// Current public contract: arrow star-form Unary nodes span exactly their
-    /// operand, excluding the `->X*` operator. Pinned as evidence for the
-    /// bounded parser-fix child; do not copy this expectation into new proofs.
-    OperandOnly,
 }
 
 #[derive(Clone, Copy)]
@@ -47,17 +40,17 @@ struct MatrixCase<'a> {
 const MATRIX: &[MatrixCase<'static>] = &[
     MatrixCase {
         text: "$sref->$*",
-        span: SpanContract::OperandOnly,
+        span: SpanContract::Full,
         shape: ExpectedShape::Unary { op: "->$*", receiver: "$sref" },
     },
     MatrixCase {
         text: "$aref->$#*",
-        span: SpanContract::OperandOnly,
+        span: SpanContract::Full,
         shape: ExpectedShape::Unary { op: "->$#*", receiver: "$aref" },
     },
     MatrixCase {
         text: "$aref->@*",
-        span: SpanContract::OperandOnly,
+        span: SpanContract::Full,
         shape: ExpectedShape::Unary { op: "->@*", receiver: "$aref" },
     },
     MatrixCase {
@@ -72,7 +65,7 @@ const MATRIX: &[MatrixCase<'static>] = &[
     },
     MatrixCase {
         text: "$href->%*",
-        span: SpanContract::OperandOnly,
+        span: SpanContract::Full,
         shape: ExpectedShape::Unary { op: "->%*", receiver: "$href" },
     },
     MatrixCase {
@@ -82,12 +75,12 @@ const MATRIX: &[MatrixCase<'static>] = &[
     },
     MatrixCase {
         text: "$cref->&*",
-        span: SpanContract::OperandOnly,
+        span: SpanContract::Full,
         shape: ExpectedShape::Unary { op: "->&*", receiver: "$cref" },
     },
     MatrixCase {
         text: "$gref->**",
-        span: SpanContract::OperandOnly,
+        span: SpanContract::Full,
         shape: ExpectedShape::Unary { op: "->**", receiver: "$gref" },
     },
 ];
@@ -150,8 +143,6 @@ fn matrix_geometry_is_byte_exact_under_crlf_source() -> TestResult {
         if case.span == SpanContract::Full {
             assert_eq!(node_source(node, &source), Some(case.text));
         }
-        // OperandOnly rows prove their geometry through the exact receiver span
-        // consumed by the binding matcher plus the pinned operand contract.
         pin_span_contract(node, &source, case)?;
     }
 
@@ -178,8 +169,8 @@ fn parse_clean(source: &str) -> Result<Node, String> {
 /// Bind exactly one public AST node for a matrix row.
 ///
 /// Slice rows bind by their full source text. Star rows bind by operator
-/// variant plus the exact receiver span, because the current public span of an
-/// arrow star-form Unary node excludes the operator.
+/// variant plus the exact receiver span, so each star-form Unary node remains
+/// structurally bound even when its span includes the operator.
 fn exact_matrix_node<'a>(
     ast: &'a Node,
     source: &str,
@@ -248,23 +239,6 @@ fn pin_span_contract(node: &Node, source: &str, case: &MatrixCase<'_>) -> Result
             if node_source(node, source) != Some(case.text) {
                 return Err(format!("row {:?} lost its full-text span", case.text));
             }
-        }
-        (SpanContract::OperandOnly, NodeKind::Unary { operand, .. }) => {
-            if node.location.start != operand.location.start
-                || node.location.end != operand.location.end
-            {
-                return Err(format!(
-                    "row {:?} drifted from the operand-only span contract",
-                    case.text
-                ));
-            }
-        }
-        (SpanContract::OperandOnly, other) => {
-            return Err(format!(
-                "row {:?} expected a Unary node for the operand-only contract, got {}",
-                case.text,
-                other.kind_name()
-            ));
         }
     }
     Ok(())
