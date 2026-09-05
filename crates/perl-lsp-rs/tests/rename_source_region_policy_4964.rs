@@ -227,6 +227,48 @@ fn rename_survives_apostrophe_in_quote_like_neighbor() -> TestResult {
     Ok(())
 }
 
+/// Sigiled package variables that share the sub's name are a different
+/// entity and must not be edited on textual coincidence; the `&` call form
+/// names the sub itself and must still be renamed.
+#[test]
+fn rename_leaves_sigiled_package_variable_coincidences_unedited() -> TestResult {
+    let app_doc = concat!(
+        "package B;\n",
+        "use A;\n",
+        "my $A::target_name;\n",
+        "local $A::target_name;\n",
+        "@A::target_name = ();\n",
+        "%A::target_name = ();\n",
+        "sub run {\n",
+        "    return &A::target_name();\n",
+        "}\n",
+    );
+    let changes = rename_target_name(app_doc)?;
+    let renamed = apply_edits(app_doc, &edits_for(&changes, APP_URI))?;
+
+    assert!(
+        renamed.contains("return &A::renamed_target();"),
+        "the `&` call form names the renamed sub and must be edited: {renamed}"
+    );
+    assert!(
+        renamed.contains("my $A::target_name;"),
+        "a sigiled scalar sharing the sub's name must not be edited: {renamed}"
+    );
+    assert!(
+        renamed.contains("local $A::target_name;"),
+        "a localized package variable must not be edited: {renamed}"
+    );
+    assert!(
+        renamed.contains("@A::target_name = ();"),
+        "a sigiled array sharing the sub's name must not be edited: {renamed}"
+    );
+    assert!(
+        renamed.contains("%A::target_name = ();"),
+        "a sigiled hash sharing the sub's name must not be edited: {renamed}"
+    );
+    Ok(())
+}
+
 /// Unicode earlier on the line must not suppress a real code occurrence.
 #[test]
 fn rename_survives_unicode_earlier_on_line() -> TestResult {

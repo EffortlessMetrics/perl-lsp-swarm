@@ -230,10 +230,15 @@ fn add_qualified_document_rename_edits<F>(
         // identifier class. A raw UTF-8 continuation byte is not a character
         // boundary: it may be the tail of a Unicode package/identifier that
         // contains this ASCII-looking substring.
-        let before_ok = source[..match_start]
-            .chars()
-            .next_back()
-            .is_none_or(|ch| !is_module_identifier_char(ch) && ch != ':' && ch != '\'');
+        //
+        // A preceding `$`/`@`/`%` makes the match a sigiled *package variable*
+        // that shares the sub's name (`$My::Pkg::target`, cf.
+        // `$File::Find::name`) — a different entity, so the edit would rebind
+        // a variable reference on textual coincidence alone. `&` is excluded
+        // deliberately: `&My::Pkg::target` is a real call of the renamed sub.
+        let before_ok = source[..match_start].chars().next_back().is_none_or(|ch| {
+            !is_module_identifier_char(ch) && ch != ':' && ch != '\'' && !is_perl_sigil(ch)
+        });
         let after_ok = source[name_end..]
             .chars()
             .next()
@@ -270,7 +275,7 @@ fn add_qualified_document_rename_edits<F>(
         tracing::debug!(
             uri = %edit_uri,
             skipped_boundary,
-            "qualified rename fallback skipped candidates failing byte boundary validation (#4964)"
+            "qualified rename fallback skipped candidates failing boundary validation (#4964)"
         );
     }
 }
@@ -2884,6 +2889,7 @@ mod tests {
         let source = concat!(
             "My::Pkg::target();\n",
             "My::Pkg::target();\n",
+            "&My::Pkg::target();\n",
             "Other::My::Pkg::target();\n",
             "λMy::Pkg::target();\n",
             "My::Pkg::targetλ();\n",
@@ -2891,6 +2897,10 @@ mod tests {
             "My::Pkg::target::child();\n",
             "Other'My::Pkg::target();\n",
             "My::Pkg::target'child();\n",
+            "my $My::Pkg::target;\n",
+            "local $My::Pkg::target;\n",
+            "@My::Pkg::target = ();\n",
+            "%My::Pkg::target = ();\n",
             "# My::Pkg::target();\n",
             "my $s = \"My::Pkg::target()\";\n",
         );
@@ -2913,8 +2923,9 @@ mod tests {
         let edits = grouped.get(uri).ok_or("missing qualified call edits")?;
         assert_eq!(
             edits.len(),
-            2,
-            "only standalone qualified calls outside comments and strings should be edited"
+            3,
+            "only standalone qualified calls (including the `&` call form) outside comments, \
+             strings, and sigiled variable references should be edited"
         );
         assert!(
             edits.iter().all(|edit| edit.get("newText").and_then(Value::as_str) == Some("renamed")),
@@ -2936,7 +2947,7 @@ mod tests {
         let deduped_edits = grouped.get(uri).ok_or("missing deduped qualified call edits")?;
         assert_eq!(
             deduped_edits.len(),
-            2,
+            3,
             "re-scanning the same document must not produce duplicate edits"
         );
 
