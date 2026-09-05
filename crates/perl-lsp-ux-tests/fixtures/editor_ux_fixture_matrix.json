@@ -734,7 +734,7 @@
       "ci_tier": "pr",
       "component": "diagnostics",
       "instrumentation": {
-        "run_receipt": false,
+        "run_receipt": true,
         "first_useful_result": false,
         "protocol_goldens": false
       },
