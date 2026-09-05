@@ -1559,7 +1559,7 @@ gates:
 
   - name: non_rust_inventory_check
     tier: merge_gate
-    description: "Scan and classify tracked non-Rust files and require the normalized committed snapshot to match"
+    description: "Classify the current tracked tree, emit retained inventory evidence, and reject newly added unclassified paths"
     required: true
     command: cargo xtask non-rust inventory --check
     timeout_seconds: 300

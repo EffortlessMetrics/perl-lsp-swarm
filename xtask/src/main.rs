@@ -2915,20 +2915,17 @@ enum NonRustCommand {
     /// Walk `git ls-files`, classify tracked files against the allowlist,
     /// and emit `target/policy/non-rust-inventory.{md,json}`.
     ///
-    /// By default this is a read-only scan: no tracked file is modified.
-    /// Pass `--write` to also regenerate the committed snapshot at
-    /// `docs/policy/NON_RUST_INVENTORY.md`.
+    /// This is always a read-only scan: no tracked file is modified.
+    /// `docs/policy/NON_RUST_INVENTORY.md` is a frozen pointer, never
+    /// generated content; the evidence is the ignored `target/policy/` pair
+    /// and the `non-rust-inventory-<sha>` CI artifact.
     Inventory {
-        /// Check classification and newly added files without rewriting outputs.
-        /// Require the generated Markdown snapshot to match the committed snapshot
-        /// after line-ending normalization.
+        /// Validate the current tracked tree against the allowlist, emit
+        /// Markdown/JSON evidence under `target/policy/`, require the frozen
+        /// pointer document, and reject newly added unclassified paths
+        /// against merge-base.
         #[arg(long)]
         check: bool,
-
-        /// Also overwrite `docs/policy/NON_RUST_INVENTORY.md` with the
-        /// regenerated content.  Mutually exclusive with `--check`.
-        #[arg(long, conflicts_with = "check")]
-        write: bool,
     },
 
     /// Check non-Rust files against the allowlist and report violations.
@@ -6627,12 +6624,10 @@ fn run_cli(cli: Cli) -> Result<()> {
                     repository.as_deref(),
                 )
             }
-            NonRustCommand::Inventory { check, write } => {
+            NonRustCommand::Inventory { check } => {
                 let root = utils::project_root()?;
                 if check {
                     tasks::file_policy::non_rust_inventory_check(&root)
-                } else if write {
-                    tasks::file_policy::non_rust_inventory_write_docs(&root)
                 } else {
                     tasks::file_policy::non_rust_inventory(&root)
                 }

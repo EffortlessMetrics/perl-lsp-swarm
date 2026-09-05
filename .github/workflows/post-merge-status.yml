@@ -1,8 +1,9 @@
 name: Post-Merge Status Regeneration
 
-# Generate status documentation from trusted default-branch source without write
-# authority. A separate minimal job validates one content-addressed payload and
-# proposes the exact five generated files through a reviewable pull request.
+# Generate status documentation and the non-Rust reader reference from trusted
+# default-branch source without write authority. A separate minimal job validates
+# one content-addressed payload and proposes the exact six published files through
+# a reviewable pull request. Branch validity is evaluated independently.
 #
 # #12606: runs queue instead of cancelling, so a run can finish generating long
 # after newer commits landed on the default branch. Two guards close that stale
@@ -21,15 +22,11 @@ on:
 
 concurrency:
   group: post-merge-status-${{ github.ref }}
-  # #10199: this run is the only automated healer for the generated status
-  # documents and docs/policy/NON_RUST_INVENTORY.md (#11731). With
-  # cancel-in-progress the next merge superseded each in-flight run before its
-  # ~10-minute generate cycle finished, so under merge cadence the healing PR
-  # never opened and main's committed inventory drifted permanently. Every
-  # later branch then failed the strict inventory ratchet in
-  # xtask/tests/file_policy.rs, reding PR Smoke on healthy PRs. Queued runs are
-  # safe: each regenerates from its own pinned event SHA and the writer updates
-  # the same automation branch, so the newest completed run converges.
+  # #10199: this run is the sole automated publisher for the generated status
+  # documents. Queuing prevents sustained merge cadence from starving
+  # publication. The non-Rust inventory is not published here: its tracked
+  # pointer is frozen and the evidence is the policy shard's
+  # `non-rust-inventory-<sha>` artifact (#14688).
   cancel-in-progress: false
 
 permissions:
@@ -76,14 +73,6 @@ jobs:
       - name: Regenerate status subsystem files and roadmap
         run: cargo run --locked -p xtask -- update-status --write
 
-      # Merge-time non-Rust inventory refresh (#11731): any merge that changes
-      # tracked file counts drifts docs/policy/NON_RUST_INVENTORY.md, and the
-      # next branch cut from main then fails non_rust_inventory_check in
-      # unit_routed_full. Regenerating here lands the drift with the same
-      # reviewable PR as the status documents instead of on an unlucky branch.
-      - name: Regenerate the non-Rust inventory
-        run: cargo run --locked -p xtask -- non-rust inventory --write
-
       - name: Validate and stage exact generated payload
         id: payload
         run: |
@@ -106,7 +95,6 @@ jobs:
               "docs/project/status/parser.md",
               "docs/project/status/quality.md",
               "docs/project/ROADMAP.md",
-              "docs/policy/NON_RUST_INVENTORY.md",
           ]
           # `update-status --write` regenerates six subsystems, not four: it also
           # owns docs/project/status/{dap,workspace}.md, editor_ux.json, and the
@@ -122,7 +110,6 @@ jobs:
           # privileged writer stay bounded to the canonical files. (#13355)
           owned_paths = {
               "docs/project/ROADMAP.md",
-              "docs/policy/NON_RUST_INVENTORY.md",
               "Cargo.lock",
           }
           root = Path.cwd().resolve()
@@ -338,7 +325,6 @@ jobs:
               "docs/project/status/parser.md",
               "docs/project/status/quality.md",
               "docs/project/ROADMAP.md",
-              "docs/policy/NON_RUST_INVENTORY.md",
           ]
           expected_paths = set(canonical)
           # Re-declared here on purpose. The generator enforces the same limits,
@@ -526,12 +512,11 @@ jobs:
           # as its base is a live dependency on it, and deleting the base
           # auto-closes that child (#12885). Cleanup is a separate admitted
           # decision via `xtask branch-deletion-admission admit`.
-          title: "chore(docs): regenerate post-merge status and inventory (#6012, #11731)"
-          commit-message: "chore(docs): regenerate post-merge status and inventory (#6012, #11731)"
+          title: "chore(docs): regenerate post-merge status (#6012, #11731)"
+          commit-message: "chore(docs): regenerate post-merge status (#6012, #11731)"
           body: |
-            Regenerates the five canonical status documents and the non-Rust
-            inventory from the trusted default-branch source at
-            `${{ github.sha }}`.
+            Regenerates the five canonical status documents from the trusted
+            default-branch source at `${{ github.sha }}`.
 
             Generation ran without repository write authority. The writer
             verified the source SHA and every path, size, and SHA-256 digest.
@@ -545,7 +530,6 @@ jobs:
             docs/project/status/parser.md
             docs/project/status/quality.md
             docs/project/ROADMAP.md
-            docs/policy/NON_RUST_INVENTORY.md
 
       - name: Raise CI on the generated PR
         # GITHUB_TOKEN-created PRs raise no pull_request events, so none of
@@ -675,7 +659,7 @@ jobs:
               comparison = json.loads(gh("api", f"repos/{repository}/compare/{source_sha}...{tip}"))
               if comparison.get("status") != "ahead" or not comparison.get("ahead_by"):
                   # Divergent or unrelated history is not provably behind main;
-                  # the strict inventory ratchet already reds such payloads.
+                  # a stale status payload is refused by the payload validator.
                   print(f"proposal PR #{number} source {source_sha} is not strictly behind {tip}; leaving untouched")
                   continue
               gh(
