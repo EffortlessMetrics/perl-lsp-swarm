@@ -153,6 +153,7 @@ function writeJsonAtomic(destination, value) {
  *   behavior_safe?: boolean,
  *   transition_state?: string,
  *   violations?: string[],
+ *   post_host_exit_processes?: string[],
  *   transition?: unknown,
  * }} SmokeStage
  */
@@ -165,6 +166,7 @@ function writeJsonAtomic(destination, value) {
  *   platform: string,
  *   architecture: string,
  *   vscode_version: string,
+ *   observed_vscode_version: string | null,
  *   source_label: string,
  *   server: { source_sha: string | null, path: string | null, sha256: string | null },
  *   vsix: { path: string | null, sha256: string | null },
@@ -196,6 +198,10 @@ function initialReceipt(revision) {
     // One default across receipt and child check: the extension-host child
     // records 'stable' when the matrix version is unset, so we do too.
     vscode_version: (process.env.PERL_LSP_VSCODE_VERSION || '').trim() || 'stable',
+    // The launched runtime version observed by the extension-host child; null
+    // until a bound first-hour receipt reports it. Consumers must treat null
+    // as unobserved, never as agreement with the requested selector.
+    observed_vscode_version: null,
     source_label: (process.env.PERL_LSP_SMOKE_SOURCE_LABEL || '').trim() || 'local-current-source',
     server: {
       source_sha: serverSourceRevision || null,
@@ -585,6 +591,22 @@ function validateChildSmokeReceipt({
   if (environment.requested_vscode_version !== expectedVscodeVersion) {
     violations.push(
       `first-hour receipt VS Code version ${JSON.stringify(environment.requested_vscode_version)} is not this matrix leg`,
+    );
+  }
+  // The requested selector alone never proves the launched host: the child
+  // must record the actual runtime version, and on a concrete leg that
+  // runtime must equal the request.
+  const runtimeVersion = environment.vscode_version;
+  if (typeof runtimeVersion !== 'string' || !/^\d+\.\d+\.\d+$/.test(runtimeVersion)) {
+    violations.push(
+      `first-hour receipt does not record a concrete launched VS Code runtime version, got ${JSON.stringify(runtimeVersion)}`,
+    );
+  } else if (
+    /^\d+\.\d+\.\d+$/.test(expectedVscodeVersion) &&
+    runtimeVersion !== expectedVscodeVersion
+  ) {
+    violations.push(
+      `first-hour receipt launched VS Code ${JSON.stringify(runtimeVersion)} but this matrix leg requested the concrete ${JSON.stringify(expectedVscodeVersion)}`,
     );
   }
   if (environment.extension_id !== 'EffortlessMetrics.perl-lsp-rs') {
@@ -1580,6 +1602,7 @@ function runActivationFailureJourneyAttempt(baseEnv, context, paths) {
       exit_codes: legExitCodes,
       reason: 'activation_failure_journey_leg_did_not_exit_cleanly',
       recovery_verdict: joined.verdict,
+      post_host_exit_processes: postHostExitProcesses,
     };
   }
   if (!validation.ok) {
@@ -1589,6 +1612,7 @@ function runActivationFailureJourneyAttempt(baseEnv, context, paths) {
       reason: 'journey child receipts did not bind this run',
       violations: validation.violations,
       recovery_verdict: joined.verdict,
+      post_host_exit_processes: postHostExitProcesses,
     };
   }
   return {
@@ -1596,6 +1620,7 @@ function runActivationFailureJourneyAttempt(baseEnv, context, paths) {
     exit_codes: legExitCodes,
     recovery_verdict: joined.verdict,
     receipt: path.relative(repoRoot, joinedReceiptFile).replaceAll('\\', '/'),
+    post_host_exit_processes: postHostExitProcesses,
   };
 }
 
@@ -1801,6 +1826,7 @@ function runCrashRecoveryJourneyAttempt(baseEnv, context, paths) {
         exit_codes: legExitCodes,
         reason: 'crash_recovery_journey_leg_observed_failure',
         recovery_verdict: joined.verdict,
+        post_host_exit_processes: postHostExitProcesses,
       };
     }
     // Aligned with the composer: a leg that did not exit cleanly is an
@@ -1810,6 +1836,7 @@ function runCrashRecoveryJourneyAttempt(baseEnv, context, paths) {
       exit_codes: legExitCodes,
       reason: 'crash_recovery_journey_leg_did_not_exit_cleanly',
       recovery_verdict: joined.verdict,
+      post_host_exit_processes: postHostExitProcesses,
     };
   }
   if (!validation.ok) {
@@ -1819,6 +1846,7 @@ function runCrashRecoveryJourneyAttempt(baseEnv, context, paths) {
       reason: 'journey child receipts did not bind this run',
       violations: validation.violations,
       recovery_verdict: joined.verdict,
+      post_host_exit_processes: postHostExitProcesses,
     };
   }
   return {
@@ -1829,6 +1857,7 @@ function runCrashRecoveryJourneyAttempt(baseEnv, context, paths) {
       joined.verdict === 'pass' ? 'pass' : joined.verdict === 'failed' ? 'failed' : 'not_proven',
     exit_codes: legExitCodes,
     recovery_verdict: joined.verdict,
+    post_host_exit_processes: postHostExitProcesses,
     receipt: path.relative(repoRoot, joinedReceiptFile).replaceAll('\\', '/'),
   };
 }
@@ -2077,6 +2106,12 @@ function main() {
                 reason: 'child_receipt_did_not_bind_this_run',
                 violations: childReceipt.violations,
               };
+          if (childReceipt.ok) {
+            // Propagate the launched runtime version the bound child
+            // observed; downstream exactness claims must bind to this, never
+            // to the requested selector alone.
+            receipt.observed_vscode_version = childReceipt.receipt.environment.vscode_version;
+          }
         }
       } else {
         receipt.stages.behavioral_smoke = {

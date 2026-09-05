@@ -63,7 +63,7 @@ tempfile.workspace = true
 glob = "0.3.3"
 jsonschema = { version = "0.52", default-features = false }
 proc-macro2 = { version = "1", default-features = false, features = ["span-locations"] }
-syn = { version = "2", default-features = false, features = [
+syn = { version = "3", default-features = false, features = [
     "clone-impls",
     "extra-traits",
     "full",

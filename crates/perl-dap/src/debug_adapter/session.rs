@@ -44,6 +44,9 @@ pub(super) enum ResumeMode {
     Next,
     StepIn,
     StepOut,
+    /// Run-to-line resume. Unreachable while standard DAP `goto` is fail-closed
+    /// (#9064); retained for the proven-primitive re-enable gate.
+    #[allow(dead_code)]
     Goto,
     Unknown,
 }

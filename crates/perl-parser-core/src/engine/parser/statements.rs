@@ -169,7 +169,7 @@ impl<'a> Parser<'a> {
         // causing it to emit Division (Slash) instead of RegexMatch.  Roll back
         // and re-lex in ExpectTerm mode to get the correct token.
         if self.tokens.peek()?.kind() == TokenKind::Slash {
-            self.tokens.relex_as_term();
+            self.reclassify_head_as_term()?;
         }
 
         let kind = self.tokens.peek()?.kind();
@@ -1230,12 +1230,12 @@ impl<'a> Parser<'a> {
     fn parse_named_unary_statement_tail(&mut self, mut expr: Node) -> ParseResult<Node> {
         expr = self.parse_relational_with(expr)?;
         expr = self.parse_equality_with(expr)?;
-        expr = self.parse_range_with(expr)?;
         expr = self.parse_bitwise_and_with(expr)?;
         expr = self.parse_bitwise_xor_with(expr)?;
         expr = self.parse_bitwise_or_with(expr)?;
         expr = self.parse_and_with(expr)?;
         expr = self.parse_or_with(expr)?;
+        expr = self.parse_range_with(expr)?;
         expr = self.parse_ternary_with(expr)?;
         expr = self.collect_comma_fat_arrow_continuation(expr)?;
         self.parse_word_or_expr(expr)
@@ -1535,7 +1535,7 @@ impl<'a> Parser<'a> {
                                 // the `/` after these builtins is a regex delimiter, not
                                 // division. Roll back the lexer to re-lex the `/` in
                                 // ExpectTerm mode so it becomes a regex.
-                                self.tokens.relex_as_term();
+                                self.reclassify_head_as_term()?;
                                 args.push(self.parse_assignment()?);
                             } else if self.peek_kind() == Some(TokenKind::LeftParen)
                                 && (Self::is_block_list_func(func_name.as_ref())
