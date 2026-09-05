@@ -5,7 +5,7 @@
 //! that item — or a deliberately corrupted variant of it — back through
 //! `inlayHint/resolve`.
 //!
-//! The claim under test is that the resolved `labelDetails.location` is derived
+//! The claim under test is that the resolved label part `location` is derived
 //! only from a subject this server issued, in this session, for this exact hint
 //! and this exact parsed snapshot. Every negative control below resolved
 //! successfully before the migration, because the resolver read `uri` and
@@ -128,9 +128,10 @@ fn resolve(server: &LspServer, hint: &Value) -> Result<Value, Box<dyn std::error
     Ok(response.result.ok_or("inlayHint/resolve produced no result")?)
 }
 
-/// `labelDetails.location` present, i.e. the server accepted the subject.
+/// A label part carrying `location`, i.e. the server accepted the subject
+/// (LSP 3.17 `InlayHintLabelPart.location`, #14679 shape).
 fn resolved_location(resolved: &Value) -> Option<&Value> {
-    resolved.pointer("/labelDetails/location")
+    resolved.get("label")?.as_array()?.iter().find_map(|part| part.get("location"))
 }
 
 // ---------------------------------------------------------------------------
@@ -229,11 +230,20 @@ fn a_fabricated_hint_no_request_produced_does_not_resolve() -> TestResult {
 }
 
 #[test]
-fn a_fabricated_hint_with_presentation_data_does_not_retain_label_details() -> TestResult {
+fn a_fabricated_hint_with_presentation_data_does_not_retain_client_locations() -> TestResult {
     let server = open_server()?;
     let fabricated = json!({
         "position": { "line": 3, "character": 6 },
-        "label": "forged:",
+        "label": [{
+            "value": "forged:",
+            "location": {
+                "uri": "file:///attacker-selected",
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 1 }
+                }
+            }
+        }],
         "kind": 2,
         "tooltip": "forged tooltip",
         "labelDetails": {
@@ -257,6 +267,15 @@ fn a_fabricated_hint_with_presentation_data_does_not_retain_label_details() -> T
     assert!(
         resolved.get("labelDetails").is_none(),
         "client-supplied labelDetails must be discarded without an authenticated envelope; got {resolved:#}"
+    );
+    assert!(
+        resolved_location(&resolved).is_none(),
+        "a client-supplied label part location must be discarded without an authenticated envelope; got {resolved:#}"
+    );
+    assert_eq!(
+        resolved.pointer("/label/0/value").and_then(Value::as_str),
+        Some("forged:"),
+        "the displayed label text is presentation data and is preserved"
     );
     Ok(())
 }

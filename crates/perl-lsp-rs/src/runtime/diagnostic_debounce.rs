@@ -19,6 +19,7 @@ enum DebounceMsg {
 
 pub(crate) struct DiagnosticDebouncer {
     tx: std::sync::mpsc::Sender<DebounceMsg>,
+    worker_handle: Option<thread::JoinHandle<()>>,
     #[allow(dead_code)] // Read by test/debug runtime pressure snapshots.
     pending_count: Arc<AtomicUsize>,
 }
@@ -31,13 +32,17 @@ impl DiagnosticDebouncer {
         let (tx, rx) = std::sync::mpsc::channel();
         let pending_count = Arc::new(AtomicUsize::new(0));
         let worker_pending_count = Arc::clone(&pending_count);
-        if let Err(e) = thread::Builder::new()
+        let worker_handle = match thread::Builder::new()
             .name("diag-debounce".into())
             .spawn(move || worker_loop(rx, interval, publish_fn, worker_pending_count))
         {
-            tracing::error!(error = %e, "diagnostic debounce thread spawn failed");
-        }
-        Self { tx, pending_count }
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                tracing::error!(error = %e, "diagnostic debounce thread spawn failed");
+                None
+            }
+        };
+        Self { tx, worker_handle, pending_count }
     }
 
     pub(crate) fn schedule(&self, uri: &str) -> bool {
@@ -54,7 +59,7 @@ impl DiagnosticDebouncer {
     pub(crate) fn unavailable_for_test() -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         drop(rx);
-        Self { tx, pending_count: Arc::new(AtomicUsize::new(0)) }
+        Self { tx, worker_handle: None, pending_count: Arc::new(AtomicUsize::new(0)) }
     }
 
     #[allow(dead_code)] // Read by test/debug runtime pressure snapshots.
@@ -68,6 +73,30 @@ impl Drop for DiagnosticDebouncer {
         if let Err(e) = self.tx.send(DebounceMsg::Shutdown) {
             tracing::debug!(error = %e, "diagnostic debounce: channel closed on shutdown");
         }
+        if let Some(handle) = self.worker_handle.take() {
+            join_worker(handle);
+        }
+    }
+}
+
+/// Join the debounce worker, tolerating the self-join teardown race.
+///
+/// Mirrors `file_watcher_debounce::join_worker` (#8064), the accepted pattern
+/// for the sibling debouncer. Self-join would panic ("a thread cannot join
+/// itself"). It happens when the publish callback's upgraded `Arc<LspServer>`
+/// is the last strong owner: the server -- and therefore this `Drop` -- then
+/// runs ON the worker thread. Dropping the handle detaches, and the worker
+/// finishes naturally once its own call stack returns. That is an expected
+/// shutdown ordering, not a fault, so it is not logged as one.
+fn join_worker(handle: thread::JoinHandle<()>) {
+    if handle.thread().id() == thread::current().id() {
+        drop(handle);
+        return;
+    }
+    if handle.join().is_err() {
+        // The panic itself is already reported by the runtime panic hook; this
+        // only records that shutdown observed it.
+        tracing::debug!("diagnostic debounce worker panicked before shutdown");
     }
 }
 
@@ -273,5 +302,84 @@ mod tests {
         drop(debouncer);
         thread::sleep(Duration::from_millis(50));
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn debouncer_drop_joins_worker_before_returning() {
+        let exited = Arc::new(AtomicUsize::new(0));
+        let callback_exited = Arc::clone(&exited);
+        let debouncer = DiagnosticDebouncer::with_interval(Duration::from_secs(5), move |_| {
+            callback_exited.fetch_add(1, Ordering::SeqCst);
+        });
+
+        debouncer.schedule("file:///test.pl");
+        drop(debouncer);
+
+        // Joining makes shutdown deterministic: the pending URI is published
+        // before Drop returns, rather than on an unjoined detached thread.
+        assert_eq!(exited.load(Ordering::SeqCst), 1);
+    }
+
+    // ---- Lifecycle: LspServer <-> DiagnosticDebouncer must not form an Arc cycle -
+
+    /// End-to-end proof for #14539: `install_default_diagnostic_debouncer`
+    /// captures `Weak<LspServer>` (not `Arc<LspServer>`) in the debounce
+    /// worker's `publish_fn`. With a strong capture the reference chain
+    /// `LspServer -> diagnostic_debouncer -> DiagnosticDebouncer -> worker
+    /// thread closure -> Arc<LspServer>` is a genuine cycle: the server's
+    /// strong count can never reach zero while the worker thread is alive,
+    /// and the worker only stops once `DiagnosticDebouncer::drop` sends
+    /// `Shutdown` -- which is only reachable through `LspServer`'s own drop.
+    ///
+    /// `debouncer_drop_joins_worker_before_returning` above does NOT cover
+    /// this: it constructs a bare `DiagnosticDebouncer` with a plain
+    /// counting callback, so it passes identically whether the production
+    /// wiring captures `Arc` or `Weak`. This test is the one that
+    /// discriminates -- reverting `Arc::downgrade` to `Arc::clone` in
+    /// `install_default_diagnostic_debouncer` fails it on the final
+    /// deallocation assertion.
+    ///
+    /// The drop runs on a dedicated thread behind a bounded channel wait
+    /// rather than inline: `DiagnosticDebouncer::drop` now joins its worker,
+    /// so a future regression that made that join unsatisfiable would hang
+    /// the whole test binary instead of failing cleanly here.
+    #[test]
+    fn dropping_the_server_releases_the_installed_diagnostic_debouncer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::mpsc;
+
+        let server = Arc::new(crate::runtime::LspServer::new());
+        server.install_default_diagnostic_debouncer();
+
+        // Observes deallocation without itself keeping the server alive.
+        let observer = Arc::downgrade(&server);
+
+        // Drive one real publication through the production seam so the
+        // worker is genuinely live and holding whatever it captured, rather
+        // than proving the property against an idle thread.
+        server.publish_diagnostics_debounced("file:///debounce_cycle.pl");
+
+        let (tx, rx) = mpsc::channel();
+        let dropper = thread::spawn(move || {
+            drop(server);
+            let _ = tx.send(());
+        });
+
+        assert!(
+            rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+            "dropping the last Arc<LspServer> must return: DiagnosticDebouncer::drop \
+             signals and joins its worker, so this blocking forever means teardown \
+             cannot complete"
+        );
+        dropper.join().map_err(|_| "server-drop thread panicked")?;
+
+        assert!(
+            observer.upgrade().is_none(),
+            "the server must be deallocated once the last external Arc is dropped; \
+             a live upgrade means the debounce worker still holds a strong \
+             Arc<LspServer> and the #14539 cycle is back"
+        );
+
+        Ok(())
     }
 }
