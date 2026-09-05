@@ -564,19 +564,13 @@ fn validate_dependencies(
                 findings,
             );
         }
-        if policy.mcp_stage == McpStage::Admitted {
+        // Before the adapter is composed, the product must not reach it. The
+        // two pre-composition stages differ only in the owner label.
+        if matches!(policy.mcp_stage, McpStage::Admitted | McpStage::Absent) {
             forbid_dependencies(
                 product,
                 std::slice::from_ref(&policy.packages.mcp_adapter),
-                "stage=admitted product",
-                findings,
-            );
-        }
-        if policy.mcp_stage == McpStage::Absent {
-            forbid_dependencies(
-                product,
-                std::slice::from_ref(&policy.packages.mcp_adapter),
-                "stage=absent product",
+                &format!("stage={} product", policy.mcp_stage),
                 findings,
             );
         }
