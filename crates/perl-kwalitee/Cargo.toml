@@ -18,6 +18,9 @@ publish = false
 include = [
     "src/**",
     "legacy_indicator_migrations.toml",
+    "distribution_kwalitee_catalog.v1.toml",
+    "distribution_kwalitee_fixtures.v1.toml",
+    "fixtures/**",
     "README.md",
     "LICENSE*",
     "Cargo.toml",
