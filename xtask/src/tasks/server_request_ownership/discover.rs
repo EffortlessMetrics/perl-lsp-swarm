@@ -512,10 +512,57 @@ pub(super) fn scan_emission(
         }
     }
 
+    // A send site names a function, not a definition, so `senders` can only
+    // hold bare names. One unrelated function sharing a promoted forwarder's
+    // name would therefore make its own callers' arguments read as emitted
+    // methods. Telling the two apart needs the types a syntactic reader does
+    // not have, so the collision is reported instead of guessed. Base senders
+    // are exempt: a trait declaration and its impl legitimately share a name.
+    let base: BTreeSet<&str> = REQUEST_SENDERS.iter().copied().collect();
+    let mut unattributable: BTreeSet<String> = BTreeSet::new();
+    for name in senders.iter().filter(|name| !base.contains(name.as_str())) {
+        let defined: Vec<&str> = files
+            .iter()
+            .flat_map(|(relative, functions)| {
+                functions.iter().filter(|facts| &facts.name == name).map(move |_| relative.as_str())
+            })
+            .collect();
+        // Every definition of a promoted name must itself forward, or a call
+        // by that name cannot be attributed to the one that does.
+        let forwarding = files
+            .iter()
+            .flat_map(|(_, functions)| functions.iter())
+            .filter(|facts| &facts.name == name)
+            .filter(|facts| {
+                facts.forwards_method
+                    && facts
+                        .sites
+                        .iter()
+                        .any(|site| senders.contains(&site.callee) && site.forwards_parameter)
+            })
+            .count();
+        if defined.len() > forwarding {
+            unattributable.insert(name.clone());
+            violations.push(Violation::new(
+                "forwarder-ambiguous",
+                name,
+                format!(
+                    "`{name}` forwards a request in one place and is also defined without \
+                     forwarding one in {} ({}); a call naming it cannot be attributed to the \
+                     forwarder by name alone, so the send is reported rather than guessed",
+                    if defined.len() - forwarding == 1 { "another" } else { "others" },
+                    defined.join(", ")
+                ),
+            ));
+        }
+    }
+
     // ── Pass two: resolve send sites ─────────────────────────────────────
     for (relative, functions) in &files {
         for facts in functions {
-            for site in facts.sites.iter().filter(|site| senders.contains(&site.callee)) {
+            for site in facts.sites.iter().filter(|site| {
+                senders.contains(&site.callee) && !unattributable.contains(&site.callee)
+            }) {
                 let resolved = site
                     .literal
                     .clone()
