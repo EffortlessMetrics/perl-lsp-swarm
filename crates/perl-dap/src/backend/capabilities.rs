@@ -6,6 +6,7 @@
 //! `perl-dap` to advertise control commands the peer never offered.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Who owns stepping/control in an external-peer session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -168,6 +169,541 @@ impl CatalogDapFlags {
     }
 }
 
+/// Whether a pure, selected-frame hover inspection path has been proven (#9573).
+///
+/// DAP's `supportsEvaluateForHovers` is a promise that an `evaluate` request
+/// carrying `context: "hover"` is a *pure inspection* of the frame the client
+/// selected. `perl-dap` has no such path yet: `handle_evaluate` issues a raw
+/// perl5db command against the debugger's *current* frame, and the custom
+/// `allowSideEffects` field can widen the screened expression subset. Until the
+/// parser-backed pure inspection path exists, advertising the capability would
+/// invite editors to route hover text into a general Perl evaluator whose frame
+/// and side-effect semantics are not the claimed feature.
+///
+/// Flipping this to `true` requires the re-enable gate recorded on #9573:
+/// selected-frame identity, an immutable value graph, bounded parser-backed
+/// inspection, trust routing that keeps REPL authority out of hover, and exact
+/// public-stdio proof. Nothing else — not `dap.core`, not backend `evaluate`,
+/// not handler presence, not a successful raw evaluation — may widen it.
+pub(crate) const PURE_HOVER_INSPECTION_PROVEN: bool = false;
+
+/// The single authority for the advertised `supportsEvaluateForHovers` value.
+///
+/// This deliberately consumes no catalog flag, backend flag, or handler-presence
+/// signal. Hover support is gated on a proof that does not exist yet, so the
+/// value is derived from [`PURE_HOVER_INSPECTION_PROVEN`] alone (#9573).
+#[must_use]
+pub(crate) const fn advertises_evaluate_for_hovers() -> bool {
+    PURE_HOVER_INSPECTION_PROVEN
+}
+
+/// The DAP standard `context` value for hover evaluation.
+const HOVER_EVALUATE_CONTEXT: &str = "hover";
+
+/// Refusal message used when hover-context evaluation is declined (#9573).
+pub(crate) const HOVER_UNSUPPORTED_MESSAGE: &str = "evaluate with context 'hover' is not supported: supportsEvaluateForHovers is advertised \
+     false because perl-dap has no pure selected-frame inspection path yet (#9573)";
+
+/// The optional breakpoint capabilities fail closed (#9578).
+///
+/// `supportsFunctionBreakpoints`, `supportsConditionalBreakpoints`,
+/// `supportsHitConditionalBreakpoints`, and `supportsLogPoints` name runtime
+/// contracts — engine-installed function resolution, condition enforcement,
+/// attributed hit counting with serialized auto-continue, and correlated
+/// logpoint output — that the native `perl5db` seam has not proven. The
+/// repository has parsers, stores, and handler registration for parts of these
+/// features, but a syntactically valid name is not runtime resolution, a
+/// locally accepted condition is not proof the engine installed and enforced
+/// it, and a hit counter is not trustworthy before exact hit attribution.
+///
+/// These gates deliberately consume no catalog flag (`dap.core`,
+/// `dap.breakpoints.*`), no backend capability, no maturity row, and no
+/// handler-presence signal. Promoting one capability to `true` requires
+/// exactly its own re-enable gate recorded on #9578, from its own exact
+/// public behavior receipt: function #8645, conditional #8988, hit-condition
+/// #8994, logpoint #9000 (with the #7366 same-session false-path receipts).
+/// No capability inherits another's receipt and no combined cell widens a
+/// single component — each authority below is bound to exactly one accessor
+/// (`optional_breakpoint_authority_binding_is_per_capability` pins this).
+pub(crate) const OPTIONAL_FUNCTION_BREAKPOINTS_PROVEN: bool = false;
+pub(crate) const OPTIONAL_CONDITIONAL_BREAKPOINTS_PROVEN: bool = false;
+pub(crate) const OPTIONAL_HIT_CONDITIONAL_BREAKPOINTS_PROVEN: bool = false;
+pub(crate) const OPTIONAL_LOG_POINTS_PROVEN: bool = false;
+
+/// The single authority for the advertised `supportsFunctionBreakpoints` value.
+///
+/// Derived from [`OPTIONAL_FUNCTION_BREAKPOINTS_PROVEN`] alone (#9578); no
+/// catalog or backend signal may widen it, and no sibling receipt
+/// (#8988/#8994/#9000) may promote it.
+#[must_use]
+pub(crate) const fn advertises_function_breakpoints() -> bool {
+    OPTIONAL_FUNCTION_BREAKPOINTS_PROVEN
+}
+
+/// The single authority for the advertised `supportsConditionalBreakpoints`
+/// value.
+///
+/// Derived from [`OPTIONAL_CONDITIONAL_BREAKPOINTS_PROVEN`] alone (#9578); no
+/// catalog or backend signal may widen it, and no sibling receipt
+/// (#8645/#8994/#9000) may promote it.
+#[must_use]
+pub(crate) const fn advertises_conditional_breakpoints() -> bool {
+    OPTIONAL_CONDITIONAL_BREAKPOINTS_PROVEN
+}
+
+/// The single authority for the advertised `supportsHitConditionalBreakpoints`
+/// value.
+///
+/// Derived from [`OPTIONAL_HIT_CONDITIONAL_BREAKPOINTS_PROVEN`] alone (#9578);
+/// no catalog or backend signal may widen it, and no sibling receipt
+/// (#8645/#8988/#9000) may promote it.
+#[must_use]
+pub(crate) const fn advertises_hit_conditional_breakpoints() -> bool {
+    OPTIONAL_HIT_CONDITIONAL_BREAKPOINTS_PROVEN
+}
+
+/// The single authority for the advertised `supportsLogPoints` value.
+///
+/// Derived from [`OPTIONAL_LOG_POINTS_PROVEN`] alone (#9578); no catalog or
+/// backend signal may widen it, and no sibling receipt
+/// (#8645/#8988/#8994) may promote it.
+#[must_use]
+pub(crate) const fn advertises_log_points() -> bool {
+    OPTIONAL_LOG_POINTS_PROVEN
+}
+
+/// Deterministic refusal for `setFunctionBreakpoints` while the capability is
+/// floored (#9578). Every request shape receives this exact message, and no
+/// rejected request resolves a name, writes a debugger command, or mutates the
+/// function-breakpoint registry.
+pub(crate) const FUNCTION_BREAKPOINTS_UNSUPPORTED_MESSAGE: &str = "setFunctionBreakpoints is not supported: supportsFunctionBreakpoints is advertised \
+     false until exact runtime resolution and engine install/hit proof exists (#9578; re-enable gate #8645)";
+
+/// Deterministic per-item refusal for a `setBreakpoints` entry carrying a
+/// `condition` while conditional support is floored (#9578). The condition is
+/// never silently stripped and an unconditional breakpoint is never installed
+/// in its place.
+pub(crate) const CONDITION_UNSUPPORTED_MESSAGE: &str = "condition is not supported: supportsConditionalBreakpoints is advertised \
+     false until exact condition installation and enforcement proof exists (#9578; re-enable gate #8988)";
+
+/// Deterministic per-item refusal for a `setBreakpoints` entry carrying a
+/// `hitCondition` while hit-condition support is floored (#9578). The entry is
+/// never installed as an unconditional breakpoint and the expression is never
+/// counted locally.
+pub(crate) const HIT_CONDITION_UNSUPPORTED_MESSAGE: &str = "hitCondition is not supported: supportsHitConditionalBreakpoints is advertised \
+     false until exact attributed-hit counting and serialized auto-continue proof exists (#9578; re-enable gate #8994)";
+
+/// Deterministic per-item refusal for a `setBreakpoints` entry carrying a
+/// `logMessage` while logpoint support is floored (#9578). The entry is never
+/// converted into an ordinary stopping breakpoint and no output is simulated.
+pub(crate) const LOG_MESSAGE_UNSUPPORTED_MESSAGE: &str = "logMessage is not supported: supportsLogPoints is advertised \
+     false until exact install/hit/output/continue proof exists (#9578; re-enable gate #9000)";
+
+/// Whether an `evaluate` request's `context` selects hover.
+///
+/// Matched ASCII-case-insensitively. The DAP-standard spelling is lowercase
+/// `hover`; while the capability is closed, accepting case variants only ever
+/// *widens the refusal*, so a client sending `Hover` cannot slip past the floor.
+///
+/// A missing or unrecognised context is deliberately **not** hover. Those keep
+/// their own conservative policy rather than being silently reclassified as
+/// hover or REPL (#9573).
+///
+/// Every backend mode routes its hover refusal through this one predicate so
+/// native, attach, and external-peer sessions cannot drift apart.
+#[must_use]
+pub(crate) fn is_hover_evaluate_context(context: Option<&str>) -> bool {
+    context.is_some_and(|value| value.eq_ignore_ascii_case(HOVER_EVALUATE_CONTEXT))
+}
+
+/// Whether a mode must refuse this `evaluate` request as unsupported hover.
+///
+/// The invariant every mode holds: **a mode refuses hover exactly when it does
+/// not advertise hover.** `advertised_hover` is the value that *this* mode puts
+/// on the wire for `supportsEvaluateForHovers`, so admission and advertisement
+/// can never disagree.
+///
+/// This matters at promotion time, not just today. If the refusal ignored the
+/// advertised value, flipping [`PURE_HOVER_INSPECTION_PROVEN`] would advertise
+/// hover while still rejecting every hover request — the same
+/// capability-versus-behaviour contradiction #9573 exists to remove, only
+/// pointing the other way.
+///
+/// Modes stay independent: each passes its own advertised value, so promoting
+/// the native gate does not silently open an external-peer path that has no
+/// pure inspection of its own.
+#[must_use]
+pub(crate) fn refuse_hover_evaluation(advertised_hover: bool, context: Option<&str>) -> bool {
+    !advertised_hover && is_hover_evaluate_context(context)
+}
+
+/// The `supportsEvaluateForHovers` value the external-peer bridge advertises.
+///
+/// Deliberately **independent of [`PURE_HOVER_INSPECTION_PROVEN`]**, which is
+/// the *native* proof gate. An external peer runs its own evaluator and has no
+/// pure selected-frame inspection of its own, so promoting the native gate must
+/// not silently open a path that routes hover text to a live external debugger.
+/// #9573 states this directly: "Keep processId attach, TCP, and external peer
+/// modes independently false unless they have their own pure hover
+/// implementation and proof."
+///
+/// Promoting this requires that separate peer-side proof.
+pub(crate) const PEER_BRIDGE_ADVERTISES_EVALUATE_FOR_HOVERS: bool = false;
+
+/// The external-peer bridge's hover decision, as a pure function.
+///
+/// `native_hover_gate` is accepted and **deliberately not used**. That is the
+/// property under test, not an oversight: the peer mode must not inherit the
+/// native proof gate (#9573). Taking it as a parameter is what makes the
+/// independence provable in CI — a test can evaluate this under both possible
+/// native values and require the result to be identical, without mutating any
+/// constant. If someone later re-reads the native gate here, that test fails.
+///
+/// The peer's own gate decides, still intersected with whether the peer can
+/// evaluate at all, so promoting the peer gate cannot over-advertise against a
+/// peer that offered no evaluation.
+#[must_use]
+pub(crate) fn peer_bridge_hover_admission(
+    _native_hover_gate: bool,
+    peer_hover_gate: bool,
+    backend_can_evaluate: bool,
+) -> bool {
+    peer_hover_gate && backend_can_evaluate
+}
+
+/// The `supportsEvaluateForHovers` value the static mirror profile advertises.
+///
+/// Mirror mode is conservative by construction and has no pure hover inspection
+/// of its own, so it stays false independently of the native gate (#9573). Both
+/// `static_mirror_capabilities` and the mirror request gate read this, so the
+/// profile cannot advertise one thing and enforce another.
+pub(crate) const MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS: bool = false;
+
+/// The #9581 secondary-capability floor: one explicit unsupported disposition
+/// per floored request.
+///
+/// Seven `initialize` capability fields — `supportsCompletionsRequest`,
+/// `supportsModulesRequest`, `supportsLoadedSourcesRequest`,
+/// `supportsRestartRequest`, `supportsValueFormattingOptions`,
+/// `supportsBreakpointLocationsRequest`, and `supportsCancelRequest` — are
+/// forced `false` in every mode (native launch, TCP attach, and both mirror
+/// peer surfaces) until that field's own exact-behavior receipt passes (#9581).
+/// Each row is independent: one field's gate evidence never widens another, and
+/// no row is derived from `supports_core`, catalog maturity, handler presence,
+/// or another mode's support.
+///
+/// While a field is floored, its request is rejected by the dispatcher *before*
+/// any handler runs, so the floored path can perform no debugger I/O, process
+/// action, or state mutation, and a missing/unavailable session can never
+/// masquerade as a successful empty result (#9581). Re-enable is per field,
+/// owned by the per-feature implementation/proof issues named in each message.
+pub(crate) fn secondary_capability_floor_message(command: &str) -> Option<String> {
+    let (capability, gate) = match command {
+        "completions" => {
+            ("supportsCompletionsRequest", "#9021 + #9046 + #9050 + #8581 + #9582 + #9584")
+        }
+        "modules" => ("supportsModulesRequest", "#8581 + #7667/#8668 + #9585 + #9586"),
+        "loadedSources" => ("supportsLoadedSourcesRequest", "#8581 + #7667/#8668 + #9585 + #9586"),
+        "restart" => {
+            ("supportsRestartRequest", "#9051 + #8691/#8703 + #8974 + #9587 + #8726 + #7568")
+        }
+        "breakpointLocations" => {
+            ("supportsBreakpointLocationsRequest", "#10524 + #2300 + #9021 + #7566")
+        }
+        "cancel" => ("supportsCancelRequest", "#9074 + #8712 + #7568"),
+        _ => return None,
+    };
+    Some(format!(
+        "`{command}` is unsupported: `{capability}` is false for this adapter \
+         (#9581 secondary-capability floor; exact semantics unproven, \
+         re-enable gate: {gate}). The request was rejected before any debugger \
+         interaction, so no state was read or changed."
+    ))
+}
+
+/// The `ValueFormat` families whose `format` option is floored (#9581):
+/// `variables` and `evaluate`.
+///
+/// `setVariable` and `setExpression` have their own capability authorities
+/// (#8354 exact-mutation proof and the #9568 promotion boundary,
+/// respectively): their requests are refused at those gates before the
+/// ValueFormat floor is consulted, so enumerating them here would hijack the
+/// refusal order.
+///
+/// Requests without a `format` option (or with a default-equivalent one) keep
+/// their independently supported contract; only a *non-default* request
+/// (`hex: true`, the pinned schema's single property) is rejected, and it is
+/// rejected before any debugger/value mutation (#9581). Re-enable gate:
+/// #9050 + #8364 + #9070 + #7342/#7345 + #9588 + #9590.
+pub(crate) fn unproven_value_format_requested(command: &str, arguments: Option<&Value>) -> bool {
+    matches!(command, "variables" | "evaluate")
+        && arguments
+            .and_then(|arguments| arguments.get("format"))
+            .and_then(|format| format.get("hex"))
+            .and_then(Value::as_bool)
+            == Some(true)
+}
+
+fn value_format_unknown_field(command: &str, arguments: Option<&Value>) -> Option<String> {
+    if !matches!(command, "variables" | "evaluate") {
+        return None;
+    }
+    arguments
+        .and_then(|arguments| arguments.get("format"))
+        .and_then(Value::as_object)
+        .and_then(|format| format.keys().find(|key| key.as_str() != "hex"))
+        .cloned()
+}
+
+fn value_format_invalid_message(command: &str, field: &str) -> String {
+    format!(
+        "`{command}`: Invalid arguments: `format` contains unknown field `{field}`; the pinned DAP ValueFormat schema only permits `hex`"
+    )
+}
+
+/// The explicit unsupported disposition for a floored `format` option (#9581).
+pub(crate) fn value_format_unsupported_message(command: &str) -> String {
+    format!(
+        "`{command}` is unsupported: a non-default `format` option was sent while \
+         `supportsValueFormattingOptions` is false for this adapter (#9581 \
+         secondary-capability floor; re-enable gate: #9050 + #8364 + #9070 + \
+         #7342/#7345 + #9588 + #9590). The request was rejected before any \
+         debugger interaction; resend without `format` for the default \
+         presentation."
+    )
+}
+
+/// The one #9581 floor decision for a request, combining both floored
+/// families: the six secondary requests and a non-default `format` option on
+/// the four ValueFormat families.
+///
+/// Every production surface — the native dispatch seams
+/// (`DebugAdapter::secondary_capability_floor_response`) and both peer
+/// frontends (`secondary_floor_response`) — applies this single function at
+/// its own sanctioned seam and constructs only its own refusal response from
+/// it, so the two families cannot drift apart between surfaces.
+pub(crate) fn capability_floor_message(command: &str, arguments: Option<&Value>) -> Option<String> {
+    if let Some(message) = secondary_capability_floor_message(command) {
+        return Some(message);
+    }
+    if let Some(field) = value_format_unknown_field(command, arguments) {
+        return Some(value_format_invalid_message(command, &field));
+    }
+    if unproven_value_format_requested(command, arguments) {
+        return Some(value_format_unsupported_message(command));
+    }
+    None
+}
+
+/// Whether an exact native-launch `setVariable` mutation path has been proven
+/// (#8354).
+///
+/// DAP's `supportsSetVariable` is a promise that a `setVariable` request
+/// assigns a named variable inside a *stopped* session through a correlated,
+/// read-back-verified broker transaction with retained-currentness and public
+/// evidence. `perl-dap` has no such path yet: the live handler screens textual
+/// target/value input and writes raw perl5db commands without exact target
+/// resolution, scalar RHS parsing, correlated read-back, or the atomic
+/// value-authority transition the mutation contract requires. Advertising the
+/// capability would invite editors to mutate a paused program through an
+/// uncorrelated textual command channel.
+///
+/// Flipping this to `true` requires the complete re-enable gate recorded on
+/// #8354 (wire/option contract, exact target resolution, scalar RHS parse,
+/// serialized broker transaction, correlated read-back, atomic value-authority
+/// transition, and the #8368 same-candidate exact public proof with #7363/#7364
+/// promotion). Nothing else — not `dap.core`, not backend `set_variable`, not
+/// handler/type presence, not `DebugBackendCapabilities::full()`, not
+/// setExpression evidence — may widen it.
+pub(crate) const EXACT_SET_VARIABLE_MUTATION_PROVEN: bool = false;
+
+/// The single authority for the advertised `supportsSetVariable` value.
+///
+/// This deliberately consumes no catalog flag, backend flag, or handler-presence
+/// signal. `setVariable` support is gated on a proof that does not exist yet, so
+/// the value is derived from [`EXACT_SET_VARIABLE_MUTATION_PROVEN`] alone
+/// (#8354).
+#[must_use]
+pub(crate) const fn advertises_set_variable() -> bool {
+    EXACT_SET_VARIABLE_MUTATION_PROVEN
+}
+
+/// Refusal message used when a `setVariable` request is declined (#8354).
+pub(crate) const SET_VARIABLE_UNSUPPORTED_MESSAGE: &str = "setVariable is not supported: \
+     supportsSetVariable is advertised false because perl-dap has no exact mutation path yet \
+     (#8354)";
+
+/// Whether a mode must refuse this `setVariable` request as unsupported.
+///
+/// The invariant every mode holds: **a mode refuses every `setVariable` request
+/// exactly when it does not advertise `supportsSetVariable`.** While the
+/// capability is closed this is unconditional — unlike hover (#9573) there is no
+/// request subset that stays legitimate, so the gate fires before argument
+/// parsing, target/value screening, reference lookup, or any broker traffic.
+///
+/// `advertised_set_variable` is the value the mode puts on the wire, so
+/// advertisement and enforcement can never disagree. Passing it explicitly (the
+/// hover-promotion pattern) keeps the gate provable in both directions without
+/// mutating the authority constant: if a mode's advertisement ever opens, its
+/// refusal must close, and vice versa (#8354).
+#[must_use]
+pub(crate) const fn refuse_set_variable(advertised_set_variable: bool) -> bool {
+    !advertised_set_variable
+}
+
+/// Whether the custom inline-values extension has a proven, versioned
+/// negotiation contract (#9089).
+///
+/// DAP's `supportsInlineValues` is a *standard* capability promise. The
+/// `inlineValues` request this crate routes is a Perl-specific custom extension:
+/// per the protocol-authority table it is the one `Extension`-class row, not a
+/// request the pinned upstream schema defines. Advertising the standard flag
+/// from the `dap.inline_values` catalog row made ordinary DAP clients see a
+/// faux-standard capability and conflated "a variable occurrence exists in the
+/// source text" with "the runtime debugger observes a current value for it".
+///
+/// Flipping this to `true` requires the re-enable gate recorded on #9089: a
+/// collision-resistant, versioned, explicitly negotiated extension identity
+/// kept outside standard DAP capability and conformance accounting, with
+/// session-bound opt-in and separate static/runtime response modes. Until then
+/// the extension stays disabled: unnegotiated clients — which is every client —
+/// receive an explicit refusal, and no standard capability cell advertises it.
+pub const INLINE_VALUES_EXTENSION_NEGOTIATION_PROVEN: bool = false;
+
+/// The single authority for the advertised inline-values extension value.
+///
+/// This deliberately consumes no catalog flag, backend flag, or handler-presence
+/// signal. The extension is gated on a negotiation contract that does not exist
+/// yet, so the value is derived from
+/// [`INLINE_VALUES_EXTENSION_NEGOTIATION_PROVEN`] alone (#9089).
+#[must_use]
+pub const fn advertises_inline_values_extension() -> bool {
+    INLINE_VALUES_EXTENSION_NEGOTIATION_PROVEN
+}
+
+/// Refusal message used when the custom `inlineValues` request is declined
+/// (#9089).
+///
+/// Deterministic and input-independent: every unnegotiated request — whatever
+/// its source, range, or format — receives this exact message, so the gate's
+/// output cannot leak anything about the input it refused.
+pub const INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE: &str = "inlineValues is not supported: \
+     the perl-dap inline-values extension is disabled because no versioned negotiation \
+     contract has been proven yet (#9089)";
+
+/// Whether a mode must refuse this custom `inlineValues` request.
+///
+/// The invariant every mode holds: **a mode serves the extension exactly when
+/// it advertises it.** `advertised_inline_values` is the value that *this* mode
+/// puts on the wire, so admission and advertisement can never disagree.
+///
+/// This matters at promotion time, not just today. If the refusal ignored the
+/// advertised value, flipping [`INLINE_VALUES_EXTENSION_NEGOTIATION_PROVEN`]
+/// would advertise the extension while the handler still rejected every
+/// request — the same capability-versus-behaviour contradiction #9089 exists to
+/// remove, only pointing the other way.
+///
+/// Modes stay independent: each passes its own advertised value, so promoting
+/// the native gate does not silently open a mirror or external-peer path that
+/// has no negotiation of its own.
+#[must_use]
+pub(crate) fn refuse_inline_values_extension(advertised_inline_values: bool) -> bool {
+    !advertised_inline_values
+}
+
+/// Whether the exact setExpression proof-and-promotion gate has passed (#9568).
+///
+/// DAP's `supportsSetExpression` promises that a `setExpression` request can
+/// assign to an arbitrary l-value in the *exact current-frame* location: bounded
+/// l-value admission, broker acknowledgement of the write, and read-back
+/// currentness. `handle_set_expression` interpolates client text into raw
+/// `p {lhs} = {rhs}` debugger commands against the debugger's *current* frame —
+/// none of that contract exists yet, so advertising the capability from
+/// `dap.core` (the previous wiring) invited editors to route assignments into
+/// an unproven mutation path.
+///
+/// Flipping this to `true` requires the re-enable gate recorded on #9568 with
+/// #9570 as the promotion boundary: exact current-frame location identity,
+/// bounded l-value admission, broker acknowledgement, read-back currentness,
+/// and exact public evidence. Nothing else — not `dap.core`, not
+/// `setVariable`/`evaluate` evidence, not handler presence, not a catalog row —
+/// may widen it.
+pub const SET_EXPRESSION_PROMOTION_PROVEN: bool = false;
+
+/// The single authority for the advertised `supportsSetExpression` value.
+///
+/// This deliberately consumes no catalog flag, backend flag, or handler-presence
+/// signal. Set-expression support is gated on a proof that does not exist yet,
+/// so the value is derived from [`SET_EXPRESSION_PROMOTION_PROVEN`] alone
+/// (#9568).
+#[must_use]
+pub const fn advertises_set_expression() -> bool {
+    SET_EXPRESSION_PROMOTION_PROVEN
+}
+
+/// Refusal message used when a `setExpression` request is declined (#9568).
+///
+/// Deterministic and input-independent: every rejected request — whatever its
+/// expression, value, frame, or format — receives this exact message, so the
+/// gate's output cannot leak anything about the input it refused.
+pub const SET_EXPRESSION_UNSUPPORTED_MESSAGE: &str = "setExpression is not supported: \
+     supportsSetExpression is advertised false because perl-dap has no exact current-frame \
+     l-value assignment proof yet (#9568)";
+
+/// Whether a mode must refuse a `setExpression` request as unsupported.
+///
+/// The invariant every mode holds: **a mode refuses setExpression exactly when
+/// it does not advertise it.** `advertised_set_expression` is the value that
+/// *this* mode puts on the wire for `supportsSetExpression`, so admission and
+/// advertisement can never disagree.
+///
+/// This matters at promotion time, not just today. If the refusal ignored the
+/// advertised value, flipping [`SET_EXPRESSION_PROMOTION_PROVEN`] would
+/// advertise the capability while the handler still rejected every request —
+/// the same capability-versus-behaviour contradiction #9568 exists to remove,
+/// only pointing the other way.
+///
+/// Modes stay independent: each passes its own advertised value, so promoting
+/// the native gate does not silently open an external-peer or mirror path that
+/// has no assignment proof of its own.
+#[must_use]
+pub(crate) const fn refuse_set_expression(advertised_set_expression: bool) -> bool {
+    !advertised_set_expression
+}
+
+/// The `supportsSetExpression` value the external-peer bridge advertises.
+///
+/// The external-peer seam has no exact current-frame l-value assignment proof
+/// of its own (#9568): the bridge can observe and drive a peer debugger, but
+/// it performs no brokered, read-back-current assignment. The value is
+/// deliberately independent of [`SET_EXPRESSION_PROMOTION_PROVEN`] so
+/// promoting the native adapter cannot silently open the peer path (#9573's
+/// independence rule, applied to setExpression).
+pub(crate) const PEER_BRIDGE_ADVERTISES_SET_EXPRESSION: bool = false;
+
+/// The external-peer bridge's setExpression advertisement, as a pure function.
+///
+/// `native_set_expression_gate` is accepted and **deliberately not used** —
+/// the same independence property [`peer_bridge_hover_admission`] proves for
+/// hover (#9573): a test evaluates this under both native values and requires
+/// the result to be identical, so re-reading the native gate here fails CI
+/// without any source mutation.
+#[must_use]
+pub(crate) fn peer_bridge_set_expression_admission(
+    _native_set_expression_gate: bool,
+    peer_set_expression_gate: bool,
+) -> bool {
+    peer_set_expression_gate
+}
+
+/// The `supportsSetExpression` value the static mirror profile advertises.
+///
+/// Mirror mode is conservative by construction and has no assignment proof of
+/// its own, so it stays false independently of the native gate (#9568). Both
+/// `static_mirror_capabilities` and the mirror request gate read this, so the
+/// profile cannot advertise one thing and enforce another.
+pub(crate) const MIRROR_ADVERTISES_SET_EXPRESSION: bool = false;
+
 /// The negotiated DAP capability flags: catalog ∩ backend.
 ///
 /// Field names mirror the DAP `capabilities` payload keys the frontend emits in
@@ -186,7 +722,21 @@ pub struct NegotiatedDapCapabilities {
     /// `supportsDataBreakpoints`.
     pub supports_data_breakpoints: bool,
     /// `supportsEvaluateForHovers`.
+    ///
+    /// Pinned false by the crate-internal hover authority, independently of
+    /// [`Self::supports_evaluate`], until a pure selected-frame inspection path
+    /// is proven (#9573).
     pub supports_evaluate_for_hovers: bool,
+    /// Whether the backend can serve a general `evaluate` request.
+    ///
+    /// DAP has no `supportsEvaluate` wire capability — `evaluate` is always
+    /// requestable — so this is an internal backend fact, not an advertised
+    /// flag. It is kept separate from [`Self::supports_evaluate_for_hovers`]
+    /// because hover is a narrower promise (pure inspection of the *selected*
+    /// frame) than general evaluation, and the two must not imply each other
+    /// (#9573).
+    #[serde(default)]
+    pub supports_evaluate: bool,
     /// `supportsSetVariable`.
     pub supports_set_variable: bool,
 }
@@ -208,14 +758,145 @@ pub fn intersect_dap_capabilities(
         supports_log_points: catalog.logpoints && backend.logpoints,
         supports_function_breakpoints: catalog.function_breakpoints && backend.function_breakpoints,
         supports_data_breakpoints: catalog.watchpoints && backend.data_breakpoints,
-        supports_evaluate_for_hovers: catalog.core && backend.evaluate,
-        supports_set_variable: catalog.core && backend.set_variable,
+        // #9573: hover is gated on a pure selected-frame inspection proof that
+        // does not exist yet. The catalog ∩ backend intersection still applies
+        // (decision D6) so that re-enabling the gate cannot over-advertise, but
+        // neither conjunct can widen the capability on its own.
+        supports_evaluate_for_hovers: advertises_evaluate_for_hovers()
+            && catalog.core
+            && backend.evaluate,
+        supports_evaluate: catalog.core && backend.evaluate,
+        // #8354: setVariable is gated on an exact mutation proof that does not
+        // exist yet. The catalog ∩ backend intersection still applies (decision
+        // D6) so that re-enabling the gate cannot over-advertise, but neither
+        // conjunct can widen the capability on its own.
+        supports_set_variable: advertises_set_variable() && catalog.core && backend.set_variable,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_test_must::must_some_with;
+
+    /// Authority-binding contract (#9578 review): each `advertises_*`
+    /// accessor reads exactly its own per-capability proof authority, and the
+    /// old shared authority no longer exists. One capability's re-enable
+    /// receipt can therefore never promote a sibling. This is a source
+    /// contract, not a value assertion: the authorities are compile-time and
+    /// every one currently floors at `false`, so promoting any capability
+    /// requires flipping exactly its own constant and updating the floor pin
+    /// below.
+    #[test]
+    fn optional_breakpoint_authority_binding_is_per_capability() {
+        // Scan only the production half: this test module legitimately names
+        // the removed authority in its own assertions.
+        let source =
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/backend/capabilities.rs"));
+        let source = must_some_with(
+            source.split("#[cfg(test)]").next(),
+            "module source always has a production half",
+        );
+
+        let bindings = [
+            ("advertises_function_breakpoints", "OPTIONAL_FUNCTION_BREAKPOINTS_PROVEN"),
+            ("advertises_conditional_breakpoints", "OPTIONAL_CONDITIONAL_BREAKPOINTS_PROVEN"),
+            (
+                "advertises_hit_conditional_breakpoints",
+                "OPTIONAL_HIT_CONDITIONAL_BREAKPOINTS_PROVEN",
+            ),
+            ("advertises_log_points", "OPTIONAL_LOG_POINTS_PROVEN"),
+        ];
+        for (accessor, authority) in bindings {
+            // The body must reduce to exactly its own authority atom after
+            // comment stripping, so neither comments nor extra expressions can
+            // satisfy the binding.
+            let atom = accessor_return_atom(source, accessor);
+            assert_eq!(
+                atom, *authority,
+                "{accessor} must return exactly its own authority {authority}"
+            );
+        }
+
+        assert!(
+            !source.contains("OPTIONAL_BREAKPOINT_CAPABILITIES_PROVEN"),
+            "the shared all-capsabilities authority must stay removed; per-capability              authorities are the only promotion path (#9578 review)"
+        );
+    }
+
+    /// Floor pin (#9578): every per-capability authority floors at `false`.
+    /// A promotion flips exactly one constant AND updates this pin together
+    /// with its own #9578 receipt, so a receipt can never silently widen a
+    /// sibling.
+    #[test]
+    fn every_optional_breakpoint_authority_floors_at_false() {
+        let source =
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/backend/capabilities.rs"));
+        let source = must_some_with(
+            source.split("#[cfg(test)]").next(),
+            "module source always has a production half",
+        );
+        for authority in [
+            "OPTIONAL_FUNCTION_BREAKPOINTS_PROVEN",
+            "OPTIONAL_CONDITIONAL_BREAKPOINTS_PROVEN",
+            "OPTIONAL_HIT_CONDITIONAL_BREAKPOINTS_PROVEN",
+            "OPTIONAL_LOG_POINTS_PROVEN",
+        ] {
+            let declaration = format!("pub(crate) const {authority}: bool = false;");
+            assert!(
+                source.contains(&declaration),
+                "{authority} must floor at false until its own re-enable receipt lands;                  update this pin in the same commit as the promotion"
+            );
+        }
+    }
+
+    /// Extract the single return atom of one `const fn` accessor from the
+    /// module source: body text with comments stripped, the `return` keyword
+    /// removed, and whitespace collapsed. Any additional expression in the
+    /// body breaks the exact-atom equality.
+    fn accessor_return_atom(source: &str, accessor: &str) -> String {
+        let signature = format!("fn {accessor}()");
+        let start = must_some_with(
+            source.find(&signature),
+            format!("{accessor} must stay defined in capabilities.rs"),
+        );
+        let open = must_some_with(source[start..].find('{'), "accessor body brace") + start;
+        let close = must_some_with(source[open..].find('}'), "accessor body close") + open;
+        let body = &source[open + 1..close];
+
+        let mut stripped = String::with_capacity(body.len());
+        for line in body.lines() {
+            let mut rest = line;
+            while !rest.is_empty() {
+                let line_comment = rest.find("//");
+                let block_comment = rest.find("/*");
+                let block_first = block_comment.is_some_and(|b| line_comment.is_none_or(|l| b < l));
+                match (block_first, line_comment) {
+                    // A block comment starting before any line comment: skip
+                    // to its terminator (which may live on a later line).
+                    (true, _) => {
+                        // `block_first` implies the block marker exists.
+                        let block_comment = block_comment.unwrap_or_default();
+                        stripped.push_str(&rest[..block_comment]);
+                        rest = &rest[block_comment + 2..];
+                    }
+                    // A line comment (or a line comment preceding a block
+                    // comment start): the rest of the line is commentary.
+                    (false, Some(line_comment)) => {
+                        stripped.push_str(&rest[..line_comment]);
+                        rest = "";
+                    }
+                    (false, None) => {
+                        stripped.push_str(rest);
+                        rest = "";
+                    }
+                }
+            }
+            stripped.push(' ');
+        }
+
+        stripped.replace("return", " ").split_whitespace().collect::<String>()
+    }
 
     fn all_catalog() -> CatalogDapFlags {
         CatalogDapFlags {
@@ -236,8 +917,23 @@ mod tests {
         assert!(n.supports_log_points);
         assert!(n.supports_function_breakpoints);
         assert!(n.supports_data_breakpoints);
-        assert!(n.supports_evaluate_for_hovers);
-        assert!(n.supports_set_variable);
+        // #8354: setVariable is excluded from "everything" for the same reason
+        // hover is: its exact mutation proof does not exist yet, so a fully
+        // capable catalog and backend must still not advertise it.
+        assert!(
+            !n.supports_set_variable,
+            "an exact setVariable mutation proof does not exist (#8354); \
+             catalog.core and backend.set_variable must not widen it"
+        );
+        // General evaluation is available with a full catalog and backend...
+        assert!(n.supports_evaluate);
+        // ...but hover stays closed regardless: it is a narrower promise than
+        // general evaluation and its pure-inspection proof does not exist
+        // (#9573). "Everything" deliberately excludes it.
+        assert!(
+            !n.supports_evaluate_for_hovers,
+            "hover must not ride along with a fully capable catalog and backend"
+        );
     }
 
     #[test]
@@ -251,7 +947,11 @@ mod tests {
         );
         assert!(n.supports_conditional_breakpoints, "ptkdb supports conditions");
         assert!(n.supports_function_breakpoints, "ptkdb supports sub breakpoints");
-        assert!(n.supports_evaluate_for_hovers, "ptkdb supports evaluate");
+        assert!(n.supports_evaluate, "ptkdb supports evaluate");
+        assert!(
+            !n.supports_evaluate_for_hovers,
+            "a peer that can evaluate still does not get the hover promise (#9573)"
+        );
         assert!(!n.supports_log_points, "ptkdb v1 has no logpoints");
         assert!(!n.supports_hit_conditional_breakpoints, "ptkdb v1 has no hit conditions");
         assert!(!n.supports_data_breakpoints, "ptkdb v1 has no data breakpoints");
@@ -263,15 +963,470 @@ mod tests {
         // Backend can evaluate, but catalog didn't compile dap.core.
         let catalog = CatalogDapFlags { core: false, ..all_catalog() };
         let n = intersect_dap_capabilities(&catalog, &DebugBackendCapabilities::full());
-        assert!(!n.supports_evaluate_for_hovers);
+        // Discriminate on `supports_evaluate`: asserting `!supports_evaluate_for_hovers`
+        // here would be vacuous while the #9573 gate pins hover false, so this
+        // test would stop proving that the catalog gate works at all.
+        assert!(!n.supports_evaluate);
         assert!(!n.supports_set_variable);
         // A non-core feature is unaffected.
         assert!(n.supports_conditional_breakpoints);
+    }
+
+    /// The #9573 floor: no catalog/backend combination may advertise hover.
+    #[test]
+    fn hover_capability_is_closed_for_every_catalog_and_backend_combination() {
+        let catalogs = [
+            all_catalog(),
+            CatalogDapFlags { core: false, ..all_catalog() },
+            CatalogDapFlags {
+                core: true,
+                breakpoints_basic: false,
+                hit_condition: false,
+                logpoints: false,
+                watchpoints: false,
+                function_breakpoints: false,
+            },
+        ];
+        let backends = [
+            DebugBackendCapabilities::full(),
+            DebugBackendCapabilities::none(),
+            DebugBackendCapabilities::ptkdb_v1_defaults(),
+            // A backend that can evaluate but is otherwise bare: the exact shape
+            // that would tempt `catalog.core && backend.evaluate` into a true.
+            DebugBackendCapabilities { evaluate: true, ..DebugBackendCapabilities::none() },
+        ];
+
+        for catalog in &catalogs {
+            for backend in &backends {
+                let n = intersect_dap_capabilities(catalog, backend);
+                assert!(
+                    !n.supports_evaluate_for_hovers,
+                    "hover advertised for catalog {catalog:?} + backend {backend:?}"
+                );
+            }
+        }
+
+        assert!(
+            !advertises_evaluate_for_hovers(),
+            "the single hover authority must report false until #9573's re-enable gate passes"
+        );
+    }
+
+    /// The #8354 floor: no catalog/backend combination may advertise setVariable.
+    #[test]
+    fn set_variable_capability_is_closed_for_every_catalog_and_backend_combination() {
+        let catalogs = [
+            all_catalog(),
+            CatalogDapFlags { core: false, ..all_catalog() },
+            CatalogDapFlags {
+                core: true,
+                breakpoints_basic: false,
+                hit_condition: false,
+                logpoints: false,
+                watchpoints: false,
+                function_breakpoints: false,
+            },
+        ];
+        let backends = [
+            DebugBackendCapabilities::full(),
+            DebugBackendCapabilities::none(),
+            DebugBackendCapabilities::ptkdb_v1_defaults(),
+            // A backend that claims set-variable but nothing else: the exact
+            // shape that would tempt `catalog.core && backend.set_variable`
+            // into a true.
+            DebugBackendCapabilities { set_variable: true, ..DebugBackendCapabilities::none() },
+        ];
+
+        for catalog in &catalogs {
+            for backend in &backends {
+                let n = intersect_dap_capabilities(catalog, backend);
+                assert!(
+                    !n.supports_set_variable,
+                    "setVariable advertised for catalog {catalog:?} + backend {backend:?}"
+                );
+            }
+        }
+
+        assert!(
+            !advertises_set_variable(),
+            "the single setVariable authority must report false until #8354's \
+             re-enable gate passes"
+        );
+    }
+
+    /// #8354 promotion safety: refusal follows advertisement in BOTH directions.
+    ///
+    /// The gate constant is `false` today, so testing only the current value
+    /// would leave the promotion path unproven. Passing the advertised value
+    /// explicitly exercises the flipped state without mutating the constant:
+    /// while a mode advertises false it refuses every request; if a promoted
+    /// mode advertises true it must stop refusing. Anything else republishes
+    /// the capability-versus-behaviour contradiction #8354 removes.
+    #[test]
+    fn set_variable_refusal_tracks_the_advertised_capability_in_both_directions() {
+        // Closed: every request is refused, independent of its content.
+        assert!(refuse_set_variable(false));
+        // Open: the refusal must disappear exactly when advertisement opens.
+        assert!(!refuse_set_variable(true));
+    }
+
+    /// #9573 promotion safety: refusal follows advertisement in BOTH directions.
+    ///
+    /// The gate constant is `false` today, so testing only the current value
+    /// would leave the promotion path unproven. Passing `advertised_hover`
+    /// explicitly exercises the flipped state without mutating the constant:
+    /// when a mode advertises hover, it must stop refusing it; when it does
+    /// not, it must refuse. Anything else republishes the exact
+    /// capability-versus-behaviour contradiction this issue removes.
+    #[test]
+    fn hover_refusal_tracks_the_advertised_capability_in_both_directions() {
+        // Closed: hover contexts refused, everything else untouched.
+        assert!(refuse_hover_evaluation(false, Some("hover")));
+        assert!(refuse_hover_evaluation(false, Some("Hover")));
+        assert!(!refuse_hover_evaluation(false, Some("watch")));
+        assert!(!refuse_hover_evaluation(false, Some("repl")));
+        assert!(!refuse_hover_evaluation(false, Some("clipboard")));
+        assert!(!refuse_hover_evaluation(false, None));
+
+        // Promoted: hover is admitted, and nothing else changes behaviour.
+        assert!(
+            !refuse_hover_evaluation(true, Some("hover")),
+            "a mode that advertises hover must stop refusing it, or promotion \
+             would advertise a capability the handler still rejects"
+        );
+        assert!(!refuse_hover_evaluation(true, Some("watch")));
+        assert!(!refuse_hover_evaluation(true, None));
+    }
+
+    /// #9573: the peer bridge's hover decision does not read the native gate.
+    ///
+    /// Asserting "the peer is closed today" would be vacuous — both gates are
+    /// false, so a *recoupled* implementation would pass it too, and CI could
+    /// only catch recoupling by mutating production source. This instead
+    /// evaluates the decision under **both** native values and requires the
+    /// result to be identical, which fails the moment the native gate is read
+    /// again, with no mutation needed.
+    #[test]
+    fn peer_hover_admission_is_independent_of_the_native_gate() {
+        for peer_gate in [false, true] {
+            for can_evaluate in [false, true] {
+                assert_eq!(
+                    peer_bridge_hover_admission(false, peer_gate, can_evaluate),
+                    peer_bridge_hover_admission(true, peer_gate, can_evaluate),
+                    "the peer decision changed with the native gate \
+                     (peer_gate={peer_gate}, can_evaluate={can_evaluate}); promoting native \
+                     must never open an external-peer hover path"
+                );
+            }
+        }
+
+        // The peer's own gate is what decides, and it still respects whether the
+        // peer can evaluate at all.
+        assert!(
+            !peer_bridge_hover_admission(true, false, true),
+            "a closed peer gate stays closed even with native promoted"
+        );
+        assert!(
+            peer_bridge_hover_admission(false, true, true),
+            "an open peer gate opens on its own authority, not the native one"
+        );
+        assert!(
+            !peer_bridge_hover_admission(true, true, false),
+            "a peer that cannot evaluate is never advertised for hover"
+        );
+    }
+
+    /// Mirror mode advertises and enforces the same value, independently.
+    #[test]
+    fn mirror_profile_advertisement_and_admission_agree() {
+        // Mirror advertises hover false and must therefore refuse hover. The
+        // advertised value itself is pinned at runtime by
+        // `peer_launch::tests::static_capabilities_match_the_conservative_profile`,
+        // which reads it back out of the emitted JSON.
+        assert!(
+            refuse_hover_evaluation(MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS, Some("hover")),
+            "mirror advertises hover false, so it must refuse hover"
+        );
+        assert!(
+            !refuse_hover_evaluation(MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS, Some("watch")),
+            "the mirror gate must stay scoped to hover"
+        );
+    }
+
+    /// Hover and general evaluation are independent evidence cells.
+    #[test]
+    fn general_evaluate_survives_the_hover_floor() {
+        let n = intersect_dap_capabilities(&all_catalog(), &DebugBackendCapabilities::full());
+        assert!(
+            n.supports_evaluate,
+            "closing hover must not disable general evaluate; watch/repl/clipboard depend on it"
+        );
+        assert!(!n.supports_evaluate_for_hovers);
+    }
+
+    /// #9581: every floored request names its own capability and its own gate,
+    /// and the floor never widens beyond the six secondary requests.
+    #[test]
+    fn secondary_capability_floor_rows_are_independent_and_explicit() {
+        let floored = [
+            ("completions", "supportsCompletionsRequest"),
+            ("modules", "supportsModulesRequest"),
+            ("loadedSources", "supportsLoadedSourcesRequest"),
+            ("restart", "supportsRestartRequest"),
+            ("breakpointLocations", "supportsBreakpointLocationsRequest"),
+            ("cancel", "supportsCancelRequest"),
+        ];
+        for (command, capability) in floored {
+            let message = secondary_capability_floor_message(command)
+                .unwrap_or_else(|| format!("`{command}` must be floored (#9581)"));
+            assert!(
+                message.contains(capability),
+                "`{command}` disposition must name its own capability row: {message}"
+            );
+            assert!(
+                message.contains("unsupported") && message.contains("#9581"),
+                "`{command}` disposition must be explicit unsupported: {message}"
+            );
+        }
+
+        // Core launch/breakpoint/stack/variable/control families stay outside
+        // the floor (#9581 scope).
+        for open in [
+            "initialize",
+            "launch",
+            "attach",
+            "setBreakpoints",
+            "setFunctionBreakpoints",
+            "threads",
+            "stackTrace",
+            "scopes",
+            "variables",
+            "setVariable",
+            "continue",
+            "next",
+            "stepIn",
+            "stepOut",
+            "pause",
+            "evaluate",
+            "configurationDone",
+            "disconnect",
+            "terminate",
+            "source",
+        ] {
+            assert!(
+                secondary_capability_floor_message(open).is_none(),
+                "`{open}` must not be floored by the secondary-capability floor"
+            );
+        }
+    }
+
+    /// #9581: only a non-default `format` on the two authority-less ValueFormat
+    /// families is floored (setVariable/setExpression are refused by their own
+    /// #8354/#9568 authorities first); absent/default-equivalent formats keep
+    /// the independent contract, and other requests are never format-floored.
+    #[test]
+    fn value_format_floor_rejects_only_non_default_format_on_the_four_families() {
+        for command in ["variables", "evaluate"] {
+            assert!(unproven_value_format_requested(
+                command,
+                Some(&serde_json::json!({ "format": { "hex": true } }))
+            ));
+            assert!(!unproven_value_format_requested(command, None));
+            assert!(!unproven_value_format_requested(command, Some(&serde_json::json!({}))));
+            assert!(!unproven_value_format_requested(
+                command,
+                Some(&serde_json::json!({ "format": {} }))
+            ));
+            assert!(!unproven_value_format_requested(
+                command,
+                Some(&serde_json::json!({ "format": { "hex": false } }))
+            ));
+        }
+        assert!(!unproven_value_format_requested(
+            "stackTrace",
+            Some(&serde_json::json!({ "format": { "hex": true } }))
+        ));
+
+        let message = value_format_unsupported_message("variables");
+        assert!(message.contains("supportsValueFormattingOptions"));
+        assert!(message.contains("#9581"));
+    }
+
+    #[test]
+    fn value_format_unknown_fields_are_rejected_before_flooring() {
+        let args = serde_json::json!({
+            "expression": "$x",
+            "format": { "hex": true, "radix": 16 }
+        });
+        let message = must_some_with(
+            capability_floor_message("evaluate", Some(&args)),
+            "unknown ValueFormat fields must be rejected",
+        );
+        assert!(message.contains("Invalid arguments"), "unexpected message: {message}");
+        assert!(message.contains("radix"), "unexpected message: {message}");
+        assert!(!message.contains("non-default `format` option"));
+    }
+
+    /// #9581: the combined floor decision every surface applies is exactly the
+    /// composition of the two floored families — a floored secondary row, a
+    /// non-default `format` on a ValueFormat family, and nothing else.
+    #[test]
+    fn capability_floor_message_combines_both_floored_families() {
+        assert!(capability_floor_message("restart", None).is_some());
+        assert!(
+            capability_floor_message(
+                "evaluate",
+                Some(&serde_json::json!({ "expression": "$x", "format": { "hex": true } }))
+            )
+            .is_some()
+        );
+        assert!(capability_floor_message("threads", None).is_none());
+        assert!(
+            capability_floor_message("evaluate", Some(&serde_json::json!({ "expression": "$x" })))
+                .is_none()
+        );
     }
 
     #[test]
     fn control_mode_defaults_to_mirror() {
         assert_eq!(ControlMode::default(), ControlMode::Mirror);
         assert_eq!(DebugBackendCapabilities::none().control_mode, ControlMode::Mirror);
+    }
+
+    /// The #9089 floor: the single inline-values extension authority is closed
+    /// until a versioned negotiation contract is proven, and it consumes no
+    /// catalog signal.
+    #[test]
+    fn inline_values_extension_authority_is_closed_until_negotiation_is_proven() {
+        assert!(
+            !advertises_inline_values_extension(),
+            "the inline-values extension must stay disabled until #9089's negotiation \
+             gate passes"
+        );
+        // The authority is a constant function of the promotion constant only;
+        // assert both spellings agree so a future edit cannot decouple them.
+        assert_eq!(
+            advertises_inline_values_extension(),
+            INLINE_VALUES_EXTENSION_NEGOTIATION_PROVEN
+        );
+    }
+
+    /// #9089 promotion safety: refusal follows advertisement in BOTH directions.
+    ///
+    /// The gate constant is `false` today, so testing only the current value
+    /// would leave the promotion path unproven. Passing `advertised` explicitly
+    /// exercises the flipped state without mutating the constant: when a mode
+    /// advertises the extension it must stop refusing it; when it does not, it
+    /// must refuse.
+    #[test]
+    fn inline_values_refusal_tracks_the_advertised_value_in_both_directions() {
+        assert!(
+            refuse_inline_values_extension(false),
+            "a mode that does not advertise the extension must refuse it"
+        );
+        assert!(
+            !refuse_inline_values_extension(true),
+            "a mode that advertises the extension must stop refusing it, or promotion \
+             would advertise a request the handler still rejects"
+        );
+    }
+
+    /// #9089: the refusal message is input-independent by construction.
+    #[test]
+    fn inline_values_refusal_message_is_deterministic() {
+        assert_eq!(
+            INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE,
+            "inlineValues is not supported: the perl-dap inline-values extension is \
+             disabled because no versioned negotiation contract has been proven yet (#9089)"
+        );
+    }
+
+    /// The #9568 floor: the single setExpression authority is closed until the
+    /// #9570 promotion boundary passes, and it consumes no catalog signal.
+    #[test]
+    fn set_expression_authority_is_closed_until_promotion() {
+        assert!(
+            !advertises_set_expression(),
+            "setExpression must stay closed until #9568's re-enable gate passes"
+        );
+        // The authority is a constant function of the promotion constant only;
+        // assert both spellings agree so a future edit cannot decouple them.
+        assert_eq!(advertises_set_expression(), SET_EXPRESSION_PROMOTION_PROVEN);
+    }
+
+    /// #9568 promotion safety: refusal follows advertisement in BOTH directions.
+    ///
+    /// The gate constant is `false` today, so testing only the current value
+    /// would leave the promotion path unproven. Passing `advertised` explicitly
+    /// exercises the flipped state without mutating the constant: when a mode
+    /// advertises setExpression it must stop refusing it; when it does not, it
+    /// must refuse. Anything else republishes the exact
+    /// capability-versus-behaviour contradiction this issue removes.
+    #[test]
+    fn set_expression_refusal_tracks_the_advertised_capability_in_both_directions() {
+        assert!(
+            refuse_set_expression(false),
+            "a mode that does not advertise setExpression must refuse it"
+        );
+        assert!(
+            !refuse_set_expression(true),
+            "a mode that advertises setExpression must stop refusing it, or promotion \
+             would advertise a capability the handler still rejects"
+        );
+    }
+
+    /// #9568: the peer bridge's setExpression decision does not read the
+    /// native gate.
+    ///
+    /// Both gates are false today, so asserting only "the peer is closed"
+    /// would pass for a recoupled implementation too. Evaluating the decision
+    /// under both native values fails the moment the native gate is read
+    /// again — the same non-mutating independence proof hover uses (#9573).
+    #[test]
+    fn peer_set_expression_admission_is_independent_of_the_native_gate() {
+        for peer_gate in [false, true] {
+            assert_eq!(
+                peer_bridge_set_expression_admission(false, peer_gate),
+                peer_bridge_set_expression_admission(true, peer_gate),
+                "the peer setExpression decision changed with the native gate \
+                 (peer_gate={peer_gate}); promoting native must never open an \
+                 external-peer assignment path"
+            );
+        }
+
+        assert!(
+            !peer_bridge_set_expression_admission(true, false),
+            "a closed peer gate stays closed even with native promoted"
+        );
+        assert!(
+            peer_bridge_set_expression_admission(false, true),
+            "an open peer gate opens on its own authority, not the native one"
+        );
+    }
+
+    /// #9568: the mirror profile advertises and enforces the same value,
+    /// independently of the native gate.
+    #[test]
+    fn mirror_set_expression_advertisement_and_admission_agree() {
+        // The advertised value itself is pinned at runtime by
+        // `peer_launch::tests::static_capabilities_match_the_conservative_profile`,
+        // which reads it back out of the emitted JSON.
+        assert!(
+            refuse_set_expression(MIRROR_ADVERTISES_SET_EXPRESSION),
+            "mirror advertises setExpression false, so it must refuse it"
+        );
+    }
+
+    /// #9568: the refusal message is input-independent by construction.
+    ///
+    /// The gate treats every request identically, so the message must be a
+    /// single deterministic string with no interpolation seam.
+    #[test]
+    fn set_expression_refusal_message_is_deterministic() {
+        assert_eq!(
+            SET_EXPRESSION_UNSUPPORTED_MESSAGE,
+            "setExpression is not supported: supportsSetExpression is advertised false \
+             because perl-dap has no exact current-frame l-value assignment proof yet (#9568)"
+        );
     }
 }

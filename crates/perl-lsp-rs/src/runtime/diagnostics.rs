@@ -33,6 +33,12 @@ fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
 ///
 /// Replaces repeated inline `json!({...})` constructions with a single
 /// typed constructor so the Diagnostic shape is defined in one place.
+///
+/// `message` is the already-projected wire value: a JSON string when markup
+/// messages were not negotiated, or a `MarkupContent` object when they were
+/// (#9131). Callers must pass the union through unchanged — recovering it
+/// through string-only access such as `Value::as_str()` silently corrupts
+/// markup-capable output into an empty message.
 fn diagnostic_json(
     start_line: u32,
     start_char: u32,
@@ -41,7 +47,7 @@ fn diagnostic_json(
     severity: u32,
     code: &str,
     source: &str,
-    message: String,
+    message: Value,
 ) -> Value {
     json!({
         "range": {
@@ -105,6 +111,14 @@ fn workspace_root_for_doc(server: &LspServer, uri: &str) -> Option<std::path::Pa
         .folder_for_doc_uri(uri)
         .and_then(|folder| folder.path.or_else(|| source_path_from_uri(&folder.uri)))
         .or_else(|| server.root_path.lock().clone())
+}
+
+fn project_version_for_doc(server: &LspServer, uri: &str) -> Option<String> {
+    server.project_config_for_uri(uri)?.perl.version
+}
+
+fn project_config_generation_for_doc(server: &LspServer, uri: &str) -> Option<u64> {
+    server.project_config_generation_for_uri(uri)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -252,13 +266,19 @@ impl PullDiagnosticsOrchestrator {
         // Get workspace root for this document's containing folder (multi-root aware).
         // Falls back to the global root_path when no specific folder matches.
         //
-        // Note: we inline the resolution here rather than calling `workspace_root_for_doc`
+        // Note: resolve the folder inline rather than calling `workspace_root_for_doc`
         // because `build_context` runs on all targets (including wasm32), while
         // `workspace_root_for_doc` is `#[cfg(not(target_arch = "wasm32"))]` since it is
         // only needed from the native perlcritic diagnostic paths.
-        let workspace_root = server
-            .folder_for_doc_uri(uri)
+        let project_version = project_version_for_doc(server, uri);
+        let folder = server.folder_for_doc_uri(uri);
+        let workspace_root = folder
             .and_then(|folder| folder.path.or_else(|| source_path_from_uri(&folder.uri)))
+            .or_else(|| {
+                project_version_for_doc(server, uri)?;
+                let path = source_path_from_uri(uri)?;
+                std::path::Path::new(&path).parent().map(ToOwned::to_owned)
+            })
             .or_else(|| server.root_path.lock().clone());
 
         // The owning folder authority key for the report subject (#7480).
@@ -315,6 +335,8 @@ impl PullDiagnosticsOrchestrator {
             native_critic_exclude,
             workspace_root,
             include_paths,
+            project_version,
+            configuration_generation: project_config_generation_for_doc(server, uri),
             markup_message_support,
             identity_root_key: root_key,
             facts_generation,
@@ -690,10 +712,37 @@ impl LspServer {
                     doc.line_starts.clone(),
                     Arc::clone(&doc.generation),
                     doc.generation.load(Ordering::SeqCst),
+                    self.workspace_identity_generation.load(Ordering::SeqCst),
                 ))
             })
             // lock is released here
         };
+        let snapshot = snapshot.map(
+            |(
+                ast_opt,
+                text,
+                parse_errors,
+                version,
+                degradation_tier,
+                line_starts,
+                generation,
+                gen_at_snapshot,
+                workspace_gen_at_snapshot,
+            )| {
+                (
+                    ast_opt,
+                    text,
+                    parse_errors,
+                    version,
+                    degradation_tier,
+                    line_starts,
+                    generation,
+                    gen_at_snapshot,
+                    workspace_gen_at_snapshot,
+                    project_config_generation_for_doc(self, &normalized_uri),
+                )
+            },
+        );
 
         let Some((
             ast_opt,
@@ -704,6 +753,8 @@ impl LspServer {
             line_starts,
             generation,
             gen_at_snapshot,
+            workspace_gen_at_snapshot,
+            config_generation_at_snapshot,
         )) = snapshot
         else {
             return;
@@ -744,6 +795,7 @@ impl LspServer {
                 .map(|context| context.search_display_paths())
                 .unwrap_or_default();
             let source_path = source_path_from_uri(uri);
+            let project_version = project_version_for_doc(self, uri);
 
             // Wait for index build, then sample staleness before touching the
             // workspace index tier (#5016 item 2).  Sample after readiness and
@@ -780,13 +832,14 @@ impl LspServer {
                             workspace_index.with_semantic_queries_for_uri(
                                 uri,
                                 |file_id, queries| {
-                                    provider.get_diagnostics_with_search_context_and_semantics(
+                                    provider.get_diagnostics_with_search_context_and_semantics_and_project_version(
                                         ast,
                                         &parse_errors,
                                         &text,
                                         Some(&resolver),
                                         &search_context,
                                         source_path.as_deref(),
+                                        project_version.as_deref(),
                                         file_id,
                                         &queries,
                                     )
@@ -799,13 +852,14 @@ impl LspServer {
                                 uri,
                                 &scoped_graph,
                                 |file_id, queries| {
-                                    provider.get_diagnostics_with_search_context_and_semantics(
+                                    provider.get_diagnostics_with_search_context_and_semantics_and_project_version(
                                         ast,
                                         &parse_errors,
                                         &text,
                                         Some(&resolver),
                                         &search_context,
                                         source_path.as_deref(),
+                                        project_version.as_deref(),
                                         file_id,
                                         &queries,
                                     )
@@ -814,24 +868,26 @@ impl LspServer {
                         }
                     });
                 semantic_diags.unwrap_or_else(|| {
-                    provider.get_diagnostics_with_search_context(
+                    provider.get_diagnostics_with_search_context_and_project_version(
                         ast,
                         &parse_errors,
                         &text,
                         Some(&resolver),
                         &search_context,
                         source_path.as_deref(),
+                        project_version.as_deref(),
                     )
                 })
             };
             #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
-            let mut diagnostics = provider.get_diagnostics_with_search_context(
+            let mut diagnostics = provider.get_diagnostics_with_search_context_and_project_version(
                 ast,
                 &parse_errors,
                 &text,
                 Some(&resolver),
                 &search_context,
                 source_path.as_deref(),
+                project_version.as_deref(),
             );
 
             // Add configured policy critic diagnostics.
@@ -846,6 +902,19 @@ impl LspServer {
 
             // Add external perlcritic diagnostics (opt-in)
             self.collect_external_perlcritic_diagnostics(uri, &text, &mut diagnostics);
+
+            let _identity_guard = self.workspace_identity_lock.lock();
+            if self.workspace_identity_generation.load(Ordering::SeqCst)
+                != workspace_gen_at_snapshot
+            {
+                tracing::debug!(
+                    uri = %normalized_uri,
+                    workspace_gen_at_snapshot,
+                    current_workspace_gen = self.workspace_identity_generation.load(Ordering::SeqCst),
+                    "Skipping stale diagnostic publish (workspace ownership/configuration changed)"
+                );
+                return;
+            }
 
             // Add dead code diagnostics from workspace-wide symbol analysis.
             // Re-check freshness immediately before reading the index: readiness
@@ -932,7 +1001,7 @@ impl LspServer {
                         severity,
                         code_str,
                         push_diagnostic_source(d.code.as_deref()),
-                        d.message.clone(),
+                        json!(d.message),
                     );
                     if !d.tags.is_empty() {
                         diag["tags"] = to_json_array(&Self::diagnostic_tags_to_lsp(&d.tags));
@@ -1023,7 +1092,7 @@ impl LspServer {
                         if e.blocks_clean_parse() { 1 } else { 2 },
                         DiagnosticCode::ParseError.as_str(),
                         "perl-lsp",
-                        message,
+                        json!(message),
                     )
                 })
                 .collect()
@@ -1043,8 +1112,13 @@ impl LspServer {
         // value-only comparison, which passed for a closed-and-reopened
         // document whose stale instance counter had not moved (close/reopen
         // ABA) and left the send itself outside any currentness decision.
-        let identity =
-            PushDiagnosticIdentity::for_document(&normalized_uri, &generation, gen_at_snapshot);
+        let identity = PushDiagnosticIdentity::for_document(
+            &normalized_uri,
+            &generation,
+            gen_at_snapshot,
+            workspace_gen_at_snapshot,
+        )
+        .with_folder_config_generation(config_generation_at_snapshot);
         let disposition = if lsp_diagnostics.is_empty() {
             PushDiagnosticsDisposition::Clear
         } else {
@@ -1115,7 +1189,11 @@ impl LspServer {
                     if e.blocks_clean_parse() { 1 } else { 2 },
                     DiagnosticCode::ParseError.as_str(),
                     "perl-lsp",
-                    msg_val.as_str().unwrap_or("").to_string(),
+                    // Preserve the negotiated String | MarkupContent union
+                    // (#9131): coercing through `as_str()` dropped the object
+                    // shape and emitted an empty message for markup-capable
+                    // clients.
+                    msg_val,
                 )
             })
             .collect()
@@ -1145,9 +1223,29 @@ impl LspServer {
                 ))
             })
         };
+        let snapshot = snapshot.map(
+            |(parse_errors, text, version, line_starts, generation, gen_at_snapshot)| {
+                (
+                    parse_errors,
+                    text,
+                    version,
+                    line_starts,
+                    generation,
+                    gen_at_snapshot,
+                    project_config_generation_for_doc(self, &normalized_uri),
+                )
+            },
+        );
 
-        let Some((parse_errors, text, version, line_starts, generation, gen_at_snapshot)) =
-            snapshot
+        let Some((
+            parse_errors,
+            text,
+            version,
+            line_starts,
+            generation,
+            gen_at_snapshot,
+            config_generation_at_snapshot,
+        )) = snapshot
         else {
             return;
         };
@@ -1157,8 +1255,13 @@ impl LspServer {
 
         // Accepted-ticket sink boundary (#11673): same contract as the full
         // path -- validate instance + generation at the enqueue, not before.
-        let identity =
-            PushDiagnosticIdentity::for_document(&normalized_uri, &generation, gen_at_snapshot);
+        let identity = PushDiagnosticIdentity::for_document(
+            &normalized_uri,
+            &generation,
+            gen_at_snapshot,
+            self.workspace_identity_generation.load(Ordering::SeqCst),
+        )
+        .with_folder_config_generation(config_generation_at_snapshot);
         let payload = publish_diagnostics_params(uri, Some(version), &lsp_diagnostics);
         match self.commit_push_diagnostics(
             &identity,
@@ -1232,8 +1335,28 @@ impl LspServer {
             })
             // lock is released here
         };
-        let Some((parse_errors, version, line_starts, text, generation, gen_at_snapshot)) =
-            snapshot
+        let snapshot = snapshot.map(
+            |(parse_errors, version, line_starts, text, generation, gen_at_snapshot)| {
+                (
+                    parse_errors,
+                    version,
+                    line_starts,
+                    text,
+                    generation,
+                    gen_at_snapshot,
+                    project_config_generation_for_doc(self, &normalized_uri),
+                )
+            },
+        );
+        let Some((
+            parse_errors,
+            version,
+            line_starts,
+            text,
+            generation,
+            gen_at_snapshot,
+            config_generation_at_snapshot,
+        )) = snapshot
         else {
             return;
         };
@@ -1276,7 +1399,7 @@ impl LspServer {
                         if e.blocks_clean_parse() { 1 } else { 2 },
                         DiagnosticCode::ParseError.as_str(),
                         "perl-lsp",
-                        message,
+                        json!(message),
                     )
                 })
                 .collect();
@@ -1293,8 +1416,13 @@ impl LspServer {
         // between the snapshot above and this send could publish stale-N
         // errors after N+1 acceptance, or onto a reopened instance of the
         // same URI.
-        let identity =
-            PushDiagnosticIdentity::for_document(&normalized_uri, &generation, gen_at_snapshot);
+        let identity = PushDiagnosticIdentity::for_document(
+            &normalized_uri,
+            &generation,
+            gen_at_snapshot,
+            self.workspace_identity_generation.load(Ordering::SeqCst),
+        )
+        .with_folder_config_generation(config_generation_at_snapshot);
         let payload = json!({
             "uri": uri,
             "version": version,
@@ -1445,11 +1573,12 @@ impl LspServer {
                     doc.clone(),
                     std::sync::Arc::clone(&doc.generation),
                     doc.generation.load(std::sync::atomic::Ordering::SeqCst),
+                    self.workspace_identity_generation.load(std::sync::atomic::Ordering::SeqCst),
                 )
             })
         };
 
-        if let Some((doc, generation, gen_at_snapshot)) = doc_snapshot {
+        if let Some((doc, generation, gen_at_snapshot, workspace_gen_at_snapshot)) = doc_snapshot {
             // Coarse workDoneProgress for the full pull-diagnostics path, which
             // may spawn the perlcritic subprocess over large trees. Initialized
             // here (after the document-existence check) so that immediately-
@@ -1493,6 +1622,19 @@ impl LspServer {
                 );
                 // Return an empty full report with no resultId so the client
                 // does not cache this stale result and retries on the next request.
+                return Ok(Some(Self::empty_full_diagnostic_report()));
+            }
+            let _identity_guard = self.workspace_identity_lock.lock();
+            if self.workspace_identity_generation.load(Ordering::SeqCst)
+                != workspace_gen_at_snapshot
+            {
+                tracing::debug!(
+                    uri = uri_str,
+                    workspace_gen_at_snapshot,
+                    current_workspace_gen =
+                        self.workspace_identity_generation.load(Ordering::SeqCst),
+                    "Skipping stale document diagnostic (workspace ownership/configuration changed)"
+                );
                 return Ok(Some(Self::empty_full_diagnostic_report()));
             }
 
@@ -1664,7 +1806,10 @@ impl LspServer {
             severity,
             code_str,
             diagnostic_source(d.code.as_deref()),
-            message_val.as_str().unwrap_or("").to_string(),
+            // Preserve the negotiated String | MarkupContent union (#9131):
+            // merged document-pull findings must not be coerced back through
+            // string-only access when markup messages were negotiated.
+            message_val,
         );
 
         if !d.tags.is_empty() {
@@ -1806,11 +1951,14 @@ impl LspServer {
         // observed at snapshot time so we can guard against stale results below
         // (mirrors the guard already present in handle_document_diagnostic and
         // the push path).
+        let workspace_gen_at_snapshot =
+            self.workspace_identity_generation.load(std::sync::atomic::Ordering::SeqCst);
         let docs_snapshot: Vec<(
             String,
             DocumentState,
             std::sync::Arc<std::sync::atomic::AtomicU32>,
             u32,
+            u64,
         )> = {
             let documents = self.documents.lock();
             documents
@@ -1818,10 +1966,31 @@ impl LspServer {
                 .map(|(k, v)| {
                     let generation_arc = std::sync::Arc::clone(&v.generation);
                     let gen_val = v.generation.load(std::sync::atomic::Ordering::SeqCst);
-                    (k.clone(), v.clone(), generation_arc, gen_val)
+                    (k.clone(), v.clone(), generation_arc, gen_val, workspace_gen_at_snapshot)
                 })
                 .collect()
         };
+        let docs_snapshot: Vec<(
+            String,
+            DocumentState,
+            std::sync::Arc<std::sync::atomic::AtomicU32>,
+            u32,
+            u64,
+            Option<u64>,
+        )> = docs_snapshot
+            .into_iter()
+            .map(|(uri, doc, generation, gen_at_snapshot, workspace_gen_at_snapshot)| {
+                let config_generation_at_snapshot = project_config_generation_for_doc(self, &uri);
+                (
+                    uri,
+                    doc,
+                    generation,
+                    gen_at_snapshot,
+                    workspace_gen_at_snapshot,
+                    config_generation_at_snapshot,
+                )
+            })
+            .collect();
 
         // Wait for index build before sampling per-document staleness for the
         // workspace semantic tier (#5016 item 2).
@@ -1839,7 +2008,23 @@ impl LspServer {
             "Scanning workspace diagnostics",
         );
 
-        for (i, (uri_str, doc, generation, gen_at_snapshot)) in docs_snapshot.iter().enumerate() {
+        #[cfg(test)]
+        if let Some(hook) = self.diagnostic_after_snapshot_hook.lock().as_ref() {
+            hook();
+        }
+
+        for (
+            i,
+            (
+                uri_str,
+                doc,
+                generation,
+                gen_at_snapshot,
+                workspace_gen_at_snapshot,
+                config_generation_at_snapshot,
+            ),
+        ) in docs_snapshot.iter().enumerate()
+        {
             // Cooperative yield every 8 documents
             if i & 0x7 == 0 {
                 std::thread::yield_now();
@@ -1870,6 +2055,7 @@ impl LspServer {
                     .map(|context| context.search_display_paths())
                     .unwrap_or_default();
                 let source_path = source_path_from_uri(uri_str);
+                let project_version = project_version_for_doc(self, uri_str);
 
                 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
                 let workspace_index_tier_enabled =
@@ -1895,13 +2081,14 @@ impl LspServer {
                                 workspace_index.with_semantic_queries_for_uri(
                                     uri_str,
                                     |file_id, queries| {
-                                        provider.get_diagnostics_with_search_context_and_semantics(
+                                        provider.get_diagnostics_with_search_context_and_semantics_and_project_version(
                                             ast,
                                             parse_errors,
                                             &doc.text,
                                             Some(&resolver),
                                             &search_context,
                                             source_path.as_deref(),
+                                            project_version.as_deref(),
                                             file_id,
                                             &queries,
                                         )
@@ -1914,13 +2101,14 @@ impl LspServer {
                                     uri_str,
                                     &scoped_graph,
                                     |file_id, queries| {
-                                        provider.get_diagnostics_with_search_context_and_semantics(
+                                        provider.get_diagnostics_with_search_context_and_semantics_and_project_version(
                                             ast,
                                             parse_errors,
                                             &doc.text,
                                             Some(&resolver),
                                             &search_context,
                                             source_path.as_deref(),
+                                            project_version.as_deref(),
                                             file_id,
                                             &queries,
                                         )
@@ -1929,25 +2117,28 @@ impl LspServer {
                             }
                         });
                     semantic_diags.unwrap_or_else(|| {
-                        provider.get_diagnostics_with_search_context(
+                        provider.get_diagnostics_with_search_context_and_project_version(
                             ast,
                             parse_errors,
                             &doc.text,
                             Some(&resolver),
                             &search_context,
                             source_path.as_deref(),
+                            project_version.as_deref(),
                         )
                     })
                 };
                 #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
-                let mut diagnostics = provider.get_diagnostics_with_search_context(
-                    ast,
-                    parse_errors,
-                    &doc.text,
-                    Some(&resolver),
-                    &search_context,
-                    source_path.as_deref(),
-                );
+                let mut diagnostics = provider
+                    .get_diagnostics_with_search_context_and_project_version(
+                        ast,
+                        parse_errors,
+                        &doc.text,
+                        Some(&resolver),
+                        &search_context,
+                        source_path.as_deref(),
+                        project_version.as_deref(),
+                    );
 
                 // Add native critic diagnostics when explicitly selected.
                 let critic_source_identity = critic_source_identity_for(uri_str, *gen_at_snapshot);
@@ -1991,6 +2182,30 @@ impl LspServer {
                     );
                     continue;
                 }
+                if project_config_generation_for_doc(self, uri_str)
+                    != *config_generation_at_snapshot
+                {
+                    tracing::debug!(
+                        uri = uri_str,
+                        config_generation_at_snapshot,
+                        current_config_generation =
+                            project_config_generation_for_doc(self, uri_str),
+                        "Skipping stale workspace diagnostic (folder configuration changed)"
+                    );
+                    continue;
+                }
+                if self.workspace_identity_generation.load(Ordering::SeqCst)
+                    != *workspace_gen_at_snapshot
+                {
+                    tracing::debug!(
+                        uri = uri_str,
+                        workspace_gen_at_snapshot,
+                        current_workspace_gen =
+                            self.workspace_identity_generation.load(Ordering::SeqCst),
+                        "Skipping stale workspace diagnostic (workspace ownership/configuration changed)"
+                    );
+                    continue;
+                }
 
                 // Complete-subject result identity (#7480): derives the result
                 // ID from the evaluation and projection subject, not from
@@ -2004,6 +2219,14 @@ impl LspServer {
                 identity_context.native_critic_profile = identity_native_profile.clone();
                 identity_context.native_critic_include = identity_native_include.clone();
                 identity_context.native_critic_exclude = identity_native_exclude.clone();
+                identity_context.project_version = project_version.clone();
+                // Record the snapshotted folder-config generation, not a re-read:
+                // the diagnostics above were evaluated under the snapshot, so the
+                // result ID must describe exactly that configuration state even if
+                // a folder reload lands in the residual window after the staleness
+                // guards. Matches the push/document-pull paths, which stamp
+                // `config_generation_at_snapshot` into the report identity.
+                identity_context.configuration_generation = *config_generation_at_snapshot;
                 identity_context.include_paths = self
                     .include_paths_for_doc(uri_str)
                     .into_iter()
@@ -2260,6 +2483,15 @@ impl LspServer {
             }
         }
 
+        let _identity_guard = self.workspace_identity_lock.lock();
+        if self.workspace_identity_generation.load(Ordering::SeqCst) != workspace_gen_at_snapshot {
+            tracing::debug!(
+                workspace_gen_at_snapshot,
+                current_workspace_gen = self.workspace_identity_generation.load(Ordering::SeqCst),
+                "Skipping stale workspace diagnostic response (workspace ownership/configuration changed)"
+            );
+            return Ok(Some(json!({ "items": [] })));
+        }
         Ok(Some(json!({ "items": items })))
     }
 
@@ -2872,8 +3104,16 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::io::Write;
+    use std::path::PathBuf;
     use std::sync::Arc as StdArc;
     use std::time::{Duration, Instant};
+
+    /// Expand 8.3 short names (and strip a Windows `\\?\` prefix) once at the
+    /// temp root so later joins match the server's canonicalized folder paths.
+    fn resolved_temp_root(temp: &tempfile::TempDir) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let canonical = std::fs::canonicalize(temp.path())?;
+        Ok(crate::execute_command::normalize_path_for_external_command(&canonical))
+    }
 
     /// Shared-buffer writer for capturing outbound LSP notifications in tests.
     struct SharedVecWriter {
@@ -2933,6 +3173,820 @@ mod tests {
             }
             std::thread::yield_now();
         }
+    }
+
+    fn install_project_version_folder(
+        server: &LspServer,
+        temp: &tempfile::TempDir,
+        version: &str,
+    ) -> Result<(String, String), Box<dyn std::error::Error>> {
+        use perl_lsp_rs_core::config::ProjectConfig;
+
+        let folder = temp.path().join("project");
+        std::fs::create_dir_all(&folder)?;
+        let file = folder.join("main.pl");
+        let uri = url::Url::from_file_path(&file)
+            .map_err(|()| "failed to build project file URI")?
+            .to_string();
+        let folder_uri = url::Url::from_directory_path(&folder)
+            .map_err(|()| "failed to build project folder URI")?
+            .to_string();
+        let mut project = ProjectConfig::default();
+        project.perl.version = Some(version.to_string());
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(folder)
+                .with_project_config(project),
+        );
+        Ok((uri, file.to_string_lossy().into_owned()))
+    }
+
+    fn install_single_file_project_config(
+        temp: &tempfile::TempDir,
+        version: &str,
+    ) -> Result<(String, String), Box<dyn std::error::Error>> {
+        let folder = temp.path().join("single-file");
+        std::fs::create_dir_all(&folder)?;
+        std::fs::write(
+            folder.join(".perl-lsp.toml"),
+            format!("[perl]\nversion = \"{version}\"\n"),
+        )?;
+        let file = folder.join("main.pl");
+        let uri = url::Url::from_file_path(&file)
+            .map_err(|()| "failed to build single-file URI")?
+            .to_string();
+        Ok((uri, file.to_string_lossy().into_owned()))
+    }
+
+    #[test]
+    fn production_push_workspace_and_pull_paths_emit_project_version_pl900()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "sub f ($x) { return $x; }\n";
+
+        let temp = tempfile::tempdir()?;
+        let (push_server, push_buffer) = make_server_with_capture();
+        let (push_uri, _) = install_project_version_folder(&push_server, &temp, "5.20")?;
+        push_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": push_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+        push_server.publish_diagnostics(&push_uri);
+        drop(push_server);
+        let push_output = String::from_utf8(push_buffer.lock().clone())?;
+        assert!(push_output.contains("PL900"), "push path must emit PL900: {push_output}");
+        assert!(
+            push_output.contains("project [perl].version"),
+            "push path must identify the project fallback: {push_output}"
+        );
+
+        let workspace_server = make_server_with_capture().0;
+        let (workspace_uri, _) = install_project_version_folder(&workspace_server, &temp, "5.20")?;
+        workspace_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": workspace_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+        let workspace_report = workspace_server
+            .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})))?
+            .ok_or("workspace diagnostic response missing")?;
+        let workspace_text = workspace_report.to_string();
+        assert!(
+            workspace_text.contains("PL900"),
+            "workspace path must emit PL900: {workspace_text}"
+        );
+        assert!(
+            workspace_text.contains("project [perl].version"),
+            "workspace path must identify the project fallback: {workspace_text}"
+        );
+
+        let pull_server = make_server_with_capture().0;
+        let (pull_uri, _) = install_project_version_folder(&pull_server, &temp, "5.20")?;
+        pull_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": pull_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+        let pull_report = pull_server
+            .handle_document_diagnostic(Some(json!({"textDocument": {"uri": pull_uri}})))?
+            .ok_or("pull diagnostic response missing")?;
+        let pull_text = pull_report.to_string();
+        assert!(pull_text.contains("PL900"), "pull path must emit PL900: {pull_text}");
+        assert!(
+            pull_text.contains("project [perl].version"),
+            "pull path must identify the project fallback: {pull_text}"
+        );
+
+        let (invalid_server, invalid_buffer) = make_server_with_capture();
+        let (invalid_uri, _) =
+            install_project_version_folder(&invalid_server, &temp, "not-a-version")?;
+        invalid_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": invalid_uri, "languageId": "perl", "version": 1, "text": "use v5.40; use builtin 'inf'; builtin::inf();\n"}
+        })))?;
+        invalid_buffer.lock().clear();
+        invalid_server.publish_diagnostics(&invalid_uri);
+        drop(invalid_server);
+        let invalid_output = String::from_utf8(invalid_buffer.lock().clone())?;
+        let invalid_frame = latest_published_diagnostics(&invalid_output, &invalid_uri)
+            .ok_or("invalid project diagnostic frame missing")?;
+        assert_eq!(invalid_frame.matches("Invalid project [perl].version").count(), 1);
+        assert!(!invalid_frame.contains("requires Perl"));
+
+        let invalid_pull_server = make_server_with_capture().0;
+        let (invalid_pull_uri, _) =
+            install_project_version_folder(&invalid_pull_server, &temp, "not-a-version")?;
+        invalid_pull_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": invalid_pull_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+        let invalid_pull_report = invalid_pull_server
+            .handle_document_diagnostic(Some(json!({"textDocument": {"uri": invalid_pull_uri}})))?
+            .ok_or("invalid document pull response missing")?;
+        let invalid_pull_text = invalid_pull_report.to_string();
+        assert_eq!(invalid_pull_text.matches("Invalid project [perl].version").count(), 1);
+        assert!(!invalid_pull_text.contains("requires Perl"));
+
+        let invalid_workspace_server = make_server_with_capture().0;
+        let (invalid_workspace_uri, _) =
+            install_project_version_folder(&invalid_workspace_server, &temp, "not-a-version")?;
+        invalid_workspace_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": invalid_workspace_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+        let invalid_workspace_report = invalid_workspace_server
+            .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})))?
+            .ok_or("invalid workspace pull response missing")?;
+        let invalid_workspace_text = invalid_workspace_report.to_string();
+        assert_eq!(invalid_workspace_text.matches("Invalid project [perl].version").count(), 1);
+        assert!(!invalid_workspace_text.contains("requires Perl"));
+        Ok(())
+    }
+
+    #[test]
+    fn production_unregistered_single_file_config_reaches_all_diagnostic_paths()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "use builtin 'inf'; builtin::inf();\n";
+
+        let temp = tempfile::tempdir()?;
+        let (push_server, push_buffer) = make_server_with_capture();
+        let (push_uri, _) = install_single_file_project_config(&temp, "5.20")?;
+        push_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": push_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+        push_server.load_and_apply_project_config();
+        push_server.publish_diagnostics(&push_uri);
+        drop(push_server);
+        let push_output = String::from_utf8(push_buffer.lock().clone())?;
+        assert!(push_output.contains("PL900"), "single-file push must emit PL900: {push_output}");
+
+        let (pull_server, _) = make_server_with_capture();
+        let (pull_uri, _) = install_single_file_project_config(&temp, "5.20")?;
+        pull_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": pull_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+        pull_server.load_and_apply_project_config();
+        let pull_report = pull_server
+            .handle_document_diagnostic(Some(json!({"textDocument": {"uri": pull_uri}})))?
+            .ok_or("single-file document pull response missing")?;
+        assert!(pull_report.to_string().contains("PL900"));
+
+        let (workspace_server, _) = make_server_with_capture();
+        let (workspace_uri, _) = install_single_file_project_config(&temp, "5.20")?;
+        workspace_server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": workspace_uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+        workspace_server.load_and_apply_project_config();
+        let workspace_report = workspace_server
+            .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})))?
+            .ok_or("single-file workspace pull response missing")?;
+        assert!(workspace_report.to_string().contains("PL900"));
+        Ok(())
+    }
+
+    #[test]
+    fn single_file_did_open_discovers_project_version_without_manual_reload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Production single-file mode never runs config discovery before the
+        // first didOpen (initialize finds no documents), so the opened
+        // document itself must populate the retained single-file authority:
+        // no manual load_and_apply call here.
+        let temp = tempfile::tempdir()?;
+        let (server, buffer) = make_server_with_capture();
+        let (uri, _) = install_single_file_project_config(&temp, "5.20")?;
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "use builtin 'inf'; builtin::inf();\n"
+            }
+        })))?;
+        assert_eq!(
+            project_version_for_doc(&server, &uri).as_deref(),
+            Some("5.20"),
+            "didOpen alone must resolve the single-file project fallback"
+        );
+        server.publish_diagnostics(&uri);
+        let output = capture_until(&buffer, |output| output.contains("PL900"));
+        assert!(
+            output.contains("PL900"),
+            "push publication must emit the discovered fallback PL900: {output}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_folder_change_republishes_push_diagnostics_for_open_documents()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Legacy push clients keep stale PL900 rows after a folder reload
+        // installs a new [perl].version unless the folder-change path
+        // schedules push republish. The document starts outside every folder
+        // and in a subdirectory without its own .perl-lsp.toml, so the first
+        // publish cannot carry the fallback.
+        let temp = tempfile::tempdir()?;
+        let ws = temp.path().join("ws");
+        let sub = ws.join("sub");
+        std::fs::create_dir_all(&sub)?;
+        let doc = sub.join("main.pl");
+        let uri = url::Url::from_file_path(&doc)
+            .map_err(|()| "failed to build document URI")?
+            .to_string();
+        let folder_uri = url::Url::from_directory_path(&ws)
+            .map_err(|()| "failed to build folder URI")?
+            .to_string();
+
+        let (server, buffer) = make_server_with_capture();
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "use builtin 'inf'; builtin::inf();\n"
+            }
+        })))?;
+        let before = capture_until(&buffer, |output| output.contains("publishDiagnostics"));
+        assert!(
+            !before.contains("requires Perl"),
+            "pre-folder publish must not carry a project-version PL900: {before}"
+        );
+
+        std::fs::write(ws.join(".perl-lsp.toml"), "[perl]\nversion = \"5.20\"\n")?;
+        server.handle_did_change_workspace_folders(Some(json!({
+            "event": {
+                "added": [{ "uri": folder_uri, "name": "ws" }],
+                "removed": []
+            }
+        })))?;
+
+        let after = capture_until(&buffer, |output| output.contains("requires Perl"));
+        assert!(
+            after.contains("PL900"),
+            "folder change must republish push diagnostics with the new project fallback: {after}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn folder_mode_clears_retained_single_file_authority() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // A registered folder is the per-folder configuration authority: once
+        // folder mode begins, a config discovered from a document directory in
+        // single-file mode must not leak into a folder that has no
+        // .perl-lsp.toml of its own.
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("root");
+        let sub = root.join("sub");
+        std::fs::create_dir_all(&sub)?;
+        std::fs::write(sub.join(".perl-lsp.toml"), "[perl]\nversion = \"5.20\"\n")?;
+        let doc = sub.join("main.pl");
+        let uri = url::Url::from_file_path(&doc)
+            .map_err(|()| "failed to build document URI")?
+            .to_string();
+        let folder_uri = url::Url::from_directory_path(&root)
+            .map_err(|()| "failed to build folder URI")?
+            .to_string();
+
+        let (server, buffer) = make_server_with_capture();
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "use builtin 'inf'; builtin::inf();\n"
+            }
+        })))?;
+        assert_eq!(
+            project_version_for_doc(&server, &uri).as_deref(),
+            Some("5.20"),
+            "single-file discovery must apply before the folder change"
+        );
+        server.publish_diagnostics(&uri);
+        let before = capture_until(&buffer, |output| output.contains("PL900"));
+        assert!(
+            before.contains("PL900"),
+            "single-file fallback must reach publication before the folder change: {before}"
+        );
+
+        server.handle_did_change_workspace_folders(Some(json!({
+            "event": {
+                "added": [{ "uri": folder_uri, "name": "root" }],
+                "removed": []
+            }
+        })))?;
+
+        assert!(
+            project_version_for_doc(&server, &uri).is_none(),
+            "a registered folder without its own .perl-lsp.toml must not inherit \
+             the retained single-file version"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_single_file_reload_and_workspace_pull_complete_without_lock_cycle()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let (uri, _) = install_single_file_project_config(&temp, "5.20")?;
+        let server = StdArc::new(LspServer::new());
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "use builtin 'inf'; builtin::inf();\n"
+            }
+        })))?;
+
+        let barrier = StdArc::new(std::sync::Barrier::new(3));
+        let (reload_tx, reload_rx) = std::sync::mpsc::channel();
+        let reload_server = StdArc::clone(&server);
+        let reload_barrier = StdArc::clone(&barrier);
+        std::thread::spawn(move || {
+            reload_barrier.wait();
+            reload_server.load_and_apply_project_config();
+            let _ = reload_tx.send(());
+        });
+
+        let (diagnostic_tx, diagnostic_rx) = std::sync::mpsc::channel();
+        let diagnostic_server = StdArc::clone(&server);
+        let diagnostic_barrier = StdArc::clone(&barrier);
+        std::thread::spawn(move || {
+            diagnostic_barrier.wait();
+            let _ = diagnostic_server
+                .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})));
+            let _ = diagnostic_tx.send(());
+        });
+
+        barrier.wait();
+        reload_rx.recv_timeout(Duration::from_secs(10))?;
+        diagnostic_rx.recv_timeout(Duration::from_secs(10))?;
+        Ok(())
+    }
+
+    #[test]
+    fn production_source_version_authority_survives_recovery_and_ambiguity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let (recovered_server, recovered_buffer) = make_server_with_capture();
+        let (recovered_uri, _) = install_project_version_folder(&recovered_server, &temp, "5.40")?;
+        recovered_server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": recovered_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "use v5.20; use builtin 'inf'; builtin::inf(); my $broken = (\n"
+            }
+        })))?;
+        recovered_server.publish_diagnostics(&recovered_uri);
+        drop(recovered_server);
+        let recovered_output = String::from_utf8(recovered_buffer.lock().clone())?;
+        assert!(
+            !recovered_output.contains("target from project [perl].version"),
+            "recovered source must not be treated as definitively absent and replaced by project fallback: {recovered_output}"
+        );
+        assert!(
+            recovered_output.contains("PL001"),
+            "the recovered parse must remain explicitly represented by parser diagnostics: {recovered_output}"
+        );
+
+        let (ambiguous_server, ambiguous_buffer) = make_server_with_capture();
+        let (ambiguous_uri, _) = install_project_version_folder(&ambiguous_server, &temp, "5.20")?;
+        ambiguous_server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": ambiguous_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "use v5.20; use v5.40; use builtin 'inf'; builtin::inf();\n"
+            }
+        })))?;
+        ambiguous_server.publish_diagnostics(&ambiguous_uri);
+        drop(ambiguous_server);
+        let ambiguous_output = String::from_utf8(ambiguous_buffer.lock().clone())?;
+        assert!(
+            !ambiguous_output.contains("target from project [perl].version"),
+            "ambiguous source declarations must not be replaced by project fallback: {ambiguous_output}"
+        );
+        assert!(
+            !ambiguous_output.contains("requires Perl v5.36+"),
+            "the highest source declaration must remain authoritative: {ambiguous_output}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_project_version_reload_invalidates_result_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("reload-project");
+        std::fs::create_dir_all(&folder)?;
+        let config_path = folder.join(".perl-lsp.toml");
+        std::fs::write(&config_path, "[perl]\nversion = \"5.20\"\n")?;
+        let file = folder.join("main.pl");
+        let uri = url::Url::from_file_path(&file)
+            .map_err(|()| "failed to build reload file URI")?
+            .to_string();
+        let folder_uri = url::Url::from_directory_path(&folder)
+            .map_err(|()| "failed to build reload folder URI")?
+            .to_string();
+        let server = make_server_with_capture().0;
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(folder.clone()),
+        );
+        server.load_and_apply_project_config();
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "sub f ($x) { return $x; }\n"}
+        })))?;
+
+        let first = server
+            .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})))?
+            .ok_or("first workspace diagnostic response missing")?;
+        let first_item = first["items"]
+            .as_array()
+            .and_then(|items| items.first())
+            .ok_or_else(|| format!("first report item missing: {first}"))?;
+        let first_id =
+            first_item["resultId"].as_str().ok_or("first result ID missing")?.to_string();
+
+        std::fs::write(&config_path, "[perl]\nversion = \"5.40\"\n")?;
+        server.load_and_apply_project_config();
+        let second = server
+            .handle_workspace_diagnostic(Some(json!({
+                "previousResultIds": [{"uri": uri, "value": first_id}]
+            })))?
+            .ok_or("second workspace diagnostic response missing")?;
+        let second_item = second["items"]
+            .as_array()
+            .and_then(|items| items.first())
+            .ok_or("second report item missing")?;
+        assert_eq!(second_item["kind"], "full", "config reload must not reuse the old report");
+        assert_ne!(
+            second_item["resultId"].as_str(),
+            Some(first_id.as_str()),
+            "project version changes must invalidate workspace report identity"
+        );
+        assert!(
+            second_item.to_string().contains("PL900"),
+            "5.40 project fallback must not enable lexical signature features: {second_item}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_reload_drops_malformed_and_absent_project_versions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("lifecycle-project");
+        std::fs::create_dir_all(&folder)?;
+        let config_path = folder.join(".perl-lsp.toml");
+        std::fs::write(&config_path, "[perl]\nversion = \"5.20\"\n")?;
+        let file = folder.join("main.pl");
+        let uri = url::Url::from_file_path(&file)
+            .map_err(|()| "failed to build lifecycle file URI")?
+            .to_string();
+        let folder_uri = url::Url::from_directory_path(&folder)
+            .map_err(|()| "failed to build lifecycle folder URI")?
+            .to_string();
+        let (server, output) = make_server_with_capture();
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(folder.clone()),
+        );
+        server.load_and_apply_project_config();
+        let initial_config_generation = server
+            .workspace_folders
+            .lock()
+            .first()
+            .ok_or("folder state missing after initial config load")?
+            .project_config_generation;
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "sub f ($x) { return $x; }\n"}
+        })))?;
+        let initial = server
+            .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})))?
+            .ok_or("initial lifecycle report missing")?;
+        let initial_item = initial["items"]
+            .as_array()
+            .and_then(|items| items.first())
+            .ok_or("initial lifecycle item missing")?;
+        let initial_id = initial_item["resultId"]
+            .as_str()
+            .ok_or("initial lifecycle result ID missing")?
+            .to_string();
+        assert!(initial_item.to_string().contains("PL900"));
+
+        std::fs::write(&config_path, "[perl]\nversion = \"5.20.1\"\n")?;
+        server.load_and_apply_project_config();
+        assert_eq!(
+            server
+                .workspace_folders
+                .lock()
+                .first()
+                .ok_or("folder state missing after malformed config")?
+                .project_config_generation,
+            initial_config_generation + 1,
+            "malformed config must advance the folder-local report generation"
+        );
+        let warning_output = capture_until(&output, |output| {
+            output.contains("invalid [perl].version")
+                && output.contains("expected a major.minor target")
+        });
+        assert!(
+            warning_output.contains("invalid [perl].version")
+                && warning_output.contains("expected a major.minor target"),
+            "invalid project versions must produce an actionable warning: {warning_output}"
+        );
+        let malformed = server
+            .handle_workspace_diagnostic(Some(json!({
+                "previousResultIds": [{"uri": uri, "value": initial_id}]
+            })))?
+            .ok_or("malformed lifecycle report missing")?;
+        let malformed_item = malformed["items"]
+            .as_array()
+            .and_then(|items| items.first())
+            .ok_or("malformed lifecycle item missing")?;
+        assert_eq!(malformed_item["kind"], "full");
+        let malformed_text = malformed_item.to_string();
+        assert_eq!(
+            malformed_text.matches("Invalid project [perl].version").count(),
+            1,
+            "malformed project configuration must remain actionable: {malformed_text}"
+        );
+        assert!(
+            !malformed_text.contains("requires Perl"),
+            "malformed project configuration must not become a fallback PL900 target: {malformed_text}"
+        );
+
+        let malformed_id = malformed_item["resultId"]
+            .as_str()
+            .ok_or("malformed lifecycle result ID missing")?
+            .to_string();
+        std::fs::remove_file(&config_path)?;
+        server.load_and_apply_project_config();
+        let absent = server
+            .handle_workspace_diagnostic(Some(json!({
+                "previousResultIds": [{"uri": uri, "value": malformed_id}]
+            })))?
+            .ok_or("absent lifecycle report missing")?;
+        let absent_item = absent["items"]
+            .as_array()
+            .and_then(|items| items.first())
+            .ok_or("absent lifecycle item missing")?;
+        assert!(!absent_item.to_string().contains("PL900"));
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_reload_preserves_per_folder_project_version_isolation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let root = resolved_temp_root(&temp)?;
+        let first_folder = root.join("first-project");
+        let second_folder = root.join("second-project");
+        std::fs::create_dir_all(&first_folder)?;
+        std::fs::create_dir_all(&second_folder)?;
+        std::fs::write(first_folder.join(".perl-lsp.toml"), "[perl]\nversion = \"5.20\"\n")?;
+        std::fs::write(second_folder.join(".perl-lsp.toml"), "[perl]\nversion = \"5.20\"\n")?;
+
+        let first_file = first_folder.join("main.pl");
+        let second_file = second_folder.join("main.pl");
+        let first_uri = url::Url::from_file_path(&first_file)
+            .map_err(|()| "failed to build first file URI")?
+            .to_string();
+        let second_uri = url::Url::from_file_path(&second_file)
+            .map_err(|()| "failed to build second file URI")?
+            .to_string();
+        let first_folder_uri = url::Url::from_directory_path(&first_folder)
+            .map_err(|()| "failed to build first folder URI")?
+            .to_string();
+        let second_folder_uri = url::Url::from_directory_path(&second_folder)
+            .map_err(|()| "failed to build second folder URI")?
+            .to_string();
+        let server = make_server_with_capture().0;
+        server.workspace_folders.lock().extend([
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(first_folder_uri.clone())
+                .with_path(first_folder.clone()),
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(second_folder_uri.clone())
+                .with_path(second_folder.clone()),
+        ]);
+        server.load_and_apply_project_config();
+        let source = "use builtin 'inf'; builtin::inf();\n";
+        let (first_config_generation, second_config_generation) = {
+            let folders = server.workspace_folders.lock();
+            let first = folders
+                .iter()
+                .find(|folder| folder.uri == first_folder_uri)
+                .ok_or("first folder state missing")?
+                .project_config_generation;
+            let second = folders
+                .iter()
+                .find(|folder| folder.uri == second_folder_uri)
+                .ok_or("second folder state missing")?
+                .project_config_generation;
+            (first, second)
+        };
+        let first_uri_key = server.normalize_uri_key(&first_uri);
+        let second_uri_key = server.normalize_uri_key(&second_uri);
+        for uri in [&first_uri, &second_uri] {
+            server.test_handle_did_open(Some(json!({
+                "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": source}
+            })))?;
+        }
+
+        let first_report = server
+            .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})))?
+            .ok_or("initial workspace diagnostic response missing")?;
+        let first_items = first_report["items"].as_array().ok_or("initial report items missing")?;
+        let first_item = first_items
+            .iter()
+            .find(|item| item["uri"].as_str() == Some(first_uri_key.as_str()))
+            .ok_or_else(|| format!("first folder report missing: {first_report}"))?;
+        let second_item = first_items
+            .iter()
+            .find(|item| item["uri"].as_str() == Some(second_uri_key.as_str()))
+            .ok_or("second folder report missing")?;
+        let first_id = first_item["resultId"].as_str().ok_or("first folder result ID missing")?;
+        let second_id =
+            second_item["resultId"].as_str().ok_or("second folder result ID missing")?;
+        assert!(first_item.to_string().contains("PL900"));
+        assert!(second_item.to_string().contains("PL900"));
+
+        std::fs::write(first_folder.join(".perl-lsp.toml"), "[perl]\nversion = \"5.40\"\n")?;
+        server.load_and_apply_project_config();
+        let (reloaded_first_config_generation, reloaded_second_config_generation) = {
+            let folders = server.workspace_folders.lock();
+            let first = folders
+                .iter()
+                .find(|folder| folder.uri == first_folder_uri)
+                .ok_or("reloaded first folder state missing")?
+                .project_config_generation;
+            let second = folders
+                .iter()
+                .find(|folder| folder.uri == second_folder_uri)
+                .ok_or("reloaded second folder state missing")?
+                .project_config_generation;
+            (first, second)
+        };
+        assert_eq!(reloaded_first_config_generation, first_config_generation + 1);
+        assert_eq!(reloaded_second_config_generation, second_config_generation);
+        let reloaded = server
+            .handle_workspace_diagnostic(Some(json!({
+                "previousResultIds": [
+                    {"uri": first_uri, "value": first_id},
+                    {"uri": second_uri, "value": second_id}
+                ]
+            })))?
+            .ok_or("reloaded workspace diagnostic response missing")?;
+        let reloaded_items = reloaded["items"].as_array().ok_or("reloaded report items missing")?;
+        let reloaded_first = reloaded_items
+            .iter()
+            .find(|item| item["uri"].as_str() == Some(first_uri_key.as_str()))
+            .ok_or("reloaded first report missing")?;
+        let reloaded_second = reloaded_items
+            .iter()
+            .find(|item| item["uri"].as_str() == Some(second_uri_key.as_str()))
+            .ok_or("reloaded second report missing")?;
+        assert_eq!(reloaded_first["kind"], "full");
+        assert!(!reloaded_first.to_string().contains("PL900"));
+        assert_eq!(
+            reloaded_second["kind"], "unchanged",
+            "an unchanged folder configuration must keep the client's cached report valid: {reloaded_second}"
+        );
+        assert_ne!(reloaded_first["resultId"].as_str(), Some(first_id));
+        assert_eq!(reloaded_second["resultId"].as_str(), Some(second_id));
+
+        let recomputed = server
+            .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})))?
+            .ok_or("recomputed workspace diagnostic response missing")?;
+        let recomputed_items =
+            recomputed["items"].as_array().ok_or("recomputed report items missing")?;
+        let recomputed_first = recomputed_items
+            .iter()
+            .find(|item| item["uri"].as_str() == Some(first_uri_key.as_str()))
+            .ok_or("recomputed first report missing")?;
+        let recomputed_second = recomputed_items
+            .iter()
+            .find(|item| item["uri"].as_str() == Some(second_uri_key.as_str()))
+            .ok_or("recomputed second report missing")?;
+        assert!(
+            !recomputed_first.to_string().contains("PL900"),
+            "recomputed first folder must retain its 5.40 target: {recomputed_first}"
+        );
+        assert!(
+            recomputed_second.to_string().contains("PL900"),
+            "recomputed second folder must retain its 5.20 target: {recomputed_second}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_diagnostics_drops_in_flight_reload_snapshot()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let (server, _) = make_server_with_capture();
+        let (uri, _) = install_project_version_folder(&server, &temp, "5.20")?;
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "sub f ($x) { return $x; }\n"}
+        })))?;
+
+        let workspace_generation = std::sync::Arc::clone(&server.workspace_identity_generation);
+        *server.diagnostic_after_snapshot_hook.lock() = Some(Box::new(move || {
+            workspace_generation.fetch_add(1, Ordering::SeqCst);
+        }));
+        let report = server
+            .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})))?
+            .ok_or("in-flight reload workspace response missing")?;
+        assert_eq!(
+            report["items"].as_array().map(Vec::len),
+            Some(0),
+            "a reload during the snapshot must discard the stale PL900 report"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_diagnostics_drops_only_the_folder_with_in_flight_config_reload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let first_folder = temp.path().join("first-project");
+        let second_folder = temp.path().join("second-project");
+        std::fs::create_dir_all(&first_folder)?;
+        std::fs::create_dir_all(&second_folder)?;
+        for folder in [&first_folder, &second_folder] {
+            std::fs::write(folder.join(".perl-lsp.toml"), "[perl]\nversion = \"5.20\"\n")?;
+        }
+        let first_file = first_folder.join("main.pl");
+        let second_file = second_folder.join("main.pl");
+        let first_uri = url::Url::from_file_path(&first_file)
+            .map_err(|()| "failed to build first file URI")?
+            .to_string();
+        let second_uri = url::Url::from_file_path(&second_file)
+            .map_err(|()| "failed to build second file URI")?
+            .to_string();
+        let first_folder_uri = url::Url::from_directory_path(&first_folder)
+            .map_err(|()| "failed to build first folder URI")?
+            .to_string();
+        let second_folder_uri = url::Url::from_directory_path(&second_folder)
+            .map_err(|()| "failed to build second folder URI")?
+            .to_string();
+        let (server, _) = make_server_with_capture();
+        let first_folder_path = first_folder.clone();
+        server.workspace_folders.lock().extend([
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(first_folder_uri)
+                .with_path(first_folder),
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(second_folder_uri)
+                .with_path(second_folder),
+        ]);
+        server.load_and_apply_project_config();
+        for uri in [&first_uri, &second_uri] {
+            server.test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "sub f ($x) { return $x; }\n"
+                }
+            })))?;
+        }
+
+        let folders = std::sync::Arc::clone(&server.workspace_folders);
+        *server.diagnostic_after_snapshot_hook.lock() = Some(Box::new(move || {
+            if let Some(folder) = folders
+                .lock()
+                .iter_mut()
+                .find(|folder| folder.path.as_ref() == Some(&first_folder_path))
+            {
+                folder.project_config_generation =
+                    folder.project_config_generation.saturating_add(1);
+            }
+        }));
+        let first_uri_key = server.normalize_uri_key(&first_uri);
+        let second_uri_key = server.normalize_uri_key(&second_uri);
+        let report = server
+            .handle_workspace_diagnostic(Some(json!({"previousResultIds": []})))?
+            .ok_or("in-flight per-folder reload response missing")?;
+        let items = report["items"].as_array().ok_or("workspace items missing")?;
+        assert!(
+            items.iter().all(|item| item["uri"].as_str() != Some(first_uri_key.as_str())),
+            "changed folder must be dropped from mixed-generation response: {report}"
+        );
+        assert!(
+            items.iter().any(|item| item["uri"].as_str() == Some(second_uri_key.as_str())),
+            "unrelated folder must remain current: {report}"
+        );
+        Ok(())
     }
 
     #[test]
@@ -4310,6 +5364,79 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn build_context_keeps_project_version_isolated_to_owning_folder()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let folder_a = temp.path().join("folder-a");
+        let folder_b = temp.path().join("folder-b");
+        let script_b = folder_b.join("script.pl");
+        std::fs::create_dir_all(&folder_a)?;
+        std::fs::create_dir_all(&folder_b)?;
+        std::fs::write(&script_b, "sub f ($x) { $x }\n")?;
+        let doc_uri = url::Url::from_file_path(&script_b).map_err(|_| "bad uri")?.to_string();
+
+        let mut config_a = perl_lsp_rs_core::config::ProjectConfig::default();
+        config_a.perl.version = Some("5.20".to_string());
+        let mut config_b = perl_lsp_rs_core::config::ProjectConfig::default();
+        config_b.perl.version = Some("5.40".to_string());
+
+        let (server, _buf) = make_server_with_capture();
+        let mut folders = server.workspace_folders.lock();
+        folders.push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(
+                url::Url::from_directory_path(&folder_a).map_err(|_| "bad uri_a")?.to_string(),
+            )
+            .with_path(folder_a)
+            .with_project_config(config_a),
+        );
+        folders.push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(
+                url::Url::from_directory_path(&folder_b).map_err(|_| "bad uri_b")?.to_string(),
+            )
+            .with_path(folder_b)
+            .with_project_config(config_b),
+        );
+        drop(folders);
+
+        let context = PullDiagnosticsOrchestrator::new().build_context(&server, &doc_uri);
+        assert_eq!(context.project_version.as_deref(), Some("5.40"));
+        Ok(())
+    }
+
+    #[test]
+    fn build_context_is_rootless_without_project_version_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let script = temp.path().join("script.pl");
+        std::fs::write(&script, "sub f ($x) { $x }\n")?;
+        let doc_uri = url::Url::from_file_path(&script).map_err(|_| "bad uri")?.to_string();
+        let (server, _buf) = make_server_with_capture();
+
+        let context = PullDiagnosticsOrchestrator::new().build_context(&server, &doc_uri);
+        assert!(context.project_version.is_none());
+        assert!(context.identity_root_key.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn build_context_does_not_discover_rootless_adjacent_project_version()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let script = temp.path().join("script.pl");
+        std::fs::write(temp.path().join(".perl-lsp.toml"), "[perl]\nversion = \"v5.20\"\n")?;
+        std::fs::write(&script, "sub f ($x) { $x }\n")?;
+        let doc_uri = url::Url::from_file_path(&script).map_err(|_| "bad uri")?.to_string();
+        let (server, _buf) = make_server_with_capture();
+
+        let context = PullDiagnosticsOrchestrator::new().build_context(&server, &doc_uri);
+
+        assert!(context.project_version.is_none());
+        assert!(context.workspace_root.is_none());
+        assert!(context.identity_root_key.is_none());
+        Ok(())
+    }
+
     /// Regression guard for scenario_14_no_lib_cancellation:
     ///
     /// When `use lib 'lib'` is followed by `no lib 'lib'` and then `use GoneModule`,
@@ -5120,5 +6247,152 @@ print \"unreachable\\n\";\n";
                 "unrelated pair {a:?}/{b:?} must keep the transport coincidence dedup"
             );
         }
+    }
+
+    // ------------------------------------------------------------------
+    // #9131 recurrence: the negotiated String | MarkupContent message
+    // union must survive syntax-only and merged document-pull
+    // serialization without string-only coercion. Reintroducing an
+    // `as_str().unwrap_or("")` recovery on the union flips the
+    // markup-capable assertions below to `""` and fails them.
+    // ------------------------------------------------------------------
+
+    const MESSAGE_UNION_PARSE_ERROR_DOCUMENT: &str = "sub broken {\n";
+
+    fn message_union_server(
+        tuning: perl_lsp_rs_core::runtime::tuning::RuntimeTuning,
+        markup_message_support: bool,
+    ) -> LspServer {
+        let (server, _buffer) = make_server_with_capture_and_tuning(tuning);
+        let capabilities = if markup_message_support {
+            json!({
+                "textDocument": { "diagnostic": { "markupMessageSupport": true } }
+            })
+        } else {
+            json!({})
+        };
+        server
+            .test_handle_initialize_dispatch(Some(json!({
+                "processId": 1,
+                "capabilities": capabilities,
+            })))
+            .expect("initialize should succeed");
+        let _ = server.test_handle_initialized_dispatch();
+        server
+    }
+
+    fn message_union_uri(name: &str) -> String {
+        if cfg!(windows) { format!("file:///C:/tmp/{name}") } else { format!("file:///tmp/{name}") }
+    }
+
+    fn syntax_only_pull_items(markup_message_support: bool) -> Vec<Value> {
+        let mut tuning = perl_lsp_rs_core::runtime::tuning::RuntimeTuning::normal_defaults();
+        tuning.diagnostic_mode = perl_lsp_rs_core::runtime::tuning::DiagnosticMode::SyntaxOnly;
+        let server = message_union_server(tuning, markup_message_support);
+        let uri = message_union_uri("9131_syntax_only.pl");
+        server
+            .test_apply_did_open(&uri, MESSAGE_UNION_PARSE_ERROR_DOCUMENT, 1)
+            .expect("didOpen should succeed");
+        let report = server
+            .test_handle_document_diagnostic(Some(json!({
+                "textDocument": { "uri": uri },
+            })))
+            .expect("syntax-only document pull should not error");
+        let items = report
+            .and_then(|r| r.get("items").and_then(Value::as_array).cloned())
+            .unwrap_or_default();
+        assert!(!items.is_empty(), "syntax-only pull must report parse errors; got {items:?}");
+        items
+    }
+
+    #[test]
+    fn syntax_only_pull_keeps_nonempty_string_message_without_markup() {
+        let items = syntax_only_pull_items(false);
+        assert_eq!(items.len(), 1, "exactly one parse error must be reported");
+        let item = &items[0];
+        assert_eq!(item["source"], "perl-lsp");
+        assert_eq!(item["severity"], 1, "a parse error that blocks a clean parse is severity 1");
+        let message = item["message"]
+            .as_str()
+            .expect("message must stay a JSON string when markup was not negotiated");
+        assert!(!message.is_empty(), "string message must be non-empty");
+    }
+
+    #[test]
+    fn syntax_only_pull_keeps_markupcontent_message_with_markup() {
+        let string_items = syntax_only_pull_items(false);
+        let markup_items = syntax_only_pull_items(true);
+        assert_eq!(markup_items.len(), 1, "exactly one parse error must be reported");
+        let item = &markup_items[0];
+
+        let message = &item["message"];
+        assert!(
+            message.is_object(),
+            "markup-capable syntax-only pull must keep the MarkupContent object; got {message}"
+        );
+        assert_eq!(message["kind"], "markdown");
+        let value = message["value"].as_str().expect("MarkupContent.value must be a string");
+        assert!(!value.is_empty(), "MarkupContent.value must be non-empty");
+
+        // Absent markup metadata falls back to the wrapper carrying the
+        // original message text, identical to the string-only transport.
+        let string_message = string_items[0]["message"]
+            .as_str()
+            .expect("string-only run must keep a string message");
+        assert_eq!(value, string_message, "message text must not change with capability state");
+
+        // Count, code, severity, range, and source are capability-invariant.
+        assert_eq!(item["severity"], string_items[0]["severity"]);
+        assert_eq!(item["code"], string_items[0]["code"]);
+        assert_eq!(item["source"], string_items[0]["source"]);
+        assert_eq!(item["range"], string_items[0]["range"]);
+    }
+
+    #[test]
+    fn merged_pull_internal_finding_keeps_message_union() {
+        // `internal_diagnostic_to_json` is the merged document-pull
+        // serializer for internal/native/external findings
+        // (document_report_to_json -> internal_diagnostic_to_json), so this
+        // exercises the exact branch the union coercion corrupted.
+        let doc = crate::state::DocumentState::new("print 'hello';\n", 1);
+        let server = LspServer::new();
+        let finding = InternalDiagnostic {
+            range: (0, 5),
+            severity: InternalDiagnosticSeverity::Warning,
+            code: Some("ValuesAndExpressions::ProhibitNoisyQuotes9131".to_string()),
+            message: "9131 merged critic finding".to_string(),
+            related_information: Vec::new(),
+            tags: Vec::new(),
+            suggestion: None,
+            fixable: false,
+            critic_observation: None,
+        };
+
+        let string_diag =
+            server.internal_diagnostic_to_json(&finding, &doc, "file:///test.pl", false);
+        let string_message = string_diag["message"]
+            .as_str()
+            .expect("message must stay a JSON string when markup was not negotiated");
+        assert!(!string_message.is_empty(), "string message must be non-empty");
+        assert_eq!(string_message, finding.message);
+
+        let markup_diag =
+            server.internal_diagnostic_to_json(&finding, &doc, "file:///test.pl", true);
+        let message = &markup_diag["message"];
+        assert!(
+            message.is_object(),
+            "markup-capable merged pull must keep the MarkupContent object; got {message}"
+        );
+        assert_eq!(message["kind"], "markdown");
+        let value = message["value"].as_str().expect("MarkupContent.value must be a string");
+        assert!(!value.is_empty(), "MarkupContent.value must be non-empty");
+        assert_eq!(value, string_message, "message text must not change with capability state");
+
+        // Count/code/severity/range/source invariants across capability states.
+        assert_eq!(markup_diag["code"], string_diag["code"]);
+        assert_eq!(markup_diag["severity"], string_diag["severity"]);
+        assert_eq!(markup_diag["source"], string_diag["source"]);
+        assert_eq!(markup_diag["range"], string_diag["range"]);
+        assert_eq!(markup_diag["code"], "ValuesAndExpressions::ProhibitNoisyQuotes9131");
     }
 }

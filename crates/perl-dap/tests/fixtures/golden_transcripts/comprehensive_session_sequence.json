@@ -23,8 +23,8 @@
       "command": "initialize",
       "body": {
         "supportsConfigurationDoneRequest": true,
-        "supportsSetVariable": true,
-        "supportsEvaluateForHovers": true
+        "supportsSetVariable": false,
+        "supportsEvaluateForHovers": false
       }
     },
     {

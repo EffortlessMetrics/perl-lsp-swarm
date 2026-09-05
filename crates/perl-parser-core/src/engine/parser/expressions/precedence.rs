@@ -108,31 +108,9 @@ impl<'a> Parser<'a> {
     /// an `Identifier("x")` followed by `Assign`. Exact source adjacency is required:
     /// Perl accepts `$value x= 3` but not `$value x = 3`.
     fn consume_assignment_operator(&mut self) -> ParseResult<Option<(&'static str, usize)>> {
-        if let Some(kind) = self.peek_kind() {
-            let op = match kind {
-                TokenKind::Assign => Some("="),
-                TokenKind::PlusAssign => Some("+="),
-                TokenKind::MinusAssign => Some("-="),
-                TokenKind::StarAssign => Some("*="),
-                TokenKind::SlashAssign => Some("/="),
-                TokenKind::PercentAssign => Some("%="),
-                TokenKind::DotAssign => Some(".="),
-                TokenKind::AndAssign => Some("&="),
-                TokenKind::OrAssign => Some("|="),
-                TokenKind::XorAssign => Some("^="),
-                TokenKind::PowerAssign => Some("**="),
-                TokenKind::LeftShiftAssign => Some("<<="),
-                TokenKind::RightShiftAssign => Some(">>="),
-                TokenKind::LogicalAndAssign => Some("&&="),
-                TokenKind::LogicalOrAssign => Some("||="),
-                TokenKind::DefinedOrAssign => Some("//="),
-                _ => None,
-            };
-
-            if let Some(op) = op {
-                let token = self.tokens.next()?;
-                return Ok(Some((op, token.start())));
-            }
+        if let Some(op) = self.peek_kind().and_then(Self::assignment_operator_text) {
+            let token = self.tokens.next()?;
+            return Ok(Some((op, token.start())));
         }
 
         if self.peek_kind() == Some(TokenKind::Identifier) {
@@ -589,8 +567,17 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
+    /// Parse at most one range operator at this precedence level.
+    ///
+    /// Perl's `..` is non-associative (perlop: "In scalar context .. returns
+    /// a boolean value... the operator is non-associative and it is a syntax
+    /// error to chain it"). One unparenthesized range is valid; an adjacent
+    /// second `..` at the same level must not be silently left-folded
+    /// (#13903). Explicitly parenthesized nesting still parses because each
+    /// nesting level re-enters this rung through its own recursive-descent
+    /// descent (`parse_or` on the right, the caller's ladder on the left).
     fn parse_range_with(&mut self, mut expr: Node) -> ParseResult<Node> {
-        while self.peek_kind() == Some(TokenKind::Range) {
+        if self.peek_kind() == Some(TokenKind::Range) {
             let op_token = self.tokens.next()?;
             let right = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                 missing
@@ -1052,9 +1039,13 @@ impl<'a> Parser<'a> {
                             | TokenKind::HashSigil
                             | TokenKind::LeftParen
                             | TokenKind::LeftBracket
+                            | TokenKind::LeftBrace
                             | TokenKind::String
                             | TokenKind::QuoteSingle
                             | TokenKind::QuoteDouble
+                            | TokenKind::Undef
+                            | TokenKind::Do
+                            | TokenKind::Sub
                             | TokenKind::Not
                             | TokenKind::Minus
                             | TokenKind::Plus

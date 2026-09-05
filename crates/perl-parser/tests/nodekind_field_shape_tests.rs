@@ -24,7 +24,7 @@ where
     node.for_each_child(|child| find_nodes(child, predicate, out));
 }
 
-fn matching_nodes<'a, F>(node: &'a Node, predicate: F) -> Vec<&'a Node>
+fn matching_nodes<F>(node: &Node, predicate: F) -> Vec<&Node>
 where
     F: Fn(&NodeKind) -> bool,
 {
@@ -159,7 +159,7 @@ fn package_phase_and_data_nodekinds_preserve_optional_shapes() -> Result<(), Str
         "DataSection",
     )?;
     match &data_node.kind {
-        NodeKind::DataSection { marker, body } => {
+        NodeKind::DataSection { marker, body, .. } => {
             assert_eq!(marker, "__END__");
             let body = body.as_ref().ok_or("data section should keep body")?;
             assert!(body.contains("fixture tail"));

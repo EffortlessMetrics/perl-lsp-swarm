@@ -113,6 +113,116 @@ def hardlink_entry(archive: tarfile.TarFile) -> None:
     archive.addfile(info)
 
 
+def hardlink_topology_member(archive: tarfile.TarFile) -> None:
+    """A hardlink wearing an accepted topology name (#11508).
+
+    ``hardlink_entry`` names its link ``hard``, so the unexpected-member rule
+    rejects it before the link rule is ever consulted. This case supplies
+    ``SHA256SUMS.txt`` itself as a hardlink, so only a real type check can
+    reject it. BusyBox ``tar -tv`` renders a hardlink with a regular-file type
+    char, which is why entry type must come from the header, not the listing.
+    """
+    _add_dir(archive, PACKAGE)
+    _add_reg(archive, f"{PACKAGE}/perllsp", POSIX_FILES["perllsp"], 0o755)
+    _add_reg(archive, f"{PACKAGE}/perl-dap", POSIX_FILES["perl-dap"], 0o755)
+    for name in ("README.md", "LICENSE-APACHE", "LICENSE-MIT"):
+        _add_reg(archive, f"{PACKAGE}/{name}", POSIX_FILES[name])
+    info = tarfile.TarInfo(f"{PACKAGE}/SHA256SUMS.txt")
+    info.type = tarfile.LNKTYPE
+    info.linkname = f"{PACKAGE}/perllsp"
+    info.mode = 0o644
+    archive.addfile(info)
+
+
+def absolute_topology_member(archive: tarfile.TarFile) -> None:
+    """The server binary delivered at an absolute archive path (#11508).
+
+    ``absolute_path`` adds an escape member alongside a complete valid
+    topology, so it is rejected as outside the package directory. Here the
+    absolute member *is* the topology's ``perllsp``: BusyBox ``tar -t`` strips
+    the leading ``/`` before printing, so a listing-derived name reads as the
+    canonical member and stages substituted content.
+    """
+    _add_dir(archive, PACKAGE)
+    _add_reg(archive, f"/{PACKAGE}/perllsp", b"smuggled-server\n", 0o755)
+    _add_reg(archive, f"{PACKAGE}/perl-dap", POSIX_FILES["perl-dap"], 0o755)
+    for name in ("README.md", "LICENSE-APACHE", "LICENSE-MIT", "SHA256SUMS.txt"):
+        _add_reg(archive, f"{PACKAGE}/{name}", POSIX_FILES[name])
+
+
+def newline_in_member_name(archive: tarfile.TarFile) -> None:
+    """A stored name carrying a raw newline (#11508).
+
+    A line-oriented listing splits this member across two lines, desynchronizing
+    any pairing of `tar -t` names with `tar -tv` type chars. Reading the header
+    name field makes it a single nonportable name instead.
+    """
+    valid_posix(archive)
+    _add_reg(archive, f"{PACKAGE}/ev\nil", b"split\n")
+
+
+def _ustar_header(name: str, size: int, mode: int, typeflag: bytes) -> bytearray:
+    """One 512-byte POSIX ustar header block with a correct checksum."""
+    header = bytearray(512)
+    encoded = name.encode()
+    header[0 : len(encoded)] = encoded
+    header[100:108] = f"{mode:07o}\0".encode()
+    header[108:116] = b"0000000\0"
+    header[116:124] = b"0000000\0"
+    header[124:136] = f"{size:011o}\0".encode()
+    header[136:148] = b"00000000000\0"
+    header[156:157] = typeflag
+    header[257:263] = b"ustar\0"
+    header[263:265] = b"00"
+    header[148:156] = b" " * 8
+    header[148:156] = f"{sum(header) & 0o7777777:06o}\0 ".encode()
+    return header
+
+
+def extended_pax_header(dest: Path) -> None:
+    """A PAX ``x`` record that renames the entry following it (#11508).
+
+    The hazard is identity rewriting: an ``x`` record's ``path`` key overrides
+    the ustar name of the next entry, so a classifier that skips the record
+    inspects one name while ``tar`` extracts under another. Here the topology's
+    ``SHA256SUMS.txt`` is delivered only through such an override, over a ustar
+    header that names ``decoy``.
+
+    The override is small and extraction-safe on purpose. An earlier version
+    forced the ``x`` record with an oversized uid, which real ``tar`` refused
+    during extraction — so the case passed even when the classifier was mutated
+    to skip extended records, proving nothing about the classifier itself.
+    """
+    import gzip as _gzip
+
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w") as archive:
+        _add_dir(archive, PACKAGE)
+        _add_reg(archive, f"{PACKAGE}/perllsp", POSIX_FILES["perllsp"], 0o755)
+        _add_reg(archive, f"{PACKAGE}/perl-dap", POSIX_FILES["perl-dap"], 0o755)
+        for name in ("README.md", "LICENSE-APACHE", "LICENSE-MIT"):
+            _add_reg(archive, f"{PACKAGE}/{name}", POSIX_FILES[name])
+    body = bytes(raw.getvalue()).rstrip(b"\0")
+    body += b"\0" * ((-len(body)) % 512)
+
+    # PAX record: "<len> path=<value>\n", where <len> counts itself.
+    value = f"path={PACKAGE}/SHA256SUMS.txt\n"
+    length = len(value) + len(str(len(value))) + 1
+    if len(str(length)) != len(str(len(value))):
+        length += 1
+    record = f"{length} {value}".encode()
+
+    out = bytearray(body)
+    out += _ustar_header("PaxHeaders/SHA256SUMS.txt", len(record), 0o644, b"x")
+    out += record + b"\0" * ((-len(record)) % 512)
+    payload = POSIX_FILES["SHA256SUMS.txt"]
+    out += _ustar_header(f"{PACKAGE}/decoy", len(payload), 0o644, b"0")
+    out += payload + b"\0" * ((-len(payload)) % 512)
+    out += b"\0" * 1024
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(_gzip.compress(bytes(out)))
+
+
 def fifo_entry(archive: tarfile.TarFile) -> None:
     valid_posix(archive)
     info = tarfile.TarInfo(f"{PACKAGE}/pipe")
@@ -176,9 +286,145 @@ def oversized_entry(archive: tarfile.TarFile) -> None:
         _add_reg(archive, f"{PACKAGE}/{name}", POSIX_FILES[name])
 
 
+def sized_directory_entry(dest: Path) -> None:
+    """A directory entry declaring a nonzero size (#11508).
+
+    POSIX requires a zero size on types that carry no data. A walker that
+    trusts the typeflag alone lets this entry's phantom data block swallow the
+    header that follows it, so the walker and a conformant tar reader disagree
+    about which entries the archive holds.
+    """
+    import gzip as _gzip
+
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w") as archive:
+        info = tarfile.TarInfo(PACKAGE + "/")
+        info.type = tarfile.DIRTYPE
+        info.mode = 0o755
+        info.size = 512
+        archive.addfile(info, io.BytesIO(b"\0" * 512))
+        _add_reg(archive, f"{PACKAGE}/perllsp", POSIX_FILES["perllsp"], 0o755)
+        _add_reg(archive, f"{PACKAGE}/perl-dap", POSIX_FILES["perl-dap"], 0o755)
+        for name in ("README.md", "LICENSE-APACHE", "LICENSE-MIT", "SHA256SUMS.txt"):
+            _add_reg(archive, f"{PACKAGE}/{name}", POSIX_FILES[name])
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(_gzip.compress(raw.getvalue()))
+
+
+def sparse_entry(dest: Path) -> None:
+    """A GNU sparse member (typeflag ``S``) carrying real stored data (#11508).
+
+    A sparse header's size field counts only the stored bytes and a long
+    sparse map continues into further blocks, so the entry's extent is not
+    derivable from the header alone. It must be refused by name rather than
+    treated as a dataless type that wrongly declared a size.
+    """
+    import gzip as _gzip
+
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w") as archive:
+        valid_posix(archive)
+    blocks = bytearray(raw.getvalue())
+
+    header = bytearray(512)
+    name = f"{PACKAGE}/sparse".encode()
+    header[0 : len(name)] = name
+    header[100:108] = b"0000644\0"
+    header[108:116] = b"0000000\0"
+    header[116:124] = b"0000000\0"
+    header[124:136] = b"00000003400\0"  # 1792 stored bytes
+    header[136:148] = b"00000000000\0"
+    header[156] = ord("S")
+    header[257:265] = b"ustar  \0"  # GNU magic+version
+    header[148:156] = b" " * 8
+    checksum = sum(header) & 0o7777777
+    header[148:156] = (f"{checksum:06o}\0 ").encode()
+
+    # Splice the sparse header (plus its stored data blocks) ahead of the
+    # end-of-archive marker so the walk reaches it.
+    body = bytes(blocks).rstrip(b"\0")
+    pad = (-len(body)) % 512
+    out = bytearray(body + b"\0" * pad)
+    out += header
+    out += b"\0" * 1792
+    out += b"\0" * 1024
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(_gzip.compress(bytes(out)))
+
+
+def hidden_member_after_zero_block(dest: Path) -> None:
+    """A second `perllsp` hidden past a lone end-of-archive block (#11508).
+
+    Readers disagree about a single zero block: GNU tar and bsdtar stop there,
+    BusyBox tar skips it and keeps reading headers. A classifier that stops at
+    the first zero block therefore never sees this member, while the host tar
+    that extracts does — and `tar -xO` concatenates every entry matching the
+    requested name, so the hidden copy lands in the staged file. The approved
+    copy is deliberately zero-length so the staged bytes are entirely the
+    hidden one.
+    """
+    import gzip as _gzip
+
+    out = bytearray()
+    out += _ustar_header(PACKAGE + "/", 0, 0o755, b"5")
+    out += _ustar_header(f"{PACKAGE}/perllsp", 0, 0o755, b"0")
+    for name, mode in (
+        ("perl-dap", 0o755),
+        ("README.md", 0o644),
+        ("LICENSE-APACHE", 0o644),
+        ("LICENSE-MIT", 0o644),
+        ("SHA256SUMS.txt", 0o644),
+    ):
+        data = POSIX_FILES[name]
+        out += _ustar_header(f"{PACKAGE}/{name}", len(data), mode, b"0")
+        out += data + b"\0" * ((-len(data)) % 512)
+    out += b"\0" * 512  # one lone zero block
+    payload = b"\x7fELF-EVIL-BACKDOOR\n"
+    out += _ustar_header(f"{PACKAGE}/perllsp", len(payload), 0o755, b"0")
+    out += payload + b"\0" * ((-len(payload)) % 512)
+    out += b"\0" * 1024
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(_gzip.compress(bytes(out)))
+
+
+def backslash_in_member_name(archive: tarfile.TarFile) -> None:
+    """A member name carrying backslash escape text (#11508).
+
+    A rejected name is echoed into a diagnostic, and the installer's `say`
+    renders with `printf %b`, which expands backslash escapes. Without a rule
+    refusing backslash, this name emits real terminal control sequences that
+    clear the screen and forge a success line over a failed install.
+    """
+    valid_posix(archive)
+    _add_reg(archive, PACKAGE + "/x\\033[2J\\033[H=> install complete\\033[0m", b"spoof\n")
+
+
 def truncated_garbage(dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(b"not-an-archive\n")
+
+
+def corrupt_header_checksum(dest: Path) -> None:
+    """A well-formed gzip stream whose second tar header no longer checksums.
+
+    Decompression succeeds, so this reaches the header walk rather than the
+    gzip guard. The corrupted field is one the classifier never reads, so no
+    path, type, or membership rule can catch it and only the header checksum
+    can reject it (#11508).
+    """
+    import gzip as _gzip
+
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w") as archive:
+        valid_posix(archive)
+    blocks = bytearray(raw.getvalue())
+    # Flip a byte in the second header's mtime field (offset 136..147), which
+    # the classifier never reads. Corrupting the name field instead would be
+    # caught by the ordinary path-membership rule, so the fixture would pass
+    # even with checksum verification disabled and would not isolate it.
+    blocks[512 + 136] ^= 0x01
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(_gzip.compress(bytes(blocks)))
 
 
 def _zip_write(dest: Path, entries: list[tuple[str, bytes, bool]]) -> None:
@@ -282,6 +528,10 @@ TAR_CASES: dict[str, Callable[[tarfile.TarFile], None]] = {
     "empty_component": empty_component,
     "symlink_entry": symlink_entry,
     "hardlink_entry": hardlink_entry,
+    "hardlink_topology_member": hardlink_topology_member,
+    "absolute_topology_member": absolute_topology_member,
+    "newline_in_member_name": newline_in_member_name,
+    "backslash_in_member_name": backslash_in_member_name,
     "fifo_entry": fifo_entry,
     "duplicate_path": duplicate_path,
     "case_collision": case_collision,
@@ -315,6 +565,21 @@ def main() -> int:
     dest = Path(args.out)
     if args.case == "truncated_garbage":
         truncated_garbage(dest)
+        return 0
+    if args.case == "corrupt_header_checksum":
+        corrupt_header_checksum(dest)
+        return 0
+    if args.case == "sized_directory_entry":
+        sized_directory_entry(dest)
+        return 0
+    if args.case == "sparse_entry":
+        sparse_entry(dest)
+        return 0
+    if args.case == "hidden_member_after_zero_block":
+        hidden_member_after_zero_block(dest)
+        return 0
+    if args.case == "extended_pax_header":
+        extended_pax_header(dest)
         return 0
     if args.case in TAR_CASES:
         _posix_tar(TAR_CASES[args.case], dest)
