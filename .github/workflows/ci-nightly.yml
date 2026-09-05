@@ -21,37 +21,67 @@ on:
         description: 'Run mutation testing'
         required: false
         type: boolean
-        default: true
+        default: false
       run_benchmarks:
         description: 'Run performance benchmarks'
         required: false
         type: boolean
-        default: true
+        default: false
       run_real_repo_latency:
         description: 'Run real-repo latency suite'
         required: false
         type: boolean
-        default: true
+        default: false
       run_corpus_differential:
         description: 'Run full parser corpus differential suite'
         required: false
         type: boolean
-        default: true
+        default: false
       run_coverage:
         description: 'Run test coverage'
         required: false
         type: boolean
-        default: true
+        default: false
       run_fuzz:
         description: 'Run fuzz testing'
         required: false
         type: boolean
-        default: true
+        default: false
       run_memory:
         description: 'Run LSP memory plateau workloads'
         required: false
         type: boolean
-        default: true
+        default: false
+      run_tautology:
+        description: 'Run tautology detection'
+        required: false
+        type: boolean
+        default: false
+      run_semver:
+        description: 'Run API compatibility checks'
+        required: false
+        type: boolean
+        default: false
+      run_public_api:
+        description: 'Run public API surface checks'
+        required: false
+        type: boolean
+        default: false
+      run_scorecard:
+        description: 'Run scorecard floor-metric ratchet checks'
+        required: false
+        type: boolean
+        default: false
+      run_clippy_strict:
+        description: 'Run strict Clippy checks'
+        required: false
+        type: boolean
+        default: false
+      run_perl_kwalitee:
+        description: 'Run Perl Kwalitee checks'
+        required: false
+        type: boolean
+        default: false
 
 # Cancel in-flight runs on new pushes (saves minutes)
 concurrency:
@@ -74,7 +104,7 @@ jobs:
     name: Mutation Testing
     if: |
       github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_mutation != 'false') ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_mutation) ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:mutation'))
     runs-on: ubuntu-24.04
@@ -103,7 +133,7 @@ jobs:
     name: Performance Benchmarks
     timeout-minutes: 45
     if: |
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_benchmarks) ||
       github.event_name == 'schedule' ||
       contains(github.event.pull_request.labels.*.name, 'ci:bench')
     runs-on: ubuntu-24.04
@@ -126,7 +156,7 @@ jobs:
         cache-on-failure: true
 
     - name: Install just
-      uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+      uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
       with:
         tool: just
 
@@ -138,6 +168,7 @@ jobs:
       run: |
         python3 benchmarks/scripts/test_extract_criterion.py -v
         python3 benchmarks/scripts/test_benchmark_guards.py -v
+        python3 benchmarks/scripts/test_benchmark_targets.py -v
 
     - name: Build perllsp binary for real-repo UX perf lane
       run: cargo build -p perllsp --bin perllsp --locked
@@ -352,7 +383,7 @@ jobs:
     timeout-minutes: 30
     if: |
       github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_real_repo_latency != 'false') ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_real_repo_latency) ||
       (github.event_name == 'pull_request' &&
        (contains(github.event.pull_request.labels.*.name, 'ci:bench') ||
         contains(github.event.pull_request.labels.*.name, 'ci:real-repo-latency')))
@@ -396,7 +427,7 @@ jobs:
     timeout-minutes: 20
     if: |
       github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_corpus_differential != 'false') ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_corpus_differential) ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:corpus-differential'))
     runs-on: ubuntu-24.04
@@ -440,7 +471,7 @@ jobs:
     timeout-minutes: 35
     if: |
       github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_memory != 'false') ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_memory) ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:memory'))
     steps:
@@ -599,7 +630,7 @@ jobs:
     timeout-minutes: 45
     if: |
       github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_coverage != 'false')
+      (github.event_name == 'workflow_dispatch' && inputs.run_coverage)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -645,7 +676,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install just
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -734,9 +765,9 @@ jobs:
   tautology-check:
     name: Tautology Detection
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 25
     if: |
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_tautology) ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:strict'))
     steps:
@@ -744,33 +775,28 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: stable
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          key: tautology-${{ hashFiles('Cargo.lock') }}
+          cache-on-failure: true
+
       - name: Check for tautological assertions
         run: |
-          echo "Checking for tautological test patterns..."
-
-          if grep -r "assert!(.*\.is_some() || .*\.is_none())" tests/; then
-            echo "❌ Found tautological assertions (is_some || is_none)"
-            exit 1
-          fi
-
-          if grep -r "assert!(true)" tests/; then
-            echo "❌ Found assert!(true)"
-            exit 1
-          fi
-
-          if grep -r "assert!(.*\.len() >= 0)" tests/; then
-            echo "❌ Found tautological length check (>= 0)"
-            exit 1
-          fi
-
-          echo "✅ No tautological patterns found"
+          echo "Checking for tautological assertions..."
+          cargo run -p xtask --locked -- check-tautology --check
 
   semver-check:
     name: API Compatibility
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     if: |
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_semver) ||
       github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:semver'))
@@ -853,7 +879,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     if: |
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_public_api) ||
       github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:public-api') &&
@@ -899,7 +925,7 @@ jobs:
         run: cargo install cargo-public-api --locked --version 0.50.1
 
       - name: Install just
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -915,7 +941,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     if: |
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_scorecard) ||
       github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:metrics-ratchet'))
@@ -936,7 +962,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install just
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -950,7 +976,7 @@ jobs:
     name: Clippy (Strict)
     timeout-minutes: 20
     if: |
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_clippy_strict) ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:strict'))
     runs-on: ubuntu-24.04
@@ -984,7 +1010,7 @@ jobs:
     # indicators are consistently green. See docs/reference/PERL_KWALITEE.md.
     continue-on-error: true
     if: |
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_perl_kwalitee) ||
       github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:kwalitee'))
@@ -1086,7 +1112,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     if: |
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_fuzz) ||
       github.event_name == 'schedule'
     strategy:
       fail-fast: false
@@ -1138,7 +1164,7 @@ jobs:
 
     - name: Run fuzzer
       run: |
-        DURATION=${{ github.event.inputs.duration || '600' }}
+        DURATION=600
         ./scripts/fuzz-bounded --duration "$DURATION" -- ${{ matrix.target }}
 
     - name: Upload crash artifacts

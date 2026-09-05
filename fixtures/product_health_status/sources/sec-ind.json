@@ -1,0 +1,14 @@
+{
+  "schema": "fixture.v1",
+  "packet_id": "sec-ind",
+  "selector": "fixture.subject",
+  "rail_id": "fixture.security-independent",
+  "subject": "security-independent@fixture-tree",
+  "source_result": "pass_with_declared_limitations",
+  "state": "current",
+  "supersedes": null,
+  "digest": "sha256:b7bb72897d58b3de711844cec40de68253b56331fc34ed0a5e25b4a22d2bde9b",
+  "limitations": ["sweep bounded to fixture corpus"],
+  "nonclaims": [],
+  "detail": {}
+}

@@ -62,7 +62,7 @@ jobs:
           shared-key: post-merge-corpus-ratchet-${{ hashFiles('Cargo.lock') }}
 
       - name: Install just
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -270,7 +270,7 @@ jobs:
           shared-key: post-merge-corpus-ratchet-${{ hashFiles('Cargo.lock') }}
 
       - name: Install just
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -517,7 +517,10 @@ jobs:
         with:
           token: ${{ github.token }}
           branch: automation/corpus-ratchet
-          delete-branch: true
+          # No delete-branch: an open PR that names this generated branch
+          # as its base is a live dependency on it, and deleting the base
+          # auto-closes that child (#12885). Cleanup is a separate admitted
+          # decision via `xtask branch-deletion-admission admit`.
           add-paths: |
             .ci/cpan-corpus-baseline.json
             .ci/cpan-corpus-manifest.txt

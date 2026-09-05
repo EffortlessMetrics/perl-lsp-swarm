@@ -19,6 +19,7 @@ use std::io::{BufReader, ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+use xtask::git_ancestry::{AncestryDisposition, AncestryReceipt, classify_ancestry};
 
 #[cfg(test)]
 static RIPR_BIN_OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
@@ -745,9 +746,11 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
         &base_sha,
         &head_sha,
         &suppressions,
-        changed_file_count,
-        attribution_scope.as_ref(),
-        production_surface.as_ref(),
+        PrEvidenceContext {
+            changed_file_count,
+            attribution_scope: attribution_scope.as_ref(),
+            production_surface: production_surface.as_ref(),
+        },
     );
     validate_pr_evidence_packet(&packet, options, changed_file_count, true, &base_sha, &head_sha)?;
     write_text(&repo.join(PR_EVIDENCE_JSON), &format_json(&packet)?)?;
@@ -932,6 +935,12 @@ fn ripr_check_ingestion_from_file(
 /// summary and no findings, which is what the previous DOM path saw through
 /// `Value::get`. A single huge finding can still dominate memory; this bounds
 /// the many-finding, unconsumed-blob shape observed in #12860.
+///
+/// Findings-only convenience wrapper over
+/// [`stream_ripr_check_payload_with_events`]. Production ingestion needs the
+/// array-boundary events for duplicate-key reset, so it drives the event API
+/// directly and this wrapper stays test-only.
+#[cfg(test)]
 fn stream_ripr_check_payload<R, F>(
     reader: R,
     on_finding: &mut F,
@@ -1928,7 +1937,7 @@ fn repo_relative_surface_path(surface: &ProductionSurface, raw_path: &str) -> Op
     // tools must not defeat the root-prefix match against cargo's plain
     // `F:/...` workspace root.
     let normalized = normalized.strip_prefix("//?/").unwrap_or(&normalized);
-    let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
+    let normalized = normalized.strip_prefix("./").unwrap_or(normalized);
     let absolute = normalized.starts_with('/') || normalized.as_bytes().get(1) == Some(&b':');
     if !absolute {
         return Some(normalized.to_string());
@@ -2148,10 +2157,10 @@ fn lexically_join(dir: &str, relative: &str) -> Option<String> {
     for component in dir.split('/').chain(relative.split('/')) {
         match component {
             "." | "" => {}
+            // `..` above the root has nothing to pop: propagate the refusal
+            // through the `Option` this function already returns.
             ".." => {
-                if components.pop().is_none() {
-                    return None;
-                }
+                components.pop()?;
             }
             other => components.push(other),
         }
@@ -2197,10 +2206,12 @@ fn pr_evidence_packet(
         base_sha,
         head_sha,
         suppressions,
-        changed_files.len(),
         None,
-        None,
-        None,
+        PrEvidenceContext {
+            changed_file_count: changed_files.len(),
+            attribution_scope: None,
+            production_surface: None,
+        },
     )
 }
 
@@ -2220,12 +2231,62 @@ fn pr_evidence_packet_on_surface(
         base_sha,
         head_sha,
         suppressions,
-        changed_files.len(),
         None,
-        None,
-        production_surface,
+        PrEvidenceContext {
+            changed_file_count: changed_files.len(),
+            attribution_scope: None,
+            production_surface,
+        },
     )
 }
+
+/// The stamped measurement context for one PR evidence packet: which diff was
+/// measured, and which bases the receipt records as applied.
+///
+/// These three facts travel together — every caller that supplies one supplies
+/// all of them — while the options, exact base/head identity, check payload,
+/// and suppression policy stay explicit arguments. Grouping them keeps both
+/// receipt builders inside the configured argument budget without weakening any
+/// call site: the struct deliberately has no `Default`, so a caller that omits
+/// a field fails to compile rather than silently measuring against an empty
+/// basis (#13809).
+///
+/// Head-revision line extents are deliberately *not* a field. #12569 moved the
+/// extent filter off the receipt builder and into ingestion, where it is
+/// applied per finding as the payload streams; by the time either builder runs,
+/// the counts are already scoped. Extents stay an explicit argument of the
+/// filtering path so this struct cannot imply a filter the builder never runs.
+#[derive(Clone, Copy)]
+struct PrEvidenceContext<'a> {
+    /// Number of files in the committed diff under evaluation.
+    changed_file_count: usize,
+    /// Dependency-attribution basis; `None` keeps every finding counted.
+    attribution_scope: Option<&'a AttributionScope>,
+    /// Compiled-production surface; `None` keeps every finding counted.
+    production_surface: Option<&'a ProductionSurface>,
+}
+
+/// Pin the no-`Default` property the doc comment above claims, so it is
+/// checked rather than merely documented (#13809 review).
+///
+/// Every field would satisfy `#[derive(Default)]` — `usize` and `Option<&_>`
+/// both have one — so a future derive added to silence an unrelated lint
+/// would compile silently and hand callers an empty measurement basis. The
+/// focused tests cannot catch that: they construct the struct explicitly, so
+/// a `Default` impl would simply go unused.
+///
+/// Two blanket impls overlap only when `PrEvidenceContext: Default`, which
+/// makes the item reference below ambiguous and fails the build. This is the
+/// `static_assertions::assert_not_impl_any!` pattern, inlined to avoid a new
+/// dev-dependency for one assertion.
+const _: fn() = || {
+    trait AmbiguousIfDefault<A> {
+        fn marker() {}
+    }
+    impl<T> AmbiguousIfDefault<()> for T {}
+    impl<T: Default> AmbiguousIfDefault<u8> for T {}
+    let _ = <PrEvidenceContext<'static> as AmbiguousIfDefault<_>>::marker;
+};
 
 /// DOM-path receipt builder, retained as the test oracle for the streaming
 /// ingestion (#12860): receipt bytes must match
@@ -2237,11 +2298,10 @@ fn pr_evidence_packet_with_count(
     base_sha: &str,
     head_sha: &str,
     suppressions: &RiprSuppressionRules,
-    changed_file_count: usize,
     head_extents: Option<&HeadLineExtents>,
-    attribution_scope: Option<&AttributionScope>,
-    production_surface: Option<&ProductionSurface>,
+    context: PrEvidenceContext<'_>,
 ) -> Value {
+    let PrEvidenceContext { attribution_scope, production_surface, .. } = context;
     let check_summary = check_value.get("summary").and_then(Value::as_object);
     let summary = ripr_pr_summary_counts(
         check_value,
@@ -2260,9 +2320,7 @@ fn pr_evidence_packet_with_count(
         base_sha,
         head_sha,
         suppressions,
-        changed_file_count,
-        attribution_scope,
-        production_surface,
+        context,
     )
 }
 
@@ -2270,16 +2328,18 @@ fn pr_evidence_packet_with_count(
 /// identical to the DOM path (`pr_evidence_packet_with_count`, retained as the
 /// test oracle) for the same payload; the #12860 compatibility tests pin this
 /// byte for byte.
+///
+/// Takes the same [`PrEvidenceContext`] as the DOM path so the stamped
+/// measurement basis has one spelling (#13809), not one per ingestion path.
 fn pr_evidence_packet_from_summary(
     options: &PrEvidenceOptions,
     ingestion: &RiprCheckIngestion,
     base_sha: &str,
     head_sha: &str,
     suppressions: &RiprSuppressionRules,
-    changed_file_count: usize,
-    attribution_scope: Option<&AttributionScope>,
-    production_surface: Option<&ProductionSurface>,
+    context: PrEvidenceContext<'_>,
 ) -> Value {
+    let PrEvidenceContext { changed_file_count, attribution_scope, production_surface } = context;
     let summary = &ingestion.summary_counts;
     let weakly_exposed = summary.weakly_exposed;
     let reachable_unrevealed = summary.reachable_unrevealed;
@@ -3716,7 +3776,7 @@ fn resolve_committed_diff(repo: &Path, base: &str, head: &str) -> Result<Committ
         ArtifactIdentity::CommitRange { base: base.to_string(), head: head.to_string() },
         repo,
     )
-    .with_context(|| merge_base_failure_guidance(base, head, is_shallow_clone(repo)))?;
+    .with_context(|| merge_base_failure_guidance(repo, base, head))?;
     let (resolved_base, resolved_head) = match resolved.identity {
         ArtifactIdentity::CommitRange { base, head } => (base, head),
         ArtifactIdentity::StagedTree { .. } => {
@@ -3739,7 +3799,7 @@ fn resolve_committed_diff(repo: &Path, base: &str, head: &str) -> Result<Committ
             range.as_str(),
         ],
     )
-    .with_context(|| merge_base_failure_guidance(base, head, is_shallow_clone(repo)))?;
+    .with_context(|| merge_base_failure_guidance(repo, base, head))?;
     let entries = parse_name_status_z(&raw)?;
     let changed_paths = entries
         .iter()
@@ -3809,27 +3869,81 @@ fn parse_name_status_z(raw: &[u8]) -> Result<Vec<CommittedDiffEntry>> {
     Ok(entries)
 }
 
-fn is_shallow_clone(repo: &Path) -> bool {
-    run_git_output(repo, &["rev-parse", "--is-shallow-repository"])
-        .map(|out| out.trim() == "true")
-        .unwrap_or(false)
+/// Actionable guidance for a committed-diff range that could not be resolved.
+///
+/// Interpreting an absent merge base is the shared ancestry authority's job, not
+/// RIPR's. A shallow, partial, or object-incomplete checkout cannot prove that
+/// two refs are unrelated, so this message reports the typed `not_proven_*`
+/// disposition instead of asserting absent history (#10304).
+fn merge_base_failure_guidance(repo: &Path, base: &str, head: &str) -> String {
+    ancestry_failure_guidance(base, head, &classify_ancestry(repo, base, head))
 }
 
-fn merge_base_failure_guidance(base: &str, head: &str, shallow: bool) -> String {
-    let mut message =
-        format!("cannot compute diff range `{base}...{head}`: no merge base between them.");
-    if shallow {
-        message.push_str(&format!(
-            " This checkout is a shallow clone, so `{base}` and `{head}` share no common history. \
+/// Pure projection of one ancestry receipt into RIPR-specific operator guidance.
+///
+/// Only [`AncestryDisposition::Unrelated`] — which the classifier reaches solely
+/// from a complete-enough local graph — may state that two refs share no common
+/// history.
+fn ancestry_failure_guidance(base: &str, head: &str, receipt: &AncestryReceipt) -> String {
+    let mut message = format!(
+        "cannot resolve diff range `{base}...{head}`: git ancestry is `{}` ({}).",
+        receipt.disposition.as_str(),
+        receipt.reason
+    );
+    match receipt.disposition {
+        // The fetch remedies below deliberately carry no refspec operand. RIPR's
+        // base is normally a remote-tracking name such as `origin/main`, and
+        // `git fetch origin origin/main` fails with `couldn't find remote ref
+        // origin/main` because the operand is resolved in the remote namespace.
+        // Fetching the remote's configured refspec is both valid and sufficient.
+        AncestryDisposition::NotProvenShallow => message.push_str(&format!(
+            " A shallow checkout cannot prove whether `{base}` and `{head}` share history. \
              Deepen the clone before running diff-scoped RIPR locally, e.g. \
-             `git fetch --unshallow` or `git fetch --deepen=200 origin {base}`. \
+             `git fetch --unshallow` or `git fetch --deepen=200 origin`. \
              CI is unaffected: the RIPR workflow checks out with fetch-depth: 0."
-        ));
-    } else {
-        message.push_str(&format!(
-            " Ensure `{base}` is fetched and shares history with `{head}`, \
-             e.g. `git fetch origin {base}`."
-        ));
+        )),
+        AncestryDisposition::NotProvenPartialClone => message.push_str(
+            " A partial/promisor checkout can omit the objects this range needs. \
+             Materialize the required commit graph, e.g. `git fetch --refetch origin`, \
+             before running diff-scoped RIPR locally. \
+             CI is unaffected: the RIPR workflow checks out with fetch-depth: 0.",
+        ),
+        AncestryDisposition::NotProvenMissingObject => {
+            // Name the side the receipt actually found missing; "the requested
+            // revision" is useless when only one of the two failed to resolve.
+            let missing = match (receipt.base_object_exists, receipt.head_object_exists) {
+                (false, true) => format!("`{base}`"),
+                (true, false) => format!("`{head}`"),
+                _ => format!("`{base}` and `{head}`"),
+            };
+            message.push_str(&format!(
+                " {missing} could not be resolved locally, which does not establish that \
+                 `{base}` and `{head}` are unrelated. Confirm the spelling, then materialize \
+                 the missing objects: `git fetch origin` covers the remote's configured \
+                 refspec, and a revision outside that refspec must be requested by its \
+                 remote-side name."
+            ));
+        }
+        AncestryDisposition::Unrelated => message.push_str(&format!(
+            " Both commit objects are present in a complete local graph and share no \
+             common history, so `{base}...{head}` has no diff range to compute. \
+             Select a base that shares history with `{head}`."
+        )),
+        AncestryDisposition::Ancestor | AncestryDisposition::Diverged => {
+            message.push_str(&format!(
+                " `{base}` and `{head}` are related in this checkout, so ancestry does not \
+             explain the failure; inspect the underlying git error above."
+            ))
+        }
+        AncestryDisposition::InvalidInput => message.push_str(
+            " Check the base and head revision values passed to the diff-scoped command.",
+        ),
+        AncestryDisposition::InstrumentFailure => message.push_str(
+            " Git could not be inspected, so no ancestry conclusion is available for this range.",
+        ),
+    }
+    for limitation in &receipt.limitations {
+        message.push_str(&format!(" Limitation: {limitation}."));
     }
     message
 }
@@ -4146,6 +4260,98 @@ fn bullet_list(values: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---------------------------------------------------------------------
+    // #13809 falsifiers: the two path helpers whose Clippy repairs are only
+    // mechanical if their refusal semantics are exact. `main` carried no
+    // focused coverage for either, so the "semantics preserved" claim rested
+    // on reading alone.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn lexically_join_resolves_dot_and_parent_segments() {
+        assert_eq!(
+            lexically_join("crates/a/src", "lib.rs").as_deref(),
+            Some("crates/a/src/lib.rs")
+        );
+        assert_eq!(
+            lexically_join("crates/a/src", "./lib.rs").as_deref(),
+            Some("crates/a/src/lib.rs")
+        );
+        // `..` pops the directory it follows rather than being retained.
+        assert_eq!(lexically_join("crates/a/src", "../lib.rs").as_deref(), Some("crates/a/lib.rs"));
+        assert_eq!(
+            lexically_join("crates/a/src", "../../lib.rs").as_deref(),
+            Some("crates/lib.rs")
+        );
+        // Backslashes normalize before joining, so Windows-shaped includes
+        // resolve identically.
+        assert_eq!(
+            lexically_join("crates/a/src", r"..\lib.rs").as_deref(),
+            Some("crates/a/lib.rs")
+        );
+    }
+
+    #[test]
+    fn lexically_join_refuses_paths_that_escape_the_root() {
+        // Only this assertion *discriminates* against a default-to-root
+        // repair (`let _ = components.pop();`): the exhausted pop is
+        // swallowed, the trailing `etc/passwd` segments repopulate
+        // `components`, and the join wrongly yields Some("etc/passwd").
+        // Verified — that repair fails here and nowhere else in this test.
+        assert_eq!(lexically_join("crates/a", "../../../etc/passwd"), None);
+
+        // These two also reach `components.pop()?` on an exhausted stack and
+        // return there, so they do exercise the changed branch. They do not
+        // discriminate, for a different reason than the line below: under the
+        // broken repair they fall through to the post-loop
+        // `components.is_empty()` guard, which yields `None` as well. Same
+        // answer by a different route, so the assertion cannot tell them
+        // apart.
+        assert_eq!(lexically_join("", ".."), None);
+        assert_eq!(lexically_join("a", "../.."), None);
+
+        // This one never reaches an exhausted pop at all: `..` pops "a"
+        // successfully and the loop ends empty, so the post-loop guard is its
+        // refusal path under both implementations. Popping exactly to empty
+        // is refusal, not an empty join.
+        assert_eq!(lexically_join("a", ".."), None);
+    }
+
+    #[test]
+    fn repo_relative_surface_path_normalizes_and_fails_closed() {
+        let surface = ProductionSurface::from_parts("/work/repo", &[]);
+
+        // Relative paths pass through, including the `./` form whose borrow
+        // this leaf simplified.
+        assert_eq!(
+            repo_relative_surface_path(&surface, "crates/a/src/lib.rs").as_deref(),
+            Some("crates/a/src/lib.rs")
+        );
+        assert_eq!(
+            repo_relative_surface_path(&surface, "./crates/a/src/lib.rs").as_deref(),
+            Some("crates/a/src/lib.rs")
+        );
+
+        // Absolute paths inside the root strip it; backslash and Windows
+        // verbatim (`//?/`) shapes normalize to the same repo-relative result.
+        let windows = ProductionSurface::from_parts("F:/work/repo", &[]);
+        assert_eq!(
+            repo_relative_surface_path(&windows, r"F:\work\repo\crates\a\src\lib.rs").as_deref(),
+            Some("crates/a/src/lib.rs")
+        );
+        assert_eq!(
+            repo_relative_surface_path(&windows, r"\\?\F:\work\repo\crates\a\src\lib.rs")
+                .as_deref(),
+            Some("crates/a/src/lib.rs")
+        );
+
+        // Absolute but outside the root is None — fail closed, never a
+        // silently mis-anchored relative path.
+        assert_eq!(repo_relative_surface_path(&surface, "/other/repo/src/lib.rs"), None);
+        // A sibling root sharing a prefix must not match on the prefix alone.
+        assert_eq!(repo_relative_surface_path(&surface, "/work/repo-two/src/lib.rs"), None);
+    }
 
     #[test]
     fn command_root_arg_allows_repo_relative_root() -> Result<()> {
@@ -5124,10 +5330,12 @@ paths = ["archive/["]
             "base-sha",
             "head-sha",
             suppressions,
-            1,
             Some(extents),
-            None,
-            None,
+            PrEvidenceContext {
+                changed_file_count: 1,
+                attribution_scope: None,
+                production_surface: None,
+            },
         )
     }
 
@@ -6733,10 +6941,12 @@ paths = ["archive/["]
             "base-sha",
             "head-sha",
             &suppressions,
-            5,
             None,
-            Some(&scope),
-            Some(&surface),
+            PrEvidenceContext {
+                changed_file_count: 5,
+                attribution_scope: Some(&scope),
+                production_surface: Some(&surface),
+            },
         );
 
         assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(2)));
@@ -6761,10 +6971,12 @@ paths = ["archive/["]
             "base-sha",
             "head-sha",
             &suppressions,
-            5,
             None,
-            None,
-            Some(&surface),
+            PrEvidenceContext {
+                changed_file_count: 5,
+                attribution_scope: None,
+                production_surface: Some(&surface),
+            },
         );
         assert_eq!(unfiltered.pointer("/summary/severe_gaps"), Some(&json!(3)));
         assert_eq!(unfiltered.pointer("/summary/non_production_excluded"), Some(&json!(1)));
@@ -6792,10 +7004,12 @@ paths = ["archive/["]
             "base-sha",
             "head-sha",
             &suppressions,
-            1,
             None,
-            None,
-            None,
+            PrEvidenceContext {
+                changed_file_count: 1,
+                attribution_scope: None,
+                production_surface: None,
+            },
         );
         let Some(packet_object) = packet.as_object_mut() else {
             bail!("packet must be a JSON object");
@@ -7681,22 +7895,322 @@ esac
         Ok(())
     }
 
-    #[test]
-    fn merge_base_guidance_points_to_unshallow_for_shallow_clone() {
-        let message = merge_base_failure_guidance("origin/main", "HEAD", true);
-        assert!(message.contains("origin/main...HEAD"), "range echoed: {message}");
-        assert!(message.contains("no merge base"), "diagnosis: {message}");
-        assert!(message.contains("shallow clone"), "shallow cause: {message}");
-        assert!(message.contains("git fetch --unshallow"), "remedy: {message}");
-        assert!(message.contains("fetch-depth: 0"), "CI note: {message}");
+    /// One ancestry receipt carrying a chosen disposition, for projecting the
+    /// RIPR guidance vocabulary without a repository.
+    fn ancestry_receipt(disposition: AncestryDisposition, reason: &str) -> AncestryReceipt {
+        AncestryReceipt {
+            schema_version: "git_ancestry.v1".to_string(),
+            repository: ".".to_string(),
+            repository_root: None,
+            git_dir: None,
+            git_common_dir: None,
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            base_sha: None,
+            head_sha: None,
+            merge_base: None,
+            is_shallow_repository: None,
+            is_partial_clone: None,
+            base_object_exists: false,
+            head_object_exists: false,
+            base_is_ancestor_of_head: None,
+            head_is_ancestor_of_base: None,
+            disposition,
+            reason: reason.to_string(),
+            guidance: Vec::new(),
+            limitations: Vec::new(),
+        }
     }
 
+    /// The false-history claim #10051/#10205 came from: a shallow checkout is
+    /// missing history, not proof that two refs are unrelated.
     #[test]
-    fn merge_base_guidance_suggests_fetch_for_non_shallow() {
-        let message = merge_base_failure_guidance("origin/main", "HEAD", false);
-        assert!(message.contains("no merge base"), "diagnosis: {message}");
+    fn shallow_guidance_reports_not_proven_instead_of_absent_history() {
+        let receipt = ancestry_receipt(
+            AncestryDisposition::NotProvenShallow,
+            "the checkout is shallow; local absence is not proof of unrelated history",
+        );
+        let message = ancestry_failure_guidance("origin/main", "HEAD", &receipt);
+
+        assert!(message.contains("origin/main...HEAD"), "range echoed: {message}");
+        assert!(message.contains("not_proven_shallow"), "typed disposition: {message}");
+        assert!(message.contains("git fetch --unshallow"), "remedy preserved: {message}");
+        assert!(message.contains("fetch-depth: 0"), "CI note preserved: {message}");
+        assert!(
+            !message.contains("share no common history"),
+            "shallow must never assert absent history: {message}"
+        );
+        assert!(
+            !message.contains("unrelated`"),
+            "shallow must not report the unrelated disposition: {message}"
+        );
+    }
+
+    /// A promisor/partial checkout is the same class of incomplete evidence.
+    #[test]
+    fn partial_clone_guidance_reports_not_proven_instead_of_absent_history() {
+        let receipt = ancestry_receipt(
+            AncestryDisposition::NotProvenPartialClone,
+            "the checkout is partial; local absence is not proof of unrelated history",
+        );
+        let message = ancestry_failure_guidance("origin/main", "HEAD", &receipt);
+
+        assert!(message.contains("not_proven_partial_clone"), "typed disposition: {message}");
+        // Assert the arm's own remedy, not just the header-emitted label: the
+        // label comes from the shared prefix, so without this a no-op or
+        // swapped arm body would still pass.
+        assert!(message.contains("git fetch --refetch origin`"), "partial remedy: {message}");
+        assert!(
+            message.contains("Materialize the required commit graph"),
+            "partial cause: {message}"
+        );
+        assert!(!message.contains("--unshallow"), "must not blame shallow: {message}");
+        assert!(
+            !message.contains("share no common history"),
+            "partial clone must never assert absent history: {message}"
+        );
+    }
+
+    /// An unresolvable revision is a bad ref or missing object, not a history claim.
+    #[test]
+    fn missing_object_guidance_does_not_blame_history() {
+        let receipt = ancestry_receipt(
+            AncestryDisposition::NotProvenMissingObject,
+            "the base commit object is unavailable",
+        );
+        let message = ancestry_failure_guidance("origin/main", "HEAD", &receipt);
+
+        assert!(message.contains("not_proven_missing_object"), "typed disposition: {message}");
+        assert!(message.contains("git fetch origin`"), "fetch remedy: {message}");
+        assert!(
+            !message.contains("share no common history"),
+            "missing object must never assert absent history: {message}"
+        );
         assert!(!message.contains("shallow"), "must not blame shallow: {message}");
-        assert!(message.contains("git fetch origin origin/main"), "fetch remedy: {message}");
+    }
+
+    /// Every fetch remedy must be a command the operator can actually run.
+    ///
+    /// RIPR's default base is the remote-tracking name `origin/main`, and
+    /// `git fetch origin origin/main` fails with `couldn't find remote ref
+    /// origin/main` because the operand resolves in the remote namespace. No
+    /// disposition may interpolate the base after a remote name.
+    #[test]
+    fn guidance_never_emits_a_remote_prefixed_fetch_refspec() {
+        for disposition in [
+            AncestryDisposition::Ancestor,
+            AncestryDisposition::Diverged,
+            AncestryDisposition::Unrelated,
+            AncestryDisposition::NotProvenShallow,
+            AncestryDisposition::NotProvenPartialClone,
+            AncestryDisposition::NotProvenMissingObject,
+            AncestryDisposition::InvalidInput,
+            AncestryDisposition::InstrumentFailure,
+        ] {
+            let receipt = ancestry_receipt(disposition, "reason");
+            let message = ancestry_failure_guidance(DEFAULT_BASE, DEFAULT_HEAD, &receipt);
+
+            assert!(
+                !message.contains(&format!("origin {DEFAULT_BASE}")),
+                "remedy must not resolve `{DEFAULT_BASE}` in the remote namespace: {message}"
+            );
+        }
+    }
+
+    /// `unrelated` is the one disposition permitted to state absent history,
+    /// and the classifier reaches it only from a complete-enough local graph.
+    #[test]
+    fn only_proven_unrelated_guidance_states_absent_history() {
+        let receipt = ancestry_receipt(
+            AncestryDisposition::Unrelated,
+            "both commit objects are present in a non-shallow, non-partial graph and no merge base exists",
+        );
+        let message = ancestry_failure_guidance("origin/main", "HEAD", &receipt);
+
+        assert!(message.contains("unrelated"), "typed disposition: {message}");
+        assert!(
+            message.contains("share no common history"),
+            "proven unrelated may state absent history: {message}"
+        );
+        assert!(!message.contains("--unshallow"), "must not blame shallow: {message}");
+    }
+
+    /// Related refs mean the diff failure has some other cause; the guidance
+    /// must not misattribute it to ancestry.
+    #[test]
+    fn related_history_guidance_does_not_blame_ancestry() {
+        for disposition in [AncestryDisposition::Ancestor, AncestryDisposition::Diverged] {
+            let receipt = ancestry_receipt(disposition, "the requested refs are related");
+            let message = ancestry_failure_guidance("origin/main", "HEAD", &receipt);
+
+            assert!(message.contains("are related in this checkout"), "related: {message}");
+            assert!(
+                !message.contains("share no common history"),
+                "related refs must never assert absent history: {message}"
+            );
+        }
+    }
+
+    /// Invalid input and instrument failure stay distinct from every history claim.
+    #[test]
+    fn invalid_and_instrument_guidance_make_no_history_claim() {
+        // Each row pins the arm's own remedy as well as the label. The label is
+        // emitted by the shared header, so asserting it alone cannot tell a
+        // correct arm from an empty or swapped one.
+        for (disposition, expected, remedy) in [
+            (
+                AncestryDisposition::InvalidInput,
+                "invalid_input",
+                "Check the base and head revision values",
+            ),
+            (
+                AncestryDisposition::InstrumentFailure,
+                "instrument_failure",
+                "Git could not be inspected",
+            ),
+        ] {
+            let receipt = ancestry_receipt(disposition, "no domain result was reached");
+            let message = ancestry_failure_guidance("origin/main", "HEAD", &receipt);
+
+            assert!(message.contains(expected), "typed disposition: {message}");
+            assert!(message.contains(remedy), "{expected} remedy: {message}");
+            assert!(
+                !message.contains("share no common history"),
+                "{expected} must never assert absent history: {message}"
+            );
+        }
+    }
+
+    /// The production seam, not just the formatter: a real shallow checkout must
+    /// reach the shared authority and report `not_proven_shallow`. Re-mapping a
+    /// failed merge base back to "unrelated" fails here.
+    #[test]
+    fn shallow_repository_production_guidance_uses_the_shared_authority() -> Result<()> {
+        let origin = tempfile::tempdir()?;
+        ancestry_git(origin.path(), &["init", "--quiet", "--initial-branch=main", "."])?;
+        ancestry_git(origin.path(), &["config", "user.email", "ripr@example.invalid"])?;
+        ancestry_git(origin.path(), &["config", "user.name", "RIPR Test"])?;
+        for index in 0..3 {
+            fs::write(origin.path().join("file.txt"), format!("revision {index}\n"))?;
+            ancestry_git(origin.path(), &["add", "file.txt"])?;
+            ancestry_git(origin.path(), &["commit", "--quiet", "-m", &format!("c{index}")])?;
+        }
+
+        let shallow = tempfile::tempdir()?;
+        // `--depth` is ignored for a plain local path, so the fixture needs a
+        // `file://` URL to actually become shallow.
+        let source = ancestry_file_url(origin.path());
+        let target = shallow.path().join("clone");
+        ancestry_git(
+            shallow.path(),
+            &["clone", "--quiet", "--depth", "1", &source, &target.display().to_string()],
+        )?;
+        assert_eq!(
+            ancestry_git(&target, &["rev-parse", "--is-shallow-repository"])?.trim(),
+            "true",
+            "fixture must actually be shallow"
+        );
+
+        let message = merge_base_failure_guidance(&target, "main~2", "HEAD");
+        assert!(message.contains("not_proven_shallow"), "shared disposition: {message}");
+        assert!(
+            !message.contains("share no common history"),
+            "shallow production path must never assert absent history: {message}"
+        );
+        Ok(())
+    }
+
+    /// A complete clone with genuinely unrelated orphan histories is the only
+    /// production case allowed to report absent history.
+    #[test]
+    fn complete_unrelated_history_production_guidance_states_absent_history() -> Result<()> {
+        let repo = tempfile::tempdir()?;
+        ancestry_git(repo.path(), &["init", "--quiet", "--initial-branch=main", "."])?;
+        ancestry_git(repo.path(), &["config", "user.email", "ripr@example.invalid"])?;
+        ancestry_git(repo.path(), &["config", "user.name", "RIPR Test"])?;
+        fs::write(repo.path().join("main.txt"), "main\n")?;
+        ancestry_git(repo.path(), &["add", "main.txt"])?;
+        ancestry_git(repo.path(), &["commit", "--quiet", "-m", "main"])?;
+
+        ancestry_git(repo.path(), &["checkout", "--quiet", "--orphan", "other"])?;
+        ancestry_git(repo.path(), &["rm", "-rf", "--quiet", "."])?;
+        fs::write(repo.path().join("other.txt"), "other\n")?;
+        ancestry_git(repo.path(), &["add", "other.txt"])?;
+        ancestry_git(repo.path(), &["commit", "--quiet", "-m", "other"])?;
+
+        let message = merge_base_failure_guidance(repo.path(), "main", "other");
+        assert!(message.contains("unrelated"), "proven unrelated: {message}");
+        assert!(
+            message.contains("share no common history"),
+            "complete graph may state absent history: {message}"
+        );
+        Ok(())
+    }
+
+    /// A bogus revision in a complete clone is a missing object, never unrelated
+    /// history — the conflation the retired private helper encoded.
+    #[test]
+    fn missing_object_production_guidance_is_not_unrelated() -> Result<()> {
+        let repo = tempfile::tempdir()?;
+        ancestry_git(repo.path(), &["init", "--quiet", "--initial-branch=main", "."])?;
+        ancestry_git(repo.path(), &["config", "user.email", "ripr@example.invalid"])?;
+        ancestry_git(repo.path(), &["config", "user.name", "RIPR Test"])?;
+        fs::write(repo.path().join("main.txt"), "main\n")?;
+        ancestry_git(repo.path(), &["add", "main.txt"])?;
+        ancestry_git(repo.path(), &["commit", "--quiet", "-m", "main"])?;
+
+        let message = merge_base_failure_guidance(repo.path(), "ripr-no-such-base-xyz", "HEAD");
+        assert!(message.contains("not_proven_missing_object"), "typed disposition: {message}");
+        // Only the base is unresolvable here, so the remedy must name the base
+        // rather than blaming both sides.
+        assert!(
+            message.contains("`ripr-no-such-base-xyz` could not be resolved locally"),
+            "names the missing side: {message}"
+        );
+        assert!(
+            !message.contains("`ripr-no-such-base-xyz` and `HEAD` could not be resolved"),
+            "must not blame the resolvable head: {message}"
+        );
+        assert!(
+            !message.contains("share no common history"),
+            "a bad ref must never assert absent history: {message}"
+        );
+        Ok(())
+    }
+
+    /// A `file://` URL for a local path, so `git clone --depth` is honoured on
+    /// both POSIX and Windows (`C:\a` must become `file:///C:/a`, not `file://C:\a`).
+    fn ancestry_file_url(path: &Path) -> String {
+        let text = path.display().to_string().replace('\\', "/");
+        if text.starts_with('/') { format!("file://{text}") } else { format!("file:///{text}") }
+    }
+
+    /// Runs git for the ancestry fixtures with the ambient settings that would
+    /// otherwise break a temporary repository neutralized. `GIT_CONFIG_GLOBAL`
+    /// is deliberately not pointed at `/dev/null`: that path does not exist on
+    /// Windows, and this crate's tests are in the Windows CI crate scope.
+    fn ancestry_git(repository: &Path, arguments: &[&str]) -> Result<String> {
+        let output = Command::new("git")
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.autocrlf=false",
+                "-c",
+                "protocol.file.allow=always",
+            ])
+            .args(arguments)
+            .current_dir(repository)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .with_context(|| format!("running git {arguments:?}"))?;
+        if !output.status.success() {
+            bail!(
+                "git {arguments:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim().to_string()
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
     #[test]
@@ -7706,10 +8220,16 @@ esac
         // instead of propagating a raw git failure.
         let repo = repo_root()?;
         match changed_files(&repo, "ripr-no-such-base-xyz", "HEAD") {
-            Ok(files) => Err(eyre!("expected missing-merge-base error, got {files:?}")),
+            Ok(files) => Err(eyre!("expected unresolvable-range error, got {files:?}")),
             Err(err) => {
                 let message = format!("{err:#}");
-                assert!(message.contains("no merge base"), "guidance surfaced: {message}");
+                assert!(message.contains("cannot resolve diff range"), "guidance: {message}");
+                // The workspace checkout may be shallow or complete; either way a
+                // bogus base is never proof that the two refs are unrelated.
+                assert!(
+                    !message.contains("share no common history"),
+                    "a bad ref must never assert absent history: {message}"
+                );
                 Ok(())
             }
         }
@@ -7722,9 +8242,6 @@ esac
         let repo = repo_root()?;
         let files = changed_files(&repo, "HEAD", "HEAD")?;
         assert!(files.is_empty(), "HEAD...HEAD has no changed files: {files:?}");
-        // Exercise the shallow probe; its value is environment-dependent, so we
-        // only assert it returns without error.
-        let _ = is_shallow_clone(&repo);
         Ok(())
     }
 
@@ -8047,10 +8564,12 @@ esac
             "base-sha",
             "head-sha",
             suppressions,
-            1,
             extents,
-            None,
-            None,
+            PrEvidenceContext {
+                changed_file_count: 1,
+                attribution_scope: None,
+                production_surface: None,
+            },
         );
         let temp = tempfile::tempdir()?;
         let raw_path = temp.path().join("raw-check.json");
@@ -8063,9 +8582,11 @@ esac
             "base-sha",
             "head-sha",
             suppressions,
-            1,
-            None,
-            None,
+            PrEvidenceContext {
+                changed_file_count: 1,
+                attribution_scope: None,
+                production_surface: None,
+            },
         );
         assert_eq!(
             format_json(&dom_packet)?,
