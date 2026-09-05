@@ -33,7 +33,7 @@ COUNTER_FIELDS = (
     "formatted_output_parse_gate_invocations",
     "gate_nodes_observed",
     "lines_processed",
-    "delimited_groups_fitted",
+    "layout_groups_fitted",
     "edits_derived",
     "replacement_bytes",
     "peak_depth",
@@ -132,6 +132,14 @@ def validate(path: Path, expected_run_id: str, expected_ids: list[str]) -> None:
         ):
             raise ValueError(
                 "sidecar counter elapsed must contain non-negative secs and nanos"
+            )
+        # serde normalises `std::time::Duration`, so a real one always carries a
+        # sub-second nanos remainder. A value at or above one billion did not
+        # come from a Duration, which makes it fabricated or corrupted evidence
+        # rather than a slow run — exactly what a typed guard exists to reject.
+        if elapsed["nanos"] >= 1_000_000_000:
+            raise ValueError(
+                "sidecar counter elapsed nanos must be a sub-second remainder"
             )
         bench_id = row.get("bench_id")
         if not isinstance(bench_id, str) or not bench_id:

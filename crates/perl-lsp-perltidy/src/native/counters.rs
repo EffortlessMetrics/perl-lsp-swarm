@@ -77,8 +77,15 @@ pub struct NativePipelineCounters {
     pub gate_nodes_observed: u64,
     /// Physical source lines processed by the render stage.
     pub lines_processed: u64,
-    /// Delimited layout groups that rendered flat (fit on one line).
-    pub delimited_groups_fitted: u64,
+    /// Layout groups that rendered flat (fit on one line).
+    ///
+    /// Every `FormatDoc::Group` the renderer fits is counted, whatever
+    /// construct produced it — a delimited list, a control block, or any other
+    /// grouped layout. The name says `layout` rather than `delimited` because
+    /// the renderer carries no provenance on a group, so a delimited-only
+    /// figure is not derivable here and claiming one would put a narrower
+    /// meaning on the receipt than the observation supports.
+    pub layout_groups_fitted: u64,
     /// Edits derived by the pipeline and returned to classification.
     pub edits_derived: u64,
     /// Replacement bytes carried by the derived edits.
@@ -132,7 +139,7 @@ impl NativePipelineCounters {
     }
 
     pub(crate) fn observe_group_fit(&mut self, depth: u64) {
-        self.delimited_groups_fitted = self.delimited_groups_fitted.saturating_add(1);
+        self.layout_groups_fitted = self.layout_groups_fitted.saturating_add(1);
         self.peak_depth = self.peak_depth.max(depth);
     }
 
@@ -166,9 +173,24 @@ thread_local! {
 
 /// Record one observation into the active collector, if any. When no scope is
 /// installed this is a no-op — the zero-effect-when-unset contract.
+///
+/// The borrow is fallible on purpose. `update` is caller-supplied and runs
+/// while the collector is borrowed, so a closure that re-entered this function
+/// — or installed or merged a scope — would panic on `borrow_mut` inside
+/// `format_document`, a production path in a crate whose workspace lints
+/// forbid panicking. No current observation closure re-enters, so this is a
+/// latent path rather than a live one; it is closed here because a formatter
+/// must not acquire a new panic route in exchange for telemetry.
+///
+/// A re-entrant observation is dropped rather than recorded. That is the same
+/// outcome as "no scope installed", which is already a supported state, and it
+/// is the conservative direction: a counter loses one observation instead of
+/// the format request losing its result.
 pub(crate) fn record_with(update: impl FnOnce(&mut NativePipelineCounters)) {
     ACTIVE_COLLECTOR.with(|cell| {
-        if let Some(counters) = cell.borrow_mut().as_mut() {
+        if let Ok(mut borrowed) = cell.try_borrow_mut()
+            && let Some(counters) = borrowed.as_mut()
+        {
             update(counters);
         }
     });
@@ -243,8 +265,8 @@ fn merge_counters(counters: &mut NativePipelineCounters, recorded: &NativePipeli
     counters.gate_nodes_observed =
         counters.gate_nodes_observed.saturating_add(recorded.gate_nodes_observed);
     counters.lines_processed = counters.lines_processed.saturating_add(recorded.lines_processed);
-    counters.delimited_groups_fitted =
-        counters.delimited_groups_fitted.saturating_add(recorded.delimited_groups_fitted);
+    counters.layout_groups_fitted =
+        counters.layout_groups_fitted.saturating_add(recorded.layout_groups_fitted);
     counters.edits_derived = counters.edits_derived.saturating_add(recorded.edits_derived);
     counters.replacement_bytes =
         counters.replacement_bytes.saturating_add(recorded.replacement_bytes);
@@ -276,7 +298,7 @@ mod tests {
             recorded.formatted_output_parse_gate_invocations = 1;
             recorded.gate_nodes_observed = 3;
             recorded.lines_processed = 4;
-            recorded.delimited_groups_fitted = 5;
+            recorded.layout_groups_fitted = 5;
             recorded.edits_derived = 6;
             recorded.replacement_bytes = 7;
             recorded.peak_depth = 8;
@@ -292,7 +314,7 @@ mod tests {
         assert_eq!(counters.formatted_output_parse_gate_invocations, 1);
         assert_eq!(counters.gate_nodes_observed, 3);
         assert_eq!(counters.lines_processed, 4);
-        assert_eq!(counters.delimited_groups_fitted, 5);
+        assert_eq!(counters.layout_groups_fitted, 5);
         assert_eq!(counters.edits_derived, 6);
         assert_eq!(counters.replacement_bytes, 7);
         assert_eq!(counters.peak_depth, 8);
@@ -309,7 +331,7 @@ mod tests {
             recorded.formatted_output_parse_gate_invocations = 1;
             recorded.gate_nodes_observed = 1;
             recorded.lines_processed = 1;
-            recorded.delimited_groups_fitted = 1;
+            recorded.layout_groups_fitted = 1;
             recorded.edits_derived = 1;
             recorded.replacement_bytes = 1;
             recorded.elapsed = Duration::from_nanos(1);
@@ -322,7 +344,7 @@ mod tests {
             formatted_output_parse_gate_invocations: u64::MAX,
             gate_nodes_observed: u64::MAX,
             lines_processed: u64::MAX,
-            delimited_groups_fitted: u64::MAX,
+            layout_groups_fitted: u64::MAX,
             edits_derived: u64::MAX,
             replacement_bytes: u64::MAX,
             peak_depth: 0,
@@ -336,7 +358,7 @@ mod tests {
         assert_eq!(counters.formatted_output_parse_gate_invocations, u64::MAX);
         assert_eq!(counters.gate_nodes_observed, u64::MAX);
         assert_eq!(counters.lines_processed, u64::MAX);
-        assert_eq!(counters.delimited_groups_fitted, u64::MAX);
+        assert_eq!(counters.layout_groups_fitted, u64::MAX);
         assert_eq!(counters.edits_derived, u64::MAX);
         assert_eq!(counters.replacement_bytes, u64::MAX);
         assert_eq!(counters.elapsed, Duration::MAX);

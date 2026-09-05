@@ -239,7 +239,7 @@ class NativePipelineSidecarGuardTests(unittest.TestCase):
                 "formatted_output_parse_gate_invocations": 1,
                 "gate_nodes_observed": 3,
                 "lines_processed": 4,
-                "delimited_groups_fitted": 1,
+                "layout_groups_fitted": 1,
                 "edits_derived": 1,
                 "replacement_bytes": 8,
                 "peak_depth": 1,
@@ -317,6 +317,33 @@ class NativePipelineSidecarGuardTests(unittest.TestCase):
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("pipeline_invocations must be positive", proc.stderr)
 
+    def test_unnormalised_elapsed_nanos_are_rejected(self) -> None:
+        """serde normalises `Duration`, so nanos is always a sub-second remainder.
+
+        A value at or above one billion cannot have come from a real
+        `std::time::Duration`, which makes it fabricated or corrupted evidence
+        rather than a slow run. Without this the guard accepted an arbitrary
+        integer in the nanos field and still reported the receipt as valid.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = [self._row(bench_id) for bench_id in self.EXPECTED]
+            rows[0]["counters"]["elapsed"] = {"secs": 0, "nanos": 1_000_000_000}
+            path = self._write(Path(tmp), rows)
+            proc = self._run(path)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("sub-second remainder", proc.stderr)
+
+    def test_maximum_normalised_elapsed_nanos_are_accepted(self) -> None:
+        """The boundary's admitting side: one nanosecond below the limit is a
+        legitimate `Duration` and must still pass, so the rule above rejects
+        malformed evidence rather than simply rejecting large elapsed values."""
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = [self._row(bench_id) for bench_id in self.EXPECTED]
+            rows[0]["counters"]["elapsed"] = {"secs": 7, "nanos": 999_999_999}
+            path = self._write(Path(tmp), rows)
+            proc = self._run(path)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
     def test_zero_non_invocation_counters_are_accepted_as_shape_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             rows = [self._row(bench_id) for bench_id in self.EXPECTED]
@@ -327,7 +354,7 @@ class NativePipelineSidecarGuardTests(unittest.TestCase):
                     "formatted_output_parse_gate_invocations": 0,
                     "gate_nodes_observed": 0,
                     "lines_processed": 0,
-                    "delimited_groups_fitted": 0,
+                    "layout_groups_fitted": 0,
                     "edits_derived": 0,
                     "replacement_bytes": 0,
                     "peak_depth": 0,

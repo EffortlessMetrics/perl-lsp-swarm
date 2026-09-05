@@ -53,9 +53,26 @@ fn run_id(toolchain: &str) -> String {
 /// Fail closed when the receipt identity file cannot be written: a bench run
 /// without per-subject identity rows is exactly the aggregate-only evidence
 /// NPC-008 forbids.
+/// The Criterion output tree for this run.
+///
+/// Criterion honours `CARGO_TARGET_DIR`, so the receipt must resolve the same
+/// way or it lands in a different tree from the measurements it documents. The
+/// nightly steps then read `target/criterion/native-pipeline-measurements.v1.json`
+/// and would validate and upload a stale file from an earlier default-directory
+/// run, or fail the `if-no-files-found: error` upload — either way publishing a
+/// receipt that does not belong to the run that produced it. The manifest-relative
+/// default is the fallback, not the assumption.
+fn criterion_dir() -> PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR")
+        .map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"),
+            PathBuf::from,
+        )
+        .join("criterion")
+}
+
 fn write_subject_identities(rows: &[serde_json::Value], run_id: &str) {
-    let output = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/criterion/native-pipeline-measurements.v1.json");
+    let output = criterion_dir().join("native-pipeline-measurements.v1.json");
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent).unwrap_or_else(|error| {
             eprintln!("native pipeline bench: cannot create {}: {error}", parent.display());
@@ -71,8 +88,20 @@ fn write_subject_identities(rows: &[serde_json::Value], run_id: &str) {
         eprintln!("native pipeline bench: cannot serialize {}: {error}", output.display());
         std::process::exit(2);
     });
-    std::fs::write(&output, serialized).unwrap_or_else(|error| {
-        eprintln!("native pipeline bench: cannot write {}: {error}", output.display());
+
+    // Publish by rename, not by writing the final path in place. The nightly
+    // artifact step runs with `if: always()`, so an interrupted bench that had
+    // written only part of the file would upload a truncated receipt — which
+    // parses as absent or malformed evidence rather than as a failed run. A
+    // rename is atomic within the tree, so the artifact path only ever holds a
+    // complete document.
+    let staged = output.with_extension("json.partial");
+    std::fs::write(&staged, serialized).unwrap_or_else(|error| {
+        eprintln!("native pipeline bench: cannot write {}: {error}", staged.display());
+        std::process::exit(2);
+    });
+    std::fs::rename(&staged, &output).unwrap_or_else(|error| {
+        eprintln!("native pipeline bench: cannot publish {}: {error}", output.display());
         std::process::exit(2);
     });
 }

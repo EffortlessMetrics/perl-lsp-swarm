@@ -113,7 +113,7 @@ fn counters_populate_every_stage_from_production_path() {
         "every physical line fed to the render stage must be counted"
     );
     assert!(
-        counters.delimited_groups_fitted > 0,
+        counters.layout_groups_fitted > 0,
         "delimited subjects must exercise the delimited group fit decision"
     );
     assert!(counters.peak_depth > 0, "nesting depth must be observed");
@@ -264,10 +264,10 @@ fn scaling_cohort_ratios_stay_within_bounded_envelope() {
                 four_n.1.lines_processed,
             ),
             (
-                "delimited_groups_fitted",
-                n.1.delimited_groups_fitted,
-                two_n.1.delimited_groups_fitted,
-                four_n.1.delimited_groups_fitted,
+                "layout_groups_fitted",
+                n.1.layout_groups_fitted,
+                two_n.1.layout_groups_fitted,
+                four_n.1.layout_groups_fitted,
             ),
             ("edits_derived", n.1.edits_derived, two_n.1.edits_derived, four_n.1.edits_derived),
             (
@@ -311,7 +311,7 @@ fn nested_counter_scope_populates_supplied_and_outer_snapshots() {
     assert_eq!(supplied.formatted_output_parse_gate_invocations, 1);
     assert!(supplied.gate_nodes_observed > 0);
     assert!(supplied.lines_processed > 0);
-    assert!(supplied.delimited_groups_fitted > 0);
+    assert!(supplied.layout_groups_fitted > 0);
     assert!(supplied.edits_derived > 0);
     assert!(supplied.replacement_bytes > 0);
     assert!(supplied.peak_depth > 0);
@@ -325,7 +325,7 @@ fn nested_counter_scope_populates_supplied_and_outer_snapshots() {
     assert_eq!(outer_snapshot.formatted_output_parse_gate_invocations, 1);
     assert!(outer_snapshot.gate_nodes_observed > 0);
     assert!(outer_snapshot.lines_processed > 0);
-    assert!(outer_snapshot.delimited_groups_fitted > 0);
+    assert!(outer_snapshot.layout_groups_fitted > 0);
     assert!(outer_snapshot.edits_derived > 0);
     assert!(outer_snapshot.replacement_bytes > 0);
     assert!(outer_snapshot.peak_depth > 0);
@@ -342,7 +342,7 @@ fn nested_counter_scope_populates_supplied_and_outer_snapshots() {
     );
     assert_eq!(outer_snapshot.gate_nodes_observed, supplied.gate_nodes_observed);
     assert_eq!(outer_snapshot.lines_processed, supplied.lines_processed);
-    assert_eq!(outer_snapshot.delimited_groups_fitted, supplied.delimited_groups_fitted);
+    assert_eq!(outer_snapshot.layout_groups_fitted, supplied.layout_groups_fitted);
     assert_eq!(outer_snapshot.edits_derived, supplied.edits_derived);
     assert_eq!(outer_snapshot.replacement_bytes, supplied.replacement_bytes);
     assert_eq!(outer_snapshot.peak_depth, supplied.peak_depth);
@@ -900,7 +900,12 @@ fn base_pin_max_timeout_minutes(job: &str) -> Option<u64> {
         "corpus-differential" => Some(20),
         "lsp-memory-plateau" => Some(35),
         "test-coverage" => Some(45),
-        "tautology-check" => Some(10),
+        // Raised from 10 on `main` by 85d810dcd (#14061), which widened this
+        // job from a spot check to a repository-wide tautological-assertion
+        // sweep. The pin tracks that owned change rather than absorbing a
+        // regression: the ratchet exists to stop a slow job being hidden by a
+        // timeout bump, and this bump paid for new work, not for lost speed.
+        "tautology-check" => Some(25),
         "semver-check" => Some(20),
         "public-api-check" => Some(20),
         "scorecard-ratchet-check" => Some(15),
