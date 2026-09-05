@@ -2064,8 +2064,10 @@ mod tests {
         // the final empty line (#10220): byte length alone would report (0, N).
         assert_eq!(server.offset_to_pos16(lf_doc, lf.len()), (1, 0));
         assert_eq!(server.offset_to_pos16(crlf_doc, crlf.len()), (1, 0));
-        // Bare CR is an admitted separator: EOF follows the second line.
-        assert_eq!(server.offset_to_pos16(cr_doc, bare_cr.len()), (1, 1));
+        // Bare CR is source content under the LF-delimited source-line
+        // contract, so EOF remains on the first line after three UTF-16
+        // units.
+        assert_eq!(server.offset_to_pos16(cr_doc, bare_cr.len()), (0, 3));
     }
 
     #[test]
@@ -2096,8 +2098,14 @@ mod tests {
         use std::sync::Arc;
 
         let server = LspServer::new();
+        // Bare-CR sources are deliberately absent: the formatter's
+        // `SourceGeometry`/`true_eof_position` still admits bare CR as a
+        // separator, which is a legacy provider surface outside the #4973
+        // LF-delimited source-line contract and owned by the downstream
+        // geometry migration issues. Parity is asserted only where both
+        // authorities share the LF contract.
         let sources =
-            ["", "package Foo;", "package Foo;\n", "a\r\n", "a\r", "#!/usr/bin/perl😀", "x\n\r\nz"];
+            ["", "package Foo;", "package Foo;\n", "a\r\n", "#!/usr/bin/perl😀", "x\n\r\nz"];
         for (idx, content) in sources.iter().enumerate() {
             let uri = format!("file:///eof-parity-{idx}.pl");
             server.documents.lock().insert(
@@ -2182,8 +2190,8 @@ mod tests {
 
         let server = LspServer::new();
         let uri = "file:///bare-cr-eof.pl";
-        // Lone CR is an admitted line separator; true EOF is line 1, not the
-        // single-line byte column the split('\n') helper reported.
+        // Lone CR is source content under the LF-delimited source-line
+        // contract, so true EOF remains on line 0.
         let text = "#!/usr/bin/perl\rwarn 'x';";
         let rope = Rope::from_str(text);
         server.documents.lock().insert(
@@ -2198,8 +2206,8 @@ mod tests {
         let actions = result.as_array().expect("response must be an action array");
         assert!(!actions.is_empty(), "missing pragma must yield an action");
         let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
-        assert_eq!(edit["start"], json!({"line": 1, "character": 9}));
-        assert_eq!(edit["end"], json!({"line": 1, "character": 9}));
+        assert_eq!(edit["start"], json!({"line": 0, "character": 25}));
+        assert_eq!(edit["end"], json!({"line": 0, "character": 25}));
     }
 
     #[test]

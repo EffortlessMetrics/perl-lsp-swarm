@@ -121,6 +121,28 @@ fn lsp_location_count(value: Option<&Value>) -> usize {
     }
 }
 
+/// Naive comment-only heuristic for the goto-definition and completion
+/// guards (#5066/#5408/#5411): `true` when a `#` appears earlier on the
+/// same line.
+///
+/// This is deliberately NOT the rename candidate classifier and is
+/// deliberately not string-aware: a `#` inside a string literal still reads
+/// as a comment to this guard, and that trade-off is pinned by the guard
+/// regression tests. Rename's edit policy uses the generation-bound
+/// `SourceRegionIndex` instead (#4964).
+pub(crate) fn is_in_comment_naive(position: usize, source: &str) -> bool {
+    let line_start =
+        if position == 0 { 0 } else { source[..position].rfind('\n').map_or(0, |p| p + 1) };
+    let line = &source[line_start..];
+
+    if let Some(comment_pos) = line.find('#') {
+        let comment_absolute = line_start + comment_pos;
+        position >= comment_absolute
+    } else {
+        false
+    }
+}
+
 #[derive(Debug)]
 struct NavigationDecisionTraceContext {
     provider: &'static str,
@@ -357,7 +379,7 @@ fn type_definition_receipt_freshness(fact_source: &'static str) -> ProviderDecis
 }
 
 #[cfg(feature = "workspace")]
-fn get_fqn_regex() -> Result<&'static regex::Regex, JsonRpcError> {
+pub(super) fn get_fqn_regex() -> Result<&'static regex::Regex, JsonRpcError> {
     FQN_RE
         .get_or_init(|| regex::Regex::new(r"([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)"))
         .as_ref()
@@ -1329,7 +1351,7 @@ impl LspServer {
                     // also classified as a string.  This now blocks whenever the
                     // offset is inside a comment.
                     let text = &doc.text;
-                    if perl_lsp_rs_core::providers::rename::is_in_comment(offset, text) {
+                    if is_in_comment_naive(offset, text) {
                         return Ok(None);
                     }
 

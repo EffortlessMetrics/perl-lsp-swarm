@@ -6,22 +6,22 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12686 |
-| Rust-family files | 3946 |
-| Non-Rust files | 8740 |
-| Allowlisted | 6501 |
+| Total tracked files | 12716 |
+| Rust-family files | 3968 |
+| Non-Rust files | 8748 |
+| Allowlisted | 6509 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 501 |
-| documentation | 2853 |
+| config | 502 |
+| documentation | 2852 |
 | generated | 2 |
-| production | 356 |
-| test | 2109 |
-| tooling | 680 |
+| production | 357 |
+| test | 2111 |
+| tooling | 685 |
 | unclassified | 2239 |
 
 ## Unclassified files
@@ -2824,7 +2824,6 @@
 | `.claude/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/agents/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/agents/builder.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `.claude/agents/lane-orchestrator.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/agents/researcher.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/agents/reviewer.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.claude/reference/review-convergence.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -2977,6 +2976,7 @@
 | `.github/workflows/review-receipt-retirement.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/ripr-infra-retry.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/ripr.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/rolling-installed-public-beta-observation.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/scoop-bump.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/security-reconciliation.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/semantic-close-containment.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -4257,6 +4257,7 @@
 | `crates/perl-position-tracking/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-position-tracking/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-position-tracking/ROADMAP.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-position-tracking/tests/line_starts_cache_fuzz.proptest-regressions` | test | `non-rust-proptest-regressions` | parser/property-tests |
 | `crates/perl-pragma/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-pragma/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-pragma/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
@@ -6555,6 +6556,7 @@
 | `scripts/ci/check_perl_lsp_rs_core_package.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check_publish_package_contents.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check_release_settings_closeout.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/check_rolling_installed_workflow.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check_security_reconciliation.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check_source_commit_api.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/ci_classify.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6684,6 +6686,7 @@
 | `scripts/ci/release_artifact_size_smoke.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/release_artifact_size_stage.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/ripr_summary.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/rolling_installed_observation.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/route-codecov-packs.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/run_gate_shard.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/run_parser_integration.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6692,6 +6695,7 @@
 | `scripts/ci/security_reconciliation_io.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/security_reconciliation_model.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_aggregate_lane_history.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_cache_writer_authority_13924.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_check_perl_lsp_rs_core_package.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_check_pr_semantic_review_currentness.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_check_publish_package_contents.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6715,6 +6719,7 @@
 | `scripts/ci/test_receipts_to_junit.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_reconcile_github_enforcement_snapshot.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_ripr_summary.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_rolling_installed_observation.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_route_codecov_packs.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_run_gate_shard.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_run_parser_integration.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -6913,6 +6918,7 @@
 | `scripts/tests/test-install-ps1-archive-safety.ps1` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-ps1-checksum-required.ps1` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-ps1-product-unit-promotion.ps1` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-install-source-version-binding.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-install-target-selection.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-installer-archive-safety.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-installer-checksum-required.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -8375,6 +8381,7 @@
 | `tests/test_active_authority_contract.py` | test | `non-rust-active-authority-contract-test` | release/ci |
 | `tests/test_agent_authority_status.py` | test | `non-rust-agent-authority-status-test` | release/ci |
 | `tests/test_legacy_authority_banners.py` | test | `non-rust-legacy-authority-banners-test` | release/ci |
+| `tests/test_writer_authority_transfer_contract.py` | test | `non-rust-writer-authority-transfer-contract-test` | release/ci |
 | `tree-sitter-perl/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 | `tree-sitter-perl/PURE_RUST_PERFORMANCE_ANALYSIS.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `tree-sitter-perl/README.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -8629,6 +8636,7 @@
 | `vscode-extension/src/test/languageClientConfiguration.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/languageClientDocumentSync.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/languageClientLifecycle.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/languageClientLifecycleSettlement.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/languageClientStartupMetrics.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/languageServerHealth.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/loadedModuleReloadFamily.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
