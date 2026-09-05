@@ -151,7 +151,10 @@ pub enum StructuredRefusal {
     /// Text was not valid structured data.
     #[error("invalid structured data at byte {offset}")]
     InvalidSyntax {
-        /// Byte offset where parsing stopped.
+        /// Byte offset where parsing stopped, measured in the structured
+        /// payload — the text *after* the `json:` prefix — not in the raw
+        /// envelope. Callers reporting against the envelope must add
+        /// [`STRUCTURED_PREFIX`]'s length.
         offset: usize,
     },
     /// Caller-supplied limits exceeded the pinned profile-v1 maxima; the

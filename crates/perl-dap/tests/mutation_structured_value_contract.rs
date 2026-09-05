@@ -481,24 +481,52 @@ fn escaped_control_and_unicode_escapes_decode_to_inert_data() -> TestResult {
 
 #[test]
 fn invalid_unicode_escapes_refuse_deterministically() -> TestResult {
+    // Offsets are payload-relative: the parser runs on the text after the
+    // `json:` prefix, so the opening quote sits at 0 and the first escape's
+    // backslash at 1. The leading `ab` cases below keep this pin honest by
+    // moving the offending escape off that fixed position.
+    //
+    // Class 1 - the refusal belongs to the leading escape, so it reports that
+    // escape's backslash: malformed or truncated first hex4, a lone low
+    // surrogate, and a high surrogate whose continuation is absent, not an
+    // escape at all, or a syntactically valid unit outside `DC00..=DFFF`.
     for (malformed, expected_offset) in [
-        (r#"json:"\u12""#, 6),
-        (r#"json:"\uzzzz""#, 6),
-        (r#"json:"\ud800""#, 6),
-        (r#"json:"\udbff""#, 6),
-        (r#"json:"\udc00""#, 6),
-        (r#"json:"\udfff""#, 6),
-        (r#"json:"\ud800\ud800""#, 12),
-        (r#"json:"\udbff\uffff""#, 12),
-        (r#"json:"\ud800x""#, 6),
-        (r#"json:"\ud83d\n""#, 6),
-        (r#"json:"\ud83d""#, 6),
+        (r#"json:"\u12""#, 1),
+        (r#"json:"\uzzzz""#, 1),
+        (r#"json:"\ud800""#, 1),
+        (r#"json:"\udbff""#, 1),
+        (r#"json:"\udc00""#, 1),
+        (r#"json:"\udfff""#, 1),
+        (r#"json:"\ud800\ud800""#, 1),
+        (r#"json:"\udbff￿""#, 1),
+        (r#"json:"\ud800x""#, 1),
+        (r#"json:"\ud83d\n""#, 1),
+        (r#"json:"\ud83d""#, 1),
+        (r#"json:"ab\ud800""#, 3),
+        (r#"json:"ab\uzzzz""#, 3),
     ] {
         let error = parse_refusal(malformed)?;
         assert_eq!(
             error,
             StructuredRefusal::InvalidSyntax { offset: expected_offset },
-            "{malformed:?} must report the offending escape backslash"
+            "{malformed:?} must report the leading escape's backslash"
+        );
+    }
+
+    // Class 2 - the continuation escape is itself malformed or truncated, so
+    // the refusal moves to the continuation backslash (leading backslash + 6)
+    // rather than pointing six bytes early at the high surrogate.
+    for (malformed, expected_offset) in [
+        (r#"json:"\ud800\uzzzz""#, 7),
+        (r#"json:"\ud800\u12""#, 7),
+        (r#"json:"\ud800\u""#, 7),
+        (r#"json:"ab\ud800\uzzzz""#, 9),
+    ] {
+        let error = parse_refusal(malformed)?;
+        assert_eq!(
+            error,
+            StructuredRefusal::InvalidSyntax { offset: expected_offset },
+            "{malformed:?} must report the continuation escape's backslash"
         );
     }
     Ok(())
