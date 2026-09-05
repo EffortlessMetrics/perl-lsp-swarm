@@ -277,12 +277,65 @@ fn scaling_cohort_ratios_stay_within_bounded_envelope() {
                 four_n.1.replacement_bytes,
             ),
         ];
+        // `is_superlinear` returns false whenever N is zero — correct as a
+        // detector rule, but it means a series this family never records is
+        // checked vacuously. Measured on this head, 7 of these 20 checks sat
+        // outside the detector's domain, so the loop alone reported coverage
+        // of a cohort it only partly exercised, and a counter that regressed
+        // to never being recorded would have joined the vacuous set silently
+        // instead of failing.
+        //
+        // Each series is therefore classified before it is bounded. An active
+        // series must be positive at N — that is what puts it in the
+        // detector's domain — and an inactive one must be zero at every size,
+        // which is a claim about the family's production behaviour rather than
+        // an exemption: `no-change` and `opaque` derive no edits and so carry
+        // no replacement bytes, and only `delimited` fits layout groups.
+        let expected_active: &[&str] = match family {
+            "delimited" => &[
+                "gate_nodes_observed",
+                "lines_processed",
+                "layout_groups_fitted",
+                "edits_derived",
+                "replacement_bytes",
+            ],
+            "statement" => {
+                &["gate_nodes_observed", "lines_processed", "edits_derived", "replacement_bytes"]
+            }
+            _ => &["gate_nodes_observed", "lines_processed"],
+        };
+
+        let mut in_domain = 0_usize;
         for (name, n_value, two_n_value, four_n_value) in series {
+            if expected_active.contains(&name) {
+                assert!(
+                    n_value > 0,
+                    "{family}.{name} is pinned as an active series but recorded nothing at N; \
+                     a counter that stops being recorded must fail here rather than turn the \
+                     envelope check below vacuous"
+                );
+                in_domain += 1;
+            } else {
+                assert_eq!(
+                    (n_value, two_n_value, four_n_value),
+                    (0, 0, 0),
+                    "{family}.{name} is pinned as inactive for this family but recorded work; \
+                     update the classification consciously rather than leaving the envelope \
+                     check silently out of domain"
+                );
+            }
+
             assert!(
                 !is_superlinear(n_value, two_n_value, four_n_value),
                 "{family}.{name} grew superlinearly: N={n_value} 2N={two_n_value} 4N={four_n_value}"
             );
         }
+
+        assert_eq!(
+            in_domain,
+            expected_active.len(),
+            "{family} must exercise exactly its pinned active series"
+        );
 
         // The scaling subjects really do scale: the render stage must see more
         // lines as units double (guards against vacuous fixed-size subjects).
