@@ -586,7 +586,7 @@ fn limitations_recorded(
 
 fn duplicate_families(families: &[SemanticFactFamily]) -> bool {
     let mut seen = HashSet::new();
-    families.iter().any(|family| !seen.insert(*family))
+    families.iter().any(|&family| !seen.insert(family))
 }
 
 fn same_families(left: &[SemanticFactFamily], right: &[SemanticFactFamily]) -> bool {
