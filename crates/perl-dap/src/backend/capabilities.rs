@@ -378,7 +378,6 @@ pub(crate) fn peer_bridge_hover_admission(
 /// profile cannot advertise one thing and enforce another.
 pub(crate) const MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS: bool = false;
 
-#[must_use]
 /// Whether an exact native-launch `setVariable` mutation path has been proven
 /// (#8354).
 ///
