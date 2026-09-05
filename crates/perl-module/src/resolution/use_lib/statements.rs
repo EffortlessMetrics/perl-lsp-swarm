@@ -481,11 +481,6 @@ fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bo
     Some((tag_end, source[tag_start..tag_end].to_string(), strip_indent, true))
 }
 
-/// Whether a line terminating `tag` appears anywhere below the line at `start`.
-///
-/// Only bareword delimiters need this confirmation: they are the one form
-/// indistinguishable from incidental text such as a regex body. Quoted,
-/// escaped and empty delimiters are honored on sight.
 /// Whether only spaces and tabs separate `idx` from the start of its line.
 ///
 /// A data-section marker may be indented; Perl ends compilation at it either
@@ -513,6 +508,11 @@ fn trimmed_line_set(source: &str) -> HashSet<&str> {
     source.lines().map(|line| line.trim_end_matches('\r').trim_start()).collect()
 }
 
+/// Whether a line terminating `tag` appears anywhere below the line at `start`.
+///
+/// Only bareword delimiters need this confirmation: they are the one form
+/// indistinguishable from incidental text such as a regex body. Quoted,
+/// escaped and empty delimiters are honored on sight.
 fn has_heredoc_terminator(source: &str, start: usize, tag: &str, strip_indent: bool) -> bool {
     let Some(first_newline) = source[start..].find('\n') else {
         return false;

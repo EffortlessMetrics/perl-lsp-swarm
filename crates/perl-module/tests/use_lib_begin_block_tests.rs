@@ -851,10 +851,18 @@ fn a_numeric_bareword_delimiter_opens_a_heredoc() {
     );
 
     // The shift readings are unaffected: both operands end a term.
-    for shift in ["my $x = $y<<2;\nuse lib 'shift_var';\n", "my $x = 1<<2;\nuse lib 'shift_num';\n"]
-    {
-        let operations = extract_use_lib_operations(shift);
-        assert_eq!(operations.len(), 1, "a tight numeric shift was read as a heredoc: {shift:?}");
+    for (shift, expected) in [
+        ("my $x = $y<<2;\nuse lib 'shift_var';\n", "shift_var"),
+        ("my $x = 1<<2;\nuse lib 'shift_num';\n", "shift_num"),
+    ] {
+        assert_eq!(
+            extract_use_lib_operations(shift),
+            vec![UseLibAction::Add(vec![UseLibPath {
+                path: expected.to_string(),
+                from_findbin: false
+            }])],
+            "a tight numeric shift was read as a heredoc: {shift:?}"
+        );
     }
 }
 

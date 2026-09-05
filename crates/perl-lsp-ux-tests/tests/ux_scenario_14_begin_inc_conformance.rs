@@ -1,5 +1,9 @@
 // Test infrastructure — allow test-friendly patterns.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(
+    clippy::print_stderr,
+    reason = "UX receipt scenarios write their structured receipt to stderr for --nocapture logs"
+)]
 
 //! Scenario 14 companion: block-leading `BEGIN` mutation of effective `@INC`.
 //!
