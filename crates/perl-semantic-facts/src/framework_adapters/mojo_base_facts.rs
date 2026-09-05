@@ -1,0 +1,916 @@
+//! Registry-activated Mojo::Base object-fact minting (#9682).
+//!
+//! This module turns source-extracted `has` declarations plus the #9681
+//! checked activation/profile into the canonical object facts of a
+//! `Mojo::Base` class: generated accessor members, the distinct reader and
+//! fluent-setter callable-result relations, and the literal parent
+//! relationship. It is the facts side of the #9682 producer leaf and builds
+//! directly on the #9681 activation seam:
+//!
+//! - object facts mint **only through the registry-activated adapter**: a
+//!   detected framework and an exact activation are both required. A
+//!   same-named `has` call in a package without an exact activation is a hard
+//!   negative and mints nothing — this module never treats `has` itself as
+//!   activation evidence;
+//! - every generated member points at the **real `has` declaration anchor**
+//!   and never receives a fabricated method body. Members carry
+//!   `Provenance::FrameworkSynthesis` / `Confidence::Medium` and the
+//!   `SemanticReasonCode::GeneratedFromSource` reason, matching the accepted
+//!   source-backed-generated provenance rules (PLSP-SPEC-0017 / -0024): a
+//!   framework-generated accessor is source-backed by its generator, but it is
+//!   never relabelled as explicit source;
+//! - the fluent setter uses the neutral
+//!   [`CallableResultRelation::ReceiverSelf`] vocabulary (#10904) rather than
+//!   a Mojo-specific return-self shape, and carries no fabricated exit
+//!   contributor: a generated accessor has a generator anchor, not a real
+//!   return statement, so its callable-result facts stay
+//!   [`CallableResultLimitation::GeneratedNoSource`];
+//! - the reader result and the setter return-self relation are **two distinct
+//!   facts about one member entity**. Default-value uncertainty limits the
+//!   reader without erasing the independently determinate `ReceiverSelf`
+//!   relation;
+//! - the literal parent proposition reuses the canonical [`PackageEdge`] /
+//!   [`PackageEdgeKind::Inherits`] vocabulary. This leaf produces the
+//!   proposition a canonical relationship representation consumes; it does not
+//!   claim `PackageEdge` is the final ProjectModel authority (that is the
+//!   typed-relationship issue's to own) and it builds no Mojo-only hierarchy;
+//! - facts are generation-owned and shadow receipts: every envelope carries
+//!   the activation's source generation plus invalidation dependencies over
+//!   the owning file and the activating `Mojo::Base` module, and the adapter
+//!   disposition remains `Shadow`, so no provider surface can publish them
+//!   (canonical publication is owned separately).
+//!
+//! Accessor semantics follow the reviewed `Mojo::Base` profile: `has` takes a
+//! name (or an array reference of names) and one optional default, every
+//! generated accessor is read-write, a write returns the invocant, and a
+//! `sub { ... }` default is a lazy builder rather than a code-reference value.
+
+use crate::envelope::{
+    CallableResultCompleteness, CallableResultFact, CallableResultLimitation,
+    CallableResultRelation, SemanticFactEnvelope,
+};
+use crate::framework::AdapterDetectionResult;
+use crate::framework_adapters::mojo_base::{
+    MOJO_BASE_FRAMEWORK_NAME, MojoBaseActivationFacts, MojoBaseActivationOutcome,
+};
+use crate::{
+    AnchorId, BoundaryDisposition, BoundaryKind, BoundaryLink, Confidence, EntityId, FactId,
+    FileId, GeneratedMember, GeneratedMemberKind, InvalidationDependency, LifecyclePhase,
+    PackageEdge, PackageEdgeKind, Provenance, SemanticConfidence, SemanticFactKind,
+    SemanticFreshness, SemanticProducer, SemanticProvenance, SemanticReasonCode, SourceAnchor,
+    SourceGeneration, ValueShape,
+};
+
+/// Attribute name selection of one source-extracted `has` declaration.
+///
+/// The name decides whether a member can be generated at all: only a literal
+/// spelling names a method. Computed and malformed spellings stay explicit
+/// typed boundaries and never become a guessed accessor name.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MojoBaseAttributeName {
+    /// A source-literal attribute name (quoted, bareword, or `qw` word).
+    Literal(String),
+    /// A computed name expression — an explicit dynamic boundary.
+    Dynamic {
+        /// Bounded dynamic explanation.
+        reason: String,
+    },
+    /// A `has` form the reviewed profile cannot interpret as one name.
+    Malformed {
+        /// Bounded malformed explanation.
+        reason: String,
+    },
+}
+
+impl MojoBaseAttributeName {
+    /// The literal spelling, when this selection names a method.
+    #[must_use]
+    pub fn literal(&self) -> Option<&str> {
+        match self {
+            Self::Literal(name) => Some(name.as_str()),
+            Self::Dynamic { .. } | Self::Malformed { .. } => None,
+        }
+    }
+}
+
+/// Default-value evidence of one source-extracted `has` declaration.
+///
+/// `Mojo::Base` admits exactly two default forms: a constant value and a code
+/// reference invoked lazily to build the value. Anything else croaks at
+/// runtime, so it is an explicit unsupported boundary rather than a guessed
+/// value.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MojoBaseAttributeDefault {
+    /// No default operand: the attribute reads as undefined until written.
+    Absent,
+    /// A source-literal constant default (string or number).
+    Constant,
+    /// A `sub { ... }` lazy builder called to build the default value.
+    LazyBuilder,
+    /// A computed default expression — an explicit dynamic boundary.
+    Dynamic {
+        /// Bounded dynamic explanation.
+        reason: String,
+    },
+    /// A default form the reviewed profile does not admit (`Mojo::Base`
+    /// rejects a non-code reference default at runtime).
+    Unsupported {
+        /// Bounded unsupported explanation.
+        reason: String,
+    },
+}
+
+/// Whether an explicit source method of the same name exists in the owning
+/// package.
+///
+/// An explicit `sub name { ... }` retains stronger source identity than a
+/// generated accessor of the same name; the collision is preserved as
+/// conflict evidence rather than silently deleting either side.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MojoBaseExplicitMethodState {
+    /// No same-named explicit method was found in the owning package.
+    None,
+    /// A same-named explicit `sub` is declared in the owning package.
+    Collides,
+}
+
+/// One source-extracted `Mojo::Base` `has` attribute declaration.
+///
+/// Extraction is pure source observation performed by the semantic analyzer:
+/// it knows the reviewed `has` grammar, it does not decide activation. An
+/// object fact exists only after this module minted it over an exact
+/// activation.
+///
+/// `has [qw(host port)];` contributes one declaration per name, all sharing
+/// the statement's `declaration_index` and separated by `name_index`.
+///
+/// Like the Dancer2 declaration carriers, this input struct stays
+/// exhaustively constructible so the extracting analyzer crate can build it
+/// directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MojoBaseAttributeDeclaration {
+    /// Source-order index of the `has` statement within its file.
+    pub declaration_index: u32,
+    /// Position of this name within the statement's name operand (`0` for a
+    /// single name, the list position for an array-reference name list).
+    pub name_index: u32,
+    /// File the declaration appears in.
+    pub file_id: FileId,
+    /// Caller package at the declaration (activation scope).
+    pub package: Option<String>,
+    /// Anchor of the whole `has` statement — the generator anchor every
+    /// generated member points at.
+    pub declaration_anchor: SourceAnchor,
+    /// Anchor of the name operand itself.
+    pub name_anchor: SourceAnchor,
+    /// Attribute name selection.
+    pub name: MojoBaseAttributeName,
+    /// Default-value evidence.
+    pub default: MojoBaseAttributeDefault,
+    /// Same-named explicit source method state in the owning package.
+    pub explicit_method: MojoBaseExplicitMethodState,
+}
+
+/// One minted generated-accessor member fact.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MojoBaseGeneratedMemberFact {
+    /// Shared semantic identity, generation, proof, and invalidation data.
+    pub envelope: SemanticFactEnvelope,
+    /// Canonical generated-member payload anchored at the real `has`
+    /// declaration.
+    pub member: GeneratedMember,
+    /// Same-named explicit source method state preserved as conflict
+    /// evidence.
+    pub explicit_method: MojoBaseExplicitMethodState,
+}
+
+/// One minted literal-parent relationship fact.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MojoBaseParentFact {
+    /// Shared semantic identity, generation, proof, and invalidation data.
+    pub envelope: SemanticFactEnvelope,
+    /// Canonical inheritance edge payload.
+    pub edge: PackageEdge,
+}
+
+/// Canonical `Mojo::Base` object facts minted for one activating package.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MojoBaseObjectFacts {
+    /// Generated accessor members, in source order.
+    pub members: Vec<MojoBaseGeneratedMemberFact>,
+    /// Reader-result relation, one per minted member, in the same order.
+    pub reader_results: Vec<CallableResultFact>,
+    /// Fluent setter return-self relation, one per minted member, in the same
+    /// order.
+    pub setter_results: Vec<CallableResultFact>,
+    /// Literal parent relationship established by the activating import.
+    pub parents: Vec<MojoBaseParentFact>,
+}
+
+impl MojoBaseObjectFacts {
+    /// Whether no object fact of any kind was minted.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.members.is_empty()
+            && self.reader_results.is_empty()
+            && self.setter_results.is_empty()
+            && self.parents.is_empty()
+    }
+}
+
+/// Domain separator keeping generated-member identities disjoint from every
+/// other fact family minted over the same (file, declaration order,
+/// generation).
+const MOJO_MEMBER_IDENTITY_DOMAIN: u64 = 0x4D4F_4A4F_4D45_4D00;
+
+/// Domain separator for the reader-result fact of one generated member.
+const MOJO_READER_IDENTITY_DOMAIN: u64 = 0x4D4F_4A4F_5245_4144;
+
+/// Domain separator for the setter return-self fact of one generated member.
+const MOJO_SETTER_IDENTITY_DOMAIN: u64 = 0x4D4F_4A4F_5345_5401;
+
+/// Domain separator for the literal-parent relationship fact.
+const MOJO_PARENT_IDENTITY_DOMAIN: u64 = 0x4D4F_4A4F_5041_5201;
+
+/// Deterministic generated-member identity for one
+/// (file, `has` statement, name position, generation).
+///
+/// Identity derives from the owning file, the source declaration order, the
+/// name position inside the statement, and the minting generation under a
+/// Mojo-specific domain separator, so member facts never collide with the
+/// route or hook families minted over the same file/order/generation.
+#[must_use]
+pub fn mojo_base_member_identity(
+    file_id: FileId,
+    declaration_index: u32,
+    name_index: u32,
+    generation: &SourceGeneration,
+) -> (FactId, EntityId) {
+    let generation_digest = match generation {
+        // FNV-1a accumulation: order- and repetition-sensitive, so distinct
+        // generation identities never collide.
+        SourceGeneration::Known(value) => {
+            value.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+                (hash ^ u64::from(byte)).wrapping_mul(0x1000_0000_01b3)
+            })
+        }
+        // An unknown generation is still a distinct minting context; the
+        // envelope degrades it separately.
+        SourceGeneration::Unknown => 0x1a2b_3c4d_5e6f_7081_u64,
+    };
+    let file = file_id.0.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let index = u64::from(declaration_index).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+    let name = u64::from(name_index).wrapping_mul(0x87C3_7B29_11C5_21D3_u64);
+    let fact = file ^ index ^ name ^ generation_digest ^ MOJO_MEMBER_IDENTITY_DOMAIN;
+    (FactId(fact), EntityId(fact.wrapping_add(1)))
+}
+
+/// Deterministic reader-result identity for one generated member.
+///
+/// Shares the member's entity — the reader relation is a fact *about* the
+/// generated accessor — while using its own fact-identity domain so it can
+/// never collide with the member fact or the setter relation.
+#[must_use]
+pub fn mojo_base_reader_identity(
+    file_id: FileId,
+    declaration_index: u32,
+    name_index: u32,
+    generation: &SourceGeneration,
+) -> (FactId, EntityId) {
+    let (fact_id, entity_id) =
+        mojo_base_member_identity(file_id, declaration_index, name_index, generation);
+    (FactId(fact_id.0 ^ MOJO_READER_IDENTITY_DOMAIN), entity_id)
+}
+
+/// Deterministic setter return-self identity for one generated member.
+///
+/// Same entity as the reader relation and its own fact-identity domain: one
+/// accessor entity carries two semantically distinct callable-result facts.
+#[must_use]
+pub fn mojo_base_setter_identity(
+    file_id: FileId,
+    declaration_index: u32,
+    name_index: u32,
+    generation: &SourceGeneration,
+) -> (FactId, EntityId) {
+    let (fact_id, entity_id) =
+        mojo_base_member_identity(file_id, declaration_index, name_index, generation);
+    (FactId(fact_id.0 ^ MOJO_SETTER_IDENTITY_DOMAIN), entity_id)
+}
+
+/// Deterministic literal-parent relationship identity for one activation
+/// site.
+#[must_use]
+pub fn mojo_base_parent_identity(
+    file_id: FileId,
+    import_start_byte: u32,
+    generation: &SourceGeneration,
+) -> (FactId, EntityId) {
+    let (fact_id, _) = mojo_base_member_identity(file_id, import_start_byte, 0, generation);
+    let fact = FactId(fact_id.0 ^ MOJO_PARENT_IDENTITY_DOMAIN);
+    (fact, EntityId(fact.0.wrapping_add(1)))
+}
+
+/// Mint the canonical `Mojo::Base` object facts for one activating package.
+///
+/// Returns no facts unless `detection` established the framework and
+/// `activation` is exact — the registry-activated adapter contract. A
+/// declaration of another package is skipped, and a declaration whose name is
+/// computed or malformed mints no member (the typed boundary stays on the
+/// declaration; this leaf never guesses an accessor name).
+///
+/// `file_id` owns the activating import — the activation profile carries the
+/// import's source interval but not its file, and the parent relationship is
+/// anchored in that file.
+///
+/// Every minted fact carries the activation's source generation plus
+/// invalidation dependencies over the owning source file and the `Mojo::Base`
+/// module, so an accessor, import, or module edit invalidates the dependent
+/// projections in the current generation.
+#[must_use]
+pub fn mojo_base_object_facts(
+    detection: &AdapterDetectionResult,
+    activation: &MojoBaseActivationFacts,
+    file_id: FileId,
+    package: Option<&str>,
+    declarations: &[MojoBaseAttributeDeclaration],
+) -> MojoBaseObjectFacts {
+    let mut facts = MojoBaseObjectFacts::default();
+    if !detection.is_detected() || !activation.is_exact() {
+        return facts;
+    }
+    let generation = &activation.source_generation;
+
+    for declaration in declarations {
+        if declaration.package.as_deref() != package {
+            continue;
+        }
+        // Only a literal spelling names a method. A computed or malformed
+        // name keeps its typed boundary on the declaration and mints nothing:
+        // a guessed accessor name would be a fabricated member.
+        let Some(name) = declaration.name.literal() else {
+            continue;
+        };
+        let Some(owning_package) = package else {
+            // An activation without an owning package cannot own a member:
+            // the generated-member payload requires a real package identity.
+            continue;
+        };
+        facts.members.push(mint_member_fact(declaration, name, owning_package, generation));
+        facts.reader_results.push(mint_reader_fact(declaration, owning_package, generation));
+        facts.setter_results.push(mint_setter_fact(declaration, owning_package, generation));
+    }
+
+    if let Some(parent) = activation_parent(activation) {
+        facts.parents.push(mint_parent_fact(activation, file_id, package, parent, generation));
+    }
+    facts
+}
+
+/// Parent package established by an exact activation.
+///
+/// `use Mojo::Base -base;` makes the caller inherit from `Mojo::Base` itself;
+/// `use Mojo::Base 'Parent';` inherits from the literal spelling. Every other
+/// outcome — including a dynamic or unmodeled parent — establishes no
+/// relationship.
+fn activation_parent(activation: &MojoBaseActivationFacts) -> Option<&str> {
+    match &activation.outcome {
+        MojoBaseActivationOutcome::ExactBaseActivation => Some(MOJO_BASE_FRAMEWORK_NAME),
+        MojoBaseActivationOutcome::ExactLiteralParentActivation { parent } => Some(parent.as_str()),
+        _ => None,
+    }
+}
+
+/// Invalidation dependencies shared by every fact of one activation: the
+/// owning source file and the activating `Mojo::Base` module.
+fn dependencies(file_id: FileId, generation: &SourceGeneration) -> Vec<InvalidationDependency> {
+    vec![
+        InvalidationDependency::new(format!("file:{}", file_id.0), generation.clone()),
+        InvalidationDependency::new(
+            format!("module:{MOJO_BASE_FRAMEWORK_NAME}"),
+            generation.clone(),
+        ),
+    ]
+}
+
+/// Build the canonical envelope for one minted source-backed-generated fact.
+///
+/// Producer `FrameworkAdapter` with `FrameworkSynthesis` / `Medium` and the
+/// `GeneratedFromSource` reason: a generated accessor is source-backed by its
+/// `has` generator, but it is never explicit source. This deliberately does
+/// not reuse the route family's exact-source envelope.
+fn generated_envelope(
+    kind: SemanticFactKind,
+    fact_id: FactId,
+    entity_id: EntityId,
+    package: &str,
+    anchor: SourceAnchor,
+    generation: &SourceGeneration,
+    file_id: FileId,
+    boundary: Option<BoundaryLink>,
+) -> SemanticFactEnvelope {
+    SemanticFactEnvelope::new(
+        fact_id,
+        Some(entity_id),
+        kind,
+        anchor,
+        generation.clone(),
+        None,
+        Some(package.to_string()),
+        LifecyclePhase::Runtime,
+        SemanticProducer::FrameworkAdapter,
+        SemanticProvenance::Known(Provenance::FrameworkSynthesis),
+        SemanticConfidence::Known(Confidence::Medium),
+        SemanticFreshness::Fresh,
+        boundary,
+        dependencies(file_id, generation),
+        SemanticReasonCode::GeneratedFromSource,
+    )
+}
+
+fn mint_member_fact(
+    declaration: &MojoBaseAttributeDeclaration,
+    name: &str,
+    package: &str,
+    generation: &SourceGeneration,
+) -> MojoBaseGeneratedMemberFact {
+    let (fact_id, entity_id) = mojo_base_member_identity(
+        declaration.file_id,
+        declaration.declaration_index,
+        declaration.name_index,
+        generation,
+    );
+    // The generator anchor is the real `has` statement: a generated member has
+    // no body of its own, so it never receives a fabricated source interval.
+    let source_anchor_id = declaration
+        .declaration_anchor
+        .anchor_id
+        .unwrap_or(AnchorId(u64::from(declaration.declaration_anchor.start_byte)));
+    // A same-named explicit `sub` retains stronger source identity; the
+    // generated member is still minted so the collision stays visible as
+    // conflict evidence rather than silently disappearing.
+    let boundary = match declaration.explicit_method {
+        MojoBaseExplicitMethodState::None => None,
+        MojoBaseExplicitMethodState::Collides => Some(BoundaryLink::new(
+            None,
+            BoundaryKind::Compatibility,
+            BoundaryDisposition::Degrade,
+            SemanticReasonCode::CompatibilityBoundary,
+        )),
+    };
+    MojoBaseGeneratedMemberFact {
+        envelope: generated_envelope(
+            SemanticFactKind::Declaration,
+            fact_id,
+            entity_id,
+            package,
+            declaration.declaration_anchor,
+            generation,
+            declaration.file_id,
+            boundary,
+        ),
+        member: GeneratedMember::new(
+            entity_id,
+            name.to_string(),
+            // Every `Mojo::Base` accessor is read-write: one method both
+            // reads and writes the attribute.
+            GeneratedMemberKind::Accessor,
+            source_anchor_id,
+            package.to_string(),
+            Provenance::FrameworkSynthesis,
+            Confidence::Medium,
+        ),
+        explicit_method: declaration.explicit_method,
+    }
+}
+
+/// Reader-result relation implied by the declaration's default evidence.
+///
+/// Only a source-literal constant default proves a value shape, and it proves
+/// it for the *default* alone: a writable accessor can store any value, so the
+/// relation is never a complete exit denominator. Every other default form
+/// leaves the read result unknown.
+fn reader_relation(
+    default: &MojoBaseAttributeDefault,
+) -> (CallableResultRelation, Vec<CallableResultLimitation>) {
+    match default {
+        MojoBaseAttributeDefault::Constant => (
+            CallableResultRelation::Concrete(ValueShape::Scalar),
+            vec![
+                CallableResultLimitation::GeneratedNoSource,
+                CallableResultLimitation::DynamicValue,
+            ],
+        ),
+        // A lazy builder's value is whatever its body returns; this leaf does
+        // not evaluate default expressions.
+        MojoBaseAttributeDefault::LazyBuilder | MojoBaseAttributeDefault::Absent => (
+            CallableResultRelation::Unknown,
+            vec![
+                CallableResultLimitation::GeneratedNoSource,
+                CallableResultLimitation::DynamicValue,
+            ],
+        ),
+        MojoBaseAttributeDefault::Dynamic { .. } => (
+            CallableResultRelation::Unknown,
+            vec![
+                CallableResultLimitation::GeneratedNoSource,
+                CallableResultLimitation::DynamicValue,
+            ],
+        ),
+        MojoBaseAttributeDefault::Unsupported { .. } => (
+            CallableResultRelation::Unknown,
+            vec![
+                CallableResultLimitation::GeneratedNoSource,
+                CallableResultLimitation::Unsupported,
+            ],
+        ),
+    }
+}
+
+fn mint_reader_fact(
+    declaration: &MojoBaseAttributeDeclaration,
+    package: &str,
+    generation: &SourceGeneration,
+) -> CallableResultFact {
+    let (fact_id, entity_id) = mojo_base_reader_identity(
+        declaration.file_id,
+        declaration.declaration_index,
+        declaration.name_index,
+        generation,
+    );
+    let (relation, limitations) = reader_relation(&declaration.default);
+    CallableResultFact::new(
+        generated_envelope(
+            SemanticFactKind::CallableResult,
+            fact_id,
+            entity_id,
+            package,
+            declaration.declaration_anchor,
+            generation,
+            declaration.file_id,
+            Some(BoundaryLink::new(
+                None,
+                BoundaryKind::Unsupported,
+                BoundaryDisposition::Degrade,
+                SemanticReasonCode::GeneratedFromSource,
+            )),
+        ),
+        relation,
+        // No exit contributor is fabricated: a generated accessor has a
+        // generator declaration anchor, not a real return statement.
+        Vec::new(),
+        CallableResultCompleteness::Partial,
+        limitations,
+    )
+}
+
+fn mint_setter_fact(
+    declaration: &MojoBaseAttributeDeclaration,
+    package: &str,
+    generation: &SourceGeneration,
+) -> CallableResultFact {
+    let (fact_id, entity_id) = mojo_base_setter_identity(
+        declaration.file_id,
+        declaration.declaration_index,
+        declaration.name_index,
+        generation,
+    );
+    CallableResultFact::new(
+        generated_envelope(
+            SemanticFactKind::CallableResult,
+            fact_id,
+            entity_id,
+            package,
+            declaration.declaration_anchor,
+            generation,
+            declaration.file_id,
+            Some(BoundaryLink::new(
+                None,
+                BoundaryKind::Unsupported,
+                BoundaryDisposition::Degrade,
+                SemanticReasonCode::GeneratedFromSource,
+            )),
+        ),
+        // The framework contract is determinate regardless of default-value
+        // uncertainty: a write returns the invocant. The relation stays
+        // symbolic so no concrete package is hard-coded here.
+        CallableResultRelation::ReceiverSelf,
+        // Same rule as the reader: no fabricated exit contributor.
+        Vec::new(),
+        // Mojo::Base generates exactly one write exit, so the alternative set
+        // is complete even though it is not source-anchored.
+        CallableResultCompleteness::Complete,
+        vec![CallableResultLimitation::GeneratedNoSource],
+    )
+}
+
+fn mint_parent_fact(
+    activation: &MojoBaseActivationFacts,
+    file_id: FileId,
+    package: Option<&str>,
+    parent: &str,
+    generation: &SourceGeneration,
+) -> MojoBaseParentFact {
+    let (import_start, import_end) = activation.source_interval;
+    // The literal parent's own range when the site located it, otherwise the
+    // activating import statement. A range is never fabricated.
+    let (anchor_start, anchor_end) = activation.parent_range.unwrap_or((import_start, import_end));
+    let (fact_id, entity_id) = mojo_base_parent_identity(file_id, import_start, generation);
+    let anchor = SourceAnchor::new(
+        Some(AnchorId(u64::from(anchor_start))),
+        file_id,
+        anchor_start,
+        anchor_end,
+    );
+    let from_package = package.unwrap_or("main").to_string();
+    MojoBaseParentFact {
+        envelope: SemanticFactEnvelope::new(
+            fact_id,
+            Some(entity_id),
+            SemanticFactKind::Declaration,
+            anchor,
+            generation.clone(),
+            None,
+            Some(from_package.clone()),
+            LifecyclePhase::Runtime,
+            SemanticProducer::FrameworkAdapter,
+            // Unlike a generated accessor, the parent relationship is written
+            // literally in source by the activating import: `use Mojo::Base
+            // 'Parent'` sets `@ISA` to that exact spelling.
+            SemanticProvenance::Known(Provenance::ExactAst),
+            SemanticConfidence::Known(Confidence::High),
+            SemanticFreshness::Fresh,
+            None,
+            dependencies(file_id, generation),
+            SemanticReasonCode::ExactSource,
+        ),
+        edge: PackageEdge::new(
+            from_package,
+            parent.to_string(),
+            PackageEdgeKind::Inherits,
+            Some(AnchorId(u64::from(anchor_start))),
+            Provenance::ExactAst,
+            Confidence::High,
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::envelope::SemanticFactStatus;
+
+    fn anchor(start: u32, end: u32) -> SourceAnchor {
+        SourceAnchor::new(Some(AnchorId(u64::from(start))), FileId(1), start, end)
+    }
+
+    fn declaration(
+        index: u32,
+        name: &str,
+        default: MojoBaseAttributeDefault,
+    ) -> MojoBaseAttributeDeclaration {
+        MojoBaseAttributeDeclaration {
+            declaration_index: index,
+            name_index: 0,
+            file_id: FileId(1),
+            package: Some("App".to_string()),
+            declaration_anchor: anchor(10 * index, 10 * index + 9),
+            name_anchor: anchor(10 * index + 4, 10 * index + 8),
+            name: MojoBaseAttributeName::Literal(name.to_string()),
+            default,
+            explicit_method: MojoBaseExplicitMethodState::None,
+        }
+    }
+
+    fn exact_activation(outcome: MojoBaseActivationOutcome) -> MojoBaseActivationFacts {
+        MojoBaseActivationFacts {
+            outcome,
+            profile_version: crate::framework_adapters::mojo_base::MOJO_BASE_PROFILE_VERSION,
+            package: Some("App".to_string()),
+            source_interval: (13, 33),
+            parent_range: None,
+            scope_identity: None,
+            environment_identity: None,
+            resolved_module: None,
+            framework_version: "9.34".to_string(),
+            confidence: Confidence::High,
+            source_generation: SourceGeneration::known("gen-1"),
+            signatures: false,
+            unmodeled_options: Vec::new(),
+            limitations: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn reader_and_setter_relations_are_semantically_distinct() {
+        let activation = exact_activation(MojoBaseActivationOutcome::ExactBaseActivation);
+        let declarations = [declaration(1, "name", MojoBaseAttributeDefault::Constant)];
+        let facts = mint_with_detection(&activation, &declarations);
+        assert_eq!(facts.members.len(), 1);
+        assert_eq!(facts.reader_results.len(), 1);
+        assert_eq!(facts.setter_results.len(), 1);
+        assert_eq!(facts.setter_results[0].relation, CallableResultRelation::ReceiverSelf);
+        assert_eq!(
+            facts.reader_results[0].relation,
+            CallableResultRelation::Concrete(ValueShape::Scalar)
+        );
+        assert_ne!(
+            facts.reader_results[0].envelope.fact_id, facts.setter_results[0].envelope.fact_id,
+            "reader and setter must be two distinct facts"
+        );
+        assert_eq!(
+            facts.reader_results[0].envelope.entity_id, facts.setter_results[0].envelope.entity_id,
+            "both relations describe one accessor entity"
+        );
+    }
+
+    #[test]
+    fn generated_facts_never_claim_exact_source_or_fabricate_an_exit() {
+        let activation = exact_activation(MojoBaseActivationOutcome::ExactBaseActivation);
+        let declarations = [declaration(1, "name", MojoBaseAttributeDefault::Constant)];
+        let facts = mint_with_detection(&activation, &declarations);
+        let member = &facts.members[0];
+        assert_eq!(member.member.provenance, Provenance::FrameworkSynthesis);
+        assert_eq!(member.member.confidence, Confidence::Medium);
+        assert_eq!(member.envelope.reason_code, SemanticReasonCode::GeneratedFromSource);
+        assert_ne!(member.envelope.status(), SemanticFactStatus::Exact);
+        for fact in facts.reader_results.iter().chain(facts.setter_results.iter()) {
+            assert!(fact.exit_anchors().is_empty(), "no exit contributor may be fabricated");
+            assert!(
+                fact.limitations().contains(&CallableResultLimitation::GeneratedNoSource),
+                "a generated accessor has no source body"
+            );
+            assert_ne!(fact.status(), SemanticFactStatus::Exact);
+        }
+    }
+
+    #[test]
+    fn member_anchors_the_real_has_declaration() {
+        let activation = exact_activation(MojoBaseActivationOutcome::ExactBaseActivation);
+        let declarations = [declaration(2, "host", MojoBaseAttributeDefault::Absent)];
+        let facts = mint_with_detection(&activation, &declarations);
+        assert_eq!(facts.members[0].member.source_anchor_id, AnchorId(20));
+        assert_eq!(facts.members[0].envelope.anchor.start_byte, 20);
+    }
+
+    #[test]
+    fn base_activation_inherits_from_mojo_base_and_literal_parent_from_its_spelling() {
+        let base = exact_activation(MojoBaseActivationOutcome::ExactBaseActivation);
+        let facts = mint_with_detection(&base, &[]);
+        assert_eq!(facts.parents.len(), 1);
+        assert_eq!(facts.parents[0].edge.to_package, "Mojo::Base");
+        assert_eq!(facts.parents[0].edge.kind, PackageEdgeKind::Inherits);
+
+        let literal = exact_activation(MojoBaseActivationOutcome::ExactLiteralParentActivation {
+            parent: "Mojo::EventEmitter".to_string(),
+        });
+        let facts = mint_with_detection(&literal, &[]);
+        assert_eq!(facts.parents[0].edge.to_package, "Mojo::EventEmitter");
+        assert_eq!(facts.parents[0].edge.from_package, "App");
+        assert_eq!(facts.parents[0].edge.provenance, Provenance::ExactAst);
+    }
+
+    #[test]
+    fn a_computed_name_mints_no_member() {
+        let activation = exact_activation(MojoBaseActivationOutcome::ExactBaseActivation);
+        let mut dynamic = declaration(1, "ignored", MojoBaseAttributeDefault::Absent);
+        dynamic.name =
+            MojoBaseAttributeName::Dynamic { reason: "computed name expression".to_string() };
+        let facts = mint_with_detection(&activation, &[dynamic]);
+        assert!(facts.members.is_empty(), "a guessed accessor name is never minted");
+        assert!(facts.reader_results.is_empty());
+        assert!(facts.setter_results.is_empty());
+    }
+
+    #[test]
+    fn declarations_of_another_package_are_skipped() {
+        let activation = exact_activation(MojoBaseActivationOutcome::ExactBaseActivation);
+        let mut foreign = declaration(1, "name", MojoBaseAttributeDefault::Absent);
+        foreign.package = Some("Other".to_string());
+        let facts = mint_with_detection(&activation, &[foreign]);
+        assert!(facts.members.is_empty());
+    }
+
+    #[test]
+    fn an_explicit_same_named_method_degrades_the_generated_member() {
+        let activation = exact_activation(MojoBaseActivationOutcome::ExactBaseActivation);
+        let mut colliding = declaration(1, "name", MojoBaseAttributeDefault::Absent);
+        colliding.explicit_method = MojoBaseExplicitMethodState::Collides;
+        let facts = mint_with_detection(&activation, &[colliding]);
+        assert_eq!(facts.members[0].explicit_method, MojoBaseExplicitMethodState::Collides);
+        let boundary = facts.members[0].envelope.boundary.as_ref();
+        assert!(boundary.is_some(), "the collision must remain visible as conflict evidence");
+    }
+
+    #[test]
+    fn identities_are_deterministic_and_generation_scoped() {
+        let first = mojo_base_member_identity(FileId(1), 3, 0, &SourceGeneration::known("gen-1"));
+        let repeat = mojo_base_member_identity(FileId(1), 3, 0, &SourceGeneration::known("gen-1"));
+        let newer = mojo_base_member_identity(FileId(1), 3, 0, &SourceGeneration::known("gen-2"));
+        let sibling = mojo_base_member_identity(FileId(1), 3, 1, &SourceGeneration::known("gen-1"));
+        assert_eq!(first, repeat, "identity must be deterministic");
+        assert_ne!(first, newer, "a new generation must mint a new identity");
+        assert_ne!(first, sibling, "names of one statement must not collide");
+    }
+
+    /// Run the real Mojo::Base detection path, then mint over its result, so
+    /// the gating in these tests is the production gate rather than a stub.
+    fn mint_with_detection(
+        activation: &MojoBaseActivationFacts,
+        declarations: &[MojoBaseAttributeDeclaration],
+    ) -> MojoBaseObjectFacts {
+        mojo_base_object_facts(
+            &detected_result("9.34", "gen-1"),
+            activation,
+            FileId(1),
+            activation.package.as_deref(),
+            declarations,
+        )
+    }
+
+    fn detected_result(version: &str, generation: &str) -> AdapterDetectionResult {
+        use crate::framework::{
+            AdapterCancellation, AdapterDetectionInput, DetectionEvidenceClass,
+            ModuleActivationIdentity, ModuleObservationReceipt, ModuleSelectorEvaluation,
+            ModuleSelectorOutcome, ModuleVersionEvidence,
+        };
+        use crate::framework_adapters::mojo_base::{detect_mojo_base, mojo_base_descriptor};
+
+        let activation = ModuleActivationIdentity::new(
+            MOJO_BASE_FRAMEWORK_NAME,
+            Some(FileId(7)),
+            SourceGeneration::known(generation),
+        )
+        .with_observed_version(ModuleVersionEvidence::new(
+            version,
+            SourceGeneration::known(generation),
+        ));
+        let evaluation = ModuleSelectorEvaluation::new(
+            MOJO_BASE_FRAMEWORK_NAME,
+            ModuleSelectorOutcome::Matched {
+                activation,
+                evidence_class: DetectionEvidenceClass::ResolvedModule,
+            },
+        );
+        detect_mojo_base(&AdapterDetectionInput::new(
+            mojo_base_descriptor(),
+            ModuleObservationReceipt::new(
+                "module-resolver.v1",
+                "root:fixture",
+                "project-environment.v1",
+                SourceGeneration::known(generation),
+                "sha256:fixture-input",
+                vec![evaluation],
+            ),
+            None,
+            AdapterCancellation::active(),
+        ))
+    }
+
+    #[test]
+    fn an_undetected_framework_mints_nothing() {
+        use crate::framework::{
+            AdapterCancellation, AdapterDetectionInput, ModuleObservationReceipt,
+        };
+        use crate::framework_adapters::mojo_base::{detect_mojo_base, mojo_base_descriptor};
+
+        // No module evaluation at all: the framework was never established, so
+        // an otherwise exact activation profile still mints no object fact.
+        let undetected = detect_mojo_base(&AdapterDetectionInput::new(
+            mojo_base_descriptor(),
+            ModuleObservationReceipt::new(
+                "module-resolver.v1",
+                "root:fixture",
+                "project-environment.v1",
+                SourceGeneration::known("gen-1"),
+                "sha256:fixture-input",
+                Vec::new(),
+            ),
+            None,
+            AdapterCancellation::active(),
+        ));
+        let activation = exact_activation(MojoBaseActivationOutcome::ExactBaseActivation);
+        let declarations = [declaration(1, "name", MojoBaseAttributeDefault::Constant)];
+        let facts =
+            mojo_base_object_facts(&undetected, &activation, FileId(1), Some("App"), &declarations);
+        assert!(facts.is_empty(), "detection must gate every object fact");
+    }
+
+    #[test]
+    fn a_non_exact_activation_mints_nothing() {
+        // The strongest negative control of #9682: `has` in a package whose
+        // activation is not exact is never accessor evidence.
+        let inexact = exact_activation(MojoBaseActivationOutcome::DynamicOrUnmodeledParent {
+            reason: "computed parent expression".to_string(),
+        });
+        let declarations = [declaration(1, "name", MojoBaseAttributeDefault::Constant)];
+        let facts = mint_with_detection(&inexact, &declarations);
+        assert!(facts.is_empty(), "a same-named `has` without exact activation emits no facts");
+    }
+}
