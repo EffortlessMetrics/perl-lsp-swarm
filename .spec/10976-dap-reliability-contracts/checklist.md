@@ -268,6 +268,10 @@ function Invoke-Structural-Laws($M) {
     if ($scItem['finding'] -isnot [string] -or -not $scItem['finding']) { throw "scope_correction $sci has empty finding" }
     $sci++
   }
+  # same failure mode as scope_corrections: the declared API shape is
+  # limitations[5], and dropping a declared uncertainty boundary must reject
+  # rather than leave the survivors vacuously valid
+  if (@($M['limitations']).Count -ne 5) { throw "limitations population drift: have $(@($M['limitations']).Count) want 5" }
   $li = 0
   foreach ($lim in $M['limitations']) { if ($lim -isnot [string] -or -not $lim) { throw "limitation $li not a non-empty string" }; $li++ }
   Invoke-Live-State-Law $M
@@ -276,6 +280,15 @@ Invoke-Structural-Laws $manifest
 
 # index_law entry 3: every authority-plane node stays authority-plane. Pinning
 # one issue left the other twelve free to be demoted without rejection.
+#
+# Derivation: the authority plane is exactly the nodes whose compiled role is
+# 'controller' or 'fan_in' at the reviewed head - 6 controllers (4973, 7278,
+# 8045, 8591, 8687, 8707) and 7 fan-ins (6684, 6688, 6991, 7206, 7310, 7343,
+# 9531). Five of those fan-ins (6991, 7206, 7310, 7343, 9531) are the
+# placement-only NOT_PROVEN nodes recorded in limitations: this law pins where
+# they sit in the role plane, and makes no claim that they carry compiled
+# authority summaries. Changing the plane is a semantic revision of the index
+# and moves this list together with the manifest.
 $authorityPlaneIssues = @(4973, 6684, 6688, 6991, 7206, 7278, 7310, 7343, 8045, 8591, 8687, 8707, 9531)
 function Invoke-Role-Law($M) {
   $seen = @{}

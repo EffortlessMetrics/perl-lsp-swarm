@@ -67,7 +67,7 @@ dap_reliability_contracts.v1
                       semantic_authority,disposition,disposition_basis,
                       hard_dependency_issues,covered_invariants,consumers}
   scope_corrections[3]            evidence-backed citation-range findings
-  limitations[3]                  honest NOT_PROVEN cells
+  limitations[5]                  honest NOT_PROVEN cells
 ```
 
 Future versions must classify semantic revision against #10976 and re-derive
