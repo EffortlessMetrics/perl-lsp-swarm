@@ -2402,6 +2402,13 @@ enum Commands {
         /// commit` (issue #3786).
         #[arg(long)]
         staged: bool,
+
+        /// Published `ci_route_plan.v1` (#10179) to consume and validate
+        /// before execution; when set, one normalized `routed_gate_result.v1`
+        /// (#9156) is emitted per executed planned `run` row under
+        /// target/receipts/routed-results/.
+        #[arg(long)]
+        route_plan: Option<PathBuf>,
     },
 
     /// Ergonomic alias for `gates --tier commit --staged` (issue #3786).
@@ -6411,6 +6418,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             parallel,
             verbose,
             staged,
+            route_plan,
         } => gates::run(gates::GateRunnerConfig {
             tier,
             gate_policy: Some(gate_policy),
@@ -6427,6 +6435,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             fail_fast,
             parallel,
             verbose,
+            route_plan_path: route_plan,
             staged,
         }),
         Commands::Precommit { format, receipt } => gates::run(gates::GateRunnerConfig {
