@@ -27,6 +27,28 @@ use std::process::Command;
 // Fixture construction
 // ---------------------------------------------------------------------------
 
+/// Git for fixture repositories, isolated the same way production is.
+///
+/// Two `#[serial]` controls below set `GIT_ALTERNATE_OBJECT_DIRECTORIES` and
+/// `GIT_CONFIG_GLOBAL` on the *process* to prove `run_git` refuses to inherit
+/// them. `#[serial]` orders those against each other only; unannotated tests
+/// keep running alongside, and a fixture `git commit` that inherited a
+/// concurrent test's alternates path failed with `invalid object … for
+/// 'seed.txt'` while `export_valid` saw `tree … is not present locally`.
+/// Every fixture spawn therefore clears Git's repository-local variables and
+/// neuters host configuration, exactly as `run_bounded` does.
+fn isolated_git() -> Command {
+    let mut command = Command::new("git");
+    for variable in super::git::GIT_LOCAL_ENV_VARS {
+        command.env_remove(variable);
+    }
+    command
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1");
+    command
+}
+
 /// A disposable Git repository with deterministic identity and dates.
 struct Fixture {
     root: tempfile::TempDir,
@@ -59,7 +81,7 @@ impl Fixture {
     }
 
     fn git(&self, arguments: &[&str]) -> Result<String> {
-        let output = Command::new("git")
+        let output = isolated_git()
             .args(arguments)
             .current_dir(self.path())
             .output()
@@ -98,7 +120,7 @@ impl Fixture {
         let stamp = self.clock.get();
         self.clock.set(stamp + 60);
         let date = format!("{stamp} +0000");
-        let output = Command::new("git")
+        let output = isolated_git()
             .args(["commit", "--quiet", "--allow-empty", "-m", message])
             .current_dir(self.path())
             .env("GIT_AUTHOR_DATE", &date)
@@ -842,11 +864,8 @@ fn identical_objects_in_two_workspaces_produce_one_identity() -> Result<()> {
     // is the ordinary cross-host difference.
     let clone_root = tempfile::TempDir::new()?;
     let clone_path = clone_root.path().join("clone");
-    let status = Command::new("git")
-        .args(["clone", "--quiet"])
-        .arg(fixture.path())
-        .arg(&clone_path)
-        .status()?;
+    let status =
+        isolated_git().args(["clone", "--quiet"]).arg(fixture.path()).arg(&clone_path).status()?;
     assert!(status.success(), "cloning the fixture");
 
     let first_destination = Destination::new()?;
@@ -858,7 +877,7 @@ fn identical_objects_in_two_workspaces_produce_one_identity() -> Result<()> {
     // input, so an observed identity and a declared one are legitimately
     // different candidates to this format. Holding both equal is what lets
     // this control compare the whole semantic identity rather than a subset.
-    let status = Command::new("git")
+    let status = isolated_git()
         .args(["remote", "set-url", "origin", "https://github.com/example/repo.git"])
         .current_dir(&clone_path)
         .status()?;
@@ -1831,7 +1850,7 @@ fn the_manifest_message_equals_the_raw_commit_body() -> Result<()> {
         let destination = Destination::new()?;
         let manifest = export_valid(&fixture, &destination)?;
 
-        let raw = Command::new("git")
+        let raw = isolated_git()
             .args(["cat-file", "commit", &commit])
             .current_dir(fixture.path())
             .output()?;
@@ -2073,8 +2092,9 @@ fn an_alternate_object_directory_cannot_satisfy_a_missing_object() -> Result<()>
     // `#[serial]` serialises this against the module's other environment-
     // mutating control. It does *not* stop unannotated tests running
     // concurrently, so it is not what makes this safe for them: every
-    // `run_git` invocation now clears or overrides these variables on the
-    // child explicitly, so a concurrent test cannot observe this one's value.
+    // `run_git` invocation and every fixture spawn (`isolated_git`) clears or
+    // overrides these variables on the child explicitly, so a concurrent test
+    // cannot observe this one's value.
     // SAFETY: restored immediately below; see above for why concurrent tests
     // are unaffected.
     let objects = fixture.path().join(".git").join("objects");
@@ -3314,8 +3334,8 @@ fn global_git_configuration_cannot_complete_an_incomplete_envelope() -> Result<(
 
     // SAFETY: restored immediately below. `#[serial]` orders this against the
     // module's other environment-mutating control; unannotated tests are
-    // unaffected because production sets this variable on every child
-    // explicitly rather than inheriting it.
+    // unaffected because production and the fixtures (`isolated_git`) set this
+    // variable on every child explicitly rather than inheriting it.
     unsafe { std::env::set_var("GIT_CONFIG_GLOBAL", &config) };
     let report = check_handoff(&destination.envelope());
     unsafe { std::env::remove_var("GIT_CONFIG_GLOBAL") };
