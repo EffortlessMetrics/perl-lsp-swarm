@@ -26,6 +26,7 @@ use crate::{
 use perl_lexer::LSP_RUNTIME_COMPLETION_KEYWORDS;
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_lsp_rs_core::providers::completion::completion_shadow::completion_visibility_shadow;
+use perl_lsp_rs_core::providers::dancer2::Dancer2CompletionCandidate;
 use perl_module::{IncRoot, IncRootKind};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -71,6 +72,23 @@ static COMPLETION_ANALYSIS_STARTED_OBSERVER: std::sync::Mutex<
 // `COMPLETION_ANALYSIS_STARTED_OBSERVER`, which only `pub(crate)` in-crate test
 // code can reach), so under a plain `expose_lsp_test_api`-only build (no
 // `cfg(test)`) this would otherwise be genuinely unused (clippy::dead_code).
+
+/// Documentation string for one Dancer2 keyword completion item.
+///
+/// Availability is read from the candidate, which phrased it from the position
+/// that offered the keyword. It must not be re-derived from
+/// [`Dancer2CompletionCandidate::scope`]: that discriminant records the
+/// reviewed *contract* scope, and since #13604 `RouteHandlerOnly` is satisfied
+/// by an admitted hook handler as well as a route handler. Matching on it here
+/// said "route handler only" on the very item the canonical request-context
+/// query had just decided to offer *because* the position was a hook,
+/// contradicting the item's own `detail`.
+///
+/// Named rather than inlined so that agreement is testable without standing up
+/// an activated workspace.
+fn dancer2_keyword_documentation(candidate: &Dancer2CompletionCandidate) -> String {
+    format!("Dancer2 DSL keyword ({}); canonical import fact", candidate.availability)
+}
 
 /// Word prefix for the Dancer2 keyword gate (mirrors the core provider's
 /// `word_prefix` shape; kept local to avoid widening the core API).
@@ -981,16 +999,7 @@ impl LspServer {
                 label: Cow::Owned(candidate.label.clone()),
                 kind: crate::completion::CompletionItemKind::Keyword,
                 detail: Some(Cow::Owned(candidate.detail.clone())),
-                documentation: Some(Cow::Owned(format!(
-                    "Dancer2 DSL keyword ({}); canonical import fact",
-                    match candidate.scope {
-                        perl_semantic_facts::framework_adapters::dancer2::DslKeywordScope::Global =>
-                            "global",
-                        perl_semantic_facts::framework_adapters::dancer2::DslKeywordScope::RouteHandlerOnly =>
-                            "route handler only",
-                        _ => "unknown",
-                    }
-                ))),
+                documentation: Some(Cow::Owned(dancer2_keyword_documentation(&candidate))),
                 insert_text: None,
                 insert_text_format: crate::completion::InsertTextFormat::PlainText,
                 // Keywords sort after every ordinary result: the framework
@@ -2529,6 +2538,73 @@ mod tests {
     )]
 
     use super::*;
+
+    /// Render the documentation the runtime would show for `keyword` at the
+    /// byte offset of `needle`, using a candidate the *provider* actually
+    /// built. Constructing one by hand here would assert only that a
+    /// formatter interpolates its argument; going through the provider is
+    /// what makes the scope/availability divergence real.
+    fn rendered_documentation(source: &'static str, needle: &str, keyword: &str) -> String {
+        use perl_lsp_rs_core::providers::dancer2::{
+            RuntimeDancer2Module, canonical_file_facts, file_activations,
+            keyword_completion_candidates,
+        };
+        use perl_semantic_facts::{FileId, SourceGeneration};
+
+        let mut parser = perl_parser_core::Parser::new(source);
+        let ast = parser.parse().expect("fixture must parse");
+        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
+        let activations =
+            file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("g1"));
+        let facts = canonical_file_facts(&ast, FileId(1), &activations);
+        let offset = source.find(needle).expect("fixture offset");
+        let candidates =
+            keyword_completion_candidates(&activations, &facts, "main", offset, &|_| false);
+        let candidate = candidates
+            .into_iter()
+            .find(|candidate| candidate.label == keyword)
+            .expect("keyword offered at this position");
+        dancer2_keyword_documentation(&candidate)
+    }
+
+    /// The rendered documentation must not contradict the position that
+    /// offered the keyword. This is the discriminating case: the reviewed
+    /// contract scope on this candidate is still `RouteHandlerOnly` while the
+    /// position is an admitted hook, so a renderer that matches on the
+    /// discriminant produces "route handler only" here and disagrees with the
+    /// item's own `detail` (#13604).
+    #[test]
+    fn keyword_documentation_follows_availability_not_the_scope_discriminant() {
+        let documentation = rendered_documentation(
+            "use Dancer2;\nhook before => sub { my $r = request; };\n",
+            "request;",
+            "request",
+        );
+        assert!(
+            !documentation.contains("route handler only"),
+            "documentation contradicts the offering position: {documentation}"
+        );
+        assert!(
+            documentation.contains("hook handler"),
+            "documentation should name the hook position: {documentation}"
+        );
+    }
+
+    /// Not a blanket rename: inside a route handler the documentation still
+    /// says route, so the wording tracks the owning context rather than
+    /// having become a constant that merely avoids the failing substring.
+    #[test]
+    fn keyword_documentation_still_names_a_route_handler() {
+        let documentation = rendered_documentation(
+            "use Dancer2;\nget '/x' => sub { my $p = params; };\n",
+            "params;",
+            "params",
+        );
+        assert!(
+            documentation.contains("route handler"),
+            "documentation should name the route position: {documentation}"
+        );
+    }
 
     fn explain_provider_decision(
         server: &LspServer,
