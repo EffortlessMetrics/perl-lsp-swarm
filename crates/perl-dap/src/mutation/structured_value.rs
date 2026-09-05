@@ -455,8 +455,13 @@ impl<'a> Parser<'a> {
     /// the decoded scalar and the consumed byte count (`6`, or `12` for an
     /// exact surrogate pair). Strict JSON: every non-surrogate unit must be a
     /// valid scalar, a lone low surrogate refuses, and a high surrogate must be
-    /// followed by an adjacent `\uDC00..=DFFF` continuation. Every failure
-    /// reports the offset of the offending escape's backslash.
+    /// followed by an adjacent `\uDC00..=DFFF` continuation.
+    ///
+    /// Refusal offsets are payload-relative and name the escape that is
+    /// actually malformed: a bad or truncated *continuation* `hex4` reports the
+    /// continuation backslash (`backslash + 6`), while a continuation that is
+    /// well-formed hex but not a low surrogate is a defect of the pair, so it
+    /// reports the leading backslash.
     fn decode_unicode_escape(&self) -> Result<(char, usize), StructuredRefusal> {
         let backslash = self.pos;
         let refused_at = |offset: usize| StructuredRefusal::InvalidSyntax { offset };
