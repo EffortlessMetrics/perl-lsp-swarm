@@ -587,3 +587,34 @@ fn a_package_other_than_the_activating_one_mints_nothing() {
         "`App`'s activation cannot make `Other` inherit from Mojo::Base"
     );
 }
+
+#[test]
+fn an_early_phaser_declares_an_accessor_wherever_it_is_nested() {
+    // Verified against `perl` itself: BEGIN/UNITCHECK/CHECK/INIT are scheduled
+    // at compile time and run regardless of what lexically encloses them — a
+    // false conditional, a loop, a sub body, or an `END` block. The accessor
+    // therefore exists for the whole run and is a genuine class member.
+    //
+    // `END` nested inside `END` still runs at shutdown, so it stays excluded:
+    // the rule is the phaser's own schedule, not merely "a phaser encloses it".
+    let code = concat!(
+        "package App;\n",
+        "use Mojo::Base -base;\n",
+        "END { BEGIN { has 'begin_in_end'; } }\n",
+        "if (0) { BEGIN { has 'begin_under_false_cond'; } }\n",
+        "while (0) { INIT { has 'init_in_loop'; } }\n",
+        "sub helper { CHECK { has 'check_in_sub'; } }\n",
+        "END { END { has 'end_in_end'; } }\n",
+        "END { has 'plain_in_end'; }\n",
+        "if (0) { has 'plain_under_cond'; }\n",
+        "sub other { has 'plain_in_sub'; }\n",
+        "has 'always';\n",
+    );
+    let facts = only_facts(code);
+    assert_eq!(
+        member_names(&facts),
+        ["begin_in_end", "begin_under_false_cond", "init_in_loop", "check_in_sub", "always"],
+        "an early phaser mints wherever it is nested; a deferred or conditional \
+         position without one mints nothing"
+    );
+}

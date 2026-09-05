@@ -50,11 +50,25 @@
 //! Package scoping mirrors the #9681 activation walk: an unqualified file
 //! defaults to `main`, bare `package X;` switches the current package for
 //! following statements, and a lexical block restores the enclosing package
-//! state afterwards. Subroutine bodies are not descended: `Mojo::Base`
-//! attributes are declared at package level, and a `has` call inside a sub
-//! body runs at call time rather than declaring a class attribute. The same
-//! applies to runtime control flow in either spelling — a block form
-//! (`if (...) { has 'x'; }`) or a postfix modifier (`has 'x' if $flag;`).
+//! state afterwards.
+//!
+//! A declaration counts only where it runs exactly once, before the run phase.
+//! A `has` inside a subroutine body runs at call time; one under runtime
+//! control flow in either spelling — a block form (`if (...) { has 'x'; }`) or
+//! a postfix modifier (`has 'x' if $flag;`) — runs only when that construct
+//! does; one inside an `END` block runs at process shutdown, after the program
+//! the accessor would serve has finished. None of those declares a class
+//! attribute.
+//!
+//! Phase blocks are the exception to that containment, because Perl schedules
+//! them independently of their lexical position. Verified against `perl`
+//! itself: a `BEGIN` still runs when nested inside a false conditional, a loop,
+//! a subroutine body, or an `END` block, and the same holds for `UNITCHECK`,
+//! `CHECK` and `INIT`. All four complete before the run phase, so an accessor
+//! installed in one exists for the whole program wherever it is written. An
+//! early phaser therefore *replaces* the enclosing execution context rather
+//! than inheriting it; `END` nested in `END` still defers, since the rule is
+//! the phaser's own schedule rather than the mere presence of a phaser.
 //!
 //! The parser shapes three different trees for the reviewed forms, all
 //! handled here:
@@ -93,12 +107,15 @@ const HAS_KEYWORD: &str = "has";
 /// this function deliberately reports `has` calls it observed without
 /// claiming they generate anything.
 ///
-/// Only declarations that run unconditionally when the package is loaded are
-/// extracted. A `has` call inside a subroutine body, a conditional, a loop, or
-/// an `eval`/`try` block does not unconditionally declare a class attribute —
-/// it runs when (and if) that construct runs — so extracting it would claim an
-/// accessor exists on paths where the call never executes. A bare lexical
-/// block is not control flow and is still extracted.
+/// Only declarations that run exactly once, before the run phase, are
+/// extracted. A `has` call inside a subroutine body, a conditional, a loop, an
+/// `eval`/`try` block, or an `END` block does not declare a class attribute —
+/// it runs when (and if) that construct runs, or after the program has
+/// finished — so extracting it would claim an accessor exists on paths where
+/// the call never executes. A bare lexical block is not control flow and is
+/// still extracted, and an early phaser (`BEGIN`, `UNITCHECK`, `CHECK`,
+/// `INIT`) is extracted wherever it appears, because Perl runs it on schedule
+/// regardless of what encloses it.
 #[must_use]
 pub fn extract_mojo_base_attribute_declarations(
     ast: &Node,
@@ -112,6 +129,7 @@ pub fn extract_mojo_base_attribute_declarations(
         subroutines: &subroutines,
         next_declaration_index: 0,
         declarations: Vec::new(),
+        deferred: false,
     };
     // An unqualified file's caller package is `main` in Perl, matching the
     // #9681 activation walk.
@@ -126,6 +144,14 @@ struct WalkState<'a> {
     subroutines: &'a SubroutineTargetIndex,
     next_declaration_index: u32,
     declarations: Vec<MojoBaseAttributeDeclaration>,
+    /// Whether the current position runs later than, or less often than, the
+    /// package's own load.
+    ///
+    /// Set by a sub body, runtime control flow, or an `END` block; cleared
+    /// again by an early phaser, which Perl schedules independently of
+    /// whatever encloses it. A declaration counts as a class attribute only
+    /// while this is false.
+    deferred: bool,
 }
 
 /// Whether this node owns runtime control flow, so statements inside it do not
@@ -133,17 +159,12 @@ struct WalkState<'a> {
 ///
 /// A bare lexical block is deliberately absent: `{ has 'x'; }` at package level
 /// executes exactly once, like any other package statement.
+///
+/// Phase blocks are deliberately absent too. They are not conditional — they
+/// are *scheduled*, on a timetable independent of their lexical position — so
+/// [`WalkState::walk`] handles them separately rather than treating them as
+/// containment.
 fn owns_runtime_control_flow(node: &Node) -> bool {
-    if let NodeKind::PhaseBlock { phase, .. } = &node.kind {
-        // Phase blocks are separated by *when* they run, not by whether they
-        // run. `BEGIN`, `UNITCHECK`, `CHECK` and `INIT` all complete before the
-        // run phase, so an accessor installed there exists for the whole
-        // program and is an ordinary class member. `END` runs at process
-        // shutdown, after the program it would serve has finished — that
-        // accessor exists for no part of the run, so reporting it as a member
-        // would be an overclaim.
-        return phase == "END";
-    }
     matches!(
         node.kind,
         NodeKind::If { .. }
@@ -234,18 +255,43 @@ impl WalkState<'_> {
             NodeKind::Package { name, block: None, .. } => {
                 *current_package = Some(name.clone());
             }
+            // A phase block runs on its own schedule, which Perl fixes at
+            // compile time regardless of what lexically encloses it: verified
+            // against `perl`, a `BEGIN` still runs inside a false conditional,
+            // a loop, a sub body, and an `END` block. So a phaser *replaces*
+            // the surrounding execution context rather than inheriting it.
+            //
+            // `BEGIN`, `UNITCHECK`, `CHECK` and `INIT` all complete before the
+            // run phase, so an accessor installed in one exists for the whole
+            // program and is an ordinary class member — the context clears.
+            // `END` runs at process shutdown, after the program the accessor
+            // would serve has finished, so it exists for no part of the run
+            // and the context defers.
+            NodeKind::PhaseBlock { phase, .. } => {
+                self.walk_deferring(node, current_package, phase == "END");
+                return;
+            }
             // `Mojo::Base` attributes are declared at package level. A `has`
-            // call inside a sub body executes at call time and does not
-            // declare a class attribute, so sub bodies are not descended.
-            NodeKind::Subroutine { .. } => return,
-            // Same rule for runtime control flow: a `has` under a conditional,
-            // loop, or eval/try runs only when that construct runs, so it
-            // never unconditionally declares a class attribute.
-            _ if owns_runtime_control_flow(node) => return,
+            // call inside a sub body executes at call time and declares no
+            // class attribute; a `has` under a conditional, loop, or eval/try
+            // runs only when that construct runs. Both are descended anyway
+            // rather than skipped, because a phaser nested inside either one
+            // still runs on schedule and does declare an attribute.
+            NodeKind::Subroutine { .. } => {
+                self.walk_deferring(node, current_package, true);
+                return;
+            }
+            _ if owns_runtime_control_flow(node) => {
+                self.walk_deferring(node, current_package, true);
+                return;
+            }
             // A collected `has` statement is fully consumed here: descending
-            // into its operands would re-observe them as ordinary source.
+            // into its operands would re-observe them as ordinary source. In a
+            // deferred position nothing is collected, so the statement is left
+            // to ordinary descent — its operands are literals either way.
             NodeKind::ExpressionStatement { expression }
-                if self.collect_declaration(expression, current_package.as_deref()) =>
+                if !self.deferred
+                    && self.collect_declaration(expression, current_package.as_deref()) =>
             {
                 return;
             }
@@ -254,6 +300,22 @@ impl WalkState<'_> {
         for child in node.children() {
             self.walk(child, current_package);
         }
+    }
+
+    /// Walk `node`'s children with the deferred-execution flag set to
+    /// `deferred`, restoring the caller's value afterwards.
+    fn walk_deferring(
+        &mut self,
+        node: &Node,
+        current_package: &mut Option<String>,
+        deferred: bool,
+    ) {
+        let enclosing = self.deferred;
+        self.deferred = deferred;
+        for child in node.children() {
+            self.walk(child, current_package);
+        }
+        self.deferred = enclosing;
     }
 
     /// Collect one `has` declaration from a statement expression.
