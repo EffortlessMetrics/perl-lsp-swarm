@@ -47,6 +47,16 @@
 //! regresses by their absence — no route published them before either — but this
 //! module is not a complete drain of the retained analysis, and #14753 tracks it.
 //!
+//! # Mapped but currently unreachable
+//!
+//! [`DiagnosticCode::RegexModifierUnavailable`] (`PL1004`) and
+//! [`DiagnosticCode::RegexCaptureUnavailable`] (`PL1006`) are mapped here and
+//! cannot fire, for a reason outside this module: `profile_at` in the parser's
+//! retention builds every record's profile with a `None` Perl version, so each
+//! version requirement resolves `Unknown` and the analyzer publishes no finding.
+//! They are kept mapped so the projection is complete the moment #14754 supplies
+//! the version — not because they are exercised today.
+//!
 //! # Publication policy
 //!
 //! - Severity is never decided here. It comes from the catalog
