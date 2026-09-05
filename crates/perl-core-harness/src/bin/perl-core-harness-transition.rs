@@ -1606,6 +1606,7 @@ mod classify_io_observer {
             },
             buckets: BTreeMap::new(),
             file_results: vec![perl_core_harness_types::RunFileResult {
+                mechanism: None,
                 path: "base/0.t".into(),
                 status: perl_core_harness_types::RunnerStatus::Pass,
                 assertions_passed: 1,
@@ -1780,6 +1781,7 @@ mod classify_io_observer {
             buckets: BTreeMap::new(),
             expected_failures: Vec::new(),
             file_results: vec![perl_core_harness_types::RunFileResult {
+                mechanism: None,
                 path: "base/0.t".into(),
                 status: perl_core_harness_types::RunnerStatus::Pass,
                 assertions_passed: 1,

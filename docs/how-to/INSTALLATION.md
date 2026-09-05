@@ -106,9 +106,45 @@ mismatched checksum evidence fails closed.
 That is an artifact-integrity control, not independent publisher provenance:
 the archive and checksum manifest are still co-hosted by the release. The
 PowerShell installer also retains its separate fail-open checksum boundary.
-Safe archive inspection, target/member identity, complete server/DAP pair
-verification, atomic promotion, and rollback preservation remain open under
-[#6097](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/6097).
+Safe archive inspection for first-party standalone installers landed in
+[#8352](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8352).
+
+POSIX inspection classifies each archive entry from its ustar header fields
+rather than from `tar -t` / `tar -tv` output, so entry names and types do not
+depend on which `tar` the host provides. That closes a divergence where BusyBox
+tar reported a hardlink as a regular file and stripped `/` and `../` from the
+names it printed, admitting members that GNU tar and bsdtar rejected
+([#11508](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11508)).
+POSIX release-download mode therefore requires `od` alongside `tar` and `gzip`;
+all three are present on the supported Linux and macOS hosts. Archives carrying
+PAX (`x`/`g`) or GNU long-name (`L`/`K`) extended records fail closed, because
+such a record can rewrite the path of the entry that follows it. The published
+release archives do not use them: they are built with `tar czf` on the GNU and
+macOS runners, and libarchive's restricted-pax default emits no extended record
+for their short ASCII names and small metadata. Two further refusals come from
+the same header walk. Bytes after the archive's own end-of-archive marker are
+refused rather than ignored, because tar implementations disagree about whether
+a lone zero block ends the archive — BusyBox tar reads past it — so a member
+placed after that marker would be invisible to a reader that stops there and
+still be extracted by one that does not. Stored names are also restricted to
+printable ASCII excluding backslash; backslash is refused even though it is
+printable because a rejected name is echoed into a diagnostic that renders
+backslash escapes, so admitting it would let an archive forge installer output.
+The archive-safety receipt records the resolved extractor profile (`gnu`,
+`libarchive`, `busybox`, or `unknown`) so an install report names the tar it
+ran under.
+Those installers now promote a verified `perllsp` + `perl-dap` product unit as
+one current selection
+([#8359](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8359)):
+readers observe the previous complete unit or the new complete unit, never a
+mixed or partial pair. POSIX local promotion tests and the GitHub-hosted
+PowerShell checksum, archive safety, and product-unit promotion job both prove
+the clone-local installer path. Publisher provenance, health-driven rollback, PATH
+persistence, and hosted install-transition proof remain separate under
+[#6097](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/6097),
+[#7832](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7832),
+[#5903](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5903), and
+[#10746](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/10746).
 Use the manual archive with independently reviewed checksum or attestation
 evidence for release-sensitive installation until those remaining boundaries
 land.
@@ -150,15 +186,23 @@ zip, require exactly one lowercase SHA-256 row for the exact selected asset,
 and verify the downloaded archive before extraction. Missing, duplicate,
 malformed, or mismatched checksum evidence fails closed. This proves archive
 integrity against the co-hosted manifest; it does not independently prove
-publisher provenance, safe archive members, atomic replacement, or rollback.
+publisher provenance, health-driven rollback, or PATH persistence. Clone-local
+`install.ps1` promotes `perllsp.exe` and `perl-dap.exe` as one product unit
+through an immutable candidate directory and an atomic current pointer.
+Windows uses a file `current` pointer replaced with `MoveFileEx` and PATH-visible
+`perllsp.cmd` / `perl-dap.cmd` shims that follow that pointer, so unelevated
+accounts never need a privileged file symlink and never publish independent
+PATH copies. Clone-local PowerShell product-unit promotion is proven by the
+hosted Windows installer-powershell-checksum-contract job on
+[#12815](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/12815).
+POSIX PATH names remain relative links into `.perl-lsp/current`.
 The script installs into `%USERPROFILE%\.local\bin` by default.
 
 Two further limits apply to the script even after that sync:
 
-- The script installs `perllsp.exe` only. It does not install the `perl-dap.exe`
-  debug adapter, unlike the POSIX installer. Take `perl-dap.exe` from the
-  release zip if you need the debugger
-  ([#5036](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/5036)).
+- Health confirmation, whole-unit rollback after a failed startup, and PATH
+  persistence remain separate claims. This installer does not import the
+  managed VS Code cache session or GC model.
 - Only `x86_64-pc-windows-msvc` is built by the release workflow, so there is
   no native ARM64 Windows binary. The script installs the x64 build on ARM64,
   which runs under the x64 emulation in Windows 11 on ARM. Windows 10 on ARM

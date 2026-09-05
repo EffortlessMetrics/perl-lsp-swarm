@@ -15,7 +15,7 @@ fn find_assignment<'a>(node: &'a Node, expected_op: &str) -> Option<&'a Node> {
     node.children().into_iter().find_map(|child| find_assignment(child, expected_op))
 }
 
-fn find_variable_declaration<'a>(node: &'a Node) -> Option<&'a Node> {
+fn find_variable_declaration(node: &Node) -> Option<&Node> {
     if matches!(&node.kind, NodeKind::VariableDeclaration { .. }) {
         return Some(node);
     }
@@ -31,7 +31,7 @@ fn find_named_call<'a>(node: &'a Node, expected_name: &str) -> Option<&'a Node> 
     node.children().into_iter().find_map(|child| find_named_call(child, expected_name))
 }
 
-fn find_missing_expression<'a>(node: &'a Node) -> Option<&'a Node> {
+fn find_missing_expression(node: &Node) -> Option<&Node> {
     if matches!(&node.kind, NodeKind::MissingExpression) {
         return Some(node);
     }
@@ -403,7 +403,7 @@ fn repetition_assignment_rejects_trivia_between_x_and_equals() -> Result<(), Str
                 ast.to_sexp()
             ));
         }
-        if (!parser.get_errors().is_empty()) != expects_recovery_diagnostics {
+        if parser.get_errors().is_empty() == expects_recovery_diagnostics {
             return Err(format!(
                 "unexpected diagnostics for {source:?}: {:?}",
                 parser.get_errors()
