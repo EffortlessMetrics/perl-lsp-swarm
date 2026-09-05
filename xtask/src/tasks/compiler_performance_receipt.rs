@@ -34,15 +34,15 @@ const SCHEMA_ID: &str =
     "https://effortlessmetrics.dev/perl-lsp/schemas/compiler_performance_receipt.v1.schema.json";
 const VERSION: &str = "compiler_performance_receipt.v1";
 
-/// Fixtures validated by `run()`, relative to the xtask crate directory.
+/// Directory holding the committed receipt fixtures, relative to the repo root.
+const FIXTURE_DIR: &str = "xtask/fixtures";
+
+/// Filename prefix that marks a file in [`FIXTURE_DIR`] as a v1 receipt.
 ///
-/// The uninstrumented fixture is not decoration: it is the only receipt that
-/// exercises the contract's headline claim, so the check would stop proving
-/// "missing is not zero" if it were dropped.
-const FIXTURES: &[&str] = &[
-    "fixtures/compiler_performance_receipt.v1.json",
-    "fixtures/compiler_performance_receipt.v1.uninstrumented.json",
-];
+/// Fixtures are discovered rather than hand-registered: a constant list is a
+/// hole, because a newly committed receipt would silently escape validation
+/// unless its author also remembered to edit that list.
+const FIXTURE_PREFIX: &str = "compiler_performance_receipt.v1";
 
 const REQUIRED: &[&str] = &[
     "schema_version",
@@ -215,8 +215,10 @@ impl RequiredText {
 impl<'de> Deserialize<'de> for RequiredText {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = String::deserialize(deserializer)?;
-        if raw.is_empty() {
-            return Err(serde::de::Error::custom("must not be empty"));
+        // Whitespace-only is not a value: a receipt_id of " " identifies nothing,
+        // and `minLength: 1` alone would accept it.
+        if raw.trim().is_empty() {
+            return Err(serde::de::Error::custom("must not be empty or whitespace-only"));
         }
         Ok(Self(raw))
     }
@@ -497,6 +499,26 @@ fn check_timing(label: &str, timing: &Timing, errors: &mut Vec<String>) {
 pub fn validate_receipt(receipt: &CompilerPerformanceReceipt) -> Result<()> {
     let mut errors = Vec::new();
 
+    // Collection invariants the schema also states. They are repeated here
+    // because a Rust consumer decodes through `serde`, which never consults the
+    // schema: a receipt with no stage rows, or no declared denominator, proves
+    // nothing and must not reach a consumer as a valid receipt.
+    if receipt.stages.is_empty() {
+        errors.push("stages: a receipt with no stage rows proves nothing".to_owned());
+    }
+    if receipt.workload.required_stages.is_empty() {
+        errors.push(
+            "workload.required_stages: the denominator this receipt is judged against cannot be empty"
+                .to_owned(),
+        );
+    }
+    let mut declared: HashSet<StageName> = HashSet::new();
+    for required in &receipt.workload.required_stages {
+        if !declared.insert(*required) {
+            errors.push(format!("workload.required_stages: {required:?} is declared twice"));
+        }
+    }
+
     // Stage identity: a name may appear once. `uniqueItems` cannot catch this,
     // because two rows sharing a name but differing in any counter are
     // distinct JSON objects.
@@ -559,6 +581,19 @@ pub fn validate_receipt(receipt: &CompilerPerformanceReceipt) -> Result<()> {
         {
             errors.push(format!(
                 "{label}: complete instrumentation requires measured work and measured timing"
+            ));
+        }
+
+        // The mirror rule. Instrumentation that is missing cannot have produced
+        // a measurement, so a row claiming both is describing two different
+        // runs. `result` is deliberately *not* constrained this way: whether a
+        // stage succeeded is observable without counting its work, so `pass`
+        // with no measurement is honest as long as instrumentation says so.
+        if stage.instrumentation == Instrumentation::Missing
+            && (stage.work.status.is_measured() || stage.timing.status.is_measured())
+        {
+            errors.push(format!(
+                "{label}: missing instrumentation cannot report measured work or timing"
             ));
         }
     }
@@ -670,15 +705,23 @@ fn validate(root: &Path) -> Result<CheckStats> {
     let validator = jsonschema::validator_for(&schema)
         .map_err(|error| color_eyre::eyre::eyre!("{SCHEMA_PATH}: invalid schema: {error}"))?;
 
-    for fixture in FIXTURES {
-        let path = root.join("xtask").join(fixture);
-        let text = fs::read_to_string(&path)
+    let fixtures = discover_fixtures(root)?;
+    if fixtures.is_empty() {
+        bail!(
+            "{FIXTURE_DIR} holds no {FIXTURE_PREFIX}* fixture; the contract would be checked against nothing"
+        );
+    }
+    for path in &fixtures {
+        let label = path
+            .file_name()
+            .map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
+        let text = fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
-        let receipt = validate_fixture(&validator, fixture, &text)?;
+        let receipt = validate_fixture(&validator, &label, &text)?;
         // Name what was actually checked, so the command's output is evidence
         // rather than an unfalsifiable "passed".
         println!(
-            "  {fixture}: receipt {} over tree {} conforms",
+            "  {label}: receipt {} over tree {} conforms",
             receipt.receipt_id.as_str(),
             receipt.subject.tree.as_str()
         );
@@ -687,8 +730,28 @@ fn validate(root: &Path) -> Result<CheckStats> {
     Ok(CheckStats {
         required_fields: REQUIRED.len(),
         stages: STAGES.len(),
-        fixtures: FIXTURES.len(),
+        fixtures: fixtures.len(),
     })
+}
+
+/// Every committed v1 receipt fixture, in a stable order.
+///
+/// Discovery rather than a hand-maintained list: a fixture that nobody
+/// registered is a fixture nobody validates.
+fn discover_fixtures(root: &Path) -> Result<Vec<std::path::PathBuf>> {
+    let dir = root.join(FIXTURE_DIR);
+    let mut found = Vec::new();
+    for entry in fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let path = entry.with_context(|| format!("failed to read {}", dir.display()))?.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name.starts_with(FIXTURE_PREFIX) && name.ends_with(".json") {
+            found.push(path);
+        }
+    }
+    found.sort();
+    Ok(found)
 }
 
 fn load_schema(root: &Path) -> Result<Value> {
@@ -730,6 +793,11 @@ fn validate_schema_document(schema: &Value) -> Result<()> {
     require_string(schema, &["$id"], SCHEMA_ID, &mut errors);
     require_string(schema, &["properties", "schema_version", "const"], VERSION, &mut errors);
     require_set(schema, &["required"], REQUIRED, &mut errors);
+    // The counter bound keeps the two surfaces from disagreeing: without it the
+    // schema would accept an integer the typed model cannot hold.
+    if lookup(schema, &["$defs", "count", "maximum"]).and_then(Value::as_u64) != Some(u64::MAX) {
+        errors.push("$defs.count.maximum must bound counters to u64::MAX".to_owned());
+    }
 
     for (path, expected) in [
         (&["$defs", "stage_name", "enum"][..], STAGES),
@@ -745,22 +813,27 @@ fn validate_schema_document(schema: &Value) -> Result<()> {
         require_set(schema, path, expected, &mut errors);
     }
 
-    // The conditional halves carry the "not zero" rule, so they are pinned by
-    // the same exact-set check as the vocabularies.
-    for (path, expected) in [
-        (&["$defs", "work", "then", "required"][..], WORK_COUNTERS),
-        (&["$defs", "correctness", "then", "required"][..], CORRECTNESS_COUNTERS),
-    ] {
-        require_set(schema, path, expected, &mut errors);
-    }
     require_set(
         schema,
         &["$defs", "provider", "required"],
         &["status", "correctness", "timing"],
         &mut errors,
     );
-    require_conditional_required(schema, &["$defs", "provider"], PROVIDER_COUNTERS, &mut errors);
-    require_conditional_required(schema, &["$defs", "cache"], CACHE_COUNTERS, &mut errors);
+
+    // The measured-only counter rule is where the contract actually lives, and
+    // it has two halves. Pinning only `then` would let the `else` prohibition be
+    // deleted silently: the committed fixtures would still pass, because they
+    // never carry a counter under a non-measured status, while the schema had
+    // quietly started permitting exactly the numbers this receipt exists to
+    // forbid. Both halves are checked for every definition that carries one.
+    for (def, expected) in [
+        (&["$defs", "work"][..], WORK_COUNTERS),
+        (&["$defs", "correctness"][..], CORRECTNESS_COUNTERS),
+        (&["$defs", "provider"][..], PROVIDER_COUNTERS),
+        (&["$defs", "cache"][..], CACHE_COUNTERS),
+    ] {
+        require_measured_only_rule(schema, def, expected, &mut errors);
+    }
 
     if !errors.is_empty() {
         bail!("compiler performance receipt schema violations: {}", errors.join("; "));
@@ -786,6 +859,12 @@ fn require_set(schema: &Value, path: &[&str], expected: &[&str], errors: &mut Ve
         errors.push(format!("{} must be a string array", path.join(".")));
         return;
     };
+    // A JSON Schema enum may hold any type. Silently dropping non-strings would
+    // let `["measured", 7]` pass an exact-set check that is supposed to pin the
+    // vocabulary, so a non-string member is reported rather than skipped.
+    for value in values.iter().filter(|value| value.as_str().is_none()) {
+        errors.push(format!("{} contains a non-string member {value}", path.join(".")));
+    }
     let actual = values.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>();
     let wanted = expected.iter().copied().collect::<BTreeSet<_>>();
     for missing in wanted.difference(&actual) {
@@ -796,31 +875,73 @@ fn require_set(schema: &Value, path: &[&str], expected: &[&str], errors: &mut Ve
     }
 }
 
-/// Assert that one `allOf` branch of `def` requires exactly `expected` under
-/// its `then`, which is how the measured-only counter rule is spelled for the
-/// definitions that carry more than one conditional.
-fn require_conditional_required(
+/// Assert that a definition carries a complete measured-only counter rule:
+/// some conditional branch requires exactly `expected` when the status is
+/// `measured`, **and** that same branch forbids every one of them otherwise.
+///
+/// A definition may spell the rule directly (`if`/`then`/`else` on the def) or
+/// as one entry in `allOf` when it carries more than one conditional; both
+/// shapes are accepted, and the two halves must live on the same branch.
+fn require_measured_only_rule(
     schema: &Value,
     def: &[&str],
     expected: &[&str],
     errors: &mut Vec<String>,
 ) {
     let label = def.join(".");
-    let Some(branches) =
-        lookup(schema, def).and_then(|value| value.get("allOf")).and_then(Value::as_array)
-    else {
-        errors.push(format!("{label}.allOf must be an array of conditionals"));
+    let Some(node) = lookup(schema, def) else {
+        errors.push(format!("{label} is missing"));
         return;
     };
+
+    let mut branches: Vec<&Value> = vec![node];
+    if let Some(all_of) = node.get("allOf").and_then(Value::as_array) {
+        branches.extend(all_of.iter());
+    }
+
     let wanted = expected.iter().copied().collect::<BTreeSet<_>>();
-    let found = branches.iter().any(|branch| {
+    let matching = branches.iter().find(|branch| {
         lookup(branch, &["then", "required"]).and_then(Value::as_array).is_some_and(|values| {
             values.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>() == wanted
         })
     });
-    if !found {
-        errors.push(format!("{label}.allOf must require exactly {expected:?} when measured"));
+
+    let Some(branch) = matching else {
+        errors.push(format!("{label} must require exactly {expected:?} when measured"));
+        return;
+    };
+
+    // The `if` has to actually select `measured`, or the two halves are pinned
+    // to the wrong condition.
+    if lookup(branch, &["if", "properties", "status", "const"]).and_then(Value::as_str)
+        != Some("measured")
+    {
+        errors.push(format!("{label} must condition its counter rule on status == \"measured\""));
     }
+
+    match forbidden_counters(branch) {
+        Some(forbidden) if forbidden == wanted => {}
+        Some(forbidden) => errors.push(format!(
+            "{label} must forbid exactly {expected:?} when not measured, found {forbidden:?}"
+        )),
+        None => errors.push(format!(
+            "{label} must forbid every counter when not measured; the else prohibition is missing or malformed"
+        )),
+    }
+}
+
+/// The counter names an `else` branch forbids, via `not.anyOf[{required:[name]}]`.
+fn forbidden_counters(branch: &Value) -> Option<BTreeSet<&str>> {
+    let clauses = lookup(branch, &["else", "not", "anyOf"])?.as_array()?;
+    let mut names = BTreeSet::new();
+    for clause in clauses {
+        let required = clause.get("required")?.as_array()?;
+        let [only] = required.as_slice() else {
+            return None;
+        };
+        names.insert(only.as_str()?);
+    }
+    Some(names)
 }
 
 #[cfg(test)]
@@ -846,6 +967,16 @@ mod tests {
     /// Run one candidate receipt through the same three surfaces `run()` uses.
     fn check(value: &Value) -> Result<()> {
         validate_fixture(&validator(), "candidate", &value.to_string()).map(|_| ())
+    }
+
+    /// Evaluate a candidate against the JSON Schema **only**.
+    ///
+    /// The schema is the transport-neutral surface: a consumer in another
+    /// language has nothing else. A rule that only `validate_receipt` enforces
+    /// is not part of that contract, so rules the schema is supposed to carry
+    /// get a control that cannot be satisfied by the Rust validator.
+    fn schema_violations(value: &Value) -> Vec<String> {
+        validator().iter_errors(value).map(|error| error.to_string()).collect()
     }
 
     fn measured() -> Value {
@@ -1121,6 +1252,118 @@ mod tests {
         );
     }
 
+    /// The schema, not only the Rust validator, must refuse reuse on a miss.
+    ///
+    /// Review found this enforced on the typed path alone, which made the
+    /// transport-neutral claim false: a non-Rust consumer validating against
+    /// the committed schema would have accepted avoided-work on a documented
+    /// cache miss.
+    #[test]
+    fn schema_alone_rejects_reused_work_on_a_cache_miss() {
+        let mut receipt = measured();
+        receipt["cache"]["outcome"] = json!("miss");
+        receipt["cache"]["currentness"] = json!("unvalidated");
+        assert!(
+            !schema_violations(&receipt).is_empty(),
+            "the schema itself must reject positive reuse without a hit"
+        );
+        assert!(check(&receipt).is_err(), "and so must the full check");
+    }
+
+    /// Zero reuse on a miss is honest and must stay valid, so the rule above
+    /// cannot have been implemented by forbidding the field outright.
+    #[test]
+    fn a_measured_cache_miss_with_no_reuse_remains_valid() {
+        let mut receipt = measured();
+        receipt["cache"]["outcome"] = json!("miss");
+        receipt["cache"]["currentness"] = json!("unvalidated");
+        receipt["cache"]["reused"] = json!(0);
+        assert_eq!(
+            schema_violations(&receipt),
+            Vec::<String>::new(),
+            "a miss that claims no reuse is an honest observation"
+        );
+        check(&receipt).expect("a measured miss with zero reuse must be accepted");
+    }
+
+    // -- instrumentation cannot contradict evidence --------------------------------
+
+    #[test]
+    fn rejects_missing_instrumentation_reporting_measured_evidence() {
+        let mut receipt = uninstrumented();
+        receipt["stages"][0]["work"] = json!({
+            "status": "measured", "units": 1, "objects": 1, "bytes": 1, "reused": 0, "recomputed": 1
+        });
+        receipt["stages"][0]["timing"] = json!({"status": "measured", "wall_ns": 1});
+        assert!(
+            !schema_violations(&receipt).is_empty(),
+            "the schema must reject measured evidence under missing instrumentation"
+        );
+        assert!(check(&receipt).is_err());
+    }
+
+    #[test]
+    fn typed_model_alone_rejects_missing_instrumentation_over_measured_evidence() {
+        let mut value = uninstrumented();
+        value["stages"][0]["work"] = json!({
+            "status": "measured", "units": 1, "objects": 1, "bytes": 1, "reused": 0, "recomputed": 1
+        });
+        value["stages"][0]["timing"] = json!({"status": "measured", "wall_ns": 1});
+        let receipt: CompilerPerformanceReceipt =
+            serde_json::from_value(value).expect("the shape still deserializes");
+        assert!(validate_receipt(&receipt).is_err());
+    }
+
+    /// `result` is deliberately independent of measurement: a stage can be
+    /// known to have succeeded without its work being counted. This pins that
+    /// decision so a later reader does not mistake it for an oversight.
+    #[test]
+    fn an_uninstrumented_stage_may_still_report_pass() {
+        let mut receipt = uninstrumented();
+        receipt["stages"][0]["result"] = json!("pass");
+        check(&receipt).expect("success and measurement are separate dimensions");
+    }
+
+    // -- typed collection invariants -------------------------------------------------
+
+    /// Mutation testing caught this one passing for the wrong reason: with an
+    /// empty `stages` list, the required-stage reconciliation fires first, so
+    /// disabling the empty-list rule left the test green. It now asserts the
+    /// specific message, which is the only thing that makes it a control for
+    /// *this* rule.
+    #[test]
+    fn typed_model_alone_rejects_an_empty_stage_list() {
+        let mut value = uninstrumented();
+        value["stages"] = json!([]);
+        value["workload"]["required_stages"] = json!(["lex_parse"]);
+        let receipt: CompilerPerformanceReceipt =
+            serde_json::from_value(value).expect("the shape still deserializes");
+        let rejected = validate_receipt(&receipt);
+        assert!(rejected.is_err(), "a receipt with no rows proves nothing");
+        assert!(
+            format!("{:?}", rejected.err()).contains("no stage rows proves nothing"),
+            "the empty-list rule itself must fire, not only the denominator reconciliation"
+        );
+    }
+
+    #[test]
+    fn typed_model_alone_rejects_an_empty_required_stage_denominator() {
+        let mut value = uninstrumented();
+        value["workload"]["required_stages"] = json!([]);
+        let receipt: CompilerPerformanceReceipt =
+            serde_json::from_value(value).expect("the shape still deserializes");
+        assert!(validate_receipt(&receipt).is_err(), "the denominator cannot be empty");
+    }
+
+    #[test]
+    fn typed_model_alone_rejects_a_duplicated_required_stage() {
+        let mut value = uninstrumented();
+        value["workload"]["required_stages"] = json!(["lex_parse", "hir", "module_graph", "hir"]);
+        let receipt: CompilerPerformanceReceipt =
+            serde_json::from_value(value).expect("the shape still deserializes");
+        assert!(validate_receipt(&receipt).is_err(), "a denominator cannot count a stage twice");
+    }
+
     // -- load-bearing identity ----------------------------------------------------
 
     #[test]
@@ -1161,6 +1404,17 @@ mod tests {
         let mut receipt = measured();
         receipt["receipt_id"] = json!("");
         assert!(check(&receipt).is_err(), "minLength: 1 is part of the contract");
+    }
+
+    #[test]
+    fn rejects_a_whitespace_only_required_string() {
+        let mut receipt = measured();
+        receipt["receipt_id"] = json!("   ");
+        assert!(
+            !schema_violations(&receipt).is_empty(),
+            "whitespace-only is not a value the schema accepts"
+        );
+        assert!(check(&receipt).is_err(), "nor one the typed boundary accepts");
     }
 
     // -- determinism ---------------------------------------------------------------
@@ -1208,6 +1462,70 @@ mod tests {
         );
     }
 
+    /// Review found the pin guarding only the `then` half: deleting an `else`
+    /// prohibition left the check green, and both committed fixtures still
+    /// passed, because neither carries a counter under a non-measured status.
+    /// The schema would have started permitting exactly the numbers this
+    /// receipt exists to forbid, silently.
+    #[test]
+    fn rejects_a_deleted_counter_prohibition() {
+        for def in ["work", "correctness"] {
+            let mut schema = schema_value();
+            schema["$defs"][def]
+                .as_object_mut()
+                .map(|node| node.remove("else"))
+                .expect("the definition is an object");
+            assert!(
+                validate_schema_document(&schema).is_err(),
+                "{def}: deleting the else prohibition must fail the pin"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_a_weakened_counter_prohibition() {
+        let mut schema = schema_value();
+        // Forbid only one of the five counters when not measured.
+        schema["$defs"]["work"]["else"] = json!({"not": {"anyOf": [{"required": ["units"]}]}});
+        assert!(
+            validate_schema_document(&schema).is_err(),
+            "forbidding a subset is not the measured-only rule"
+        );
+    }
+
+    #[test]
+    fn rejects_a_counter_prohibition_deleted_from_a_multi_conditional_definition() {
+        for def in ["provider", "cache"] {
+            let mut schema = schema_value();
+            let branches = schema["$defs"][def]["allOf"].as_array().cloned().unwrap_or_default();
+            let stripped: Vec<Value> = branches
+                .into_iter()
+                .map(|mut branch| {
+                    if let Some(object) = branch.as_object_mut() {
+                        if object.contains_key("then") && object.contains_key("else") {
+                            object.remove("else");
+                        }
+                    }
+                    branch
+                })
+                .collect();
+            schema["$defs"][def]["allOf"] = json!(stripped);
+            assert!(
+                validate_schema_document(&schema).is_err(),
+                "{def}: the else prohibition must be pinned inside allOf too"
+            );
+        }
+    }
+
+    /// The rule must be tied to `measured`, not to whatever the `if` happens to
+    /// name, or both halves could be pinned to the wrong condition.
+    #[test]
+    fn rejects_a_counter_rule_conditioned_on_the_wrong_status() {
+        let mut schema = schema_value();
+        schema["$defs"]["work"]["if"]["properties"]["status"]["const"] = json!("not_proven");
+        assert!(validate_schema_document(&schema).is_err());
+    }
+
     #[test]
     fn rejects_a_relaxed_measured_only_counter_rule() {
         let mut schema = schema_value();
@@ -1215,6 +1533,29 @@ mod tests {
         assert!(
             validate_schema_document(&schema).is_err(),
             "the measured-only counter rule is pinned"
+        );
+    }
+
+    /// A JSON Schema enum may hold any type, so an exact-set check that skipped
+    /// non-strings could be widened without the pin noticing.
+    #[test]
+    fn rejects_a_non_string_member_smuggled_into_a_vocabulary() {
+        let mut schema = schema_value();
+        schema["$defs"]["evidence_status"]["enum"] =
+            json!(["measured", "not_proven", "not_applicable", "failed", "cancelled", 7]);
+        assert!(validate_schema_document(&schema).is_err());
+    }
+
+    #[test]
+    fn rejects_an_unbounded_counter_type() {
+        let mut schema = schema_value();
+        schema["$defs"]["count"]
+            .as_object_mut()
+            .map(|count| count.remove("maximum"))
+            .expect("count is an object");
+        assert!(
+            validate_schema_document(&schema).is_err(),
+            "an unbounded counter lets the schema accept what the typed model cannot hold"
         );
     }
 

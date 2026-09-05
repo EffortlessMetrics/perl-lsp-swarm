@@ -26,9 +26,19 @@
     "limitations": {"type": "array", "items": {"$ref": "#/$defs/required_text"}}
   },
   "$defs": {
-    "required_text": {"type": "string", "minLength": 1},
+    "required_text": {
+      "description": "A value the contract requires. Whitespace-only is not a value, so at least one non-whitespace character is required.",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
 
-    "count": {"type": "integer", "minimum": 0},
+    "count": {
+      "description": "A non-negative count. Bounded above by u64 so a schema-valid receipt is always decodable by the typed model.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
 
     "evidence_status": {
       "description": "Whether the paired observation was actually taken. Only 'measured' admits counters.",
@@ -218,12 +228,19 @@
               "status": {"const": "measured"}
             }
           }
+        },
+        {
+          "if": {
+            "properties": {"reused": {"type": "integer", "minimum": 1}},
+            "required": ["reused"]
+          },
+          "then": {"properties": {"outcome": {"const": "hit"}}}
         }
       ]
     },
 
     "stage": {
-      "description": "One compiler stage. The five state fields may not contradict each other: a stage that is not applicable, or required but unobserved, cannot also report measured work, measured timing, complete instrumentation, or a passing result.",
+      "description": "One compiler stage. The five state fields may not contradict each other: a stage that is not applicable, or required but unobserved, cannot also report measured work, measured timing, complete instrumentation, or a passing result; and instrumentation that is missing cannot coexist with measured evidence. Note that `result` and the evidence statuses are deliberately independent in the other direction: a stage may legitimately report `pass` while carrying no measurement, because whether a stage succeeded is observable without counting its work. Instrumentation state, not the result, is what says how much was measured.",
       "type": "object",
       "additionalProperties": false,
       "required": ["name", "applicability", "result", "work", "timing", "instrumentation"],
@@ -263,6 +280,18 @@
             "properties": {
               "work": {"properties": {"status": {"const": "measured"}}},
               "timing": {"properties": {"status": {"const": "measured"}}}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"instrumentation": {"const": "missing"}},
+            "required": ["instrumentation"]
+          },
+          "then": {
+            "properties": {
+              "work": {"properties": {"status": {"not": {"const": "measured"}}}},
+              "timing": {"properties": {"status": {"not": {"const": "measured"}}}}
             }
           }
         }

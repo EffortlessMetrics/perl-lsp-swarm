@@ -1557,6 +1557,31 @@ gates:
       - docs
       - build
 
+  # The compiler performance receipt (#9311) is a fail-closed contract in the
+  # same family as compiler_concept_ledger below: it rejects counters published
+  # without measurement, a cache hit without validated currentness, contradictory
+  # stage states, and unpinned artifact identities. Nothing executed it until this
+  # gate existed, so its enforcement claim was inert — and the non-Rust allowlist
+  # rows for the schema and both fixtures name this command as their coverage,
+  # which is only true if something runs it. Runs in the `policy` shard.
+  - name: compiler_performance_receipt_contract
+    tier: merge_gate
+    description: "Validate schemas/compiler_performance_receipt.v1.schema.json, its pinned vocabularies, and every committed receipt fixture against schema, typed model, and cross-field rules"
+    required: true
+    command: cargo xtask check-compiler-performance-receipt
+    # 300s to match non_rust_inventory_check and msrv_authority_sync, the sibling
+    # `cargo xtask ...` gates in this shard. The validator itself is near-instant;
+    # the cost is the cargo invocation on a cold shard.
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - compiler
+      - contract
+
   - name: non_rust_inventory_check
     tier: merge_gate
     description: "Scan and classify tracked non-Rust files and require the normalized committed snapshot to match"
