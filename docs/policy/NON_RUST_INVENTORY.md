@@ -7,9 +7,9 @@
 | Metric | Count |
 |---|---|
 | Total tracked files | 12505 |
-| Rust-family files | 3870 |
-| Non-Rust files | 8635 |
-| Allowlisted | 6398 |
+| Rust-family files | 3868 |
+| Non-Rust files | 8637 |
+| Allowlisted | 6400 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
@@ -17,9 +17,9 @@
 | Category | Count |
 |---|---|
 | config | 497 |
-| documentation | 2817 |
+| documentation | 2818 |
 | generated | 2 |
-| production | 348 |
+| production | 349 |
 | test | 2067 |
 | tooling | 667 |
 | unclassified | 2237 |
@@ -2307,6 +2307,7 @@
 | `.cargo/mutants.toml` | config | `non-rust-cargo-config` | release/ci |
 | `.changes/header.tpl.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.changes/unreleased/product-0000-Changed-module-facade-seal.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-0000-Removed-refactoring-engine-retirement.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-10004-Changed-201500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-10100-Added-025500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-10532-Added-121200.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -8459,6 +8460,7 @@
 | `vscode-extension/src/serverDemand.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/startupDiagnosis.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/streamingCompletion.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/strictSemver.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/supportCommandGroup.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/supportCommands.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/supportPacket.ts` | production | `non-rust-vscode-extension` | editor/vscode |

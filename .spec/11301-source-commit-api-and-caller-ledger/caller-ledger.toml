@@ -51,7 +51,13 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # thin alias of it, so the migration is behavior-preserving and removes four
 # compatibility callers rather than accepting them into the baseline. Net
 # effect on the combined tree: 696 - 1 = 695.
-compatibility_baseline = 695
+# Burndown 695 -> 687 by #14032 (#5231 RefactoringEngine retirement): deleting
+# crates/perl-parser/src/refactor/refactoring.rs and
+# crates/perl-parser/src/refactor/scoped_rename_tests.rs removed their 8
+# compatibility `.index_file(...)` call sites (4 per file, checker-equivalent
+# regex scan over the pre-deletion blobs); both files dropped out of
+# caller_paths with them.
+compatibility_baseline = 687
 
 # Structural recurrence control (#11305): files under these prefixes must
 # never call compatibility source APIs at all -- live commits go through
@@ -99,8 +105,6 @@ caller_paths = [
   "crates/perl-lsp-rs/tests/lsp_workspace_index_e2e.rs",
   "crates/perl-lsp-rs/tests/multi_root_workspace_tests.rs",
   "crates/perl-lsp-rs/tests/workstream_e_trust_anchor_tests.rs",
-  "crates/perl-parser/src/refactor/refactoring.rs",
-  "crates/perl-parser/src/refactor/scoped_rename_tests.rs",
   "crates/perl-parser/src/refactor/workspace_refactor.rs",
   "crates/perl-parser/src/refactor/workspace_rename.rs",
   "crates/perl-parser/tests/dead_code_detector.rs",
