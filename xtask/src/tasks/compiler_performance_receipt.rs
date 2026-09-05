@@ -810,31 +810,40 @@ fn discover_fixtures(root: &Path) -> Result<Vec<std::path::PathBuf>> {
 fn collect_fixtures(dir: &Path, found: &mut Vec<std::path::PathBuf>) -> Result<()> {
     for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
         let path = entry.with_context(|| format!("failed to read {}", dir.display()))?.path();
-        // `symlink_metadata` deliberately does not follow links, and a link is
-        // refused rather than skipped. Following one would let a required gate
-        // depend on whatever the checkout happens to contain outside the
-        // committed tree; skipping one silently would let the gate pass while
-        // omitting a receipt whose name matches. Both are the same failure —
-        // the gate not checking what it claims to — so a link is an error that
-        // names itself.
+        // `symlink_metadata` deliberately does not follow links, so a linked
+        // directory cannot pull receipts in from outside the committed tree.
         let metadata = fs::symlink_metadata(&path)
             .with_context(|| format!("failed to inspect {}", path.display()))?;
+        let claims_receipt_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(FIXTURE_PREFIX) && name.ends_with(".json"));
+
         if metadata.is_symlink() {
-            bail!(
-                "{}: fixture discovery refuses symlinks. A link may resolve outside the committed \
-                 tree, and skipping it would let the gate pass without validating a receipt. \
-                 Commit the fixture as a real file.",
-                path.display()
-            );
+            // Refuse only a link that claims a receipt name. Skipping one would
+            // let the gate pass while omitting a receipt it advertises checking,
+            // and following it would make the gate depend on whatever the
+            // checkout contains outside the committed tree — the same failure
+            // either way, so it is an error that names itself.
+            if claims_receipt_name {
+                bail!(
+                    "{}: fixture discovery refuses a symlink named like a receipt. A link may \
+                     resolve outside the committed tree, and skipping it would let the gate pass \
+                     without validating a receipt. Commit the fixture as a real file.",
+                    path.display()
+                );
+            }
+            // Any other link belongs to a different fixture suite. `xtask/fixtures`
+            // is shared — `FIXTURE_PREFIX` exists because of that — so failing on
+            // a link this gate does not own would let an unrelated suite block a
+            // required merge gate. Not following it is the whole obligation.
+            continue;
         }
         if metadata.is_dir() {
             collect_fixtures(&path, found)?;
             continue;
         }
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if name.starts_with(FIXTURE_PREFIX) && name.ends_with(".json") {
+        if claims_receipt_name {
             found.push(path);
         }
     }
@@ -1116,17 +1125,23 @@ mod tests {
         assert_eq!(found, vec![top, deep], "nested fixtures are discovered; others are not");
     }
 
-    /// A symlink in the fixture tree is refused, not silently skipped.
+    /// A symlink named like a receipt is refused; any other link is ignored.
     ///
-    /// Discovery feeds a required merge gate. Following a link would make that
-    /// gate depend on whatever the checkout contains outside the committed
-    /// tree; skipping a matching link would let the gate pass while omitting a
-    /// receipt. Both are the gate not checking what it claims to, so discovery
-    /// fails closed and names the path.
+    /// Discovery feeds a required merge gate, so a link that claims a receipt
+    /// name fails closed: following it would make the gate depend on whatever
+    /// the checkout contains outside the committed tree, and skipping it would
+    /// let the gate pass while omitting a receipt. But `xtask/fixtures` is
+    /// shared, so refusing every link would let an unrelated fixture suite
+    /// block this gate on a PR that never touched it. For a link this gate does
+    /// not own, not following it is the whole obligation.
     #[cfg(unix)]
     #[test]
-    fn discovery_refuses_symlinks_rather_than_following_or_skipping_them() {
-        for link_target_is_dir in [true, false] {
+    fn discovery_refuses_only_symlinks_that_claim_a_receipt_name() {
+        /// Build a fixture tree holding one committed receipt plus one link.
+        fn tree(
+            link_name: &str,
+            to_dir: bool,
+        ) -> (tempfile::TempDir, tempfile::TempDir, std::path::PathBuf) {
             let root = tempfile::tempdir().expect("temp dir");
             let outside = tempfile::tempdir().expect("temp dir");
             let stray = outside.path().join(format!("{FIXTURE_PREFIX}.stray.json"));
@@ -1134,22 +1149,38 @@ mod tests {
 
             let fixtures = root.path().join(FIXTURE_DIR);
             fs::create_dir_all(&fixtures).expect("create fixture dir");
-            fs::write(fixtures.join(format!("{FIXTURE_PREFIX}.json")), MEASURED)
-                .expect("write committed fixture");
+            let committed = fixtures.join(format!("{FIXTURE_PREFIX}.json"));
+            fs::write(&committed, MEASURED).expect("write committed fixture");
 
-            let (target, link_name) = if link_target_is_dir {
-                (outside.path().to_path_buf(), "linked".to_owned())
-            } else {
-                (stray.clone(), format!("{FIXTURE_PREFIX}.linked.json"))
-            };
-            std::os::unix::fs::symlink(&target, fixtures.join(&link_name)).expect("create symlink");
+            let target = if to_dir { outside.path().to_path_buf() } else { stray };
+            std::os::unix::fs::symlink(&target, fixtures.join(link_name)).expect("create symlink");
+            (root, outside, committed)
+        }
 
-            let rejected = discover_fixtures(root.path());
-            let rendered =
-                format!("{:#}", rejected.err().expect("discovery must refuse a symlink"));
-            assert!(
-                rendered.contains("refuses symlinks") && rendered.contains(&link_name),
-                "the refusal must name the offending link, got {rendered}"
+        // A link wearing a receipt name is this gate's business, and it fails.
+        let link_name = format!("{FIXTURE_PREFIX}.linked.json");
+        let (root, _outside, _committed) = tree(&link_name, false);
+        let rendered = format!(
+            "{:#}",
+            discover_fixtures(root.path()).err().expect("a receipt-named link must be refused")
+        );
+        assert!(
+            rendered.contains("refuses a symlink named like a receipt")
+                && rendered.contains(&link_name),
+            "the refusal must name the offending link, got {rendered}"
+        );
+
+        // A link this gate does not own must not fail it, and must not be
+        // followed into whatever it points at.
+        for (link_name, to_dir) in [("unrelated-suite.json", false), ("linked", true)] {
+            let (root, _outside, committed) = tree(link_name, to_dir);
+            let found = discover_fixtures(root.path()).unwrap_or_else(|error| {
+                panic!("a link named {link_name} must not fail this gate: {error:#}")
+            });
+            assert_eq!(
+                found,
+                vec![committed],
+                "{link_name}: only the committed receipt is discovered — a link is never followed"
             );
         }
     }
