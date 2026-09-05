@@ -116,9 +116,15 @@ fn test_capability_dap_core_initialize_response() -> TestResult {
             "supportsEvaluateForHovers must stay false even when dap.core is enabled (#9573)"
         );
 
+        // #8354: setVariable is NOT a `dap.core` consequence either. The exact
+        // mutation proof does not exist, so the catalog flag cannot widen the
+        // field and initialize must advertise false even with dap.core enabled.
         let supports_set_variable =
-            body.get("supportsSetVariable").and_then(|v| v.as_bool()).unwrap_or(false);
-        assert!(supports_set_variable, "supportsSetVariable must be true when dap.core is enabled");
+            body.get("supportsSetVariable").and_then(|v| v.as_bool()).unwrap_or(true);
+        assert!(
+            !supports_set_variable,
+            "supportsSetVariable must stay false even when dap.core is enabled (#8354)"
+        );
     }
     Ok(())
 }
