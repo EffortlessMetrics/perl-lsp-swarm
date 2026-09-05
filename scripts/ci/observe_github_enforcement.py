@@ -73,6 +73,11 @@ ANY_SOURCE_APP_ID = -1
 # bound would let an oversized or hostile response exhaust memory and kill the
 # observer; an over-long body is treated as an unreadable surface instead.
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+# Base64 grows a payload by 4/3 plus padding; a bundle body longer than this
+# cannot decode to a response the live transport would have accepted.
+MAX_BODY_BASE64_CHARS = (MAX_RESPONSE_BYTES // 3 + 1) * 4
+# Ruleset targets GitHub can return; anything else is an unreadable listing.
+RULESET_TARGETS = frozenset({"branch", "tag", "push"})
 # `mkstemp` appends ~12 characters to the prefix it is given. Bounding the
 # prefix keeps the staging name inside NAME_MAX for a destination whose own
 # name is near the limit.
@@ -372,12 +377,27 @@ class Capture:
                     "capture bundle entry must carry a status exactly when it "
                     "did not fail in transport"
                 )
+            encoded = entry["body_base64"]
+            if not isinstance(encoded, str):
+                raise ObserverError(
+                    "capture bundle entry body_base64 must be a string"
+                )
+            # An imported bundle is untrusted bytes; bound it the way the live
+            # transport bounds a response before decoding anything.
+            if len(encoded) > MAX_BODY_BASE64_CHARS:
+                raise ObserverError(
+                    "capture bundle entry body exceeds the response bound"
+                )
             try:
-                body = base64.b64decode(entry["body_base64"], validate=True)
+                body = base64.b64decode(encoded, validate=True)
             except (ValueError, TypeError) as error:
                 raise ObserverError(
                     "capture bundle entry body_base64 is not valid base64"
                 ) from error
+            if len(body) > MAX_RESPONSE_BYTES:
+                raise ObserverError(
+                    "capture bundle entry body exceeds the response bound"
+                )
             link = entry.get("link", "")
             if not isinstance(link, str):
                 raise ObserverError("capture bundle entry link must be a string")
@@ -467,13 +487,31 @@ def branch_ruleset_ids(listing: ApiResult) -> list[int]:
     for item in payload:
         if not isinstance(item, dict):
             raise ObserverError("ruleset listing entry must be an object")
-        if item.get("target") != "branch":
+        target = item.get("target")
+        if target not in RULESET_TARGETS:
+            # A ruleset whose target the observer cannot read might be a
+            # branch ruleset. Skipping it would hide enforcement behind a
+            # listing that still reads as complete.
+            raise ObserverError(
+                f"ruleset listing entry target must be one of "
+                f"{sorted(RULESET_TARGETS)}"
+            )
+        if target != "branch":
             # Tag and push rulesets cannot enforce a branch status context and
             # are not representable in github_enforcement_snapshot.v1.
             continue
         ruleset_id = item.get("id")
-        if not isinstance(ruleset_id, int) or isinstance(ruleset_id, bool):
-            raise ObserverError("ruleset listing entry id must be an integer")
+        if (
+            not isinstance(ruleset_id, int)
+            or isinstance(ruleset_id, bool)
+            or ruleset_id <= 0
+        ):
+            # The snapshot contract requires positive ids; a zero or negative
+            # id would pass here only to make the reconciler reject the whole
+            # capture downstream.
+            raise ObserverError(
+                "ruleset listing entry id must be a positive integer"
+            )
         ids.append(ruleset_id)
     return sorted(set(ids))
 
@@ -1019,7 +1057,11 @@ def ruleset_status_checks(
         )
         checks = parameters.get("required_status_checks")
         if checks is None:
-            continue
+            # Same reasoning as absent parameters: a rule with no checks list
+            # is unreadable, not a rule that requires nothing.
+            raise ObserverError(
+                f"ruleset {ruleset_id} required_status_checks rule has no checks"
+            )
         if not isinstance(checks, list):
             raise ObserverError(
                 f"ruleset {ruleset_id} required_status_checks must be a list"
@@ -1229,6 +1271,8 @@ def load_json(path: Path, field: str) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as error:
         raise ObserverError(f"{field} not found: {path}") from error
+    except OSError as error:
+        raise ObserverError(f"failed to read {field}: {path}") from error
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
         raise ObserverError(f"{field} is not valid JSON: {path}") from error
 

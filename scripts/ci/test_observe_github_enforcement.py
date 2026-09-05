@@ -8,6 +8,7 @@ exact bytes GitHub would return.
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import tempfile
@@ -616,6 +617,53 @@ class RulesetObservation(unittest.TestCase):
         self.assertEqual(snapshot["rulesets"]["items"], [])
         self.assertEqual(snapshot["observation"]["permission"], "complete")
 
+    def test_unreadable_listing_target_or_id_is_not_silently_skipped(self) -> None:
+        """A ruleset the observer cannot classify may be a branch ruleset.
+
+        Skipping it as if it were a tag ruleset would hide live enforcement
+        behind a listing that still reads as complete; a zero or negative id
+        would pass here only to be rejected by the reconciler downstream.
+        """
+        for label, mutate in (
+            ("target absent", lambda item: item.pop("target")),
+            ("target null", lambda item: item.__setitem__("target", None)),
+            ("target empty", lambda item: item.__setitem__("target", "")),
+            ("target unknown", lambda item: item.__setitem__("target", "repo")),
+            ("id zero", lambda item: item.__setitem__("id", 0)),
+            ("id negative", lambda item: item.__setitem__("id", -RULESET_ID)),
+        ):
+            listing = json.loads(ruleset_list_response())
+            mutate(listing[0])
+            with self.subTest(mutation=label):
+                snapshot = observe(transport(rulesets=(200, body(listing))))
+                self.assertEqual(snapshot["rulesets"]["instrument_state"], "unreadable")
+                self.assertEqual(snapshot["rulesets"]["items"], [])
+                self.assertIn(
+                    observer.RULESET_LIST_UNREADABLE,
+                    snapshot["observation"]["limitations"],
+                )
+                self.assertNotEqual(snapshot["observation"]["permission"], "complete")
+
+    def test_required_status_checks_rule_without_checks_fails_closed(self) -> None:
+        """Parameters present but no checks list is unreadable, not empty."""
+        for label, mutate in (
+            ("absent", lambda params: params.pop("required_status_checks")),
+            (
+                "explicit null",
+                lambda params: params.__setitem__("required_status_checks", None),
+            ),
+        ):
+            detail = json.loads(ruleset_detail_response())
+            mutate(detail["rules"][0]["parameters"])
+            with self.subTest(mutation=label):
+                snapshot = observe(transport(detail=(200, body(detail))))
+                self.assertEqual(snapshot["rulesets"]["items"], [])
+                self.assertIn(
+                    f"{observer.RULESET_DETAIL_UNREADABLE}:{RULESET_ID}",
+                    snapshot["observation"]["limitations"],
+                )
+                self.assertNotEqual(snapshot["observation"]["permission"], "complete")
+
     def test_unrepresentable_ref_conditions_are_reported_not_dropped(self) -> None:
         """Silently dropping a ruleset would understate live enforcement."""
         detail = json.loads(ruleset_detail_response())
@@ -1034,6 +1082,30 @@ class CaptureBundle(unittest.TestCase):
             with self.subTest(label=label):
                 with self.assertRaises(observer.ObserverError):
                     observer.Capture.from_bundle(bundle)
+
+    def test_bundle_body_is_bounded_before_it_is_decoded(self) -> None:
+        """Imported bytes get the same bound the live transport enforces.
+
+        `from_bundle` used to decode `body_base64` unconditionally, so a
+        connector bundle could carry a body far larger than any response
+        the observer itself would have accepted.
+        """
+        oversized = "A" * (observer.MAX_BODY_BASE64_CHARS + 4)
+        for label, value in (
+            ("oversized", oversized),
+            ("not a string", 12),
+        ):
+            bundle = self.valid_bundle()
+            bundle["entries"][0]["body_base64"] = value
+            with self.subTest(label=label):
+                with self.assertRaises(observer.ObserverError):
+                    observer.Capture.from_bundle(bundle)
+        # Positive control: a body exactly at the bound still decodes.
+        bundle = self.valid_bundle()
+        bundle["entries"][0]["body_base64"] = base64.b64encode(
+            b"x" * observer.MAX_RESPONSE_BYTES
+        ).decode("ascii")
+        observer.Capture.from_bundle(bundle)
 
     def test_bundle_cannot_represent_a_state_the_transport_never_emits(
         self,
@@ -2091,6 +2163,14 @@ class Privacy(unittest.TestCase):
 
 def codes(result: dict) -> set[str]:
     return {row["code"] for row in result["limitations"]}
+
+
+class LoadJsonTests(unittest.TestCase):
+    def test_unreadable_input_is_a_typed_observer_error(self) -> None:
+        """Any OSError on an input becomes a typed failure, not a traceback."""
+        with tempfile.TemporaryDirectory() as raw:
+            with self.assertRaises(observer.ObserverError):
+                observer.load_json(Path(raw), "static receipt")
 
 
 if __name__ == "__main__":
