@@ -656,6 +656,27 @@ fn collect_public_items(
                          than skipped."
                     );
                 }
+                // `ident: None` means this is an *invocation* at item position,
+                // not a `macro_rules!` definition. Its expansion can contain
+                // public structs, enums, functions, impls or re-exports, and
+                // `syn` does not expand macros — so skipping it would let a
+                // whole public surface exist with no row and no error, which is
+                // the one outcome this derivation refuses. The privacy of the
+                // macro says nothing about the privacy of what it emits.
+                if item_macro.ident.is_none() {
+                    let name = item_macro
+                        .mac
+                        .path
+                        .segments
+                        .last()
+                        .map_or_else(|| "?".to_string(), |segment| segment.ident.to_string());
+                    bail!(
+                        "`{module_path}` invokes the macro `{name}!` at item position. Its \
+                         expansion may declare public API this derivation cannot see, so the \
+                         inventory cannot claim to be complete: expand it, or handle the \
+                         invocation explicitly."
+                    );
+                }
             }
             syn::Item::ForeignMod(foreign) => {
                 let exports_public_item = foreign.items.iter().any(|item| match item {
@@ -2862,6 +2883,22 @@ fn collect_public_reexports(
                         };
                         found.push((qualified, rendered));
                     }
+                }
+            }
+            // `pub extern crate perl_ast_v2 as ast_v2;` publishes the package
+            // under that alias to every downstream consumer, exactly as a
+            // `pub use` does. It is a different item kind, so it fell through
+            // the catch-all and published a path with no row behind it.
+            syn::Item::ExternCrate(item) if is_public(&item.vis) => {
+                let rendered = item.ident.to_string();
+                if API_USE_FORM.is_match(&format!("{rendered}::")) {
+                    let alias = item
+                        .rename
+                        .as_ref()
+                        .map_or_else(|| rendered.clone(), |(_, to)| to.to_string());
+                    let qualified =
+                        if namespace.is_empty() { alias } else { format!("{namespace}::{alias}") };
+                    found.push((qualified, rendered));
                 }
             }
             syn::Item::Mod(item_mod) if is_public(&item_mod.vis) => {

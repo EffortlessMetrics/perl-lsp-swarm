@@ -1810,6 +1810,75 @@ fn a_forwarding_reexport_must_terminate_in_the_inventory() -> Result<()> {
 }
 
 #[test]
+fn an_item_position_macro_invocation_stops_the_audit() -> Result<()> {
+    // A macro invocation at item position can expand to public structs, enums,
+    // functions, impls or re-exports, and `syn` does not expand macros. Skipping
+    // it because the macro itself is private let a whole public surface exist
+    // with no row and no error — the one outcome this derivation refuses. The
+    // privacy of the macro says nothing about the privacy of what it emits.
+    let Err(err) = derive_public_items("define_nodes! { Alpha, Beta }") else {
+        bail!("an item-position macro invocation must stop the audit");
+    };
+    let rendered = format!("{err:?}");
+    assert!(
+        rendered.contains("define_nodes!"),
+        "the bail must name the invocation it cannot see through: {rendered}"
+    );
+
+    // A private `macro_rules!` *definition* is still skipped: it declares a
+    // macro, not items, so failing on it would reject an ordinary internal
+    // helper for a reason unrelated to the public API.
+    derive_public_items("macro_rules! helper { () => {} }")?;
+    // And an exported one still bails, on its own separate reason.
+    let Err(err) = derive_public_items("#[macro_export]\nmacro_rules! shown { () => {} }") else {
+        bail!("an exported macro must still stop the audit");
+    };
+    assert!(format!("{err:?}").contains("macro_export"));
+    Ok(())
+}
+
+#[test]
+fn a_public_extern_crate_alias_is_a_public_path() -> Result<()> {
+    // `pub extern crate perl_ast_v2 as ast_v2;` publishes the package under
+    // that alias to every downstream consumer, exactly as a `pub use` does. It
+    // is a different item kind, so it fell through the catch-all and published
+    // a path with no row behind it.
+    let derived: BTreeSet<String> =
+        derive_public_reexports("pub extern crate perl_ast_v2 as ast_v2;")
+            .into_iter()
+            .map(|(binding, _)| binding)
+            .collect();
+    assert_eq!(derived, BTreeSet::from(["ast_v2".to_string()]));
+
+    // Unaliased, the crate name is the binding.
+    let plain: BTreeSet<String> = derive_public_reexports("pub extern crate perl_ast_v2;")
+        .into_iter()
+        .map(|(binding, _)| binding)
+        .collect();
+    assert_eq!(plain, BTreeSet::from(["perl_ast_v2".to_string()]));
+
+    // A private one publishes nothing, and an unrelated crate is not the
+    // package.
+    assert!(derive_public_reexports("extern crate perl_ast_v2 as ast_v2;").is_empty());
+    assert!(derive_public_reexports("pub extern crate serde as ast_v2;").is_empty());
+
+    // It reconciles like any other public path: no row, no pass.
+    let rows = reexport_rows(&[("rx:one", "the_crate::other", "crates/c/src/lib.rs:1")])?;
+    let sources = sources(&[(
+        "crates/c/src/lib.rs",
+        "pub use perl_ast_v2 as other;\npub extern crate perl_ast_v2 as ast_v2;",
+    )]);
+    let Err(err) = reconcile_reexport_inventory(&rows, &sources) else {
+        bail!("a public extern crate alias must demand its own row");
+    };
+    assert!(
+        format!("{err:?}").contains("ast_v2"),
+        "the rejection must name the uninventoried alias: {err:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_forwarding_chain_that_never_reaches_the_package_is_rejected() -> Result<()> {
     // Stepping once was not enough: a target that merely matches *some*
     // inventoried path is satisfied by another forwarding row, so two rows
