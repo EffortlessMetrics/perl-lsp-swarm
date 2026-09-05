@@ -1422,14 +1422,17 @@ impl LspServer {
                 p.get("newName").and_then(|s| s.as_str()),
             )
         {
-            let rename_starts_in_blocked_context = {
+            let (rename_starts_in_blocked_context, rename_targets_package) = {
                 let documents = self.documents_guard();
                 self.get_document(&documents, uri)
                     .map(|doc| {
                         let offset = self.pos16_to_offset(doc, line as u32, ch as u32);
-                        Self::rename_blocked_at(doc, offset)
+                        (
+                            Self::rename_blocked_at(doc, offset),
+                            Self::rename_target_is_package(doc, offset),
+                        )
                     })
-                    .unwrap_or(false)
+                    .unwrap_or((false, false))
             };
             if rename_starts_in_blocked_context {
                 self.record_rename_provider_decision_trace(
@@ -1449,15 +1452,6 @@ impl LspServer {
             // pointed at (#9827 review). `prepareRename` already refuses these
             // positions, so a conforming client will not reach this; a client
             // that skips `prepareRename` still must not get the wrong edit.
-            let rename_targets_package = {
-                let documents = self.documents_guard();
-                self.get_document(&documents, uri)
-                    .map(|doc| {
-                        let offset = self.pos16_to_offset(doc, line as u32, ch as u32);
-                        Self::rename_target_is_package(doc, offset)
-                    })
-                    .unwrap_or(false)
-            };
             if rename_targets_package {
                 self.record_rename_provider_decision_trace(
                     Some(uri),
