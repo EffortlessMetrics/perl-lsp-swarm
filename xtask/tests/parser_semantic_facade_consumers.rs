@@ -37,9 +37,28 @@ use std::{
 const FACADE_CRATE_PREFIX: &str = "crates/perl-parser/";
 const FACADE_HEAD: &str = "perl_parser";
 
-/// Scan roots for governed consumer sources. Root-level workspace members
-/// (`xtask`, `fuzz`) are scanned explicitly alongside `crates`.
-const SCAN_ROOTS: &[&str] = &["crates", "xtask/src", "fuzz/fuzz_targets"];
+/// Scan roots for governed consumer sources: whole workspace members, not
+/// hand-picked subdirectories. Naming `xtask` and `fuzz` at member granularity
+/// keeps `xtask/tests`, `xtask/examples`, and any directory a member grows
+/// later inside the guard automatically (#14300 wave 2); the sibling TDD guard
+/// still carries the narrow literal until the shared discovery primitive lands
+/// under that issue.
+const SCAN_ROOTS: &[&str] = &["crates", "xtask", "fuzz"];
+
+/// Directory names never scanned: build output is generated, not governed
+/// source, and can contain vendored copies of facade consumers.
+const SKIPPED_DIR_NAMES: &[&str] = &["target"];
+
+/// Facade-guard sources excluded from their own scan. These files carry the
+/// forbidden tokens deliberately, as string fixtures proving the detector
+/// rejects them; because comment stripping is lexical and does not tokenize
+/// string literals, scanning them would report the detector's own evidence as
+/// a violation. The list is exact paths, never a prefix, so a real consumer
+/// cannot hide behind it.
+const GUARD_SELF_PATHS: &[&str] = &[
+    "xtask/tests/parser_semantic_facade_consumers.rs",
+    "xtask/tests/parser_tdd_facade_consumers.rs",
+];
 
 /// Leading path segments of `perl-parser` modules that re-export semantic
 /// authority.
@@ -265,7 +284,10 @@ fn collect_rs_files(
         };
         let name = entry.file_name().to_string_lossy().into_owned();
         let child_relative = format!("{relative}/{name}");
-        if child_relative.starts_with(FACADE_CRATE_PREFIX) || child_relative == "crates/perl-parser"
+        if child_relative.starts_with(FACADE_CRATE_PREFIX)
+            || child_relative == "crates/perl-parser"
+            || SKIPPED_DIR_NAMES.contains(&name.as_str())
+            || GUARD_SELF_PATHS.contains(&child_relative.as_str())
         {
             continue;
         }
@@ -447,4 +469,42 @@ use crate::perl_parser_wrapper::analysis::Also;
 ";
     let hits = forbidden_facade_references(&code_without_comments(source));
     assert!(hits.is_empty(), "unexpected boundary hits: {hits:?}");
+}
+
+/// #14300 wave 2: the guard's coverage hole was `SCAN_ROOTS` naming
+/// hand-picked subdirectories, so a facade consumer landing in
+/// `xtask/tests/**` or `xtask/examples/**` merged unseen. Roots are now whole
+/// workspace members. This proves the collector actually reaches those
+/// directories rather than trusting the constant's shape.
+#[test]
+fn scan_reaches_every_directory_of_each_governed_member() {
+    let root = repo_root();
+    let mut files = Vec::new();
+    let mut failures = Vec::new();
+    for scan_root in SCAN_ROOTS {
+        collect_rs_files(&root.join(scan_root), scan_root, &mut files, &mut failures);
+    }
+    assert!(failures.is_empty(), "scan roots must all be readable: {failures:?}");
+
+    for required in ["crates/", "xtask/src/", "xtask/tests/", "fuzz/fuzz_targets/"] {
+        assert!(
+            files.iter().any(|file| file.starts_with(required)),
+            "no source collected under {required}; SCAN_ROOTS no longer covers it"
+        );
+    }
+
+    assert!(
+        !files.iter().any(|file| file.starts_with("crates/perl-parser/")),
+        "the facade crate owns its own compatibility exports until #11379 and must stay excluded"
+    );
+    assert!(
+        !files.iter().any(|file| file.split('/').any(|segment| segment == "target")),
+        "build output must never be scanned as governed source"
+    );
+    for guard in GUARD_SELF_PATHS {
+        assert!(
+            !files.iter().any(|file| file == guard),
+            "{guard} carries forbidden tokens as detector fixtures and must stay excluded"
+        );
+    }
 }
