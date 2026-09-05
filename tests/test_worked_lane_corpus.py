@@ -152,10 +152,13 @@ MIN_ABBREV = 7
 #     argument the receipts floor already makes, and a ruling is the one field
 #     whose entire content is a decision recorded somewhere else.
 #   * it carries a backticked disposition token, which is how this repository
-#     spells a recorded ruling (`PROMOTE`, `NOT_PROVEN`, `SUPERSEDED`) and how
+#     spells a recorded ruling (`PROMOTE`, `REVIEW_CURRENT`) and how
 #     the one `COVERED` row already reads.
-#   * that token is not an explicitly provisional one, so a row cannot claim
-#     coverage on a decision still being taken.
+#   * that token is not an explicitly provisional one, and the prose around it
+#     does not qualify it as provisional, so a row cannot claim coverage on a
+#     decision still being taken.
+#   * that token is not a negative outcome: a lane ruled `NOT_PROVEN` did not
+#     demonstrate its transition, which is what `COVERED` asserts.
 #
 # Unlike `Source receipts`, a ruling is not required to appear in the lane
 # document: the deliberation it points at often lives on a separate issue, as
@@ -169,8 +172,9 @@ RULING_TOKEN = re.compile(r"`([A-Z][A-Z_]{2,})`")
 # through, which is the same hole one level down -- and answering it by naming
 # those two would just invite the next compound. A disposition qualified by a
 # provisional word is provisional whatever it is qualified with, so the word is
-# what gets matched. `NOT_PROVEN` and `SUPERSEDED_OR_CLOSE` are unaffected:
-# their components say a decision was reached.
+# what gets matched. `NOT_PROVEN` and `SUPERSEDED_OR_CLOSE` are unaffected by
+# this rule: their components say a decision was reached. `NEGATIVE_RULINGS`
+# below rejects them on different grounds.
 PROVISIONAL_WORDS = frozenset(
     {
         "PENDING",
@@ -205,9 +209,28 @@ PROVISIONAL_WORDS = frozenset(
 #
 # Matched whole, not per word: `MERGE` and `BLOCKED` are unobjectionable
 # elsewhere, and `BLOCKED_BY_PREREQUISITE` is a review outcome that stays valid.
-# `NOT_PROVEN` is deliberately absent: it is the one token on the integration
-# line that is also a review outcome, so it stays a valid ruling.
+# `NOT_PROVEN` is deliberately absent here: it is a review outcome, not
+# posture, and `NEGATIVE_RULINGS` owns its rejection.
 INTEGRATION_STATES = frozenset({"INTEGRATION_READY", "MERGE_BLOCKED", "PR_IN_FLIGHT"})
+
+# A negative review outcome is a decision that was reached, so it is not
+# provisional -- but it is a decision that the transition was *not*
+# demonstrated. `COVERED` asserts the opposite. A lane ruled `NOT_PROVEN`,
+# `BLOCKED_BY_PREREQUISITE`, or `SUPERSEDED_OR_CLOSE` belongs under `ABSENT`
+# with the ruling recorded there, not as a certified example of the category.
+# Matched whole, like the integration states.
+NEGATIVE_RULINGS = frozenset({"NOT_PROVEN", "BLOCKED_BY_PREREQUISITE", "SUPERSEDED_OR_CLOSE"})
+
+# The token rule above only sees the backticked word. "proposed `PROMOTE`" or
+# "`PROMOTE`, likely" pass it while telling the reader the decision is still
+# open, which is the same soft state moved from the token into the prose around
+# it. Matched per word over the whole ruling, case-insensitively, so it covers
+# the token components too.
+PROSE_PROVISIONAL_WORDS = frozenset(
+    {word.lower() for word in PROVISIONAL_WORDS}
+    | {"likely", "probably", "tentative", "tentatively", "provisional", "provisionally", "maybe"}
+)
+PROSE_WORD = re.compile(r"[A-Za-z]+")
 
 
 def ruling_defect(ruling: str) -> str | None:
@@ -239,6 +262,24 @@ def ruling_defect(ruling: str) -> str | None:
     )
     if provisional:
         return f"is still provisional ({', '.join(provisional)})"
+    prose_provisional = sorted(
+        {
+            word
+            for word in PROSE_WORD.findall(RULING_TOKEN.sub(" ", stripped))
+            if word.lower() in PROSE_PROVISIONAL_WORDS
+        }
+    )
+    if prose_provisional:
+        return (
+            f"is qualified as provisional in its prose "
+            f"({', '.join(prose_provisional)})"
+        )
+    negative = sorted(tokens & NEGATIVE_RULINGS)
+    if negative:
+        return (
+            f"records a negative outcome ({', '.join(negative)}); the lane did "
+            f"not demonstrate its transition, so the row belongs under ABSENT"
+        )
     posture = sorted(tokens & INTEGRATION_STATES)
     if posture:
         return (
@@ -588,6 +629,16 @@ class WorkedLaneLedgerTests(unittest.TestCase):
             "an integration blocker": "#13788 — `MERGE_BLOCKED` on the required shard",
             "a run still in flight": "#13788 — `PR_IN_FLIGHT` while checks finish",
             "readiness to integrate": "#13788 — `INTEGRATION_READY` on the current head",
+            # A negative review outcome is settled, but it settles that the
+            # transition was not demonstrated; that is an ABSENT row's ruling.
+            "a not-proven outcome": "#4179 — `NOT_PROVEN` for cross-provider coverage",
+            "a prerequisite blocker": "#11141 — `BLOCKED_BY_PREREQUISITE` on the candidate lanes",
+            "a superseded outcome": "#5713 — `SUPERSEDED_OR_CLOSE` on the umbrella",
+            # Provisional prose around a settled token is the same soft state
+            # moved out of the token.
+            "provisional prose before the token": "#4192 — proposed `PROMOTE` for the integration proof",
+            "provisional prose after the token": "#4192 — `PROMOTE`, likely, once the review lands",
+            "a lowercase pending in prose": "#4192 — `PROMOTE` pending the reviewer",
         }
         for label, ruling in rejected.items():
             with self.subTest(rejected=label):
@@ -604,18 +655,11 @@ class WorkedLaneLedgerTests(unittest.TestCase):
                 "issues/4192) — `PROMOTE` for the review-forward synthetic "
                 "integration proof"
             ),
-            "a bare reference": "#4192 — `NOT_PROVEN` for cross-provider calibration",
-            "an underscored token": "#5713 — `SUPERSEDED_OR_CLOSE` on the umbrella",
-            # Component matching must not swallow compounds whose words say a
-            # decision was reached -- the cost of over-reaching here is a
-            # correct ruling a writer cannot record.
-            "a negated but settled token": "#4179 — `NOT_PROVEN` for cross-provider coverage",
-            # `AGENTS.md` names these as typed outcomes: being blocked on a
-            # stated prerequisite is a decision that was reached, not one still
-            # being taken. A `BLOCKED` component in the provisional set rejected
-            # both, which is why the accepted side is checked against the
-            # repository's own vocabulary rather than against intuition.
-            "a repository-defined blocker": "#11141 — `BLOCKED_BY_PREREQUISITE` on the candidate lanes",
+            "a bare reference": "#4192 — `PROMOTE` for the cross-provider calibration",
+            "an underscored token": "#5713 — `REVIEW_CURRENT` on the umbrella",
+            # Prose matching is per word: `unlikely`-free words that merely
+            # contain a provisional word (`independent`, `pendant`) must pass.
+            "a word that contains a provisional word": "#4192 — `PROMOTE` for the independent proof",
         }
         for label, ruling in accepted.items():
             with self.subTest(accepted=label):
