@@ -509,10 +509,14 @@ fn detect_disposition(
         return Disposition::Exemption("file-based (.changes/exemptions/)".to_string());
     }
     let changelog_paths = policy.changelog_paths();
-    // The release-prep heuristic is satisfied only by present files; an
-    // all-deleted change set is not a release prep.
-    let surviving: Vec<String> = changed.iter().filter(|f| !absent.contains(*f)).cloned().collect();
-    if is_release_prep(&surviving, &changelog_paths) {
+    // Release-prep shape is judged over *every* changed path, deleted ones
+    // included: a release prep does not delete production code, and filtering
+    // the absent paths out first let a deleted source file ride the surviving
+    // allowlisted files into a ReleasePrep pass (#13484 review round 4).
+    // At least one path must still survive, since an all-deleted change set
+    // is not a release prep either (round 3).
+    let surviving_count = changed.iter().filter(|f| !absent.contains(*f)).count();
+    if surviving_count > 0 && is_release_prep(changed, &changelog_paths) {
         return Disposition::ReleasePrep;
     }
     Disposition::Missing
@@ -1092,7 +1096,50 @@ fn is_ancestor(root: &Path, sha: &str, base: &str) -> Option<bool> {
 /// this platform — is treated as absent, which is the fail-closed direction:
 /// it may not supply an exemption, a release-prep, or a Fragment disposition.
 fn absent_paths(root: &Path, changed: &[String]) -> std::collections::HashSet<String> {
-    changed.iter().filter(|f| !root.join(f.as_str()).exists()).cloned().collect()
+    let tracked = head_tree_paths(root);
+    changed
+        .iter()
+        .filter(|f| {
+            // `symlink_metadata`, not `exists`: `exists` follows a symlink, so
+            // a dangling one reads as absent and would skip validation
+            // entirely. A symlink is a repository entry either way and must
+            // reach the checker, which reports the failed read.
+            let on_disk = root.join(f.as_str()).symlink_metadata().is_ok();
+            // Absent from the working tree is not the same as absent from the
+            // candidate: a fragment committed at HEAD but deleted locally is
+            // still the fragment this PR carries. CI checks out clean, so this
+            // only diverges on a dirty local run — where skipping validation
+            // would be the wrong direction.
+            !on_disk && !tracked.contains(&f.replace('\\', "/"))
+        })
+        .cloned()
+        .collect()
+}
+
+/// Paths tracked at `HEAD` in `root`'s git history. Empty on any git failure
+/// (unspawnable git, non-repo root, no commit yet) — a soft degrade leaving
+/// [`absent_paths`] to decide from the working tree alone.
+///
+/// `HEAD` is the candidate, not a base, so consulting it costs none of the
+/// base-coherence the round-4 change removed: there is still no diff range for
+/// a caller-supplied changed-file list to disagree with. `-z` keeps non-ASCII
+/// paths unquoted.
+fn head_tree_paths(root: &Path) -> std::collections::HashSet<String> {
+    let Ok(out) = Command::new("git")
+        .current_dir(root)
+        .args(["ls-tree", "-r", "--name-only", "-z", "HEAD"])
+        .output()
+    else {
+        return Default::default();
+    };
+    if !out.status.success() {
+        return Default::default();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .split('\0')
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Resolve which policy boundary (if any) applies to a PR whose diff base is
@@ -2827,6 +2874,114 @@ changelog = "vscode-extension/CHANGELOG.md"
         assert!(
             !rendered.contains("rendered OK"),
             "an unreadable fragment must not be handed to the renderer; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// A deleted production file must not ride surviving allowlisted files
+    /// into a ReleasePrep pass. Judging the shape over the surviving paths
+    /// only made the deletion invisible: `Cargo.toml` alone looks like a
+    /// release prep, so the removed source file owed nothing (#13484 review
+    /// round 4).
+    #[test]
+    fn deleted_production_file_cannot_ride_release_prep() {
+        let policy = test_policy("", "");
+        let changed = vec!["crates/perl-parser/src/lib.rs".to_string(), "Cargo.toml".to_string()];
+        let mut absent = std::collections::HashSet::new();
+        absent.insert("crates/perl-parser/src/lib.rs".to_string());
+        assert_eq!(
+            detect_disposition(&changed, &absent, "", &policy),
+            Disposition::Missing,
+            "a deleted production file still owes a disposition; only its absence from the \
+             surviving set made the rest look like a release prep"
+        );
+    }
+
+    /// A fragment committed at HEAD but deleted in a dirty working tree is
+    /// still the fragment the candidate carries, and must be validated rather
+    /// than excluded as deleted. CI checks out clean, so this only diverges
+    /// locally — where silently skipping validation is the wrong direction
+    /// (#13484 review round 4).
+    #[test]
+    fn uncommitted_local_deletion_does_not_excuse_a_committed_fragment()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let armed = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "blocking", Some(&armed), Some(&armed))?;
+        write_valid_changie(dir)?;
+        std::fs::create_dir_all(dir.join(".changes/unreleased")).map_err(|e| e.to_string())?;
+        let fragment_path = ".changes/unreleased/product-1-Added-000000.yaml";
+        // Committed with the #12549 shape, so validation must flag it.
+        std::fs::write(
+            dir.join(fragment_path),
+            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ntime:\ncustom:\n  PR: \"1\"\n",
+        )
+        .map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "-A"])?;
+        run_git(dir, &["commit", "-q", "-m", "add fragment"])?;
+        // Deleted locally only — never committed.
+        std::fs::remove_file(dir.join(fragment_path)).map_err(|e| e.to_string())?;
+        let list = write_changed_files(dir, &[fragment_path])?;
+        let (outcome, report) =
+            check_inner(Some(armed), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        let rendered = report.lines.join("\n");
+        assert!(
+            !rendered.contains("ignoring deleted fragment(s)"),
+            "a fragment still tracked at HEAD is not a deleted fragment; got:\n{rendered}"
+        );
+        assert_eq!(
+            outcome,
+            CheckOutcome::BlockingViolation,
+            "the committed fragment is malformed and must escalate, not be excused by an \
+             uncommitted local deletion; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// A dangling symlink is a repository entry, and `Path::exists()` follows
+    /// the link — so it reads as absent and would skip validation entirely.
+    /// It must reach the checker, which reports the failed read (#13484
+    /// review round 4).
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlink_fragment_is_not_treated_as_absent() -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let armed = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "blocking", Some(&armed), Some(&armed))?;
+        write_valid_changie(dir)?;
+        std::fs::create_dir_all(dir.join(".changes/unreleased")).map_err(|e| e.to_string())?;
+        let fragment_path = ".changes/unreleased/product-1-Added-000000.yaml";
+        std::os::unix::fs::symlink("nowhere.yaml", dir.join(fragment_path))
+            .map_err(|e| e.to_string())?;
+        let list = write_changed_files(dir, &[fragment_path])?;
+        let (outcome, report) =
+            check_inner(Some(armed), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        let rendered = report.lines.join("\n");
+        assert!(
+            !rendered.contains("ignoring deleted fragment(s)"),
+            "a dangling symlink is present as an entry, not deleted; got:\n{rendered}"
+        );
+        assert_eq!(
+            outcome,
+            CheckOutcome::BlockingViolation,
+            "an unresolvable fragment must escalate rather than pass unvalidated; \
+             got:\n{rendered}"
         );
         Ok(())
     }
