@@ -156,7 +156,11 @@ impl DebugAdapter {
             // single-thread execution requests are not a distinct capability
             // and stay unadvertised.
             "supportsSingleThreadExecutionRequests": false,
-            "supportsSetExpression": supports_core,
+            // #9568: not `supports_core`. setExpression is gated on an exact
+            // current-frame l-value assignment proof (#9570 promotion boundary)
+            // that does not exist yet, so the wire value comes from the single
+            // setExpression authority and no catalog row can widen it.
+            "supportsSetExpression": crate::backend::capabilities::advertises_set_expression(),
             "supportsTerminateRequest": supports_core,
             "supportsDataBreakpoints": supports_watchpoints,
             "supportsReadMemoryRequest": false,

@@ -402,6 +402,9 @@ pub fn perl_dap::backend::capabilities::NegotiatedDapCapabilities::eq(&self, oth
 pub fn perl_dap::backend::capabilities::NegotiatedDapCapabilities::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::backend::capabilities::NegotiatedDapCapabilities::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::backend::capabilities::NegotiatedDapCapabilities::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub const perl_dap::backend::capabilities::SET_EXPRESSION_PROMOTION_PROVEN: bool
+pub const perl_dap::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE: &str
+pub const fn perl_dap::backend::capabilities::advertises_set_expression() -> bool
 pub fn perl_dap::backend::capabilities::intersect_dap_capabilities(catalog: &perl_dap::backend::capabilities::CatalogDapFlags, backend: &perl_dap::backend::capabilities::DebugBackendCapabilities) -> perl_dap::backend::capabilities::NegotiatedDapCapabilities
 pub mod perl_dap::backend::external_peer
 pub enum perl_dap::backend::external_peer::ExternalPeerMode
