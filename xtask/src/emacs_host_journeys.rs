@@ -1125,6 +1125,14 @@ fn validate_cell(cell: &JourneyCell, classes: &[&str]) -> Result<()> {
                 "host-visible cell {} requires at least one host-visible surface",
                 cell.cell_id
             );
+            // Exact partition, not mere presence: a host-visible cell that also
+            // bound a protocol-only surface would let a protocol frame supply
+            // evidence for a host-visible claim.
+            ensure!(
+                cell.host_surfaces.iter().all(|surface| surface.is_host_visible()),
+                "host-visible cell {} must not expose protocol-only surfaces",
+                cell.cell_id
+            );
             ensure!(
                 !cell
                     .allowed_limitations

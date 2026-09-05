@@ -161,6 +161,32 @@ fn protocol_membership_rejects_host_visible_surface() -> Result<()> {
 }
 
 #[test]
+fn host_visible_cell_rejects_a_mixed_protocol_surface() -> Result<()> {
+    // The mixed lie the protocol-only inverse cannot catch: a genuinely
+    // host-visible cell that also binds the protocol-only surface, so a
+    // protocol frame could supply evidence for a host-visible claim.
+    let mut cells = compiled()?;
+    let host_visible = "emacs.eldoc_hover_observation.hover_rendered";
+    let position = cells
+        .iter()
+        .position(|cell| cell.cell_id == host_visible)
+        .ok_or_else(|| anyhow::anyhow!("hover cell vanished from the registry"))?;
+    cells[position].host_surfaces.push(HostSurface::DiagnosticsPollProtocol);
+    // Confine it to the pull cohort so the pull-cohort law cannot be the
+    // rejecting law; only the evidence-partition law can fire here.
+    cells[position].cohorts = vec![DiagnosticCohort::StandaloneEglotPull];
+    let error = match emacs_host_journeys::validate_registry(&cells) {
+        Err(error) => error.to_string(),
+        Ok(_) => bail!("host-visible row accepted a protocol-only surface"),
+    };
+    ensure!(
+        error.contains("must not expose protocol-only surfaces"),
+        "unexpected rejection for mixed host-visible row: {error}"
+    );
+    Ok(())
+}
+
+#[test]
 fn platform_applicability_uses_a_closed_vocabulary() -> Result<()> {
     ensure!(
         PLATFORM_APPLICABILITY_TOKENS == ["all"],
@@ -529,6 +555,90 @@ fn digests_cover_bindings_and_survive_row_ordering_only_changes() -> Result<()> 
         emacs_host_journeys::registry_digest(&removed)? != baseline,
         "registry digest ignored a removed row"
     );
+    Ok(())
+}
+
+#[test]
+fn cell_digest_moves_for_every_identity_bearing_field() -> Result<()> {
+    // The digest is the registry's identity. `cell_digest` builds a private
+    // view struct, so a future edit could drop a field from that view while
+    // leaving `JourneyCell` intact and no other test would go red. Mutate each
+    // field exactly once and require the digest to move.
+    type Mutator = fn(&mut JourneyCell);
+    let mutations: &[(&str, Mutator)] = &[
+        ("cell_id", |c| c.cell_id.insert_str(0, "altered.")),
+        ("cell_version", |c| c.cell_version += 1),
+        ("journey_class", |c| c.journey_class.insert_str(0, "altered_")),
+        ("depth", |c| {
+            c.depth = match c.depth {
+                DepthClass::Core => DepthClass::Optional,
+                DepthClass::Optional => DepthClass::Core,
+            }
+        }),
+        ("cohorts", |c| c.cohorts.clear()),
+        ("fixture_owners", |c| c.fixture_owners.push("altered_fixture".to_string())),
+        ("expectation_owner.ids", |c| {
+            c.expectation_owner.ids.push("altered.expectation".to_string())
+        }),
+        ("expectation_owner.set_digest", |c| {
+            c.expectation_owner.set_digest.insert_str(0, "altered")
+        }),
+        ("root_reference", |c| {
+            c.root_reference = match c.root_reference.take() {
+                Some(_) => None,
+                None => Some(RootReference { role_token: ROOT_ROLE_TOKENS[0].to_string() }),
+            }
+        }),
+        ("dimensions", |c| c.dimensions.push("altered_dimension".to_string())),
+        ("host_surfaces", |c| c.host_surfaces.push(HostSurface::StaleResultRejection)),
+        ("evidence_kind", |c| {
+            c.evidence_kind = match c.evidence_kind {
+                EvidenceKind::HostVisibleObservation => EvidenceKind::ProtocolMembershipOnly,
+                EvidenceKind::ProtocolMembershipOnly => EvidenceKind::HostVisibleObservation,
+            }
+        }),
+        ("positive_discriminator", |c| c.positive_discriminator.insert_str(0, "altered ")),
+        ("false_subject_controls", |c| {
+            c.false_subject_controls.push("altered_control".to_string())
+        }),
+        ("coordinate_domains", |c| c.coordinate_domains.push("altered_domain".to_string())),
+        ("platform_applicability", |c| c.platform_applicability.insert_str(0, "altered_")),
+        ("allowed_limitations", |c| c.allowed_limitations.push("altered_limitation".to_string())),
+        ("max_stage", |c| {
+            c.max_stage = match c.max_stage {
+                EvidenceStage::PublicArtifact => EvidenceStage::ReleaseCandidate,
+                _ => EvidenceStage::PublicArtifact,
+            }
+        }),
+        ("claim_ceiling", |c| c.claim_ceiling.insert_str(0, "altered ")),
+        ("producer_mapping", |c| c.producer_mapping.insert_str(0, "altered_")),
+    ];
+
+    let cells = compiled()?;
+    let baseline_registry = emacs_host_journeys::registry_digest(&cells)?;
+    for (field, mutate) in mutations {
+        for index in 0..cells.len() {
+            let baseline_cell = emacs_host_journeys::cell_digest(&cells[index])?;
+            let mut edited = cells.clone();
+            mutate(&mut edited[index]);
+            if edited[index] == cells[index] {
+                // The mutation was a no-op on this row (an already-absent
+                // option, an identical stage); it proves nothing here.
+                continue;
+            }
+            ensure!(
+                emacs_host_journeys::cell_digest(&edited[index])? != baseline_cell,
+                "cell digest ignored a change to {field} on row {}",
+                cells[index].cell_id
+            );
+            ensure!(
+                emacs_host_journeys::registry_digest(&edited)? != baseline_registry,
+                "registry digest ignored a change to {field} on row {}",
+                cells[index].cell_id
+            );
+            break;
+        }
+    }
     Ok(())
 }
 
