@@ -274,7 +274,7 @@ pub fn perl_parser::refactor::modernize::ModernizationSuggestion::fmt(&self, f: 
 pub struct perl_parser::compat::modernize::PerlModernizer
 pub fn perl_parser::refactor::modernize::PerlModernizer::analyze(&self, code: &str) -> alloc::vec::Vec<perl_parser::refactor::modernize::ModernizationSuggestion>
 pub fn perl_parser::refactor::modernize::PerlModernizer::apply(&self, code: &str) -> alloc::string::String
-pub fn perl_parser::refactor::modernize::PerlModernizer::modernize_file(&mut self, file: &std::path::Path, _patterns: &[perl_parser::refactor::refactoring::ModernizationPattern]) -> perl_parser_core::syntax::error::ParseResult<usize>
+pub fn perl_parser::refactor::modernize::PerlModernizer::modernize_file(&mut self, file: &std::path::Path) -> perl_parser_core::syntax::error::ParseResult<usize>
 pub fn perl_parser::refactor::modernize::PerlModernizer::new() -> Self
 pub fn perl_parser::refactor::modernize::PerlModernizer::default() -> Self
 pub mod perl_parser::compat::modernize_refactored
@@ -293,116 +293,6 @@ pub fn perl_parser::refactor::modernize_refactored::PerlModernizer::analyze(&sel
 pub fn perl_parser::refactor::modernize_refactored::PerlModernizer::apply(&self, code: &str) -> alloc::string::String
 pub fn perl_parser::refactor::modernize_refactored::PerlModernizer::new() -> Self
 pub fn perl_parser::refactor::modernize_refactored::PerlModernizer::default() -> Self
-pub mod perl_parser::compat::refactoring
-pub enum perl_parser::compat::refactoring::ModernizationPattern
-pub perl_parser::compat::refactoring::ModernizationPattern::DeprecatedOperators
-pub perl_parser::compat::refactoring::ModernizationPattern::PackageDeclarations
-pub perl_parser::compat::refactoring::ModernizationPattern::StrictWarnings
-pub perl_parser::compat::refactoring::ModernizationPattern::SubroutineCalls
-pub perl_parser::compat::refactoring::ModernizationPattern::VariableDeclarations
-pub fn perl_parser::refactor::refactoring::ModernizationPattern::clone(&self) -> perl_parser::refactor::refactoring::ModernizationPattern
-pub fn perl_parser::refactor::refactoring::ModernizationPattern::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::ModernizationPattern::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::ModernizationPattern::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub enum perl_parser::compat::refactoring::RefactoringScope
-pub perl_parser::compat::refactoring::RefactoringScope::Block
-pub perl_parser::compat::refactoring::RefactoringScope::Block::end: (u32, u32)
-pub perl_parser::compat::refactoring::RefactoringScope::Block::file: std::path::PathBuf
-pub perl_parser::compat::refactoring::RefactoringScope::Block::start: (u32, u32)
-pub perl_parser::compat::refactoring::RefactoringScope::Directory(std::path::PathBuf)
-pub perl_parser::compat::refactoring::RefactoringScope::File(std::path::PathBuf)
-pub perl_parser::compat::refactoring::RefactoringScope::FileSet(alloc::vec::Vec<std::path::PathBuf>)
-pub perl_parser::compat::refactoring::RefactoringScope::Function
-pub perl_parser::compat::refactoring::RefactoringScope::Function::file: std::path::PathBuf
-pub perl_parser::compat::refactoring::RefactoringScope::Function::name: alloc::string::String
-pub perl_parser::compat::refactoring::RefactoringScope::Package
-pub perl_parser::compat::refactoring::RefactoringScope::Package::file: std::path::PathBuf
-pub perl_parser::compat::refactoring::RefactoringScope::Package::name: alloc::string::String
-pub perl_parser::compat::refactoring::RefactoringScope::Workspace
-pub fn perl_parser::refactor::refactoring::RefactoringScope::clone(&self) -> perl_parser::refactor::refactoring::RefactoringScope
-pub fn perl_parser::refactor::refactoring::RefactoringScope::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::RefactoringScope::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::RefactoringScope::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub enum perl_parser::compat::refactoring::RefactoringType
-pub perl_parser::compat::refactoring::RefactoringType::ExtractMethod
-pub perl_parser::compat::refactoring::RefactoringType::ExtractMethod::end_position: (usize, usize)
-pub perl_parser::compat::refactoring::RefactoringType::ExtractMethod::method_name: alloc::string::String
-pub perl_parser::compat::refactoring::RefactoringType::ExtractMethod::start_position: (usize, usize)
-pub perl_parser::compat::refactoring::RefactoringType::Inline
-pub perl_parser::compat::refactoring::RefactoringType::Inline::all_occurrences: bool
-pub perl_parser::compat::refactoring::RefactoringType::Inline::symbol_name: alloc::string::String
-pub perl_parser::compat::refactoring::RefactoringType::Modernize
-pub perl_parser::compat::refactoring::RefactoringType::Modernize::patterns: alloc::vec::Vec<perl_parser::refactor::refactoring::ModernizationPattern>
-pub perl_parser::compat::refactoring::RefactoringType::MoveCode
-pub perl_parser::compat::refactoring::RefactoringType::MoveCode::elements: alloc::vec::Vec<alloc::string::String>
-pub perl_parser::compat::refactoring::RefactoringType::MoveCode::source_file: std::path::PathBuf
-pub perl_parser::compat::refactoring::RefactoringType::MoveCode::target_file: std::path::PathBuf
-pub perl_parser::compat::refactoring::RefactoringType::OptimizeImports
-pub perl_parser::compat::refactoring::RefactoringType::OptimizeImports::group_by_type: bool
-pub perl_parser::compat::refactoring::RefactoringType::OptimizeImports::remove_unused: bool
-pub perl_parser::compat::refactoring::RefactoringType::OptimizeImports::sort_alphabetically: bool
-pub perl_parser::compat::refactoring::RefactoringType::SymbolRename
-pub perl_parser::compat::refactoring::RefactoringType::SymbolRename::new_name: alloc::string::String
-pub perl_parser::compat::refactoring::RefactoringType::SymbolRename::old_name: alloc::string::String
-pub perl_parser::compat::refactoring::RefactoringType::SymbolRename::scope: perl_parser::refactor::refactoring::RefactoringScope
-pub fn perl_parser::refactor::refactoring::RefactoringType::clone(&self) -> perl_parser::refactor::refactoring::RefactoringType
-pub fn perl_parser::refactor::refactoring::RefactoringType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::RefactoringType::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::RefactoringType::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub struct perl_parser::compat::refactoring::BackupCleanupResult
-pub perl_parser::compat::refactoring::BackupCleanupResult::directories_removed: usize
-pub perl_parser::compat::refactoring::BackupCleanupResult::space_reclaimed: u64
-pub fn perl_parser::refactor::refactoring::BackupCleanupResult::clone(&self) -> perl_parser::refactor::refactoring::BackupCleanupResult
-pub fn perl_parser::refactor::refactoring::BackupCleanupResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_parser::compat::refactoring::BackupInfo
-pub perl_parser::compat::refactoring::BackupInfo::backup_dir: std::path::PathBuf
-pub perl_parser::compat::refactoring::BackupInfo::file_mappings: std::collections::hash::map::HashMap<std::path::PathBuf, std::path::PathBuf>
-pub fn perl_parser::refactor::refactoring::BackupInfo::clone(&self) -> perl_parser::refactor::refactoring::BackupInfo
-pub fn perl_parser::refactor::refactoring::BackupInfo::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::BackupInfo::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::BackupInfo::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub struct perl_parser::compat::refactoring::RefactoringConfig
-pub perl_parser::compat::refactoring::RefactoringConfig::backup_max_age_seconds: u64
-pub perl_parser::compat::refactoring::RefactoringConfig::backup_root: core::option::Option<std::path::PathBuf>
-pub perl_parser::compat::refactoring::RefactoringConfig::create_backups: bool
-pub perl_parser::compat::refactoring::RefactoringConfig::max_backup_retention: usize
-pub perl_parser::compat::refactoring::RefactoringConfig::max_files_per_operation: usize
-pub perl_parser::compat::refactoring::RefactoringConfig::operation_timeout: u64
-pub perl_parser::compat::refactoring::RefactoringConfig::parallel_processing: bool
-pub perl_parser::compat::refactoring::RefactoringConfig::safe_mode: bool
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::clone(&self) -> perl_parser::refactor::refactoring::RefactoringConfig
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::default() -> Self
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub struct perl_parser::compat::refactoring::RefactoringEngine
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::clear_history(&mut self) -> perl_parser_core::syntax::error::ParseResult<perl_parser::refactor::refactoring::BackupCleanupResult>
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::get_operation_history(&self) -> &[perl_parser::refactor::refactoring::RefactoringOperation]
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::index_file(&mut self, path: &std::path::Path, content: &str) -> perl_parser_core::syntax::error::ParseResult<()>
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::new() -> Self
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::refactor(&mut self, operation_type: perl_parser::refactor::refactoring::RefactoringType, files: alloc::vec::Vec<std::path::PathBuf>) -> perl_parser_core::syntax::error::ParseResult<perl_parser::refactor::refactoring::RefactoringResult>
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::rollback(&mut self, operation_id: &str) -> perl_parser_core::syntax::error::ParseResult<perl_parser::refactor::refactoring::RefactoringResult>
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::with_config(config: perl_parser::refactor::refactoring::RefactoringConfig) -> Self
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::default() -> Self
-pub struct perl_parser::compat::refactoring::RefactoringOperation
-pub perl_parser::compat::refactoring::RefactoringOperation::backup_info: core::option::Option<perl_parser::refactor::refactoring::BackupInfo>
-pub perl_parser::compat::refactoring::RefactoringOperation::id: alloc::string::String
-pub perl_parser::compat::refactoring::RefactoringOperation::modified_files: alloc::vec::Vec<std::path::PathBuf>
-pub perl_parser::compat::refactoring::RefactoringOperation::operation_type: perl_parser::refactor::refactoring::RefactoringType
-pub perl_parser::compat::refactoring::RefactoringOperation::timestamp: std::time::SystemTime
-pub fn perl_parser::refactor::refactoring::RefactoringOperation::clone(&self) -> perl_parser::refactor::refactoring::RefactoringOperation
-pub fn perl_parser::refactor::refactoring::RefactoringOperation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_parser::compat::refactoring::RefactoringResult
-pub perl_parser::compat::refactoring::RefactoringResult::changes_made: usize
-pub perl_parser::compat::refactoring::RefactoringResult::errors: alloc::vec::Vec<alloc::string::String>
-pub perl_parser::compat::refactoring::RefactoringResult::files_modified: usize
-pub perl_parser::compat::refactoring::RefactoringResult::operation_id: core::option::Option<alloc::string::String>
-pub perl_parser::compat::refactoring::RefactoringResult::success: bool
-pub perl_parser::compat::refactoring::RefactoringResult::warnings: alloc::vec::Vec<alloc::string::String>
-pub fn perl_parser::refactor::refactoring::RefactoringResult::clone(&self) -> perl_parser::refactor::refactoring::RefactoringResult
-pub fn perl_parser::refactor::refactoring::RefactoringResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::RefactoringResult::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::RefactoringResult::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub mod perl_parser::compat::workspace_refactor
 pub enum perl_parser::compat::workspace_refactor::RefactorError
 pub perl_parser::compat::workspace_refactor::RefactorError::DocumentNotIndexed(alloc::string::String)
@@ -717,7 +607,7 @@ pub fn perl_parser::refactor::modernize::ModernizationSuggestion::fmt(&self, f: 
 pub struct perl_parser::modernize::PerlModernizer
 pub fn perl_parser::refactor::modernize::PerlModernizer::analyze(&self, code: &str) -> alloc::vec::Vec<perl_parser::refactor::modernize::ModernizationSuggestion>
 pub fn perl_parser::refactor::modernize::PerlModernizer::apply(&self, code: &str) -> alloc::string::String
-pub fn perl_parser::refactor::modernize::PerlModernizer::modernize_file(&mut self, file: &std::path::Path, _patterns: &[perl_parser::refactor::refactoring::ModernizationPattern]) -> perl_parser_core::syntax::error::ParseResult<usize>
+pub fn perl_parser::refactor::modernize::PerlModernizer::modernize_file(&mut self, file: &std::path::Path) -> perl_parser_core::syntax::error::ParseResult<usize>
 pub fn perl_parser::refactor::modernize::PerlModernizer::new() -> Self
 pub fn perl_parser::refactor::modernize::PerlModernizer::default() -> Self
 pub mod perl_parser::modernize_refactored
@@ -863,7 +753,7 @@ pub fn perl_parser::refactor::modernize::ModernizationSuggestion::fmt(&self, f: 
 pub struct perl_parser::prelude::refactor::modernize::PerlModernizer
 pub fn perl_parser::refactor::modernize::PerlModernizer::analyze(&self, code: &str) -> alloc::vec::Vec<perl_parser::refactor::modernize::ModernizationSuggestion>
 pub fn perl_parser::refactor::modernize::PerlModernizer::apply(&self, code: &str) -> alloc::string::String
-pub fn perl_parser::refactor::modernize::PerlModernizer::modernize_file(&mut self, file: &std::path::Path, _patterns: &[perl_parser::refactor::refactoring::ModernizationPattern]) -> perl_parser_core::syntax::error::ParseResult<usize>
+pub fn perl_parser::refactor::modernize::PerlModernizer::modernize_file(&mut self, file: &std::path::Path) -> perl_parser_core::syntax::error::ParseResult<usize>
 pub fn perl_parser::refactor::modernize::PerlModernizer::new() -> Self
 pub fn perl_parser::refactor::modernize::PerlModernizer::default() -> Self
 pub mod perl_parser::prelude::refactor::modernize_refactored
@@ -882,116 +772,6 @@ pub fn perl_parser::refactor::modernize_refactored::PerlModernizer::analyze(&sel
 pub fn perl_parser::refactor::modernize_refactored::PerlModernizer::apply(&self, code: &str) -> alloc::string::String
 pub fn perl_parser::refactor::modernize_refactored::PerlModernizer::new() -> Self
 pub fn perl_parser::refactor::modernize_refactored::PerlModernizer::default() -> Self
-pub mod perl_parser::prelude::refactor::refactoring
-pub enum perl_parser::prelude::refactor::refactoring::ModernizationPattern
-pub perl_parser::prelude::refactor::refactoring::ModernizationPattern::DeprecatedOperators
-pub perl_parser::prelude::refactor::refactoring::ModernizationPattern::PackageDeclarations
-pub perl_parser::prelude::refactor::refactoring::ModernizationPattern::StrictWarnings
-pub perl_parser::prelude::refactor::refactoring::ModernizationPattern::SubroutineCalls
-pub perl_parser::prelude::refactor::refactoring::ModernizationPattern::VariableDeclarations
-pub fn perl_parser::refactor::refactoring::ModernizationPattern::clone(&self) -> perl_parser::refactor::refactoring::ModernizationPattern
-pub fn perl_parser::refactor::refactoring::ModernizationPattern::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::ModernizationPattern::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::ModernizationPattern::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub enum perl_parser::prelude::refactor::refactoring::RefactoringScope
-pub perl_parser::prelude::refactor::refactoring::RefactoringScope::Block
-pub perl_parser::prelude::refactor::refactoring::RefactoringScope::Block::end: (u32, u32)
-pub perl_parser::prelude::refactor::refactoring::RefactoringScope::Block::file: std::path::PathBuf
-pub perl_parser::prelude::refactor::refactoring::RefactoringScope::Block::start: (u32, u32)
-pub perl_parser::prelude::refactor::refactoring::RefactoringScope::Directory(std::path::PathBuf)
-pub perl_parser::prelude::refactor::refactoring::RefactoringScope::File(std::path::PathBuf)
-pub perl_parser::prelude::refactor::refactoring::RefactoringScope::FileSet(alloc::vec::Vec<std::path::PathBuf>)
-pub perl_parser::prelude::refactor::refactoring::RefactoringScope::Function
-pub perl_parser::prelude::refactor::refactoring::RefactoringScope::Function::file: std::path::PathBuf
-pub perl_parser::prelude::refactor::refactoring::RefactoringScope::Function::name: alloc::string::String
-pub perl_parser::prelude::refactor::refactoring::RefactoringScope::Package
-pub perl_parser::prelude::refactor::refactoring::RefactoringScope::Package::file: std::path::PathBuf
-pub perl_parser::prelude::refactor::refactoring::RefactoringScope::Package::name: alloc::string::String
-pub perl_parser::prelude::refactor::refactoring::RefactoringScope::Workspace
-pub fn perl_parser::refactor::refactoring::RefactoringScope::clone(&self) -> perl_parser::refactor::refactoring::RefactoringScope
-pub fn perl_parser::refactor::refactoring::RefactoringScope::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::RefactoringScope::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::RefactoringScope::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub enum perl_parser::prelude::refactor::refactoring::RefactoringType
-pub perl_parser::prelude::refactor::refactoring::RefactoringType::ExtractMethod
-pub perl_parser::prelude::refactor::refactoring::RefactoringType::ExtractMethod::end_position: (usize, usize)
-pub perl_parser::prelude::refactor::refactoring::RefactoringType::ExtractMethod::method_name: alloc::string::String
-pub perl_parser::prelude::refactor::refactoring::RefactoringType::ExtractMethod::start_position: (usize, usize)
-pub perl_parser::prelude::refactor::refactoring::RefactoringType::Inline
-pub perl_parser::prelude::refactor::refactoring::RefactoringType::Inline::all_occurrences: bool
-pub perl_parser::prelude::refactor::refactoring::RefactoringType::Inline::symbol_name: alloc::string::String
-pub perl_parser::prelude::refactor::refactoring::RefactoringType::Modernize
-pub perl_parser::prelude::refactor::refactoring::RefactoringType::Modernize::patterns: alloc::vec::Vec<perl_parser::refactor::refactoring::ModernizationPattern>
-pub perl_parser::prelude::refactor::refactoring::RefactoringType::MoveCode
-pub perl_parser::prelude::refactor::refactoring::RefactoringType::MoveCode::elements: alloc::vec::Vec<alloc::string::String>
-pub perl_parser::prelude::refactor::refactoring::RefactoringType::MoveCode::source_file: std::path::PathBuf
-pub perl_parser::prelude::refactor::refactoring::RefactoringType::MoveCode::target_file: std::path::PathBuf
-pub perl_parser::prelude::refactor::refactoring::RefactoringType::OptimizeImports
-pub perl_parser::prelude::refactor::refactoring::RefactoringType::OptimizeImports::group_by_type: bool
-pub perl_parser::prelude::refactor::refactoring::RefactoringType::OptimizeImports::remove_unused: bool
-pub perl_parser::prelude::refactor::refactoring::RefactoringType::OptimizeImports::sort_alphabetically: bool
-pub perl_parser::prelude::refactor::refactoring::RefactoringType::SymbolRename
-pub perl_parser::prelude::refactor::refactoring::RefactoringType::SymbolRename::new_name: alloc::string::String
-pub perl_parser::prelude::refactor::refactoring::RefactoringType::SymbolRename::old_name: alloc::string::String
-pub perl_parser::prelude::refactor::refactoring::RefactoringType::SymbolRename::scope: perl_parser::refactor::refactoring::RefactoringScope
-pub fn perl_parser::refactor::refactoring::RefactoringType::clone(&self) -> perl_parser::refactor::refactoring::RefactoringType
-pub fn perl_parser::refactor::refactoring::RefactoringType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::RefactoringType::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::RefactoringType::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub struct perl_parser::prelude::refactor::refactoring::BackupCleanupResult
-pub perl_parser::prelude::refactor::refactoring::BackupCleanupResult::directories_removed: usize
-pub perl_parser::prelude::refactor::refactoring::BackupCleanupResult::space_reclaimed: u64
-pub fn perl_parser::refactor::refactoring::BackupCleanupResult::clone(&self) -> perl_parser::refactor::refactoring::BackupCleanupResult
-pub fn perl_parser::refactor::refactoring::BackupCleanupResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_parser::prelude::refactor::refactoring::BackupInfo
-pub perl_parser::prelude::refactor::refactoring::BackupInfo::backup_dir: std::path::PathBuf
-pub perl_parser::prelude::refactor::refactoring::BackupInfo::file_mappings: std::collections::hash::map::HashMap<std::path::PathBuf, std::path::PathBuf>
-pub fn perl_parser::refactor::refactoring::BackupInfo::clone(&self) -> perl_parser::refactor::refactoring::BackupInfo
-pub fn perl_parser::refactor::refactoring::BackupInfo::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::BackupInfo::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::BackupInfo::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub struct perl_parser::prelude::refactor::refactoring::RefactoringConfig
-pub perl_parser::prelude::refactor::refactoring::RefactoringConfig::backup_max_age_seconds: u64
-pub perl_parser::prelude::refactor::refactoring::RefactoringConfig::backup_root: core::option::Option<std::path::PathBuf>
-pub perl_parser::prelude::refactor::refactoring::RefactoringConfig::create_backups: bool
-pub perl_parser::prelude::refactor::refactoring::RefactoringConfig::max_backup_retention: usize
-pub perl_parser::prelude::refactor::refactoring::RefactoringConfig::max_files_per_operation: usize
-pub perl_parser::prelude::refactor::refactoring::RefactoringConfig::operation_timeout: u64
-pub perl_parser::prelude::refactor::refactoring::RefactoringConfig::parallel_processing: bool
-pub perl_parser::prelude::refactor::refactoring::RefactoringConfig::safe_mode: bool
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::clone(&self) -> perl_parser::refactor::refactoring::RefactoringConfig
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::default() -> Self
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub struct perl_parser::prelude::refactor::refactoring::RefactoringEngine
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::clear_history(&mut self) -> perl_parser_core::syntax::error::ParseResult<perl_parser::refactor::refactoring::BackupCleanupResult>
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::get_operation_history(&self) -> &[perl_parser::refactor::refactoring::RefactoringOperation]
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::index_file(&mut self, path: &std::path::Path, content: &str) -> perl_parser_core::syntax::error::ParseResult<()>
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::new() -> Self
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::refactor(&mut self, operation_type: perl_parser::refactor::refactoring::RefactoringType, files: alloc::vec::Vec<std::path::PathBuf>) -> perl_parser_core::syntax::error::ParseResult<perl_parser::refactor::refactoring::RefactoringResult>
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::rollback(&mut self, operation_id: &str) -> perl_parser_core::syntax::error::ParseResult<perl_parser::refactor::refactoring::RefactoringResult>
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::with_config(config: perl_parser::refactor::refactoring::RefactoringConfig) -> Self
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::default() -> Self
-pub struct perl_parser::prelude::refactor::refactoring::RefactoringOperation
-pub perl_parser::prelude::refactor::refactoring::RefactoringOperation::backup_info: core::option::Option<perl_parser::refactor::refactoring::BackupInfo>
-pub perl_parser::prelude::refactor::refactoring::RefactoringOperation::id: alloc::string::String
-pub perl_parser::prelude::refactor::refactoring::RefactoringOperation::modified_files: alloc::vec::Vec<std::path::PathBuf>
-pub perl_parser::prelude::refactor::refactoring::RefactoringOperation::operation_type: perl_parser::refactor::refactoring::RefactoringType
-pub perl_parser::prelude::refactor::refactoring::RefactoringOperation::timestamp: std::time::SystemTime
-pub fn perl_parser::refactor::refactoring::RefactoringOperation::clone(&self) -> perl_parser::refactor::refactoring::RefactoringOperation
-pub fn perl_parser::refactor::refactoring::RefactoringOperation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_parser::prelude::refactor::refactoring::RefactoringResult
-pub perl_parser::prelude::refactor::refactoring::RefactoringResult::changes_made: usize
-pub perl_parser::prelude::refactor::refactoring::RefactoringResult::errors: alloc::vec::Vec<alloc::string::String>
-pub perl_parser::prelude::refactor::refactoring::RefactoringResult::files_modified: usize
-pub perl_parser::prelude::refactor::refactoring::RefactoringResult::operation_id: core::option::Option<alloc::string::String>
-pub perl_parser::prelude::refactor::refactoring::RefactoringResult::success: bool
-pub perl_parser::prelude::refactor::refactoring::RefactoringResult::warnings: alloc::vec::Vec<alloc::string::String>
-pub fn perl_parser::refactor::refactoring::RefactoringResult::clone(&self) -> perl_parser::refactor::refactoring::RefactoringResult
-pub fn perl_parser::refactor::refactoring::RefactoringResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::RefactoringResult::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::RefactoringResult::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub mod perl_parser::prelude::refactor::workspace_refactor
 pub enum perl_parser::prelude::refactor::workspace_refactor::RefactorError
 pub perl_parser::prelude::refactor::workspace_refactor::RefactorError::DocumentNotIndexed(alloc::string::String)
@@ -1082,6 +862,13 @@ pub perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameError::Time
 pub fn perl_parser::refactor::workspace_rename::WorkspaceRenameError::clone(&self) -> perl_parser::refactor::workspace_rename::WorkspaceRenameError
 pub fn perl_parser::refactor::workspace_rename::WorkspaceRenameError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser::refactor::workspace_rename::WorkspaceRenameError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser::prelude::refactor::workspace_rename::BackupInfo
+pub perl_parser::prelude::refactor::workspace_rename::BackupInfo::backup_dir: std::path::PathBuf
+pub perl_parser::prelude::refactor::workspace_rename::BackupInfo::file_mappings: std::collections::hash::map::HashMap<std::path::PathBuf, std::path::PathBuf>
+pub fn perl_parser::refactor::workspace_rename::BackupInfo::clone(&self) -> perl_parser::refactor::workspace_rename::BackupInfo
+pub fn perl_parser::refactor::workspace_rename::BackupInfo::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser::refactor::workspace_rename::BackupInfo::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_parser::refactor::workspace_rename::BackupInfo::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_parser::prelude::refactor::workspace_rename::ConflictLocation
 pub perl_parser::prelude::refactor::workspace_rename::ConflictLocation::column: u32
 pub perl_parser::prelude::refactor::workspace_rename::ConflictLocation::existing_symbol: alloc::string::String
@@ -1121,7 +908,7 @@ pub fn perl_parser::refactor::workspace_rename::WorkspaceRenameConfig::fmt(&self
 pub fn perl_parser::refactor::workspace_rename::WorkspaceRenameConfig::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_parser::refactor::workspace_rename::WorkspaceRenameConfig::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameResult
-pub perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameResult::backup_info: core::option::Option<perl_parser::refactor::refactoring::BackupInfo>
+pub perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameResult::backup_info: core::option::Option<perl_parser::refactor::workspace_rename::BackupInfo>
 pub perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameResult::description: alloc::string::String
 pub perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameResult::file_edits: alloc::vec::Vec<perl_parser::refactor::workspace_refactor::FileEdit>
 pub perl_parser::prelude::refactor::workspace_rename::WorkspaceRenameResult::statistics: perl_parser::refactor::workspace_rename::RenameStatistics
@@ -1347,7 +1134,7 @@ pub fn perl_parser::refactor::modernize::ModernizationSuggestion::fmt(&self, f: 
 pub struct perl_parser::refactor::modernize::PerlModernizer
 pub fn perl_parser::refactor::modernize::PerlModernizer::analyze(&self, code: &str) -> alloc::vec::Vec<perl_parser::refactor::modernize::ModernizationSuggestion>
 pub fn perl_parser::refactor::modernize::PerlModernizer::apply(&self, code: &str) -> alloc::string::String
-pub fn perl_parser::refactor::modernize::PerlModernizer::modernize_file(&mut self, file: &std::path::Path, _patterns: &[perl_parser::refactor::refactoring::ModernizationPattern]) -> perl_parser_core::syntax::error::ParseResult<usize>
+pub fn perl_parser::refactor::modernize::PerlModernizer::modernize_file(&mut self, file: &std::path::Path) -> perl_parser_core::syntax::error::ParseResult<usize>
 pub fn perl_parser::refactor::modernize::PerlModernizer::new() -> Self
 pub fn perl_parser::refactor::modernize::PerlModernizer::default() -> Self
 pub mod perl_parser::refactor::modernize_refactored
@@ -1366,116 +1153,6 @@ pub fn perl_parser::refactor::modernize_refactored::PerlModernizer::analyze(&sel
 pub fn perl_parser::refactor::modernize_refactored::PerlModernizer::apply(&self, code: &str) -> alloc::string::String
 pub fn perl_parser::refactor::modernize_refactored::PerlModernizer::new() -> Self
 pub fn perl_parser::refactor::modernize_refactored::PerlModernizer::default() -> Self
-pub mod perl_parser::refactor::refactoring
-pub enum perl_parser::refactor::refactoring::ModernizationPattern
-pub perl_parser::refactor::refactoring::ModernizationPattern::DeprecatedOperators
-pub perl_parser::refactor::refactoring::ModernizationPattern::PackageDeclarations
-pub perl_parser::refactor::refactoring::ModernizationPattern::StrictWarnings
-pub perl_parser::refactor::refactoring::ModernizationPattern::SubroutineCalls
-pub perl_parser::refactor::refactoring::ModernizationPattern::VariableDeclarations
-pub fn perl_parser::refactor::refactoring::ModernizationPattern::clone(&self) -> perl_parser::refactor::refactoring::ModernizationPattern
-pub fn perl_parser::refactor::refactoring::ModernizationPattern::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::ModernizationPattern::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::ModernizationPattern::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub enum perl_parser::refactor::refactoring::RefactoringScope
-pub perl_parser::refactor::refactoring::RefactoringScope::Block
-pub perl_parser::refactor::refactoring::RefactoringScope::Block::end: (u32, u32)
-pub perl_parser::refactor::refactoring::RefactoringScope::Block::file: std::path::PathBuf
-pub perl_parser::refactor::refactoring::RefactoringScope::Block::start: (u32, u32)
-pub perl_parser::refactor::refactoring::RefactoringScope::Directory(std::path::PathBuf)
-pub perl_parser::refactor::refactoring::RefactoringScope::File(std::path::PathBuf)
-pub perl_parser::refactor::refactoring::RefactoringScope::FileSet(alloc::vec::Vec<std::path::PathBuf>)
-pub perl_parser::refactor::refactoring::RefactoringScope::Function
-pub perl_parser::refactor::refactoring::RefactoringScope::Function::file: std::path::PathBuf
-pub perl_parser::refactor::refactoring::RefactoringScope::Function::name: alloc::string::String
-pub perl_parser::refactor::refactoring::RefactoringScope::Package
-pub perl_parser::refactor::refactoring::RefactoringScope::Package::file: std::path::PathBuf
-pub perl_parser::refactor::refactoring::RefactoringScope::Package::name: alloc::string::String
-pub perl_parser::refactor::refactoring::RefactoringScope::Workspace
-pub fn perl_parser::refactor::refactoring::RefactoringScope::clone(&self) -> perl_parser::refactor::refactoring::RefactoringScope
-pub fn perl_parser::refactor::refactoring::RefactoringScope::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::RefactoringScope::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::RefactoringScope::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub enum perl_parser::refactor::refactoring::RefactoringType
-pub perl_parser::refactor::refactoring::RefactoringType::ExtractMethod
-pub perl_parser::refactor::refactoring::RefactoringType::ExtractMethod::end_position: (usize, usize)
-pub perl_parser::refactor::refactoring::RefactoringType::ExtractMethod::method_name: alloc::string::String
-pub perl_parser::refactor::refactoring::RefactoringType::ExtractMethod::start_position: (usize, usize)
-pub perl_parser::refactor::refactoring::RefactoringType::Inline
-pub perl_parser::refactor::refactoring::RefactoringType::Inline::all_occurrences: bool
-pub perl_parser::refactor::refactoring::RefactoringType::Inline::symbol_name: alloc::string::String
-pub perl_parser::refactor::refactoring::RefactoringType::Modernize
-pub perl_parser::refactor::refactoring::RefactoringType::Modernize::patterns: alloc::vec::Vec<perl_parser::refactor::refactoring::ModernizationPattern>
-pub perl_parser::refactor::refactoring::RefactoringType::MoveCode
-pub perl_parser::refactor::refactoring::RefactoringType::MoveCode::elements: alloc::vec::Vec<alloc::string::String>
-pub perl_parser::refactor::refactoring::RefactoringType::MoveCode::source_file: std::path::PathBuf
-pub perl_parser::refactor::refactoring::RefactoringType::MoveCode::target_file: std::path::PathBuf
-pub perl_parser::refactor::refactoring::RefactoringType::OptimizeImports
-pub perl_parser::refactor::refactoring::RefactoringType::OptimizeImports::group_by_type: bool
-pub perl_parser::refactor::refactoring::RefactoringType::OptimizeImports::remove_unused: bool
-pub perl_parser::refactor::refactoring::RefactoringType::OptimizeImports::sort_alphabetically: bool
-pub perl_parser::refactor::refactoring::RefactoringType::SymbolRename
-pub perl_parser::refactor::refactoring::RefactoringType::SymbolRename::new_name: alloc::string::String
-pub perl_parser::refactor::refactoring::RefactoringType::SymbolRename::old_name: alloc::string::String
-pub perl_parser::refactor::refactoring::RefactoringType::SymbolRename::scope: perl_parser::refactor::refactoring::RefactoringScope
-pub fn perl_parser::refactor::refactoring::RefactoringType::clone(&self) -> perl_parser::refactor::refactoring::RefactoringType
-pub fn perl_parser::refactor::refactoring::RefactoringType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::RefactoringType::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::RefactoringType::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub struct perl_parser::refactor::refactoring::BackupCleanupResult
-pub perl_parser::refactor::refactoring::BackupCleanupResult::directories_removed: usize
-pub perl_parser::refactor::refactoring::BackupCleanupResult::space_reclaimed: u64
-pub fn perl_parser::refactor::refactoring::BackupCleanupResult::clone(&self) -> perl_parser::refactor::refactoring::BackupCleanupResult
-pub fn perl_parser::refactor::refactoring::BackupCleanupResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_parser::refactor::refactoring::BackupInfo
-pub perl_parser::refactor::refactoring::BackupInfo::backup_dir: std::path::PathBuf
-pub perl_parser::refactor::refactoring::BackupInfo::file_mappings: std::collections::hash::map::HashMap<std::path::PathBuf, std::path::PathBuf>
-pub fn perl_parser::refactor::refactoring::BackupInfo::clone(&self) -> perl_parser::refactor::refactoring::BackupInfo
-pub fn perl_parser::refactor::refactoring::BackupInfo::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::BackupInfo::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::BackupInfo::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub struct perl_parser::refactor::refactoring::RefactoringConfig
-pub perl_parser::refactor::refactoring::RefactoringConfig::backup_max_age_seconds: u64
-pub perl_parser::refactor::refactoring::RefactoringConfig::backup_root: core::option::Option<std::path::PathBuf>
-pub perl_parser::refactor::refactoring::RefactoringConfig::create_backups: bool
-pub perl_parser::refactor::refactoring::RefactoringConfig::max_backup_retention: usize
-pub perl_parser::refactor::refactoring::RefactoringConfig::max_files_per_operation: usize
-pub perl_parser::refactor::refactoring::RefactoringConfig::operation_timeout: u64
-pub perl_parser::refactor::refactoring::RefactoringConfig::parallel_processing: bool
-pub perl_parser::refactor::refactoring::RefactoringConfig::safe_mode: bool
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::clone(&self) -> perl_parser::refactor::refactoring::RefactoringConfig
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::default() -> Self
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub struct perl_parser::refactor::refactoring::RefactoringEngine
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::clear_history(&mut self) -> perl_parser_core::syntax::error::ParseResult<perl_parser::refactor::refactoring::BackupCleanupResult>
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::get_operation_history(&self) -> &[perl_parser::refactor::refactoring::RefactoringOperation]
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::index_file(&mut self, path: &std::path::Path, content: &str) -> perl_parser_core::syntax::error::ParseResult<()>
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::new() -> Self
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::refactor(&mut self, operation_type: perl_parser::refactor::refactoring::RefactoringType, files: alloc::vec::Vec<std::path::PathBuf>) -> perl_parser_core::syntax::error::ParseResult<perl_parser::refactor::refactoring::RefactoringResult>
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::rollback(&mut self, operation_id: &str) -> perl_parser_core::syntax::error::ParseResult<perl_parser::refactor::refactoring::RefactoringResult>
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::with_config(config: perl_parser::refactor::refactoring::RefactoringConfig) -> Self
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::default() -> Self
-pub struct perl_parser::refactor::refactoring::RefactoringOperation
-pub perl_parser::refactor::refactoring::RefactoringOperation::backup_info: core::option::Option<perl_parser::refactor::refactoring::BackupInfo>
-pub perl_parser::refactor::refactoring::RefactoringOperation::id: alloc::string::String
-pub perl_parser::refactor::refactoring::RefactoringOperation::modified_files: alloc::vec::Vec<std::path::PathBuf>
-pub perl_parser::refactor::refactoring::RefactoringOperation::operation_type: perl_parser::refactor::refactoring::RefactoringType
-pub perl_parser::refactor::refactoring::RefactoringOperation::timestamp: std::time::SystemTime
-pub fn perl_parser::refactor::refactoring::RefactoringOperation::clone(&self) -> perl_parser::refactor::refactoring::RefactoringOperation
-pub fn perl_parser::refactor::refactoring::RefactoringOperation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_parser::refactor::refactoring::RefactoringResult
-pub perl_parser::refactor::refactoring::RefactoringResult::changes_made: usize
-pub perl_parser::refactor::refactoring::RefactoringResult::errors: alloc::vec::Vec<alloc::string::String>
-pub perl_parser::refactor::refactoring::RefactoringResult::files_modified: usize
-pub perl_parser::refactor::refactoring::RefactoringResult::operation_id: core::option::Option<alloc::string::String>
-pub perl_parser::refactor::refactoring::RefactoringResult::success: bool
-pub perl_parser::refactor::refactoring::RefactoringResult::warnings: alloc::vec::Vec<alloc::string::String>
-pub fn perl_parser::refactor::refactoring::RefactoringResult::clone(&self) -> perl_parser::refactor::refactoring::RefactoringResult
-pub fn perl_parser::refactor::refactoring::RefactoringResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::RefactoringResult::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::RefactoringResult::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub mod perl_parser::refactor::workspace_refactor
 pub enum perl_parser::refactor::workspace_refactor::RefactorError
 pub perl_parser::refactor::workspace_refactor::RefactorError::DocumentNotIndexed(alloc::string::String)
@@ -1566,6 +1243,13 @@ pub perl_parser::refactor::workspace_rename::WorkspaceRenameError::Timeout::tota
 pub fn perl_parser::refactor::workspace_rename::WorkspaceRenameError::clone(&self) -> perl_parser::refactor::workspace_rename::WorkspaceRenameError
 pub fn perl_parser::refactor::workspace_rename::WorkspaceRenameError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser::refactor::workspace_rename::WorkspaceRenameError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser::refactor::workspace_rename::BackupInfo
+pub perl_parser::refactor::workspace_rename::BackupInfo::backup_dir: std::path::PathBuf
+pub perl_parser::refactor::workspace_rename::BackupInfo::file_mappings: std::collections::hash::map::HashMap<std::path::PathBuf, std::path::PathBuf>
+pub fn perl_parser::refactor::workspace_rename::BackupInfo::clone(&self) -> perl_parser::refactor::workspace_rename::BackupInfo
+pub fn perl_parser::refactor::workspace_rename::BackupInfo::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser::refactor::workspace_rename::BackupInfo::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_parser::refactor::workspace_rename::BackupInfo::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_parser::refactor::workspace_rename::ConflictLocation
 pub perl_parser::refactor::workspace_rename::ConflictLocation::column: u32
 pub perl_parser::refactor::workspace_rename::ConflictLocation::existing_symbol: alloc::string::String
@@ -1605,7 +1289,7 @@ pub fn perl_parser::refactor::workspace_rename::WorkspaceRenameConfig::fmt(&self
 pub fn perl_parser::refactor::workspace_rename::WorkspaceRenameConfig::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_parser::refactor::workspace_rename::WorkspaceRenameConfig::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_parser::refactor::workspace_rename::WorkspaceRenameResult
-pub perl_parser::refactor::workspace_rename::WorkspaceRenameResult::backup_info: core::option::Option<perl_parser::refactor::refactoring::BackupInfo>
+pub perl_parser::refactor::workspace_rename::WorkspaceRenameResult::backup_info: core::option::Option<perl_parser::refactor::workspace_rename::BackupInfo>
 pub perl_parser::refactor::workspace_rename::WorkspaceRenameResult::description: alloc::string::String
 pub perl_parser::refactor::workspace_rename::WorkspaceRenameResult::file_edits: alloc::vec::Vec<perl_parser::refactor::workspace_refactor::FileEdit>
 pub perl_parser::refactor::workspace_rename::WorkspaceRenameResult::statistics: perl_parser::refactor::workspace_rename::RenameStatistics
@@ -1613,116 +1297,6 @@ pub perl_parser::refactor::workspace_rename::WorkspaceRenameResult::warnings: al
 pub fn perl_parser::refactor::workspace_rename::WorkspaceRenameResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser::refactor::workspace_rename::WorkspaceRenameResult::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_parser::refactor::workspace_rename::WorkspaceRenameResult::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub mod perl_parser::refactoring
-pub enum perl_parser::refactoring::ModernizationPattern
-pub perl_parser::refactoring::ModernizationPattern::DeprecatedOperators
-pub perl_parser::refactoring::ModernizationPattern::PackageDeclarations
-pub perl_parser::refactoring::ModernizationPattern::StrictWarnings
-pub perl_parser::refactoring::ModernizationPattern::SubroutineCalls
-pub perl_parser::refactoring::ModernizationPattern::VariableDeclarations
-pub fn perl_parser::refactor::refactoring::ModernizationPattern::clone(&self) -> perl_parser::refactor::refactoring::ModernizationPattern
-pub fn perl_parser::refactor::refactoring::ModernizationPattern::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::ModernizationPattern::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::ModernizationPattern::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub enum perl_parser::refactoring::RefactoringScope
-pub perl_parser::refactoring::RefactoringScope::Block
-pub perl_parser::refactoring::RefactoringScope::Block::end: (u32, u32)
-pub perl_parser::refactoring::RefactoringScope::Block::file: std::path::PathBuf
-pub perl_parser::refactoring::RefactoringScope::Block::start: (u32, u32)
-pub perl_parser::refactoring::RefactoringScope::Directory(std::path::PathBuf)
-pub perl_parser::refactoring::RefactoringScope::File(std::path::PathBuf)
-pub perl_parser::refactoring::RefactoringScope::FileSet(alloc::vec::Vec<std::path::PathBuf>)
-pub perl_parser::refactoring::RefactoringScope::Function
-pub perl_parser::refactoring::RefactoringScope::Function::file: std::path::PathBuf
-pub perl_parser::refactoring::RefactoringScope::Function::name: alloc::string::String
-pub perl_parser::refactoring::RefactoringScope::Package
-pub perl_parser::refactoring::RefactoringScope::Package::file: std::path::PathBuf
-pub perl_parser::refactoring::RefactoringScope::Package::name: alloc::string::String
-pub perl_parser::refactoring::RefactoringScope::Workspace
-pub fn perl_parser::refactor::refactoring::RefactoringScope::clone(&self) -> perl_parser::refactor::refactoring::RefactoringScope
-pub fn perl_parser::refactor::refactoring::RefactoringScope::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::RefactoringScope::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::RefactoringScope::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub enum perl_parser::refactoring::RefactoringType
-pub perl_parser::refactoring::RefactoringType::ExtractMethod
-pub perl_parser::refactoring::RefactoringType::ExtractMethod::end_position: (usize, usize)
-pub perl_parser::refactoring::RefactoringType::ExtractMethod::method_name: alloc::string::String
-pub perl_parser::refactoring::RefactoringType::ExtractMethod::start_position: (usize, usize)
-pub perl_parser::refactoring::RefactoringType::Inline
-pub perl_parser::refactoring::RefactoringType::Inline::all_occurrences: bool
-pub perl_parser::refactoring::RefactoringType::Inline::symbol_name: alloc::string::String
-pub perl_parser::refactoring::RefactoringType::Modernize
-pub perl_parser::refactoring::RefactoringType::Modernize::patterns: alloc::vec::Vec<perl_parser::refactor::refactoring::ModernizationPattern>
-pub perl_parser::refactoring::RefactoringType::MoveCode
-pub perl_parser::refactoring::RefactoringType::MoveCode::elements: alloc::vec::Vec<alloc::string::String>
-pub perl_parser::refactoring::RefactoringType::MoveCode::source_file: std::path::PathBuf
-pub perl_parser::refactoring::RefactoringType::MoveCode::target_file: std::path::PathBuf
-pub perl_parser::refactoring::RefactoringType::OptimizeImports
-pub perl_parser::refactoring::RefactoringType::OptimizeImports::group_by_type: bool
-pub perl_parser::refactoring::RefactoringType::OptimizeImports::remove_unused: bool
-pub perl_parser::refactoring::RefactoringType::OptimizeImports::sort_alphabetically: bool
-pub perl_parser::refactoring::RefactoringType::SymbolRename
-pub perl_parser::refactoring::RefactoringType::SymbolRename::new_name: alloc::string::String
-pub perl_parser::refactoring::RefactoringType::SymbolRename::old_name: alloc::string::String
-pub perl_parser::refactoring::RefactoringType::SymbolRename::scope: perl_parser::refactor::refactoring::RefactoringScope
-pub fn perl_parser::refactor::refactoring::RefactoringType::clone(&self) -> perl_parser::refactor::refactoring::RefactoringType
-pub fn perl_parser::refactor::refactoring::RefactoringType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::RefactoringType::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::RefactoringType::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub struct perl_parser::refactoring::BackupCleanupResult
-pub perl_parser::refactoring::BackupCleanupResult::directories_removed: usize
-pub perl_parser::refactoring::BackupCleanupResult::space_reclaimed: u64
-pub fn perl_parser::refactor::refactoring::BackupCleanupResult::clone(&self) -> perl_parser::refactor::refactoring::BackupCleanupResult
-pub fn perl_parser::refactor::refactoring::BackupCleanupResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_parser::refactoring::BackupInfo
-pub perl_parser::refactoring::BackupInfo::backup_dir: std::path::PathBuf
-pub perl_parser::refactoring::BackupInfo::file_mappings: std::collections::hash::map::HashMap<std::path::PathBuf, std::path::PathBuf>
-pub fn perl_parser::refactor::refactoring::BackupInfo::clone(&self) -> perl_parser::refactor::refactoring::BackupInfo
-pub fn perl_parser::refactor::refactoring::BackupInfo::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::BackupInfo::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::BackupInfo::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub struct perl_parser::refactoring::RefactoringConfig
-pub perl_parser::refactoring::RefactoringConfig::backup_max_age_seconds: u64
-pub perl_parser::refactoring::RefactoringConfig::backup_root: core::option::Option<std::path::PathBuf>
-pub perl_parser::refactoring::RefactoringConfig::create_backups: bool
-pub perl_parser::refactoring::RefactoringConfig::max_backup_retention: usize
-pub perl_parser::refactoring::RefactoringConfig::max_files_per_operation: usize
-pub perl_parser::refactoring::RefactoringConfig::operation_timeout: u64
-pub perl_parser::refactoring::RefactoringConfig::parallel_processing: bool
-pub perl_parser::refactoring::RefactoringConfig::safe_mode: bool
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::clone(&self) -> perl_parser::refactor::refactoring::RefactoringConfig
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::default() -> Self
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub struct perl_parser::refactoring::RefactoringEngine
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::clear_history(&mut self) -> perl_parser_core::syntax::error::ParseResult<perl_parser::refactor::refactoring::BackupCleanupResult>
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::get_operation_history(&self) -> &[perl_parser::refactor::refactoring::RefactoringOperation]
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::index_file(&mut self, path: &std::path::Path, content: &str) -> perl_parser_core::syntax::error::ParseResult<()>
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::new() -> Self
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::refactor(&mut self, operation_type: perl_parser::refactor::refactoring::RefactoringType, files: alloc::vec::Vec<std::path::PathBuf>) -> perl_parser_core::syntax::error::ParseResult<perl_parser::refactor::refactoring::RefactoringResult>
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::rollback(&mut self, operation_id: &str) -> perl_parser_core::syntax::error::ParseResult<perl_parser::refactor::refactoring::RefactoringResult>
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::with_config(config: perl_parser::refactor::refactoring::RefactoringConfig) -> Self
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::default() -> Self
-pub struct perl_parser::refactoring::RefactoringOperation
-pub perl_parser::refactoring::RefactoringOperation::backup_info: core::option::Option<perl_parser::refactor::refactoring::BackupInfo>
-pub perl_parser::refactoring::RefactoringOperation::id: alloc::string::String
-pub perl_parser::refactoring::RefactoringOperation::modified_files: alloc::vec::Vec<std::path::PathBuf>
-pub perl_parser::refactoring::RefactoringOperation::operation_type: perl_parser::refactor::refactoring::RefactoringType
-pub perl_parser::refactoring::RefactoringOperation::timestamp: std::time::SystemTime
-pub fn perl_parser::refactor::refactoring::RefactoringOperation::clone(&self) -> perl_parser::refactor::refactoring::RefactoringOperation
-pub fn perl_parser::refactor::refactoring::RefactoringOperation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_parser::refactoring::RefactoringResult
-pub perl_parser::refactoring::RefactoringResult::changes_made: usize
-pub perl_parser::refactoring::RefactoringResult::errors: alloc::vec::Vec<alloc::string::String>
-pub perl_parser::refactoring::RefactoringResult::files_modified: usize
-pub perl_parser::refactoring::RefactoringResult::operation_id: core::option::Option<alloc::string::String>
-pub perl_parser::refactoring::RefactoringResult::success: bool
-pub perl_parser::refactoring::RefactoringResult::warnings: alloc::vec::Vec<alloc::string::String>
-pub fn perl_parser::refactor::refactoring::RefactoringResult::clone(&self) -> perl_parser::refactor::refactoring::RefactoringResult
-pub fn perl_parser::refactor::refactoring::RefactoringResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::RefactoringResult::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::RefactoringResult::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub mod perl_parser::tdd
 pub use perl_parser::tdd::<<perl_tdd_support::tdd::*>>
 pub mod perl_parser::tokens
@@ -1823,61 +1397,6 @@ pub fn perl_parser::refactor::workspace_refactor::WorkspaceRefactor::move_subrou
 pub fn perl_parser::refactor::workspace_refactor::WorkspaceRefactor::new(index: perl_workspace::workspace::workspace_index::WorkspaceIndex) -> Self
 pub fn perl_parser::refactor::workspace_refactor::WorkspaceRefactor::optimize_imports(&self) -> core::result::Result<perl_parser::refactor::workspace_refactor::RefactorResult, alloc::string::String>
 pub fn perl_parser::refactor::workspace_refactor::WorkspaceRefactor::rename_symbol(&self, old_name: &str, new_name: &str, _file_path: &std::path::Path, _position: (usize, usize)) -> core::result::Result<perl_parser::refactor::workspace_refactor::RefactorResult, perl_parser::refactor::workspace_refactor::RefactorError>
-pub enum perl_parser::ModernizationPattern
-pub perl_parser::ModernizationPattern::DeprecatedOperators
-pub perl_parser::ModernizationPattern::PackageDeclarations
-pub perl_parser::ModernizationPattern::StrictWarnings
-pub perl_parser::ModernizationPattern::SubroutineCalls
-pub perl_parser::ModernizationPattern::VariableDeclarations
-pub fn perl_parser::refactor::refactoring::ModernizationPattern::clone(&self) -> perl_parser::refactor::refactoring::ModernizationPattern
-pub fn perl_parser::refactor::refactoring::ModernizationPattern::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::ModernizationPattern::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::ModernizationPattern::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub enum perl_parser::RefactoringScope
-pub perl_parser::RefactoringScope::Block
-pub perl_parser::RefactoringScope::Block::end: (u32, u32)
-pub perl_parser::RefactoringScope::Block::file: std::path::PathBuf
-pub perl_parser::RefactoringScope::Block::start: (u32, u32)
-pub perl_parser::RefactoringScope::Directory(std::path::PathBuf)
-pub perl_parser::RefactoringScope::File(std::path::PathBuf)
-pub perl_parser::RefactoringScope::FileSet(alloc::vec::Vec<std::path::PathBuf>)
-pub perl_parser::RefactoringScope::Function
-pub perl_parser::RefactoringScope::Function::file: std::path::PathBuf
-pub perl_parser::RefactoringScope::Function::name: alloc::string::String
-pub perl_parser::RefactoringScope::Package
-pub perl_parser::RefactoringScope::Package::file: std::path::PathBuf
-pub perl_parser::RefactoringScope::Package::name: alloc::string::String
-pub perl_parser::RefactoringScope::Workspace
-pub fn perl_parser::refactor::refactoring::RefactoringScope::clone(&self) -> perl_parser::refactor::refactoring::RefactoringScope
-pub fn perl_parser::refactor::refactoring::RefactoringScope::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::RefactoringScope::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::RefactoringScope::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub enum perl_parser::RefactoringType
-pub perl_parser::RefactoringType::ExtractMethod
-pub perl_parser::RefactoringType::ExtractMethod::end_position: (usize, usize)
-pub perl_parser::RefactoringType::ExtractMethod::method_name: alloc::string::String
-pub perl_parser::RefactoringType::ExtractMethod::start_position: (usize, usize)
-pub perl_parser::RefactoringType::Inline
-pub perl_parser::RefactoringType::Inline::all_occurrences: bool
-pub perl_parser::RefactoringType::Inline::symbol_name: alloc::string::String
-pub perl_parser::RefactoringType::Modernize
-pub perl_parser::RefactoringType::Modernize::patterns: alloc::vec::Vec<perl_parser::refactor::refactoring::ModernizationPattern>
-pub perl_parser::RefactoringType::MoveCode
-pub perl_parser::RefactoringType::MoveCode::elements: alloc::vec::Vec<alloc::string::String>
-pub perl_parser::RefactoringType::MoveCode::source_file: std::path::PathBuf
-pub perl_parser::RefactoringType::MoveCode::target_file: std::path::PathBuf
-pub perl_parser::RefactoringType::OptimizeImports
-pub perl_parser::RefactoringType::OptimizeImports::group_by_type: bool
-pub perl_parser::RefactoringType::OptimizeImports::remove_unused: bool
-pub perl_parser::RefactoringType::OptimizeImports::sort_alphabetically: bool
-pub perl_parser::RefactoringType::SymbolRename
-pub perl_parser::RefactoringType::SymbolRename::new_name: alloc::string::String
-pub perl_parser::RefactoringType::SymbolRename::old_name: alloc::string::String
-pub perl_parser::RefactoringType::SymbolRename::scope: perl_parser::refactor::refactoring::RefactoringScope
-pub fn perl_parser::refactor::refactoring::RefactoringType::clone(&self) -> perl_parser::refactor::refactoring::RefactoringType
-pub fn perl_parser::refactor::refactoring::RefactoringType::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::RefactoringType::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::RefactoringType::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub enum perl_parser::SuggestionPriority
 pub perl_parser::SuggestionPriority::High
 pub perl_parser::SuggestionPriority::Low
@@ -1935,48 +1454,6 @@ pub fn perl_parser::refactor::import_optimizer::OrganizationSuggestion::clone(&s
 pub fn perl_parser::refactor::import_optimizer::OrganizationSuggestion::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser::refactor::import_optimizer::OrganizationSuggestion::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_parser::refactor::import_optimizer::OrganizationSuggestion::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub struct perl_parser::RefactoringConfig
-pub perl_parser::RefactoringConfig::backup_max_age_seconds: u64
-pub perl_parser::RefactoringConfig::backup_root: core::option::Option<std::path::PathBuf>
-pub perl_parser::RefactoringConfig::create_backups: bool
-pub perl_parser::RefactoringConfig::max_backup_retention: usize
-pub perl_parser::RefactoringConfig::max_files_per_operation: usize
-pub perl_parser::RefactoringConfig::operation_timeout: u64
-pub perl_parser::RefactoringConfig::parallel_processing: bool
-pub perl_parser::RefactoringConfig::safe_mode: bool
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::clone(&self) -> perl_parser::refactor::refactoring::RefactoringConfig
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::default() -> Self
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::RefactoringConfig::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-pub struct perl_parser::RefactoringEngine
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::clear_history(&mut self) -> perl_parser_core::syntax::error::ParseResult<perl_parser::refactor::refactoring::BackupCleanupResult>
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::get_operation_history(&self) -> &[perl_parser::refactor::refactoring::RefactoringOperation]
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::index_file(&mut self, path: &std::path::Path, content: &str) -> perl_parser_core::syntax::error::ParseResult<()>
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::new() -> Self
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::refactor(&mut self, operation_type: perl_parser::refactor::refactoring::RefactoringType, files: alloc::vec::Vec<std::path::PathBuf>) -> perl_parser_core::syntax::error::ParseResult<perl_parser::refactor::refactoring::RefactoringResult>
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::rollback(&mut self, operation_id: &str) -> perl_parser_core::syntax::error::ParseResult<perl_parser::refactor::refactoring::RefactoringResult>
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::with_config(config: perl_parser::refactor::refactoring::RefactoringConfig) -> Self
-pub fn perl_parser::refactor::refactoring::RefactoringEngine::default() -> Self
-pub struct perl_parser::RefactoringOperation
-pub perl_parser::RefactoringOperation::backup_info: core::option::Option<perl_parser::refactor::refactoring::BackupInfo>
-pub perl_parser::RefactoringOperation::id: alloc::string::String
-pub perl_parser::RefactoringOperation::modified_files: alloc::vec::Vec<std::path::PathBuf>
-pub perl_parser::RefactoringOperation::operation_type: perl_parser::refactor::refactoring::RefactoringType
-pub perl_parser::RefactoringOperation::timestamp: std::time::SystemTime
-pub fn perl_parser::refactor::refactoring::RefactoringOperation::clone(&self) -> perl_parser::refactor::refactoring::RefactoringOperation
-pub fn perl_parser::refactor::refactoring::RefactoringOperation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct perl_parser::RefactoringResult
-pub perl_parser::RefactoringResult::changes_made: usize
-pub perl_parser::RefactoringResult::errors: alloc::vec::Vec<alloc::string::String>
-pub perl_parser::RefactoringResult::files_modified: usize
-pub perl_parser::RefactoringResult::operation_id: core::option::Option<alloc::string::String>
-pub perl_parser::RefactoringResult::success: bool
-pub perl_parser::RefactoringResult::warnings: alloc::vec::Vec<alloc::string::String>
-pub fn perl_parser::refactor::refactoring::RefactoringResult::clone(&self) -> perl_parser::refactor::refactoring::RefactoringResult
-pub fn perl_parser::refactor::refactoring::RefactoringResult::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_parser::refactor::refactoring::RefactoringResult::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-pub fn perl_parser::refactor::refactoring::RefactoringResult::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_parser::UnusedImport
 pub perl_parser::UnusedImport::line: usize
 pub perl_parser::UnusedImport::module: alloc::string::String
