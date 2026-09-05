@@ -109,7 +109,10 @@ $paths = New-Object System.Collections.Generic.List[string]
 $nameStatus = @(& git diff --name-status $base HEAD)
 if ($LASTEXITCODE -ne 0) { throw 'committed diff failed' }
 foreach ($line in $nameStatus) {
-  if ($line -match '^([RCA])([0-9]*)\t(.+)\t(.+)$') {
+  if ($line -match '^([RC])([0-9]*)\t(.+)\t(.+)$') {
+    # both ends of a rename/copy are in scope: moving a file out of the bundle
+    # is a scope change at its source as well as its destination
+    $paths.Add($Matches[3])
     $paths.Add($Matches[4])
   } elseif ($line -match '^([ADM])\t(.+)$') {
     # deletions are in scope too: a committed removal outside the bundle must
@@ -212,7 +215,7 @@ function Invoke-Structural-Laws($M) {
     $viewsIdx[$vid] = $true
     if (-not $v['title']) { throw "omission: title $vid" }
     if (-not $v['first_falsifier']) { throw "omission: first_falsifier $vid" }
-    if ($null -eq $v['compilation_boundary_note']) { throw "omission: compilation_boundary_note $vid" }
+    if ($v['compilation_boundary_note'] -isnot [string] -or -not $v['compilation_boundary_note'].Trim()) { throw "omission: empty compilation_boundary_note $vid" }
     foreach ($inv in $v['compiled_invariants']) {
       Assert-ExactKeys $inv @('invariant_id','statement') "invariant in $vid"
       $iid = $inv['invariant_id']
@@ -271,10 +274,20 @@ function Invoke-Structural-Laws($M) {
 }
 Invoke-Structural-Laws $manifest
 
+# index_law entry 3: every authority-plane node stays authority-plane. Pinning
+# one issue left the other twelve free to be demoted without rejection.
+$authorityPlaneIssues = @(4973, 6684, 6688, 6991, 7206, 7278, 7310, 7343, 8045, 8591, 8687, 8707, 9531)
 function Invoke-Role-Law($M) {
+  $seen = @{}
   foreach ($nd in $M['contract_nodes']) {
-    if ($nd['issue'] -eq 8591 -and $nd['role'] -notin @('controller','fan_in')) { throw 'role-law: controller demoted to builder leaf' }
+    if ([int]$nd['issue'] -in $authorityPlaneIssues) {
+      if ($nd['role'] -notin @('controller','fan_in')) { throw "role-law: authority-plane node $($nd['issue']) demoted to $($nd['role'])" }
+      $seen[[int]$nd['issue']] = 1
+    } elseif ($nd['role'] -in @('controller','fan_in')) {
+      throw "role-law: node $($nd['issue']) promoted to $($nd['role']) outside the pinned authority plane"
+    }
   }
+  foreach ($i in $authorityPlaneIssues) { if (-not $seen.ContainsKey($i)) { throw "role-law: authority-plane node $i absent" } }
 }
 function Invoke-Invariant-Uniqueness($M) {
   $s = @{}
@@ -368,33 +381,35 @@ $d1 = Semantic-Digest $manifest
 
 # --- 6. fail-closed falsifier mutations T01..T15 ---
 function Deep-Copy($node) { return ConvertFrom-Json -InputObject (ConvertTo-Json -InputObject $node -Depth 100) -AsHashtable }
-function Expect-Reject([string]$name, [scriptblock]$mutate) {
+# Each control names the discriminator it is supposed to exercise. Accepting any
+# exception let a mutation pass through an unrelated law while the named law
+# silently regressed.
+function Expect-Reject([string]$name, [scriptblock]$mutate, [string]$expect) {
   $m = Deep-Copy $manifest
   & $mutate $m
-  try { Invoke-Structural-Laws $m } catch { return }
-  try { Invoke-Role-Law $m } catch { return }
-  try { Invoke-Invariant-Uniqueness $m } catch { return }
-  try { Invoke-Consumer-Law $m } catch { return }
-  try { Invoke-Command-Spelling-Law $m } catch { return }
-  try { Invoke-View-Omission-Law $m } catch { return }
-  try { Invoke-Orphan-Law $m } catch { return }
-  try { Invoke-Root-Key-Law $m } catch { return }
-  try { Invoke-Population-Law $m } catch { return }
-  throw "negative control did not reject: $name"
+  $msg = $null
+  foreach ($law in @(
+    { Invoke-Structural-Laws $m }, { Invoke-Role-Law $m }, { Invoke-Invariant-Uniqueness $m },
+    { Invoke-Consumer-Law $m }, { Invoke-Command-Spelling-Law $m }, { Invoke-View-Omission-Law $m },
+    { Invoke-Orphan-Law $m }, { Invoke-Root-Key-Law $m }, { Invoke-Population-Law $m })) {
+    try { & $law } catch { $msg = $_.Exception.Message; break }
+  }
+  if ($null -eq $msg) { throw "negative control did not reject: $name" }
+  if ($msg -notmatch $expect) { throw "negative control ${name} rejected for the wrong reason: expected /$expect/, got '$msg'" }
 }
-Expect-Reject 'T01' { param($m) $m['contract_nodes'][0].Remove('disposition_basis') }
-Expect-Reject 'T02' { param($m) $m['next_ready_slot'] = 'x' }
-Expect-Reject 'T03' { param($m) $m['contract_nodes'][1]['stable_semantic_id'] = $m['contract_nodes'][0]['stable_semantic_id'] }
-Expect-Reject 'T04' { param($m) foreach ($nd in $m['contract_nodes']) { if ($nd['issue'] -eq 8591) { $nd['role'] = 'evidence_leaf'; break } } }
-Expect-Reject 'T05' { param($m) $clone = Deep-Copy $m['family_views'][0]['compiled_invariants'][0]; $arr2 = @($m['family_views'][2]['compiled_invariants']); $arr2 += $clone; $m['family_views'][2]['compiled_invariants'] = $arr2 }
-Expect-Reject 'T06' { param($m) $keep = @(); foreach ($nd in $m['contract_nodes']) { if (@($nd['covered_invariants']) -contains 'INV-EV-03') { continue }; $keep += $nd }; $m['contract_nodes'] = $keep }
-Expect-Reject 'T07' { param($m) $m['family_views'][2]['first_falsifier'] = '' }
-Expect-Reject 'T08' { param($m) $m['contract_nodes'][10]['covered_invariants'] = @() }
-Expect-Reject 'T09' { param($m) $m['contract_nodes'][3]['semantic_authority'] = 'authority abcdef0123456789abcd token' }
-Expect-Reject 'T10' { param($m) $m['contract_nodes'][5]['consumers'] = @('99999') }
-Expect-Reject 'T11' { param($m) $m['contract_nodes'][7]['disposition_basis'] = 'proof obligation is cargo xtask check tidy' }
-Expect-Reject 'T13' { param($m) $keep = @($m['contract_nodes']); $m['contract_nodes'] = @($keep[0..($keep.Count - 2)]) }
-Expect-Reject 'T15' { param($m) $m['contract_nodes'][0]['hard_dependency_issues'] = @([int]999999) }
+Expect-Reject 'T01' { param($m) $m['contract_nodes'][0].Remove('disposition_basis') } 'key-set mismatch'
+Expect-Reject 'T02' { param($m) $m['next_ready_slot'] = 'x' } 'root|unknown key'
+Expect-Reject 'T03' { param($m) $m['contract_nodes'][1]['stable_semantic_id'] = $m['contract_nodes'][0]['stable_semantic_id'] } 'semantic id law violated'
+Expect-Reject 'T04' { param($m) foreach ($nd in $m['contract_nodes']) { if ($nd['issue'] -eq 8591) { $nd['role'] = 'evidence_leaf'; break } } } 'role-law'
+Expect-Reject 'T05' { param($m) $clone = Deep-Copy $m['family_views'][0]['compiled_invariants'][0]; $arr2 = @($m['family_views'][2]['compiled_invariants']); $arr2 += $clone; $m['family_views'][2]['compiled_invariants'] = $arr2 } 'second authority|duplicated invariant'
+Expect-Reject 'T06' { param($m) $keep = @(); foreach ($nd in $m['contract_nodes']) { if (@($nd['covered_invariants']) -contains 'INV-EV-03') { continue }; $keep += $nd }; $m['contract_nodes'] = $keep } 'orphan authority invariant'
+Expect-Reject 'T07' { param($m) $m['family_views'][2]['first_falsifier'] = '' } 'omission: first_falsifier'
+Expect-Reject 'T08' { param($m) $m['contract_nodes'][10]['covered_invariants'] = @() } 'ownerless SPEC_COMPILED'
+Expect-Reject 'T09' { param($m) $m['contract_nodes'][3]['semantic_authority'] = 'authority abcdef0123456789abcd token' } 'hex|live-state|long hex run'
+Expect-Reject 'T10' { param($m) $m['contract_nodes'][5]['consumers'] = @('99999') } 'out-of-vocabulary consumer'
+Expect-Reject 'T11' { param($m) $m['contract_nodes'][7]['disposition_basis'] = 'proof obligation is cargo xtask check tidy' } 'command spelling'
+Expect-Reject 'T13' { param($m) $keep = @($m['contract_nodes']); $m['contract_nodes'] = @($keep[0..($keep.Count - 2)]) } 'T13 population'
+Expect-Reject 'T15' { param($m) $m['contract_nodes'][0]['hard_dependency_issues'] = @([int]999999) } 'unresolved hard dependency'
 # T12a rotation preserves semantic digest
 $rotNodes = @()
 $rotNodes += $manifest['contract_nodes'][$manifest['contract_nodes'].Count - 1]

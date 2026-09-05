@@ -142,7 +142,7 @@
         }
       ],
       "first_falsifier": "generic success or UI presence standing in for engine-confirmed install/hit evidence",
-      "compilation_boundary_note": "",
+      "compilation_boundary_note": "No external controller statement applies: the INV-BP invariants are owned inside this family by the breakpoint nodes compiled here.",
       "consumers": [
         "10558"
       ]
@@ -286,7 +286,7 @@
         }
       ],
       "first_falsifier": "cross-SHA evidence, repaired-in-place matrix rows, or green checks standing in for receipts",
-      "compilation_boundary_note": "",
+      "compilation_boundary_note": "No external controller statement applies: the INV-EV invariants are owned inside this family; exact-evidence consumption semantics remain with consumer #10558.",
       "consumers": [
         "10558"
       ]
@@ -2310,6 +2310,8 @@
   "limitations": [
     "per-node currentness and landed-vs-pending status are intentionally absent: current-tree truth belongs to probe layer #10997 and consumer #10558",
     "node completeness beyond the seven families enumerated by #10976 (error-origin stages, collection budgets, nullability subtrain, lifecycle races, backpressure, Windows containment) remains the #10558 population sweep",
-    "this index does not adjudicate individual issue outcomes; stale dispositions are corrected through the owning issue or revision governance, never silently"
+    "this index does not adjudicate individual issue outcomes; stale dispositions are corrected through the owning issue or revision governance, never silently",
+    "consumer_vocabulary is a closed superset of current usage: 4346 and 6056 are declared consumers that no contract_node currently cites, reserved as forward references for the #10558 population sweep; a node that begins citing either is admitted by the vocabulary but is not thereby justified by any compiled decision here",
+    "the five NOT_PROVEN fan_in nodes (6991, 7206, 7310, 7343, 9531) aggregate unresolvable citations rather than behavioural authority; their semantic_authority records that absence explicitly, so index_law entry 3 should be read as a role-plane statement about placement, not as a claim that these five carry compiled authority summaries"
   ]
 }
