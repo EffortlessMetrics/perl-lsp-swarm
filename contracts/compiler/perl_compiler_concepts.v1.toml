@@ -171,9 +171,9 @@ family = "dynamic"
 title = "Tie"
 ast_kinds = ["Tie"]
 parser_ast = "parsed"
-flat_hir = "absent"
+flat_hir = "boundary"
 body_hir = "opaque"
-pir_a = "absent"
+pir_a = "boundary"
 compile_effects_world = "not_applicable"
 eir_profile = "boundary"
 gold = "missing"
@@ -182,8 +182,8 @@ composition = "missing"
 provider_eligibility = "ineligible"
 ownership = "active"
 owner_issue = "#6683"
-claim_boundary = "Tie lifecycle, target place, hidden method effects, and capability boundaries are not represented."
-evidence = ["docs/project/status/hir_lowering.md", "#6683"]
+claim_boundary = "Flat HIR marks the binding with DynamicBoundary(TiedPlaceBinding) and PIR carries it as an unclassified boundary, so a tied place is no longer presented as ordinary storage. Tie lifecycle, target place identity, hidden TIE* method effects, and capability boundaries are still not represented."
+evidence = ["docs/project/status/hir_lowering.md", "#6683", "#14786"]
 
 [[concepts]]
 concept_id = "dynamic.untie"
@@ -191,9 +191,9 @@ family = "dynamic"
 title = "Untie"
 ast_kinds = ["Untie"]
 parser_ast = "parsed"
-flat_hir = "absent"
+flat_hir = "boundary"
 body_hir = "opaque"
-pir_a = "absent"
+pir_a = "boundary"
 compile_effects_world = "not_applicable"
 eir_profile = "boundary"
 gold = "missing"
@@ -202,8 +202,8 @@ composition = "missing"
 provider_eligibility = "ineligible"
 ownership = "active"
 owner_issue = "#6683"
-claim_boundary = "Untie and tied-place lifetime/destructor consequences are not represented."
-evidence = ["docs/project/status/hir_lowering.md", "#6683"]
+claim_boundary = "Flat HIR marks the release with DynamicBoundary(TiedPlaceRelease) and PIR carries it as an unclassified boundary. Tied-place lifetime, hidden UNTIE/DESTROY consequences, and the resulting storage semantics are still not represented."
+evidence = ["docs/project/status/hir_lowering.md", "#6683", "#14786"]
 
 [[concepts]]
 concept_id = "exceptions.defer"

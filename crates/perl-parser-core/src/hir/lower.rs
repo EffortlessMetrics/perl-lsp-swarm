@@ -713,6 +713,49 @@ impl Lowerer {
                 }
                 self.visit_children(node, confidence);
             }
+            // `tie`/`untie` change what a place *is*. After a tie, ordinary-looking
+            // reads and writes of the target dispatch to hidden TIE* methods, so
+            // flat HIR must not present the place as ordinary storage. Mark the
+            // boundary explicitly, then keep traversing: the class expression and
+            // the constructor arguments are ordinary Perl and still lower.
+            //
+            // The reasons are deliberately constant and do not name the tie class.
+            // Modeling the tied place identity, the hidden constructor dispatch,
+            // and the tied access classes belongs to #6683; a class name embedded
+            // in prose here would imply a machine-readable fact this slice has not
+            // established.
+            NodeKind::Tie { .. } => {
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::DynamicBoundary(DynamicBoundary {
+                        kind: DynamicBoundaryKind::TiedPlaceBinding,
+                        reason: "tie binds the place to a tie class; subsequent access \
+                                 dispatches to hidden TIE* methods"
+                            .to_string(),
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+                self.visit_children(node, confidence);
+            }
+            NodeKind::Untie { .. } => {
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::DynamicBoundary(DynamicBoundary {
+                        kind: DynamicBoundaryKind::TiedPlaceRelease,
+                        reason: "untie releases a tied place; hidden UNTIE/DESTROY effects \
+                                 and the resulting storage semantics are not modeled"
+                            .to_string(),
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+                self.visit_children(node, confidence);
+            }
             NodeKind::Regex { pattern, replacement, modifiers, has_embedded_code } => {
                 self.push_item(
                     node,

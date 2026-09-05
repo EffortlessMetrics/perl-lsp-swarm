@@ -726,6 +726,14 @@ fn map_boundary_kind(kind: DynamicBoundaryKind) -> PirDynamicBoundaryKind {
         DynamicBoundaryKind::Autoload => PirDynamicBoundaryKind::Autoload,
         DynamicBoundaryKind::SymbolicReferenceDeref => PirDynamicBoundaryKind::SymbolicReference,
         DynamicBoundaryKind::EmbeddedRegexCode => PirDynamicBoundaryKind::EmbeddedRegexCode,
+        // Tie/untie reach PIR as unclassified boundaries on purpose. The
+        // boundary itself is real — control leaves through hidden TIE*/UNTIE
+        // dispatch — so it must not be dropped, but PIR has no tied-place
+        // concept to classify it with yet. Giving it one is #6683's work, not
+        // this mapping's; `Unknown` states exactly what is known today.
+        DynamicBoundaryKind::TiedPlaceBinding | DynamicBoundaryKind::TiedPlaceRelease => {
+            PirDynamicBoundaryKind::Unknown
+        }
     }
 }
 
