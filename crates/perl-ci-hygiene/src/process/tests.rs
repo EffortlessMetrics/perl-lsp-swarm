@@ -985,13 +985,11 @@ mod child_cwd_launch_coherence {
     }
 
     #[test]
-    fn an_explicitly_configured_path_variable_overrides_the_bare_name_policy() -> TestResult {
+    fn a_caller_supplied_path_replaces_the_inherited_search_path() -> TestResult {
         let workspace = TempDir::new("coherence-explicit")?;
         let installed = TempDir::new("coherence-explicit-installed")?;
         plant(installed.path(), "INSTALLED")?;
 
-        // `configure_child` applies caller `env_vars` after the policy, so a
-        // caller that configures PATH deliberately keeps its own semantics.
         let output = command_with_output(
             workspace.path(),
             PROBE,
@@ -999,6 +997,90 @@ mod child_cwd_launch_coherence {
             &[("PATH", &installed.path().to_string_lossy())],
         )?;
         assert_eq!(output.trim(), "INSTALLED");
+        Ok(())
+    }
+
+    // #14150 review (Devin, round 3): the admission policy has to read the
+    // *effective* search path. Reading only the inherited one rejected a bare
+    // name that the caller's own absolute PATH resolves; reading only the
+    // caller's would let a relative component in an explicitly configured PATH
+    // reach `repo_root`. The inherited PATH is process-global, so these rows run
+    // in a re-exec'd child.
+
+    const CALLER_PATH_WORKSPACE_ENV: &str = "PERL_CI_HYGIENE_CALLER_PATH_WORKSPACE";
+    const CALLER_PATH_VALUE_ENV: &str = "PERL_CI_HYGIENE_CALLER_PATH_VALUE";
+    const CALLER_PATH_FILTER: &str =
+        "process::tests::child_cwd_launch_coherence::caller_path_child";
+    const CALLER_PATH_MARKER: &str = "__PERL_CI_HYGIENE_CALLER_PATH__";
+
+    /// Runs inside a child whose *inherited* PATH is unusable. Reports what the
+    /// wrapper does when the caller supplies a PATH through `env_vars`.
+    #[test]
+    fn caller_path_child() -> TestResult {
+        let Ok(workspace) = env::var(CALLER_PATH_WORKSPACE_ENV) else {
+            return Ok(());
+        };
+        let configured = env::var(CALLER_PATH_VALUE_ENV).unwrap_or_default();
+        let env_vars: Vec<(&str, &str)> =
+            if configured.is_empty() { Vec::new() } else { vec![("PATH", configured.as_str())] };
+
+        let launched = match command_with_output(Path::new(&workspace), PROBE, &[], &env_vars) {
+            Ok(stdout) => stdout.trim().to_owned(),
+            Err(error) => format!("<error: {error}>"),
+        };
+        let mut stdout = io::stdout().lock();
+        writeln!(stdout, "{CALLER_PATH_MARKER}:{launched}")?;
+        stdout.flush()?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_caller_supplied_path_is_honored_over_an_unusable_inherited_one() -> TestResult {
+        let workspace = TempDir::new("coherence-caller-workspace")?;
+        let installed = TempDir::new("coherence-caller-installed")?;
+        plant(workspace.path(), "WORKSPACE")?;
+        plant(installed.path(), "INSTALLED")?;
+
+        let report = |configured: &str| -> TestResult<String> {
+            let output = Command::new(env::current_exe()?)
+                .args([CALLER_PATH_FILTER, "--exact", "--nocapture"])
+                .env("PATH", ".")
+                .env(CALLER_PATH_WORKSPACE_ENV, workspace.path())
+                .env(CALLER_PATH_VALUE_ENV, configured)
+                .output()?;
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            stdout
+                .lines()
+                .find_map(|line| line.strip_prefix(&format!("{CALLER_PATH_MARKER}:")))
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| {
+                    io::Error::other(format!("caller-path child reported nothing: {stdout}")).into()
+                })
+        };
+
+        // The regression: an absolute PATH supplied by the caller must launch
+        // the tool even though the inherited PATH admits nothing.
+        assert_eq!(
+            report(&installed.path().to_string_lossy())?,
+            "INSTALLED",
+            "a caller-supplied absolute PATH must be honored over an unusable inherited one"
+        );
+
+        // Control: without that override the same call is refused, so the row
+        // above is not passing for some unrelated reason.
+        let refused = report("")?;
+        assert!(
+            refused.starts_with("<error:") && refused.contains("is not available"),
+            "an unusable inherited PATH with no caller override must be refused, got {refused}"
+        );
+
+        // The policy is uniform: a caller-supplied PATH that is itself
+        // unadmissible cannot reach the workspace candidate either.
+        let relative = report(".")?;
+        assert!(
+            relative.starts_with("<error:") && relative.contains("is not available"),
+            "a caller-supplied relative PATH must not reach the workspace, got {relative}"
+        );
         Ok(())
     }
 

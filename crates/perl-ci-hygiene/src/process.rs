@@ -58,39 +58,71 @@ fn apply_admissible_search_path(child: &mut Command, path: Option<&OsStr>) {
     }
 }
 
+/// Whether `key` names the search-path variable on this platform.
+///
+/// Windows environment names are case-insensitive, so `Path` and `PATH` are the
+/// same variable there. Unix names are exact.
+fn is_search_path_key(key: &str) -> bool {
+    #[cfg(windows)]
+    {
+        key.eq_ignore_ascii_case("PATH")
+    }
+    #[cfg(not(windows))]
+    {
+        key == "PATH"
+    }
+}
+
 /// Shared child construction for every wrapper in this module.
 ///
-/// A bare name is refused when the search path has no admissible component.
+/// The policy is applied to the *effective* search path — the value the child
+/// would actually use, which is a caller-supplied `PATH` when one is given and
+/// the inherited `PATH` otherwise. Evaluating only the inherited value would
+/// reject a bare name that the caller's own absolute `PATH` resolves perfectly
+/// well; evaluating only the caller's would let a relative component in an
+/// explicitly configured `PATH` reach `repo_root`. One rule over the effective
+/// value avoids both.
+///
+/// A bare name is refused when that effective path has no admissible component.
 /// Removing PATH is not an empty search list — the platform substitutes its own
 /// default directories — so launching anyway would run a tool that
 /// [`command_exists`] reports absent, which is exactly the discovery/launch
-/// disagreement this module exists to prevent. An explicit path is unaffected:
-/// the launch APIs resolve it directly and never consult a search path.
-///
-/// Caller-supplied `env_vars` are applied last, so an explicitly configured
-/// `PATH` keeps its own trust and identity policy instead of being overridden
-/// by the bare-name search policy above.
+/// disagreement this module exists to prevent. An explicit *command* path is
+/// unaffected: the launch APIs resolve it directly and never consult a search
+/// path.
 fn configure_child(
     command: &str,
     repo_root: &Path,
     args: &[&str],
     env_vars: &[(&str, &str)],
 ) -> Result<Command> {
-    let search_path = env::var_os("PATH");
-    if is_bare_name(command) && admissible_search_paths(search_path.as_deref()).is_empty() {
+    let inherited = env::var_os("PATH");
+    // Later entries win, matching `Command::env`.
+    let configured = env_vars
+        .iter()
+        .rev()
+        .find(|(key, _)| is_search_path_key(key))
+        .map(|(_, value)| OsStr::new(*value));
+    let effective = configured.or(inherited.as_deref());
+
+    if is_bare_name(command) && admissible_search_paths(effective).is_empty() {
         return Err(color_eyre::eyre::eyre!(
-            "command '{command}' is not available: PATH has no absolute component, \
-             and a relative or empty component cannot be resolved to the directory \
-             the child would run in"
+            "command '{command}' is not available: the search path has no absolute \
+             component, and a relative or empty component cannot be resolved to the \
+             directory the child would run in"
         ));
     }
 
     let mut child = Command::new(command);
     child.current_dir(repo_root).args(args);
-    apply_admissible_search_path(&mut child, search_path.as_deref());
     for (key, value) in env_vars {
-        child.env(key, value);
+        // PATH is set from the effective value below so that one policy governs
+        // it, whichever source supplied it.
+        if !is_search_path_key(key) {
+            child.env(key, value);
+        }
     }
+    apply_admissible_search_path(&mut child, effective);
     Ok(child)
 }
 
