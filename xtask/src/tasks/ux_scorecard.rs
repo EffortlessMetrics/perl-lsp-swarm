@@ -2,7 +2,9 @@ use crate::tasks::metrics::ratchet::{self, SubsystemBaseline};
 use crate::utils::project_root;
 use chrono::Utc;
 use color_eyre::eyre::{Context, Result, bail};
-use perl_lsp_ux_tests::{ScenarioScore, aggregate_editor_ux_scorecard};
+use perl_lsp_ux_tests::{
+    ScenarioScore, UxEvidenceClass, aggregate_editor_ux_scorecard, ensure_score_evidence_consistent,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -36,6 +38,14 @@ struct ScenarioMeasurement {
     diagnostics_correct: Option<bool>,
     rename_success: Option<bool>,
     cross_file_success: Option<bool>,
+    /// Evidence class of the measured row.
+    ///
+    /// Defaults to [`UxEvidenceClass::SemanticProof`] so measurement fixtures
+    /// written before the field existed keep parsing as full-proof rows; a
+    /// transport-characterization row carrying semantic metric values is
+    /// rejected by [`ensure_score_evidence_consistent`] before aggregation.
+    #[serde(default)]
+    evidence_class: UxEvidenceClass,
     latency_ms_by_request: BTreeMap<String, Vec<u64>>,
 }
 
@@ -87,6 +97,14 @@ fn run_at(
 
     let raw_measurements = load_measurements_raw(&input_path)?;
     let scenarios = load_measurements(&raw_measurements);
+    // Evidence-class consistency gate: a transport-characterization row
+    // carrying semantic metric values is a misclassification and must fail
+    // scorecard generation here instead of being silently filtered downstream
+    // (#13570).
+    for scenario in &scenarios {
+        ensure_score_evidence_consistent(scenario)
+            .map_err(|message| color_eyre::eyre::eyre!("{message}"))?;
+    }
     let scorecard = aggregate_editor_ux_scorecard(&scenarios);
     let latencies = compute_latency_percentiles(&raw_measurements);
     let scenario_ids: Vec<String> =
@@ -214,6 +232,7 @@ fn load_measurements(raw: &[ScenarioMeasurement]) -> Vec<ScenarioScore> {
                 diagnostics_correct: m.diagnostics_correct,
                 rename_success: m.rename_success,
                 cross_file_success: m.cross_file_success,
+                evidence_class: m.evidence_class,
                 mean_latency_ms,
             }
         })
@@ -571,6 +590,7 @@ mod tests {
             diagnostics_correct: None,
             rename_success: None,
             cross_file_success: cross,
+            evidence_class: UxEvidenceClass::SemanticProof,
             latency_ms_by_request: latency
                 .iter()
                 .map(|(k, v)| ((*k).to_string(), v.clone()))
@@ -667,6 +687,7 @@ mod tests {
             diagnostics_correct: None,
             rename_success: None,
             cross_file_success: None,
+            evidence_class: UxEvidenceClass::SemanticProof,
             latency_ms_by_request: BTreeMap::from([
                 ("hover".to_string(), vec![10, 20, 30]),
                 ("completion".to_string(), vec![5, 15]),
@@ -692,6 +713,7 @@ mod tests {
             diagnostics_correct: Some(false),
             rename_success: Some(true),
             cross_file_success: Some(true),
+            evidence_class: UxEvidenceClass::SemanticProof,
             latency_ms_by_request: BTreeMap::new(),
         }];
         let scenarios = load_measurements(&raw);
@@ -901,6 +923,44 @@ mod tests {
 
     fn minimal_measurement_json() -> &'static str {
         r#"[{"scenario_id":"malformed-input-regression","hover_correct":true,"completion_top1_correct":null,"completion_top5_correct":null,"definition_exact_hit":null,"symbol_correct":null,"diagnostics_correct":null,"rename_success":null,"cross_file_success":null,"latency_ms_by_request":{}}]"#
+    }
+
+    /// A transport-characterization measurement row carrying a semantic metric
+    /// is a misclassification: production scorecard generation must reject it
+    /// at ingestion instead of silently filtering it downstream (#13570).
+    #[test]
+    fn transport_row_with_semantic_metric_fails_before_writing_artifacts() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        fs::write(
+            root.path().join("measurements.json"),
+            r#"[{"scenario_id":"scenario-24-post-edit-navigation","hover_correct":null,"completion_top1_correct":null,"completion_top5_correct":null,"definition_exact_hit":true,"symbol_correct":null,"diagnostics_correct":null,"rename_success":null,"cross_file_success":null,"evidence_class":"transport_characterization","latency_ms_by_request":{}}]"#,
+        )?;
+        let output_path = root.path().join("scorecard.json");
+        let status_path = root.path().join("status.md");
+        let result = run_at(
+            root.path(),
+            UxScorecardFormat::Human,
+            Some(PathBuf::from("measurements.json")),
+            Some(PathBuf::from("scorecard.json")),
+            Some(PathBuf::from("status.md")),
+            false,
+        );
+
+        let error = match result {
+            Ok(()) => {
+                return Err(color_eyre::eyre::eyre!(
+                    "transport-characterization row carrying a semantic metric must fail"
+                ));
+            }
+            Err(error) => error,
+        };
+        check_true(
+            error.to_string().contains("transport characterization")
+                && error.to_string().contains("definition_exact_hit"),
+            "evidence-class rejection must name the row class and metric",
+        )?;
+        check_true(!output_path.exists(), "rejected row created scorecard artifact")?;
+        check_true(!status_path.exists(), "rejected row created status artifact")
     }
 
     #[test]
@@ -1309,6 +1369,7 @@ mod tests {
                 diagnostics_correct: Some(true),
                 rename_success: None,
                 cross_file_success: None,
+                evidence_class: UxEvidenceClass::SemanticProof,
                 latency_ms_by_request: BTreeMap::from([("hover".to_string(), vec![10, 20, 30])]),
             },
             ScenarioMeasurement {
@@ -1321,6 +1382,7 @@ mod tests {
                 diagnostics_correct: None,
                 rename_success: Some(true),
                 cross_file_success: Some(true),
+                evidence_class: UxEvidenceClass::SemanticProof,
                 latency_ms_by_request: BTreeMap::from([
                     ("completion".to_string(), vec![5, 15, 25]),
                     ("hover".to_string(), vec![50, 60, 70]),

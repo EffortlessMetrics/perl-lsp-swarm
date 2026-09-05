@@ -76,6 +76,10 @@
       "invocation_sha256": "bda2415c986c80554803c795134977c94e6052d57d6782c5dc4cf217932f2e0d"
     },
     {
+      "id": "parser.red_black_tree_delete_fixup",
+      "invocation_sha256": "3c3cbd0ebcac31428f7890ed4e11af02b54841b6b36cb1e41be0374478563f57"
+    },
+    {
       "id": "parser.ripr.seam_proof",
       "invocation_sha256": "ec3dc815f097e8edd072678a0ff03eca48908dd1c4e29845d86340481cddc1f7"
     },
