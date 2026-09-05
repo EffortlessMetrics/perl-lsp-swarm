@@ -119,6 +119,14 @@ sha = 'cd2ce8fcbc39b97be8ca5fce6e763baed58fa128'
 kind = 'legacy_debt'
 value = 'v5'
 
+# Verified against upstream on 2026-09-05 via the GitHub refs API:
+#   refs/tags/v5.0.1 -> lightweight tag on commit 368f82528645a54fb793d4d04e342629a3f51346
+[[pin]]
+action = 'actions/deploy-pages'
+sha = '368f82528645a54fb793d4d04e342629a3f51346'
+kind = 'release_tag'
+value = 'v5.0.1'
+
 [[pin]]
 action = 'actions/download-artifact'
 sha = '3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'
@@ -248,6 +256,14 @@ sha = '96fe6ef7f33517b61c61be40b68a1882f3264fb8'
 kind = 'release_tag'
 value = 'v4.2.0'
 
+# Verified against upstream on 2026-09-05 via the GitHub refs API:
+#   refs/tags/v4.3.0 -> lightweight tag on commit 1f40c72289eff860ee54a304f1438e3cff362e0a
+[[pin]]
+action = 'docker/setup-qemu-action'
+sha = '1f40c72289eff860ee54a304f1438e3cff362e0a'
+kind = 'release_tag'
+value = 'v4.3.0'
+
 [[pin]]
 action = 'dtolnay/rust-toolchain'
 sha = '6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772'
@@ -375,6 +391,14 @@ action = 'taiki-e/install-action'
 sha = '37f7c5781271959fb65b6b35224e28652ff2b63d'
 kind = 'release_tag'
 value = 'v2.87.0'
+
+# Verified against upstream on 2026-09-05 via the GitHub refs API:
+#   refs/tags/v2.87.4 -> lightweight tag on commit e67fa11c4b9316fa714ddf0abed07a0c3143b95b
+[[pin]]
+action = 'taiki-e/install-action'
+sha = 'e67fa11c4b9316fa714ddf0abed07a0c3143b95b'
+kind = 'release_tag'
+value = 'v2.87.4'
 
 # Verified against upstream on 2026-08-29:
 # github/codeql-action v4.37.8 -> db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28
