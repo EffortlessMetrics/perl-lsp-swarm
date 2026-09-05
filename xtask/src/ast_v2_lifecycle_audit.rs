@@ -71,7 +71,7 @@ const V2_CRATE_PATH: &str = "perl_ast_v2";
 /// together with the manifest bytes; patching around it silently is exactly what
 /// the pin exists to prevent.
 pub const PINNED_CANONICAL_DIGEST: &str =
-    "8FBE19F2CFC6A2413D2BA90F6E3544CAA9274AA970E71762EC6629C9C9527377";
+    "A9555F6B85B9C6B8779425A497FB195A5D74C3E118761117DE1C466A23125BDF";
 
 // ---------------------------------------------------------------------------
 // Code-owned v1 vocabularies. A cardinality check lets a repinned manifest
@@ -302,46 +302,82 @@ pub fn derive_public_items(source: &str) -> Result<Vec<DerivedItem>> {
         .map_err(|err| color_eyre::eyre::eyre!("failed to parse the v2 crate source: {err}"))?;
 
     let mut derived = Vec::new();
-    for item in &file.items {
+    collect_public_items(&file.items, V2_CRATE_PATH, &mut derived)?;
+    derived.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(derived)
+}
+
+/// Walk one module's items, recursing into public inline modules.
+///
+/// The unhandled-kind arm **bails**. Skipping instead would be the single worst
+/// defect this instrument could have: a `pub fn`, `pub const`, `pub trait`,
+/// `pub union` or `pub use` added to the crate would produce no row, no error
+/// and no drift, so the "a public item cannot land without a row" claim would
+/// be silently false for every item shape the match does not name. An audit that
+/// cannot model a public item must say so, not pass.
+fn collect_public_items(
+    items: &[syn::Item],
+    module_path: &str,
+    derived: &mut Vec<DerivedItem>,
+) -> Result<()> {
+    for item in items {
+        // Non-public items are genuinely out of scope, so they are skipped
+        // before the unhandled-kind check — otherwise a private helper `fn`
+        // would fail the audit for no reason.
+        if let Some(vis) = item_visibility(item)
+            && !is_public(vis)
+        {
+            continue;
+        }
+
         match item {
-            syn::Item::Type(alias) if is_public(&alias.vis) => {
+            syn::Item::Type(alias) => {
                 let name = alias.ident.to_string();
                 derived.push(DerivedItem {
-                    path: format!("{V2_CRATE_PATH}::{name}"),
+                    path: format!("{module_path}::{name}"),
                     kind: "type_alias".to_string(),
-                    shape: format!("type {name} = {}", render_type(&alias.ty)?),
+                    shape: format!(
+                        "type {name}{} = {}",
+                        render_generics(&alias.generics)?,
+                        render_type(&alias.ty)?
+                    ),
                 });
             }
-            syn::Item::Struct(item_struct) if is_public(&item_struct.vis) => {
+            syn::Item::Struct(item_struct) => {
                 let name = item_struct.ident.to_string();
                 derived.push(DerivedItem {
-                    path: format!("{V2_CRATE_PATH}::{name}"),
+                    path: format!("{module_path}::{name}"),
                     kind: "struct".to_string(),
                     shape: format!(
-                        "struct {name} {} {}",
+                        "struct {name}{} {}{} {}",
+                        render_generics(&item_struct.generics)?,
                         render_derives(&item_struct.attrs)?,
+                        render_non_exhaustive(&item_struct.attrs),
                         render_fields(&item_struct.fields, FieldContext::Struct)?
                     ),
                 });
             }
-            syn::Item::Enum(item_enum) if is_public(&item_enum.vis) => {
+            syn::Item::Enum(item_enum) => {
                 let name = item_enum.ident.to_string();
                 derived.push(DerivedItem {
-                    path: format!("{V2_CRATE_PATH}::{name}"),
+                    path: format!("{module_path}::{name}"),
                     kind: "enum".to_string(),
                     shape: format!(
-                        "enum {name} {} ({} variants)",
+                        "enum {name}{} {}{} ({} variants)",
+                        render_generics(&item_enum.generics)?,
                         render_derives(&item_enum.attrs)?,
+                        render_non_exhaustive(&item_enum.attrs),
                         item_enum.variants.len()
                     ),
                 });
                 for variant in &item_enum.variants {
                     let variant_name = variant.ident.to_string();
                     derived.push(DerivedItem {
-                        path: format!("{V2_CRATE_PATH}::{name}::{variant_name}"),
+                        path: format!("{module_path}::{name}::{variant_name}"),
                         kind: "enum_variant".to_string(),
                         shape: format!(
-                            "variant {variant_name} {}",
+                            "variant {variant_name}{} {}",
+                            render_non_exhaustive(&variant.attrs),
                             render_fields(&variant.fields, FieldContext::Variant)?
                         ),
                     });
@@ -359,7 +395,7 @@ pub fn derive_public_items(source: &str) -> Result<Vec<DerivedItem>> {
                     Some((trait_path, _)) => {
                         let trait_name = render_path(trait_path)?;
                         derived.push(DerivedItem {
-                            path: format!("{V2_CRATE_PATH}::{self_name} as {trait_name}"),
+                            path: format!("{module_path}::{self_name} as {trait_name}"),
                             kind: "trait_impl".to_string(),
                             shape: format!("impl {trait_name} for {self_name}"),
                         });
@@ -374,7 +410,7 @@ pub fn derive_public_items(source: &str) -> Result<Vec<DerivedItem>> {
                             }
                             let method_name = method.sig.ident.to_string();
                             derived.push(DerivedItem {
-                                path: format!("{V2_CRATE_PATH}::{self_name}::{method_name}"),
+                                path: format!("{module_path}::{self_name}::{method_name}"),
                                 kind: "associated_fn".to_string(),
                                 shape: render_signature(&method.sig)?,
                             });
@@ -382,12 +418,136 @@ pub fn derive_public_items(source: &str) -> Result<Vec<DerivedItem>> {
                     }
                 }
             }
-            _ => {}
+            syn::Item::Mod(module) => {
+                let Some((_, inner)) = &module.content else {
+                    bail!(
+                        "`pub mod {}` has no inline body, so its public surface lives in another \
+                         file that this derivation does not read. The audited crate is a single \
+                         file by contract; splitting it requires teaching the derivation to \
+                         follow modules.",
+                        module.ident
+                    );
+                };
+                let nested = format!("{module_path}::{}", module.ident);
+                collect_public_items(inner, &nested, derived)?;
+            }
+            other => bail!(
+                "the audit derivation cannot model this public item ({}) in `{module_path}`. It \
+                 must be handled explicitly: silently skipping it would mean a public item had \
+                 landed with no inventory row and no error, which is the exact failure this \
+                 audit exists to prevent.",
+                describe_item(other)
+            ),
+        }
+    }
+    Ok(())
+}
+
+/// The visibility of an item, where the item kind has one.
+///
+/// `impl` blocks and macro invocations have no visibility of their own; they
+/// return `None` and are dispatched on kind instead.
+fn item_visibility(item: &syn::Item) -> Option<&syn::Visibility> {
+    match item {
+        syn::Item::Const(x) => Some(&x.vis),
+        syn::Item::Enum(x) => Some(&x.vis),
+        syn::Item::ExternCrate(x) => Some(&x.vis),
+        syn::Item::Fn(x) => Some(&x.vis),
+        syn::Item::Mod(x) => Some(&x.vis),
+        syn::Item::Static(x) => Some(&x.vis),
+        syn::Item::Struct(x) => Some(&x.vis),
+        syn::Item::Trait(x) => Some(&x.vis),
+        syn::Item::TraitAlias(x) => Some(&x.vis),
+        syn::Item::Type(x) => Some(&x.vis),
+        syn::Item::Union(x) => Some(&x.vis),
+        syn::Item::Use(x) => Some(&x.vis),
+        _ => None,
+    }
+}
+
+/// A human-readable label for an item kind, for the fail-closed message.
+fn describe_item(item: &syn::Item) -> String {
+    match item {
+        syn::Item::Const(x) => format!("pub const {}", x.ident),
+        syn::Item::Fn(x) => format!("pub fn {}", x.sig.ident),
+        syn::Item::Static(x) => format!("pub static {}", x.ident),
+        syn::Item::Trait(x) => format!("pub trait {}", x.ident),
+        syn::Item::TraitAlias(x) => format!("pub trait alias {}", x.ident),
+        syn::Item::Union(x) => format!("pub union {}", x.ident),
+        syn::Item::Use(_) => "a pub use re-export".to_string(),
+        syn::Item::ExternCrate(x) => format!("pub extern crate {}", x.ident),
+        syn::Item::Macro(_) => {
+            "a macro invocation, whose expansion is not visible here".to_string()
+        }
+        syn::Item::ForeignMod(_) => "an extern block".to_string(),
+        _ => "an item kind this derivation has no name for".to_string(),
+    }
+}
+
+/// Render item-level generics, which are public contract.
+///
+/// Adding a lifetime, a type parameter, or a bound on one narrows or widens the
+/// API without touching a single field, so a shape that ignored generics would
+/// let a breaking change land under an unmoved row.
+fn render_generics(generics: &syn::Generics) -> Result<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for param in &generics.params {
+        match param {
+            syn::GenericParam::Lifetime(lifetime) => {
+                parts.push(format!("'{}", lifetime.lifetime.ident));
+            }
+            syn::GenericParam::Type(ty) => {
+                let mut rendered = ty.ident.to_string();
+                let mut bounds: Vec<String> = Vec::new();
+                for bound in &ty.bounds {
+                    match bound {
+                        syn::TypeParamBound::Trait(trait_bound) => {
+                            bounds.push(render_path(&trait_bound.path)?);
+                        }
+                        syn::TypeParamBound::Lifetime(lifetime) => {
+                            bounds.push(format!("'{}", lifetime.ident));
+                        }
+                        other => bail!(
+                            "the audit derivation cannot render this generic bound: {other:?}"
+                        ),
+                    }
+                }
+                if !bounds.is_empty() {
+                    bounds.sort();
+                    rendered.push_str(&format!(": {}", bounds.join(" + ")));
+                }
+                parts.push(rendered);
+            }
+            // `GenericParam` is exhaustive in syn 3, so there is no catch-all
+            // arm here: adding one would be dead code, and a future variant
+            // would surface as a compile error, which is the stronger signal.
+            syn::GenericParam::Const(konst) => {
+                parts.push(format!("const {}: {}", konst.ident, render_type(&konst.ty)?));
+            }
         }
     }
 
-    derived.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(derived)
+    let where_clause = match &generics.where_clause {
+        Some(clause) => format!(" where[{} predicates]", clause.predicates.len()),
+        None => String::new(),
+    };
+
+    if parts.is_empty() {
+        Ok(where_clause)
+    } else {
+        Ok(format!("<{}>{where_clause}", parts.join(", ")))
+    }
+}
+
+/// Record `#[non_exhaustive]`, which is public contract: adding it stops
+/// downstream exhaustive matching and literal construction, and no field or
+/// derive would record the change.
+fn render_non_exhaustive(attrs: &[syn::Attribute]) -> &'static str {
+    if attrs.iter().any(|attr| attr.path().is_ident("non_exhaustive")) {
+        " non_exhaustive"
+    } else {
+        ""
+    }
 }
 
 /// Derive the production `NodeKind` variant names the parity rows may cite.
@@ -585,12 +745,38 @@ fn render_type(ty: &syn::Type) -> Result<String> {
             Ok(format!("({})", parts.join(", ")))
         }
         syn::Type::Slice(slice) => Ok(format!("[{}]", render_type(&slice.elem)?)),
-        syn::Type::Array(array) => Ok(format!("[{}; _]", render_type(&array.elem)?)),
+        // The length is part of the type. Rendering `[u8; _]` would make
+        // `[u8; 4]` and `[u8; 8]` share a shape, so a breaking width change
+        // could land under an unmoved row.
+        syn::Type::Array(array) => {
+            Ok(format!("[{}; {}]", render_type(&array.elem)?, render_const_expr(&array.len)?))
+        }
         syn::Type::Paren(paren) => render_type(&paren.elem),
         syn::Type::Group(group) => render_type(&group.elem),
         syn::Type::Never(_) => Ok("!".to_string()),
         other => bail!(
             "the audit derivation cannot render this type shape; it must be handled \
+             explicitly rather than approximated: {other:?}"
+        ),
+    }
+}
+
+/// Render a const expression appearing in a type position (an array length).
+///
+/// Deliberately narrow: a literal or a named const path, and fail closed on
+/// anything else rather than reduce a computed length to a placeholder that a
+/// different length would share.
+fn render_const_expr(expr: &syn::Expr) -> Result<String> {
+    match expr {
+        syn::Expr::Lit(lit) => match &lit.lit {
+            syn::Lit::Int(int) => Ok(int.base10_digits().to_string()),
+            other => {
+                bail!("the audit derivation cannot render this array length literal: {other:?}")
+            }
+        },
+        syn::Expr::Path(path) => render_path(&path.path),
+        other => bail!(
+            "the audit derivation cannot render this array length expression; it must be handled \
              explicitly rather than approximated: {other:?}"
         ),
     }
@@ -673,9 +859,113 @@ fn contains_token(text: &str, token: &str) -> bool {
     false
 }
 
-/// Whether any reference token appears as a whole word in `text`.
+/// Two v2 types are public API of `perl-parser-core` under unqualified names
+/// (`crates/perl-parser-core/src/lib.rs:97`). A consumer reaching them that way
+/// writes `perl_parser_core::DiagnosticId` and names none of the four tokens
+/// above, so a token scan alone silently drops it.
+///
+/// This was not a theoretical gap. `crates/perl-parser-core/tests/diagnostic_id_tests.rs`
+/// does exactly that and was missing from the first version of this inventory,
+/// which had recorded the blind spot and then wrongly asserted it was empty.
+/// Detecting the path mechanically is worth more than documenting it.
+///
+/// Both the direct form and the grouped-import form are matched, because
+/// `use perl_parser_core::{DiagnosticId, ParseError};` reaches the same type.
+static REEXPORTED_TYPE_PATH: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    #[expect(
+        clippy::expect_used,
+        reason = "a literal pattern that fails to compile is a build-time defect in this module, \
+                  not a runtime condition a caller could handle"
+    )]
+    regex::Regex::new(
+        r"perl_parser_core::(?:\{[^}]*\b(?:DiagnosticId|MissingKind)\b|(?:DiagnosticId|MissingKind)\b)",
+    )
+    .expect("the re-exported-type pattern is a valid literal regex")
+});
+
+/// Whether `text` reaches the audited package by any known path.
 pub fn mentions_audited_package(text: &str) -> bool {
     REFERENCE_TOKENS.iter().any(|token| contains_token(text, token))
+        || REEXPORTED_TYPE_PATH.is_match(text)
+}
+
+/// Rust path forms that mean a file actually *reaches the API*, as opposed to
+/// naming the crate as a string.
+///
+/// These are all `::`-joined Rust paths. A policy glob (`"crates/perl-ast-v2/**"`)
+/// or a crate-name inventory entry (`"perl-ast-v2",`) is hyphenated and matches
+/// none of them, which is exactly the distinction the role vocabulary draws.
+static API_USE_FORM: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    #[expect(
+        clippy::expect_used,
+        reason = "a literal pattern that fails to compile is a build-time defect in this module, \
+                  not a runtime condition a caller could handle"
+    )]
+    regex::Regex::new(
+        r"\bperl_ast_v2\s*(?:::|as\b)|\bast_v2\s*::|\bperl_ast::v2\b|perl_parser_core::(?:\{[^}]*\b(?:DiagnosticId|MissingKind)\b|(?:DiagnosticId|MissingKind)\b)",
+    )
+    .expect("the API-use pattern is a valid literal regex")
+});
+
+/// Whether a Rust file reaches the package's API from code, ignoring comments.
+///
+/// This stops the inverse of falsifier 9. The scan knows a file references the
+/// package; without this it does not know *how*, so a real code consumer could
+/// be relabelled `docs_reference` with its symbols emptied and slip out of every
+/// gating check — the non-gating roles are exactly the ones that skip the symbol
+/// and scan requirements.
+///
+/// Deliberately scoped two ways. Only `.rs` files are examined, because a TOML
+/// policy row that names the crate is a genuine `policy_inventory` reference and
+/// not API use. And only `::`-joined Rust path forms count, so a crate name
+/// inside a string literal — a coverage fixture path, an allowlist glob — stays
+/// correctly classifiable as inventory rather than being forced to a code role.
+pub fn references_package_api_in_code(text: &str, path: &str) -> bool {
+    if !path.ends_with(".rs") {
+        return false;
+    }
+    let mut stripped = String::with_capacity(text.len());
+    let mut in_block = false;
+    for line in text.lines() {
+        let mut rest = line;
+        loop {
+            if in_block {
+                match rest.find("*/") {
+                    Some(end) => {
+                        rest = &rest[end + 2..];
+                        in_block = false;
+                    }
+                    None => {
+                        rest = "";
+                        break;
+                    }
+                }
+            }
+            let block_start = rest.find("/*");
+            let line_start = rest.find("//");
+            match (block_start, line_start) {
+                (Some(b), Some(l)) if b < l => {
+                    stripped.push_str(&rest[..b]);
+                    rest = &rest[b + 2..];
+                    in_block = true;
+                }
+                (_, Some(l)) => {
+                    stripped.push_str(&rest[..l]);
+                    rest = "";
+                    break;
+                }
+                (Some(b), None) => {
+                    stripped.push_str(&rest[..b]);
+                    rest = &rest[b + 2..];
+                    in_block = true;
+                }
+                (None, None) => break,
+            }
+        }
+        stripped.push_str(rest);
+        stripped.push('\n');
+    }
+    API_USE_FORM.is_match(&stripped)
 }
 
 /// Roots scanned for the gating consumer denominator.
@@ -1498,6 +1788,26 @@ fn reconcile_consumers(m: &Manifest, repo_root: &Path) -> Result<()> {
                  symbol use is unknown is not an inventoried consumer",
                 row.consumer_id,
                 row.role
+            );
+        }
+
+        // The inverse of falsifier 9, and the one the first version missed: a
+        // real code consumer relabelled `docs_reference` or `policy_inventory`
+        // escapes every gating check, because those roles are exactly the ones
+        // that skip the symbol and scan requirements. Classification must answer
+        // to the file, so a non-gating role is only available to a file that
+        // does not reach the package from code.
+        if !gating
+            && let Ok(text) = std::fs::read_to_string(repo_root.join(&row.file))
+            && references_package_api_in_code(&text, &row.file)
+        {
+            bail!(
+                "consumer {} claims the non-gating role `{}`, but `{}` reaches the audited \
+                 package's API from Rust code, not from a comment or a crate-name string. A real \
+                 consumer cannot be downgraded to a prose mention.",
+                row.consumer_id,
+                row.role,
+                row.file
             );
         }
     }

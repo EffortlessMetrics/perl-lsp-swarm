@@ -784,6 +784,163 @@ fn a_symlink_hiding_a_reference_fails_closed_but_a_harmless_one_does_not() -> Re
 }
 
 #[test]
+fn an_unmodelled_public_item_stops_the_audit_instead_of_vanishing() -> Result<()> {
+    // The single worst defect this instrument could have. The first revision's
+    // derivation matched only type/struct/enum/impl and skipped everything else,
+    // so a crate containing all six of these produced ZERO rows and ZERO errors
+    // — the "a public item cannot land without a row" claim was silently false
+    // for every item shape the match did not name.
+    for (label, source) in [
+        ("free fn", "pub fn helper(x: u8) -> u8 { x }"),
+        ("const", "pub const LIMIT: usize = 4;"),
+        ("static", "pub static NAME: &str = \"n\";"),
+        ("trait", "pub trait Visitor { fn visit(&self); }"),
+        ("union", "pub union Bits { pub a: u8 }"),
+        ("pub use", "pub use std::collections::HashMap;"),
+        ("extern crate", "pub extern crate serde;"),
+    ] {
+        match derive_public_items(source) {
+            Ok(items) => bail!(
+                "a public {label} must stop the audit, but it produced {} rows and no error",
+                items.len()
+            ),
+            Err(err) => assert!(
+                format!("{err:#}").contains("cannot model this public item"),
+                "{label} was rejected for the wrong reason: {err:#}"
+            ),
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_public_inline_module_is_walked_rather_than_ignored() -> Result<()> {
+    // Nesting must not hide a public item, and a non-inline `pub mod` must fail
+    // closed because its body lives in a file this derivation never reads.
+    let nested = derive_public_items("pub mod inner { pub type Hidden = u8; }")?;
+    assert_eq!(nested.len(), 1, "expected the nested item, got {nested:?}");
+    assert_eq!(nested[0].path, "perl_ast_v2::inner::Hidden");
+
+    match derive_public_items("pub mod elsewhere;") {
+        Ok(items) => bail!("a non-inline `pub mod` must fail closed, got {items:?}"),
+        Err(err) => {
+            assert!(format!("{err:#}").contains("no inline body"), "{err:#}");
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn a_private_item_the_derivation_cannot_model_is_still_skipped() -> Result<()> {
+    // The fail-closed arm must not fire on private helpers, or every ordinary
+    // edit to the crate would break the audit for no reason.
+    let derived = derive_public_items("fn helper() {}\nconst LIMIT: u8 = 1;\nmod inner { }")?;
+    assert!(derived.is_empty(), "private items must be skipped, got {derived:?}");
+    Ok(())
+}
+
+#[test]
+fn breaking_changes_that_touch_no_field_still_move_the_shape() -> Result<()> {
+    // Four collisions the first shape renderer had. Each pair is a real,
+    // breaking public-API change that left the shape string byte-identical, so
+    // it could land under an unmoved inventory row.
+    let shape_of = |src: &str| -> Result<String> {
+        let derived = derive_public_items(src)?;
+        derived
+            .iter()
+            .find(|item| item.kind == "struct" || item.kind == "enum")
+            .map(|item| item.shape.clone())
+            .ok_or_else(|| color_eyre::eyre::eyre!("no struct or enum derived from {src}"))
+    };
+
+    for (label, left, right) in [
+        (
+            "non_exhaustive",
+            "pub struct S { pub a: u8 }",
+            "#[non_exhaustive]\npub struct S { pub a: u8 }",
+        ),
+        ("array length", "pub struct S { pub a: [u8; 4] }", "pub struct S { pub a: [u8; 8] }"),
+        ("lifetime param", "pub struct S { pub a: u8 }", "pub struct S<'a> { pub a: &'a u8 }"),
+        (
+            "generic bound",
+            "pub struct S<T> { pub a: T }",
+            "pub struct S<T: Clone + Send> { pub a: T }",
+        ),
+    ] {
+        assert_ne!(
+            shape_of(left)?,
+            shape_of(right)?,
+            "{label}: a breaking change left the shape identical, so it could land under an \
+             unmoved row"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_real_code_consumer_cannot_be_downgraded_to_a_prose_mention() -> Result<()> {
+    // The inverse of falsifier 9, and the hole the first revision had: the
+    // non-gating roles skip both the symbol requirement and the scan
+    // requirement, so relabelling a real production consumer `docs_reference`
+    // and emptying its symbols escaped every check.
+    let mut value = real_value()?;
+    let row = row_mut(&mut value, "consumers", "consumer_id", "c:parser-core-trivia")?;
+    row["role"] = Value::String("docs_reference".to_string());
+    row["symbols"] = Value::Array(vec![]);
+    assert_rejected(&value, "cannot be downgraded to a prose mention")
+}
+
+#[test]
+fn naming_the_crate_in_policy_data_is_still_allowed_to_be_inventory() -> Result<()> {
+    // The downgrade check must not overreach the other way. A TOML policy row
+    // and a crate-name string in a coverage fixture genuinely are inventory
+    // references, not API use; forcing them to a gating role would be just as
+    // wrong as letting a real consumer hide.
+    assert!(!references_package_api_in_code("name = \"perl-ast-v2\"\n", "policy/x.toml"));
+    assert!(!references_package_api_in_code(
+        "let p = \"crates/perl-ast-v2/src/lib.rs\";\n",
+        "xtask/tests/fixture.rs"
+    ));
+    assert!(!references_package_api_in_code("// see perl_ast_v2::Node\n", "crates/a/src/lib.rs"));
+    // But real API use in code is caught, including through the unqualified
+    // re-export that names no package token at all.
+    assert!(references_package_api_in_code("use perl_ast_v2::Node;\n", "crates/a/src/lib.rs"));
+    assert!(references_package_api_in_code("use perl_ast::v2::NodeKind;\n", "crates/a/src/lib.rs"));
+    assert!(references_package_api_in_code(
+        "use perl_parser_core::DiagnosticId;\n",
+        "crates/a/tests/t.rs"
+    ));
+    Ok(())
+}
+
+#[test]
+fn the_unqualified_reexport_consumer_is_found_and_inventoried() -> Result<()> {
+    // This file reaches the v2 `DiagnosticId` through perl_parser_core's
+    // unqualified re-export and contains none of the four package tokens. The
+    // first revision of this inventory recorded that path as a blind spot and
+    // then asserted it was empty; it was not. Both halves are pinned here: the
+    // scan must find the file, and the manifest must carry a row for it.
+    let scanned = derive_reference_files(&repo_root_for_tests()?)?;
+    assert!(
+        scanned.contains("crates/perl-parser-core/tests/diagnostic_id_tests.rs"),
+        "the unqualified re-export path must be detected, not merely documented"
+    );
+
+    let value = real_value()?;
+    let row = value["consumers"]
+        .as_array()
+        .ok_or_else(|| color_eyre::eyre::eyre!("missing consumers"))?
+        .iter()
+        .find(|row| {
+            row.get("file").and_then(Value::as_str)
+                == Some("crates/perl-parser-core/tests/diagnostic_id_tests.rs")
+        })
+        .ok_or_else(|| color_eyre::eyre::eyre!("no consumer row for the diagnostic-id test"))?;
+    assert_eq!(row["role"].as_str(), Some("test_fixture"));
+    Ok(())
+}
+
+#[test]
 fn a_path_qualified_derive_is_recorded_rather_than_silently_dropped() -> Result<()> {
     // Adding `serde::Serialize` is a real public-contract change, and the audit
     // rows assert `serialization_disposition: not_represented`. Rendering only
@@ -905,16 +1062,90 @@ fn no_migration_or_mutation_surface_is_added() -> Result<()> {
     // #8843 inventories and rules. If this module ever grows a way to move
     // source, rewrite a manifest, publish, or delete a package, the claim
     // ceiling has been broken regardless of what the JSON says.
+    //
+    // This is an ALLOWLIST, not a denylist, and the difference is the whole
+    // point. The first version listed six forbidden strings, which ordinary
+    // code walks straight past: `File::create(..).write_all(..)`,
+    // `OpenOptions::new().write(true)`, `fs::copy`, or `use std::process::Command
+    // as Cmd` all evade every one of them. Naming what is permitted instead
+    // means any new filesystem or process call fails until someone justifies it.
+    //
+    // Honest boundary: this is a tripwire over one file's own text, not a proof
+    // of absence. It cannot see a mutating helper called in another module. It
+    // catches the realistic case — someone extending this module — and the
+    // claim it supports is scoped to that.
     let source = std::fs::read_to_string(
         repo_root_for_tests()?.join("xtask/src/ast_v2_lifecycle_audit.rs"),
     )?;
-    for forbidden in
-        ["fs::write", "fs::remove", "fs::rename", "fs::create_dir", "Command::new", "duct::"]
-    {
-        assert!(
-            !source.contains(forbidden),
-            "the audit module must stay read-only; found `{forbidden}`"
-        );
+
+    const PERMITTED_FS_CALLS: [&str; 2] = ["fs::read_to_string", "fs::read("];
+
+    let mut offenders: Vec<String> = Vec::new();
+    for (index, line) in source.lines().enumerate() {
+        // The allowlist entries themselves live in this file's prose; only
+        // inspect lines that look like code, not the doc comments describing it.
+        let code = line.split("//").next().unwrap_or("");
+        // Markers are path forms, not bare words. A bare `duct` matches
+        // "pro-duct-ion", and a bare `Command` would match ordinary prose —
+        // the same substring hazard the token scan guards against elsewhere.
+        for marker in ["fs::", "process::", "Command::", "duct::"] {
+            if !code.contains(marker) {
+                continue;
+            }
+            if marker == "fs::" && PERMITTED_FS_CALLS.iter().any(|ok| code.contains(ok)) {
+                continue;
+            }
+            offenders.push(format!("line {}: {}", index + 1, code.trim()));
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "the audit module must stay read-only; only {PERMITTED_FS_CALLS:?} are permitted, and no \
+         process execution at all. Found:\n  {}",
+        offenders.join("\n  ")
+    );
+    Ok(())
+}
+
+#[test]
+fn the_read_only_allowlist_actually_rejects_the_patterns_a_denylist_missed() -> Result<()> {
+    // A guard that only ever passes proves nothing. These are the exact shapes
+    // the previous six-string denylist let through; the allowlist must reject
+    // every one of them.
+    let evasions = [
+        "std::fs::File::create(path)?.write_all(data.as_bytes())?;",
+        "use std::fs::File as F;",
+        "std::fs::OpenOptions::new().write(true).open(path)?;",
+        "std::fs::copy(src, dst)?;",
+        "use std::process::Command as Cmd;",
+        "let out = duct::cmd!(\"rm\", path).run()?;",
+    ];
+    const PERMITTED_FS_CALLS: [&str; 2] = ["fs::read_to_string", "fs::read("];
+    for line in evasions {
+        let code = line.split("//").next().unwrap_or("");
+        let flagged = ["fs::", "process::", "Command::", "duct::"].iter().any(|marker| {
+            code.contains(marker)
+                && !(*marker == "fs::" && PERMITTED_FS_CALLS.iter().any(|ok| code.contains(ok)))
+        });
+        assert!(flagged, "the read-only guard must reject `{line}`");
+    }
+    // And it must not flag the reads this module legitimately performs, nor
+    // ordinary prose. A bare `duct` marker matches "pro-duct-ion", a word this
+    // module's own text uses constantly — the same substring hazard the token
+    // scan guards against, caught here by a control rather than in review.
+    for permitted in [
+        "let text = std::fs::read_to_string(path)?;",
+        "let bytes = std::fs::read(p)?;",
+        "\"production_implementation\",",
+        "the production AST source declares no NodeKind enum",
+    ] {
+        let flagged = ["fs::", "process::", "Command::", "duct::"].iter().any(|marker| {
+            permitted.contains(marker)
+                && !(*marker == "fs::"
+                    && PERMITTED_FS_CALLS.iter().any(|ok| permitted.contains(ok)))
+        });
+        assert!(!flagged, "the read-only guard must permit `{permitted}`");
     }
     Ok(())
 }

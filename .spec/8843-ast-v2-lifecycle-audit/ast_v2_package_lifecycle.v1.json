@@ -14,7 +14,7 @@
     "v2_source": "crates/perl-ast-v2/src/lib.rs",
     "v1_ast_source": "crates/perl-ast/src/ast.rs",
     "public_item_instrument": "syn parse of the crate source, walking public type aliases, structs, enums, enum variants, inherent public associated functions and trait impls. Each row records a normalized shape covering derives, field names and types, and signatures, so a field or derive change cannot land under an unmoved row. Type rendering is total over the shapes these sources use and fails closed on anything else rather than approximating.",
-    "consumer_instrument": "Whole-word scan for perl_ast_v2, perl-ast-v2, ast_v2 and perl_ast::v2 across .rs and .toml files under the gating scan roots. Word boundaries are required on both sides, so ast_v2 does not match ast_v2_lifecycle_audit. The scan finds references; it does not classify them, and the role column is authored.",
+    "consumer_instrument": "Whole-word scan for perl_ast_v2, perl-ast-v2, ast_v2 and perl_ast::v2 across .rs and .toml files under the gating scan roots, plus a pattern for perl_parser_core's unqualified DiagnosticId / MissingKind re-export, which names none of those tokens. Word boundaries are required on both sides, so ast_v2 does not match ast_v2_lifecycle_audit. The scan finds references and, separately, whether a reference occurs in code or only in a comment: the role column is authored, but a file that reaches the package from code cannot be given a non-gating role.",
     "gating_scan_roots": [
       "crates",
       "xtask",
@@ -70,6 +70,7 @@
       "consumer_ids": [
         "c:ast-tests-comprehensive",
         "c:parser-core-root-reexport",
+        "c:parser-core-tests-diagnostic-id",
         "c:v2-tests-node-kinds",
         "c:v2-tests-sexp"
       ],
@@ -372,8 +373,8 @@
       "currentness_disposition": "not_applicable",
       "parity_note": "An independent lossy debug projection over an abbreviated grammar, silently eliding children below depth 128 as `...`. It is neither the native machine output authority (#8044) nor Tree-sitter compatibility (#8047), and it must not be read as parity evidence for either.",
       "consumer_ids": [
-        "c:ast-tests-additional",
         "c:ast-tests-comprehensive",
+        "c:parser-core-tests-ast-node",
         "c:v2-tests-node-kinds",
         "c:v2-tests-sexp"
       ],
@@ -792,7 +793,9 @@
       "currentness_disposition": "not_applicable",
       "parity_note": "Public entry point to the same depth-limited debug projection as Node::to_sexp. Truncation is silent: a truncated rendering is indistinguishable from a tree that genuinely ends in `...`.",
       "consumer_ids": [
-        "c:v2-tests-node-kinds",
+        "c:ast-tests-additional",
+        "c:ast-tests-comprehensive",
+        "c:parser-core-tests-ast-node",
         "c:v2-tests-sexp"
       ],
       "replacement_path": "perl_ast::v2::NodeKind::to_sexp",
@@ -884,8 +887,8 @@
       "currentness_disposition": "not_applicable",
       "parity_note": "Trait impl delegating to new(). It is public API: removing it is a breaking change no field or signature row would record, which is why trait impls are inventoried separately.",
       "consumer_ids": [
-        "c:v2-tests-node-kinds",
-        "c:v2-tests-sexp"
+        "c:ast-tests-comprehensive",
+        "c:v2-tests-node-kinds"
       ],
       "replacement_path": "perl_ast::v2::NodeIdGenerator as Default",
       "earliest_removal_owner": "#8847"
@@ -1154,6 +1157,15 @@
       "proposition": "Proves MissingKind is reachable through perl_parser_core::ast_v2 and names every variant."
     },
     {
+      "consumer_id": "c:parser-core-tests-diagnostic-id",
+      "file": "crates/perl-parser-core/tests/diagnostic_id_tests.rs",
+      "role": "test_fixture",
+      "symbols": [
+        "perl_parser_core::DiagnosticId"
+      ],
+      "proposition": "Reaches the v2 DiagnosticId through perl_parser_core's UNQUALIFIED re-export, so the file names none of the four package tokens. This is the blind spot the audit documented; the first revision then wrongly asserted it was empty. The loader now detects this path directly, so the row is scanned rather than merely authored."
+    },
+    {
       "consumer_id": "c:policy-topology",
       "file": "policy/repository-topology.toml",
       "role": "policy_inventory",
@@ -1378,7 +1390,7 @@
     "independent_lifecycle_evidence_ids": [],
     "unknowns": [
       "Non-registry external use (vendored copies, private forks) is not observable with any instrument available here; ev:external-source-search records this as unavailable rather than as zero.",
-      "A consumer reaching MissingKind or DiagnosticId through perl_parser_core's unqualified re-export (rx:parser-core-types) has no textual dependency on the perl-ast-v2 name, so no name-based search would find it.",
+      "Consumers reaching DiagnosticId or MissingKind through perl_parser_core's unqualified re-export (rx:parser-core-types) carry no textual dependency on the perl-ast-v2 name. The loader now matches that specific path, but the general shape of the problem stands: this package is reachable under names that never mention it.",
       "The reverse-dependency figure is a point-in-time observation from 2026-09-05 and ages; #8847 must re-observe rather than inherit it."
     ]
   },
@@ -1400,7 +1412,7 @@
     }
   ],
   "limitations": [
-    "The consumer scan is textual. A consumer that reaches the package only through perl_parser_core's unqualified DiagnosticId or MissingKind re-export, or through a grouped import such as use perl_ast::{v2, ast}, names none of the four tokens and would not be found. No such consumer exists on the authored basis, but the instrument cannot promise it.",
+    "The consumer scan is textual. The first revision of this inventory recorded the unqualified perl_parser_core::DiagnosticId / MissingKind re-export as a blind spot and then wrongly asserted no consumer used it; crates/perl-parser-core/tests/diagnostic_id_tests.rs did, and was missing. That path is now matched directly by the loader, in both its qualified and grouped-import forms, so it is checked rather than assumed. The residual gap is narrower but real: a consumer reaching the package through a grouped import such as use perl_ast::{v2, ast}, through a wildcard use perl_parser_core::*, or through a locally aliased re-export of its own, still names no matched token. No such consumer exists on the authored basis, and the instrument cannot promise it.",
     "syn sees declarations, not semantics. The public-item denominator is exact; whether a consumer depends on a variant's meaning rather than its name is an authored judgement.",
     "Per-variant consumer attribution was resolved by alias-aware analysis of each consumer file, because v1 and v2 share 16 variant names. That analysis is authored input to this manifest, not a check the loader re-runs; the loader verifies that every consumer id resolves and that every named production counterpart still exists.",
     "External evidence is a point-in-time registry observation from 2026-09-05. It ages, and the loader cannot refresh it.",
