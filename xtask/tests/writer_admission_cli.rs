@@ -103,24 +103,42 @@ fn low_disk_blocks() -> Result<()> {
 }
 
 #[test]
-fn writer_collision_open_pr_blocks() -> Result<()> {
+fn open_pr_is_candidate_presence_not_writer_collision() -> Result<()> {
+    // Legacy fixture name retained to avoid churn: the same observed open
+    // PR must now prove candidate presence/reuse, not a live second writer.
     let (ok, stdout) = run_fixture("writer-collision-open-pr.json")?;
     assert!(ok);
-    assert!(stdout.contains("\"verdict\": \"BLOCK\""), "expected BLOCK verdict, got: {stdout}");
+    assert!(stdout.contains("\"verdict\": \"PASS\""), "expected PASS verdict, got: {stdout}");
     assert!(
-        stdout.contains("writer-collision"),
-        "expected writer-collision check to fire: {stdout}"
+        stdout.contains("candidate-presence"),
+        "expected candidate-presence check to surface the existing PR: {stdout}"
+    );
+    assert!(
+        stdout.contains("reuse/resume") && stdout.contains("not live-writer evidence"),
+        "expected open PR to be routed to reuse/resume without inventing liveness: {stdout}"
+    );
+    assert!(
+        !stdout.contains("\"name\": \"writer-collision\""),
+        "PR existence must not synthesize a writer-collision check: {stdout}"
     );
     Ok(())
 }
 
 #[test]
-fn gh_unavailable_is_not_proven_never_a_silent_pass() -> Result<()> {
+fn gh_unavailable_does_not_invent_writer_collision() -> Result<()> {
+    // Candidate lookup is useful for reuse, but GitHub availability cannot
+    // prove whether another session is alive. Local safety checks remain
+    // authoritative for this command's verdict.
     let (ok, stdout) = run_fixture("gh-unavailable-not-proven.json")?;
     assert!(ok, "advisory-first must still exit 0: {stdout}");
+    assert!(stdout.contains("\"verdict\": \"PASS\""), "expected PASS verdict, got: {stdout}");
     assert!(
-        stdout.contains("\"verdict\": \"NOT_PROVEN\""),
-        "gh-unavailable must yield NOT_PROVEN, never a silent PASS: {stdout}"
+        stdout.contains("candidate-presence") && stdout.contains("do not infer"),
+        "unavailable PR lookup must remain candidate uncertainty, not writer liveness: {stdout}"
+    );
+    assert!(
+        !stdout.contains("\"name\": \"writer-collision\""),
+        "missing GitHub evidence must not invent a writer-collision check: {stdout}"
     );
     Ok(())
 }
