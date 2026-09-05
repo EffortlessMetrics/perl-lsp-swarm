@@ -229,6 +229,27 @@ pub const AST_NODE_GEOMETRY_FIELDS: &[AstGeometryField] = &[
         payload_role: Some(crate::AstPayloadPolicy::DeclarationNameAnchor),
         disposition: AstGeometryDisposition::SourceExact,
     },
+    // `DataSection` mirrors `Format`: an opaque payload region plus an exact anchor
+    // naming the construct that introduces it. The marker span covers the
+    // `__DATA__` / `__END__` keyword itself — a declaration name anchor by the same
+    // rule as `PhaseBlock.phase_span` above — while the body span covers arbitrary
+    // trailing text that is not Perl and carries no interior structure to preserve.
+    AstGeometryField {
+        kind_name: "DataSection",
+        field: "marker_span",
+        shape: AstGeometryShape::Optional,
+        mapping: AstGeometryMapping::MapRange,
+        payload_role: Some(crate::AstPayloadPolicy::DeclarationNameAnchor),
+        disposition: AstGeometryDisposition::SourceExact,
+    },
+    AstGeometryField {
+        kind_name: "DataSection",
+        field: "body_span",
+        shape: AstGeometryShape::Optional,
+        mapping: AstGeometryMapping::MapRange,
+        payload_role: Some(crate::AstPayloadPolicy::OpaqueSourceRegion),
+        disposition: AstGeometryDisposition::SourceBoundary,
+    },
     AstGeometryField {
         kind_name: "Class",
         field: "name_span",
@@ -872,7 +893,18 @@ pub fn observe_geometry_fields(kind: &NodeKind) -> Vec<ObservedGeometryField> {
         NodeKind::PhaseBlock { phase: _, phase_span, block: _ } => {
             optional_span("phase_span", phase_span.is_some())
         }
-        NodeKind::DataSection { marker: _, body: _ } => NONE,
+        NodeKind::DataSection { marker: _, marker_span, body: _, body_span } => vec![
+            ObservedGeometryField {
+                field: "marker_span",
+                shape: AstGeometryShape::Optional,
+                occurrences: usize::from(marker_span.is_some()),
+            },
+            ObservedGeometryField {
+                field: "body_span",
+                shape: AstGeometryShape::Optional,
+                occurrences: usize::from(body_span.is_some()),
+            },
+        ],
         NodeKind::Class { name: _, name_span, parents: _, body: _ } => {
             optional_span("name_span", name_span.is_some())
         }

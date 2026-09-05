@@ -225,7 +225,11 @@ pub const AST_NODE_POLICIES: &[AstNodePolicy] = &[
     policy!("Use", Leaf, Exact, ProfileControlled, NotApplicable, NotApplicable, NotApplicable, &[AstPayloadPolicy::DeclarationNameAnchor]),
     policy!("No", Leaf, Exact, ProfileControlled, NotApplicable, NotApplicable, NotApplicable, &[AstPayloadPolicy::DeclarationNameAnchor]),
     policy!("PhaseBlock", ChildBearing, Exact, ProfileControlled, Required, Nondecreasing, MayOverlap, &[AstPayloadPolicy::DeclarationNameAnchor]),
-    policy!("DataSection", SourceBoundary, Mixed, ProfileControlled, NotApplicable, NotApplicable, NotApplicable, &[AstPayloadPolicy::OpaqueSourceRegion]),
+    // Declares both roles for the same reason `Format` does: the opaque trailing
+    // payload earns the `SourceBoundary` classification, while the `__DATA__` /
+    // `__END__` marker span is an exact declaration-name anchor. Its policy tuple
+    // is otherwise identical to `Format`'s.
+    policy!("DataSection", SourceBoundary, Mixed, ProfileControlled, NotApplicable, NotApplicable, NotApplicable, &[AstPayloadPolicy::DeclarationNameAnchor, AstPayloadPolicy::OpaqueSourceRegion]),
     policy!("Class", ChildBearing, Exact, ProfileControlled, Required, Nondecreasing, MayOverlap, &[AstPayloadPolicy::DeclarationNameAnchor]),
     policy!("Format", SourceBoundary, Mixed, ProfileControlled, NotApplicable, NotApplicable, NotApplicable, &[AstPayloadPolicy::DeclarationNameAnchor, AstPayloadPolicy::OpaqueSourceRegion]),
     policy!("Identifier", Leaf, Exact, ProfileControlled, NotApplicable, NotApplicable, NotApplicable, &[AstPayloadPolicy::IdentifierExact]),
@@ -617,7 +621,7 @@ pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
                 body_span: Some(loc)
             },
             &["marker", "body"],
-            &["marker_span", "body_span"]
+            &[]
         ),
         fixture!(
             NodeKind::Class {
