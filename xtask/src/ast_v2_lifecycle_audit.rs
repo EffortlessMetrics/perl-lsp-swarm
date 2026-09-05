@@ -2773,6 +2773,64 @@ fn reconcile_parity_counterparts(m: &Manifest, repo_root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Whether a consumer row's declared role contradicts what its own path — and,
+/// for `public_reexport`, its content — already settle.
+///
+/// The role was a closed vocabulary and nothing more, so the four gating roles
+/// were interchangeable: a `package_dependency` relabelled
+/// `production_implementation` reconciled green while #8845's migration
+/// breakdown described the wrong work.
+///
+/// Only what the source actually settles is asserted here. A crate manifest is
+/// a manifest; an integration-test target is not production code; a
+/// `public_reexport` must really publish one.
+///
+/// Deliberately **not** asserted: that a `test_fixture` must live under
+/// `tests/`. A `#[cfg(test)]` module inside `src/` is a real and legitimate
+/// shape for that role, and the path alone cannot tell such a file from a
+/// production one. The reverse direction *is* certain — a file under `tests/`
+/// is not production — so that is the direction taken. Guessing the other way
+/// would fire on other people's PRs, which is the failure mode this instrument
+/// is most obliged to avoid.
+fn role_contradiction(role: &str, file: &str, publishes_reexport: Option<bool>) -> Option<String> {
+    let is_manifest = file == "Cargo.toml" || file.ends_with("/Cargo.toml");
+    let is_rust = file.ends_with(".rs");
+    let is_test_target = file.contains("/tests/") || file.contains("/benches/");
+    let rust_role =
+        matches!(role, "production_implementation" | "test_fixture" | "public_reexport");
+
+    if role == "package_dependency" && !is_manifest {
+        return Some(format!(
+            "role `package_dependency` describes a crate manifest, but `{file}` is not a \
+             `Cargo.toml`"
+        ));
+    }
+    if rust_role && is_manifest {
+        return Some(format!(
+            "`{file}` is a crate manifest, so its role can only be `package_dependency`, not \
+             `{role}`"
+        ));
+    }
+    if rust_role && !is_rust {
+        return Some(format!(
+            "role `{role}` describes Rust source, but `{file}` is not a `.rs` file"
+        ));
+    }
+    if role == "production_implementation" && is_test_target {
+        return Some(format!(
+            "`{file}` is an integration-test target, so its role is not \
+             `production_implementation`"
+        ));
+    }
+    if role == "public_reexport" && publishes_reexport == Some(false) {
+        return Some(format!(
+            "role `public_reexport` claims `{file}` publishes a public path to the package, but \
+             the re-export derivation finds none there"
+        ));
+    }
+    None
+}
+
 fn reconcile_consumers(m: &Manifest, repo_root: &Path, scanned: &BTreeSet<String>) -> Result<()> {
     let all_files: BTreeSet<&str> = m.consumers.iter().map(|row| row.file.as_str()).collect();
 
@@ -2825,6 +2883,31 @@ fn reconcile_consumers(m: &Manifest, repo_root: &Path, scanned: &BTreeSet<String
                     row.file
                 );
             }
+        }
+
+        // The role is what #8845 reads to size each part of the migration, so a
+        // role the source contradicts is a wrong instruction to a successor, not
+        // a cosmetic mislabel.
+        //
+        // Deliberately *after* the scan and existence checks. Those answer a
+        // prior question — whether the row describes anything at all — and a row
+        // that fails them should say so in their terms. Checking the role first
+        // preempted `a_gating_row_naming_a_file_that_does_not_reference_the_package_is_rejected`,
+        // which promotes a prose row to a production role: it must still be
+        // rejected for the scan finding no reference, not merely for the file
+        // not ending in `.rs`.
+        let publishes_reexport = if row.role == "public_reexport" {
+            match std::fs::read_to_string(repo_root.join(&row.file)) {
+                Ok(text) => Some(!derive_public_reexports(&text).is_empty()),
+                // Unreadable is not evidence of absence; the checks above own
+                // that case and report it in their own terms.
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+        if let Some(contradiction) = role_contradiction(&row.role, &row.file, publishes_reexport) {
+            bail!("consumer {}: {contradiction}", row.consumer_id);
         }
 
         // A dependency whose exact symbol use is unknown is not an inventoried
@@ -3094,14 +3177,36 @@ fn reconcile_reexport_inventory(
         claimed_by_file.entry(file).or_default().extend(row_reexport_paths(row)?);
     }
 
-    // A derived binding is what the row's public path ends in. The row records
-    // the path from the crate root (`perl_parser::compat::ast_v2`); the
-    // derivation sees only what is inside one file, so it renders `ast_v2` at
-    // file top level and `compat::ast_v2` inside `pub mod compat`. Matching on a
-    // `::`-segment suffix accepts both while keeping two same-named bindings in
-    // one file distinct: `a::ast_v2` does not satisfy a row for `b::ast_v2`.
-    let claims = |claimed: &BTreeSet<String>, binding: &str| -> bool {
-        claimed.iter().any(|path| path == binding || path.ends_with(&format!("::{binding}")))
+    // Whether one claimed row path is the public path of one derived binding in
+    // one file. Both halves are load-bearing:
+    //
+    // * The row records the whole path from its crate root
+    //   (`perl_parser::compat::ast_v2`), while the derivation sees only inside
+    //   one file — rendering `ast_v2` at file top level, and `compat::ast_v2`
+    //   inside `pub mod compat`. A file that *is* module `engine` therefore
+    //   yields `ast_v2` for the row `perl_parser_core::engine::ast_v2`. The
+    //   `::`-segment suffix bridges that, and keeps two same-named bindings in
+    //   one file distinct: `a::ast_v2` does not satisfy a row for `b::ast_v2`.
+    //
+    // * The suffix alone accepted **any** crate prefix, so a row could name a
+    //   crate that publishes nothing and still be validated by a real binding
+    //   in another crate's file — the inventory recording a public path that
+    //   does not exist. The path must therefore also start at the crate that
+    //   actually contains the site.
+    //
+    // This anchors both ends against the file. It still does not resolve the
+    // module graph in between, which stays the recorded limitation.
+    let binds = |file: &str, path: &str, binding: &str| -> bool {
+        let Some(root) = crate_root_of(file) else {
+            return false;
+        };
+        let Some(rest) = path.strip_prefix(&format!("{root}::")) else {
+            return false;
+        };
+        rest == binding || rest.ends_with(&format!("::{binding}"))
+    };
+    let claims = |file: &str, claimed: &BTreeSet<String>, binding: &str| -> bool {
+        claimed.iter().any(|path| binds(file, path, binding))
     };
 
     // Every public path the inventory knows about, for chaining forwarding
@@ -3116,7 +3221,7 @@ fn reconcile_reexport_inventory(
         };
         for (binding, rendered) in derived {
             for path in claimed {
-                if path == binding || path.ends_with(&format!("::{binding}")) {
+                if binds(file, path, binding) {
                     target_of.insert(path.clone(), rendered.clone());
                 }
             }
@@ -3130,7 +3235,7 @@ fn reconcile_reexport_inventory(
     for (file, derived) in &derived_by_file {
         for (binding, rendered) in derived {
             let covered =
-                claimed_by_file.get(*file).is_some_and(|claimed| claims(claimed, binding));
+                claimed_by_file.get(*file).is_some_and(|claimed| claims(file, claimed, binding));
             if !covered {
                 bail!(
                     "`{file}` publicly re-exports the audited package as `{binding}` (from \
@@ -3172,16 +3277,16 @@ fn reconcile_reexport_inventory(
             );
         };
         for path in row_reexport_paths(row)? {
-            let live = derived
-                .iter()
-                .any(|(binding, _)| path == *binding || path.ends_with(&format!("::{binding}")));
+            let live = derived.iter().any(|(binding, _)| binds(&file, &path, binding));
             if !live {
                 bail!(
                     "re-export {} claims `{file}` publishes the audited package at `{path}`, but \
                      no public re-export there binds that path any more. A path that became \
                      private, was renamed, or was removed is a compatibility change and must move \
-                     the inventory.",
-                    row.reexport_id
+                     the inventory. The path must also start at the crate that owns the site — \
+                     `{}` here.",
+                    row.reexport_id,
+                    crate_root_of(&file).unwrap_or_else(|| "<not a crate source path>".to_string())
                 );
             }
         }

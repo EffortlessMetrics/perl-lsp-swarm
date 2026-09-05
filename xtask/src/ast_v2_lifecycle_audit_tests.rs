@@ -494,6 +494,78 @@ fn a_gating_row_naming_a_file_that_does_not_reference_the_package_is_rejected() 
 }
 
 #[test]
+fn a_gating_role_the_source_contradicts_cannot_stay_in_the_inventory() -> Result<()> {
+    // The four gating roles were a closed vocabulary and nothing else, so they
+    // were interchangeable: relabelling a `Cargo.toml` row
+    // `production_implementation` reconciled green, and #8845 — which sizes each
+    // part of the migration from these roles — would have been handed the wrong
+    // breakdown. Only what the source settles is asserted.
+    for (role, file, needle) in [
+        // A manifest is a manifest, in both directions.
+        ("package_dependency", "crates/perl-ast/src/lib.rs", "is not a `Cargo.toml`"),
+        ("production_implementation", "crates/perl-ast/Cargo.toml", "can only be"),
+        ("public_reexport", "crates/perl-ast/Cargo.toml", "can only be"),
+        ("test_fixture", "crates/perl-ast/Cargo.toml", "can only be"),
+        // A Rust role needs Rust.
+        ("production_implementation", "docs/agents/NOTES.md", "is not a `.rs` file"),
+        ("test_fixture", "policy/repository-topology.toml", "is not a `.rs` file"),
+        // An integration-test target is not production code.
+        (
+            "production_implementation",
+            "crates/perl-ast/tests/comprehensive_unit_tests.rs",
+            "integration-test target",
+        ),
+    ] {
+        let contradiction = role_contradiction(role, file, None);
+        let Some(rendered) = contradiction else {
+            bail!("role `{role}` on `{file}` must be rejected as contradicted by the source");
+        };
+        assert!(
+            rendered.contains(needle),
+            "role `{role}` on `{file}` must be rejected for that reason: {rendered}"
+        );
+    }
+
+    // A `public_reexport` must really publish one; the derivation answers that,
+    // and `None` (unreadable) is never treated as absence.
+    assert!(
+        role_contradiction("public_reexport", "crates/perl-ast/src/lib.rs", Some(false))
+            .is_some_and(|rendered| rendered.contains("finds none there")),
+        "a public_reexport row over a file that publishes nothing must be rejected"
+    );
+    assert!(
+        role_contradiction("public_reexport", "crates/perl-ast/src/lib.rs", None).is_none(),
+        "an unreadable file is not evidence that it publishes nothing"
+    );
+
+    // The honest rows must all survive, or the check is a tripwire on the
+    // inventory it is meant to protect.
+    for (role, file) in [
+        ("package_dependency", "crates/perl-lexer/Cargo.toml"),
+        ("package_dependency", "Cargo.toml"),
+        ("production_implementation", "crates/perl-parser-core/src/tokens/trivia.rs"),
+        ("test_fixture", "crates/perl-ast-v2/tests/node_kinds.rs"),
+        ("docs_reference", "docs/agents/NOTES.md"),
+        ("policy_inventory", "policy/repository-topology.toml"),
+    ] {
+        assert!(
+            role_contradiction(role, file, Some(true)).is_none(),
+            "role `{role}` on `{file}` is consistent and must not be rejected"
+        );
+    }
+
+    // The direction deliberately left unasserted: a `#[cfg(test)]` module inside
+    // `src/` is a legitimate `test_fixture`, and the path cannot tell it from a
+    // production file. Rejecting it would fire on other people's PRs.
+    assert!(
+        role_contradiction("test_fixture", "crates/perl-parser-core/src/tokens/trivia.rs", None)
+            .is_none(),
+        "a test fixture inside src/ is a real shape and must not be guessed at"
+    );
+    Ok(())
+}
+
+#[test]
 fn the_consumer_scan_actually_finds_the_known_production_sites() -> Result<()> {
     // Positive control for the scan itself: if the walker silently found nothing,
     // every "no row" test above would pass vacuously.
@@ -1805,6 +1877,48 @@ fn a_reexport_that_stops_being_public_cannot_stay_inventoried() -> Result<()> {
 }
 
 #[test]
+fn a_reexport_row_must_name_the_crate_that_owns_its_site() -> Result<()> {
+    // Row paths were matched against derived bindings by `::`-segment suffix
+    // alone. The suffix is needed — the derivation sees only inside one file, so
+    // a file that *is* module `engine` renders `ast_v2` for the row
+    // `perl_parser_core::engine::ast_v2` — but on its own it accepted any crate
+    // prefix whatsoever. A row could therefore name a crate that publishes
+    // nothing and be validated by a real binding in a different crate's file:
+    // the compatibility inventory recording a public path that does not exist,
+    // which is the one thing these rows are for.
+    let live = sources(&[("crates/perl-ast/src/lib.rs", "pub use perl_ast_v2 as v2;")]);
+
+    // The honest row still reconciles.
+    let correct = reexport_rows(&[("rx:known", "perl_ast::v2", "crates/perl-ast/src/lib.rs:93")])?;
+    reconcile_reexport_inventory(&correct, &live)?;
+
+    // The same binding suffix under a crate that does not own the site must not.
+    for wrong in ["perl_parser::v2", "perl_ast_v2::v2", "not_a_crate::v2"] {
+        let rows = reexport_rows(&[("rx:wrong", wrong, "crates/perl-ast/src/lib.rs:93")])?;
+        let Err(err) = reconcile_reexport_inventory(&rows, &live) else {
+            bail!("a row claiming `{wrong}` at a `perl-ast` site must not reconcile");
+        };
+        let rendered = format!("{err:?}");
+        assert!(
+            rendered.contains("perl_ast"),
+            "the rejection must name the crate that owns the site: {rendered}"
+        );
+    }
+
+    // The suffix relaxation the prefix check must not have broken: a row whose
+    // path carries an intermediate module the file cannot see still binds, so
+    // long as it starts at that file's own crate.
+    let nested = sources(&[("crates/perl-parser-core/src/engine/mod.rs", "pub use perl_ast_v2;")]);
+    let engine_row = reexport_rows(&[(
+        "rx:engine",
+        "perl_parser_core::engine::perl_ast_v2",
+        "crates/perl-parser-core/src/engine/mod.rs:12",
+    )])?;
+    reconcile_reexport_inventory(&engine_row, &nested)?;
+    Ok(())
+}
+
+#[test]
 fn a_public_reexport_inside_a_public_module_is_a_public_path() -> Result<()> {
     // `pub mod compat { pub use perl_ast_v2 as ast_v2; }` publishes the package
     // exactly as a top-level `pub use` does. A top-level-only walk called such a
@@ -1834,8 +1948,8 @@ fn a_forwarding_reexport_must_terminate_in_the_inventory() -> Result<()> {
     // terminate in the inventory, so swapping one for an unrelated module names
     // a path no row describes.
     let rows = reexport_rows(&[
-        ("rx:direct", "the_crate::engine::ast_v2", "crates/c/src/engine/mod.rs:1"),
-        ("rx:forward", "the_crate::ast_v2", "crates/c/src/lib.rs:1"),
+        ("rx:direct", "c::engine::ast_v2", "crates/c/src/engine/mod.rs:1"),
+        ("rx:forward", "c::ast_v2", "crates/c/src/lib.rs:1"),
     ])?;
 
     let chained = sources(&[
@@ -2014,7 +2128,7 @@ fn a_public_extern_crate_alias_is_a_public_path() -> Result<()> {
     assert!(derive_public_reexports("pub extern crate serde as ast_v2;").is_empty());
 
     // It reconciles like any other public path: no row, no pass.
-    let rows = reexport_rows(&[("rx:one", "the_crate::other", "crates/c/src/lib.rs:1")])?;
+    let rows = reexport_rows(&[("rx:one", "c::other", "crates/c/src/lib.rs:1")])?;
     let sources = sources(&[(
         "crates/c/src/lib.rs",
         "pub use perl_ast_v2 as other;\npub extern crate perl_ast_v2 as ast_v2;",
@@ -2036,8 +2150,8 @@ fn a_forwarding_chain_that_never_reaches_the_package_is_rejected() -> Result<()>
     // pointing at each other passed with no direct export anywhere — the
     // inventory vouching for itself.
     let rows = reexport_rows(&[
-        ("rx:a", "the_crate::a::ast_v2", "crates/c/src/a.rs:1"),
-        ("rx:b", "the_crate::b::ast_v2", "crates/c/src/b.rs:1"),
+        ("rx:a", "c::a::ast_v2", "crates/c/src/a.rs:1"),
+        ("rx:b", "c::b::ast_v2", "crates/c/src/b.rs:1"),
     ])?;
 
     // The cycle: a forwards to b, b forwards to a, neither names the package.
@@ -2083,7 +2197,7 @@ fn a_nested_module_sharing_the_package_name_is_not_the_package() -> Result<()> {
     assert!(!names_package_directly("perl_parser_core::Parser"));
 
     // End to end: the lookalike must now be forced to chain, and fail.
-    let rows = reexport_rows(&[("rx:one", "the_crate::ast_v2", "crates/c/src/lib.rs:1")])?;
+    let rows = reexport_rows(&[("rx:one", "c::ast_v2", "crates/c/src/lib.rs:1")])?;
     let lookalike = sources(&[("crates/c/src/lib.rs", "pub use other::perl_ast_v2 as ast_v2;")]);
     let Err(err) = reconcile_reexport_inventory(&rows, &lookalike) else {
         bail!("a nested lookalike must not satisfy a compatibility row");
@@ -2112,7 +2226,7 @@ fn two_modules_exporting_one_alias_are_two_compatibility_paths() -> Result<()> {
     );
 
     // One row cannot cover both, and the row that exists covers only its own.
-    let rows = reexport_rows(&[("rx:a", "the_crate::a::ast_v2", "crates/c/src/lib.rs:1")])?;
+    let rows = reexport_rows(&[("rx:a", "c::a::ast_v2", "crates/c/src/lib.rs:1")])?;
     let both = sources(&[("crates/c/src/lib.rs", source)]);
     let Err(err) = reconcile_reexport_inventory(&rows, &both) else {
         bail!("the second module's public path must demand its own row");
