@@ -12,7 +12,11 @@ use std::time::{Duration, Instant};
 const INDEX_READY_WAIT_MS: u64 = 2_000;
 const INDEX_READY_POLL_MS: u64 = 1;
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
-const INDEXING_START_GATE_WAIT_MS: u64 = 5_000;
+// 30s: the timeout only bites when a test stalls before releasing the
+// gate; a dropped release sender disconnects immediately. The long leash
+// keeps gate-based race tests stable under fully parallel test loads
+// (#13308).
+const INDEXING_START_GATE_WAIT_MS: u64 = 30_000;
 
 /// LSP-level milestones used to measure when startup indexing becomes useful.
 #[allow(dead_code)] // Provider readiness hooks land in the follow-up workload slice.
@@ -600,6 +604,37 @@ pub(crate) fn notify_workspace_indexing_started(
             tracing::warn!(
                 timeout_ms = INDEXING_START_GATE_WAIT_MS,
                 "readiness indexing start gate was not released before timeout"
+            );
+        }
+    }
+}
+
+#[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+pub(crate) fn set_indexing_commit_gate(
+    gate: &std::sync::Mutex<Option<WorkspaceIndexingStartGate>>,
+    started: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+) {
+    if let Ok(mut gate) = gate.lock() {
+        *gate = Some(WorkspaceIndexingStartGate { started, release });
+    }
+}
+
+/// Test-only gate fired inside the startup scan's per-file commit critical
+/// section, after `indexing_transition_lock` is acquired (#13308). It lets a
+/// regression test pause the background indexer at exactly the point where
+/// didOpen's insertion must wait for it.
+#[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+pub(crate) fn notify_indexing_commit_gate(
+    gate: &std::sync::Mutex<Option<WorkspaceIndexingStartGate>>,
+) {
+    let gate = gate.lock().ok().and_then(|mut gate| gate.take());
+    if let Some(gate) = gate {
+        let _ = gate.started.send(());
+        if gate.release.recv_timeout(Duration::from_millis(INDEXING_START_GATE_WAIT_MS)).is_err() {
+            tracing::warn!(
+                timeout_ms = INDEXING_START_GATE_WAIT_MS,
+                "indexing commit gate was not released before timeout"
             );
         }
     }
