@@ -27,7 +27,7 @@ export interface SupportCommandDependencies {
   readonly editorName?: string | undefined;
 }
 
-function sanitizeDiagnosticField(value: string | undefined, fallback: string): string {
+export function sanitizeDiagnosticField(value: string | undefined, fallback: string): string {
   const firstLine = (value ?? '').split(/\r\n|[\n\r\u2028\u2029]/, 1)[0] ?? '';
   const printable = firstLine.replace(/[\u0000-\u001f\u007f-\u009f]/g, (character) => {
     const codePoint = character.charCodeAt(0).toString(16).padStart(4, '0');

@@ -97,7 +97,10 @@ toml = "1.1.2"
 nix = { version = "0.31.3", features = ["signal"] }  # For SIGINT handling (AC9)
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3.9", features = ["processthreadsapi", "winnt", "handleapi"] }  # For read-only process existence checks (AC9, #3028)
+winapi = { version = "0.3.9", features = ["processthreadsapi", "winnt", "handleapi", "namedpipeapi", "jobapi2", "tlhelp32"] }  # For bounded test-process-tree cleanup and pipe polling
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
 
 [features]
 # The shipped package contains the native adapter only. External implementations
@@ -187,9 +190,16 @@ path = "tests/dap_non_regression_tests.rs"
 # AC:17 Phase 3 non-regression: protocol shape, seq monotonicity, capabilities consistency (#435)
 
 [[test]]
+name = "dap_capability_advertising_tests"
+path = "tests/dap_capability_advertising_tests.rs"
+# Capability refusal proof uses the stopped-session test helper.
+required-features = ["test-helpers"]
+
+[[test]]
 name = "dap_step_through_tests"
 path = "tests/dap_step_through_tests.rs"
 # AC:3535 Comprehensive step-through debugging tests: stepIn, stepOut, stepOver, continue, pause, gotoTargets, cancel
+required-features = ["test-helpers"]
 
 [[test]]
 name = "dap_syntax_check_tests"
@@ -383,6 +393,11 @@ path = "tests/error_class_fixed_origin.rs"
 name = "debugger_output_origin"
 path = "tests/debugger_output_origin.rs"
 # #8746: originated stack/variable parse classification by caller-supplied origin
+
+[[test]]
+name = "backend_error_class"
+path = "tests/backend_error_class.rs"
+# #8758: a peer-reported failure is a reported outcome, never an adapter bug
 
 [[test]]
 name = "wave_h_security_edge_cases"

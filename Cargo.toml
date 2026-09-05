@@ -348,6 +348,7 @@ tree-sitter = "0.26.9"
 ropey = "1.6.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+sha1 = "0.11"
 sha2 = "0.11.0"
 strum = { version = "0.28", features = ["derive"] }
 regex = "1.12.2"
@@ -415,6 +416,15 @@ dbg_macro = "deny"
 # Async discipline: lock-across-await is a deadlock/perf risk (#2899).
 await_holding_lock = "deny"
 await_holding_refcell_ref = "deny"
+# let_underscore_lock: activated by #14444 after a zero-site confirmation on a
+# complete workspace --all-targets measurement (force-warn pierces allows).
+# This row covers non-std guards only — borrowed `parking_lot` mutex and
+# read/write guards. Standard-library guards are owned by the
+# `rust::let_underscore_lock` row below; the two identities partition the
+# surface and do not overlap. Both rows match only `let _ = <borrowed guard>`;
+# owned arc guards, `drop(m.lock())`, and mapped guards are outside what either
+# lint sees. That measured gap is #14579.
+let_underscore_lock = "deny"
 # mutex_atomic: prefer proper Mutex over atomic-loaded Mutex guards (#2899).
 mutex_atomic = "warn"
 # collapsible_if: activated by #6305 after the 293-site burn-down (#6375-#6380)
@@ -429,7 +439,9 @@ collapsible_match = "deny"
 decimal_bitwise_operands = "warn"
 duration_suboptimal_units = "warn"
 needless_type_cast = "warn"
-manual_ilog2 = "warn"
+# manual_ilog2: promoted to deny by #9896 after a zero-site confirmation on a
+# complete workspace --all-targets measurement (force-warn pierces allows).
+manual_ilog2 = "deny"
 manual_take = "deny"
 unnecessary_trailing_comma = "warn"
 # wildcard_imports: Phase 1 (warn) — measures violations before crate-by-crate fix (#2333).
@@ -447,3 +459,10 @@ disallowed_fields = "deny"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(ci)', 'cfg(feature, values("slow_tests"))'] }
+# let_underscore_lock: standard-library synchronization guards (`std::sync`
+# mutex and read/write guards). rustc denies this by default, but a default is
+# not a repository contract: an upstream level change would silently remove the
+# invariant. #14444 states it explicitly so the contract survives that change,
+# and pairs it with the `clippy::let_underscore_lock` row above, which covers
+# the `parking_lot` guards rustc does not see.
+let_underscore_lock = "deny"

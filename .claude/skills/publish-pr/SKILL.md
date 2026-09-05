@@ -42,6 +42,8 @@ the claim and non-goals; then name risk, rollback, and review locations.
 ## Review index
 ```
 
+Proportionality mirrors `review-pr`'s carve-out: a candidate whose cumulative diff is mechanical — generated regeneration, lint-site collapse, allowlist row removal, comment-only edits — may publish a reduced index of three sections: **Claim**, **Proof**, and **What this does not establish**. The full index remains the default for anything crossing a production seam.
+
 ## Enforcement status is part of the claim
 
 When a candidate adds or changes a gate, check, linting check, ratchet, or policy, state in the body whether it is **required** or **advisory**, and resolve that against live protection rather than intent. A body implying a gate blocks merge when it runs advisory overstates the claim, and the overstatement survives the merge as documentation.

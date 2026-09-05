@@ -1,0 +1,14 @@
+{
+  "schema": "fixture.v1",
+  "packet_id": "client-wrong",
+  "selector": "fixture.subject",
+  "rail_id": "fixture.client",
+  "subject": "client@other-platform",
+  "source_result": "pass",
+  "state": "current",
+  "supersedes": null,
+  "digest": "sha256:30d94286d5912732267ec672475f9fce00f24bdbf008b3e3a6195b74807eaed5",
+  "limitations": [],
+  "nonclaims": [],
+  "detail": {}
+}

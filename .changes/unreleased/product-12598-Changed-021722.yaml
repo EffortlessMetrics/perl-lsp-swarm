@@ -1,0 +1,9 @@
+project: product
+component: Tooling hygiene
+kind: Changed
+body: "Activate `clippy::map_err_ignore` deny for three Cohort C1 crates: `perl-position-tracking`, `perl-uri`, and `perl-semantic-analyzer`. Each production finding is covered by a `#[expect(clippy::map_err_ignore, reason = ...)]` — `LineRecord::new` impossible-rejection in `push_byte` (position-tracking), unit-typed `Url::from_file_path` error in `fs_path_to_uri` (uri), and lock-poison class in `index_file_str` (semantic-analyzer). 69 total target roots now carry the deny (8+8+53)."
+time: 2026-08-27T00:00:00Z
+custom:
+  PR: "12848"
+  Slug: map-err-ignore-c1-three-crates-12598
+  Breaking: "no"

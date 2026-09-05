@@ -147,6 +147,7 @@ fn all_strict_keeps_the_default_bundle() -> TestResult {
 fn all_strict_boundary_discriminator_input_that_hits_the_boundary_strict_refs_true() -> TestResult {
     let state = PragmaState::all_strict();
     let expected = PragmaState {
+        perl_version: None,
         strict_vars: true,
         strict_subs: true,
         strict_refs: true,

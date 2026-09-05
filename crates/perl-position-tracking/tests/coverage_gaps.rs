@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 //! Targeted coverage tests for uncovered branches in perl-position-tracking.
 //!
 //! Each test covers a specific function or branch identified by source analysis.
@@ -112,32 +114,25 @@ fn range_contains_position_at_end_returns_false() {
     assert!(!r.contains(end));
 }
 
-// ─── LineStartsCache: CR-only line endings ──────────────────────────────────
+// ─── LineStartsCache: bare CR is source content ─────────────────────────────
 
 #[test]
 fn line_starts_cache_cr_only_position_round_trip() {
     let src = "abc\rdef\rghi";
     let cache = LineStartsCache::new(src);
-    // Line starts: 0, 4 (after \r), 8 (after \r)
-    assert_eq!(cache.offset_to_position(src, 4), (1, 0));
-    assert_eq!(cache.offset_to_position(src, 8), (2, 0));
-    // Round-trip
-    assert_eq!(cache.position_to_offset(src, 1, 0), 4);
-    assert_eq!(cache.position_to_offset(src, 2, 0), 8);
+    // Only LF starts a line; both bare CR bytes remain addressable content.
+    assert_eq!(cache.offset_to_position(src, 4), (0, 4));
+    assert_eq!(cache.offset_to_position(src, 8), (0, 8));
+    assert_eq!(cache.position_to_offset(src, 0, 4), 4);
+    assert_eq!(cache.position_to_offset(src, 0, 8), 8);
 }
 
 #[test]
-fn line_starts_cache_position_to_offset_strips_cr_from_line_end() {
-    // The inner CRLF-strip loop: ensure CR at line end is stripped when computing
-    // the line extent for position_to_offset.
+fn line_starts_cache_position_to_offset_preserves_bare_cr_content() {
     let src = "ab\rcd";
     let cache = LineStartsCache::new(src);
-    // Character 0 on line 1 should be at byte 3 ('c')
-    let off = cache.position_to_offset(src, 1, 0);
-    assert_eq!(off, 3);
-    // Character 1 on line 1 should be at byte 4 ('d')
-    let off2 = cache.position_to_offset(src, 1, 1);
-    assert_eq!(off2, 4);
+    assert_eq!(cache.position_to_offset(src, 0, 3), 3);
+    assert_eq!(cache.position_to_offset(src, 0, 4), 4);
 }
 
 // ─── LineIndex: position_to_offset last-line path (no trailing newline) ─────
