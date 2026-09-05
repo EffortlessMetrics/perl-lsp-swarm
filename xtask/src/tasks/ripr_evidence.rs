@@ -7117,6 +7117,15 @@ paths = ["archive/["]
             .ok_or_else(|| eyre!("missing summary_only array"))?;
         assert_eq!(items[0]["path"], json!("crates/foo/src/a.rs"));
         assert_eq!(items[0]["line"], json!(10));
+        // probe:a10b arrives before probe:a10a at the same (path, line). The
+        // smaller id must win, and the pair must collapse to one entry —
+        // without this the test passes whichever duplicate the fallback kept.
+        assert_eq!(items[0]["id"], json!("probe:a10a"));
+        assert_eq!(
+            items.iter().filter(|item| item["path"] == json!("crates/foo/src/a.rs")).count(),
+            1,
+            "duplicate (path, line) seams must collapse to one entry"
+        );
         assert_eq!(items[1]["path"], json!("crates/foo/src/b.rs"));
         assert_eq!(items[2]["path"], json!("crates/foo/src/e.rs"));
         assert_eq!(items[2]["line"], json!(50));
@@ -7136,6 +7145,108 @@ paths = ["archive/["]
         assert!(markdown.contains("- status: incomplete"), "{markdown}");
         assert!(markdown.contains("crates/foo/src/a.rs:10"), "{markdown}");
         assert!(markdown.contains("tool_error: ripr timed out after 600s"), "{markdown}");
+        Ok(())
+    }
+
+    /// Drives the production fallback seam (`fallback_guidance_comments` via
+    /// `write_degraded_review_comments`) with the payload shape #12860 actually
+    /// produced: many findings, each carrying an unconsumed blob the receipt
+    /// never reads.
+    ///
+    /// The existing fallback tests either reconstruct the accumulator loop by
+    /// hand — which leaves the production wiring (`BufReader` transport, the
+    /// `Start`/`Finding` event match, the base-ref guard) unproven — or use a
+    /// payload too narrow to reach `FALLBACK_GUIDANCE_LIMIT`. This closes both:
+    /// truncation and duplicate-key replacement are exercised through the same
+    /// entry point production uses, on a payload whose findings array is far
+    /// larger than anything the fallback is allowed to retain.
+    ///
+    /// Falsifies three wrong implementations: one that buffers the findings
+    /// array, one that truncates before applying a later smaller-id
+    /// replacement, and one that lets a duplicate `(path, line)` occupy two of
+    /// the bounded slots.
+    #[test]
+    fn fallback_guidance_streams_a_wide_payload_and_replaces_duplicates() -> Result<()> {
+        const SEAM_COUNT: usize = 40;
+        const BLOB_BYTES: usize = 256 * 1024;
+
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        fs::create_dir_all(repo.join("policy"))?;
+        fs::write(repo.join("policy/ripr-suppressions.toml"), "")?;
+        let raw_check = repo.join(PR_RAW_CHECK_JSON);
+        if let Some(parent) = raw_check.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        // Distinct (path, line) seams, ordered so the retained window is the
+        // first FALLBACK_GUIDANCE_LIMIT paths by sort order, not by arrival.
+        let mut findings = Vec::with_capacity(SEAM_COUNT + 1);
+        for index in (0..SEAM_COUNT).rev() {
+            let mut finding = raw_check_finding(
+                &format!("probe:seam{index:03}z"),
+                "no_static_path",
+                &format!("crates/foo/src/seam{index:03}.rs"),
+                7,
+            );
+            finding["irrelevant_diagnostics"] = Value::String("x".repeat(BLOB_BYTES));
+            findings.push(finding);
+        }
+        // A late duplicate of a retained seam, carrying a smaller id. It must
+        // replace the retained entry rather than add a slot — and it arrives
+        // after truncation has already discarded the tail.
+        findings.push(raw_check_finding(
+            "probe:seam000a",
+            "no_static_path",
+            "crates/foo/src/seam000.rs",
+            7,
+        ));
+
+        let payload = json!({ "base": "HEAD", "findings": findings }).to_string();
+        assert!(
+            payload.len() > SEAM_COUNT * BLOB_BYTES,
+            "the payload must be far larger than the retained window"
+        );
+        fs::write(&raw_check, &payload)?;
+
+        let options = ReviewCommentsOptions {
+            root: ".".to_string(),
+            base: "HEAD".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+            timeout_seconds: None,
+        };
+        write_degraded_review_comments(repo, &options, ".", "ripr timed out after 600s")?;
+
+        let packet: Value =
+            serde_json::from_str(&fs::read_to_string(repo.join(REVIEW_COMMENTS_JSON))?)?;
+        let items = packet
+            .get("summary_only")
+            .and_then(Value::as_array)
+            .ok_or_else(|| eyre!("missing summary_only array"))?;
+
+        assert_eq!(
+            items.len(),
+            FALLBACK_GUIDANCE_LIMIT,
+            "a payload of {SEAM_COUNT} seams must truncate to the guidance bound"
+        );
+        // The retained window is the sort-order prefix, not the arrival prefix.
+        for (index, item) in items.iter().enumerate() {
+            assert_eq!(item["path"], json!(format!("crates/foo/src/seam{index:03}.rs")), "{item}");
+        }
+        // The late duplicate replaced the retained entry in place.
+        assert_eq!(items[0]["id"], json!("probe:seam000a"));
+        assert_eq!(
+            items.iter().filter(|item| item["path"] == json!("crates/foo/src/seam000.rs")).count(),
+            1,
+            "the duplicate (path, line) must not consume a second bounded slot"
+        );
+        // No blob reached the receipt: the fallback reads the seam, not the payload.
+        assert!(
+            !fs::read_to_string(repo.join(REVIEW_COMMENTS_JSON))?.contains(&"x".repeat(1024)),
+            "unconsumed finding fields must not reach the receipt"
+        );
         Ok(())
     }
 
