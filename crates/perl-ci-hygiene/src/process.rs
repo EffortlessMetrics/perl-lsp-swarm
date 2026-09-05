@@ -39,9 +39,12 @@ fn admissible_search_paths(path: Option<&OsStr>) -> Vec<PathBuf> {
 /// under `current_dir(repo_root)` runs `repo_root/tool` instead.
 ///
 /// When nothing is admissible the variable is *removed* rather than set to an
-/// empty value: an empty PATH means the current directory on Unix, which is the
-/// `repo_root` candidate this policy refuses. Removing it leaves the platform's
-/// own absolute default search path, which cannot name the workspace.
+/// empty value, because an empty PATH means the current directory on Unix — the
+/// `repo_root` candidate this policy refuses. Removing it is not by itself an
+/// empty search list either: Unix `execvp` falls back to the platform's own
+/// default directories when PATH is unset, so a bare name could still resolve
+/// somewhere [`command_exists`] never looked. [`configure_child`] closes that
+/// gap by refusing to launch a bare name at all when nothing is admissible.
 fn apply_admissible_search_path(child: &mut Command, path: Option<&OsStr>) {
     match env::join_paths(admissible_search_paths(path)) {
         Ok(joined) if !joined.is_empty() => {
@@ -57,6 +60,13 @@ fn apply_admissible_search_path(child: &mut Command, path: Option<&OsStr>) {
 
 /// Shared child construction for every wrapper in this module.
 ///
+/// A bare name is refused when the search path has no admissible component.
+/// Removing PATH is not an empty search list — the platform substitutes its own
+/// default directories — so launching anyway would run a tool that
+/// [`command_exists`] reports absent, which is exactly the discovery/launch
+/// disagreement this module exists to prevent. An explicit path is unaffected:
+/// the launch APIs resolve it directly and never consult a search path.
+///
 /// Caller-supplied `env_vars` are applied last, so an explicitly configured
 /// `PATH` keeps its own trust and identity policy instead of being overridden
 /// by the bare-name search policy above.
@@ -65,14 +75,23 @@ fn configure_child(
     repo_root: &Path,
     args: &[&str],
     env_vars: &[(&str, &str)],
-) -> Command {
+) -> Result<Command> {
+    let search_path = env::var_os("PATH");
+    if is_bare_name(command) && admissible_search_paths(search_path.as_deref()).is_empty() {
+        return Err(color_eyre::eyre::eyre!(
+            "command '{command}' is not available: PATH has no absolute component, \
+             and a relative or empty component cannot be resolved to the directory \
+             the child would run in"
+        ));
+    }
+
     let mut child = Command::new(command);
     child.current_dir(repo_root).args(args);
-    apply_admissible_search_path(&mut child, env::var_os("PATH").as_deref());
+    apply_admissible_search_path(&mut child, search_path.as_deref());
     for (key, value) in env_vars {
         child.env(key, value);
     }
-    child
+    Ok(child)
 }
 
 /// Whether `command` is a bare name that the launch APIs will PATH-search.
@@ -101,7 +120,7 @@ pub(crate) fn command_with_output(
     args: &[&str],
     env_vars: &[(&str, &str)],
 ) -> Result<String> {
-    let mut child = configure_child(command, repo_root, args, env_vars);
+    let mut child = configure_child(command, repo_root, args, env_vars)?;
     child.stdout(Stdio::piped()).stderr(Stdio::piped());
     let output = child.output().wrap_err_with(|| format!("running {command}"))?;
     let status = output.status.code().unwrap_or(1);
@@ -121,7 +140,7 @@ pub(crate) fn command_with_output_all(
     args: &[&str],
     env_vars: &[(&str, &str)],
 ) -> Result<String> {
-    let mut child = configure_child(command, repo_root, args, env_vars);
+    let mut child = configure_child(command, repo_root, args, env_vars)?;
     child.stdout(Stdio::piped()).stderr(Stdio::piped());
     let output = child.output().wrap_err_with(|| format!("running {command}"))?;
     let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -144,7 +163,7 @@ pub(crate) fn command_with_input_with_status(
     env_vars: &[(&str, &str)],
     stdin_payload: &str,
 ) -> Result<(i32, String)> {
-    let mut child = configure_child(command, repo_root, args, env_vars);
+    let mut child = configure_child(command, repo_root, args, env_vars)?;
     child.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let mut child = child.spawn().wrap_err_with(|| format!("running {command}"))?;
@@ -172,7 +191,7 @@ pub(crate) fn command_output_with_status(
     args: &[&str],
     env_vars: &[(&str, &str)],
 ) -> Result<(i32, String)> {
-    let mut child = configure_child(command, repo_root, args, env_vars);
+    let mut child = configure_child(command, repo_root, args, env_vars)?;
     child.stdout(Stdio::piped()).stderr(Stdio::piped());
     let output = child.output().wrap_err_with(|| format!("running {command}"))?;
     let status = output.status.code().unwrap_or(1);
@@ -186,7 +205,7 @@ pub(crate) fn command_timed_status(
     args: &[&str],
     env_vars: &[(&str, &str)],
 ) -> Result<(i32, Duration)> {
-    let mut child = configure_child(command, repo_root, args, env_vars);
+    let mut child = configure_child(command, repo_root, args, env_vars)?;
     child.stdout(Stdio::null()).stderr(Stdio::null());
     let start = Instant::now();
     let status = child.status().wrap_err_with(|| format!("running {command}"))?;
@@ -200,7 +219,7 @@ pub(crate) fn command_with_output_allow_empty_match(
     args: &[&str],
     env_vars: &[(&str, &str)],
 ) -> Result<String> {
-    let mut child = configure_child(command, repo_root, args, env_vars);
+    let mut child = configure_child(command, repo_root, args, env_vars)?;
     child.stdout(Stdio::piped()).stderr(Stdio::piped());
     let output = child.output().wrap_err_with(|| format!("running {command}"))?;
     let status = output.status.code().unwrap_or(1);
@@ -219,7 +238,7 @@ pub(crate) fn command_with_output_allow_failure(
     args: &[&str],
     env_vars: &[(&str, &str)],
 ) -> Result<String> {
-    let mut child = configure_child(command, repo_root, args, env_vars);
+    let mut child = configure_child(command, repo_root, args, env_vars)?;
     child.stdout(Stdio::piped()).stderr(Stdio::piped());
     let output = child.output().wrap_err_with(|| format!("running {command}"))?;
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
@@ -231,7 +250,7 @@ pub(crate) fn command_status(
     args: &[&str],
     env_vars: &[(&str, &str)],
 ) -> Result<i32> {
-    let mut child = configure_child(command, repo_root, args, env_vars);
+    let mut child = configure_child(command, repo_root, args, env_vars)?;
     let status = child.status().wrap_err_with(|| format!("running {command}"))?;
     Ok(status.code().unwrap_or(1))
 }

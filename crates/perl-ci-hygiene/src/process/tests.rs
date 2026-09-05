@@ -1,5 +1,5 @@
 use super::{
-    admissible_search_paths, apply_admissible_search_path, command_exists_in_path,
+    admissible_search_paths, apply_admissible_search_path, command_exists, command_exists_in_path,
     command_output_lines, command_output_with_status, command_status, command_status_strict,
     command_timed_status, command_with_input_with_status, command_with_output,
     command_with_output_all, command_with_output_allow_empty_match,
@@ -1068,6 +1068,94 @@ mod child_cwd_launch_coherence {
                 "PATH={raw:?}: the candidate must still be reachable by the pre-repair \
                  expression, proving the fixture reproduces the defect, yet be rejected \
                  by the admission policy"
+            );
+        }
+        Ok(())
+    }
+
+    // #14150 review (Devin): removing PATH is not an empty search list. Unix
+    // `execvp` substitutes the platform's own default directories when PATH is
+    // unset, so before `configure_child` refused the launch, a wrapper could run
+    // `/bin/sh` while `command_exists("sh")` reported it absent — a
+    // discovery/launch disagreement of exactly the kind this module prevents.
+    //
+    // `sh` is deliberately an ambient platform tool rather than a repository
+    // probe: the claim is precisely about the platform default search path,
+    // which no repository-owned fixture can occupy.
+
+    const PLATFORM_TOOL: &str = "sh";
+    const DEFAULT_PATH_SCENARIO_ENV: &str = "PERL_CI_HYGIENE_DEFAULT_PATH_WORKSPACE";
+    const DEFAULT_PATH_FILTER: &str =
+        "process::tests::child_cwd_launch_coherence::platform_default_child";
+    const DEFAULT_PATH_MARKER: &str = "__PERL_CI_HYGIENE_DEFAULT_PATH__";
+
+    /// Runs inside a child with a controlled PATH. Reports whether discovery
+    /// admits a tool that lives in the platform's default directories, and
+    /// whether the production wrapper will launch it.
+    #[test]
+    fn platform_default_child() -> TestResult {
+        let Ok(workspace) = env::var(DEFAULT_PATH_SCENARIO_ENV) else {
+            return Ok(());
+        };
+        let admitted = command_exists(PLATFORM_TOOL);
+        let launched = match command_with_output(
+            Path::new(&workspace),
+            PLATFORM_TOOL,
+            &["-c", "echo RAN"],
+            &[],
+        ) {
+            Ok(stdout) => stdout.trim().to_owned(),
+            Err(error) => format!("<error: {error}>"),
+        };
+        let mut stdout = io::stdout().lock();
+        writeln!(stdout, "{DEFAULT_PATH_MARKER}:admitted={admitted},launched={launched}")?;
+        stdout.flush()?;
+        Ok(())
+    }
+
+    #[test]
+    fn an_unadmitted_path_cannot_launch_a_platform_default_tool() -> TestResult {
+        let workspace = TempDir::new("coherence-platform-default")?;
+
+        let report = |path_value: &OsStr| -> TestResult<String> {
+            let output = Command::new(env::current_exe()?)
+                .args([DEFAULT_PATH_FILTER, "--exact", "--nocapture"])
+                .env("PATH", path_value)
+                .env(DEFAULT_PATH_SCENARIO_ENV, workspace.path())
+                .output()?;
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            stdout
+                .lines()
+                .find_map(|line| line.strip_prefix(&format!("{DEFAULT_PATH_MARKER}:")))
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| {
+                    io::Error::other(format!("platform-default child reported nothing: {stdout}"))
+                        .into()
+                })
+        };
+
+        // Control: with the real PATH the tool is genuinely reachable, so the
+        // rejection below is the policy and not a missing instrument.
+        let inherited = env::var_os("PATH").unwrap_or_default();
+        assert_eq!(
+            report(&inherited)?,
+            "admitted=true,launched=RAN",
+            "the platform tool must be admitted and launched under an ordinary absolute PATH"
+        );
+
+        // With nothing admissible, discovery reports the tool absent. The
+        // launch must agree instead of falling back to the platform default
+        // directories that discovery never searched.
+        for raw in [".", "", ":", ".:"] {
+            let reported = report(OsStr::new(raw))?;
+            assert!(
+                reported.starts_with("admitted=false,launched=<error:"),
+                "PATH={raw:?}: discovery and launch must agree that the tool is \
+                 unavailable, got {reported}"
+            );
+            assert!(
+                reported.contains("is not available"),
+                "PATH={raw:?}: the refusal must name the unusable search path, got {reported}"
             );
         }
         Ok(())
