@@ -1,0 +1,28 @@
+{
+  "schema": "standalone_install_vectors.v1",
+  "contract_generation": 1,
+  "vectors": [
+    { "vector_id": "v001-archive-pair-success", "path": "vectors/v001-archive-pair-success.json" },
+    { "vector_id": "v002-archive-historical-server-only", "path": "vectors/v002-archive-historical-server-only.json" },
+    { "vector_id": "v003-registry-source-server-only", "path": "vectors/v003-registry-source-server-only.json" },
+    { "vector_id": "v004-local-development-non-authoritative", "path": "vectors/v004-local-development-non-authoritative.json" },
+    { "vector_id": "v005-provenance-required-satisfied", "path": "vectors/v005-provenance-required-satisfied.json" },
+    { "vector_id": "v006-provenance-not-required", "path": "vectors/v006-provenance-not-required.json" },
+    { "vector_id": "v007-fallback-allowed-new-branch", "path": "vectors/v007-fallback-allowed-new-branch.json" },
+    { "vector_id": "v008-fallback-forbidden-no-registry-action", "path": "vectors/v008-fallback-forbidden-no-registry-action.json" },
+    { "vector_id": "v009-transport-checksum-subject-mix", "path": "vectors/v009-transport-checksum-subject-mix.json" },
+    { "vector_id": "v010-wrong-predecessor-receipt", "path": "vectors/v010-wrong-predecessor-receipt.json" },
+    { "vector_id": "v011-missing-mandatory-stage", "path": "vectors/v011-missing-mandatory-stage.json" },
+    { "vector_id": "v012-mandatory-mislabeled-not-applicable", "path": "vectors/v012-mandatory-mislabeled-not-applicable.json" },
+    { "vector_id": "v013-pair-missing-dap", "path": "vectors/v013-pair-missing-dap.json" },
+    { "vector_id": "v014-health-failure-rollback", "path": "vectors/v014-health-failure-rollback.json" },
+    { "vector_id": "v015-path-persisted-fresh-process-fails", "path": "vectors/v015-path-persisted-fresh-process-fails.json" },
+    { "vector_id": "v016-retry-stale-completion", "path": "vectors/v016-retry-stale-completion.json" },
+    { "vector_id": "v017-cancel-before-staging", "path": "vectors/v017-cancel-before-staging.json" },
+    { "vector_id": "v018-cancel-after-promotion", "path": "vectors/v018-cancel-after-promotion.json" },
+    { "vector_id": "v019-instrument-failure-redaction", "path": "vectors/v019-instrument-failure-redaction.json" },
+    { "vector_id": "v020-latest-drift-detected", "path": "vectors/v020-latest-drift-detected.json" },
+    { "vector_id": "v021-unknown-schema-receipt", "path": "vectors/v021-unknown-schema-receipt.json" },
+    { "vector_id": "v022-retry-succeeds-erase-prior-attempt", "path": "vectors/v022-retry-succeeds-erase-prior-attempt.json" }
+  ]
+}

@@ -59,10 +59,10 @@ use tasks::{
     release_notes, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
     rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
     semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
-    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
-    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
-    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
-    validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
+    shadow_parity, srp_microcrates, standalone_vectors, supported_editor_inline_smoke,
+    swarm_agent_roster, swarm_summary, sync_release_docs, targeted_checks, test, test_lsp,
+    train_edge_contract, unwired_scan, update_homebrew, update_status, ux_regression_receipt,
+    ux_scorecard, validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
     workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
 #[cfg(feature = "parser-tasks")]
@@ -2132,6 +2132,17 @@ enum Commands {
     /// Check active install docs and release notes for stale install command drift.
     InstallSurfaceCheck,
 
+    /// Standalone install semantic conformance vectors (#11550): the
+    /// versioned deterministic corpus, independent expected-outcome oracle,
+    /// fixture-port protocol data, and mutation bank used to prove POSIX and
+    /// PowerShell transaction conformance. Proof-only: never executes
+    /// production adapters and implements no product behavior.
+    #[command(name = "standalone-vectors")]
+    StandaloneVectors {
+        #[command(subcommand)]
+        command: StandaloneVectorsCommand,
+    },
+
     /// Validate PR intent/title/body against changed paths and closeout evidence.
     IntentDiffGate {
         /// Pull request number to inspect via `gh pr view`.
@@ -2776,6 +2787,27 @@ enum CheckFilePolicyCliMode {
     Advisory,
     BlockingAllowlist,
     BlockingStrict,
+}
+
+#[derive(Subcommand)]
+enum StandaloneVectorsCommand {
+    /// Validate the corpus: schema, contract rules, independent-oracle
+    /// derivations, authored expectations, and byte-identical goldens.
+    /// `--update-golden` is an explicit writer action, never live state.
+    Check {
+        /// Rewrite the golden semantic packets.
+        #[arg(long)]
+        update_golden: bool,
+    },
+    /// Render one vector's full derivation (stage walk, receipts, ceilings,
+    /// terminal fold) and its assertion results.
+    Explain {
+        /// Vector id, e.g. v001-archive-pair-success.
+        vector: String,
+    },
+    /// Apply every registered wrong-behavior mutation to its target vectors;
+    /// fail if any mutation survives with a packet identical to its golden.
+    MutationCheck,
 }
 
 #[derive(Subcommand)]
@@ -6225,6 +6257,15 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
         Commands::DocClaims => doc_claims::run(),
         Commands::InstallSurfaceCheck => install_surface_check::run(),
+        Commands::StandaloneVectors { command } => match command {
+            StandaloneVectorsCommand::Check { update_golden } => {
+                standalone_vectors::run_check(update_golden)
+            }
+            StandaloneVectorsCommand::Explain { vector } => {
+                standalone_vectors::run_explain(&vector)
+            }
+            StandaloneVectorsCommand::MutationCheck => standalone_vectors::run_mutation_check(),
+        },
         Commands::IntentDiffGate { pr, fixture, receipt } => {
             intent_diff_gate::run(intent_diff_gate::IntentDiffGateConfig { pr, fixture, receipt })
         }

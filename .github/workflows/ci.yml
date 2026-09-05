@@ -1606,6 +1606,15 @@ jobs:
       - name: Gate-policy budget witness contract (required merge surface)
         run: cargo test -p xtask --test issue_4657_ci_workflow_contract --locked -- --nocapture
 
+      # #13295: standalone semantic conformance corpus — oracle, mutation bank,
+      # and CLI command wiring. These tests span corpus authoring rules,
+      # derivation determinism, and all 15 behavioral mutations; they are the
+      # primary negative-control surface for the standalone install semantics
+      # (#10243/#11550) and must run on the required merge surface so a broken
+      # corpus vector or a regressed oracle cannot land undetected.
+      - name: Standalone semantic conformance corpus contract (required merge surface)
+        run: cargo test -p xtask --test standalone_vectors_cli --locked -- --nocapture
+
       # #14585: nothing executed `xtask/tests/file_policy.rs`. No workflow named
       # `--test file_policy`, the merge gate runs `cargo test --workspace --lib`
       # (which does not build `tests/`), and the policy shard runs

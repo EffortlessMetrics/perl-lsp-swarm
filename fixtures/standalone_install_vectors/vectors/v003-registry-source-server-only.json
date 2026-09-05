@@ -1,0 +1,65 @@
+{
+  "vector_id": "v003-registry-source-server-only",
+  "contract_generation": 1,
+  "family": "exact_registry_source_server_only",
+  "platform_classification": "platform_neutral",
+  "intent": {
+    "operation_id": "txn-v003",
+    "attempt_id": "attempt-a1",
+    "route": "first_party_posix",
+    "mode": "exact_registry_source",
+    "selector": { "latest_requested": null },
+    "target": { "platform": "synthetic-platform", "arch": "synthetic-arch", "libc": "synthetic-libc" },
+    "requested_product_unit": "server_only",
+    "fallback_policy": "forbidden",
+    "path_policy": "persist",
+    "config_digest": "cfg-digest-v003"
+  },
+  "resolved_subject": {
+    "subject_id": "subject-v003",
+    "mode": "exact_registry_source",
+    "registry_subject": { "registry_id": "registry-synthetic", "package": "synthetic-perllsp-server", "version": "9.9.9-synthetic", "toolchain_policy_id": "toolchain-syn-v003" },
+    "product_unit": "server_only",
+    "required_executables": ["perllsp"],
+    "destination_role": "install_root",
+    "provenance_required": false
+  },
+  "stage_graph": [
+    { "stage_id": "resolve_subject", "applicability": "required", "predecessors": [], "port_script": "resolve" },
+    { "stage_id": "transport", "applicability": "not_applicable", "predecessors": [], "port_script": "unused-transport" },
+    { "stage_id": "checksum_integrity", "applicability": "not_applicable", "predecessors": [], "port_script": "unused-checksum" },
+    { "stage_id": "provenance", "applicability": "not_applicable", "predecessors": [], "port_script": "unused-provenance" },
+    { "stage_id": "archive_manifest_and_staging", "applicability": "not_applicable", "predecessors": [], "port_script": "unused-staging" },
+    { "stage_id": "source_build", "applicability": "required", "predecessors": ["resolve_subject"], "port_script": "source-build" },
+    { "stage_id": "executable_observation", "applicability": "required", "predecessors": ["source_build"], "port_script": "observe" },
+    { "stage_id": "promotion", "applicability": "required", "predecessors": ["executable_observation"], "port_script": "promote" },
+    { "stage_id": "path_persistence", "applicability": "required", "predecessors": ["promotion"], "port_script": "path" },
+    { "stage_id": "fresh_process_observation", "applicability": "required", "predecessors": ["path_persistence"], "port_script": "fresh" },
+    { "stage_id": "installed_transition", "applicability": "required", "predecessors": ["fresh_process_observation"], "port_script": "install" }
+  ],
+  "port_scripts": {
+    "resolve": { "calls": [{ "result": "success" }] },
+    "unused-transport": { "calls": [{ "result": "success" }] },
+    "unused-checksum": { "calls": [{ "result": "success" }] },
+    "unused-provenance": { "calls": [{ "result": "success" }] },
+    "unused-staging": { "calls": [{ "result": "success" }] },
+    "source-build": { "calls": [{ "result": "success", "artifacts": ["artifact-built-v003"] }] },
+    "observe": { "calls": [{ "result": "success", "executables": { "perllsp": "ok" } }] },
+    "promote": { "calls": [{ "result": "success", "effects": [{ "level": "promotion_reached", "kind": "promoted" }] }] },
+    "path": { "calls": [{ "result": "success", "effects": [{ "level": "path_persisted", "kind": "path_persisted" }] }] },
+    "fresh": { "calls": [{ "result": "success" }] },
+    "install": { "calls": [{ "result": "success", "effects": [{ "level": "installed_claim", "kind": "installed_claim" }] }] }
+  },
+  "expected": {
+    "terminal_result": "succeeded",
+    "terminal_stage": "installed_transition",
+    "reason_family": "none",
+    "action_class": "none",
+    "side_effect_ceiling": "installed_claim",
+    "claim_ceiling": "installed_release_claim",
+    "pair_claims_satisfied": false,
+    "branch_count": 1,
+    "attempt_count": 1
+  },
+  "redaction": { "forbidden_tokens": [] }
+}
