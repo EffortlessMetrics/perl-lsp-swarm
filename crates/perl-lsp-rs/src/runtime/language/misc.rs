@@ -55,14 +55,34 @@ fn truncate_inlay_hint_label(hint: &mut Value, max_chars: usize) {
     let Some(label) = hint.get_mut("label") else {
         return;
     };
-    let Some(text) = label.as_str() else {
-        return;
-    };
-    if text.chars().count() <= max_chars {
-        return;
+    match label {
+        Value::String(text) if text.chars().count() > max_chars => {
+            *text = text.chars().take(max_chars).collect();
+        }
+        Value::Array(parts) => {
+            // Spend the budget across the parts in order; parts past the budget
+            // are dropped rather than left empty.
+            let mut remaining = max_chars;
+            parts.retain_mut(|part| {
+                let Some(text) = part.get("value").and_then(Value::as_str).map(str::to_owned)
+                else {
+                    return true;
+                };
+                if remaining == 0 {
+                    return false;
+                }
+                let count = text.chars().count();
+                if count > remaining {
+                    part["value"] = Value::String(text.chars().take(remaining).collect());
+                    remaining = 0;
+                } else {
+                    remaining -= count;
+                }
+                true
+            });
+        }
+        _ => {}
     }
-
-    *label = Value::String(text.chars().take(max_chars).collect());
 }
 
 #[derive(Debug, Clone)]
@@ -614,13 +634,9 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         if let Some(mut hint) = params {
-            // If hint already has both tooltip and labelDetails, return as-is
-            if hint.get("tooltip").is_some() && hint.get("labelDetails").is_some() {
-                return Ok(Some(hint));
-            }
-
             // Extract hint properties for tooltip and label location generation
-            let label = hint.get("label").and_then(|l| l.as_str()).unwrap_or("").to_string();
+            let label =
+                crate::inlay_hints::inlay_hint_label_str(&hint).unwrap_or_default().to_string();
             let kind = hint.get("kind").and_then(|k| k.as_u64()).unwrap_or(0);
 
             // Add tooltip if not already present.
@@ -671,8 +687,11 @@ impl LspServer {
                 }
             }
 
-            // Add labelDetails.location for parameter hints (kind=2) if not already present,
-            // but only when the client declared "label.location" in resolveSupport.properties.
+            // Fill `InlayHintLabelPart.location` for parameter hints (kind=2), but only when
+            // the client declared "label.location" in resolveSupport.properties. The label's
+            // representation is preserved: the provider already emits parameter labels as
+            // parts, and resolve only populates the advertised nested property (#14679). A
+            // string label is left untouched rather than rewritten into parts.
             let client_supports_label_location = self
                 .client_capabilities
                 .lock()
@@ -681,13 +700,17 @@ impl LspServer {
                 .map(|props| props.contains("label.location"))
                 .unwrap_or(false);
 
-            if hint.get("labelDetails").is_none()
-                && kind == 2
+            if kind == 2
                 && client_supports_label_location
                 && let Some(label_location) = self.resolve_hint_label_location(&hint)
                 && let Some(obj) = hint.as_object_mut()
+                && let Some(Value::Array(parts)) = obj.get_mut("label")
+                && let Some(part) = parts
+                    .iter_mut()
+                    .find(|part| part.get("value").is_some() && part.get("location").is_none())
+                && let Some(part) = part.as_object_mut()
             {
-                obj.insert("labelDetails".to_string(), json!({ "location": label_location }));
+                part.insert("location".to_string(), label_location);
             }
 
             Ok(Some(hint))
@@ -2485,16 +2508,16 @@ mod tests {
     }
 
     /// When the client declares "label.location" in resolveSupport.properties,
-    /// handle_inlay_hint_resolve must include labelDetails in the response for
+    /// handle_inlay_hint_resolve must include a label part location in the response for
     /// a parameter hint (kind=2) that has no function data to resolve.
     ///
     /// In this test the hint has no `data.functionName` so `resolve_hint_label_location`
     /// returns None — but the important thing is that the code path is entered
-    /// (i.e. no labelDetails are injected when there is nothing to look up, and
+    /// (i.e. no label part location is injected when there is nothing to look up, and
     /// no panic occurs).
     #[test]
     fn inlay_hint_resolve_label_location_requires_client_capability() {
-        // Hint without client capability: labelDetails must NOT be added
+        // Hint without client capability: a label part location must NOT be added
         let server_no_cap = make_server_with_caps(ClientCapabilities {
             inlay_hint_resolve_support: None,
             ..ClientCapabilities::default()
@@ -2511,10 +2534,10 @@ mod tests {
         let resolved = result.expect("must return Some");
         assert!(
             resolved.get("labelDetails").is_none(),
-            "labelDetails must be absent when client did not declare resolve support"
+            "legacy labelDetails must be absent when client did not declare resolve support"
         );
 
-        // Hint with client capability for a different property: labelDetails must NOT be added
+        // Hint with client capability for a different property: a label part location must NOT be added
         let mut other_props = HashSet::new();
         other_props.insert("tooltip".to_string());
         let server_other_prop = make_server_with_caps(ClientCapabilities {
@@ -2527,12 +2550,12 @@ mod tests {
         let resolved2 = result2.expect("must return Some");
         assert!(
             resolved2.get("labelDetails").is_none(),
-            "labelDetails must be absent when client only declared 'tooltip' resolve support"
+            "legacy labelDetails must be absent when client only declared 'tooltip' resolve support"
         );
 
         // Hint with client capability declaring "label.location": the resolver attempts
         // label location lookup.  With no open document the lookup returns None so
-        // labelDetails is still absent — but no panic or error must occur.
+        // The label part location is still absent — but no panic or error must occur.
         let mut location_props = HashSet::new();
         location_props.insert("label.location".to_string());
         let server_with_cap = make_server_with_caps(ClientCapabilities {
@@ -2543,10 +2566,10 @@ mod tests {
             .handle_inlay_hint_resolve(Some(hint))
             .expect("resolve must not error when client declares label.location");
         let resolved3 = result3.expect("must return Some");
-        // Document is not open so resolve_hint_label_location returns None — labelDetails absent
+        // Document is not open so resolve_hint_label_location returns None — no label location
         assert!(
             resolved3.get("labelDetails").is_none(),
-            "labelDetails must be absent when document is not open (no sub found)"
+            "legacy labelDetails must be absent when document is not open (no sub found)"
         );
         // Tooltip must still be filled in regardless of label.location capability
         assert!(
