@@ -282,13 +282,22 @@ pinned_schema!(InterfacesSchema, "interfaces.v1");
 // Typed receipt
 // ---------------------------------------------------------------------------
 
-/// A receipt that has passed every rule in [`validate_receipt`].
+/// A decoded compiler performance receipt.
 ///
-/// Deserialization is fail-closed: the cross-field rules run *inside* decoding
+/// **Decoding is fail-closed**: the cross-field rules run *inside* deserialization
 /// via `try_from`, so `serde_json::from_str::<CompilerPerformanceReceipt>` can
-/// only produce a receipt that already satisfies them. A consumer cannot hold
-/// an invalid value of this type by forgetting a second call — which it
-/// otherwise would, since nothing in the type system compels one.
+/// only yield a receipt that already satisfies them. That closes the gap where a
+/// consumer had to remember a second call, which nothing in the type system
+/// compelled.
+///
+/// It does **not** make the invariant permanent. The fields are public, so a
+/// struct literal or a mutation after decoding can still produce an invalid
+/// value, and `Serialize` will emit it. Enforcing that would mean private
+/// fields and a constructor/accessor surface — worth doing when there is a
+/// producer to design it around, and deferred with the crate-boundary question
+/// to the instrumentation leaves (#5216). Until then the enforced boundary is
+/// decoding, and callers that build a receipt by hand should run
+/// [`validate_receipt`] before emitting it.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(try_from = "ReceiptFields")]
 pub struct CompilerPerformanceReceipt {
@@ -801,8 +810,17 @@ fn discover_fixtures(root: &Path) -> Result<Vec<std::path::PathBuf>> {
 fn collect_fixtures(dir: &Path, found: &mut Vec<std::path::PathBuf>) -> Result<()> {
     for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
         let path = entry.with_context(|| format!("failed to read {}", dir.display()))?.path();
-        if path.is_dir() {
+        // `symlink_metadata` deliberately does not follow links: a directory
+        // symlink under `fixtures` would otherwise pull in files from outside
+        // the committed tree, making a required gate depend on whatever the
+        // checkout happens to contain.
+        let metadata = fs::symlink_metadata(&path)
+            .with_context(|| format!("failed to inspect {}", path.display()))?;
+        if metadata.is_dir() {
             collect_fixtures(&path, found)?;
+            continue;
+        }
+        if metadata.is_symlink() {
             continue;
         }
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
@@ -1088,6 +1106,30 @@ mod tests {
 
         let found = discover_fixtures(root.path()).expect("discovery must succeed");
         assert_eq!(found, vec![top, deep], "nested fixtures are discovered; others are not");
+    }
+
+    /// A directory symlink must not pull files in from outside the tree.
+    ///
+    /// Discovery feeds a required merge gate, so following a link would make
+    /// that gate depend on whatever the checkout happens to contain rather than
+    /// on committed fixtures.
+    #[cfg(unix)]
+    #[test]
+    fn discovery_does_not_follow_directory_symlinks_out_of_the_tree() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let outside = tempfile::tempdir().expect("temp dir");
+        fs::write(outside.path().join(format!("{FIXTURE_PREFIX}.stray.json")), MEASURED)
+            .expect("write stray receipt outside the tree");
+
+        let fixtures = root.path().join(FIXTURE_DIR);
+        fs::create_dir_all(&fixtures).expect("create fixture dir");
+        let top = fixtures.join(format!("{FIXTURE_PREFIX}.json"));
+        fs::write(&top, MEASURED).expect("write committed fixture");
+        std::os::unix::fs::symlink(outside.path(), fixtures.join("linked"))
+            .expect("create directory symlink");
+
+        let found = discover_fixtures(root.path()).expect("discovery must succeed");
+        assert_eq!(found, vec![top], "a linked directory contributes no fixtures");
     }
 
     // -- the committed artifacts ------------------------------------------------
