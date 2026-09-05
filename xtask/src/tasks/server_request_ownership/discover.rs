@@ -99,8 +99,30 @@ fn call_open_paren(source: &str, from: usize) -> Option<usize> {
             continue;
         }
         if at.starts_with("/*") {
-            let end = at.find("*/")?;
-            cursor += offset + end + 2;
+            // Rust block comments nest. Stopping at the first `*/` left the
+            // scanner staring at comment text, so it gave up and the send
+            // silently left the denominator.
+            let mut depth = 0usize;
+            let mut index = 0usize;
+            let end = loop {
+                let rest = at.get(index..)?;
+                let next = rest.find("/*").map(|at| (at, true));
+                let close = rest.find("*/").map(|at| (at, false));
+                let (at_offset, opening) = match (next, close) {
+                    (Some(open), Some(close)) if open.0 < close.0 => open,
+                    (_, Some(close)) => close,
+                    _ => return None,
+                };
+                index += at_offset + 2;
+                if opening {
+                    depth += 1;
+                } else if depth <= 1 {
+                    break index;
+                } else {
+                    depth -= 1;
+                }
+            };
+            cursor += offset + end;
             continue;
         }
         return None;
@@ -355,6 +377,47 @@ pub(super) fn parse_direction_registry(
     (out, violations)
 }
 
+/// The set of call names in one file whose invocation emits a server request:
+/// the sender primitives, plus every `method: &str` helper whose own body
+/// reaches one of them, closed transitively.
+fn forwarding_closure<'a>(source: &'a str, decls: &'a [FnDecl]) -> BTreeSet<&'a str> {
+    let mut senders: BTreeSet<&str> = REQUEST_SENDERS.iter().copied().collect();
+    let candidates: Vec<&FnDecl> = decls.iter().filter(|decl| decl.forwards_method).collect();
+
+    // A forwarder may call another forwarder declared later in the file, so
+    // repeat until no further name joins.
+    loop {
+        let mut grew = false;
+        for decl in &candidates {
+            if senders.contains(decl.name.as_str()) {
+                continue;
+            }
+            let body = fn_body(source, decls, decl);
+            if senders.iter().any(|sender| {
+                body.contains(&format!(".{sender}")) || body.contains(&format!("::{sender}"))
+            }) {
+                senders.insert(decl.name.as_str());
+                grew = true;
+            }
+        }
+        if !grew {
+            break senders;
+        }
+    }
+}
+
+/// The source between a declaration and the next one. Over-inclusive for a
+/// nested `fn`, which can only keep a forwarder rather than drop one.
+fn fn_body<'a>(source: &'a str, decls: &[FnDecl], decl: &FnDecl) -> &'a str {
+    let end = decls
+        .iter()
+        .map(|other| other.offset)
+        .filter(|offset| *offset > decl.offset)
+        .min()
+        .unwrap_or(source.len());
+    &source[decl.offset..end]
+}
+
 /// Scan production runtime sources for server-request emission call sites.
 ///
 /// Each discovered site is attributed to the function that contains it, so the
@@ -404,25 +467,29 @@ pub(super) fn scan_emission(
             }
         }
 
-        // A helper that declares `method: &str` forwards a caller-supplied
-        // method, so its own callers are send sites too. Tracing one hop keeps
-        // a new wrapper from hiding a concrete method behind an exempt callee.
-        let mut senders: BTreeSet<&str> = REQUEST_SENDERS.iter().copied().collect();
-        for decl in decls.iter().filter(|decl| decl.forwards_method) {
-            senders.insert(decl.name.as_str());
-        }
+        // A helper that declares `method: &str` *and* reaches a sender forwards
+        // a caller-supplied method, so its own callers are send sites too.
+        // Requiring the body keeps a new wrapper from hiding a concrete method
+        // behind an exempt callee without promoting every helper that merely
+        // inspects a method name — `is_lifecycle_method`, `record_latency` — to
+        // a request emitter and inventing phantom requests from its callers.
+        let senders = forwarding_closure(&stripped, &decls);
 
-        for sender in &senders {
-            let needle = format!(".{sender}");
+        // `self.send_request(..)` and `Type::send_request(..)` are the same
+        // emission; matching only the method-call form let the associated
+        // function form leave discovery entirely.
+        for (sender, separator) in senders.iter().flat_map(|sender| [(sender, "."), (sender, "::")])
+        {
+            let needle = format!("{separator}{sender}");
             let mut from = 0usize;
             while let Some(offset) = stripped[from..].find(&needle) {
-                let dot = from + offset;
-                let name = identifier_at(&stripped, dot + 1);
-                from = dot + 1 + name.len().max(1);
+                let at = from + offset + separator.len();
+                let name = identifier_at(&stripped, at);
+                from = at + name.len().max(1);
                 if name != *sender {
                     continue;
                 }
-                let Some(open) = call_open_paren(&stripped, dot + 1 + name.len()) else { continue };
+                let Some(open) = call_open_paren(&stripped, at + name.len()) else { continue };
                 from = open;
 
                 // Parse to the matching `)` over the whole remaining source, so
@@ -498,8 +565,6 @@ struct FeatureRow {
     #[serde(default)]
     spec: String,
     #[serde(default)]
-    area: String,
-    #[serde(default)]
     direction: String,
     #[serde(default)]
     advertised: bool,
@@ -527,7 +592,6 @@ pub(super) fn parse_feature_catalog(source: &str) -> Result<BTreeMap<String, Cat
                 row.id,
                 CatalogRow {
                     spec: row.spec,
-                    area: row.area,
                     advertised: row.advertised,
                     maturity: row.maturity,
                     state_owner: row.state_owner,

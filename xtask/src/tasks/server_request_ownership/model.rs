@@ -109,8 +109,6 @@ pub(super) enum RegistryKind {
 pub(super) struct CatalogRow {
     /// Declared LSP specification version.
     pub(super) spec: String,
-    /// Declared protocol area (`workspace`, `window`, `protocol`, …).
-    pub(super) area: String,
     /// Whether the catalog advertises the method.
     pub(super) advertised: bool,
     /// Catalog maturity (`proven`, `not_proven`, …).

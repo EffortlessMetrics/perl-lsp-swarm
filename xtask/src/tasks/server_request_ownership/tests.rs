@@ -78,14 +78,13 @@ fn agreeing_discovery() -> Discovered {
         ],
     );
     let mut catalog_rows = BTreeMap::new();
-    catalog_rows.insert("lsp.code_lens_refresh".to_string(), catalog("LSP 3.16", "workspace"));
+    catalog_rows.insert("lsp.code_lens_refresh".to_string(), catalog("LSP 3.16"));
     Discovered { registry, emitted, catalog_rows, ambiguous_symbols: BTreeSet::new() }
 }
 
-fn catalog(spec: &str, area: &str) -> CatalogRow {
+fn catalog(spec: &str) -> CatalogRow {
     CatalogRow {
         spec: spec.to_string(),
-        area: area.to_string(),
         advertised: true,
         maturity: "not_proven".to_string(),
         state_owner: "missing".to_string(),
@@ -263,12 +262,17 @@ fn a_stale_emitter_path_fails() {
     assert!(rules(vec![row], &agreeing_discovery()).contains(&"emitter-path-stale"));
 }
 
+/// A renamed symbol is caught by the source-derived comparison, not by a
+/// substring test for the name: the citation is not in the discovered set, and
+/// the symbol that really emits is left uncited.
 #[test]
 fn a_stale_emitter_symbol_fails() {
     let mut row = passing_row();
     row.emitters =
         vec!["crates/perl-lsp-rs/src/runtime/client_requests.rs#renamed_away_symbol".to_string()];
-    assert!(rules(vec![row], &agreeing_discovery()).contains(&"emitter-symbol-stale"));
+    let findings = rules(vec![row], &agreeing_discovery());
+    assert!(findings.contains(&"emitter-not-discovered"), "{findings:?}");
+    assert!(findings.contains(&"emitter-uncited"), "{findings:?}");
 }
 
 /// Citing a symbol that really exists in the file but emits a different method
@@ -330,9 +334,7 @@ fn a_selected_318_surface_may_not_claim_stable_317() {
     discovered
         .registry
         .insert("workspace/foldingRange/refresh".to_string(), RegistryKind::ServerToClientRequest);
-    discovered
-        .catalog_rows
-        .insert("lsp.folding_range_refresh".to_string(), catalog("LSP 3.18", "workspace"));
+    discovered.catalog_rows.insert("lsp.folding_range_refresh".to_string(), catalog("LSP 3.18"));
     discovered.emitted.insert(
         "workspace/foldingRange/refresh".to_string(),
         vec![
@@ -366,9 +368,7 @@ fn demoting_a_318_surface_on_the_matrix_side_alone_fails() {
     discovered
         .registry
         .insert("workspace/foldingRange/refresh".to_string(), RegistryKind::ServerToClientRequest);
-    discovered
-        .catalog_rows
-        .insert("lsp.folding_range_refresh".to_string(), catalog("LSP 3.18", "workspace"));
+    discovered.catalog_rows.insert("lsp.folding_range_refresh".to_string(), catalog("LSP 3.18"));
     discovered.emitted.insert(
         "workspace/foldingRange/refresh".to_string(),
         vec![
@@ -404,9 +404,7 @@ fn demoting_a_318_surface_on_the_matrix_side_alone_fails() {
 #[test]
 fn citing_an_unrelated_catalog_row_fails() {
     let mut discovered = agreeing_discovery();
-    discovered
-        .catalog_rows
-        .insert("lsp.inlay_hint_refresh".to_string(), catalog("LSP 3.17", "workspace"));
+    discovered.catalog_rows.insert("lsp.inlay_hint_refresh".to_string(), catalog("LSP 3.17"));
     let mut row = passing_row();
     row.feature_catalog_row = "lsp.inlay_hint_refresh".to_string();
     assert!(rules(vec![row], &discovered).contains(&"catalog-spec-mismatch"));
@@ -465,20 +463,18 @@ fn a_matrix_that_widens_its_own_vocabulary_fails() {
 }
 
 /// Spec equality alone would accept a swap between two catalog rows sharing a
-/// version, so the catalog's area must own the method's wire segment.
+/// version, so the cited row must name this method.
 #[test]
-fn citing_a_catalog_row_from_another_area_fails() {
+fn citing_a_catalog_row_belonging_to_another_method_fails() {
     let mut discovered = agreeing_discovery();
-    // `lsp.show_message_request` is a real server-to-client row that shares no
-    // area with a `workspace/` method.
-    discovered
-        .catalog_rows
-        .insert("lsp.show_message_request".to_string(), catalog("LSP 3.16", "window"));
+    // `lsp.show_message_request` is a real server-to-client row, but it is not
+    // this method's row.
+    discovered.catalog_rows.insert("lsp.show_message_request".to_string(), catalog("LSP 3.16"));
     let mut row = passing_row();
     row.feature_catalog_row = "lsp.show_message_request".to_string();
 
     assert!(
-        rules(vec![row], &discovered).contains(&"catalog-area-mismatch"),
+        rules(vec![row], &discovered).contains(&"catalog-identity-mismatch"),
         "a workspace method may not claim a window catalog row"
     );
 }
@@ -984,4 +980,127 @@ fn the_fingerprint_is_sensitive_to_a_load_bearing_field() {
         fingerprint(&render(&mutated, None)),
         "a disposition change must move the fingerprint"
     );
+}
+
+// ── Falsifiers for the open review findings (pre-fix) ───────────────────
+
+/// Two catalog rows that share a spec version *and* an area were previously
+/// interchangeable: `spec` plus `area` cannot tell `lsp.code_lens_refresh` from
+/// `lsp.semantic_tokens_refresh`, so ownership could be assigned to the wrong
+/// feature while the gate stayed green.
+#[test]
+fn a_catalog_row_of_the_same_spec_and_area_cannot_be_swapped_in() {
+    let mut row = passing_row();
+    row.feature_catalog_row = "lsp.semantic_tokens_refresh".to_string();
+    let mut discovered = agreeing_discovery();
+    discovered.catalog_rows.insert("lsp.semantic_tokens_refresh".to_string(), catalog("LSP 3.16"));
+
+    assert!(
+        rules(vec![row], &discovered).contains(&"catalog-identity-mismatch"),
+        "a same-spec, same-area catalog row belonging to another method must be refused"
+    );
+}
+
+/// Rust permits nested block comments. Stopping at the first `*/` left the
+/// scanner unable to find the `(`, and the send silently left the denominator.
+#[test]
+fn a_nested_block_comment_before_the_argument_list_does_not_hide_a_send()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (emitted, findings) = scan_synthetic(
+        r#"
+impl Server {
+    pub fn emit_commented(&self) {
+        self.send_request /* outer /* inner */ still outer */ ("workspace/codeLens/refresh", p);
+    }
+}
+"#,
+    )?;
+
+    assert_eq!(
+        emitted.get("workspace/codeLens/refresh").map(Vec::as_slice),
+        Some(["src/runtime/synthetic.rs#emit_commented".to_string()].as_slice()),
+        "a nested block comment must not hide a send site"
+    );
+    assert!(findings.is_empty(), "{findings:?}");
+    Ok(())
+}
+
+/// A send written in associated-function form is an ordinary emission. Matching
+/// only `.send_request` let `Self::send_request(..)` leave discovery entirely.
+#[test]
+fn an_associated_function_send_is_still_discovered() -> Result<(), Box<dyn std::error::Error>> {
+    let (emitted, findings) = scan_synthetic(
+        r#"
+impl Server {
+    pub fn emit_via_path(&self) {
+        Self::send_request(self, "workspace/codeLens/refresh", p);
+    }
+}
+"#,
+    )?;
+
+    assert_eq!(
+        emitted.get("workspace/codeLens/refresh").map(Vec::as_slice),
+        Some(["src/runtime/synthetic.rs#emit_via_path".to_string()].as_slice()),
+        "an associated-function send must be discovered like a method call"
+    );
+    assert!(findings.is_empty(), "{findings:?}");
+    Ok(())
+}
+
+/// `method: &str` in a signature is not evidence that a helper sends anything.
+/// Treating every such helper as a forwarder turned its literal-argument
+/// callers into phantom requests — and its identifier-argument callers into
+/// spurious `emission-unresolved` findings.
+#[test]
+fn a_method_named_helper_that_never_sends_is_not_a_forwarder()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (emitted, findings) = scan_synthetic(
+        r#"
+impl Server {
+    fn is_lifecycle_method(&self, method: &str) -> bool {
+        matches!(method, "initialize" | "shutdown")
+    }
+
+    pub fn route(&self, incoming: &str) -> bool {
+        self.is_lifecycle_method("workspace/codeLens/refresh")
+    }
+}
+"#,
+    )?;
+
+    assert!(
+        emitted.is_empty(),
+        "a helper that only inspects a method name emits nothing: {emitted:?}"
+    );
+    assert!(findings.is_empty(), "{findings:?}");
+    Ok(())
+}
+
+/// The tightened forwarder rule must not lose the real one: a wrapper that
+/// takes the method from its caller *and* reaches a sender still makes its own
+/// callers send sites.
+#[test]
+fn a_forwarder_that_reaches_a_sender_still_propagates() -> Result<(), Box<dyn std::error::Error>> {
+    let (emitted, findings) = scan_synthetic(
+        r#"
+impl Server {
+    fn dispatch(&self, method: &str, params: Value) -> io::Result<()> {
+        self.send_request(method, params)
+    }
+
+    pub fn refresh(&self) {
+        self.dispatch("workspace/codeLens/refresh", p);
+    }
+}
+"#,
+    )?;
+
+    assert_eq!(
+        emitted.get("workspace/codeLens/refresh").map(Vec::as_slice),
+        Some(["src/runtime/synthetic.rs#refresh".to_string()].as_slice()),
+        "a real forwarder must still expose its callers as send sites"
+    );
+    assert!(findings.is_empty(), "{findings:?}");
+    Ok(())
 }

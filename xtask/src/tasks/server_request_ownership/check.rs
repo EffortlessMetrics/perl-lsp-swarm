@@ -29,14 +29,43 @@ const SCHEMA_RESPONSE_DECODERS: [&str; 2] = ["generic_shape", "per_method"];
 const SCHEMA_DISPOSITIONS: [&str; 4] =
     ["supported", "advertised_not_proven", "helper_only_unadvertised", "not_proven"];
 
-/// The catalog `area` that owns a method's first wire segment.
-fn expected_catalog_area(method: &str) -> Option<&'static str> {
-    match method.split('/').next() {
-        Some("workspace") => Some("workspace"),
-        Some("window") => Some("window"),
-        Some("client") => Some("protocol"),
-        _ => None,
+/// Lower-case identity tokens of an LSP method name.
+///
+/// `workspace/codeLens/refresh` yields `[workspace, code, lens, refresh]`: wire
+/// segments split on `/`, camel humps split apart.
+fn method_tokens(method: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    for segment in method.split('/') {
+        let mut current = String::new();
+        for ch in segment.chars() {
+            if ch.is_ascii_uppercase() && !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+            current.push(ch.to_ascii_lowercase());
+        }
+        if !current.is_empty() {
+            tokens.push(current);
+        }
     }
+    tokens
+}
+
+/// Whether a catalog id names the same request as a method.
+///
+/// The catalog's `id` is the only identity it carries — it has no method column
+/// — so the binding is its snake-case tail against the method's own tokens. A
+/// catalog id restates the method's tokens in order, optionally dropping the
+/// leading wire segment: `lsp.code_lens_refresh` for `workspace/codeLens/refresh`,
+/// `lsp.client_register_capability` for `client/registerCapability`.
+///
+/// Equality, not containment: `spec` and `area` are shared by whole families of
+/// rows, so either alone lets two same-version workspace rows be swapped with
+/// the gate still green.
+fn catalog_id_names_method(catalog_id: &str, method: &str) -> bool {
+    let id_tokens: Vec<&str> =
+        catalog_id.strip_prefix("lsp.").unwrap_or(catalog_id).split('_').collect();
+    let method_tokens = method_tokens(method);
+    id_tokens == method_tokens || id_tokens == method_tokens.get(1..).unwrap_or_default()
 }
 
 fn missing(cell: &str) -> bool {
@@ -333,7 +362,7 @@ fn check_row(
 
     // ── Emitter citations must be current ────────────────────────────────
     for emitter in &row.emitters {
-        let Some((path, symbol)) = RequestRow::split_emitter(emitter) else {
+        let Some((path, _symbol)) = RequestRow::split_emitter(emitter) else {
             violations.push(Violation::new(
                 "emitter-shape",
                 &row.id,
@@ -341,20 +370,15 @@ fn check_row(
             ));
             continue;
         };
-        let absolute = repo_root.join(path);
-        let Ok(source) = std::fs::read_to_string(&absolute) else {
+        // Whether this symbol emits this method is decided below by the
+        // discovered-set comparison, which is source-derived. A `contains`
+        // test for the symbol name would add no independent proof — it matches
+        // comments, call sites, and longer identifiers alike.
+        if !repo_root.join(path).is_file() {
             violations.push(Violation::new(
                 "emitter-path-stale",
                 &row.id,
                 format!("emitter path `{path}` does not exist"),
-            ));
-            continue;
-        };
-        if !source.contains(symbol) {
-            violations.push(Violation::new(
-                "emitter-symbol-stale",
-                &row.id,
-                format!("`{path}` no longer defines `{symbol}`"),
             ));
         }
     }
@@ -427,23 +451,17 @@ fn check_row(
                         ),
                     ));
                 }
-                // Spec equality alone would accept a swap between two rows that
-                // share a version, so the catalog's area must also own this
-                // method's wire segment.
-                if let Some(expected) = expected_catalog_area(&row.method)
-                    && !catalog.area.is_empty()
-                    && catalog.area != expected
-                {
+                // Spec equality alone would accept a swap between two rows
+                // that share a version, so the cited row must also *be* this
+                // method's row.
+                if !catalog_id_names_method(&row.feature_catalog_row, &row.method) {
                     violations.push(Violation::new(
-                        "catalog-area-mismatch",
+                        "catalog-identity-mismatch",
                         &row.id,
                         format!(
-                            "`{}` is a `{}` method but `{}` files `{}` under area `{}`",
-                            row.method,
-                            expected,
-                            meta.feature_catalog,
-                            row.feature_catalog_row,
-                            catalog.area
+                            "`{}` cites `{}`, but that id does not name `{}`; a catalog row is \
+                             bound to its method, not merely to a matching spec version",
+                            row.id, row.feature_catalog_row, row.method
                         ),
                     ));
                 }
