@@ -61,7 +61,6 @@ jobs:
           import gzip
           import json
           import os
-          import re
           import urllib.request
 
           url = (
@@ -80,10 +79,15 @@ jobs:
           with urllib.request.urlopen(request, timeout=30) as response:
               staged = base64.b64decode(json.load(response)["content"]).decode("utf-8")
 
-          match = re.search(r'payload = """\n(.*?)\n\s*"""', staged, re.DOTALL)
-          if match is None:
-              raise SystemExit("immutable repair payload not found")
-          payload = "".join(match.group(1).split())
+          marker = 'payload = """'
+          start = staged.find(marker)
+          if start < 0:
+              raise SystemExit("immutable repair payload opening marker not found")
+          start += len(marker)
+          end = staged.find('"""', start)
+          if end < 0:
+              raise SystemExit("immutable repair payload closing marker not found")
+          payload = "".join(staged[start:end].split())
           script = gzip.decompress(base64.b64decode(payload)).decode("utf-8")
           exec(compile(script, "repair-14688.py", "exec"), {"__name__": "__main__"})
           PY
