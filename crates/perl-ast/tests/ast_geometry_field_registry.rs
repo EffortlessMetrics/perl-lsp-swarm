@@ -480,11 +480,28 @@ fn declared_geometry_fields() -> DeclaredFields {
 /// ninth geometry field truncates the scan somewhere the `>= 9` floor cannot
 /// see — the floor counts fields found, and nine were already found.
 ///
-/// Char literals are deliberately not tracked: `'` is ambiguous with a lifetime
-/// in type position, and guessing wrong would corrupt the scan rather than
-/// protect it. This is safe because the only text whose brace balance matters is
-/// the enum body, which contains field declarations and comments and no
-/// character literals. This is a scanner sized for that job, not a Rust lexer.
+/// Char literals **are** tracked, and the earlier reasoning for skipping them
+/// does not survive contact with the failure it allowed. That reasoning was: `'`
+/// is ambiguous with a lifetime in type position, so guessing would corrupt the
+/// scan; and the enum body carries no character literals anyway.
+///
+/// The second half was the load-bearing half, and it was too narrow — the scan
+/// runs over the whole file, not the enum body, so a `const QUOTE: char = '"';`
+/// anywhere above the enum was enough. Read naively, `'"'` opens a *string*, and
+/// everything to the next `"` in the file is neutralized, taking real field
+/// declarations with it. The `>= 9` floor below does catch that, so it was never
+/// silent — but it reports a broken scanner rather than simply working.
+///
+/// The first half assumed the ambiguity is unresolvable. It is not, for the two
+/// forms that occur: a char literal is `'` followed either by a backslash escape
+/// or by exactly one character and then a closing `'`. A lifetime has no closing
+/// quote, so looking ahead for one separates `'"'` and `'\''` from `'a` and
+/// `'static` without guessing.
+///
+/// This is still a scanner sized for the job, not a Rust lexer. What it does not
+/// handle — nested raw-string hash counts beyond the closing form, byte strings,
+/// and any literal form Rust may add — remains a live maintenance edge, and the
+/// floor remains the backstop for all of it.
 fn strip_comments(source: &str) -> String {
     let chars: Vec<char> = source.chars().collect();
     let mut out = String::with_capacity(source.len());
