@@ -217,14 +217,16 @@ branches = ["master"]
 duplicate_of = []
 
 [lane.coverage]
-description = "Coverage collection."
+description = "Coverage collection for scheduled nightly or explicitly manual runs."
 intent = "execution-surface measurement"
+workflow = ".github/workflows/ci-nightly.yml"
+job = "test-coverage"
 runner = "ubuntu_24_04"
 base_lem = 45
 default_pr = false
 blocking = false
-labels = ["ci:coverage", "coverage", "full-ci"]
-branches = ["master"]
+labels = []
+branches = []
 duplicate_of = []
 
 [lane.mutation]
