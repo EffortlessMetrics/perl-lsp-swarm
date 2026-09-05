@@ -855,27 +855,6 @@ fn admissible_search_paths_preserve_spaces_and_non_ascii_absolute_components() -
 }
 
 #[test]
-fn command_exists_in_path_rejects_candidates_reachable_only_relatively() -> TestResult {
-    let temp = TempDir::new("relative-only")?;
-    let command = "ci-hygiene-probe";
-    fs::write(temp.path().join(command_candidate_name(command)), b"")?;
-
-    // The very same directory admits the candidate when named absolutely, so
-    // the rejection below is the admission policy and not a missing fixture.
-    let absolute = joined_path(&[temp.path()])?;
-    assert!(command_exists_in_path(command, Some(absolute.as_os_str())));
-
-    for relative in [".", "reldir", "./reldir", ""] {
-        assert!(
-            !command_exists_in_path(command, Some(OsStr::new(relative))),
-            "PATH component {relative:?} is not resolvable to the child's directory \
-             and must not admit a candidate"
-        );
-    }
-    Ok(())
-}
-
-#[test]
 fn command_exists_in_path_rejects_explicit_paths_on_every_platform() -> TestResult {
     let temp = TempDir::new("explicit-path")?;
     let command = "ci-hygiene-probe";
@@ -1034,6 +1013,65 @@ mod child_cwd_launch_coherence {
     const WIRING_SCENARIO_ENV: &str = "PERL_CI_HYGIENE_WIRING_WORKSPACE";
     const WIRING_FILTER: &str = "process::tests::child_cwd_launch_coherence::wrapper_wiring_child";
     const WIRING_MARKER: &str = "__PERL_CI_HYGIENE_WIRING_LAUNCHED__";
+
+    // Discovery side, isolated the same way: the ambiguous PATH component has
+    // to resolve against the *probing* process's own directory for the row to
+    // mean anything, and that directory is process-global.
+
+    const DISCOVERY_SCENARIO_ENV: &str = "PERL_CI_HYGIENE_DISCOVERY_PATH";
+    const DISCOVERY_FILTER: &str = "process::tests::child_cwd_launch_coherence::discovery_child";
+    const DISCOVERY_MARKER: &str = "__PERL_CI_HYGIENE_DISCOVERY__";
+
+    /// Runs inside a child whose working directory holds a planted candidate.
+    /// Reports both the admission policy's answer and the pre-repair
+    /// expression's answer for the same PATH.
+    #[test]
+    fn discovery_child() -> TestResult {
+        let Ok(raw) = env::var(DISCOVERY_SCENARIO_ENV) else {
+            return Ok(());
+        };
+        let path = OsString::from(raw);
+        let admitted = command_exists_in_path(PROBE, Some(path.as_os_str()));
+        // What `command_exists_in_path` did before #14150: join the component
+        // as given, which resolves it against *this* process's directory.
+        let unfiltered = env::split_paths(path.as_os_str()).any(|dir| dir.join(PROBE).is_file());
+        let mut stdout = io::stdout().lock();
+        writeln!(stdout, "{DISCOVERY_MARKER}:admitted={admitted},unfiltered={unfiltered}")?;
+        stdout.flush()?;
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_rejects_a_candidate_reachable_only_through_an_ambiguous_component() -> TestResult {
+        let decoy = TempDir::new("coherence-discovery-decoy")?;
+        plant(decoy.path(), "DECOY")?;
+        let nested = decoy.path().join("reldir");
+        fs::create_dir_all(&nested)?;
+        plant(&nested, "DECOY")?;
+
+        for raw in [".", "", "reldir"] {
+            let output = Command::new(env::current_exe()?)
+                .args([DISCOVERY_FILTER, "--exact", "--nocapture"])
+                .current_dir(decoy.path())
+                .env(DISCOVERY_SCENARIO_ENV, raw)
+                .output()?;
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            let reported = stdout
+                .lines()
+                .find_map(|line| line.strip_prefix(&format!("{DISCOVERY_MARKER}:")))
+                .ok_or_else(|| {
+                    io::Error::other(format!("discovery child reported nothing: {stdout}"))
+                })?;
+
+            assert_eq!(
+                reported, "admitted=false,unfiltered=true",
+                "PATH={raw:?}: the candidate must still be reachable by the pre-repair \
+                 expression, proving the fixture reproduces the defect, yet be rejected \
+                 by the admission policy"
+            );
+        }
+        Ok(())
+    }
 
     /// Runs inside the re-exec'd child, whose inherited PATH begins with an
     /// ambiguous component that reaches the workspace directory. Reports which
