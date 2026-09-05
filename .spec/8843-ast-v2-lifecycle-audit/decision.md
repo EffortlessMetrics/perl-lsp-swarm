@@ -15,7 +15,7 @@ the loader reconciles it against current source on every run.
 |---|---:|
 | public items (incl. every enum variant) | 39 |
 | public re-export paths | 6 |
-| consumer rows | 36 |
+| consumer rows | 37 |
 | package/release surfaces | 7 |
 | external evidence rows | 5 |
 
@@ -83,7 +83,7 @@ shared name as parity:
   `found` token.
 - **2 `unique`** — `ErrorRef`, `Missing`.
 
-## Two findings the planning comment did not have
+## Three findings the planning comment did not have
 
 **Four more public paths than recorded.** The 2026-08-21 comment lists two
 re-export paths. Current main has six: `perl_ast::v2`,
@@ -100,6 +100,19 @@ declares `perl-ast-v2` under `[dev-dependencies]`, and no `perl_ast_v2` or
 `crates/perl-lexer/src/tokenizer/mod.rs:3-5` states the opposite of the manifest,
 describing that module as the slice with *no* `perl-ast-v2` dependency. Recorded
 as an inventory row; removing it is outside this issue's claim ceiling.
+
+**A consumer reached the package under a name that never mentions it.**
+`crates/perl-parser-core/tests/diagnostic_id_tests.rs` uses
+`use perl_parser_core::DiagnosticId;` and contains none of the package's four
+name tokens, because `perl-parser-core` re-exports two v2 types under
+unqualified names at `crates/perl-parser-core/src/lib.rs:97`. The first revision
+of this audit recorded that path as a blind spot and then asserted no consumer
+used it — while this one already did, at the same evidence pin. The loader now
+matches that path directly rather than documenting it, so the row is checked.
+
+The general lesson is recorded rather than smoothed over: this package is
+reachable under names that do not contain its own, and any future search for its
+consumers has to account for that.
 
 ## A finding about reachability
 
@@ -121,7 +134,7 @@ semantics, and it does **not** authorize deleting the published package.
 | successor | wake |
 |---|---|
 | #8844 | **May start now.** This ruling is its start condition. |
-| #8845 | After #8844 lands. The migration set is this manifest's gating rows: 4 production, 5 re-export, 7 test-fixture. |
+| #8845 | After #8844 lands. The migration set is this manifest's gating rows: 4 production, 5 re-export, 5 package-dependency, 8 test-fixture. |
 | #8847 | After #8845 **and** the window closes on **re-observed** registry evidence. #8847 must re-run the reverse-dependency observation; it may not inherit this snapshot. |
 
 **Reversal condition.** Move to `RETAIN` only on a third-party reverse dependency,
@@ -133,10 +146,13 @@ that a `retain` ruling must name independent-lifecycle evidence.
 
 ## Limitations
 
-- The consumer scan is textual. A consumer reaching the package only through
-  `perl_parser_core`'s unqualified re-export, or a grouped `use perl_ast::{v2, ast}`,
-  names none of the four tokens. None exists on the authored basis; the instrument
-  cannot promise it.
+- The consumer scan is textual. The `perl_parser_core` unqualified re-export path
+  is now matched directly, in both its qualified and grouped-import forms, after
+  the first revision wrongly claimed no consumer used it. The residual gap is
+  narrower but real: a grouped `use perl_ast::{v2, ast}`, a wildcard
+  `use perl_parser_core::*`, or a locally aliased re-export of the package's own
+  would still name no matched token. None exists on the authored basis; the
+  instrument cannot promise it.
 - `syn` sees declarations, not semantics. The public-item denominator is exact;
   whether a consumer depends on a variant's *meaning* is an authored judgement.
 - Per-variant consumer attribution was resolved by alias-aware analysis (v1 and v2
