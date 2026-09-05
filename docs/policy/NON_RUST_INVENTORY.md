@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12725 |
-| Rust-family files | 3974 |
-| Non-Rust files | 8751 |
-| Allowlisted | 6512 |
+| Total tracked files | 12740 |
+| Rust-family files | 3984 |
+| Non-Rust files | 8756 |
+| Allowlisted | 6517 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 502 |
-| documentation | 2853 |
+| documentation | 2856 |
 | generated | 2 |
 | production | 357 |
 | test | 2113 |
-| tooling | 685 |
+| tooling | 687 |
 | unclassified | 2239 |
 
 ## Unclassified files
@@ -2345,6 +2345,7 @@
 | `.changes/unreleased/product-12815-Fixed-221500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13073-Fixed-020212.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13094-Fixed-022731.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13100-Fixed-021009.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13123-Fixed-021700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13125-Fixed-021800.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13157-Fixed-023317.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2354,6 +2355,7 @@
 | `.changes/unreleased/product-13191-Fixed-062500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13237-Fixed-111500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13283-Fixed-122901.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13500-Fixed-043011.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13796-Fixed-174500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13890-Fixed-225841.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13985-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2458,6 +2460,7 @@
 | `.changes/unreleased/product-7243-Added-090000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-7275-Fixed-064500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-7276-Changed-053500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-7291-Fixed-140000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-7310-Changed-051500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-7416-Fixed-075602.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-7462-Added-085300.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -3568,6 +3571,7 @@
 | `benchmarks/scripts/test_benchmark_targets.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `benchmarks/scripts/test_extract_criterion.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `benchmarks/scripts/test_regression.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
+| `benchmarks/scripts/validate-native-pipeline-sidecar.py` | tooling | `non-rust-benchmarks-scripts` | parser/perf |
 | `book/.gitignore` | config | `non-rust-gitignore-family` | release/ci |
 | `book/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `book/src/SUMMARY.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -6721,6 +6725,7 @@
 | `scripts/ci/test_reconcile_github_enforcement_snapshot.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_ripr_summary.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_rolling_installed_observation.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/test_route_codecov_binary_targets.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_route_codecov_packs.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_run_gate_shard.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/test_run_parser_integration.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
