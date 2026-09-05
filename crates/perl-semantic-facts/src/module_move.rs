@@ -567,6 +567,38 @@ impl ModuleMovePlan {
         {
             return Err(ModuleMoveInvalidPlan::FingerprintMismatch);
         }
+        // Invariants that hold for every plan, blocked or complete: `build`
+        // never emits an edit that violates them, so a blocked plan whose
+        // diagnostic edits break them did not come from `build`. The
+        // fingerprint proves the payload is self-consistent, not that it is
+        // legitimate — it is computed through a public API, so anyone who edits
+        // a field can recompute it. Each edit is therefore re-derived.
+        let snapshot = CurrentGenerations::admit(self.current_generations.clone());
+        if !snapshot.contradicted.is_empty() || snapshot.canonical() != self.current_generations {
+            return Err(ModuleMoveInvalidPlan::GenerationEvidenceUnusable);
+        }
+        for edit in &self.edits {
+            if snapshot.current(edit.file_id) != Some(&edit.generation) {
+                return Err(ModuleMoveInvalidPlan::EditIsNotAtItsFilesCurrentGeneration);
+            }
+            let sites = identity_sites(&edit.old_text, &self.source.package);
+            let [site] = sites.as_slice() else {
+                return Err(ModuleMoveInvalidPlan::EditIsNotTheIdentitySubstitution);
+            };
+            if edit.new_text
+                != substitute(
+                    &edit.old_text,
+                    *site,
+                    &self.source.package,
+                    &self.resource.target_module,
+                )
+            {
+                return Err(ModuleMoveInvalidPlan::EditIsNotTheIdentitySubstitution);
+            }
+        }
+        // Completeness-only requirements below. A blocked plan may legitimately
+        // carry an ineligible source, a target that already exists, or no
+        // generation for the moved file — those are reasons it is blocked.
         if !claims_complete {
             return Ok(());
         }
@@ -592,40 +624,9 @@ impl ModuleMovePlan {
         if !self.target_was_absent {
             return Err(ModuleMoveInvalidPlan::TargetWasNotProvenAbsent);
         }
-        // Re-derive the generation binding the plan claims. Every edit must sit
-        // at the admitted current generation of its own file, and the moved
-        // file's admitted generation must be the source fact itself.
-        let snapshot = CurrentGenerations::admit(self.current_generations.clone());
-        if !snapshot.contradicted.is_empty()
-            || snapshot.canonical() != self.current_generations
-            || snapshot.current(self.source.file_id) != Some(&self.source.generation)
-        {
+        // The moved file's admitted generation must be the source fact itself.
+        if snapshot.current(self.source.file_id) != Some(&self.source.generation) {
             return Err(ModuleMoveInvalidPlan::GenerationEvidenceUnusable);
-        }
-        for edit in &self.edits {
-            if snapshot.current(edit.file_id) != Some(&edit.generation) {
-                return Err(ModuleMoveInvalidPlan::EditIsNotAtItsFilesCurrentGeneration);
-            }
-        }
-        // The fingerprint proves the payload is self-consistent, not that it is
-        // legitimate: it is computed through a public API, so anyone who edits a
-        // field can recompute it. Each edit must therefore be re-derived as the
-        // substitution it claims to be.
-        for edit in &self.edits {
-            let sites = identity_sites(&edit.old_text, &self.source.package);
-            let [site] = sites.as_slice() else {
-                return Err(ModuleMoveInvalidPlan::EditIsNotTheIdentitySubstitution);
-            };
-            if edit.new_text
-                != substitute(
-                    &edit.old_text,
-                    *site,
-                    &self.source.package,
-                    &self.resource.target_module,
-                )
-            {
-                return Err(ModuleMoveInvalidPlan::EditIsNotTheIdentitySubstitution);
-            }
         }
         let declarations = self
             .edits
@@ -895,19 +896,23 @@ fn identity_sites(text: &str, identity: &str) -> Vec<usize> {
     if identity.is_empty() {
         return Vec::new();
     }
-    let boundary = |byte: Option<u8>| {
-        byte.is_none_or(|value| !(value.is_ascii_alphanumeric() || value == b'_'))
+    // Boundaries are decided per character, not per byte: under `use utf8` a
+    // Perl package name may contain non-ASCII word characters, and inspecting a
+    // UTF-8 continuation byte reads the tail of `Å` as punctuation. This is
+    // deliberately stricter than `is_perl_identifier_char` in `perl-parser`,
+    // which is ASCII-only — refusing to rename is the safe direction for a
+    // planner that rewrites source.
+    let boundary = |character: Option<char>| {
+        character.is_none_or(|value| !(value.is_alphanumeric() || value == '_'))
     };
     text.match_indices(identity)
         .filter(|(start, _)| {
             let end = start + identity.len();
-            // A `::`-separated identity must not be a suffix or prefix of a
-            // longer package path either.
             // Both `::` and Perl's legacy `'` separator extend a package
             // identity, so a match adjacent to either is part of a longer name.
-            boundary(start.checked_sub(1).and_then(|index| text.as_bytes().get(index).copied()))
+            boundary(text[..*start].chars().next_back())
                 && !text[..*start].ends_with([':', '\''])
-                && boundary(text.as_bytes().get(end).copied())
+                && boundary(text[end..].chars().next())
                 && !text[end..].starts_with([':', '\''])
         })
         .map(|(start, _)| start)
@@ -1557,7 +1562,6 @@ mod tests {
                 as fn(&mut _),
             |plan: &mut ModuleMovePlan| plan.resource.source_path = "lib/Other.pm".into(),
             |plan: &mut ModuleMovePlan| plan.resource.source_module = "Other".into(),
-            |plan: &mut ModuleMovePlan| plan.resource.target_module = "..".into(),
         ] {
             let mut forged = plan(vec![declaration()], source_only_snapshot());
             mutate(&mut forged);
@@ -1565,6 +1569,23 @@ mod tests {
             assert_eq!(
                 forged.validate(),
                 Err(ModuleMoveInvalidPlan::ResourceTransitionInconsistent)
+            );
+        }
+    }
+
+    /// Rewriting `target_module` alone is caught earlier and more precisely:
+    /// the edits no longer substitute the module the transition names, which is
+    /// a stronger statement than "the transition looks inconsistent".
+    #[test]
+    fn a_target_module_the_edits_do_not_substitute_is_refused() {
+        for target in ["Other", ".."] {
+            let mut forged = plan(vec![declaration()], source_only_snapshot());
+            forged.resource.target_module = target.into();
+            forged.fingerprint = rebuild_fingerprint(&forged);
+            assert_eq!(
+                forged.validate(),
+                Err(ModuleMoveInvalidPlan::EditIsNotTheIdentitySubstitution),
+                "target_module {target:?} was accepted"
             );
         }
     }
@@ -1681,18 +1702,24 @@ mod tests {
     }
 
     #[test]
-    fn a_stripped_or_contradictory_snapshot_is_unusable() {
-        for mutate in [
-            (|plan: &mut ModuleMovePlan| plan.current_generations.clear()) as fn(&mut _),
-            |plan: &mut ModuleMovePlan| {
-                plan.current_generations.push(generation(SOURCE_FILE, "g9"));
-            },
-        ] {
-            let mut forged = plan(vec![declaration()], source_only_snapshot());
-            mutate(&mut forged);
-            forged.fingerprint = rebuild_fingerprint(&forged);
-            assert_eq!(forged.validate(), Err(ModuleMoveInvalidPlan::GenerationEvidenceUnusable));
-        }
+    fn a_contradictory_snapshot_is_unusable() {
+        let mut forged = plan(vec![declaration()], source_only_snapshot());
+        forged.current_generations.push(generation(SOURCE_FILE, "g9"));
+        forged.fingerprint = rebuild_fingerprint(&forged);
+        assert_eq!(forged.validate(), Err(ModuleMoveInvalidPlan::GenerationEvidenceUnusable));
+    }
+
+    /// Stripping the snapshot leaves each edit with no admitted generation, so
+    /// it is refused for the sharper reason rather than the generic one.
+    #[test]
+    fn a_stripped_snapshot_leaves_every_edit_unauthorized() {
+        let mut forged = plan(vec![declaration()], source_only_snapshot());
+        forged.current_generations.clear();
+        forged.fingerprint = rebuild_fingerprint(&forged);
+        assert_eq!(
+            forged.validate(),
+            Err(ModuleMoveInvalidPlan::EditIsNotAtItsFilesCurrentGeneration)
+        );
     }
 
     #[test]
@@ -1749,6 +1776,107 @@ mod tests {
             plan.current_generations.iter().all(|entry| entry.file_id != DEPENDENT_FILE),
             "a contradicted file was retained as if it had a current generation"
         );
+    }
+
+    // --- blocked plans are validated too (Devin review) -----------------------
+
+    /// A blocked plan's diagnostic edits are still claims about source. They
+    /// must satisfy every invariant that does not depend on completeness, or
+    /// `validate() == Ok(())` would assure something it never checked.
+    #[test]
+    fn a_blocked_plans_diagnostic_edits_are_still_validated() {
+        let blocked = || {
+            let mut input = source();
+            input.occurrences_complete = false;
+            ModuleMovePlan::build(
+                input,
+                ModuleMoveTarget::Package("New::Name".into()),
+                vec![declaration()],
+                source_only_snapshot(),
+                false,
+            )
+        };
+        let baseline = blocked();
+        assert!(!baseline.is_complete());
+        assert_eq!(baseline.validate(), Ok(()), "the builder's own blocked plan must validate");
+        assert!(!baseline.edits.is_empty(), "this case needs a diagnostic edit to mutate");
+
+        let mut forged = blocked();
+        forged.edits[0].new_text = "package Malicious::Name".into();
+        forged.fingerprint = rebuild_fingerprint(&forged);
+        assert_eq!(
+            forged.validate(),
+            Err(ModuleMoveInvalidPlan::EditIsNotTheIdentitySubstitution),
+            "a blocked plan accepted an arbitrary diagnostic edit"
+        );
+
+        let mut forged = blocked();
+        forged.edits[0].generation = SourceGeneration::known("fabricated");
+        forged.fingerprint = rebuild_fingerprint(&forged);
+        assert_eq!(
+            forged.validate(),
+            Err(ModuleMoveInvalidPlan::EditIsNotAtItsFilesCurrentGeneration)
+        );
+    }
+
+    /// The completeness-only requirements must stay gated, or the builder's own
+    /// blocked plans would fail their acceptance boundary.
+    #[test]
+    fn completeness_only_requirements_do_not_apply_to_blocked_plans() {
+        let mut input = source();
+        input.editable = false;
+        let plan = ModuleMovePlan::build(
+            input,
+            ModuleMoveTarget::Package("New::Name".into()),
+            vec![declaration()],
+            source_only_snapshot(),
+            true,
+        );
+        assert!(!plan.is_complete());
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::InvalidSource));
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::TargetCollision));
+        assert_eq!(
+            plan.validate(),
+            Ok(()),
+            "an ineligible source and an existing target are why it is blocked, not defects"
+        );
+    }
+
+    // --- Unicode identifier boundaries (Devin review) -------------------------
+
+    /// Under `use utf8` a package name may carry non-ASCII word characters.
+    /// Inspecting adjacent *bytes* read the tail of `Å` as punctuation, so a
+    /// longer name was accepted as the source identity and partially renamed.
+    #[test]
+    fn a_unicode_identifier_character_extends_a_package_identity() {
+        for text in [
+            "use \u{c5}Old::Name",
+            "use Old::Name\u{394}",
+            "use caf\u{e9}Old::Name",
+            "use Old::Name\u{3bb}x",
+        ] {
+            let item = occurrence_at(text, 40, 4);
+            let plan = plan(vec![declaration(), item], source_only_snapshot());
+            assert!(
+                plan.blockers.contains(&ModuleMoveBlocker::UnsupportedProjection),
+                "{text} was treated as the source identity"
+            );
+            assert!(
+                plan.edits.iter().all(|edit| edit.occurrence_id != OccurrenceId(4)),
+                "a longer Unicode package name was partially renamed"
+            );
+        }
+    }
+
+    /// Non-word Unicode next to the identity is still a boundary, so the rule
+    /// cannot over-reject legitimate occurrences.
+    #[test]
+    fn non_word_unicode_remains_a_boundary() {
+        for text in ["use \u{ab}Old::Name\u{bb}", "use \u{2014}Old::Name"] {
+            let item = occurrence_at(text, 40, 4);
+            let plan = plan(vec![declaration(), item], source_only_snapshot());
+            assert!(plan.is_complete(), "{text} was rejected: {:?}", plan.blockers);
+        }
     }
 
     // --- Perl identifier validity (Devin review) ------------------------------
