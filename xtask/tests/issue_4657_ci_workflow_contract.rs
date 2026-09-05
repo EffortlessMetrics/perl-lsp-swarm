@@ -3,6 +3,14 @@
 use std::fs;
 use std::path::PathBuf;
 
+const CACHE_HARNESS_COMMAND: &str =
+    "        run: cargo test -p xtask --test direct_command_guidance --locked -- --nocapture";
+const CACHE_HARNESS_STEP: &str =
+    "      - name: Direct command guidance contract (required merge surface)";
+const REQUIRED_JOB_IF: &str = "    if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'";
+
+use serde_yaml_ng::Value;
+
 fn project_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -51,6 +59,109 @@ fn job_block<'a>(workflow: &'a str, job: &str) -> Option<&'a str> {
         })
         .map_or(rest.len(), |(idx, _)| body_offset + idx + 1);
     Some(&rest[..end])
+}
+
+fn yaml_key(line: &str) -> Option<&str> {
+    let (key, _) = line.trim_start().split_once(':')?;
+    Some(key.trim().trim_matches(['\"', '\'']))
+}
+
+fn cache_harness_wiring(workflow: &str) -> Result<(), &'static str> {
+    let job = job_block(workflow, "check-all-targets").ok_or("required job is absent")?;
+    if job.lines().filter(|line| *line == REQUIRED_JOB_IF).count() != 1 {
+        return Err("required job reachability changed");
+    }
+    if job.lines().any(|line| {
+        line.starts_with("    ")
+            && !line.starts_with("      ")
+            && yaml_key(line) == Some("continue-on-error")
+    }) {
+        return Err("required job became optional");
+    }
+
+    let lines = job.lines().collect::<Vec<_>>();
+    let starts = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| line.starts_with("      - ").then_some(index))
+        .collect::<Vec<_>>();
+    let matching = starts
+        .iter()
+        .enumerate()
+        .filter_map(|(position, start)| {
+            let end = starts.get(position + 1).copied().unwrap_or(lines.len());
+            let step = &lines[*start..end];
+            (step.first() == Some(&CACHE_HARNESS_STEP)).then_some(step)
+        })
+        .collect::<Vec<_>>();
+    let [step] = matching.as_slice() else {
+        return Err("required cache harness step must be unique");
+    };
+    let run_fields = step
+        .iter()
+        .filter(|line| {
+            line.starts_with("        ")
+                && !line.starts_with("          ")
+                && yaml_key(line) == Some("run")
+        })
+        .collect::<Vec<_>>();
+    if run_fields.len() != 1 || *run_fields[0] != CACHE_HARNESS_COMMAND {
+        return Err("required cache harness run command changed");
+    }
+    if step.iter().any(|line| {
+        line.starts_with("        ")
+            && !line.starts_with("          ")
+            && matches!(yaml_key(line), Some("if" | "continue-on-error"))
+    }) {
+        return Err("required cache harness step became conditional or optional");
+    }
+    Ok(())
+}
+
+#[test]
+fn required_cache_harness_wiring_is_independently_enforced()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root()?;
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))?.replace("\r\n", "\n");
+    assert_eq!(cache_harness_wiring(&ci), Ok(()));
+
+    let job = job_block(&ci, "check-all-targets").ok_or("required job is absent")?;
+    let mutated_job = job.replacen(
+        REQUIRED_JOB_IF,
+        "    if: false\n        if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'",
+        1,
+    );
+    let copied_if = ci.replacen(job, &mutated_job, 1);
+    assert!(cache_harness_wiring(&copied_if).is_err());
+    let orphaned = ci.replace(CACHE_HARNESS_COMMAND, "        run: echo orphaned");
+    assert!(cache_harness_wiring(&orphaned).is_err());
+    let block_scalar = ci.replace(
+        CACHE_HARNESS_COMMAND,
+        "        run: |\n          cargo test -p xtask --test direct_command_guidance --locked -- --nocapture",
+    );
+    assert!(cache_harness_wiring(&block_scalar).is_err());
+    for field in [
+        "        if: false",
+        "        continue-on-error: true",
+        "        continue-on-error : true",
+        "        \"continue-on-error\": true",
+        "        \"continue-on-error\" : true",
+    ] {
+        let mutant =
+            ci.replacen(CACHE_HARNESS_COMMAND, &format!("{field}\n{CACHE_HARNESS_COMMAND}"), 1);
+        assert!(cache_harness_wiring(&mutant).is_err());
+    }
+    for field in [
+        "    continue-on-error: true",
+        "    continue-on-error : true",
+        "    \"continue-on-error\": true",
+        "    \"continue-on-error\" : true",
+    ] {
+        let mutant =
+            ci.replacen("  check-all-targets:\n", &format!("  check-all-targets:\n{field}\n"), 1);
+        assert!(cache_harness_wiring(&mutant).is_err());
+    }
+    Ok(())
 }
 
 /// #9594: the bit-rot guard must not pin the pull-request head SHA.
@@ -220,5 +331,49 @@ fn compile_all_targets_budget_envelope_stays_witnessed() -> Result<(), Box<dyn s
          different command under the same watchdog. Extracted job:\n{job}"
     );
 
+    Ok(())
+}
+
+/// #14355: the Windows portability lane must admit integration targets.
+///
+/// The release-artifact smoke target is intentionally Unix-only at runtime,
+/// but its crate-root cfg must still be compiled on Windows. The Windows lane
+/// therefore retains its library execution and adds a narrow compile-only
+/// command for this integration target.
+#[test]
+fn windows_platform_smoke_compiles_integration_targets_without_running_them()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root()?;
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))?.replace("\r\n", "\n");
+    let workflow: Value = serde_yaml_ng::from_str(&ci)?;
+    let run = workflow
+        .get("jobs")
+        .and_then(|jobs| jobs.get("windows-platform-smoke"))
+        .and_then(|job| job.get("steps"))
+        .and_then(Value::as_sequence)
+        .and_then(|steps| {
+            steps.iter().find_map(|step| {
+                let name = step.get("name")?.as_str()?;
+                (name == "Run Windows portability smoke")
+                    .then(|| step.get("run")?.as_str().map(str::to_owned))
+                    .flatten()
+            })
+        })
+        .ok_or("windows platform smoke has no named run command")?;
+    assert!(
+        !run.contains("Conflict-marker guard"),
+        "run extraction must stop at the end of the YAML block scalar; command: {run}"
+    );
+
+    assert!(
+        run.contains("cargo test $WINDOWS_TEST_CRATES --locked --lib"),
+        "Windows portability smoke must retain its library execution; command: {run}"
+    );
+    assert!(
+        run.contains(
+            "cargo test -p xtask --test release_artifact_size_smoke_script --locked --no-run"
+        ),
+        "Windows portability smoke must compile the Unix-only integration target without running it; command: {run}"
+    );
     Ok(())
 }
