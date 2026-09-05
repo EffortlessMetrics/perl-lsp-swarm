@@ -56,8 +56,12 @@ export interface LanguageClientLifecycleOptions {
 }
 
 export class LanguageClientLifecycleError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(
+    message: string,
+    readonly reason: 'server-path-unresolved' | 'cleanup-incomplete' | 'lifecycle',
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
     this.name = 'LanguageClientLifecycleError';
   }
 }
@@ -71,6 +75,13 @@ interface ActiveClient<TClient extends LifecycleClient<TEvent>, TEvent = unknown
 
 interface CleanupResult {
   readonly error: unknown | undefined;
+  /** True only when every lifecycle-owned client cleanup call completed successfully. */
+  readonly clientCleanupComplete: boolean;
+}
+
+interface BoundedOperationResult {
+  readonly completed: boolean;
+  readonly error: unknown;
 }
 
 const DEFAULT_STOP_TIMEOUT_MS = 5_000;
@@ -81,6 +92,10 @@ const DEFAULT_STOP_TIMEOUT_MS = 5_000;
  * A generation is invalidated before stopping or restarting. Any asynchronous
  * work that belongs to an older generation must finish its cleanup without
  * publishing a stale running state.
+ *
+ * This owner can establish completion of the client-facing listener/stop/
+ * dispose calls only. Exact child-process/resource terminality is a stronger
+ * external observation supplied by the process-lifecycle owner.
  */
 export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TEvent = unknown> {
   private readonly stopTimeoutMs: number;
@@ -92,6 +107,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
   private startPromise: Promise<TClient | undefined> | undefined;
   private restartPromise: Promise<TClient | undefined> | undefined;
   private stopPromise: Promise<void> | undefined;
+  private replacementBlockedError: unknown | undefined;
   private readonly cleanupPromises = new WeakMap<TClient, Promise<CleanupResult>>();
 
   constructor(
@@ -110,6 +126,15 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
     };
   }
 
+  /** True only while this exact client and generation remain authoritative. */
+  isCurrent(client: TClient, generation: number): boolean {
+    return (
+      this.generation === generation &&
+      this.activeClient?.generation === generation &&
+      this.activeClient.client === client
+    );
+  }
+
   /** Start the current generation, coalescing concurrent callers. */
   start(): Promise<TClient | undefined> {
     if (this.restartPromise) {
@@ -117,6 +142,9 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
     }
     if (this.startPromise) {
       return this.startPromise;
+    }
+    if (this.replacementBlockedError !== undefined) {
+      return Promise.reject(this.replacementBlockedFailure());
     }
     if (this.state === 'running' && this.activeClient) {
       return Promise.resolve(this.activeClient.client);
@@ -159,6 +187,9 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
   }
 
   private beginStart(): Promise<TClient | undefined> {
+    if (this.replacementBlockedError !== undefined) {
+      return Promise.reject(this.replacementBlockedFailure());
+    }
     if (this.startPromise) {
       return this.startPromise;
     }
@@ -196,7 +227,10 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
         return undefined;
       }
       if (!serverPath) {
-        throw new LanguageClientLifecycleError('Language server path could not be resolved.');
+        throw new LanguageClientLifecycleError(
+          'Language server path could not be resolved.',
+          'server-path-unresolved',
+        );
       }
 
       this.serverPath = serverPath;
@@ -215,7 +249,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
 
       await client.start();
       if (!this.isCurrentActive(active)) {
-        await this.shutdown(active);
+        this.recordCleanupResult(await this.shutdown(active));
         return undefined;
       }
 
@@ -223,7 +257,7 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
         await this.hooks.onStarted(client, serverPath);
       }
       if (!this.isCurrentActive(active)) {
-        await this.shutdown(active);
+        this.recordCleanupResult(await this.shutdown(active));
         return undefined;
       }
 
@@ -231,16 +265,23 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
       return client;
     } catch (error: unknown) {
       if (active) {
-        await this.shutdown(active);
+        this.recordCleanupResult(await this.shutdown(active));
       }
       if (!this.isCurrentGeneration(startGeneration)) {
         return undefined;
       }
 
-      this.error = error;
+      // When tearing down the failed startup also left client cleanup
+      // incomplete, the lifecycle is replacement-blocked: surface that block
+      // instead of the startup error, so callers present reload remediation
+      // rather than retry guidance for a lifecycle that can never admit a
+      // replacement. The startup error stays attached as diagnostic `cause`.
+      const surfaced =
+        this.replacementBlockedError !== undefined ? this.replacementBlockedFailure(error) : error;
+      this.error = surfaced;
       this.transition('failed', startGeneration);
       this.notifyCallback('failed', this.hooks.onFailed, this.snapshot);
-      throw error;
+      throw surfaced;
     }
   }
 
@@ -251,12 +292,18 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
     this.serverPath = null;
     this.transition('stopping', stopGeneration);
 
-    const cleanup = active ? await this.shutdown(active) : { error: undefined };
-    if (cleanup.error !== undefined) {
-      this.error = cleanup.error;
+    const cleanup = active
+      ? await this.shutdown(active)
+      : this.replacementBlockedError !== undefined
+        ? { error: this.replacementBlockedError, clientCleanupComplete: false }
+        : { error: undefined, clientCleanupComplete: true };
+    if (!cleanup.clientCleanupComplete) {
+      this.recordCleanupResult(cleanup);
+      this.error = cleanup.error ?? this.replacementBlockedFailure();
       this.transition('failed', stopGeneration);
       this.notifyCallback('failed', this.hooks.onFailed, this.snapshot);
     } else {
+      this.replacementBlockedError = undefined;
       this.error = undefined;
       this.transition('stopped', stopGeneration);
       this.notifyCallback('stopped', this.hooks.onStopped, this.snapshot);
@@ -265,6 +312,9 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
 
   private async runRestart(): Promise<TClient | undefined> {
     await this.stop();
+    if (this.replacementBlockedError !== undefined) {
+      throw this.replacementBlockedFailure();
+    }
     return this.beginStart();
   }
 
@@ -334,32 +384,60 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
     }
 
     let firstError: unknown = undefined;
+    let clientCleanupComplete = true;
     if (active.listener) {
       try {
         active.listener.dispose();
       } catch (error: unknown) {
         firstError = error;
+        clientCleanupComplete = false;
       }
       active.listener = undefined;
     }
 
-    const stopError = await this.runBounded('stop', () => active.client.stop());
-    if (firstError === undefined && stopError !== undefined) {
-      firstError = stopError;
+    const stopResult = await this.runBounded('stop', () => active.client.stop());
+    if (!stopResult.completed) {
+      firstError ??= stopResult.error;
+      clientCleanupComplete = false;
     }
 
-    const disposeError = await this.runBounded('dispose', () => active.client.dispose());
-    if (firstError === undefined && disposeError !== undefined) {
-      firstError = disposeError;
+    const disposeResult = await this.runBounded('dispose', () => active.client.dispose());
+    if (!disposeResult.completed) {
+      firstError ??= disposeResult.error;
+      clientCleanupComplete = false;
     }
 
-    return { error: firstError };
+    return { error: firstError, clientCleanupComplete };
+  }
+
+  private recordCleanupResult(cleanup: CleanupResult): void {
+    if (cleanup.clientCleanupComplete) {
+      return;
+    }
+    this.replacementBlockedError =
+      cleanup.error ??
+      new LanguageClientLifecycleError(
+        'Language client cleanup calls did not complete successfully.',
+        'cleanup-incomplete',
+      );
+  }
+
+  private replacementBlockedFailure(cause?: unknown): LanguageClientLifecycleError {
+    const detail =
+      this.replacementBlockedError instanceof Error && this.replacementBlockedError.message
+        ? `: ${this.replacementBlockedError.message}`
+        : '';
+    return new LanguageClientLifecycleError(
+      `Language client cleanup is incomplete; replacement startup is blocked${detail}`,
+      'cleanup-incomplete',
+      cause === undefined ? undefined : { cause },
+    );
   }
 
   private async runBounded(
     operation: string,
     callback: () => void | Promise<void>,
-  ): Promise<unknown | undefined> {
+  ): Promise<BoundedOperationResult> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const operationPromise = Promise.resolve().then(callback);
@@ -368,14 +446,15 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
           reject(
             new LanguageClientLifecycleError(
               `Language client ${operation} timed out after ${this.stopTimeoutMs}ms.`,
+              'lifecycle',
             ),
           );
         }, this.stopTimeoutMs);
       });
       await Promise.race([operationPromise, timeoutPromise]);
-      return undefined;
+      return { completed: true, error: undefined };
     } catch (error: unknown) {
-      return error;
+      return { completed: false, error };
     } finally {
       if (timer) {
         clearTimeout(timer);

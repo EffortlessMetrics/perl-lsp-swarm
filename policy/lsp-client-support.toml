@@ -239,7 +239,7 @@ claim_boundary = "Codex CLI consumes MCP tools; registering perllsp --stdio dire
 [[client]]
 id = "codex_desktop"
 display_name = "Codex Desktop"
-integration_mode = "custom_stdio_server"
+integration_mode = "no_documented_lsp_surface"
 tier = "not_proven_unsupported"
 owner_issue = 6739
 requires_actual_client_receipt = true
@@ -249,7 +249,7 @@ evidence = [
 ]
 known_overrides = []
 external_dependency = ""
-claim_boundary = "The documented custom-server flow is unsupported or unverified for Codex Desktop; no current client capability or execution receipt is registered."
+claim_boundary = "No documented upstream surface registers a language server with Codex Desktop; direct support is unsupported/not proven and no client capability or execution receipt is registered."
 
 [[client]]
 id = "opencode"

@@ -7,7 +7,7 @@ schema_version = 1
 policy = "framework-adapters"
 owner = "perl-lsp maintainers"
 status = "advisory"
-updated = "2026-05-20"
+updated = "2026-08-28"
 spec = "docs/specs/PLSP-SPEC-0024-framework-fact-adapters.md"
 fact_provenance_spec = "docs/specs/PLSP-SPEC-0017-fact-provenance-and-source-backing.md"
 edit_authorization_spec = "docs/specs/PLSP-SPEC-0018-edit-authorization-contract.md"
@@ -162,27 +162,65 @@ claim_boundary = "AUTOLOAD-heavy packages emit dynamic boundaries that explain f
 [[adapter]]
 framework = "DBIx::Class"
 fact_class = "static_subset"
-state = "deferred"
+state = "shadow"
 fact_provenance = "SourceBackedGenerated"
 source_anchor_required = true
 generated_label_required = true
 rename_policy = "blocked_until_class_specific_receipt"
 safe_delete_policy = "blocked_until_class_specific_receipt"
-provider_surfaces = [
-  "hover",
-  "workspace_symbols",
-  "definition",
-  "references",
-  "rename",
-  "safe_delete",
-]
+provider_surfaces = []
 blocks = [
   "generated_no_source",
   "dynamic_boundary",
   "stale_fact",
+  "low_confidence",
+  "ambiguous_identity",
+  "unsupported_fact_class",
+  "unresolved_module_identity",
+  "unsupported_version",
+]
+claim_boundary = "DBIx::Class result-class/result-source identities are registry-backed shadow output (#9736): exact facts require resolved supported DBIx::Class::Core identity plus static base/parent activation and a static current-package table declaration; columns, relationships, types, providers, and runtime schema loading remain excluded."
+version_constraint = ">=0.080000,<0.090000"
+
+[[adapter]]
+framework = "DBIx::QuickORM"
+fact_class = "explicit_table_column_field"
+state = "planned"
+fact_provenance = "SourceBackedGenerated"
+source_anchor_required = true
+generated_label_required = false
+rename_policy = "blocked_until_class_specific_receipt"
+safe_delete_policy = "blocked_until_class_specific_receipt"
+provider_surfaces = []
+supported_forms = [
+  "use DBIx::QuickORM type => 'table'",
+  "table static_name => sub { ... }",
+  "column static_identifier => sub { ... }",
+  "columns(static_identifiers, sub { ... })",
+]
+blocked_forms = [
+  "plain_schema_import_inline_row_identity",
+  "rename_skip_only_import_customization",
+  "dynamic_or_interpolated_table_name",
+  "dynamic_or_interpolated_column_name",
+  "non_identifier_column_name",
+  "generated_member_inference_without_autorow",
+  "autofill_runtime_schema",
+  "autorow_generated_class",
+  "autoname_field_accessor",
+  "autoname_link_accessor",
+  "link_accessor",
+  "runtime_schema_mutation",
+]
+blocks = [
+  "generated_no_source",
+  "dynamic_boundary",
+  "ambiguous_identity",
+  "stale_fact",
+  "low_confidence",
   "unsupported_fact_class",
 ]
-claim_boundary = "DBIx::Class support is deferred to a static source-backed subset; runtime schema loading remains dynamic."
+claim_boundary = "DBIx::QuickORM has a parser-backed, non-published EntityKind::Field candidate extractor for identifier-shaped columns in explicit table classes using the default DSL names. Explicit table classes install qorm_table and row inheritance but do not synthesize one method per column: ordinary rows use field($name), while named field accessors belong to autorow. Each import replaces the caller's builder; plain or symbol-customized imports therefore close this candidate contract. Canonical shards, live providers, runtime schema fill, generated row classes, naming hooks, links, generated-member inference, and edit authorization remain blocked pending separate admission proof."
 
 [[adapter]]
 framework = "Catalyst"

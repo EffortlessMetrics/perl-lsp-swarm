@@ -4,6 +4,7 @@
 //! - `CursorSymbolKind` enum variants and trait impls
 //! - `extract_symbol_from_source` — sigil detection, edge cases, defaults
 //! - `get_symbol_range_at_position` — range extraction with sigils
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_symbol::cursor::{
     CursorSymbolKind, extract_symbol_from_source, get_symbol_range_at_position,
@@ -38,7 +39,6 @@ fn kind_clone_and_copy() {
 
 #[test]
 fn kind_eq_and_ne() {
-    assert_eq!(CursorSymbolKind::Scalar, CursorSymbolKind::Scalar);
     assert_ne!(CursorSymbolKind::Scalar, CursorSymbolKind::Array);
     assert_ne!(CursorSymbolKind::Hash, CursorSymbolKind::Subroutine);
 }

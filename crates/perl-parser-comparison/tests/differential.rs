@@ -21,6 +21,7 @@
 //! | `SilentlyEmpty` | Parse succeeds but key content is missing |
 //! | `Errors` | Parser returned an error / has error nodes |
 //! | `Crashes` | Parser panicked (caught with catch_unwind) |
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_parser_comparison::{Verdict, parse_v1, parse_v2, parse_v3};
 

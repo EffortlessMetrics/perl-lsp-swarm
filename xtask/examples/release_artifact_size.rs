@@ -14,25 +14,25 @@ use std::path::{Component, Path, PathBuf};
 mod measure;
 #[path = "../src/bin/release_artifact_size/model.rs"]
 mod model;
+#[path = "../src/bin/release_artifact_size/policy.rs"]
+mod policy;
 #[path = "../src/bin/release_artifact_size/render.rs"]
 mod render;
 
 use model::{DecisionPolicy, Receipt};
 
+// Re-exported so `measure` keeps resolving them through `super`, and so the
+// shadow-lane contract proof can bind the workflow to the same constants
+// instead of restating them.
+pub(crate) use policy::{BINARY_NAMES, GOVERNED_TARGETS, REPOSITORY, SAFE_ICF_RUSTFLAGS};
+
 pub(crate) const CHECK_NAME: &str = "release-artifact-size";
 pub(crate) const SCHEMA_VERSION: &str = "release_artifact_size.v1";
-pub(crate) const REPOSITORY: &str = "EffortlessMetrics/perl-lsp-swarm";
 pub(crate) const CLAIM_BOUNDARY: &str = concat!(
     "same-SHA post-strip size and packaged-binary smoke comparison for perllsp ",
     "and perl-dap on one native macOS target; does not prove startup/RSS ",
     "improvement, other targets, publication, or general release readiness"
 );
-pub(crate) const SAFE_ICF_RUSTFLAGS: &str =
-    "-C linker=rust-lld -C linker-flavor=ld64.lld -C link-arg=--icf=safe";
-pub(crate) const BINARY_NAMES: [&str; 2] = ["perllsp", "perl-dap"];
-/// The exact native macOS target triples governed by issue #5432. Adoption is
-/// restricted to these; no other triple may earn `adopt`.
-pub(crate) const GOVERNED_TARGETS: [&str; 2] = ["aarch64-apple-darwin", "x86_64-apple-darwin"];
 
 #[derive(Debug, Parser)]
 #[command(name = "release-artifact-size")]
@@ -113,10 +113,7 @@ struct Args {
     baseline_rustflags: String,
 
     /// Declared candidate linker flags. Must equal the safe-ICF policy.
-    #[arg(
-        long,
-        default_value = "-C linker=rust-lld -C linker-flavor=ld64.lld -C link-arg=--icf=safe"
-    )]
+    #[arg(long, default_value = SAFE_ICF_RUSTFLAGS)]
     candidate_rustflags: String,
 
     /// JSON receipt output path.

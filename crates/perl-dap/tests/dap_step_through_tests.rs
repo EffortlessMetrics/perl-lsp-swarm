@@ -10,12 +10,13 @@
 //! - cancel signal during step operations
 //! - goto with unknown target id
 //! - restartFrame and terminateThreads unsupported paths
-//! - Variable inspection request during a stepping sequence
+//! - Variable and scope inspection after rejected stepping requests
 //! - Sequence monotonicity across stepping operations
 //!
-//! Run with: cargo test -p perl-dap --test dap_step_through_tests
+//! Run with: cargo test -p perl-dap --features test-helpers --test dap_step_through_tests
 
 use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
+use perl_dap::types::{Source, StackFrame};
 use serde_json::json;
 use std::fs;
 use std::sync::mpsc::{Receiver, sync_channel};
@@ -302,10 +303,12 @@ fn test_step_in_to_xs_builtin_via_target_id() -> Result<(), Box<dyn std::error::
 }
 
 #[test]
-// AC:3535
-fn test_step_in_targets_with_real_perl_function_calls() -> Result<(), Box<dyn std::error::Error>> {
+// AC:3535 / #9069
+fn test_step_in_targets_is_refused_without_source_scans() -> Result<(), Box<dyn std::error::Error>>
+{
     // Create a Perl source file containing multiple function calls on one line.
-    // stepInTargets should detect them.
+    // Even when such a frame exists, targeted stepping is fail-closed (#9069):
+    // the request must be refused without publishing regex-derived target IDs.
     let dir = tempfile::tempdir()?;
     let script_path = dir.path().join("subroutine_calls.pl");
     fs::write(
@@ -314,106 +317,162 @@ fn test_step_in_targets_with_real_perl_function_calls() -> Result<(), Box<dyn st
     )?;
 
     let mut adapter = make_adapter();
-    // We need a stack frame that refers to line 3 in the file above.
-    // stepInTargets looks up the frame from the session; without a session,
-    // frame_info is None → targets list is empty. Verify response shape.
+    let source_path = script_path.to_str().ok_or("temporary source path is not valid UTF-8")?;
+    adapter.seed_stopped_session_with_frames_for_test(vec![StackFrame::new(
+        1,
+        "main",
+        Source::new(source_path),
+        3,
+    )]);
+    let queries_before = adapter.debugger_query_count_for_test();
     let args = json!({ "frameId": 1 });
     let response = adapter.handle_request(1, "stepInTargets", Some(args));
 
     match response {
-        DapMessage::Response { success, command, body, .. } => {
-            assert!(success, "stepInTargets should succeed");
+        DapMessage::Response { success, command, body, message, .. } => {
             assert_eq!(command, "stepInTargets");
-            let body = body.ok_or("expected body")?;
-            let targets =
-                body.get("targets").and_then(|v| v.as_array()).ok_or("expected targets")?;
-            // No active session → no frames → empty targets list
             assert!(
-                targets.is_empty(),
-                "without a session, stepInTargets should return empty targets"
+                !success,
+                "stepInTargets must be refused while targeted stepping is unsupported (#9069)"
+            );
+            assert!(body.is_none(), "refused stepInTargets must not publish target IDs");
+            assert!(
+                message.is_some_and(|m| !m.is_empty()),
+                "refused stepInTargets must explain the unsupported disposition"
             );
         }
         _ => return Err("Expected Response for stepInTargets".into()),
     }
+    assert_eq!(
+        adapter.debugger_query_count_for_test(),
+        queries_before,
+        "refused stepInTargets must not query the debugger after valid frame admission"
+    );
 
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// 4. Variable inspection during a stepping sequence
-// ---------------------------------------------------------------------------
-
 #[test]
-// AC:3535
-fn test_variables_request_during_stepping_sequence() -> Result<(), Box<dyn std::error::Error>> {
-    // After issuing step commands, variable requests must still be serviced.
+// #9069 review (P1): targeted stepping is unsupported, so a `stepIn` that
+// carries a `targetId` must be refused before any debugger I/O — no `s`
+// write, no resume-state change, no cache clear, no `continued` event —
+// instead of silently looking honored while the whole-`s` operation runs.
+fn test_step_in_with_target_id_is_refused_before_debugger_io()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let script_path = dir.path().join("plain.pl");
+    fs::write(&script_path, "my $x = 1;\nprint $x;\n")?;
+
     let mut adapter = make_adapter();
+    let source_path = script_path.to_str().ok_or("temporary source path is not valid UTF-8")?;
+    adapter.seed_stopped_session_with_frames_for_test(vec![StackFrame::new(
+        1,
+        "main",
+        Source::new(source_path),
+        1,
+    )]);
+    let queries_before = adapter.debugger_query_count_for_test();
 
-    // Step a few times
-    adapter.handle_request(1, "next", Some(json!({"threadId": 1})));
-    adapter.handle_request(2, "stepIn", Some(json!({"threadId": 1})));
-    adapter.handle_request(3, "next", Some(json!({"threadId": 1})));
-
-    // Now request variables (default scope reference = 11)
-    let var_response =
-        adapter.handle_request(4, "variables", Some(json!({"variablesReference": 11})));
-
-    match var_response {
-        DapMessage::Response { success, command, body, .. } => {
-            assert!(success, "variables request after stepping should succeed");
-            assert_eq!(command, "variables");
-            let body = body.ok_or("variables response must have a body")?;
-            let vars = body
-                .get("variables")
-                .and_then(|v| v.as_array())
-                .ok_or("variables body must have a variables array")?;
-            // Placeholder variables (@_ and $self) are returned without a session
-            assert!(!vars.is_empty(), "expected placeholder variables");
-        }
-        _ => return Err("Expected Response for variables".into()),
-    }
-    Ok(())
-}
-
-#[test]
-// AC:3535
-fn test_scopes_request_during_stepping_sequence() -> Result<(), Box<dyn std::error::Error>> {
-    // Scopes must be available between step operations.
-    let mut adapter = make_adapter();
-
-    adapter.handle_request(1, "next", Some(json!({"threadId": 1})));
-
-    let scopes_response = adapter.handle_request(2, "scopes", Some(json!({"frameId": 1})));
-
-    match scopes_response {
-        DapMessage::Response { success, command, body, .. } => {
-            assert!(success, "scopes request after stepping should succeed");
-            assert_eq!(command, "scopes");
-            let body = body.ok_or("scopes response must have a body")?;
-            let scopes = body
-                .get("scopes")
-                .and_then(|v| v.as_array())
-                .ok_or("scopes body must have a scopes array")?;
-            assert!(!scopes.is_empty(), "expected at least one scope");
-            assert_eq!(
-                scopes[0].get("name").and_then(|n| n.as_str()),
-                Some("Locals"),
-                "first scope should be Locals"
+    let response =
+        adapter.handle_request(1, "stepIn", Some(json!({ "threadId": 1, "targetId": 3 })));
+    match response {
+        DapMessage::Response { success, command, body, message, .. } => {
+            assert_eq!(command, "stepIn");
+            assert!(
+                !success,
+                "stepIn with a targetId must be refused while targeted stepping is \
+                 unsupported (#9069)"
+            );
+            assert!(body.is_none(), "the refusal must carry no body");
+            let message = message.unwrap_or_default();
+            assert!(
+                message.contains("targetId"),
+                "the refusal must name the unsupported targetId: {message}"
             );
         }
-        _ => return Err("Expected Response for scopes".into()),
+        _ => return Err("Expected Response for stepIn".into()),
+    }
+    assert_eq!(
+        adapter.debugger_query_count_for_test(),
+        queries_before,
+        "refused stepIn must not reach the debugger"
+    );
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 4. Variable and scope inspection after rejected stepping requests
+// ---------------------------------------------------------------------------
+
+#[test]
+// AC:3535
+fn test_variables_request_after_rejected_stepping_without_session_is_empty()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Without an active session, execution-control requests must not fabricate
+    // stopped-frame authority or inspection data.
+    let mut adapter = make_adapter();
+
+    for (request_seq, command) in [(1, "next"), (2, "stepIn"), (3, "next")] {
+        let response = adapter.handle_request(request_seq, command, Some(json!({"threadId": 1})));
+        let body = assert_response(response, command, false)?;
+        if body.is_some() {
+            return Err(format!("rejected {command} must not return a response body").into());
+        }
+    }
+
+    // A reference with no admitted stopped session returns honest empty data.
+    let var_response =
+        adapter.handle_request(4, "variables", Some(json!({"variablesReference": 11})));
+    let body = assert_response(var_response, "variables", true)?
+        .ok_or("variables response must have a body")?;
+    let vars = body
+        .get("variables")
+        .and_then(|v| v.as_array())
+        .ok_or("variables body must have a variables array")?;
+    if !vars.is_empty() {
+        return Err("variables must be empty without an admitted stopped frame".into());
+    }
+    Ok(())
+}
+
+#[test]
+// AC:3535
+fn test_scopes_request_after_rejected_next_without_session_is_empty()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Without an active session, a rejected next must not fabricate stopped-frame authority.
+    let mut adapter = make_adapter();
+
+    let next_response = adapter.handle_request(1, "next", Some(json!({"threadId": 1})));
+    let next_body = assert_response(next_response, "next", false)?;
+    if next_body.is_some() {
+        return Err("rejected next must not return a response body".into());
+    }
+
+    let scopes_response = adapter.handle_request(2, "scopes", Some(json!({"frameId": 1})));
+    let body = assert_response(scopes_response, "scopes", true)?
+        .ok_or("scopes response must have a body")?;
+    let scopes = body
+        .get("scopes")
+        .and_then(|v| v.as_array())
+        .ok_or("scopes body must have a scopes array")?;
+    if !scopes.is_empty() {
+        return Err("scopes must be empty without an admitted stopped frame".into());
     }
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// 5. gotoTargets with real Perl source file
+// 5. gotoTargets fail-closed on real Perl source (#9064)
 // ---------------------------------------------------------------------------
 
 #[test]
 // AC:3535
-fn test_goto_targets_with_executable_perl_lines() -> Result<(), Box<dyn std::error::Error>> {
-    // Create a Perl file and ask for goto targets near a specific line.
+fn test_goto_targets_unsupported_for_valid_perl_source() -> Result<(), Box<dyn std::error::Error>> {
+    // Negative control (#9064): even for a valid Perl file with executable
+    // lines, unsupported gotoTargets must not discover or publish targets a
+    // client could use as standard goto. Run-to-line would execute the
+    // intervening statements, so no target may be offered.
     let dir = tempfile::tempdir()?;
     let script_path = dir.path().join("goto_test.pl");
     fs::write(
@@ -430,23 +489,12 @@ fn test_goto_targets_with_executable_perl_lines() -> Result<(), Box<dyn std::err
 
     match response {
         DapMessage::Response { success, command, body, .. } => {
-            assert!(success, "gotoTargets should succeed for valid Perl file");
             assert_eq!(command, "gotoTargets");
-            let body = body.ok_or("expected body")?;
-            let targets =
-                body.get("targets").and_then(|v| v.as_array()).ok_or("expected targets array")?;
-            // There should be at least one executable target near line 3
             assert!(
-                !targets.is_empty(),
-                "gotoTargets should find executable lines near line 3 in a valid Perl file"
+                !success,
+                "gotoTargets must fail closed for a valid Perl file while unadvertised"
             );
-            // Each target must have id and label
-            for target in targets {
-                assert!(target.get("id").is_some(), "target must have id");
-                assert!(target.get("label").is_some(), "target must have label");
-                let label = target.get("label").and_then(|v| v.as_str()).unwrap_or("");
-                assert!(label.starts_with("Line "), "label should start with 'Line ': {label}");
-            }
+            assert!(body.is_none(), "unsupported gotoTargets must not publish a targets body");
         }
         _ => return Err("Expected Response for gotoTargets".into()),
     }
@@ -455,9 +503,10 @@ fn test_goto_targets_with_executable_perl_lines() -> Result<(), Box<dyn std::err
 }
 
 #[test]
-// AC:3535
-fn test_goto_targets_nonexistent_file_returns_empty_targets()
--> Result<(), Box<dyn std::error::Error>> {
+// AC:3535 — #9064 fail-closed: the gate refuses before any filesystem access,
+// so the empty-targets contract no longer exists; a nonexistent file gets the
+// explicit unsupported failure.
+fn test_goto_targets_nonexistent_file_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let args = json!({
         "source": { "path": "/nonexistent/file.pl" },
@@ -467,18 +516,11 @@ fn test_goto_targets_nonexistent_file_returns_empty_targets()
 
     match response {
         DapMessage::Response { success, command, body, .. } => {
-            // Path validation may reject as traversal or file not found → either empty success or failure
-            let _ = success;
+            // #9064: the fail-closed gate refuses before any filesystem access,
+            // so a nonexistent file gets the explicit unsupported failure.
             assert_eq!(command, "gotoTargets");
-            if success {
-                let body = body.ok_or("gotoTargets response must have a body")?;
-                let targets = body
-                    .get("targets")
-                    .and_then(|v| v.as_array())
-                    .ok_or("gotoTargets body must have a targets array")?;
-                assert!(targets.is_empty(), "nonexistent file must yield empty targets");
-            }
-            // if !success, that is also acceptable (path validation rejected the path)
+            assert!(!success, "gotoTargets must fail closed while unadvertised");
+            assert!(body.is_none(), "unsupported gotoTargets must not publish a body");
         }
         _ => return Err("Expected Response for gotoTargets".into()),
     }
@@ -486,12 +528,13 @@ fn test_goto_targets_nonexistent_file_returns_empty_targets()
 }
 
 // ---------------------------------------------------------------------------
-// 6. goto with unknown target id
+// 6. goto while unadvertised (fail-closed; unknown-target lookup is unreachable)
 // ---------------------------------------------------------------------------
 
 #[test]
-// AC:3535
-fn test_goto_unknown_target_id_returns_failure() -> Result<(), Box<dyn std::error::Error>> {
+// AC:3535 — #9064 fail-closed: the `dap.goto` gate refuses before any target
+// lookup, so only the unsupported contract is exercised here.
+fn test_goto_unsupported_while_unadvertised() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let args = json!({ "threadId": 1, "targetId": 99999 });
     let response = adapter.handle_request(1, "goto", Some(args));
@@ -503,8 +546,8 @@ fn test_goto_unknown_target_id_returns_failure() -> Result<(), Box<dyn std::erro
             assert!(message.is_some(), "failure must include a message");
             let msg = message.ok_or("goto failure response must have a message")?;
             assert!(
-                msg.contains("Unknown goto target") || msg.contains("99999"),
-                "message should indicate unknown target: {msg}"
+                msg.contains("unsupported"),
+                "message should explain standard goto is unsupported (#9064): {msg}"
             );
         }
         _ => return Err("Expected Response for goto".into()),
@@ -789,8 +832,8 @@ fn test_step_in_targets_missing_frame_id_returns_failure() -> Result<(), Box<dyn
 }
 
 #[test]
-// AC:3535
-fn test_step_in_targets_with_frame_id_no_session_returns_empty()
+// AC:3535 / #9069
+fn test_step_in_targets_with_frame_id_is_refused_without_session()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
 
@@ -799,17 +842,12 @@ fn test_step_in_targets_with_frame_id_no_session_returns_empty()
 
     match response {
         DapMessage::Response { success, command, body, .. } => {
-            assert!(success, "stepInTargets with valid frameId should succeed");
             assert_eq!(command, "stepInTargets");
-            let body = body.ok_or("stepInTargets response must have a body")?;
-            let targets = body
-                .get("targets")
-                .and_then(|v| v.as_array())
-                .ok_or("stepInTargets body must have a targets array")?;
             assert!(
-                targets.is_empty(),
-                "without a session, stepInTargets must return empty targets"
+                !success,
+                "stepInTargets must fail while targeted stepping is unsupported (#9069)"
             );
+            assert!(body.is_none(), "refused stepInTargets must not carry a targets body");
         }
         _ => return Err("Expected Response for stepInTargets".into()),
     }

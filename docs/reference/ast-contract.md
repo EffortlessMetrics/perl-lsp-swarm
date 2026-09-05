@@ -45,13 +45,13 @@ not an arena or index tree.
   canonical child fields. Overflow is proven on a 50,000-node chain with a
   256 KiB worker. Output stays at or under the documented byte bound, and
   truncation is visible. Rust `Debug` is not machine identity, equality, or
-  a durable metric. Configured complete/truncated rendering is
-  [#8832](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8832).
+  a durable metric.
 - Exact whole-tree reads (`count_nodes`, `find_deepest_containing_offset`)
   are iterative over the canonical child visit table and cannot silently
   truncate. Bounded variants expose complete/truncated/instrument-failed
-  state. `to_sexp` may stay depth-guarded; configured rendering remains
-  [#8832](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8832).
+  state. Native debug `render_debug_sexp` is iterative and returns
+  `Complete` / `Truncated` / `InstrumentFailure`. `to_sexp` is a `String`
+  convenience over that engine and cannot prove completeness.
 
 ## Contributor checklist (AST behavior changes)
 

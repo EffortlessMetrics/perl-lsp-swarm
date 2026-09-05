@@ -2,4 +2,4 @@
 source: crates/tree-sitter-perl-rs/tests/snapshots.rs
 expression: sexp
 ---
-(source_file (my_declaration (variable $ matched)(match (variable $ str) (regex "/^\\d+$/" ""))))
+(source_file (statements (my_declaration (declarator my) (variable (variable (sigil $) (name matched))) (initializer (match (pattern "/^\\d+$/") (modifiers "") (expr (variable (sigil $) (name str))))))))

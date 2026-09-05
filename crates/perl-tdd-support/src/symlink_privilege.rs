@@ -142,11 +142,11 @@ fn write_uncaptured_stderr(message: &str) {
         // harness capture even though stderr itself is captured. Only take it
         // when stderr is the terminal; when stderr is redirected, the skip
         // reason belongs in the redirection, not force-printed to the console.
-        if std::io::stderr().is_terminal() {
-            if let Ok(mut console) = std::fs::OpenOptions::new().write(true).open("CONOUT$") {
-                let _ = console.write_all(message.as_bytes());
-                return;
-            }
+        if std::io::stderr().is_terminal()
+            && let Ok(mut console) = std::fs::OpenOptions::new().write(true).open("CONOUT$")
+        {
+            let _ = console.write_all(message.as_bytes());
+            return;
         }
     }
     eprint!("{message}");

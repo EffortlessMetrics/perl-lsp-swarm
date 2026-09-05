@@ -682,10 +682,8 @@ fn split_two_top_level_args(input: &str) -> Option<(&str, &str)> {
             '\'' | '"' | '`' => quote = Some(ch),
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => {
-                if split.replace(idx).is_some() {
-                    return None;
-                }
+            ',' if depth == 0 && split.replace(idx).is_some() => {
+                return None;
             }
             _ => {}
         }

@@ -191,15 +191,13 @@ impl<T> ReachabilityOperationOutcome<T> {
             (ReachabilitySemanticOutcome::LegitimateEmpty, Some(_)) => {
                 return Err(ReachabilityContractError::EmptyWithRetainedValue);
             }
-            (ReachabilitySemanticOutcome::Partial { limitations }, Some(_)) => {
-                if limitations.is_empty() {
-                    return Err(ReachabilityContractError::PartialWithoutLimitation);
-                }
+            (ReachabilitySemanticOutcome::Partial { limitations }, Some(_))
+                if limitations.is_empty() =>
+            {
+                return Err(ReachabilityContractError::PartialWithoutLimitation);
             }
-            (truth, Some(_)) => {
-                if !truth.may_carry_value() {
-                    return Err(ReachabilityContractError::ValueWithNonValuedTruth);
-                }
+            (truth, Some(_)) if !truth.may_carry_value() => {
+                return Err(ReachabilityContractError::ValueWithNonValuedTruth);
             }
             _ => {}
         }

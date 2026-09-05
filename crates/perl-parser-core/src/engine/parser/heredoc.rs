@@ -133,8 +133,8 @@ impl<'a> Parser<'a> {
         }
 
         // Check for timeout
-        if let Some(start) = self.heredoc_start_time {
-            if start.elapsed().as_millis() > HEREDOC_TIMEOUT_MS as u128 {
+        if let Some(start) = self.heredoc_start_time
+            && start.elapsed().as_millis() > HEREDOC_TIMEOUT_MS as u128 {
                 self.errors.push(ParseError::syntax(
                     format!("Heredoc parsing timed out (> {}ms)", HEREDOC_TIMEOUT_MS),
                     self.byte_cursor,
@@ -144,7 +144,6 @@ impl<'a> Parser<'a> {
                 self.heredoc_start_time = None;
                 return;
             }
-        }
 
         // Keep a copy of the suffix declarations so we can match outputs back to inputs.
         // The prefix belongs to an enclosing statement and must remain queued until that
@@ -191,14 +190,13 @@ impl<'a> Parser<'a> {
                 } else {
                     None
                 };
-                if let Some(body_location) = body_location {
-                    if body_location != decl.decl_span.start {
+                if let Some(body_location) = body_location
+                    && body_location != decl.decl_span.start {
                         self.errors.push(ParseError::SyntaxError {
                             message: format!("Unterminated heredoc body: {}", label),
                             location: body_location,
                         });
                     }
-                }
             }
 
             // Defensive guardrail: warn if heredoc node wasn't found at expected span

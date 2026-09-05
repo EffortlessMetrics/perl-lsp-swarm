@@ -2,7 +2,6 @@
 //!
 //! Tests window notifications, progress reporting, and work done progress per LSP 3.17 spec.
 
-#![allow(clippy::collapsible_if)]
 // Integration tests print diagnostic output for CI troubleshooting; this is
 // not the LSP server's stdio transport, so print_stdout doesn't apply the
 // way it does to production code.
@@ -554,12 +553,12 @@ fn validate_preinitialize_outbox(msgs: &[Value], init_token: Option<&Value>) -> 
                 return Err(format!("method not allowed during initialize: {method}"));
             }
             // If it's $/progress, verify the token matches the initialize workDoneToken
-            if method == "$/progress" {
-                if let Some(expected_token) = init_token {
-                    let actual_token = &m["params"]["token"];
-                    if actual_token != expected_token {
-                        return Err("$/progress token must equal initialize.workDoneToken".into());
-                    }
+            if method == "$/progress"
+                && let Some(expected_token) = init_token
+            {
+                let actual_token = &m["params"]["token"];
+                if actual_token != expected_token {
+                    return Err("$/progress token must equal initialize.workDoneToken".into());
                 }
             }
         }

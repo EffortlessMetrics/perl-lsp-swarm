@@ -1,19 +1,31 @@
-;;; eglot-released.el --- Released-Eglot adapter for the perl-lsp host driver -*- lexical-binding: t; -*-
+;;; eglot-released.el --- External-Eglot adapter for the perl-lsp host driver -*- lexical-binding: t; -*-
 
 ;; Loaded by the shared runner right after scripts/test/emacs-host-driver.el.
-;; It owns exactly one client subject: standalone Eglot as released on GNU
-;; ELPA (pinned 1.23 by the registry).  The declared package inputs arrive
-;; through the run plan environment; this adapter never installs, refreshes,
-;; or consults package archives or ambient package state, and it proves that
-;; the Eglot it loads is the declared release file, not the Emacs build's
-;; bundled copy and not an ambient cache entry.
+;; It owns the external Eglot client subjects: standalone Eglot as released
+;; on GNU ELPA (the legacy pinned 1.23 row and the manifest-bound 1.24 row)
+;; and the pinned upstream-source Eglot extracted from the declared
+;; emacs.git tree (#8776).  The declared inputs arrive through the run plan
+;; environment; this adapter never installs, refreshes, or consults package
+;; archives or ambient package state, and it proves that the Eglot it loads
+;; is the declared client file, not the Emacs build's bundled copy and not
+;; an ambient cache entry.
+;;
+;; The declared package archive reaches this adapter exactly for released
+;; subjects — the run-plan builder refuses a package input for the
+;; upstream-source subject before launch — so its presence selects the
+;; released identity emission (with the archive digest as package
+;; identity) and its absence selects the package-free upstream-source
+;; identity.  The journey itself (registration, connection, candidate
+;; binding, capability capture, shutdown, evidence exports) is one shared
+;; path; the two states differ only in the client_loaded identity evidence
+;; they emit.
 
 ;; NOTE: `eglot' is deliberately NOT required at the top of this file.  A
 ;; top-level require of it would load the Emacs build's bundled copy before
-;; the declared package directory is on `load-path', and the in-body
+;; the declared client directory is on `load-path', and the in-body
 ;; require below would then be a satisfied no-op — the run would execute
-;; bundled Eglot while claiming the released subject.  The only require
-;; happens after the load-path is owned by the declared package.
+;; bundled Eglot while claiming an external subject.  The only require
+;; happens after the load-path is owned by the declared file.
 (require 'cl-lib)
 (require 'json)
 (require 'lisp-mnt)
@@ -27,7 +39,7 @@
 (defun perl-lsp-test-released-env (name)
   "Return required host environment variable NAME or signal an error."
   (or (getenv name)
-      (error "released Eglot adapter missing environment: %s" name)))
+      (error "external Eglot adapter missing environment: %s" name)))
 
 (defun perl-lsp-test-released-file-digest (file)
   "Return the sha256 hex digest of FILE's raw bytes.
@@ -41,16 +53,22 @@ text files, always for the binary package archive."
     (secure-hash 'sha256 (buffer-string))))
 
 (defun perl-lsp-test-released-library-facts (library)
-  "Return (VERSION SHA256-HEX) for the declared released LIBRARY file.
+  "Return (VERSION SHA256-HEX) for the declared external LIBRARY file.
 
-Unlike the bundled subject, the released subject requires the version
-header: `released' is a mandatory identity field, so a library whose header
-cannot be read fails the run instead of degrading to a digest-only claim."
+Both external states require the version header: `released' and
+`upstream-source' are mandatory identity fields, so a library whose header
+cannot be read fails the run instead of degrading to a digest-only claim.
+The readability guard lives here, before the literal insert: the caller's
+`let*' binding evaluates this function before any body guard could run, so
+an unreadable declared file must fail with this declared error rather than
+an Emacs-generic read error."
+  (unless (file-readable-p library)
+    (error "declared external Eglot library is not readable"))
   (let ((version (with-temp-buffer
                    (insert-file-contents-literally library)
                    (lm-version))))
     (unless (and (stringp version) (not (string= version "")))
-      (error "released Eglot library carries no version header"))
+      (error "external Eglot library carries no version header"))
     (list version (perl-lsp-test-released-file-digest library))))
 
 (defun perl-lsp-test-released-json-normalize (value)
@@ -88,14 +106,14 @@ cannot be read fails the run instead of degrading to a digest-only claim."
   "Write SERVER's initialize capabilities to SNAPSHOT-FILE."
   (let ((capabilities (eglot--capabilities server)))
     (unless capabilities
-      (error "released Eglot server reported no initialize capabilities"))
+      (error "external Eglot server reported no initialize capabilities"))
     (with-temp-file snapshot-file
       (insert
        (condition-case err
            (json-serialize
             (perl-lsp-test-released-json-normalize capabilities))
          (error
-          (error "released Eglot capability snapshot serialization failed: %S"
+          (error "external Eglot capability snapshot serialization failed: %S"
                  err)))))))
 
 (defun perl-lsp-test-released-export-buffer (buffer file)
@@ -110,18 +128,22 @@ cannot be read fails the run instead of degrading to a digest-only claim."
     (while (and (process-live-p process) (< (float-time) limit))
       (accept-process-output nil 0.1))
     (when (process-live-p process)
-      (error "released Eglot server process survived shutdown"))))
+      (error "external Eglot server process survived shutdown"))))
 
 (defun perl-lsp-test-released-observed-program (server)
   "Return the program the live SERVER process was actually started as."
   (let* ((process (jsonrpc--process server))
          (command (and (process-live-p process) (process-command process))))
     (unless (and command (stringp (car command)))
-      (error "released Eglot server process exposes no program identity"))
+      (error "external Eglot server process exposes no program identity"))
     (car command)))
 
 (defun perl-lsp-test-client-run ()
-  "Drive one released-Eglot lifecycle journey against the exact candidate."
+  "Drive one external-Eglot lifecycle journey against the exact candidate.
+
+The declared package archive selects the released identity; its absence
+selects the package-free upstream-source identity.  Everything after
+`client_loaded' is one shared journey for both states."
   (let* ((candidate (perl-lsp-test-released-env "PERL_LSP_EMACS_CANDIDATE"))
          (fixture-root (perl-lsp-test-released-env "PERL_LSP_EMACS_FIXTURE_ROOT"))
          (configuration (perl-lsp-test-released-env "PERL_LSP_EMACS_CONFIGURATION"))
@@ -129,33 +151,47 @@ cannot be read fails the run instead of degrading to a digest-only claim."
          (client-log (perl-lsp-test-released-env "PERL_LSP_EMACS_CLIENT_LOG"))
          (stderr-file (perl-lsp-test-released-env "PERL_LSP_EMACS_SERVER_STDERR"))
          (library (perl-lsp-test-released-env "PERL_LSP_EMACS_CLIENT_SOURCE"))
-         (package-file (perl-lsp-test-released-env "PERL_LSP_EMACS_CLIENT_PACKAGE"))
-         (facts (perl-lsp-test-released-library-facts library)))
-    (unless (file-readable-p library)
-      (error "declared released Eglot library is not readable"))
-    ;; The declared package file is part of the released subject's identity;
-    ;; its digest is emitted as runtime evidence alongside the library.
-    (unless (and package-file (file-readable-p package-file))
-      (error "released Eglot subject requires the declared package file"))
-    ;; The package directory is pushed to the front of `load-path' and the
-    ;; resolution is then proven: `locate-library' must return exactly the
-    ;; declared file.  If the Emacs build's bundled Eglot, an ambient
-    ;; package directory, or a stale cache entry answered instead, this
-    ;; equality fails and the run fails closed.
+         ;; Optional by state, not by oversight: the run-plan builder
+         ;; refuses a package input for the upstream-source subject before
+         ;; launch, so a live binding here means the released identity.
+         (package-file (getenv "PERL_LSP_EMACS_CLIENT_PACKAGE")))
+    ;; The declared library's identity facts (version header and raw-byte
+    ;; digest) are computed here, after the bindings and before anything is
+    ;; loaded: the facts function guards the file's readability itself —
+    ;; the first place the file is touched — so an unreadable declared
+    ;; library fails with the declared error, never an Emacs-generic read
+    ;; error from a `let*' binding that ran before a guard could.
+    ;; The declared package file is part of a released subject's identity;
+    ;; its digest is emitted as runtime evidence alongside the library.  An
+    ;; upstream-source subject carries no package identity at all, so the
+    ;; requirement is conditional on the input's presence.
+    (when package-file
+      (unless (file-readable-p package-file)
+        (error "released Eglot subject requires the declared package file")))
+    (let ((facts (perl-lsp-test-released-library-facts library)))
+    ;; The declared file's directory is pushed to the front of `load-path'
+    ;; and the resolution is then proven: `locate-library' must return
+    ;; exactly the declared file.  If the Emacs build's bundled Eglot, an
+    ;; ambient package directory, or a stale cache entry answered instead,
+    ;; this equality fails and the run fails closed.
     (add-to-list 'load-path (file-name-directory library))
     (require 'eglot)
     (let ((resolved (locate-library "eglot")))
       (unless resolved
-        (error "released Eglot library did not resolve after require"))
+        (error "external Eglot library did not resolve after require"))
       (unless (string-equal (file-truename resolved)
                             (file-truename library))
-        (error "released Eglot did not resolve to the declared package file")))
+        (error "external Eglot did not resolve to the declared client file")))
     (perl-lsp-test-emit
      "client_loaded"
-     `((source_state . "released")
-       (version . ,(nth 0 facts))
-       (source_sha256 . ,(nth 1 facts))
-       (package_sha256 . ,(perl-lsp-test-released-file-digest package-file))))
+     (if package-file
+         `((source_state . "released")
+           (version . ,(nth 0 facts))
+           (source_sha256 . ,(nth 1 facts))
+           (package_sha256 . ,(perl-lsp-test-released-file-digest package-file)))
+       `((source_state . "upstream_source")
+         (version . ,(nth 0 facts))
+         (source_sha256 . ,(nth 1 facts)))))
     ;; The checked configuration is a real run input: it is loaded before
     ;; the connection so client behavior settings come from the plan, not
     ;; from ambient state.
@@ -174,18 +210,18 @@ cannot be read fails the run instead of degrading to a digest-only claim."
                       (eglot-autoreconnect nil)
                       (eglot-autoshutdown nil))
                   ;; `eglot--connect' does not default its class argument;
-                  ;; nil would break `make-instance', so the released
-                  ;; subject pins the stock class explicitly.
+                  ;; nil would break `make-instance', so the external
+                  ;; subjects pin the stock class explicitly.
                   (eglot--connect (list major-mode)
                                   (eglot--current-project)
                                   'eglot-lsp-server contact '("perl")))))
           (unless (and server (eglot-current-server))
-            (error "released Eglot connect did not manage the fixture buffer"))
+            (error "external Eglot connect did not manage the fixture buffer"))
           ;; Exact-candidate binding: the observed program of the live
           ;; server process must be the declared candidate, byte for byte.
           (unless (string-equal (perl-lsp-test-released-observed-program server)
                                 candidate)
-            (error "released Eglot selected a non-candidate server program"))
+            (error "external Eglot selected a non-candidate server program"))
           (perl-lsp-test-emit
            "registration_selected"
            `((registration . "manual_row")
@@ -218,7 +254,7 @@ cannot be read fails the run instead of degrading to a digest-only claim."
             (perl-lsp-test-released-export-buffer
              (jsonrpc-events-buffer server) client-log)
             (perl-lsp-test-released-export-buffer
-             (jsonrpc-stderr-buffer server) stderr-file)))))))
+             (jsonrpc-stderr-buffer server) stderr-file))))))))
 
 (provide 'eglot-released)
 ;;; eglot-released.el ends here

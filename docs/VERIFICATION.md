@@ -27,13 +27,13 @@ The release badge shows the latest GitHub release. GitHub releases are the publi
 Regenerate public badge endpoints:
 
 ```bash
-cargo xtask badges
+python3 scripts/generate-badges.py
 ```
 
 Check committed endpoint drift:
 
 ```bash
-cargo xtask badges --check
+python3 scripts/generate-badges.py --check
 ```
 
 Committed endpoint files live under `badges/`. Detailed reports stay under `target/` locally or in CI artifacts.

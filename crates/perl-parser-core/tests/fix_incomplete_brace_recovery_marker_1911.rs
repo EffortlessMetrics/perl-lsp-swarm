@@ -3,7 +3,7 @@
 //!
 //! Before the fix, an incomplete brace literal that the user is mid-typing
 //! (e.g. `my $cfg = { host => "localhost", port =>`) parsed to an empty
-//! `(block )` node: the partial content AND the incompleteness were both lost
+//! `(block)` node: the partial content AND the incompleteness were both lost
 //! from the AST, so consumers had no recovery marker to act on. The fix emits a
 //! `MissingExpression` marker in the returned block while preserving the #1352
 //! anti-swallow behavior (trailing declarations stay separate top-level nodes).

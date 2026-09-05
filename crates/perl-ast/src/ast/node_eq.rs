@@ -339,7 +339,6 @@ mod tests {
     #[test]
     fn equal_leaves_and_wide_programs_compare() {
         let leaf = numbered("7", 0);
-        assert_eq!(leaf, leaf);
         assert_eq!(leaf, numbered("7", 0));
         assert_ne!(leaf, numbered("8", 0));
         assert_ne!(leaf, numbered("7", 1));
@@ -396,7 +395,6 @@ mod tests {
         );
         assert_ne!(none, some);
         assert_ne!(some, none);
-        assert_eq!(none, none);
     }
 
     #[test]
@@ -461,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn error_expected_tokens_are_material_and_absent_from_sexp()
+    fn error_expected_tokens_are_material_and_visible_in_sexp()
     -> Result<(), perl_token::TokenSpanError> {
         let left = Node::new(
             NodeKind::Error {
@@ -481,7 +479,7 @@ mod tests {
             },
             loc(0, 1),
         );
-        assert_eq!(left.to_sexp(), right.to_sexp());
+        assert_ne!(left.to_sexp(), right.to_sexp(), "recovery expected tokens must be visible");
         assert_ne!(left, right);
         let with_found = Node::new(
             NodeKind::Error {
@@ -492,13 +490,15 @@ mod tests {
             },
             loc(0, 1),
         );
-        assert_eq!(left.to_sexp(), with_found.to_sexp());
+        assert_ne!(left.to_sexp(), with_found.to_sexp(), "found token must be visible");
         assert_ne!(left, with_found);
+        assert!(left.to_sexp().contains("expected"), "sexp = {}", left.to_sexp());
+        assert!(with_found.to_sexp().contains("found"), "sexp = {}", with_found.to_sexp());
         Ok(())
     }
 
     #[test]
-    fn subroutine_name_span_and_declarator_are_material_and_absent_from_sexp() {
+    fn subroutine_name_span_is_material_and_absent_from_sexp() {
         let body = Node::new(NodeKind::Block { statements: vec![] }, loc(10, 12));
         let left = Node::new(
             NodeKind::Subroutine {
@@ -536,10 +536,11 @@ mod tests {
             },
             loc(0, 12),
         );
-        assert_eq!(left.to_sexp(), span_moved.to_sexp());
-        assert_eq!(left.to_sexp(), lexical.to_sexp());
+        assert_eq!(left.to_sexp(), span_moved.to_sexp(), "sexp omits name_span");
+        assert_ne!(left.to_sexp(), lexical.to_sexp(), "declarator is a debug payload");
         assert_ne!(left, span_moved);
         assert_ne!(left, lexical);
+        assert!(lexical.to_sexp().contains("declarator"), "sexp = {}", lexical.to_sexp());
     }
 
     #[test]
@@ -564,7 +565,6 @@ mod tests {
             loc(0, 20),
         );
         assert_ne!(left, right);
-        assert_eq!(left, left);
     }
 
     #[test]
@@ -633,7 +633,6 @@ mod tests {
         let a = wrap_expr(program(vec![numbered("1", 0), numbered("2", 1)]));
         let b = wrap_expr(program(vec![numbered("1", 0), numbered("2", 1)]));
         let c = wrap_expr(program(vec![numbered("1", 0), numbered("2", 1)]));
-        assert_eq!(a, a, "reflexive");
         assert_eq!(a == b, b == a, "symmetric");
         assert_eq!(a, b);
         assert_eq!(b, c);

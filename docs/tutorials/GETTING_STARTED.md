@@ -21,12 +21,12 @@ The rest of this guide is editor-specific setup and feature discovery.
 
 ## What is a Language Server?
 
-A **language server** is a program that runs alongside your editor and gives it deep understanding of your code. Instead of each editor re-implementing features like "go to definition" or "show all references," the [Language Server Protocol (LSP)](https://microsoft.github.io/language-server-protocol/) defines a standard way for any editor to talk to a language-specific backend. `perllsp` is the native Perl 5 language server CLI from the perl-lsp project: it parses your code, builds an index of symbols, and responds to editor requests over JSON-RPC -- so you get IDE-grade navigation, completion, diagnostics, and refactoring in VS Code, Neovim, Emacs, Helix, Codex Desktop, or any other LSP-capable editor. No Perl runtime is required; the server is a single native binary.
+A **language server** is a program that runs alongside your editor and gives it deep understanding of your code. Instead of each editor re-implementing features like "go to definition" or "show all references," the [Language Server Protocol (LSP)](https://microsoft.github.io/language-server-protocol/) defines a standard way for any editor to talk to a language-specific backend. `perllsp` is the native Perl 5 language server CLI from the perl-lsp project: it parses your code, builds an index of symbols, and responds to editor requests over JSON-RPC -- so you get IDE-grade navigation, completion, diagnostics, and refactoring in VS Code, Neovim, Emacs, Helix, or any other LSP-capable editor. No Perl runtime is required; the server is a single native binary.
 
 ## Prerequisites
 
 - **Rust 1.95+** (for building from source)
-- **A supported editor**: VS Code, Amazon Kiro, Neovim, Emacs, Helix, Codex Desktop, or Sublime Text
+- **A supported editor**: VS Code, Amazon Kiro, Neovim, Emacs, Helix, or Sublime Text
 
 ## Installation
 
@@ -99,7 +99,7 @@ perllsp --health
 # Optional: show feature/profile information
 perllsp --info
 
-# Optional: validate a Perl file from the CLI
+# Optional: native listed-file parser check (does not execute project Perl)
 perllsp --check script.pl
 ```
 
@@ -395,18 +395,43 @@ After reloading, `perllsp --version` should print the version number.
 
 The editor must be able to find and launch the `perllsp` binary. Symptoms include "server failed to start" messages or LSP features simply not appearing.
 
-1. **Verify the binary path** -- run `which perllsp` in the same shell your editor uses. Some editors (VS Code, for instance) may not inherit your shell's `PATH` when launched from a desktop shortcut. Try launching the editor from the terminal (`code .`) so it inherits your environment.
+1. **Verify the binary path** in the same shell your editor uses:
+   - POSIX-compatible shells: `command -v perllsp`
+   - PowerShell: `Get-Command perllsp`
+   - Windows Command Prompt: `where.exe perllsp`
+
+   Some editors (VS Code, for instance) may not inherit your shell's `PATH` when launched from a desktop shortcut. Try launching the editor from the terminal (`code .`) so it inherits your environment.
 
 2. **Check editor logs** -- every LSP client has a log output:
    - VS Code: View > Output > select "Perl Language Server"
    - Neovim: `:LspLog`
    - Emacs: `*eglot stderr*` buffer
 
-3. **Test JSON-RPC communication** manually:
+3. **Ask the binary about itself.** These checks are the supported way to tell a
+   broken installation from an editor that cannot find or launch the server, and
+   they work the same in every shell:
+
    ```bash
-   echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}' | perllsp --stdio
+   perllsp --version   # version, git commit, and parser in use
+   perllsp --health    # prints "ok <version>"
+   perllsp --doctor .  # Perl path, project config, and effective @INC roots
    ```
-   You should see a JSON response. If you see an error, the binary itself has a problem -- try reinstalling.
+
+   These commands prove the binary is installed, runnable, and able to report its
+   own configuration. They do not start the language server: `--health` prints a
+   version string and `--doctor` is a read-only report, so neither exercises the
+   stdio transport or request handling. If all three succeed, rule out a missing
+   or unrunnable binary and move on to the editor's own logs in step 2 -- that is
+   the surface that shows a server which starts and then fails.
+
+   Do not test the server by piping bare JSON into `perllsp --stdio`. LSP stdio
+   requires every message to carry a `Content-Length` header followed by a blank
+   line and the UTF-8 JSON payload, so an unframed line is never read as a
+   request: the server waits, prints nothing on standard output, and exits when
+   its input closes. That silence is a property of the protocol, not evidence of
+   a bad install. Hand-framing a request is protocol debugging rather than an
+   installation check. Use the repository's protocol harnesses when debugging
+   request framing instead of hand-constructing messages in this basic guide.
 
 4. **VS Code specific**: ensure the extension is installed and enabled:
    ```bash

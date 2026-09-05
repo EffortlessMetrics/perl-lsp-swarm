@@ -143,10 +143,12 @@ pub(super) fn count_corpus_sections(root: &Path) -> usize {
     let marker = Regex::new(r"^=+\s*$").ok();
     let mut total: usize = 0;
 
-    let walker =
-        walkdir::WalkDir::new(&corpus_dir).into_iter().filter_map(|e| e.ok()).filter(|e| {
-            e.file_type().is_file() && e.path().extension().is_some_and(|ext| ext == "txt")
-        });
+    // Tree-sitter corpora admit any filename; the sectioned-document convention
+    // is the `=` marker below, not a `.txt` extension.
+    let walker = walkdir::WalkDir::new(&corpus_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file());
 
     for entry in walker {
         if let Ok(content) = fs::read_to_string(entry.path())

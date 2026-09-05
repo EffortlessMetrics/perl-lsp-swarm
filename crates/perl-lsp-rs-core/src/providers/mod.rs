@@ -12,6 +12,10 @@
 
 // Group 1 -- helpers (no inter-provider dependencies)
 pub mod completion_item;
+/// Canonical Dancer2 read-only provider slice (#8928): one selected
+/// authority per request from canonical activation/import/route/context/
+/// hook facts, never a union of canonical and legacy answers.
+pub mod dancer2;
 pub mod provider_decision;
 pub mod semantic_port;
 pub mod semantic_port_adapters;
@@ -33,6 +37,7 @@ pub mod document_links;
 pub mod document_symbols;
 pub mod folding;
 pub mod formatting_types;
+pub mod htmx;
 pub mod import_management;
 pub mod inlay_hints;
 pub mod on_type_formatting;
@@ -77,6 +82,7 @@ pub use file_completion::*;
 pub use folding::*;
 pub use formatting::*;
 pub use formatting_types::*;
+pub use htmx::*;
 pub use import_management::*;
 pub use inlay_hints::*;
 pub use inline_completion::*;

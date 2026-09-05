@@ -6,8 +6,8 @@
 //! - a second child-match table that omits a #8424 field
 //! - bounded helpers that coerce `Truncated` into `usize` / `Some`
 //!
-//! They do not cover `to_sexp` rendering (#8832), Clone/Eq/Debug (#6900), or
-//! source-index caches (#8044).
+//! They do not cover native debug rendering (`to_sexp` / `render_debug_sexp`,
+//! #8832), Clone/Eq/Debug (#6900), or source-index caches (#8044).
 
 use perl_ast::ast::MAX_AST_DEPTH;
 use perl_ast::{

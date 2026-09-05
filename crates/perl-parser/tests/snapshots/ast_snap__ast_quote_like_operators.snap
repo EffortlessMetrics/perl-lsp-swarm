@@ -1,6 +1,5 @@
 ---
 source: crates/perl-parser/tests/ast_snap.rs
-assertion_line: 200
 expression: "parse_sexp(\"my $single = q{literal}; my $double = qq|hello $name|; my @words = qw(foo bar baz);\",)"
 ---
-(source_file (my_declaration (variable $ single)(string "q{literal}")) (my_declaration (variable $ double)(string_interpolated "qq|hello $name|")) (my_declaration (variable @ words)(array (string "foo") (string "bar") (string "baz"))))
+(source_file (statements (my_declaration (declarator my) (variable (variable (sigil $) (name single))) (initializer (string (value q{literal}))))) (statements (my_declaration (declarator my) (variable (variable (sigil $) (name double))) (initializer (string_interpolated (value "qq|hello $name|") (interpolated true))))) (statements (my_declaration (declarator my) (variable (variable (sigil @) (name words))) (initializer (array (elements (string (value foo))) (elements (string (value bar))) (elements (string (value baz))))))))

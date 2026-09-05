@@ -26,9 +26,11 @@
 //!
 //! Refs: #8174, #8566.
 
+use chrono::{NaiveDate, Utc};
 use color_eyre::eyre::{Context, Result, bail, eyre};
-use glob::Pattern;
+use glob::{MatchOptions, Pattern};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -91,6 +93,38 @@ pub struct FileRecord {
     pub entry: Option<AllowEntry>,
 }
 
+/// Exact-tree policy comparison used by trusted CI. The evaluator is sourced
+/// from the trusted checkout; candidate trees are read only as Git objects.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExactTreePolicyReceipt {
+    pub schema_version: u32,
+    pub event_name: Option<String>,
+    pub repository: Option<String>,
+    pub base_sha: String,
+    pub base_tree_sha: Option<String>,
+    pub subject_sha: String,
+    pub subject_tree_sha: Option<String>,
+    pub pr_head_sha: Option<String>,
+    pub base_allowlist_blob_sha: Option<String>,
+    pub subject_allowlist_blob_sha: Option<String>,
+    pub base_unclassified_count: usize,
+    pub subject_unclassified_count: usize,
+    pub new_unclassified_paths: Vec<String>,
+    pub outcome: String,
+    pub failure_stage: Option<String>,
+    pub error: Option<String>,
+    /// UTC date used when evaluating expiring allowlist entries.
+    pub evaluation_date: String,
+    pub evaluator_commit: Option<String>,
+    pub evaluator_tree: Option<String>,
+    pub inventory_markdown_path: Option<String>,
+    pub inventory_markdown_size: Option<u64>,
+    pub inventory_markdown_sha256: Option<String>,
+    pub inventory_json_path: Option<String>,
+    pub inventory_json_size: Option<u64>,
+    pub inventory_json_sha256: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Rust-family classifier
 // ---------------------------------------------------------------------------
@@ -127,9 +161,22 @@ struct PreparedAllowEntry<'a> {
 }
 
 fn prepare_allow_entries(entries: &[AllowEntry]) -> Vec<PreparedAllowEntry<'_>> {
+    prepare_allow_entries_at(entries, Utc::now().date_naive())
+}
+
+fn prepare_allow_entries_at(
+    entries: &[AllowEntry],
+    evaluation_date: NaiveDate,
+) -> Vec<PreparedAllowEntry<'_>> {
     let mut prepared = Vec::new();
     for entry in entries {
-        if entry.retired {
+        if entry.retired
+            || entry
+                .expires
+                .as_deref()
+                .and_then(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
+                .is_some_and(|expires| expires < evaluation_date)
+        {
             continue;
         }
         let glob = match entry.glob.as_deref() {
@@ -144,13 +191,258 @@ fn prepare_allow_entries(entries: &[AllowEntry]) -> Vec<PreparedAllowEntry<'_>> 
     prepared
 }
 
+fn validate_exact_allow_entries(entries: &[AllowEntry]) -> Result<()> {
+    let mut ids = std::collections::BTreeSet::new();
+    for entry in entries.iter().filter(|entry| !entry.retired) {
+        if !ids.insert(&entry.id) {
+            bail!("duplicate allowlist entry id {}", entry.id);
+        }
+        if entry.kind.trim().is_empty()
+            || entry.language.trim().is_empty()
+            || entry.surface.trim().is_empty()
+            || entry.classification.trim().is_empty()
+            || entry.owner.trim().is_empty()
+            || entry.reason.trim().is_empty()
+        {
+            bail!("allowlist entry {} has empty required metadata", entry.id);
+        }
+        match (entry.glob.as_deref(), entry.path.as_deref()) {
+            (Some(_), Some(_)) => bail!("allowlist entry {} sets both glob and path", entry.id),
+            (None, None) => bail!("allowlist entry {} has no glob or path", entry.id),
+            (Some(pattern), None) => {
+                Pattern::new(pattern)
+                    .with_context(|| format!("invalid glob in allowlist entry {}", entry.id))?;
+            }
+            (None, Some(path)) if path.starts_with('/') || path.contains('\\') => {
+                bail!("invalid path in allowlist entry {}", entry.id)
+            }
+            (None, Some(_)) => {}
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Entry-level coherence (#9680/#9993)
+// ---------------------------------------------------------------------------
+
+/// Git conflict-marker line prefixes. Textual conflict resolution can leave
+/// these inside a multi-line TOML string, where the parser still accepts the
+/// file; markers left at the top level already fail TOML parsing. Git writes
+/// markers at column 0, so the raw line prefix is matched and indented or
+/// commented mentions are not flagged.
+const POLICY_CONFLICT_MARKER_PREFIXES: &[&str] = &["<<<<<<< ", ">>>>>>> ", "||||||| "];
+
+fn is_policy_conflict_marker(line: &str) -> bool {
+    line == "======="
+        || POLICY_CONFLICT_MARKER_PREFIXES.iter().any(|prefix| line.starts_with(prefix))
+}
+
+/// Return 1-based line numbers that begin a Git conflict marker.
+fn policy_conflict_marker_lines(text: &str) -> Vec<usize> {
+    text.lines()
+        .enumerate()
+        .filter(|(_, line)| is_policy_conflict_marker(line))
+        .map(|(index, _)| index + 1)
+        .collect()
+}
+
+/// Shared wording for the mispaired-provenance finding so the raw-bytes,
+/// policy-table, and typed entry surfaces report one identical message shape.
+fn mispaired_provenance_message(
+    first_id: &str,
+    first_matcher: &str,
+    id: &str,
+    matcher: &str,
+) -> String {
+    format!(
+        "entries {first_id:?} and {id:?} carry an identical `reason` under different matchers ({first_matcher:?} vs {matcher:?}); provenance is mispaired"
+    )
+}
+
+/// Detect the mispaired-provenance shape produced by textual conflict
+/// resolution (#9680): two non-retired entries with different matchers that
+/// carry a byte-identical `reason`. The file stays valid TOML with green
+/// schema, duplicate, and coverage checks while its identity join is wrong.
+///
+/// The allowlist schema carries no issue/authority field beyond `id` today,
+/// so the subject join is derived from the identity-bearing `reason` field
+/// rather than from prose structure. Retired entries are exempt: a
+/// historical row may deliberately record the disposition of an accepted
+/// entry without being live policy.
+fn mispaired_provenance_conflicts(entries: &[&toml::map::Map<String, toml::Value>]) -> Vec<String> {
+    let mut conflicts = Vec::new();
+    let mut seen: std::collections::BTreeMap<&str, (&str, &str)> =
+        std::collections::BTreeMap::new();
+    for entry in entries {
+        let retired = entry.get("retired").and_then(toml::Value::as_bool).unwrap_or(false);
+        if retired {
+            continue;
+        }
+        let Some(reason) = entry.get("reason").and_then(toml::Value::as_str) else {
+            continue;
+        };
+        if reason.trim().is_empty() {
+            continue;
+        }
+        let id = entry.get("id").and_then(toml::Value::as_str).unwrap_or("<unnamed>");
+        let matcher = entry
+            .get("glob")
+            .or_else(|| entry.get("path"))
+            .and_then(toml::Value::as_str)
+            .unwrap_or("<none>");
+        match seen.entry(reason) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert((id, matcher));
+            }
+            std::collections::btree_map::Entry::Occupied(slot) => {
+                let (first_id, first_matcher) = slot.get();
+                if *first_matcher != matcher {
+                    conflicts.push(mispaired_provenance_message(
+                        first_id,
+                        first_matcher,
+                        id,
+                        matcher,
+                    ));
+                }
+            }
+        }
+    }
+    conflicts
+}
+
+fn validate_exact_policy_bytes(policy: &[u8]) -> Result<()> {
+    let text = std::str::from_utf8(policy).context("allowlist is not UTF-8")?;
+    let marker_lines = policy_conflict_marker_lines(text);
+    if !marker_lines.is_empty() {
+        bail!("allowlist contains Git conflict markers at lines {marker_lines:?}");
+    }
+    let value: toml::Value = toml::from_str(text).context("parsing allowlist policy")?;
+    let entries = value
+        .get("allow")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| eyre!("allowlist must define an allow array"))?;
+    let tables: Vec<&toml::map::Map<String, toml::Value>> =
+        entries.iter().filter_map(toml::Value::as_table).collect();
+    if let Some(conflict) = mispaired_provenance_conflicts(&tables).first() {
+        bail!("mispaired provenance: {conflict}");
+    }
+    let mut matchers = std::collections::BTreeSet::new();
+    for (index, raw) in entries.iter().enumerate() {
+        let table = raw.as_table().ok_or_else(|| eyre!("allow entry {index} is not a table"))?;
+        for key in table.keys() {
+            if !ALLOWED_ALLOW_FIELDS.contains(&key.as_str()) {
+                bail!("allow entry {index} has unknown field {key}");
+            }
+        }
+        let retired = table.get("retired").and_then(toml::Value::as_bool).unwrap_or(false);
+        if retired {
+            continue;
+        }
+        let id = table
+            .get("id")
+            .and_then(toml::Value::as_str)
+            .ok_or_else(|| eyre!("allow entry {index} missing id"))?;
+        let glob = table.get("glob").and_then(toml::Value::as_str);
+        let path = table.get("path").and_then(toml::Value::as_str);
+        if glob.is_some() == path.is_some() {
+            bail!("allow entry {id} must set exactly one matcher");
+        }
+        let matcher = glob.or(path).ok_or_else(|| eyre!("allow entry {id} has no matcher"))?;
+        if matcher.starts_with("./")
+            || matcher.starts_with('/')
+            || matcher.contains('\\')
+            || matcher.trim() != matcher
+        {
+            bail!("invalid repository-relative matcher in allow entry {id}");
+        }
+        if !matchers.insert(matcher.to_string()) {
+            bail!("duplicate matcher {matcher}");
+        }
+        if let Some(glob) = glob {
+            Pattern::new(glob).with_context(|| format!("invalid glob in allow entry {id}"))?;
+            if is_policy_broad_glob(glob)
+                && table
+                    .get("broad_glob_reason")
+                    .and_then(toml::Value::as_str)
+                    .is_none_or(|reason| reason.trim().is_empty())
+            {
+                bail!("broad glob in allow entry {id} lacks broad_glob_reason");
+            }
+        }
+        let classification =
+            table.get("classification").and_then(toml::Value::as_str).unwrap_or("");
+        if !KNOWN_CLASSIFICATIONS.contains(&classification) {
+            bail!("unknown classification {classification} in allow entry {id}");
+        }
+        let covered_by = table
+            .get("covered_by")
+            .ok_or_else(|| eyre!("allow entry {id} is missing covered_by"))?;
+        let coverage = covered_by.as_array();
+        if coverage.is_none_or(|items| !items.iter().all(|item| item.as_str().is_some())) {
+            bail!("allow entry {id} covered_by must be a list of strings");
+        }
+        if COVERAGE_REQUIRING_CLASSIFICATIONS.contains(&classification)
+            && coverage.is_none_or(Vec::is_empty)
+        {
+            bail!("allow entry {id} requires at least one covered_by entry");
+        }
+        let mut dates = BTreeMap::new();
+        for field in ["created", "review_after", "expires"] {
+            if let Some(date) = table.get(field).and_then(toml::Value::as_str) {
+                let parsed = NaiveDate::parse_from_str(date, "%Y-%m-%d")
+                    .with_context(|| format!("invalid {field} date in allow entry {id}"))?;
+                dates.insert(field, parsed);
+            }
+        }
+        if let (Some(created), Some(review_after)) =
+            (dates.get("created"), dates.get("review_after"))
+            && created >= review_after
+        {
+            bail!("created date is after review_after in allow entry {id}");
+        }
+        if let (Some(created), Some(expires)) = (dates.get("created"), dates.get("expires"))
+            && expires <= created
+        {
+            bail!("expires date is not after created in allow entry {id}");
+        }
+    }
+    Ok(())
+}
+
+/// Match options for every allowlist glob.
+///
+/// `require_literal_separator` stops `*` and `?` at `/`, so a single-segment
+/// matcher governs exactly the directory it names: `.changes/unreleased/*.yaml`
+/// covers the fragments sitting directly in that directory, and a nested path
+/// such as `.changes/unreleased/archive/old.yaml` cannot inherit the entry.
+/// Entries that genuinely own a tree opt in explicitly with `**`.
+///
+/// The `glob` crate's default (used by the bare `Pattern::matches`) lets `*`
+/// cross `/`, which silently widens every single-segment entry into a
+/// whole-tree entry and contradicts the documented schema in
+/// `docs/policy/NON_RUST_POLICY.md`. Refs: #9994.
+const POLICY_MATCH_OPTIONS: MatchOptions = MatchOptions {
+    case_sensitive: true,
+    require_literal_separator: true,
+    require_literal_leading_dot: false,
+};
+
+/// Match one repo-relative path against an allowlist glob.
+///
+/// Every allowlist matcher goes through here so glob breadth is decided in one
+/// place instead of per call site.
+fn glob_matches_path(pattern: &Pattern, path: &str) -> bool {
+    pattern.matches_with(path, POLICY_MATCH_OPTIONS)
+}
+
 fn find_matching_prepared_entry<'a>(
     file_path: &str,
     entries: &[PreparedAllowEntry<'a>],
 ) -> Option<&'a AllowEntry> {
     for prepared in entries {
         let matched = if let Some(pattern) = prepared.glob.as_ref() {
-            pattern.matches(file_path)
+            glob_matches_path(pattern, file_path)
         } else if let Some(ref exact) = prepared.entry.path {
             exact == file_path
         } else {
@@ -191,6 +483,661 @@ pub fn list_tracked_files(root: &Path) -> Result<Vec<String>> {
     files.sort_unstable();
     files.dedup();
     Ok(files)
+}
+
+fn git_object(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .with_context(|| format!("running git {}", args.join(" ")))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("no diagnostic")
+            .chars()
+            .take(240)
+            .collect::<String>();
+        bail!("git {} failed: {detail}", args.join(" "));
+    }
+    Ok(output.stdout)
+}
+
+fn tree_paths(root: &Path, sha: &str) -> Result<Vec<String>> {
+    let raw = git_object(root, &["ls-tree", "-r", "-z", "--name-only", sha])?;
+    let mut paths = raw
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| String::from_utf8(p.to_vec()).context("tree contains a non-UTF-8 path"))
+        .collect::<Result<Vec<_>>>()?;
+    paths.sort();
+    if paths.windows(2).any(|pair| pair[0] == pair[1]) {
+        bail!("tree {sha} contains duplicate paths");
+    }
+    Ok(paths)
+}
+
+fn tree_file(root: &Path, sha: &str, path: &str) -> Result<(String, Vec<u8>)> {
+    let spec = format!("{sha}:{path}");
+    let bytes = git_object(root, &["show", &spec])?;
+    let listing = git_object(root, &["ls-tree", sha, "--", path])?;
+    let text = String::from_utf8(listing).context("tree listing is not UTF-8")?;
+    let object_sha = text
+        .split_whitespace()
+        .nth(2)
+        .ok_or_else(|| eyre!("tree {sha} does not contain {path}"))?;
+    Ok((object_sha.to_string(), bytes))
+}
+
+fn classify_tree_at(
+    root: &Path,
+    sha: &str,
+    evaluation_date: NaiveDate,
+) -> Result<(Vec<FileRecord>, String)> {
+    let (blob_sha, policy) = tree_file(root, sha, "policy/non-rust-allowlist.toml")?;
+    validate_exact_policy_bytes(&policy)?;
+    let allowlist: Allowlist =
+        toml::from_str(std::str::from_utf8(&policy).context("allowlist is not UTF-8")?)
+            .with_context(|| format!("parsing policy/non-rust-allowlist.toml from {sha}"))?;
+    validate_exact_allow_entries(&allowlist.allow)?;
+    let prepared = prepare_allow_entries_at(&allowlist.allow, evaluation_date);
+    let records = tree_paths(root, sha)?
+        .iter()
+        .map(|path| classify_file_with_prepared(path, &prepared))
+        .collect::<Vec<_>>();
+    Ok((records, blob_sha))
+}
+
+fn expired_paths_in_tree(
+    root: &Path,
+    sha: &str,
+    evaluation_date: NaiveDate,
+) -> Result<Vec<String>> {
+    let (_, policy) = tree_file(root, sha, "policy/non-rust-allowlist.toml")?;
+    let allowlist: Allowlist = toml::from_str(std::str::from_utf8(&policy)?)?;
+    let expired = allowlist
+        .allow
+        .iter()
+        .filter(|entry| {
+            !entry.retired
+                && entry
+                    .expires
+                    .as_deref()
+                    .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
+                    .is_some_and(|date| date < evaluation_date)
+        })
+        .filter_map(|entry| {
+            if let Some(glob) = entry.glob.as_deref() {
+                Pattern::new(glob).ok().map(|pattern| (Some(pattern), None, entry.id.as_str()))
+            } else {
+                entry.path.as_deref().map(|path| (None, Some(path), entry.id.as_str()))
+            }
+        })
+        .collect::<Vec<_>>();
+    let active = prepare_allow_entries_at(&allowlist.allow, evaluation_date);
+    let mut paths = tree_paths(root, sha)?
+        .into_iter()
+        .filter(|path| {
+            !is_rust_file(path)
+                && expired.iter().any(|(glob, exact, _)| {
+                    glob.as_ref().is_some_and(|pattern| glob_matches_path(pattern, path))
+                        || exact.is_some_and(|candidate| candidate == path)
+                })
+                && find_matching_prepared_entry(path, &active).is_none()
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+fn validate_subject_workflow(root: &Path, base_sha: &str, subject_sha: &str) -> Result<()> {
+    let base_listing =
+        git_object(root, &["ls-tree", base_sha, "--", ".github/workflows/non-rust-policy.yml"])?;
+    let listing =
+        git_object(root, &["ls-tree", subject_sha, "--", ".github/workflows/non-rust-policy.yml"])?;
+    if listing.is_empty() && base_listing.is_empty() {
+        return Ok(());
+    }
+    if listing.is_empty() {
+        bail!("subject workflow removes the trusted exact-tree policy workflow");
+    }
+    let (_, bytes) = tree_file(root, subject_sha, ".github/workflows/non-rust-policy.yml")?;
+    let subject_matches_base = if !base_listing.is_empty() {
+        let (_, base_bytes) = tree_file(root, base_sha, ".github/workflows/non-rust-policy.yml")?;
+        base_bytes == bytes
+    } else {
+        false
+    };
+    let contract_version = |text: &str| -> Result<u64> {
+        text.lines()
+            .find_map(|line| line.trim().strip_prefix("# contract-version:"))
+            .map(str::trim)
+            .ok_or_else(|| eyre!("trusted workflow is missing # contract-version metadata"))?
+            .parse::<u64>()
+            .context("trusted workflow contract-version must be an integer")
+    };
+    let text = String::from_utf8(bytes).context("subject workflow is not UTF-8")?;
+    if !base_listing.is_empty() {
+        let (_, base_bytes) = tree_file(root, base_sha, ".github/workflows/non-rust-policy.yml")?;
+        let base_text = String::from_utf8(base_bytes).context("base workflow is not UTF-8")?;
+        let base_version = contract_version(&base_text)?;
+        let subject_version = contract_version(&text)?;
+        if !subject_matches_base && subject_version != base_version.saturating_add(1) {
+            bail!(
+                "trusted workflow changes require exactly one contract-version increment (base {base_version}, subject {subject_version})"
+            );
+        }
+    } else {
+        contract_version(&text)?;
+    }
+    for required in [
+        "pull_request_target:",
+        "merge_group:",
+        "push:",
+        "workflow_dispatch:",
+        "permissions:\n  contents: read",
+        "ref: ${{ env.EVALUATOR_SHA }}",
+        "BASE_SHA:",
+        "SUBJECT_SHA:",
+        "PR_HEAD_SHA:",
+        "PR_NUMBER:",
+        "merge-base --is-ancestor",
+        "SUBJECT_SHA^1",
+        "refs/heads/non-rust-policy-subject^{commit}",
+        "--base-sha \"$BASE_SHA\"",
+        "--subject-sha \"$SUBJECT_SHA\"",
+        "Non-Rust policy exact-tree",
+        "persist-credentials: false",
+        "actions/upload-artifact@",
+        "if: always()",
+    ] {
+        if !text.contains(required) {
+            bail!("subject workflow weakens trusted contract: missing {required}");
+        }
+    }
+    if text.contains("actions/checkout@") && !text.contains("ref: ${{ env.EVALUATOR_SHA }}") {
+        bail!("subject workflow must checkout the trusted evaluator SHA");
+    }
+    if text.matches("actions/checkout@").count() != 1 {
+        bail!("subject workflow must contain exactly one trusted checkout");
+    }
+    if text.matches("permissions:").count() != 1 {
+        bail!("subject workflow must define exactly one top-level read-only permissions block");
+    }
+    // Validate the load-bearing steps structurally, so comments or unrelated
+    // jobs cannot satisfy the trusted-base contract.
+    let yaml: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&text).context("parsing trusted workflow YAML")?;
+    let key = |name: &str| serde_yaml_ng::Value::String(name.to_string());
+    let jobs = yaml
+        .as_mapping()
+        .and_then(|mapping| mapping.get(key("jobs")))
+        .and_then(serde_yaml_ng::Value::as_mapping)
+        .ok_or_else(|| eyre!("trusted workflow must define jobs mapping"))?;
+    let job = jobs
+        .get(key("exact-tree"))
+        .and_then(serde_yaml_ng::Value::as_mapping)
+        .ok_or_else(|| eyre!("trusted workflow must define exact-tree job"))?;
+    let steps = job
+        .get(key("steps"))
+        .and_then(serde_yaml_ng::Value::as_sequence)
+        .ok_or_else(|| eyre!("exact-tree job must define steps sequence"))?;
+    // Inspect executable Cargo commands structurally. The trusted contract
+    // step contains this validator's own examples and forbidden-pattern
+    // source text; scanning serialized YAML would mistake that source for a
+    // candidate-controlled invocation.
+    let forbidden = [
+        "pull_request.head",
+        "pull_request.head.sha",
+        "github.event.pull_request.head",
+        "refs/pull/${{",
+    ];
+    let is_contract_step = |step: &&serde_yaml_ng::Value| {
+        step.as_mapping().is_some_and(|map| {
+            map.get(key("id")).and_then(serde_yaml_ng::Value::as_str)
+                == Some("verify-trusted-workflow-contract")
+                && map.get(key("name")).and_then(serde_yaml_ng::Value::as_str)
+                    == Some("Verify trusted workflow contract")
+        })
+    };
+    let reserved_id_count = steps
+        .iter()
+        .filter(|step| {
+            step.as_mapping()
+                .and_then(|map| map.get(key("id")))
+                .and_then(serde_yaml_ng::Value::as_str)
+                == Some("verify-trusted-workflow-contract")
+        })
+        .count();
+    if reserved_id_count != 1 {
+        bail!("trusted workflow must define exactly one reserved contract-verification step ID");
+    }
+    let contract_steps = steps.iter().filter(is_contract_step).collect::<Vec<_>>();
+    if contract_steps.len() != 1 {
+        bail!("trusted workflow must define exactly one stable contract-verification step");
+    }
+    for step in steps {
+        let map =
+            step.as_mapping().ok_or_else(|| eyre!("trusted workflow step must be a mapping"))?;
+        if is_contract_step(&step) {
+            continue;
+        }
+        // Candidate-controlled refs can be smuggled through `env`/`with` and
+        // expanded by an otherwise innocuous `run` command. Inspect those
+        // executable inputs as well as the command body.
+        for key_name in ["env", "with"] {
+            if map.get(key(key_name)).is_some_and(|value| {
+                serde_yaml_ng::to_string(value)
+                    .is_ok_and(|text| forbidden.iter().any(|token| text.contains(token)))
+            }) {
+                bail!("subject workflow must not execute candidate source");
+            }
+        }
+        let Some(run) = map.get(key("run")).and_then(serde_yaml_ng::Value::as_str) else {
+            continue;
+        };
+        let lines = run.lines().collect::<Vec<_>>();
+        for (index, line) in lines.iter().enumerate() {
+            let normalized = line.trim();
+            let mut words = normalized.split_whitespace();
+            if words.next() != Some("cargo") || words.next() != Some("run") {
+                continue;
+            }
+            let mut command = normalized.to_string();
+            for continuation in lines.iter().skip(index + 1) {
+                let stripped = continuation.trim();
+                if stripped.starts_with("--") || command.ends_with('\\') {
+                    command.push('\n');
+                    command.push_str(stripped);
+                } else {
+                    break;
+                }
+            }
+            if forbidden.iter().any(|token| command.contains(token)) {
+                bail!("subject workflow must not execute candidate source");
+            }
+        }
+    }
+    let bind_run = steps
+        .iter()
+        .find(|step| {
+            step.as_mapping()
+                .and_then(|map| map.get(key("id")))
+                .and_then(serde_yaml_ng::Value::as_str)
+                == Some("bind")
+        })
+        .and_then(|step| step.get(key("run")))
+        .and_then(serde_yaml_ng::Value::as_str)
+        .ok_or_else(|| eyre!("trusted workflow must define an id: bind run step"))?;
+    let bind_run_contains = |needle: &str| bind_run.contains(needle);
+    if !steps.iter().any(|step| {
+        let Some(map) = step.as_mapping() else { return false };
+        map.get(key("uses"))
+            .and_then(serde_yaml_ng::Value::as_str)
+            .is_some_and(|uses| uses.starts_with("actions/checkout@"))
+            && map
+                .get(key("with"))
+                .and_then(serde_yaml_ng::Value::as_mapping)
+                .and_then(|with| with.get(key("ref")))
+                .and_then(serde_yaml_ng::Value::as_str)
+                .is_some_and(|reference| reference.contains("env.EVALUATOR_SHA"))
+    }) {
+        bail!("trusted workflow must checkout EVALUATOR_SHA in its checkout step");
+    }
+    let direct_subject_fetch = bind_run_contains("git fetch --no-tags origin \"$SUBJECT_SHA\"");
+    let synthetic_pr_subject = bind_run_contains(
+        "refs/pull/$PR_NUMBER/head:refs/remotes/origin/non-rust-policy-pr-head",
+    ) && bind_run_contains(
+        "git rev-parse refs/remotes/origin/non-rust-policy-pr-head^{commit}",
+    ) && bind_run_contains(
+        "test \"$(git rev-parse refs/remotes/origin/non-rust-policy-pr-head^{commit})\" = \"$PR_HEAD_SHA\"",
+    ) && bind_run_contains(
+        "git merge-tree --write-tree \"$BASE_SHA\" \"$PR_HEAD_SHA\"",
+    ) && bind_run_contains(
+        "git commit-tree \"$merge_tree\" -p \"$BASE_SHA\" -p \"$PR_HEAD_SHA\"",
+    ) && bind_run_contains("GIT_AUTHOR_DATE=2000-01-01T00:00:00Z")
+        && bind_run_contains("GIT_COMMITTER_DATE=2000-01-01T00:00:00Z");
+    if (!direct_subject_fetch && !synthetic_pr_subject)
+        || !bind_run_contains("git update-ref refs/heads/non-rust-policy-subject")
+    {
+        bail!("trusted workflow must bind the exact SUBJECT_SHA Git object");
+    }
+    let evaluator_steps = steps
+        .iter()
+        .filter_map(|step| {
+            let map = step.as_mapping()?;
+            let name = map.get(key("name")).and_then(serde_yaml_ng::Value::as_str)?;
+            (name == "Run trusted exact-tree evaluator").then_some(map)
+        })
+        .collect::<Vec<_>>();
+    if evaluator_steps.len() != 1 {
+        bail!("trusted workflow must define exactly one named evaluator step");
+    }
+    let evaluator = evaluator_steps[0];
+    let evaluator_run = evaluator
+        .get(key("run"))
+        .and_then(serde_yaml_ng::Value::as_str)
+        .ok_or_else(|| eyre!("trusted evaluator step must execute a run command"))?;
+    if !evaluator_run.contains("cargo run --locked -p xtask -- non-rust exact-tree") {
+        bail!("trusted evaluator step must execute the exact-tree command");
+    }
+    for argument in [
+        "--base-sha \"$BASE_SHA\"",
+        "--subject-sha \"$SUBJECT_SHA\"",
+        "--event-name \"$GITHUB_EVENT_NAME\"",
+        "--repository \"$GITHUB_REPOSITORY\"",
+    ] {
+        if !evaluator_run.contains(argument) {
+            bail!("trusted evaluator step is missing exact argument {argument}");
+        }
+    }
+    let condition = evaluator
+        .get(key("if"))
+        .and_then(serde_yaml_ng::Value::as_str)
+        .ok_or_else(|| eyre!("trusted evaluator step must gate on identity binding"))?;
+    if condition.trim() != "steps.bind.outcome == 'success'" {
+        bail!("trusted evaluator step must use the exact identity-binding condition");
+    }
+    if !steps.iter().any(|step| {
+        let Some(map) = step.as_mapping() else { return false };
+        map.get(key("uses"))
+            .and_then(serde_yaml_ng::Value::as_str)
+            .is_some_and(|uses| uses.starts_with("actions/upload-artifact@"))
+            && map
+                .get(key("if"))
+                .and_then(serde_yaml_ng::Value::as_str)
+                .is_some_and(|condition| condition.contains("always()"))
+    }) {
+        bail!("trusted workflow must upload evidence with if: always()");
+    }
+    for step in steps {
+        if let Some(action) = step
+            .as_mapping()
+            .and_then(|map| map.get(key("uses")))
+            .and_then(serde_yaml_ng::Value::as_str)
+        {
+            if !(action.starts_with("actions/checkout@")
+                || action.starts_with("dtolnay/rust-toolchain@")
+                || action.starts_with("taiki-e/install-action@")
+                || action.starts_with("Swatinem/rust-cache@")
+                || action.starts_with("actions/upload-artifact@"))
+            {
+                bail!("subject workflow adds an unapproved action: {action}");
+            }
+            let reference = action
+                .split_once('@')
+                .and_then(|(_, value)| value.split_whitespace().next())
+                .ok_or_else(|| {
+                    eyre!("subject workflow action is missing an immutable reference: {action}")
+                })?;
+            if reference.len() != 40 || !reference.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                bail!("subject workflow action must use a full 40-hex commit SHA: {action}");
+            }
+        }
+    }
+    let executable_text = steps
+        .iter()
+        .filter_map(|step| {
+            let map = step.as_mapping()?;
+            (!is_contract_step(&step)).then_some(map)
+        })
+        .filter_map(|step| step.get(key("run")))
+        .filter_map(serde_yaml_ng::Value::as_str)
+        .collect::<Vec<_>>();
+    for forbidden in [
+        "git show",
+        "git cat-file",
+        "git archive",
+        "git checkout",
+        "git clone",
+        "git read-tree",
+        "git reset",
+        "git restore",
+        "git worktree",
+        "source ",
+        " . ./",
+        "./$",
+        " . ",
+        "bash <",
+        "sh <",
+        "curl ",
+        "wget ",
+        "| bash",
+        "| sh",
+        "eval ",
+        "refs/pull/${{",
+        "git fetch .*head",
+    ] {
+        if executable_text.iter().any(|run| run.contains(forbidden)) && forbidden != "refs/pull/" {
+            bail!(
+                "subject workflow must not execute or import candidate-derived content: {forbidden}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Compare policy classification of two immutable Git trees and emit an
+/// exact-SHA receipt. Existing debt is preserved; only newly unclassified
+/// subject paths fail.
+pub fn non_rust_exact_tree(
+    root: &Path,
+    base_sha: &str,
+    subject_sha: &str,
+    pr_head_sha: Option<&str>,
+    receipt_path: &Path,
+    event_name: Option<&str>,
+    repository: Option<&str>,
+) -> Result<()> {
+    if receipt_path.exists() {
+        fs::remove_file(receipt_path).context("removing stale exact-tree receipt")?;
+    }
+    let result = non_rust_exact_tree_inner(
+        root,
+        base_sha,
+        subject_sha,
+        pr_head_sha,
+        receipt_path,
+        event_name,
+        repository,
+    );
+    if let Err(error) = &result {
+        let error_text = error.to_string();
+        let failure_stage = if error_text.contains("allowlist") || error_text.contains("parsing") {
+            "policy"
+        } else if error_text.contains("writing") || error_text.contains("output") {
+            "projection"
+        } else if error_text.contains("rev-parse") || error_text.contains("ancestry") {
+            "identity"
+        } else {
+            "evaluation"
+        };
+        let receipt = ExactTreePolicyReceipt {
+            schema_version: 2,
+            event_name: event_name.map(str::to_string),
+            repository: repository.map(str::to_string),
+            base_sha: base_sha.to_string(),
+            base_tree_sha: None,
+            subject_sha: subject_sha.to_string(),
+            subject_tree_sha: None,
+            pr_head_sha: pr_head_sha.map(str::to_string),
+            base_allowlist_blob_sha: None,
+            subject_allowlist_blob_sha: None,
+            base_unclassified_count: 0,
+            subject_unclassified_count: 0,
+            new_unclassified_paths: Vec::new(),
+            outcome: "fail".to_string(),
+            failure_stage: Some(failure_stage.to_string()),
+            error: Some(error_text),
+            evaluation_date: Utc::now().date_naive().to_string(),
+            evaluator_commit: git_object(root, &["rev-parse", "HEAD"])
+                .ok()
+                .and_then(|b| String::from_utf8(b).ok())
+                .map(|s| s.trim().to_string()),
+            evaluator_tree: git_object(root, &["rev-parse", "HEAD^{tree}"])
+                .ok()
+                .and_then(|b| String::from_utf8(b).ok())
+                .map(|s| s.trim().to_string()),
+            inventory_markdown_path: None,
+            inventory_markdown_size: None,
+            inventory_markdown_sha256: None,
+            inventory_json_path: None,
+            inventory_json_size: None,
+            inventory_json_sha256: None,
+        };
+        if !receipt_path.exists() {
+            if let Some(parent) = receipt_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(receipt_path, serde_json::to_vec_pretty(&receipt)?)?;
+        }
+    }
+    result
+}
+
+fn non_rust_exact_tree_inner(
+    root: &Path,
+    base_sha: &str,
+    subject_sha: &str,
+    pr_head_sha: Option<&str>,
+    receipt_path: &Path,
+    event_name: Option<&str>,
+    repository: Option<&str>,
+) -> Result<()> {
+    let base_ref = format!("{base_sha}^{{commit}}");
+    let subject_ref = format!("{subject_sha}^{{commit}}");
+    let base_commit = String::from_utf8(git_object(root, &["rev-parse", "--verify", &base_ref])?)?
+        .trim()
+        .to_string();
+    let subject_commit =
+        String::from_utf8(git_object(root, &["rev-parse", "--verify", &subject_ref])?)?
+            .trim()
+            .to_string();
+    if let Some(pr_head) = pr_head_sha {
+        let ancestor = Command::new("git")
+            .args(["merge-base", "--is-ancestor", pr_head, &subject_commit])
+            .current_dir(root)
+            .status()
+            .context("checking PR head ancestry")?;
+        if !ancestor.success() {
+            bail!("subject {subject_commit} does not contain PR head {pr_head}");
+        }
+    }
+    let topology = Command::new("git")
+        .args(["merge-base", "--is-ancestor", &base_commit, &subject_commit])
+        .current_dir(root)
+        .status()
+        .context("checking base ancestry")?;
+    if !topology.success() {
+        bail!("subject {subject_commit} is not based on base {base_commit}");
+    }
+    if matches!(event_name, Some("pull_request_target") | Some("merge_group")) {
+        let first_parent =
+            String::from_utf8(git_object(root, &["rev-parse", &format!("{subject_commit}^1")])?)?
+                .trim()
+                .to_string();
+        if first_parent != base_commit {
+            bail!("subject first parent {first_parent} is not base {base_commit}");
+        }
+    }
+    let base_tree_ref = format!("{base_commit}^{{tree}}");
+    let subject_tree_ref = format!("{subject_commit}^{{tree}}");
+    let base_tree_sha =
+        String::from_utf8(git_object(root, &["rev-parse", &base_tree_ref])?)?.trim().to_string();
+    let subject_tree_sha =
+        String::from_utf8(git_object(root, &["rev-parse", &subject_tree_ref])?)?.trim().to_string();
+    validate_subject_workflow(root, &base_commit, &subject_commit)?;
+    let evaluation_date = Utc::now().date_naive();
+    let (base_records, base_allowlist_blob_sha) =
+        classify_tree_at(root, &base_commit, evaluation_date)?;
+    let (subject_records, subject_allowlist_blob_sha) =
+        classify_tree_at(root, &subject_commit, evaluation_date)?;
+    let base_unclassified = base_records
+        .iter()
+        .filter(|r| r.category == "unclassified")
+        .map(|r| r.path.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let subject_unclassified = subject_records
+        .iter()
+        .filter(|r| r.category == "unclassified")
+        .map(|r| r.path.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut new_unclassified_paths =
+        subject_unclassified.difference(&base_unclassified).cloned().collect::<Vec<_>>();
+    let base_expired_paths = expired_paths_in_tree(root, &base_commit, evaluation_date)?
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    for path in expired_paths_in_tree(root, &subject_commit, evaluation_date)? {
+        // Preserve inherited expired debt, and do not flag paths that remain
+        // covered by another active entry (their subject record is classified).
+        if subject_unclassified.contains(&path)
+            && !base_expired_paths.contains(&path)
+            && !new_unclassified_paths.contains(&path)
+        {
+            new_unclassified_paths.push(path);
+        }
+    }
+    new_unclassified_paths.sort();
+    let markdown = render_markdown(&subject_records);
+    let output_dir = root.join("target/policy");
+    fs::create_dir_all(&output_dir).context("creating exact-tree output directory")?;
+    fs::write(output_dir.join("non-rust-inventory.md"), &markdown)
+        .context("writing exact-tree Markdown")?;
+    fs::write(
+        output_dir.join("non-rust-inventory.json"),
+        serde_json::to_vec_pretty(&subject_records)?,
+    )
+    .context("writing exact-tree JSON")?;
+    let markdown_sha256 = Sha256::digest(markdown.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let json_bytes = serde_json::to_vec_pretty(&subject_records)?;
+    let json_sha256 =
+        Sha256::digest(&json_bytes).iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let receipt = ExactTreePolicyReceipt {
+        schema_version: 2,
+        event_name: event_name.map(str::to_string),
+        repository: repository.map(str::to_string),
+        base_sha: base_commit,
+        base_tree_sha: Some(base_tree_sha),
+        subject_sha: subject_commit,
+        subject_tree_sha: Some(subject_tree_sha),
+        pr_head_sha: pr_head_sha.map(str::to_string),
+        base_allowlist_blob_sha: Some(base_allowlist_blob_sha),
+        subject_allowlist_blob_sha: Some(subject_allowlist_blob_sha),
+        base_unclassified_count: base_unclassified.len(),
+        subject_unclassified_count: subject_unclassified.len(),
+        outcome: if new_unclassified_paths.is_empty() { "pass" } else { "fail" }.to_string(),
+        new_unclassified_paths: new_unclassified_paths.clone(),
+        failure_stage: None,
+        error: None,
+        evaluation_date: evaluation_date.to_string(),
+        evaluator_commit: git_object(root, &["rev-parse", "HEAD"])
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
+            .map(|s| s.trim().to_string()),
+        evaluator_tree: git_object(root, &["rev-parse", "HEAD^{tree}"])
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
+            .map(|s| s.trim().to_string()),
+        inventory_markdown_path: Some("target/policy/non-rust-inventory.md".to_string()),
+        inventory_markdown_size: Some(markdown.len() as u64),
+        inventory_markdown_sha256: Some(markdown_sha256),
+        inventory_json_path: Some("target/policy/non-rust-inventory.json".to_string()),
+        inventory_json_size: Some(json_bytes.len() as u64),
+        inventory_json_sha256: Some(json_sha256),
+    };
+    if let Some(parent) = receipt_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(receipt_path, serde_json::to_vec_pretty(&receipt)?)?;
+    if !new_unclassified_paths.is_empty() {
+        bail!("newly unclassified paths: {}", new_unclassified_paths.join(", "));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -299,7 +1246,11 @@ pub fn render_markdown(records: &[FileRecord]) -> String {
         );
         out.push_str("| Path | Extension |\n|---|---|\n");
         for r in non_rust.iter().filter(|r| !r.allowlisted) {
-            out.push_str(&format!("| `{}` | `{}` |\n", r.path, r.extension));
+            out.push_str(&format!(
+                "| `{}` | `{}` |\n",
+                escape_markdown_cell(&r.path),
+                escape_markdown_cell(&r.extension)
+            ));
         }
         out.push('\n');
     }
@@ -309,7 +1260,13 @@ pub fn render_markdown(records: &[FileRecord]) -> String {
     for r in non_rust.iter().filter(|r| r.allowlisted) {
         let (id, owner) =
             r.entry.as_ref().map(|e| (e.id.as_str(), e.owner.as_str())).unwrap_or(("", ""));
-        out.push_str(&format!("| `{}` | {} | `{}` | {} |\n", r.path, r.category, id, owner));
+        out.push_str(&format!(
+            "| `{}` | {} | `{}` | {} |\n",
+            escape_markdown_cell(&r.path),
+            r.category,
+            escape_markdown_cell(id),
+            escape_markdown_cell(owner)
+        ));
     }
     out.push('\n');
 
@@ -333,7 +1290,7 @@ pub fn render_markdown(records: &[FileRecord]) -> String {
 /// row counts, so stale summary totals cannot survive a regeneration.
 pub(crate) fn verify_inventory_projection(markdown: &str) -> Result<()> {
     let mut seen_paths = std::collections::BTreeSet::new();
-    let mut summary_counts: std::collections::BTreeMap<&str, usize> =
+    let mut summary_counts: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
     let mut section_rows: std::collections::BTreeMap<&str, usize> =
         std::collections::BTreeMap::new();
@@ -345,22 +1302,21 @@ pub(crate) fn verify_inventory_projection(markdown: &str) -> Result<()> {
             section = line.trim_start_matches('#').trim();
             continue;
         }
-        let Some(rest) = line.strip_prefix("| ") else { continue };
-        let cells: Vec<&str> =
-            rest.trim_end().trim_end_matches('|').split('|').map(str::trim).collect();
+        let Some(cells) = parse_markdown_cells(line) else { continue };
         if cells.len() == 2 && section == "Summary" {
             if let Ok(count) = cells[1].parse::<usize>() {
-                summary_counts.insert(cells[0], count);
+                summary_counts.insert(cells[0].clone(), count);
             }
             continue;
         }
         let Some(path) = cells
             .first()
             .and_then(|cell| cell.strip_prefix('`').and_then(|path| path.strip_suffix('`')))
+            .map(str::to_string)
         else {
             continue;
         };
-        if !seen_paths.insert(path) {
+        if !seen_paths.insert(path.clone()) {
             bail!(
                 "non-Rust inventory projection emits duplicate file rows for `{path}`; \
                  regenerate from a single pass with `cargo xtask non-rust inventory --write`"
@@ -468,10 +1424,10 @@ pub fn non_rust_inventory_write_docs(root: &Path) -> Result<()> {
 
 /// Check the tracked-file classification against the allowlist.
 ///
-/// The committed Markdown inventory is generated documentation, so it may be
-/// behind a concurrent merge. The scan and classification must still complete;
-/// stale generated documentation and the existing unclassified backlog are
-/// reported as warnings. A newly added unclassified file is a blocking error.
+/// The committed Markdown inventory is generated documentation and must match
+/// the current tree. The existing unclassified backlog is reported as a warning,
+/// while newly added unclassified files and stale generated documentation are
+/// blocking errors.
 pub fn non_rust_inventory_check(root: &Path) -> Result<()> {
     let baseline = resolve_inventory_baseline(root);
     non_rust_inventory_check_with_baseline(root, baseline.as_deref())
@@ -536,9 +1492,10 @@ fn non_rust_inventory_check_with_baseline(root: &Path, baseline: Option<&str>) -
         );
     }
     if normalize_line_endings(&actual) != normalize_line_endings(&expected) {
-        eprintln!(
-            "warning: non-Rust inventory documentation is stale at {}; run `cargo xtask non-rust inventory --write` to regenerate it",
-            docs_path.display()
+        let path_delta = inventory_path_delta(&actual, &expected);
+        bail!(
+            "non-Rust inventory documentation is stale at {}; {path_delta}; run `cargo xtask non-rust inventory --write` to regenerate it",
+            docs_path.display(),
         );
     }
     println!("Non-Rust inventory scan completed: {}", docs_path.display());
@@ -593,6 +1550,87 @@ fn added_paths_since(root: &Path, baseline: &str) -> Result<Vec<String>> {
 
 fn normalize_line_endings(value: &str) -> String {
     value.replace("\r\n", "\n")
+}
+
+/// Escape a literal value for embedding in one Markdown table cell so the
+/// rendered row keeps exactly one cell per column: a literal `|` inside a
+/// value would otherwise split the row. Backslashes are intentionally left
+/// unchanged because values may be rendered inside Markdown code spans. The
+/// pipe escape is reversed by [`parse_markdown_cells`].
+fn escape_markdown_cell(value: &str) -> String {
+    value.replace('|', "\\|")
+}
+
+/// Split one rendered table row into its raw cell values, honoring
+/// [`escape_markdown_cell`] pipe escapes and trimming the surrounding
+/// whitespace the renderer emits. Only the marker immediately before a pipe
+/// is consumed; all other backslashes are preserved verbatim. Returns `None`
+/// for lines outside table rows.
+fn parse_markdown_cells(line: &str) -> Option<Vec<String>> {
+    let rest = line.trim().strip_prefix("| ")?;
+    // Remove exactly the table delimiter. Using `trim_end_matches('|')` would
+    // also remove a literal pipe when a caller provides a row without the
+    // renderer's separating whitespace.
+    let trimmed = rest.trim_end().strip_suffix('|')?;
+    let mut cells = Vec::new();
+    let mut current = String::new();
+    for ch in trimmed.chars() {
+        match ch {
+            '|' => {
+                if current.ends_with('\\') {
+                    current.pop();
+                    current.push('|');
+                } else {
+                    cells.push(current.trim().to_string());
+                    current = String::new();
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+    cells.push(current.trim().to_string());
+    Some(cells)
+}
+
+/// Collect the backtick-wrapped first-column cells of a generated inventory
+/// table.
+///
+/// Header, separator, and summary rows have no backtick-wrapped first cell
+/// and are ignored, so the result is exactly the tracked-file rows.
+fn inventory_row_paths(markdown: &str) -> std::collections::BTreeSet<String> {
+    markdown
+        .lines()
+        .filter_map(|line| {
+            let cells = parse_markdown_cells(line)?;
+            let cell = cells.first()?;
+            Some(cell.strip_prefix('`')?.strip_suffix('`')?.to_string())
+        })
+        .collect()
+}
+
+/// Describe how a regenerated inventory (`expected`) differs from the
+/// committed one (`actual`).
+///
+/// Returns the exact missing and no-longer-generated rows when the row paths
+/// diverge, or a metadata-only note when both documents cover the same rows
+/// but summary counts or other non-row content changed.
+fn inventory_path_delta(actual: &str, expected: &str) -> String {
+    let actual = inventory_row_paths(actual);
+    let expected = inventory_row_paths(expected);
+    let missing = expected.difference(&actual).cloned().collect::<Vec<_>>();
+    let unexpected = actual.difference(&expected).cloned().collect::<Vec<_>>();
+    let mut details = Vec::new();
+    if !missing.is_empty() {
+        details.push(format!("missing generated paths: {}", missing.join(", ")));
+    }
+    if !unexpected.is_empty() {
+        details.push(format!("paths no longer generated: {}", unexpected.join(", ")));
+    }
+    if details.is_empty() {
+        "the row paths match but summary or metadata changed".to_string()
+    } else {
+        details.join("; ")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -705,6 +1743,13 @@ fn validate_policy_table(
             return 0;
         }
     };
+    // Scan the raw source before parsing and table lookup: a syntactically
+    // valid policy without the selected table must not bypass marker checks.
+    let marker_lines = policy_conflict_marker_lines(&text);
+    if !marker_lines.is_empty() {
+        errors.push(format!("{}: Git conflict markers at lines {marker_lines:?}", path.display()));
+    }
+
     let data = match toml::from_str::<toml::Value>(&text) {
         Ok(data) => data,
         Err(err) => {
@@ -723,12 +1768,14 @@ fn validate_policy_table(
 
     let mut seen_ids: BTreeMap<String, usize> = BTreeMap::new();
     let mut seen_matchers: BTreeMap<String, String> = BTreeMap::new();
+    let mut coherence_tables: Vec<&toml::map::Map<String, toml::Value>> = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
         let Some(table) = entry.as_table() else {
             errors
                 .push(format!("{}: `{table_name}` entry #{index} must be a table", path.display()));
             continue;
         };
+        coherence_tables.push(table);
 
         if strict_allow_schema {
             validate_allow_schema_entry(table, index, errors);
@@ -753,6 +1800,12 @@ fn validate_policy_table(
             errors.push(format!(
                 "{entry_id}: duplicate matcher `{matcher}` (also used by id `{previous_id}`)"
             ));
+        }
+    }
+
+    if table_name == "allow" {
+        for conflict in mispaired_provenance_conflicts(&coherence_tables) {
+            errors.push(format!("{}: mispaired provenance: {conflict}", path.display()));
         }
     }
 
@@ -913,11 +1966,20 @@ fn parse_policy_date(
 /// Broad-glob heuristic for policy schema validation. Mirrors the original
 /// Python gate and intentionally catches more than the strict enforcement
 /// broad-glob helper.
+///
+/// Breadth is decided by `**`, the only token that crosses a directory
+/// boundary, and it counts wherever it appears — `**/x`, `x/**`, and
+/// `x/**/y` all reach an arbitrary-depth tree. Testing only the leading and
+/// trailing forms let an internal `**` (`fixtures/pkt/**/*.json`) span a tree
+/// while the validator called it narrow and waived `broad_glob_reason`.
+///
+/// `*.md` used to be listed here because the loose matcher let its `*` cross
+/// `/`, making it a whole-repository grab; with segment-aware matching
+/// (#9994) it reaches only the repository root, so demanding a
+/// `broad_glob_reason` for it would force a misleading justification onto a
+/// genuinely narrow rule. Refs: #9994, #14583.
 fn is_policy_broad_glob(glob_str: &str) -> bool {
-    glob_str.starts_with("**")
-        || glob_str.ends_with("/**")
-        || glob_str == "*.md"
-        || glob_str.starts_with("**/")
+    glob_str.split('/').any(|segment| segment == "**")
 }
 
 // ---------------------------------------------------------------------------
@@ -1041,14 +2103,6 @@ fn days_to_ymd(days: u64) -> (u32, u32, u32) {
     (year as u32, month as u32, day as u32)
 }
 
-/// Returns `true` when the glob pattern looks like a "broad" glob
-/// (e.g. `**/*`, `**`, `*`).
-fn is_broad_glob(glob_str: &str) -> bool {
-    matches!(glob_str.trim(), "**" | "**/*" | "*" | "*.*")
-        || glob_str.starts_with("**/*.")
-            && glob_str.trim_start_matches("**/").trim_start_matches("*.").is_empty()
-}
-
 fn expired_entry_count(entries: &[AllowEntry]) -> usize {
     entries
         .iter()
@@ -1081,7 +2135,7 @@ fn entry_matches_any_tracked_file(entry: &AllowEntry, tracked: &[String]) -> boo
         let Ok(pattern) = Pattern::new(glob_str) else {
             return false;
         };
-        return tracked.iter().any(|tracked_path| pattern.matches(tracked_path));
+        return tracked.iter().any(|tracked_path| glob_matches_path(&pattern, tracked_path));
     }
     false
 }
@@ -1093,12 +2147,6 @@ fn unused_entry_count(entries: &[AllowEntry], tracked: &[String]) -> usize {
         .filter(|entry| entry.glob.is_some() ^ entry.path.is_some())
         .filter(|entry| !entry_matches_any_tracked_file(entry, tracked))
         .count()
-}
-
-/// Load the allowlist from the given path (overrides root-relative default).
-fn load_allowlist_from(path: &std::path::Path) -> Result<Allowlist> {
-    let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
 }
 
 fn render_policy_report_markdown(receipt: &FilePolicyReceipt) -> String {
@@ -1157,6 +2205,38 @@ fn check_allowlist_entries(
                     path: None,
                     entry_id: Some(id.to_string()),
                 });
+            }
+        }
+    }
+
+    // --- Mispaired provenance (#9680/#9993), blocking in enforcement modes ---
+    if mode != CheckFilePolicyMode::Advisory {
+        let mut seen_reasons: BTreeMap<&str, (&str, &str)> = BTreeMap::new();
+        for entry in entries.iter().filter(|entry| !entry.retired) {
+            if entry.reason.trim().is_empty() {
+                continue;
+            }
+            let matcher = entry.glob.as_deref().or(entry.path.as_deref()).unwrap_or("<none>");
+            match seen_reasons.entry(entry.reason.as_str()) {
+                std::collections::btree_map::Entry::Vacant(slot) => {
+                    slot.insert((entry.id.as_str(), matcher));
+                }
+                std::collections::btree_map::Entry::Occupied(slot) => {
+                    let (first_id, first_matcher) = slot.get();
+                    if *first_matcher != matcher {
+                        violations.push(PolicyViolation {
+                            kind: "mispaired-provenance".to_string(),
+                            message: mispaired_provenance_message(
+                                first_id,
+                                first_matcher,
+                                &entry.id,
+                                matcher,
+                            ),
+                            path: None,
+                            entry_id: Some(entry.id.clone()),
+                        });
+                    }
+                }
             }
         }
     }
@@ -1320,9 +2400,12 @@ fn check_allowlist_entries(
         }
 
         // --- Broad glob without reason ---
+        // Emptiness is judged the same way schema validation judges it: a
+        // blank or whitespace-only justification is an absent one, or a broad
+        // glob could satisfy enforcement with `broad_glob_reason = ""`.
         if let Some(ref glob_str) = entry.glob
-            && is_broad_glob(glob_str)
-            && entry.broad_glob_reason.is_none()
+            && is_policy_broad_glob(glob_str)
+            && entry.broad_glob_reason.as_deref().is_none_or(|reason| reason.trim().is_empty())
         {
             violations.push(PolicyViolation {
                 kind: "broad-glob-no-reason".to_string(),
@@ -1346,12 +2429,19 @@ pub fn check_file_policy(root: &std::path::Path, config: CheckFilePolicyConfig) 
         if let Some(ref r) = config.root_override { r.clone() } else { root.to_path_buf() };
     let root = effective_root.as_path();
 
-    // Load allowlist.
-    let allowlist = if let Some(ref custom_path) = config.allowlist_path {
-        load_allowlist_from(custom_path)?
-    } else {
-        load_allowlist(root)?
-    };
+    // Load the raw allowlist before deserializing it so blocking enforcement
+    // cannot bypass conflict-marker detection by going through the typed
+    // loader. The structural validation path performs the same raw scan.
+    let allowlist_path = config
+        .allowlist_path
+        .clone()
+        .unwrap_or_else(|| root.join("policy/non-rust-allowlist.toml"));
+    let allowlist_text = fs::read_to_string(&allowlist_path)
+        .with_context(|| format!("reading {}", allowlist_path.display()))?;
+    let marker_lines = policy_conflict_marker_lines(&allowlist_text);
+
+    let allowlist: Allowlist = toml::from_str(&allowlist_text)
+        .with_context(|| format!("parsing {}", allowlist_path.display()))?;
 
     let entries = &allowlist.allow;
 
@@ -1360,6 +2450,15 @@ pub fn check_file_policy(root: &std::path::Path, config: CheckFilePolicyConfig) 
     let prepared = prepare_allow_entries(entries);
 
     let mut violations: Vec<PolicyViolation> = Vec::new();
+
+    if !marker_lines.is_empty() && config.mode != CheckFilePolicyMode::Advisory {
+        violations.push(PolicyViolation {
+            kind: "conflict-marker".to_string(),
+            message: format!("Git conflict markers at lines {marker_lines:?}"),
+            path: Some(allowlist_path.display().to_string()),
+            entry_id: None,
+        });
+    }
 
     // --- Per-file classification ---
     let mut non_rust_count = 0usize;
@@ -1464,7 +2563,7 @@ pub fn check_file_policy(root: &std::path::Path, config: CheckFilePolicyConfig) 
 
     // Decide exit code based on mode.
     if config.mode != CheckFilePolicyMode::Advisory && !violations.is_empty() {
-        std::process::exit(1);
+        bail!("file policy check found {} violation(s)", violations.len());
     }
 
     Ok(())
@@ -2199,6 +3298,7 @@ fn render_migration_candidates_markdown(candidates: &[MigrationCandidate]) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use color_eyre::eyre::ensure;
 
     fn make_entry(
         id: &str,
@@ -2227,6 +3327,178 @@ mod tests {
 
     fn violation_kinds(violations: &[PolicyViolation]) -> Vec<&str> {
         violations.iter().map(|violation| violation.kind.as_str()).collect()
+    }
+
+    /// Two-schema-valid entries whose `reason` prose was spliced from one row
+    /// into the other by textual conflict resolution (#9680).
+    fn mispaired_allowlist_fixture() -> String {
+        r#"
+schema_version = 1
+policy = "non-rust-allowlist"
+
+[[allow]]
+id = "entry-a"
+path = "docs/a.md"
+kind = "doc"
+language = "markdown"
+surface = "docs"
+classification = "documentation"
+owner = "docs"
+reason = "Documents the alpha subsystem with its full user contract."
+covered_by = ["manual review"]
+created = "2026-01-01"
+review_after = "2026-06-01"
+
+[[allow]]
+id = "entry-b"
+path = "docs/b.md"
+kind = "doc"
+language = "markdown"
+surface = "docs"
+classification = "documentation"
+owner = "docs"
+reason = "Documents the alpha subsystem with its full user contract."
+covered_by = ["manual review"]
+created = "2026-01-01"
+review_after = "2026-06-01"
+"#
+        .to_string()
+    }
+
+    #[test]
+    fn mispaired_provenance_fails_exact_policy_bytes() -> Result<()> {
+        let err =
+            validate_exact_policy_bytes(mispaired_allowlist_fixture().as_bytes()).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("provenance is mispaired"), "{message}");
+        assert!(message.contains("entry-a") && message.contains("entry-b"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn distinct_reasons_pass_exact_policy_bytes() -> Result<()> {
+        let policy = mispaired_allowlist_fixture().replacen(
+            "reason = \"Documents the alpha subsystem with its full user contract.\"",
+            "reason = \"Documents the beta subsystem with its own operator guide.\"",
+            1,
+        );
+        validate_exact_policy_bytes(policy.as_bytes())?;
+        Ok(())
+    }
+
+    #[test]
+    fn retired_duplicate_reason_passes_exact_policy_bytes() -> Result<()> {
+        let policy = mispaired_allowlist_fixture()
+            .replace("id = \"entry-b\"", "id = \"entry-b\"\nretired = true");
+        validate_exact_policy_bytes(policy.as_bytes())?;
+        Ok(())
+    }
+
+    #[test]
+    fn conflict_marker_inside_multiline_string_fails_exact_policy_bytes() -> Result<()> {
+        let policy = mispaired_allowlist_fixture().replace(
+            "reason = \"Documents the alpha subsystem with its full user contract.\"",
+            "reason = \"\"\"\nKeeps the alpha subsystem documented.\n<<<<<<< HEAD\nKeeps the gamma subsystem documented.\n=======\n>>>>>>> feature-branch\n\"\"\"",
+        );
+        let err = validate_exact_policy_bytes(policy.as_bytes()).unwrap_err();
+        assert!(err.to_string().contains("conflict markers"), "{}", err);
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_multiline_reason_separator_is_not_a_conflict_marker() -> Result<()> {
+        let policy = mispaired_allowlist_fixture().replacen(
+            "reason = \"Documents the alpha subsystem with its full user contract.\"",
+            "reason = \"\"\"\n======= Overview\nDescribes the alpha subsystem.\n\"\"\"",
+            1,
+        );
+        let policy = policy.replacen(
+            "reason = \"Documents the alpha subsystem with its full user contract.\"",
+            "reason = \"Documents the beta subsystem with its own operator guide.\"",
+            1,
+        );
+        validate_exact_policy_bytes(policy.as_bytes())?;
+        Ok(())
+    }
+
+    #[test]
+    fn mispaired_provenance_blocks_enforcement_modes_and_spares_advisory() -> Result<()> {
+        let allowlist: Allowlist = toml::from_str(&mispaired_allowlist_fixture())?;
+        let entries = allowlist.allow;
+        let blocking =
+            check_allowlist_entries(&entries, CheckFilePolicyMode::BlockingAllowlist, &[]);
+        assert!(violation_kinds(&blocking).contains(&"mispaired-provenance"));
+        let strict = check_allowlist_entries(&entries, CheckFilePolicyMode::BlockingStrict, &[]);
+        assert!(violation_kinds(&strict).contains(&"mispaired-provenance"));
+        let advisory = check_allowlist_entries(&entries, CheckFilePolicyMode::Advisory, &[]);
+        assert!(!violation_kinds(&advisory).contains(&"mispaired-provenance"));
+        Ok(())
+    }
+
+    #[test]
+    fn policy_table_path_reports_mispaired_provenance_and_conflict_markers() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let allowlist_path = temp.path().join("allowlist.toml");
+        std::fs::write(&allowlist_path, mispaired_allowlist_fixture())?;
+        let mut errors = Vec::new();
+        validate_policy_table(&allowlist_path, "allow", true, &mut errors);
+        assert!(errors.iter().any(|error| error.contains("provenance is mispaired")), "{errors:?}");
+
+        let marker_path = temp.path().join("markers.toml");
+        std::fs::write(
+            &marker_path,
+            "[[allow]]\nid = \"entry-a\"\nreason = \"\"\"\nline\n<<<<<<< HEAD\n\"\"\"\n",
+        )?;
+        let mut marker_errors = Vec::new();
+        validate_policy_table(&marker_path, "allow", false, &mut marker_errors);
+        assert!(
+            marker_errors.iter().any(|error| error.contains("conflict markers")),
+            "{marker_errors:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn policy_table_path_scans_markers_before_missing_table_return() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("missing-allow.toml");
+        std::fs::write(&path, "# no allow table\n<<<<<<< HEAD\n")?;
+        let mut errors = Vec::new();
+        assert_eq!(validate_policy_table(&path, "allow", true, &mut errors), 0);
+        assert!(errors.iter().any(|error| error.contains("conflict markers")), "{errors:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn expiry_is_valid_on_expiration_date_and_excluded_afterward() -> Result<()> {
+        let mut entry = make_entry("expiring", None, Some("docs/a.txt"), "documentation");
+        entry.expires = Some("2026-08-31".to_string());
+        let entries = [entry];
+        let same_day = prepare_allow_entries_at(
+            &entries,
+            NaiveDate::from_ymd_opt(2026, 8, 31).ok_or_else(|| eyre!("invalid date"))?,
+        );
+        assert!(find_matching_prepared_entry("docs/a.txt", &same_day).is_some());
+        let next_day = prepare_allow_entries_at(
+            &entries,
+            NaiveDate::from_ymd_opt(2026, 9, 1).ok_or_else(|| eyre!("invalid date"))?,
+        );
+        assert!(find_matching_prepared_entry("docs/a.txt", &next_day).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn exact_path_expiry_does_not_use_glob_matching() -> Result<()> {
+        let mut entry = make_entry("literal", None, Some("docs/[a].txt"), "documentation");
+        entry.expires = Some("2026-01-01".to_string());
+        let entries = [entry];
+        let active = prepare_allow_entries_at(
+            &entries,
+            NaiveDate::from_ymd_opt(2026, 2, 1).ok_or_else(|| eyre!("invalid date"))?,
+        );
+        assert!(find_matching_prepared_entry("docs/[a].txt", &active).is_none());
+        assert!(find_matching_prepared_entry("docs/a.txt", &active).is_none());
+        Ok(())
     }
 
     fn write_fixture(root: &Path, relative: &str, contents: &str) -> Result<()> {
@@ -2427,6 +3699,470 @@ mod tests {
         assert_eq!(rec.category, "unclassified", "retired entry must not match");
     }
 
+    // --- glob breadth: `*` is one segment, `**` is a tree (#9994) ---
+
+    /// The repository root, for proofs that must bind to the shipped policy
+    /// rather than a fixture copy of it.
+    fn repo_root() -> Result<std::path::PathBuf> {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        manifest_dir
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| eyre!("{} has no workspace-root parent", manifest_dir.display()))
+    }
+
+    /// The single production rule that governs unreleased Changie fragments.
+    fn changie_fragment_entry() -> Result<AllowEntry> {
+        let allowlist = load_allowlist(&repo_root()?)?;
+        allowlist
+            .allow
+            .into_iter()
+            .find(|entry| entry.id == CHANGIE_FRAGMENT_ENTRY_ID)
+            .ok_or_else(|| eyre!("allowlist is missing entry {CHANGIE_FRAGMENT_ENTRY_ID}"))
+    }
+
+    const CHANGIE_FRAGMENT_ENTRY_ID: &str = "non-rust-changelog-fragments";
+
+    #[test]
+    fn single_star_glob_stops_at_a_directory_separator() {
+        let entries = vec![make_entry("fragments", Some("a/b/*.yaml"), None, "documentation")];
+
+        assert!(classify_file("a/b/one.yaml", &entries).allowlisted, "direct child must match");
+        assert!(
+            !classify_file("a/b/nested/one.yaml", &entries).allowlisted,
+            "`*` must not cross `/`: a nested path cannot inherit a single-segment entry"
+        );
+        assert!(
+            !classify_file("a/b/nested/deeper/one.yaml", &entries).allowlisted,
+            "`*` must not cross `/` at any depth"
+        );
+    }
+
+    #[test]
+    fn double_star_glob_still_owns_a_whole_tree() {
+        // Negative control for the fix above: tree-shaped entries must keep
+        // matching nested paths, or the matcher change would silently strip
+        // coverage from every `**` entry in the ledger.
+        let entries = vec![make_entry("docs", Some("docs/**"), None, "documentation")];
+
+        assert!(classify_file("docs/policy/FILE_POLICY.md", &entries).allowlisted);
+        assert!(classify_file("docs/a/b/c/deep.md", &entries).allowlisted);
+    }
+
+    #[test]
+    fn leading_double_star_glob_matches_root_and_nested_paths() {
+        // `**/*.md` is the breadth `non-rust-root-governance-docs` carries.
+        let entries = vec![make_entry("markdown", Some("**/*.md"), None, "documentation")];
+
+        assert!(classify_file("README.md", &entries).allowlisted, "root-level markdown");
+        assert!(classify_file("book/src/intro.md", &entries).allowlisted, "nested markdown");
+    }
+
+    #[test]
+    fn nested_markdown_keeps_the_coverage_the_loose_matcher_used_to_supply() -> Result<()> {
+        // Tightening `*` to one segment would have dropped every nested
+        // markdown file out of the ledger, because the entry that covered them
+        // was written `*.md` and only reached them through the loose matcher.
+        // The breadth is now declared instead of accidental; this proves the
+        // fix did not quietly shrink what the policy governs.
+        let allowlist = load_allowlist(&repo_root()?)?;
+        let prepared = prepare_allow_entries(&allowlist.allow);
+
+        for nested in [
+            ".claude/skills/deliver-pr/SKILL.md",
+            "docs/policy/NON_RUST_POLICY.md",
+            "book/src/SUMMARY.md",
+        ] {
+            assert!(
+                find_matching_prepared_entry(nested, &prepared).is_some(),
+                "{nested} must stay governed by the allowlist"
+            );
+        }
+        Ok(())
+    }
+
+    // --- one typed rule governs the Changie fragment class (#9994) ---
+
+    #[test]
+    fn changie_rule_governs_exactly_the_fragment_directory() -> Result<()> {
+        let entry = changie_fragment_entry()?;
+        let entries = vec![entry];
+
+        // Ordinary fragments the producer creates are covered with no edit here.
+        for fragment in [
+            ".changes/unreleased/product-1-Added-101010.yaml",
+            ".changes/unreleased/product-14466-Fixed-000000.yaml",
+        ] {
+            assert!(
+                classify_file(fragment, &entries).allowlisted,
+                "{fragment} must be governed by the typed rule"
+            );
+        }
+
+        // Nothing outside the exact fragment path class may inherit the rule.
+        for outsider in [
+            ".changes/unreleased/nested/product-1-Added-101010.yaml",
+            ".changes/unreleased/archive/2025/product-1-Added-101010.yaml",
+            ".changes/product-1-Added-101010.yaml",
+            ".changes/v0.1.0.yaml",
+            "CHANGELOG.md",
+            "docs/product-1-Added-101010.yaml",
+            "crates/perl-parser/fixtures/product-1-Added-101010.yaml",
+        ] {
+            assert!(
+                !classify_file(outsider, &entries).allowlisted,
+                "{outsider} must not inherit the Changie fragment rule"
+            );
+        }
+
+        // The rule is bound to the producer's extension, not to YAML generally.
+        assert!(
+            !classify_file(".changes/unreleased/product-1-Added-101010.yml", &entries).allowlisted,
+            "`.yml` is not the fragment extension Changie writes"
+        );
+        assert!(
+            !classify_file(".changes/unreleased/.gitkeep", &entries).allowlisted,
+            "the directory keeper is not a fragment and is covered on its own terms"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn changie_rule_is_narrow_enough_to_need_no_broad_glob_justification() -> Result<()> {
+        let entry = changie_fragment_entry()?;
+        let glob = entry.glob.as_deref().ok_or_else(|| eyre!("fragment rule must be a glob"))?;
+
+        assert!(
+            !is_policy_broad_glob(glob),
+            "{glob} must stay a narrow path class; a broad matcher would let unrelated files in"
+        );
+        assert!(
+            entry.broad_glob_reason.is_none(),
+            "a narrow rule must not carry a decorative broad-glob justification"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn broad_glob_detection_tracks_segment_aware_matching() {
+        // `**` is the only token that crosses a directory boundary, so it is
+        // the only thing that makes a matcher broad.
+        for broad in [
+            "**/*.md",
+            "**/*.pl",
+            "docs/**",
+            "**/LICENSE-*",
+            "**",
+            // `**` counts wherever it sits. Checking only the leading and
+            // trailing forms let an internal `**` span a tree while the
+            // validator waived `broad_glob_reason`.
+            "docs/**/README.md",
+            "fixtures/agent_review_packet/**/*.json",
+            "crates/perl-parser/**/*.disabled",
+        ] {
+            assert!(is_policy_broad_glob(broad), "{broad} reaches a whole tree");
+        }
+
+        // Single-segment matchers govern one directory. Requiring a
+        // broad-glob justification for these would force a misleading
+        // rationale onto a narrow rule — and would block #14583 from
+        // narrowing the markdown entry back to repository-root governance
+        // docs, whose matcher is exactly `*.md`.
+        for narrow in
+            ["*.md", ".changes/unreleased/*.yaml", "badges/*.json", "crates/*/features_sot.toml"]
+        {
+            assert!(!is_policy_broad_glob(narrow), "{narrow} governs one directory level");
+        }
+    }
+
+    #[test]
+    fn both_production_validators_agree_on_tree_glob_breadth() {
+        // `validate-policy` and `check-file-policy --mode blocking-strict` are
+        // both advertised as enforcing the broad-glob justification rule. They
+        // used to consult different predicates, so an entry could be refused by
+        // one and waved through by the other.
+        for glob in ["docs/**/README.md", "fixtures/pkt/**/*.json", "docs/**", "**/*.md"] {
+            // A blank justification is treated as absent on both sides;
+            // otherwise `broad_glob_reason = ""` would satisfy enforcement
+            // while schema validation still refused the entry.
+            for reason in [None, Some(String::new()), Some("   \n".to_string())] {
+                let mut entry = make_entry("tree", Some(glob), None, "documentation");
+                entry.broad_glob_reason = reason.clone();
+
+                let strict = check_allowlist_entries(
+                    std::slice::from_ref(&entry),
+                    CheckFilePolicyMode::BlockingStrict,
+                    &[],
+                );
+                assert!(
+                    violation_kinds(&strict).contains(&"broad-glob-no-reason"),
+                    "blocking-strict must refuse {glob} with justification {reason:?}"
+                );
+            }
+
+            assert!(
+                is_policy_broad_glob(glob),
+                "schema validation must agree that {glob} is broad"
+            );
+
+            // Positive control: a real justification satisfies enforcement, so
+            // the rule cannot be passing by refusing everything.
+            let mut justified = make_entry("tree", Some(glob), None, "documentation");
+            justified.broad_glob_reason = Some("Bounded by one owned tree.".to_string());
+            let accepted = check_allowlist_entries(
+                std::slice::from_ref(&justified),
+                CheckFilePolicyMode::BlockingStrict,
+                &[],
+            );
+            assert!(
+                !violation_kinds(&accepted).contains(&"broad-glob-no-reason"),
+                "a justified {glob} must not be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn broad_changes_tree_glob_is_rejected_without_a_reason() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let allowlist = temp.path().join("allow.toml");
+        let debt = temp.path().join("debt.toml");
+        fs::write(
+            &allowlist,
+            r#"
+schema_version = 1
+policy = "non-rust-allowlist"
+
+[[allow]]
+id = "non-rust-changes-tree"
+glob = ".changes/**"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Everything under the changes directory."
+covered_by = []
+created = "2026-05-13"
+review_after = "2026-11-13"
+"#,
+        )?;
+        fs::write(&debt, "debt = []\n")?;
+
+        let validation = validate_non_rust_policy_files(&allowlist, &debt);
+
+        assert!(
+            validation.errors.iter().any(|error| error.contains("broad_glob_reason")),
+            "a `.changes/**` tree grab must be refused, not silently accepted: {:?}",
+            validation.errors
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fragment_path_coverage_is_not_a_claim_about_fragment_content() -> Result<()> {
+        // The path rule says only "this path class is accounted for". It must
+        // not become an implicit content exemption: a hand-written file that
+        // never went through `cargo change` still matches the path class, and
+        // is still the changelog gate's to reject. `validate_fragment` owns
+        // that verdict and has its own negative suite in `changelog.rs`.
+        use crate::tasks::changelog::{ChangieConfig, Fragment, validate_fragment};
+
+        let entry = changie_fragment_entry()?;
+        let entries = vec![entry.clone()];
+        let hand_written = ".changes/unreleased/not-a-real-fragment.yaml";
+
+        assert!(
+            classify_file(hand_written, &entries).allowlisted,
+            "the path class must stay checkable rather than routing around the content gate"
+        );
+        assert!(
+            entry.covered_by.iter().any(|check| check == "cargo xtask changelog check"),
+            "the entry must name the gate that actually validates fragment content"
+        );
+
+        // Drive the production validator with the production `.changie.yaml`,
+        // not a fixture copy of either: the claim is that the path rule leaves
+        // the real gate reachable, so a copy would prove nothing about it.
+        let config: ChangieConfig =
+            serde_yaml_ng::from_str(&fs::read_to_string(repo_root()?.join(".changie.yaml"))?)?;
+
+        let malformed: Fragment = serde_yaml_ng::from_str(concat!(
+            "project: not-a-project\n",
+            "kind: NotAKind\n",
+            "body: tiny\n",
+            "custom:\n",
+            "  PR: \"nonsense\"\n",
+        ))?;
+        let findings = validate_fragment(&malformed, &config);
+        assert!(
+            findings.iter().any(|f| f.contains("unknown project")),
+            "the real gate must still reject an unknown project: {findings:?}"
+        );
+        assert!(
+            findings.iter().any(|f| f.contains("unknown kind")),
+            "the real gate must still reject an unknown kind: {findings:?}"
+        );
+        assert!(
+            findings.iter().any(|f| f.contains("body")),
+            "the real gate must still reject an under-length body: {findings:?}"
+        );
+        assert!(
+            findings.iter().any(|f| f.contains("PR")),
+            "the real gate must still reject a non-numeric PR reference: {findings:?}"
+        );
+
+        // Positive control: without it, a validator that rejected everything
+        // would satisfy the assertions above.
+        let well_formed: Fragment = serde_yaml_ng::from_str(concat!(
+            "project: product\n",
+            "component: Developer experience\n",
+            "kind: Changed\n",
+            "body: A sufficiently long changelog body line for the gate.\n",
+            "custom:\n",
+            "  PR: \"14588\"\n",
+            "  Breaking: \"no\"\n",
+        ))?;
+        assert!(
+            validate_fragment(&well_formed, &config).is_empty(),
+            "a well-formed fragment must pass the same production validator"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn no_per_fragment_allowlist_rows_remain() -> Result<()> {
+        let allowlist = load_allowlist(&repo_root()?)?;
+
+        let per_fragment: Vec<&str> = allowlist
+            .allow
+            .iter()
+            .filter(|entry| entry.id != CHANGIE_FRAGMENT_ENTRY_ID)
+            .filter(|entry| {
+                let matcher = entry.glob.as_deref().or(entry.path.as_deref()).unwrap_or_default();
+                matcher.starts_with(".changes/unreleased/")
+            })
+            .map(|entry| entry.id.as_str())
+            .collect();
+
+        assert!(
+            per_fragment.is_empty(),
+            "individual fragments must not earn allowlist rows; found {per_fragment:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn every_tracked_fragment_resolves_to_the_single_typed_rule() -> Result<()> {
+        let root = repo_root()?;
+        let allowlist = load_allowlist(&root)?;
+        let prepared = prepare_allow_entries(&allowlist.allow);
+
+        let mut fragments: Vec<String> = list_tracked_files(&root)?
+            .into_iter()
+            .filter(|path| path.starts_with(".changes/unreleased/") && path.ends_with(".yaml"))
+            .collect();
+
+        // A release drains the directory, so the tracked population is
+        // legitimately empty some of the time. Always exercise a synthetic
+        // fragment as well, so this proof can never pass vacuously on the
+        // release commit.
+        fragments.push(".changes/unreleased/product-1-Added-101010.yaml".to_string());
+
+        for fragment in &fragments {
+            let owner = find_matching_prepared_entry(fragment, &prepared)
+                .ok_or_else(|| eyre!("{fragment} is not covered by any allowlist entry"))?;
+            assert_eq!(
+                owner.id, CHANGIE_FRAGMENT_ENTRY_ID,
+                "{fragment} must be governed by the typed rule, not by {}",
+                owner.id
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn draining_the_fragment_directory_leaves_no_stale_policy_row() -> Result<()> {
+        // A release renders and deletes every unreleased fragment. Because the
+        // rule names a path class rather than instances, the ledger needs no
+        // edit; the entry simply stops matching. This is the property that a
+        // per-fragment row could not have.
+        let entry = changie_fragment_entry()?;
+        let entries = vec![entry.clone()];
+
+        assert!(
+            classify_file(".changes/unreleased/product-1-Added-101010.yaml", &entries).allowlisted,
+            "covered before the release drains the directory"
+        );
+        assert!(
+            !entry_matches_any_tracked_file(&entry, &[".changes/unreleased/.gitkeep".to_string()]),
+            "after the drain the rule matches nothing and leaves no per-file receipt behind"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn two_independent_fragment_additions_do_not_touch_the_allowlist() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path();
+        let entry = changie_fragment_entry()?;
+        let allowlist_toml =
+            format!("[[allow]]\n{}", toml::to_string(&entry).context("serializing rule")?);
+
+        run_git(root, &["init", "-q"])?;
+        run_git(root, &["config", "user.email", "fixture@example.invalid"])?;
+        run_git(root, &["config", "user.name", "fixture"])?;
+        // A global `commit.gpgSign=true` with no usable key is inherited here
+        // and would abort the fixture commits before any matcher or merge
+        // behaviour is exercised, turning a host setting into a test failure.
+        run_git(root, &["config", "commit.gpgsign", "false"])?;
+        // Name the base branch without depending on `git init -b` or on the
+        // host's `init.defaultBranch`.
+        run_git(root, &["checkout", "-q", "-b", "base"])?;
+        write_fixture(root, "policy/non-rust-allowlist.toml", &allowlist_toml)?;
+        write_fixture(root, ".changes/unreleased/.gitkeep", "")?;
+        run_git(root, &["add", "."])?;
+        run_git(root, &["commit", "-qm", "base"])?;
+
+        let first = ".changes/unreleased/product-101-Added-101010.yaml";
+        let second = ".changes/unreleased/product-202-Fixed-202020.yaml";
+
+        for (branch, fragment) in [("candidate-a", first), ("candidate-b", second)] {
+            run_git(root, &["checkout", "-q", "-b", branch, "base"])?;
+            write_fixture(root, fragment, "project: product\nkind: Added\nbody: fixture\n")?;
+            run_git(root, &["add", fragment])?;
+            run_git(root, &["commit", "-qm", branch])?;
+        }
+
+        // Neither candidate edited the shared policy authority: that is the
+        // whole point of the typed rule. #9680's conflicts came from both
+        // candidates appending a row to this one file.
+        for branch in ["candidate-a", "candidate-b"] {
+            let output = std::process::Command::new("git")
+                .current_dir(root)
+                .args(["diff", "--name-only", "base", branch])
+                .output()
+                .context("diffing candidate against base")?;
+            let changed = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                !changed.contains("policy/non-rust-allowlist.toml"),
+                "adding a fragment must not mutate the allowlist; {branch} changed: {changed}"
+            );
+        }
+
+        run_git(root, &["checkout", "-q", "candidate-a"])?;
+        run_git(root, &["merge", "-q", "--no-edit", "candidate-b"])?;
+
+        let entries = vec![entry];
+        for fragment in [first, second] {
+            assert!(root.join(fragment).exists(), "{fragment} must survive the merge");
+            assert!(
+                classify_file(fragment, &entries).allowlisted,
+                "{fragment} must be governed after the merge with no allowlist edit"
+            );
+        }
+        Ok(())
+    }
+
     // --- extension extraction ---
 
     #[test]
@@ -2533,7 +4269,7 @@ mod tests {
     }
 
     #[test]
-    fn non_rust_inventory_check_accepts_current_and_stale_docs() -> Result<()> {
+    fn non_rust_inventory_check_accepts_current_and_normalized_docs() -> Result<()> {
         let temp = tempfile::tempdir()?;
         init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
         write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
@@ -2546,9 +4282,131 @@ mod tests {
         fs::write(&docs_path, current.replace('\n', "\r\n"))?;
         non_rust_inventory_check(temp.path())?;
 
-        fs::write(&docs_path, "stale\n")?;
-        non_rust_inventory_check(temp.path())?;
         Ok(())
+    }
+
+    #[test]
+    fn non_rust_inventory_check_rejects_valid_but_stale_docs() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
+        write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
+        non_rust_inventory_write_docs(temp.path())?;
+
+        write_fixture(temp.path(), "src/lib.rs", "pub fn fixture() {}\n")?;
+        run_git(temp.path(), &["add", "src/lib.rs"])?;
+
+        let error = non_rust_inventory_check(temp.path())
+            .err()
+            .ok_or_else(|| eyre!("valid but stale inventory documentation must fail"))?;
+        ensure!(
+            error.to_string().contains("inventory documentation is stale"),
+            "unexpected stale-inventory error: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn inventory_path_delta_reports_exact_added_and_removed_rows() {
+        let actual = "| `docs/old.md` | documentation | `old` | owner |\n";
+        let expected = "| `docs/new.md` | documentation | `new` | owner |\n";
+        let delta = inventory_path_delta(actual, expected);
+        assert!(delta.contains("missing generated paths: docs/new.md"));
+        assert!(delta.contains("paths no longer generated: docs/old.md"));
+    }
+
+    #[test]
+    fn inventory_path_delta_reports_metadata_only_change_when_row_paths_match() {
+        // Same backtick-wrapped row paths in both documents; only the summary
+        // metadata line differs, so the delta must take the metadata-only
+        // branch instead of naming missing or removed rows.
+        let actual = "# Non-Rust File Inventory\n\n\
+            | Metric | Count |\n|---|---|\n\
+            | Total tracked files | 1 |\n\n\
+            | `docs/keep.md` | documentation | `keep` | owner |\n";
+        let expected = "# Non-Rust File Inventory\n\n\
+            | Metric | Count |\n|---|---|\n\
+            | Total tracked files | 2 |\n\n\
+            | `docs/keep.md` | documentation | `keep` | owner |\n";
+        let delta = inventory_path_delta(actual, expected);
+        assert_eq!(delta, "the row paths match but summary or metadata changed");
+    }
+
+    /// A tracked path containing `|` is rendered escaped in table cells; the
+    /// delta parser must reverse the escape and name the raw path, not hide
+    /// the stale row as metadata-only drift.
+    #[test]
+    fn inventory_path_delta_names_pipe_paths_through_markdown_escapes() {
+        let actual = "| `docs/old.md` | documentation | `old` | owner |\n\
+            | `docs/a|b.md` | documentation | `ab` | owner |\n";
+        let actual_rendered = actual.replace("docs/a|b.md", "docs/a\\|b.md");
+        let expected = "| `docs/new.md` | documentation | `new` | owner |\n\
+             | `docs/a\\|b.md` | documentation | `ab` | owner |\n";
+        let delta = inventory_path_delta(&actual_rendered, expected);
+        assert!(delta.contains("missing generated paths: docs/new.md"), "{delta}");
+        assert!(delta.contains("paths no longer generated: docs/old.md"), "{delta}");
+        assert!(
+            !delta.contains("docs/a"),
+            "the pipe path must be recovered on both sides, not reported stale: {delta}"
+        );
+
+        // Round trip: the escaped cell parses back to the raw path.
+        let escaped = escape_markdown_cell("docs/a|b.md");
+        let row = format!("| `{escaped}` | documentation | `ab` | owner |\n");
+        let parsed = inventory_row_paths(&row);
+        assert_eq!(
+            parsed.into_iter().collect::<Vec<_>>(),
+            vec!["docs/a|b.md"],
+            "escape and parse must be exact inverses"
+        );
+
+        // A backslash that is not part of a `\|` escape stays verbatim, and
+        // the pipe after it still decodes (#14330 review).
+        let raw = "docs\\a|b.md";
+        assert_eq!(escape_markdown_cell(raw), "docs\\a\\|b.md");
+        let row = format!("| `{}` | documentation | `ab` | owner |\n", escape_markdown_cell(raw));
+        let parsed = inventory_row_paths(&row);
+        assert_eq!(
+            parsed.into_iter().collect::<Vec<_>>(),
+            vec![raw],
+            "non-escape backslashes must round-trip verbatim"
+        );
+    }
+
+    #[test]
+    fn markdown_metadata_cells_round_trip_odd_backslashes_before_pipe() {
+        for count in 1..=3 {
+            let prefix = "\\".repeat(count);
+            let id = format!("id-{prefix}|suffix");
+            let owner = format!("owner-{prefix}|suffix");
+            let row = format!(
+                "| `path.md` | documentation | `{}` | {} |\n",
+                escape_markdown_cell(&id),
+                escape_markdown_cell(&owner)
+            );
+            let cells = parse_markdown_cells(&row).expect("rendered row must parse");
+            assert_eq!(cells.len(), 4, "metadata backslashes must not add cells");
+            assert_eq!(cells[2], format!("`{id}`"));
+            assert_eq!(cells[3], owner);
+        }
+    }
+
+    #[test]
+    fn markdown_metadata_cells_round_trip_trailing_literal_pipe() {
+        let id = "id|";
+        let owner = "owner|";
+        let row = format!(
+            "| `path.md` | documentation | `{}` | {} |\n",
+            escape_markdown_cell(id),
+            escape_markdown_cell(owner)
+        );
+        let cells = parse_markdown_cells(&row).expect("rendered row must parse");
+        assert_eq!(cells, vec!["`path.md`", "documentation", "`id|`", "owner|"]);
+
+        // The codec must also preserve a final literal pipe when there is no
+        // whitespace before the table delimiter.
+        let compact = "| `path.md`|documentation|`id\\|`|owner\\||";
+        let cells = parse_markdown_cells(compact).expect("compact row must parse");
+        assert_eq!(cells, vec!["`path.md`", "documentation", "`id|`", "owner|"]);
     }
 
     #[test]
@@ -2619,6 +4477,33 @@ mod tests {
         )?;
 
         assert!(non_rust_inventory_check(temp.path()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn blocking_check_file_policy_rejects_conflict_markers_in_raw_allowlist() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let _tracked = init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
+        let allowlist = temp.path().join("allow.toml");
+        std::fs::write(
+            &allowlist,
+            "[[allow]]\nid = \"readme\"\npath = \"README.md\"\nkind = \"documentation\"\nlanguage = \"markdown\"\nowner = \"team\"\nreason = \"\"\"\n<<<<<<< HEAD\n\"\"\"\nsurface = \"docs\"\nclassification = \"documentation\"\ncovered_by = [\"fixture\"]\ncreated = \"2026-01-01\"\nreview_after = \"2099-01-01\"\n",
+        )?;
+
+        let result = check_file_policy(
+            temp.path(),
+            CheckFilePolicyConfig {
+                mode: CheckFilePolicyMode::BlockingAllowlist,
+                json_output: None,
+                allowlist_path: Some(allowlist),
+                root_override: Some(temp.path().to_path_buf()),
+            },
+        );
+        let error = result.expect_err("blocking policy accepted raw conflict marker");
+        assert!(
+            error.to_string().contains("violation"),
+            "blocking policy did not report a violation: {error:?}"
+        );
         Ok(())
     }
 
@@ -2702,8 +4587,8 @@ surface = "docs"
 classification = "generated"
 owner = "release/ci"
 reason = "Generated badge data."
-generated_by = "cargo xtask badges"
-covered_by = []
+generated_by = "python3 scripts/generate-badges.py"
+covered_by = ["python3 scripts/generate-badges.py --check"]
 created = "2026-05-13"
 review_after = "2026-08-13"
 "#,
@@ -2718,6 +4603,30 @@ review_after = "2026-08-13"
         Ok(())
     }
 
+    #[test]
+    fn debt_entries_may_reuse_reason_across_matchers() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let debt = temp.path().join("debt.toml");
+        fs::write(
+            &debt,
+            r#"
+[[debt]]
+id = "debt-a"
+path = "legacy/a.py"
+reason = "classification pending"
+
+[[debt]]
+id = "debt-b"
+path = "legacy/b.py"
+reason = "classification pending"
+"#,
+        )?;
+        let mut errors = Vec::new();
+        let count = validate_policy_table(&debt, "debt", false, &mut errors);
+        assert_eq!(count, 2);
+        assert!(!errors.iter().any(|error| error.contains("mispaired provenance")), "{errors:?}");
+        Ok(())
+    }
     #[test]
     fn validate_non_rust_policy_reports_schema_errors() -> Result<()> {
         let temp = tempfile::tempdir()?;
@@ -3023,10 +4932,9 @@ review_after = "2026-08-13"
         assert_eq!(add_days((1970, 1, 1), 31), (1970, 2, 1));
         assert_eq!(fmt_ymd((2026, 6, 9)), "2026-06-09");
         assert!(is_past_date("not-a-date"));
-        assert!(is_policy_broad_glob("*.md"));
         assert!(is_policy_broad_glob("docs/**"));
-        assert!(is_broad_glob("**/*"));
-        assert!(!is_broad_glob("docs/*.md"));
+        assert!(is_policy_broad_glob("**/*"));
+        assert!(!is_policy_broad_glob("docs/*.md"));
         assert_eq!(classify_dir("docs"), "docs");
         assert_eq!(classify_dir("scripts"), "build");
         assert_eq!(classify_dir("unknown"), "tbd");
@@ -3143,5 +5051,309 @@ review_after = "2026-08-13"
             verify_inventory_projection(&markdown).is_ok(),
             "consistent projection must verify"
         );
+    }
+
+    fn commit_fixture(root: &Path, message: &str) -> Result<String> {
+        run_git(root, &["config", "user.email", "fixture@example.invalid"])?;
+        run_git(root, &["config", "user.name", "fixture"])?;
+        run_git(root, &["add", "-A"])?;
+        run_git(root, &["commit", "-qm", message])?;
+        let sha = git_object(root, &["rev-parse", "HEAD"])?;
+        Ok(String::from_utf8(sha)?.trim().to_string())
+    }
+
+    fn exact_fixture() -> Result<(tempfile::TempDir, String)> {
+        let temp = tempfile::tempdir()?;
+        init_tracked_fixture(
+            temp.path(),
+            &[
+                ("README.md", "fixture\n"),
+                ("policy/non-rust-allowlist.toml", &readme_allowlist_toml()?),
+                (
+                    ".github/workflows/non-rust-policy.yml",
+                    include_str!("../../../.github/workflows/non-rust-policy.yml"),
+                ),
+            ],
+        )?;
+        let base = commit_fixture(temp.path(), "base")?;
+        Ok((temp, base))
+    }
+
+    #[test]
+    fn exact_tree_rejects_new_unclassified_path_and_writes_receipt() -> Result<()> {
+        let (temp, base) = exact_fixture()?;
+        write_fixture(temp.path(), "notes.txt", "new\n")?;
+        let subject = commit_fixture(temp.path(), "unclassified")?;
+        let receipt = temp.path().join("receipt.json");
+        let error = non_rust_exact_tree(temp.path(), &base, &subject, None, &receipt, None, None)
+            .expect_err("new unclassified path must fail");
+        assert!(error.to_string().contains("notes.txt"));
+        let receipt: ExactTreePolicyReceipt = serde_json::from_str(&fs::read_to_string(receipt)?)?;
+        assert_eq!(receipt.new_unclassified_paths, vec!["notes.txt"]);
+        assert_eq!(receipt.outcome, "fail");
+        Ok(())
+    }
+
+    #[test]
+    fn exact_tree_catches_rename_and_allowlist_regressions() -> Result<()> {
+        let (temp, base) = exact_fixture()?;
+        run_git(temp.path(), &["mv", "README.md", "notes.txt"])?;
+        let subject = commit_fixture(temp.path(), "rename")?;
+        let error = non_rust_exact_tree(
+            temp.path(),
+            &base,
+            &subject,
+            None,
+            &temp.path().join("rename.json"),
+            None,
+            None,
+        )
+        .expect_err("rename into an unclassified path must fail");
+        assert!(error.to_string().contains("notes.txt"));
+
+        let (temp, base) = exact_fixture()?;
+        write_fixture(temp.path(), "policy/non-rust-allowlist.toml", "allow = []\n")?;
+        let subject = commit_fixture(temp.path(), "allowlist regression")?;
+        let error = non_rust_exact_tree(
+            temp.path(),
+            &base,
+            &subject,
+            None,
+            &temp.path().join("allowlist.json"),
+            None,
+            None,
+        )
+        .expect_err("removing allowlist coverage must fail");
+        assert!(error.to_string().contains("README.md"));
+        Ok(())
+    }
+
+    #[test]
+    fn exact_tree_rejects_malformed_and_unrelated_subject_identity() -> Result<()> {
+        let (temp, base) = exact_fixture()?;
+        let error = non_rust_exact_tree(
+            temp.path(),
+            "not-a-sha",
+            &base,
+            None,
+            &temp.path().join("bad.json"),
+            None,
+            None,
+        )
+        .expect_err("malformed base must fail");
+        assert!(error.to_string().contains("git rev-parse"));
+        let error = non_rust_exact_tree(
+            temp.path(),
+            &base,
+            &base,
+            Some("deadbeef"),
+            &temp.path().join("head.json"),
+            None,
+            None,
+        )
+        .expect_err("unrelated PR head must fail");
+        assert!(error.to_string().contains("does not contain PR head"));
+        Ok(())
+    }
+
+    #[test]
+    fn exact_tree_accepts_unchanged_trusted_workflow() -> Result<()> {
+        let (temp, base) = exact_fixture()?;
+        write_fixture(temp.path(), "README.md", "updated fixture\n")?;
+        let subject = commit_fixture(temp.path(), "documentation-only change")?;
+        let receipt = temp.path().join("unchanged-workflow.json");
+
+        non_rust_exact_tree(temp.path(), &base, &subject, None, &receipt, None, None)?;
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_workflow_rejects_alternate_candidate_checkout_or_import() -> Result<()> {
+        for injected in [
+            "\n          git checkout \"$SUBJECT_SHA\"\n",
+            "\n          git worktree add candidate \"$SUBJECT_SHA\"\n",
+            "\n          source ./candidate.sh\n",
+        ] {
+            let (temp, base) = exact_fixture()?;
+            let workflow_path = ".github/workflows/non-rust-policy.yml";
+            let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
+            // A changed trusted workflow must increment its contract-version by
+            // exactly one before later checks run; follow that protocol so the
+            // injection itself is what gets rejected.
+            let version_marker = "# contract-version: ";
+            let version = workflow
+                .lines()
+                .find_map(|line| line.trim().strip_prefix(version_marker))
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .expect("fixture workflow must carry a contract-version");
+            let workflow = workflow.replacen(
+                &format!("{version_marker}{version}"),
+                &format!("{version_marker}{}", version + 1),
+                1,
+            );
+            let workflow = workflow.replacen(
+                "      - name: Upload exact-tree receipt",
+                &(injected.to_string() + "      - name: Upload exact-tree receipt"),
+                1,
+            );
+            write_fixture(temp.path(), workflow_path, &workflow)?;
+            let subject = commit_fixture(temp.path(), "untrusted workflow")?;
+            let error = validate_subject_workflow(temp.path(), &base, &subject)
+                .expect_err("candidate checkout/import must be rejected");
+            assert!(
+                error.to_string().contains("must not execute or import candidate-derived content"),
+                "unexpected error: {error}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_workflow_scans_executable_cargo_runs_not_validator_source() -> Result<()> {
+        let (temp, base) = exact_fixture()?;
+        let workflow_path = ".github/workflows/non-rust-policy.yml";
+        let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
+        let workflow = workflow.replacen(
+            "          run_bodies = []\n",
+            "          # cargo run github.event.pull_request.head.sha\n          run_bodies = []\n",
+            1,
+        );
+        let version_marker = "# contract-version: ";
+        let version = workflow
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(version_marker))
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .expect("fixture workflow must carry a contract-version");
+        let workflow = workflow.replacen(
+            &format!("{version_marker}{version}"),
+            &format!("{version_marker}{}", version + 1),
+            1,
+        );
+        write_fixture(temp.path(), workflow_path, &workflow)?;
+        let subject = commit_fixture(temp.path(), "validator source comment")?;
+        validate_subject_workflow(temp.path(), &base, &subject)?;
+
+        let (temp, base) = exact_fixture()?;
+        let workflow_path = ".github/workflows/non-rust-policy.yml";
+        let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
+        let version = workflow
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(version_marker))
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .expect("fixture workflow must carry a contract-version");
+        let workflow = workflow.replacen(
+            &format!("{version_marker}{version}"),
+            &format!("{version_marker}{}", version + 1),
+            1,
+        );
+        let workflow = workflow.replacen(
+            "run: cargo run --locked -p xtask -- non-rust exact-tree",
+            "run: cargo run --locked -p xtask -- non-rust exact-tree --subject-sha ${{ github.event.pull_request.head.sha }}",
+            1,
+        );
+        write_fixture(temp.path(), workflow_path, &workflow)?;
+        let subject = commit_fixture(temp.path(), "candidate interpolation")?;
+        let error = validate_subject_workflow(temp.path(), &base, &subject)
+            .expect_err("candidate-derived evaluator interpolation must fail closed");
+        assert!(
+            error.to_string().contains("must not execute candidate source"),
+            "unexpected error: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_workflow_rejects_candidate_refs_in_step_inputs_and_whitespace_variants() -> Result<()>
+    {
+        let workflow_path = ".github/workflows/non-rust-policy.yml";
+        let version_marker = "# contract-version: ";
+        for injected in [
+            "\n      - name: candidate ref input\n        env:\n          REF: refs/pull/${{ github.event.pull_request.number }}/head\n        run: echo \"$REF\"\n",
+            "\n      - name: candidate ref command\n        run: cargo  run --locked -p xtask -- non-rust exact-tree --subject-sha ${{ github.event.pull_request.head.sha }}\n",
+        ] {
+            let (temp, base) = exact_fixture()?;
+            let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
+            let version = workflow
+                .lines()
+                .find_map(|line| line.trim().strip_prefix(version_marker))
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .expect("fixture workflow must carry a contract-version");
+            let workflow = workflow.replacen(
+                &format!("{version_marker}{version}"),
+                &format!("{version_marker}{}", version + 1),
+                1,
+            );
+            let workflow = workflow.replacen(
+                "      - name: Upload exact-tree receipt",
+                &(injected.to_string() + "      - name: Upload exact-tree receipt"),
+                1,
+            );
+            write_fixture(temp.path(), workflow_path, &workflow)?;
+            let subject = commit_fixture(temp.path(), "candidate ref bypass")?;
+            let error = validate_subject_workflow(temp.path(), &base, &subject)
+                .expect_err("candidate-controlled ref must fail closed");
+            assert!(
+                error.to_string().contains("must not execute candidate source"),
+                "unexpected error: {error}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_workflow_rejects_duplicate_reserved_contract_id() -> Result<()> {
+        let (temp, base) = exact_fixture()?;
+        let workflow_path = ".github/workflows/non-rust-policy.yml";
+        let workflow = fs::read_to_string(temp.path().join(workflow_path))?;
+        let version_marker = "# contract-version: ";
+        let version = workflow
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(version_marker))
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .ok_or_else(|| eyre!("fixture workflow must carry a contract-version"))?;
+        let workflow = workflow.replacen(
+            &format!("{version_marker}{version}"),
+            &format!("{version_marker}{}", version + 1),
+            1,
+        );
+        let duplicate = "      - id: verify-trusted-workflow-contract\n        name: Unexpected duplicate\n        run: echo duplicate\n";
+        let workflow = workflow.replacen(
+            "      - name: Upload exact-tree receipt",
+            &(duplicate.to_string() + "      - name: Upload exact-tree receipt"),
+            1,
+        );
+        write_fixture(temp.path(), workflow_path, &workflow)?;
+        let subject = commit_fixture(temp.path(), "duplicate reserved workflow id")?;
+        let error = validate_subject_workflow(temp.path(), &base, &subject)
+            .expect_err("duplicate reserved workflow ID must fail closed");
+        assert!(
+            error.to_string().contains("exactly one reserved contract-verification step ID"),
+            "unexpected error: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn exact_tree_workflow_keeps_trusted_shadow_contract() -> Result<()> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join(".github/workflows/non-rust-policy.yml");
+        let workflow = fs::read_to_string(root)?;
+        for required in [
+            "pull_request_target:",
+            "merge_group:",
+            "push:",
+            "workflow_dispatch:",
+            "permissions:\n  contents: read",
+            "ref: ${{ env.EVALUATOR_SHA }}",
+            "merge-base --is-ancestor",
+            "Non-Rust policy exact-tree",
+            "if: always()",
+            "persist-credentials: false",
+        ] {
+            assert!(workflow.contains(required), "workflow missing `{required}`");
+        }
+        assert!(!workflow.contains("actions/checkout@v"), "actions must be pinned");
+        Ok(())
     }
 }

@@ -820,263 +820,9 @@ fn construction_binds_matrix_fingerprint_to_matrix_authority() -> Result<()> {
 // Review repair: registered JSON schema agrees with produced receipts
 // ---------------------------------------------------------------------------
 
-/// Minimal structural validator covering exactly the JSON Schema keywords this
-/// registered schema uses. Unknown keywords fail closed instead of passing.
-mod schema_check {
-    use serde_json::Value;
-
-    pub fn validate(root: &Value, instance: &Value) -> Result<(), String> {
-        check(root, root, instance)
-    }
-
-    fn check(schema: &Value, root: &Value, instance: &Value) -> Result<(), String> {
-        if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
-            let pointer = reference.strip_prefix('#').unwrap_or(reference);
-            let target = root
-                .pointer(pointer)
-                .ok_or_else(|| format!("schema $ref {reference} unresolved"))?;
-            return check(target, root, instance);
-        }
-        if let Some(expected) = schema.get("type") {
-            let satisfied = match expected {
-                Value::String(name) => type_matches(name, instance)?,
-                Value::Array(names) => {
-                    let mut matched = false;
-                    for name in names.iter().filter_map(Value::as_str) {
-                        matched = matched || type_matches(name, instance)?;
-                    }
-                    matched
-                }
-                other => return Err(format!("unsupported schema type shape {other}")),
-            };
-            if !satisfied {
-                return Err(format!("instance violates type constraint {expected}"));
-            }
-        }
-        if let Some(expected) = schema.get("const")
-            && instance != expected
-        {
-            return Err(format!("instance violates const {expected}"));
-        }
-        if let Some(expected) = schema.get("enum").and_then(Value::as_array)
-            && !expected.contains(instance)
-        {
-            return Err(format!("instance is outside enum {expected:?}"));
-        }
-        // Pattern/numeric keywords constrain their matching instance types;
-        // other types are governed solely by the checked `type` keyword.
-        if let Some(pattern) = schema.get("pattern").and_then(Value::as_str)
-            && let Some(text) = instance.as_str()
-        {
-            anchored_pattern_matches(pattern, text)?;
-        }
-        if let Some(minimum) = schema.get("minimum").and_then(Value::as_i64)
-            && let Some(number) = instance.as_i64()
-            && number < minimum
-        {
-            return Err(format!("instance {number} is below minimum {minimum}"));
-        }
-        match instance {
-            Value::String(text) => {
-                if let Some(min) = schema.get("minLength").and_then(Value::as_u64)
-                    && (text.chars().count() as u64) < min
-                {
-                    return Err(format!("string shorter than minLength {min}"));
-                }
-                if let Some(max) = schema.get("maxLength").and_then(Value::as_u64)
-                    && (text.chars().count() as u64) > max
-                {
-                    return Err(format!("string longer than maxLength {max}"));
-                }
-            }
-            Value::Array(items) => {
-                if let Some(min) = schema.get("minItems").and_then(Value::as_u64)
-                    && (items.len() as u64) < min
-                {
-                    return Err(format!("array shorter than minItems {min}"));
-                }
-                if schema.get("uniqueItems") == Some(&Value::Bool(true)) {
-                    let duplicated = items
-                        .iter()
-                        .enumerate()
-                        .any(|(index, item)| items[index + 1..].iter().any(|later| later == item));
-                    if duplicated {
-                        return Err("array items are not unique".to_string());
-                    }
-                }
-                if let Some(item_schema) = schema.get("items") {
-                    for item in items {
-                        check(item_schema, root, item)?;
-                    }
-                }
-            }
-            Value::Object(object) => {
-                for key in schema.get("required").and_then(Value::as_array).into_iter().flatten() {
-                    let key = key.as_str().ok_or("required entries must be strings")?;
-                    if !object.contains_key(key) {
-                        return Err(format!("object is missing required key {key}"));
-                    }
-                }
-                let properties = schema.get("properties").and_then(Value::as_object);
-                let additional = schema.get("additionalProperties");
-                for (key, value) in object {
-                    match properties.and_then(|properties| properties.get(key)) {
-                        Some(key_schema) => check(key_schema, root, value)?,
-                        None => match additional {
-                            Some(&Value::Bool(false)) => {
-                                return Err(format!("object carries unknown property {key}"));
-                            }
-                            Some(additional_schema) => {
-                                check(additional_schema, root, value)?;
-                            }
-                            _ => {}
-                        },
-                    }
-                }
-            }
-            _ => {}
-        }
-        if let Some(branches) = schema.get("oneOf").and_then(Value::as_array) {
-            let passing =
-                branches.iter().filter(|branch| check(branch, root, instance).is_ok()).count();
-            if passing != 1 {
-                return Err(format!("instance satisfies {passing} oneOf branches, expected 1"));
-            }
-        }
-        Ok(())
-    }
-
-    fn type_matches(name: &str, instance: &Value) -> Result<bool, String> {
-        Ok(match name {
-            "object" => instance.is_object(),
-            "array" => instance.is_array(),
-            "string" => instance.is_string(),
-            "boolean" => instance.is_boolean(),
-            "null" => instance.is_null(),
-            "integer" => instance.is_i64() || instance.is_u64(),
-            "number" => instance.is_number(),
-            other => return Err(format!("unsupported schema type name {other}")),
-        })
-    }
-
-    /// Anchored pattern matcher for the single-piece character-class shapes
-    /// this schema uses (`^[class]{n,m}$`, `^[class]+$`, `^([class]{w})*$`).
-    /// Any other grammar fails closed instead of passing.
-    fn anchored_pattern_matches(pattern: &str, text: &str) -> Result<(), String> {
-        let unsupported = || format!("unsupported pattern grammar {pattern}");
-        let body = pattern
-            .strip_prefix('^')
-            .ok_or_else(unsupported)?
-            .strip_suffix('$')
-            .ok_or_else(unsupported)?;
-        let (unit_width, min_units, max_units, class_body) =
-            if let Some(inner) = body.strip_prefix('(').and_then(|rest| rest.strip_suffix(")*")) {
-                let (class_body, width) = split_bracket_and_exact_repeat(inner)?;
-                (width, 0, None, class_body)
-            } else {
-                let (class_body, quantifier) = split_bracket_and_quantifier(body)?;
-                match quantifier {
-                    Quantifier::OneOrMore | Quantifier::Plain => (1, 1, None, class_body),
-                    Quantifier::Exact(units) => (1, units, Some(units), class_body),
-                    Quantifier::Bounded(low, high) => (1, low, Some(high), class_body),
-                }
-            };
-        let class = parse_char_class(class_body)?;
-        let bytes = text.as_bytes();
-        if !bytes.iter().all(|byte| class.contains(*byte)) {
-            return Err(format!("text {text:?} contains characters outside {pattern}"));
-        }
-        if bytes.len() % unit_width != 0 {
-            return Err(format!("text {text:?} length does not fit pattern {pattern}"));
-        }
-        let units = (bytes.len() / unit_width) as u64;
-        if units < min_units || max_units.is_some_and(|max| units > max) {
-            return Err(format!("text {text:?} length does not satisfy pattern {pattern}"));
-        }
-        Ok(())
-    }
-
-    enum Quantifier {
-        Plain,
-        OneOrMore,
-        Exact(u64),
-        Bounded(u64, u64),
-    }
-
-    /// Splits `[class]` plus an optional `{n}`, `{n,m}`, or `+` suffix.
-    fn split_bracket_and_quantifier(body: &str) -> Result<(&str, Quantifier), String> {
-        if let Some(rest) = body.strip_suffix('+') {
-            let class = strip_brackets(rest).ok_or_else(|| format!("bad class in {body}"))?;
-            return Ok((class, Quantifier::OneOrMore));
-        }
-        let Some((core, suffix)) = body.split_once('{') else {
-            let class = strip_brackets(body).ok_or_else(|| format!("bad class in {body}"))?;
-            return Ok((class, Quantifier::Plain));
-        };
-        let numbers =
-            suffix.strip_suffix('}').ok_or_else(|| format!("bad quantifier in {body}"))?;
-        let parse_number =
-            |value: &str| value.parse::<u64>().map_err(|_| format!("bad quantifier in {body}"));
-        let bounds = if let Some((low, high)) = numbers.split_once(',') {
-            let max = match high.is_empty() {
-                true => None,
-                false => Some(parse_number(high)?),
-            };
-            (parse_number(low)?, max)
-        } else {
-            let exact = parse_number(numbers)?;
-            (exact, Some(exact))
-        };
-        let class = strip_brackets(core).ok_or_else(|| format!("bad class in {body}"))?;
-        Ok((
-            class,
-            match bounds {
-                (low, Some(high)) if low == high => Quantifier::Exact(low),
-                (low, Some(high)) => Quantifier::Bounded(low, high),
-                (low, None) => Quantifier::Bounded(low, u64::MAX),
-            },
-        ))
-    }
-
-    /// Splits `[class]{w}` where the group-star unit repeats `w` bytes each.
-    fn split_bracket_and_exact_repeat(body: &str) -> Result<(&str, usize), String> {
-        let (class, quantifier) = split_bracket_and_quantifier(body)?;
-        let Quantifier::Exact(units) = quantifier else {
-            return Err(format!("group star requires an exact byte width, got {body}"));
-        };
-        Ok((class, units as usize))
-    }
-
-    fn strip_brackets(body: &str) -> Option<&str> {
-        body.strip_prefix('[').and_then(|rest| rest.strip_suffix(']'))
-    }
-
-    fn parse_char_class(body: &str) -> Result<CharClass, String> {
-        let mut class = CharClass::default();
-        let mut chars = body.chars().peekable();
-        while let Some(first) = chars.next() {
-            if chars.peek() == Some(&'-') {
-                chars.next();
-                let last = chars.next().ok_or_else(|| format!("dangling range in class {body}"))?;
-                class.ranges.push((first as u8, last as u8));
-            } else {
-                class.ranges.push((first as u8, first as u8));
-            }
-        }
-        Ok(class)
-    }
-
-    #[derive(Default)]
-    struct CharClass {
-        ranges: Vec<(u8, u8)>,
-    }
-
-    impl CharClass {
-        fn contains(&self, byte: u8) -> bool {
-            self.ranges.iter().any(|(low, high)| *low <= byte && byte <= *high)
-        }
-    }
-}
+// The minimal schema validator is shared with every other contract suite
+// so one instrument governs schema agreement (#7729).
+use crate::schema_check;
 
 #[test]
 fn produced_receipt_matches_registered_json_schema() -> Result<()> {
@@ -1153,4 +899,52 @@ impl ObservedDiscoveryInput {
         self.discovery_frame = frame;
         self
     }
+}
+
+#[test]
+fn deserialized_receipt_intake_rejects_noncanonical_artifact_digest_spelling() -> Result<()> {
+    // #7725 review falsifier: receipts arriving by deserialization bypass
+    // construction entirely, so the canonical-spelling law must hold on the
+    // shared receipt-validation path, not only at the constructor.
+    let matrix = matrix()?;
+    let receipt = build(&matrix, &base_input(&matrix, "component_base", b"t/base/if.t\n")?)?;
+    let original = receipt.payload.invocation.runner_artifact.content_sha256.clone();
+
+    let retag_artifact = |spelled: String| -> Result<UpstreamDiscoveryReceiptV1> {
+        let mut value = serde_json::to_value(&receipt)?;
+        value["payload"]["invocation"]["runner_artifact"]["content_sha256"] = json!(spelled);
+        let mut tampered: UpstreamDiscoveryReceiptV1 = serde_json::from_value(value)?;
+        tampered.payload_digest =
+            discovery_payload_digest(&tampered.payload).map_err(|error| eyre!(error))?;
+        Ok(tampered)
+    };
+
+    let uppercased = retag_artifact(original.to_ascii_uppercase())?;
+    assert_rejected_where(
+        "uppercase artifact digest under a recomputed payload digest",
+        validate_receipt_subject_binding(&uppercased),
+    )?;
+    assert!(validate_observed_discovery_receipt(&matrix, &uppercased).is_err());
+
+    // Flip exactly one case-bearing (letter) nibble, never a digit, so the
+    // mutation cannot collapse into the canonical control when the digest
+    // happens to start with a hex digit.
+    let mut mixed = original.clone();
+    let letter_nibble = mixed
+        .bytes()
+        .position(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_digit())
+        .ok_or_else(|| eyre!("fixture artifact digest carries no case-bearing nibble"))?;
+    let flipped = mixed[letter_nibble..=letter_nibble].to_ascii_uppercase();
+    mixed.replace_range(letter_nibble..=letter_nibble, &flipped);
+    assert_ne!(mixed, original, "mixed-case mutation must alter the spelling");
+    let mixed_case = retag_artifact(mixed)?;
+    assert_rejected_where(
+        "single mixed-case nibble under a recomputed payload digest",
+        validate_receipt_subject_binding(&mixed_case),
+    )?;
+
+    // Canonical control: the unchanged spelling keeps validating.
+    ensure(validate_receipt_subject_binding(&receipt))?;
+    ensure(validate_observed_discovery_receipt(&matrix, &receipt))?;
+    Ok(())
 }

@@ -9,6 +9,7 @@ mod support;
 use parking_lot::Mutex;
 use perl_lsp::LspServer;
 use perl_lsp::server::MessageType;
+use perl_lsp_rs_core::governance::FeatureProfile;
 use perl_lsp_rs_core::runtime::tuning::RuntimeTuning;
 use perl_lsp_rs_core::transport::framing::ContentLengthFramer;
 use serde_json::{Value, json};
@@ -678,6 +679,121 @@ fn dynamic_file_watcher_registration_uses_string_globs_not_relative_patterns() -
     Ok(())
 }
 
+/// #8897: document-filter `RelativePattern` (LSP 3.18) is not implemented.
+/// With every dynamic-registration surface enabled, the only registration that
+/// may carry a `RelativePattern` shape (`baseUri`) is the 3.17
+/// workspace/didChangeWatchedFiles watcher glob. Document-selector producers
+/// must never emit relative filters.
+#[test]
+fn document_filter_relative_pattern_is_never_emitted() -> TestResult {
+    let mut harness = LspHarness::new_with_feature_profile(FeatureProfile::All);
+    harness.initialize(Some(json!({
+        "workspace": {
+            "didChangeWatchedFiles": {
+                "dynamicRegistration": true,
+                "relativePatternSupport": true
+            }
+        },
+        "textDocument": {
+            "inlineCompletion": {
+                "dynamicRegistration": true
+            }
+        }
+    })))?;
+
+    let requests = harness.drain_server_requests(250);
+    assert!(!requests.is_empty(), "expected dynamic registrations to scan");
+
+    let mut saw_watcher = false;
+    for request in &requests {
+        if request.get("method").and_then(Value::as_str) != Some("client/registerCapability") {
+            continue;
+        }
+        let registrations = request
+            .pointer("/params/registrations")
+            .and_then(Value::as_array)
+            .ok_or("registerCapability missing registrations")?;
+        for registration in registrations {
+            let method = registration.get("method").and_then(Value::as_str).unwrap_or("");
+            if method == "workspace/didChangeWatchedFiles" {
+                saw_watcher = true;
+                let watchers = registration
+                    .pointer("/registerOptions/watchers")
+                    .and_then(Value::as_array)
+                    .ok_or("watcher registration missing watchers")?;
+                assert!(
+                    watchers.iter().any(|watcher| {
+                        watcher.pointer("/globPattern/baseUri").and_then(Value::as_str).is_some()
+                    }),
+                    "relative-pattern capable clients must receive a watcher baseUri: {registration}"
+                );
+                continue;
+            }
+            let rendered = serde_json::to_string(registration)?;
+            assert!(
+                !rendered.contains("baseUri"),
+                "document-filter RelativePattern must never be emitted for {method}: {rendered}"
+            );
+        }
+    }
+    assert!(saw_watcher, "expected the allowed watcher RelativePattern registration");
+    Ok(())
+}
+
+/// #8897: notebook document-filter `RelativePattern` (LSP 3.18) is not
+/// implemented. The preview profile may advertise notebook document sync, but
+/// it must never emit notebook selectors carrying relative patterns.
+#[test]
+fn notebook_document_filter_relative_pattern_is_never_emitted() -> TestResult {
+    let mut harness = LspHarness::new_with_feature_profile(FeatureProfile::All);
+    let init = harness.initialize_ready(
+        "file:///workspace",
+        Some(json!({
+            "notebookDocument": {
+                "synchronization": {
+                    "dynamicRegistration": true
+                }
+            }
+        })),
+    )?;
+
+    let caps = init
+        .get("capabilities")
+        .ok_or_else(|| format!("initialize response missing capabilities: {init}"))?;
+    let notebook_sync = caps
+        .pointer("/notebookDocumentSync")
+        .ok_or_else(|| format!("FeatureProfile::All missing notebook producer path: {caps}"))?;
+    let selectors = notebook_sync
+        .pointer("/notebookSelector")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("notebookDocumentSync missing static notebookSelector: {caps}"))?;
+    assert!(!selectors.is_empty(), "notebook producer returned no static selectors");
+    assert_no_key(&Value::Array(selectors.clone()), "pattern")?;
+    assert_no_key(&Value::Array(selectors.clone()), "baseUri")?;
+    let rendered_sync = serde_json::to_string(notebook_sync)?;
+    assert!(
+        !rendered_sync.contains("baseUri"),
+        "notebook static selectors must never contain RelativePattern baseUri: {rendered_sync}"
+    );
+
+    let requests = harness.drain_server_requests(250);
+    for request in &requests {
+        if request.get("method").and_then(Value::as_str) != Some("client/registerCapability") {
+            continue;
+        }
+        let rendered = serde_json::to_string(request)?;
+        assert!(
+            !rendered.contains("notebook"),
+            "notebook document-filter registrations must never be emitted: {rendered}"
+        );
+        assert!(
+            !rendered.contains("baseUri"),
+            "notebook RelativePattern filters must never be emitted: {rendered}"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn folding_range_refresh_is_not_sent_without_client_support() -> TestResult {
     let output = OutputCapture::default();
@@ -928,10 +1044,10 @@ fn assert_no_trusted_markdown_affordances(value: &Value) -> TestResult {
 
 fn collect_trusted_markdown_affordance_paths(value: &Value, path: &str, paths: &mut Vec<String>) {
     match value {
-        Value::String(text) => {
-            if text.to_ascii_lowercase().contains("command:") || text.contains("$(") {
-                paths.push(path.to_string());
-            }
+        Value::String(text)
+            if text.to_ascii_lowercase().contains("command:") || text.contains("$(") =>
+        {
+            paths.push(path.to_string());
         }
         Value::Object(map) => {
             for (name, child) in map {

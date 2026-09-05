@@ -21,6 +21,13 @@ pub struct ProjectFixtureFile {
     pub content: String,
 }
 
+impl ProjectFixtureFile {
+    /// Construct one fixture file from a relative path and content.
+    pub fn new(relative_path: impl Into<String>, content: impl Into<String>) -> Self {
+        Self { relative_path: relative_path.into(), content: content.into() }
+    }
+}
+
 /// Resolve the repository workspace root from this crate's manifest location.
 pub fn workspace_root() -> Result<PathBuf> {
     Path::new(env!("CARGO_MANIFEST_DIR"))

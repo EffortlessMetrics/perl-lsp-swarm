@@ -23,8 +23,24 @@ const DEFAULT_LEDGER: &str = ".ci/policies/action-pin-provenance.toml";
 struct Args {
     #[arg(long)]
     root: Option<PathBuf>,
+    /// Exact recorded comparator tree (event-time base SHA for push/merge_group).
     #[arg(long)]
     base: Option<String>,
+    /// Compare against the true merge base of this git revision and HEAD,
+    /// resolved at run time so the scanned result's own incorporated base side
+    /// is used even after intervening merges rebuilt it (#10194). Fails closed
+    /// when ancestry cannot be proven.
+    #[arg(long, conflicts_with = "base")]
+    merge_base: Option<String>,
+    /// Bind the scanned checkout to the PR subject: HEAD must be GitHub's
+    /// two-parent simulated merge ref whose second parent equals this candidate
+    /// head SHA. Fails closed on any other topology.
+    #[arg(long)]
+    expect_merge_of: Option<String>,
+    /// Bind the scanned repository: the normalized origin remote must name this
+    /// owner/repository slug.
+    #[arg(long)]
+    expect_origin: Option<String>,
     #[arg(long)]
     receipt: Option<PathBuf>,
     #[arg(long)]
@@ -33,9 +49,25 @@ struct Args {
     ledger: PathBuf,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+/// Where the effective comparator came from, recorded verbatim in the receipt.
+#[derive(Clone, Debug)]
+enum BaseSource {
+    /// Caller supplied the exact comparator commit (`--base`).
+    Recorded,
+    /// Comparator resolved at run time as merge-base(revision, HEAD); carries
+    /// the revision so the receipt shows the exact resolution request.
+    MergeBase(String),
+}
+
+#[derive(Clone, Debug)]
 struct Ledger {
     pin: Vec<LedgerPin>,
+    source_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LedgerFile {
+    pin: Vec<toml::Spanned<LedgerPin>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
@@ -44,6 +76,8 @@ struct LedgerPin {
     sha: String,
     kind: ProjectionKind,
     value: String,
+    #[serde(skip)]
+    source_line: usize,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -111,6 +145,7 @@ struct Receipt {
     schema_version: &'static str,
     receipt_kind: &'static str,
     base: Option<String>,
+    base_source: Option<String>,
     base_compared: bool,
     strict_all: bool,
     passed: bool,
@@ -126,16 +161,25 @@ fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
     let root = args.root.unwrap_or_else(default_root);
+    verify_subject_binding(&root, args.expect_merge_of.as_deref(), args.expect_origin.as_deref())?;
     let ledger_path = if args.ledger.is_absolute() { args.ledger } else { root.join(args.ledger) };
-    let ledger = load_ledger(&ledger_path)?;
+    let ledger = load_ledger(&ledger_path, &ledger_display_path(&root, &ledger_path))?;
     let pattern = uses_pattern()?;
     let current = scan_worktree(&root, &pattern)?;
-    let (base, compared) = match args.base.as_deref().filter(|v| !v.trim().is_empty()) {
-        Some(base) => (scan_git_ref(&root, base, &pattern)?, true),
+    let comparator = if let Some(spec) = non_empty(args.merge_base.as_deref()) {
+        // The scanned worktree is a merge result; compare it against the base
+        // tree actually incorporated into that result, resolved now.
+        Some((resolve_merge_base(&root, spec)?, BaseSource::MergeBase(spec.to_owned())))
+    } else {
+        non_empty(args.base.as_deref()).map(|recorded| (recorded.to_owned(), BaseSource::Recorded))
+    };
+    let (base, compared) = match &comparator {
+        Some((comparator_sha, _)) => (scan_git_ref(&root, comparator_sha, &pattern)?, true),
         None => (Vec::new(), false),
     };
     let mut receipt = validate(current, base, compared, args.strict_all, &ledger);
-    receipt.base = args.base;
+    receipt.base = comparator.as_ref().map(|(sha, _)| sha.clone());
+    receipt.base_source = comparator.as_ref().map(|(sha, source)| base_source_label(sha, source));
     for issue in &receipt.issues {
         eprintln!(
             "::{} file={},line={}::[{}] {}",
@@ -146,17 +190,158 @@ fn main() -> Result<()> {
         write_receipt(&path, &receipt)?;
     }
     if !receipt.passed {
-        bail!(
-            "action-pin provenance failed with {} error(s) and {} warning(s)",
-            receipt.error_count,
-            receipt.warning_count
-        );
+        bail!("{}", failure_summary(&receipt));
     }
     println!(
         "Action-pin provenance passed ({} external use(s), {} new/changed, {} warning(s))",
         receipt.occurrence_count, receipt.new_or_changed_count, receipt.warning_count
     );
+    if let Some((sha, source)) = &comparator {
+        println!("Comparator: {} ({})", sha, base_source_label(sha, source));
+    }
     Ok(())
+}
+
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|v| !v.is_empty())
+}
+
+/// Builds the single-line process failure summary. The per-issue annotations
+/// are printed above this line and can scroll out of a CI log, so the final
+/// error must itself name the failing codes and locations. A count-only
+/// summary read as an empty-message crash and repeatedly delayed diagnosis
+/// of the recurring main red (#14249).
+fn failure_summary(receipt: &Receipt) -> String {
+    const MAX_LISTED: usize = 10;
+    let errors: Vec<&Issue> = receipt.issues.iter().filter(|i| i.level == "error").collect();
+    let mut summary = format!(
+        "action-pin provenance failed with {} error(s) and {} warning(s)",
+        receipt.error_count, receipt.warning_count
+    );
+    if errors.is_empty() {
+        return summary;
+    }
+    let listed = errors.len().min(MAX_LISTED);
+    let parts: Vec<String> = errors[..listed]
+        .iter()
+        .map(|issue| format!("{} at {}:{}", issue.code, issue.path, issue.line))
+        .collect();
+    summary.push_str(": ");
+    summary.push_str(&parts.join("; "));
+    if errors.len() > listed {
+        summary.push_str(&format!("; and {} more", errors.len() - listed));
+    }
+    summary
+}
+
+fn base_source_label(comparator_sha: &str, source: &BaseSource) -> String {
+    match source {
+        BaseSource::Recorded => format!("recorded:{comparator_sha}"),
+        BaseSource::MergeBase(revision) => {
+            format!("merge_base(git merge-base {revision} HEAD):{comparator_sha}")
+        }
+    }
+}
+
+/// Verifies the optional subject bindings before any scan output is produced.
+/// Every check fails closed: a binding that cannot be evaluated is an error,
+/// never a silent skip, so a drifted or relocated checkout cannot be scanned
+/// under a claimed identity.
+fn verify_subject_binding(
+    root: &Path,
+    expect_merge_of: Option<&str>,
+    expect_origin: Option<&str>,
+) -> Result<()> {
+    if let Some(expected_head) = non_empty(expect_merge_of) {
+        let expected_head = expected_head.to_ascii_lowercase();
+        let head_parents = git_stdout(
+            root,
+            ["rev-list", "--parents", "-n", "1", "HEAD"],
+            "git rev-list --parents -n 1 HEAD",
+        )?;
+        let tokens: Vec<&str> = head_parents.split_whitespace().collect();
+        let [head, parent1, parent2] = tokens.as_slice() else {
+            bail!(
+                "expected HEAD to be GitHub's simulated merge ref for candidate {expected_head}, found {} parents",
+                tokens.len().saturating_sub(1)
+            );
+        };
+        if !parent2.eq_ignore_ascii_case(&expected_head) {
+            bail!(
+                "HEAD {head} is a merge of {parent1} and {parent2}, not of the expected candidate {expected_head}"
+            );
+        }
+    }
+    if let Some(expected_slug) = non_empty(expect_origin) {
+        let url = git_stdout(root, ["remote", "get-url", "origin"], "git remote get-url origin")?;
+        let actual = normalized_repo_slug(&url)
+            .ok_or_else(|| eyre!("origin remote {url} does not name an owner/repository"))?;
+        let expected = normalized_repo_slug(expected_slug).ok_or_else(|| {
+            eyre!("--expect-origin {expected_slug} does not name an owner/repository")
+        })?;
+        if actual != expected {
+            bail!("origin remote {url} does not match expected repository {expected_slug}");
+        }
+    }
+    Ok(())
+}
+
+fn git_stdout<const N: usize>(root: &Path, arguments: [&str; N], what: &str) -> Result<String> {
+    let output = Command::new("git").current_dir(root).args(arguments).output()?;
+    if !output.status.success() {
+        return Err(eyre!("{what} failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    String::from_utf8(output.stdout)
+        .with_context(|| format!("{what} returned non-UTF-8 output"))
+        .map(|value| value.trim().to_owned())
+}
+
+/// Reduces a remote URL to its owner/repository slug so https, ssh, scp, and
+/// bare `owner/repo` forms of the same repository compare equal. A leading
+/// segment is treated as a host only when it looks like one (contains a dot).
+fn normalized_repo_slug(url: &str) -> Option<String> {
+    let trimmed = url.trim().trim_end_matches('/');
+    let without_scheme = trimmed.split_once("://").map_or(trimmed, |(_, rest)| rest);
+    let without_user = without_scheme.rsplit_once('@').map_or(without_scheme, |(_, rest)| rest);
+    let path = match without_user.split_once(':') {
+        Some((host, rest)) if host.contains('.') => rest,
+        _ => match without_user.split_once('/') {
+            Some((host, rest)) if host.contains('.') => rest,
+            _ => without_user,
+        },
+    };
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    if path.is_empty() || !path.contains('/') { None } else { Some(path.to_ascii_lowercase()) }
+}
+
+/// Resolves the exact commit describing the shared history of `revision` and
+/// HEAD inside the repository rooted at `root`. Fails closed so an unprovable
+/// comparator can never silently degrade into no comparison or a stale one.
+fn resolve_merge_base(root: &Path, revision: &str) -> Result<String> {
+    let output =
+        Command::new("git").current_dir(root).args(["merge-base", revision, "HEAD"]).output()?;
+    if !output.status.success() {
+        return Err(eyre!(
+            "git merge-base {revision} HEAD failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let sha = String::from_utf8(output.stdout)?.trim().to_ascii_lowercase();
+    if sha.len() != 40 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(eyre!("git merge-base {revision} HEAD returned unexpected output: {sha}"));
+    }
+    for probe in
+        [["--is-ancestor", sha.as_str(), "HEAD"], ["--is-ancestor", sha.as_str(), revision]]
+    {
+        let output =
+            Command::new("git").current_dir(root).args(["merge-base"]).args(probe).output()?;
+        if !output.status.success() {
+            return Err(eyre!(
+                "resolved comparator {sha} is not a common ancestor of {revision} and HEAD"
+            ));
+        }
+    }
+    Ok(sha)
 }
 
 fn default_root() -> PathBuf {
@@ -173,10 +358,28 @@ fn release_pattern() -> Result<Regex> {
 fn branch_pattern() -> Result<Regex> {
     Regex::new(r"^[A-Za-z0-9._/-]+ \([A-Za-z0-9._/-]+\)$").context("compiling branch pattern")
 }
+fn immutable_sha_pattern() -> Result<Regex> {
+    Regex::new(r"^[0-9a-fA-F]{40}$").context("compiling immutable sha pattern")
+}
 
-fn load_ledger(path: &Path) -> Result<Ledger> {
+fn ledger_display_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/")
+}
+
+fn load_ledger(path: &Path, source_path: &str) -> Result<Ledger> {
     let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+    let parsed: LedgerFile =
+        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    let mut pin = Vec::with_capacity(parsed.pin.len());
+    for located in parsed.pin {
+        let start = located.span().start.min(text.len());
+        let source_line =
+            text.as_bytes()[..start].iter().filter(|byte| **byte == b'\n').count() + 1;
+        let mut located_pin = located.into_inner();
+        located_pin.source_line = source_line;
+        pin.push(located_pin);
+    }
+    Ok(Ledger { pin, source_path: source_path.to_owned() })
 }
 
 fn scan_worktree(root: &Path, pattern: &Regex) -> Result<Vec<Occurrence>> {
@@ -234,6 +437,9 @@ fn scan_git_ref(root: &Path, base: &str, pattern: &Regex) -> Result<Vec<Occurren
 fn scan_text(path: &str, text: &str, pattern: &Regex) -> Result<Vec<Occurrence>> {
     let release = release_pattern()?;
     let branch = branch_pattern()?;
+    // Compiled once and propagated: classification must never depend on a
+    // pattern that could silently drop the occurrence being classified.
+    let immutable_sha = immutable_sha_pattern()?;
     Ok(text
         .lines()
         .enumerate()
@@ -249,7 +455,7 @@ fn scan_text(path: &str, text: &str, pattern: &Regex) -> Result<Vec<Occurrence>>
                 if let Some(image) = scalar.strip_prefix("docker://") {
                     (image.to_owned(), scalar.to_owned(), ReferenceKind::Docker)
                 } else if let Some((action, reference)) = scalar.rsplit_once('@') {
-                    let kind = if Regex::new(r"^[0-9a-fA-F]{40}$").ok()?.is_match(reference) {
+                    let kind = if immutable_sha.is_match(reference) {
                         ReferenceKind::ImmutableSha
                     } else {
                         ReferenceKind::Mutable
@@ -321,6 +527,7 @@ fn validate(
         schema_version: RECEIPT_SCHEMA,
         receipt_kind: "action_pin_provenance",
         base: None,
+        base_source: None,
         base_compared: compared,
         strict_all: strict,
         passed: error_count == 0,
@@ -334,20 +541,33 @@ fn validate(
 }
 
 fn validate_ledger(ledger: &Ledger, issues: &mut Vec<Issue>) {
-    let mut values: BTreeMap<(&str, &str), BTreeSet<(&ProjectionKind, &str)>> = BTreeMap::new();
+    let mut values: BTreeMap<(&str, &str), Vec<&LedgerPin>> = BTreeMap::new();
     for pin in &ledger.pin {
-        values.entry((&pin.action, &pin.sha)).or_default().insert((&pin.kind, &pin.value));
+        values.entry((&pin.action, &pin.sha)).or_default().push(pin);
     }
-    for ((action, sha), projections) in values {
-        let authoritative: BTreeSet<_> =
-            projections.iter().filter(|(kind, _)| **kind != ProjectionKind::LegacyDebt).collect();
-        if authoritative.len() > 1 {
+    for ((action, sha), rows) in values {
+        let mut authoritative = BTreeSet::new();
+        let mut first_line = None;
+        for pin in rows {
+            if pin.kind == ProjectionKind::LegacyDebt
+                || !authoritative.insert((&pin.kind, pin.value.as_str()))
+            {
+                continue;
+            }
+            let line = pin.source_line;
+            let Some(previous_line) = first_line else {
+                first_line = Some(line);
+                continue;
+            };
             issues.push(Issue {
                 level: "error",
                 code: "CONTRADICTORY_LEDGER_MAPPING",
-                path: DEFAULT_LEDGER.into(),
-                line: 1,
-                message: format!("{action}@{sha} has contradictory reviewed mappings"),
+                path: ledger.source_path.clone(),
+                line,
+                message: format!(
+                    "{action}@{sha} has a reviewed mapping that contradicts {}:{previous_line}",
+                    ledger.source_path
+                ),
             });
         }
     }
@@ -430,10 +650,16 @@ mod tests {
         scan_text(".github/workflows/test.yml", source, &uses_pattern()?)
     }
     fn ledger(pins: Vec<LedgerPin>) -> Ledger {
-        Ledger { pin: pins }
+        Ledger { pin: pins, source_path: DEFAULT_LEDGER.into() }
     }
     fn row(action: &str, sha: &str, kind: ProjectionKind, value: &str) -> LedgerPin {
-        LedgerPin { action: action.into(), sha: sha.into(), kind, value: value.into() }
+        LedgerPin {
+            action: action.into(),
+            sha: sha.into(),
+            kind,
+            value: value.into(),
+            source_line: 1,
+        }
     }
     const SHA: &str = "1111111111111111111111111111111111111111";
     #[test]
@@ -491,12 +717,24 @@ mod tests {
     }
     #[test]
     fn contradictory_authoritative_mappings_fail() -> Result<()> {
-        let map = ledger(vec![
-            row("actions/checkout", SHA, ProjectionKind::ReleaseTag, "v7.0.0"),
-            row("actions/checkout", SHA, ProjectionKind::ReleaseTag, "v7.0.1"),
-        ]);
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("custom-pins.toml");
+        let source = format!(
+            "# selected ledger\n\n[[pin]]\naction = 'actions/checkout'\nsha = '{SHA}'\nkind = 'release_tag'\nvalue = 'v7.0.0'\n\n[[pin]]\naction = 'actions/checkout'\nsha = '{SHA}'\nkind = 'release_tag'\nvalue = 'v7.0.1'\n"
+        );
+        fs::write(&path, &source)?;
+        let map = load_ledger(&path, "custom/custom-pins.toml")?;
         let receipt = validate(vec![], vec![], false, false, &map);
-        assert!(receipt.issues.iter().any(|i| i.code == "CONTRADICTORY_LEDGER_MAPPING"));
+        let issue = receipt
+            .issues
+            .iter()
+            .find(|issue| issue.code == "CONTRADICTORY_LEDGER_MAPPING")
+            .ok_or_else(|| eyre!("missing contradictory-ledger issue"))?;
+        assert_eq!(issue.path, "custom/custom-pins.toml");
+        assert_eq!(issue.line, 9);
+        assert!(issue.message.contains("custom/custom-pins.toml:3"));
+        let summary = failure_summary(&receipt);
+        assert!(summary.contains("CONTRADICTORY_LEDGER_MAPPING at custom/custom-pins.toml:9"));
         Ok(())
     }
     #[test]
@@ -512,6 +750,57 @@ mod tests {
         );
         assert!(receipt.passed);
         assert_eq!(receipt.warning_count, 1);
+        Ok(())
+    }
+    #[test]
+    fn scans_bumped_codeql_pin_with_release_projection() -> Result<()> {
+        // The exact ci-security.yml line shape whose bumped pin went unproven
+        // on main (#14249): immutable SHA with a release-tag projection.
+        let source = concat!(
+            "        uses: github/codeql-action/upload-sarif@",
+            "cdf488f595d80d6e07e03d4674febd5ab45fa938",
+            "  # v4.37.9\n"
+        );
+        let got = scan(source)?;
+        assert_eq!(got.len(), 1);
+        let pin = &got[0];
+        assert_eq!(pin.action, "github/codeql-action/upload-sarif");
+        assert_eq!(pin.reference, "cdf488f595d80d6e07e03d4674febd5ab45fa938");
+        assert_eq!(pin.reference_kind, ReferenceKind::ImmutableSha);
+        assert_eq!(pin.projection_kind, Some(ProjectionKind::ReleaseTag));
+        assert_eq!(pin.comment.as_deref(), Some("v4.37.9"));
+        Ok(())
+    }
+    #[test]
+    fn failure_summary_names_unproven_locations() -> Result<()> {
+        // Regression for the recurring main red: the process summary counted
+        // failures ("failed with 2 error(s) and 87 warning(s)") without naming
+        // them, reading as an empty-message crash in CI logs. The summary must
+        // identify each error-level issue and its location.
+        let source = format!(
+            "- uses: github/codeql-action/upload-sarif@{SHA} # v4.37.9\n\
+             - uses: github/codeql-action/upload-sarif@{SHA} # v4.37.9\n"
+        );
+        let got = scan(&source)?;
+        let receipt = validate(got, vec![], true, false, &ledger(vec![]));
+        assert_eq!(receipt.error_count, 2);
+        let summary = failure_summary(&receipt);
+        assert!(summary.starts_with("action-pin provenance failed with 2 error(s)"));
+        assert!(summary.contains("ACTION_PROVENANCE_NOT_PROVEN at .github/workflows/test.yml:1"));
+        assert!(summary.contains("ACTION_PROVENANCE_NOT_PROVEN at .github/workflows/test.yml:2"));
+        Ok(())
+    }
+    #[test]
+    fn failure_summary_bounds_very_long_lists() -> Result<()> {
+        let source: String =
+            (0..16).map(|i| format!("- uses: action-{i}@{SHA} # v1.0.{i}\n")).collect();
+        let got = scan(&source)?;
+        let receipt = validate(got, vec![], true, false, &ledger(vec![]));
+        assert_eq!(receipt.error_count, 16);
+        let summary = failure_summary(&receipt);
+        assert!(summary.contains("and 6 more"));
+        assert!(summary.contains("test.yml:10"));
+        assert!(!summary.contains("test.yml:11"));
         Ok(())
     }
 }

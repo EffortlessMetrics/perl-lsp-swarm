@@ -315,6 +315,7 @@ jobs:
             -e RUST_BACKTRACE=1 \
             -e CARGO_TERM_COLOR=always \
             -e TMPDIR=/tmp/jobtmp \
+            -e GITHUB_JOB="$GITHUB_JOB" \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -v "$CARGO_HOME:/cargo-home" \
             -v "$SCCACHE_DIR:/sccache" \
@@ -326,17 +327,18 @@ jobs:
               rustc --version
               cargo --version
               sccache --version || true
-              cargo fetch --locked
-              cargo check --workspace --locked
-              # Formatting is part of the required proof: a drifted tree must
-              # block merge here, not pass and drift main (#9127).
+              # The canonical command emits a subject receipt and diff-hygiene
+              # check via git (#8407); mirror the proven ripr.yml safe.directory
+              # pattern for the host-checkout UID boundary before it runs.
+              git config --global --add safe.directory /workspace
+              # Pinned lane literal: scripts/ci/test_rustfmt_required_workflow.py
+              # requires workspace-wide fmt here per route (#9127/#12320).
               cargo fmt --all -- --check
-              cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
-              cargo test --locked -p perl-parser --test parser_accuracy_e2e -- --nocapture
-              cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
-              scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --list | awk "/: test\$/{count++} END {print count+0}")
-              test "$scorecard_tests" -gt 0
-              INSTA_UPDATE=no cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --test-threads=1
+              # Canonical Rust Small proof (#8407): one xtask command owns the
+              # semantic steps for every route so the aggregate required check
+              # means one proof. scripts/ci/test_rust_small_route_contract.py
+              # pins this exact invocation in each lane.
+              cargo run -p xtask --locked -- rust-small-proof
               sccache --show-stats || true
             '
 
@@ -476,6 +478,7 @@ jobs:
             -e RUST_BACKTRACE=1 \
             -e CARGO_TERM_COLOR=always \
             -e TMPDIR=/tmp/jobtmp \
+            -e GITHUB_JOB="$GITHUB_JOB" \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -v "$CARGO_HOME:/cargo-home" \
             -v "$SCCACHE_DIR:/sccache" \
@@ -487,17 +490,18 @@ jobs:
               rustc --version
               cargo --version
               sccache --version || true
-              cargo fetch --locked
-              cargo check --workspace --locked
-              # Formatting is part of the required proof: a drifted tree must
-              # block merge here, not pass and drift main (#9127).
+              # The canonical command emits a subject receipt and diff-hygiene
+              # check via git (#8407); mirror the proven ripr.yml safe.directory
+              # pattern for the host-checkout UID boundary before it runs.
+              git config --global --add safe.directory /workspace
+              # Pinned lane literal: scripts/ci/test_rustfmt_required_workflow.py
+              # requires workspace-wide fmt here per route (#9127/#12320).
               cargo fmt --all -- --check
-              cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
-              cargo test --locked -p perl-parser --test parser_accuracy_e2e -- --nocapture
-              cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
-              scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --list | awk "/: test\$/{count++} END {print count+0}")
-              test "$scorecard_tests" -gt 0
-              INSTA_UPDATE=no cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --test-threads=1
+              # Canonical Rust Small proof (#8407): one xtask command owns the
+              # semantic steps for every route so the aggregate required check
+              # means one proof. scripts/ci/test_rust_small_route_contract.py
+              # pins this exact invocation in each lane.
+              cargo run -p xtask --locked -- rust-small-proof
               sccache --show-stats || true
             '
 
@@ -546,18 +550,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo fetch --locked
-          cargo check --workspace --locked
-          # Formatting is part of the required proof: a drifted tree must
-          # block merge here, not pass and drift main (#9127).
+          # Pinned lane literal: scripts/ci/test_rustfmt_required_workflow.py
+          # requires workspace-wide fmt here per route (#9127/#12320).
           cargo fmt --all -- --check
-          cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
-          cargo test --locked -p perl-parser --test parser_accuracy_e2e -- --nocapture
-          cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
-          scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --list | grep -c -F ": test" || true)
-          test "$scorecard_tests" -gt 0
-          INSTA_UPDATE=no cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --test-threads=1
-          git diff --check
+          # Canonical Rust Small proof (#8407): one xtask command owns the
+          # semantic steps for every route so the aggregate required check
+          # means one proof. scripts/ci/test_rust_small_route_contract.py
+          # pins this exact invocation in each lane.
+          cargo run -p xtask --locked -- rust-small-proof
 
   # ── Disk-full failover ──────────────────────────────────────────────────────
   # Defense-in-depth: if the primary self-hosted runner's preflight disk-guard
@@ -621,18 +621,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo fetch --locked
-          cargo check --workspace --locked
-          # Formatting is part of the required proof: a drifted tree must
-          # block merge here, not pass and drift main (#9127).
+          # Pinned lane literal: scripts/ci/test_rustfmt_required_workflow.py
+          # requires workspace-wide fmt here per route (#9127/#12320).
           cargo fmt --all -- --check
-          cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
-          cargo test --locked -p perl-parser --test parser_accuracy_e2e -- --nocapture
-          cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
-          scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --list | grep -c -F ": test" || true)
-          test "$scorecard_tests" -gt 0
-          INSTA_UPDATE=no cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --test-threads=1
-          git diff --check
+          # Canonical Rust Small proof (#8407): one xtask command owns the
+          # semantic steps for every route so the aggregate required check
+          # means one proof. scripts/ci/test_rust_small_route_contract.py
+          # pins this exact invocation in each lane.
+          cargo run -p xtask --locked -- rust-small-proof
 
   rust-small-result:
     name: Perl LSP Rust Small Result
@@ -656,13 +652,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Structural + producer tests for #9127 residual: a silent revert of
-          # the #12320 cargo fmt --all insertions, reintroduced changed-file
-          # narrowing, or verbose-header misclassification must fail this
-          # required check. Draft-skip stays in the evaluate step (#10006).
+          # Structural + producer tests for #9127 residual and #9959
+          # meta-fmt retirement: a silent revert of the #12320 cargo fmt
+          # --all insertions, reintroduced changed-file narrowing, verbose-header
+          # misclassification, or a second unowned hosted formatter producer
+          # must fail this required check. Draft-skip stays in the evaluate
+          # step (#10006).
           python3 -m unittest \
             scripts/ci/test_rustfmt_check.py \
             scripts/ci/test_rustfmt_required_workflow.py \
+            scripts/ci/test_rust_small_route_contract.py \
+            scripts/ci/test_hosted_formatter_producers.py \
             scripts/ci/test_main_red_refusal.py
 
       - name: Probe main-red refusal

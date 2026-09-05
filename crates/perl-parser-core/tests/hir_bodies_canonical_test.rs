@@ -28,7 +28,7 @@
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
     AccessMode, AssignMode, BodyOwnerKind, DeclStorageClass, HIR_BODY_MODEL_VERSION, HirExpr,
-    HirStmt, Sigil, UnaryMode, VariableKind, lower_ast,
+    HirExprId, HirStmt, Sigil, UnaryMode, VariableKind, lower_ast,
 };
 
 fn parse(source: &str) -> perl_parser_core::hir::HirFile {
@@ -453,6 +453,77 @@ fn hir_canonical_unsupported_parent_known_child_emitted() -> Result<(), Box<dyn 
     Ok(())
 }
 
+/// Select the expression a sub body's second statement contributes.
+///
+/// `sub foo { my $x = 1; $x }` lowers the use-site to a bare `Expr`, but a
+/// parser that merges the declaration and the use emits a single `Let` whose
+/// `init` carries the same expression. Both shapes are answerable; anything
+/// else (including a `Let` with no init) has nothing to check.
+///
+/// Shared so the `Let` arm is not tolerance-only dead code in the regression
+/// guard below: `hir_canonical_merged_let_second_stmt_yields_its_init_expr`
+/// drives that arm with a fixture that actually produces it, and fails if the
+/// arm stops answering.
+fn second_stmt_expr_id(stmt: &HirStmt) -> Option<HirExprId> {
+    match stmt {
+        HirStmt::Expr(id) => Some(*id),
+        HirStmt::Let { init: Some(id), .. } => Some(*id),
+        _ => None,
+    }
+}
+
+// ── 11a. The merged-`Let` arm of `second_stmt_expr_id` ───────────────────────
+//
+// `sub foo { my $x = 1; my $y = $x; }` lowers BOTH statements to `Let`, so the
+// second one is exactly the merged shape the regression guard tolerates. That
+// guard cannot fail if the arm breaks — losing the arm makes it return early
+// and pass vacuously — so the arm is pinned here instead, where a `None` is an
+// error rather than an early success.
+
+#[test]
+fn hir_canonical_merged_let_second_stmt_yields_its_init_expr()
+-> Result<(), Box<dyn std::error::Error>> {
+    let file = parse("sub foo { my $x = 1; my $y = $x; }");
+
+    let sub_body = file
+        .bodies
+        .iter()
+        .find(|b| matches!(&b.owner, BodyOwnerKind::Subroutine { name } if name.as_deref() == Some("foo")))
+        .ok_or("must find body for sub foo")?;
+    let root = sub_body.block(sub_body.root_block).ok_or("sub root block")?;
+    assert!(root.stmts.len() >= 2, "fixture must lower to at least two statements");
+
+    let stmt2 = sub_body.stmt(root.stmts[1]).ok_or("second stmt")?;
+    assert!(
+        matches!(stmt2, HirStmt::Let { init: Some(_), .. }),
+        "fixture must produce a `Let` carrying an init; got {stmt2:?}",
+    );
+
+    let expr_id = second_stmt_expr_id(stmt2)
+        .ok_or("the merged-`Let` arm must answer with the init expression id")?;
+    // The init lowers to the whole `$y = $x` assignment, so the `$x` read is
+    // its rhs rather than the init node itself.
+    let init = sub_body.expr(expr_id).ok_or("init expr")?;
+    let HirExpr::Assign { rhs, .. } = init else {
+        return Err(format!("init must lower to an Assign; got {init:?}").into());
+    };
+    let read = sub_body.expr(*rhs).ok_or("assign rhs")?;
+    match read {
+        HirExpr::Variable(v) => {
+            assert_eq!(v.name, "x", "rhs of `my $y = $x` must reference $x");
+            assert!(
+                matches!(v.kind, VariableKind::Lexical),
+                "$x read in the init must resolve Lexical; got {:?}",
+                v.kind
+            );
+        }
+        other => {
+            return Err(format!("assign rhs must lower to Variable($x); got {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
 // ── 11. Sub-body lexical resolution (scope-chain regression guard) ────────────
 //
 // THE guard for MUST-FIX #1: before the fix, BodyBuilder2 always started at
@@ -480,17 +551,8 @@ fn hir_canonical_sub_body_lexical_resolution() -> Result<(), Box<dyn std::error:
     // Second statement: bare `$x` usage — must resolve to VariableKind::Lexical
     // (not Package, which would mean the scope-chain fix didn't work).
     let stmt2 = sub_body.stmt(root.stmts[1]).ok_or("second stmt")?;
-    let expr_id = match stmt2 {
-        HirStmt::Expr(id) => *id,
-        HirStmt::Let { init, .. } => {
-            // Tolerate if the parser merged both into one Let — check the init
-            if let Some(id) = init {
-                *id
-            } else {
-                return Ok(()); // no init to check
-            }
-        }
-        _ => return Ok(()),
+    let Some(expr_id) = second_stmt_expr_id(stmt2) else {
+        return Ok(()); // no expression to check in this shape
     };
 
     let expr = sub_body.expr(expr_id).ok_or("second expr")?;

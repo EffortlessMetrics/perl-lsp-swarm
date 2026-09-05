@@ -3,20 +3,6 @@
 #![deny(unsafe_code)]
 #![cfg_attr(test, allow(clippy::print_stderr, clippy::print_stdout))]
 
-/// Crate-wide test support. Shared, process-global synchronization for tests
-/// that mutate environment variables — `PATH` in particular is read by
-/// production code (`platform::*`, `config::perl_oracle_env`) and mutated by
-/// `set_var`/`remove_var` (which Rust 2024 made `unsafe` precisely because the
-/// process environment is a shared global). Every test that mutates `PATH` MUST
-/// hold [`test_support::PATH_ENV_LOCK`] for the duration of the mutation +
-/// restore, so all such tests serialize against the same guard rather than each
-/// relying on a function-local lock that only excludes itself.
-#[cfg(test)]
-pub(crate) mod test_support {
-    /// Process-global lock serializing every `PATH`-mutating test in this crate.
-    pub(crate) static PATH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-}
-
 /// Helpers for translating feature catalog entries into client capability checks.
 pub mod capability_map;
 /// Runtime configuration loading, validation, and compatibility adapters.
@@ -24,6 +10,9 @@ pub mod config;
 /// Checked scope/precedence/validation authority consumed by configuration generations.
 #[path = "configuration_authority/checked.rs"]
 pub(crate) mod configuration_authority;
+/// Crate-private, versioned configuration observation model (#10813); fixture
+/// producers only until #10386 consumes it.
+mod configuration_observation;
 /// Parser for Perl::Critic output emitted by external lint runs.
 pub mod critic_parser;
 /// Registry-driven, native-first external-tool doctor projection.

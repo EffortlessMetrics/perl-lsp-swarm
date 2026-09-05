@@ -32,28 +32,6 @@ impl<'a> Parser<'a> {
         matches!(kind, Some(TokenKind::Increment) | Some(TokenKind::Decrement))
     }
 
-    fn peek_compound_assign_op(&mut self) -> Option<&'static str> {
-        match self.peek_kind()? {
-            TokenKind::Assign => Some("="),
-            TokenKind::PlusAssign => Some("+="),
-            TokenKind::MinusAssign => Some("-="),
-            TokenKind::StarAssign => Some("*="),
-            TokenKind::SlashAssign => Some("/="),
-            TokenKind::PercentAssign => Some("%="),
-            TokenKind::DotAssign => Some(".="),
-            TokenKind::AndAssign => Some("&="),
-            TokenKind::OrAssign => Some("|="),
-            TokenKind::XorAssign => Some("^="),
-            TokenKind::PowerAssign => Some("**="),
-            TokenKind::LeftShiftAssign => Some("<<="),
-            TokenKind::RightShiftAssign => Some(">>="),
-            TokenKind::LogicalAndAssign => Some("&&="),
-            TokenKind::LogicalOrAssign => Some("||="),
-            TokenKind::DefinedOrAssign => Some("//="),
-            _ => None,
-        }
-    }
-
     #[inline]
     fn is_variable_sigil(kind: Option<TokenKind>) -> bool {
         matches!(
@@ -92,15 +70,12 @@ impl<'a> Parser<'a> {
         }
 
         // Identifier that starts with a sigil char (e.g. `$name`, `@items`)
-        if next == TokenKind::Identifier {
-            if let Ok(t) = self.tokens.peek_second() {
-                if let Some(ch) = t.text.chars().next() {
-                    if matches!(ch, '$' | '@' | '%' | '*' | '&') {
+        if next == TokenKind::Identifier
+            && let Ok(t) = self.tokens.peek_second()
+                && let Some(ch) = t.text.chars().next()
+                    && matches!(ch, '$' | '@' | '%' | '*' | '&') {
                         return true;
                     }
-                }
-            }
-        }
 
         false
     }
@@ -124,25 +99,18 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Check recursion depth with optimized hot path
+    /// Enter production recursion depth through the live operation context.
+    ///
+    /// Checks the next depth before entering, then records current and maximum
+    /// depth once. This is the only production recursion-depth authority.
     #[inline(always)]
-    fn check_recursion(&mut self) -> ParseResult<()> {
-        self.recursion_depth += 1;
-        // Fast path: avoid expensive comparisons in the common case
-        if self.recursion_depth > MAX_RECURSION_DEPTH {
-            // The recursion guard keeps its own error identity so the typed
-            // stop cause preserves which guard terminated the parse instead of
-            // relabeling expression recursion as structural nesting.
-            return Err(ParseError::RecursionDepthExhausted {
-                depth: self.recursion_depth,
-                max_depth: MAX_RECURSION_DEPTH,
-            });
-        }
-        Ok(())
+    fn enter_production_depth(&mut self) -> ParseResult<()> {
+        self.operation.enter_recursion()
     }
 
-    fn exit_recursion(&mut self) {
-        self.recursion_depth = self.recursion_depth.saturating_sub(1);
+    #[inline(always)]
+    fn exit_production_depth(&mut self) {
+        self.operation.exit_recursion();
     }
 
     fn check_block_recursion(&mut self) -> ParseResult<()> {
@@ -160,45 +128,47 @@ impl<'a> Parser<'a> {
         self.block_depth = self.block_depth.saturating_sub(1);
     }
 
+    /// Run `f` under the live production recursion-depth context.
+    ///
+    /// Closure-based so the tracker can be borrowed without a `Drop` guard
+    /// that aliases `&mut Parser`. Depth is unwound on success, parse error,
+    /// recovery, cancellation, exhaustion (never entered), and early return.
+    #[inline]
+    fn with_depth<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> ParseResult<T>,
+    ) -> ParseResult<T> {
+        self.enter_production_depth()?;
+        let result = f(self);
+        self.exit_production_depth();
+        result
+    }
+
     /// Run `f` under the recursion depth budget.
     ///
-    /// - `check_recursion()` increments depth (and may error)
-    /// - depth is decremented on scope exit (even on early return / panic)
+    /// Existing recursive seams call this name. New seams should call
+    /// [`Self::with_depth`] so unwind cannot be skipped.
     #[inline]
     fn with_recursion_guard<T>(
         &mut self,
         f: impl FnOnce(&mut Self) -> ParseResult<T>,
     ) -> ParseResult<T> {
-        self.check_recursion()?;
-
-        struct Guard<'p, 'src>(&'p mut Parser<'src>);
-        impl<'p, 'src> Drop for Guard<'p, 'src> {
-            fn drop(&mut self) {
-                self.0.exit_recursion();
-            }
-        }
-
-        let guard = Guard(self);
-        f(guard.0)
+        self.with_depth(f)
     }
 
     /// Run `f` under the structural block nesting budget.
+    ///
+    /// `block_depth` is syntactic nesting for `NestingTooDeep`. It is not the
+    /// live tracker resource-control authority.
     #[inline]
     fn with_block_recursion_guard<T>(
         &mut self,
         f: impl FnOnce(&mut Self) -> ParseResult<T>,
     ) -> ParseResult<T> {
         self.check_block_recursion()?;
-
-        struct Guard<'p, 'src>(&'p mut Parser<'src>);
-        impl<'p, 'src> Drop for Guard<'p, 'src> {
-            fn drop(&mut self) {
-                self.0.exit_block_recursion();
-            }
-        }
-
-        let guard = Guard(self);
-        f(guard.0)
+        let result = f(self);
+        self.exit_block_recursion();
+        result
     }
 
     /// Check if an identifier is a builtin function that can take arguments without parens.
@@ -555,13 +525,12 @@ impl<'a> Parser<'a> {
             return true;
         }
         // The lexer sometimes emits variables as Identifier("$x") tokens
-        if self.peek_kind() == Some(TokenKind::Identifier) {
-            if let Ok(tok) = self.peek_token() {
+        if self.peek_kind() == Some(TokenKind::Identifier)
+            && let Ok(tok) = self.peek_token() {
                 return tok.text.starts_with('$')
                     || tok.text.starts_with('@')
                     || tok.text.starts_with('%');
             }
-        }
         false
     }
 
@@ -642,7 +611,10 @@ impl<'a> Parser<'a> {
     }
 
     /// Auto-quote a bare identifier when it appears on the left side of `=>`.
-    fn autoquote_fat_arrow_key(node: &mut Node) {
+    /// Apply Perl's implicit string conversion to a bareword immediately left
+    /// of a fat comma. `=>` is a comma synonym, but unlike a plain comma it
+    /// also auto-quotes an otherwise bare identifier.
+    pub(crate) fn auto_quote_bareword_before_fat_comma(node: &mut Node) {
         if let NodeKind::Identifier { ref name } = node.kind {
             *node = Node::new(
                 NodeKind::String { value: name.clone(), interpolated: false },
@@ -672,7 +644,7 @@ impl<'a> Parser<'a> {
         if self.peek_kind() == Some(TokenKind::FatArrow) {
             saw_fat_arrow = true;
             if let Some(last) = expressions.last_mut() {
-                Self::autoquote_fat_arrow_key(last);
+                Self::auto_quote_bareword_before_fat_comma(last);
             }
             self.consume_token()?; // consume =>
             if self.peek_kind() == Some(TokenKind::FatArrow) {
@@ -702,11 +674,10 @@ impl<'a> Parser<'a> {
 
             if self.peek_kind() == Some(TokenKind::FatArrow) {
                 saw_fat_arrow = true;
-                if !was_comma {
-                    if let Some(last) = expressions.last_mut() {
-                        Self::autoquote_fat_arrow_key(last);
+                if !was_comma
+                    && let Some(last) = expressions.last_mut() {
+                        Self::auto_quote_bareword_before_fat_comma(last);
                     }
-                }
                 self.consume_token()?; // consume =>
             }
 
@@ -727,7 +698,7 @@ impl<'a> Parser<'a> {
 
             if self.peek_kind() == Some(TokenKind::FatArrow) {
                 saw_fat_arrow = true;
-                Self::autoquote_fat_arrow_key(&mut elem);
+                Self::auto_quote_bareword_before_fat_comma(&mut elem);
                 self.consume_token()?; // consume =>
                 expressions.push(elem);
 
@@ -1336,12 +1307,11 @@ impl<'a> Parser<'a> {
                     return false;
                 }
                 // Block-list functions (map/grep/sort/etc.) as argument: `uniq map { ... } @list`
-                if Self::is_block_list_func(&next_text) {
-                    if let Ok(third) = self.tokens.peek_second() {
+                if Self::is_block_list_func(&next_text)
+                    && let Ok(third) = self.tokens.peek_second() {
                         return third.kind() == TokenKind::LeftBrace
                             || third.kind() == TokenKind::LeftParen;
                     }
-                }
                 // Builtin functions as arguments:
                 //
                 // Pattern A (sigil arg): `func values %hash`, `func keys %h`
@@ -1357,8 +1327,8 @@ impl<'a> Parser<'a> {
                 // Without the `LeftParen` check, the early-return here prevented
                 // the fallthrough to the general `(` check at the bottom of this
                 // branch, causing `croak ref($x) . "y"` to drop the argument.
-                if Self::is_builtin_function(&next_text) {
-                    if let Ok(third) = self.tokens.peek_second() {
+                if Self::is_builtin_function(&next_text)
+                    && let Ok(third) = self.tokens.peek_second() {
                         let third_text: &str = &third.text;
                         if third.kind() == TokenKind::LeftParen {
                             // builtin(args) — the builtin is called with parens,
@@ -1367,14 +1337,12 @@ impl<'a> Parser<'a> {
                         }
                         return Self::is_sigil_argument_start(third.kind(), third_text);
                     }
-                }
-                if next_text.starts_with(|c: char| c.is_ascii_lowercase() || c == '_') {
-                    if self.tokens.peek_second().ok().is_some_and(|third| {
+                if next_text.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+                    && self.tokens.peek_second().ok().is_some_and(|third| {
                         Self::is_sigil_argument_start(third.kind(), third.text.as_ref())
                     }) {
                         return true;
                     }
-                }
                 // Check if the next-next token is `(` — that signals a function call
                 // or `=>` (fat arrow after bareword) — that signals an auto-quoted arg
                 self.tokens.peek_second().ok().is_some_and(|t| {

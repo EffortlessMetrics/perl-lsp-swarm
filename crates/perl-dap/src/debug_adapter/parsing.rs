@@ -9,6 +9,7 @@ use super::{
     Source, StackFrame, Variable, VariableParser, VariableRenderer, ansi_escape_re,
     is_internal_frame_name_and_path, prompt_re,
 };
+use crate::parse_origin::{DebuggerOutputOrigin, OriginatedParseInput, ParseIdentity};
 use crate::value::PerlValue;
 
 impl DebugAdapter {
@@ -86,12 +87,12 @@ impl DebugAdapter {
 
     /// Convert parsed stack frames from `perl-dap-stack` into local DAP response frames.
     pub(super) fn parse_stack_frames_from_text(
-        output: &str,
+        input: OriginatedParseInput<'_>,
     ) -> (Vec<StackFrame>, HashMap<i32, Vec<String>>) {
         let mut parser = PerlStackParser::new();
         let mut arguments = HashMap::new();
         let frames = parser
-            .parse_stack_trace(output)
+            .parse_stack_trace_originated(input)
             .into_iter()
             .map(|frame| {
                 let source = frame.source.unwrap_or_default();
@@ -140,6 +141,8 @@ impl DebugAdapter {
         variables_ref: i32,
         start: usize,
         count: usize,
+        origin: DebuggerOutputOrigin,
+        identity: ParseIdentity,
     ) -> (Vec<CachedVariable>, HashMap<i32, Vec<CachedVariable>>) {
         use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
         // Decode the scope kind from the variablesReference using the codec.
@@ -154,7 +157,7 @@ impl DebugAdapter {
             },
             _ => return (Vec::new(), HashMap::new()),
         };
-        let parsed = scope_variables::parse_assignments(lines, scope_type);
+        let parsed = scope_variables::parse_assignments(lines, scope_type, origin, identity);
         let page = scope_variables::sort_and_paginate(parsed, start, count);
 
         let mut top_level = Vec::with_capacity(page.len());
@@ -178,7 +181,14 @@ impl DebugAdapter {
         count: usize,
     ) -> (Vec<CachedVariable>, HashMap<i32, Vec<CachedVariable>>) {
         let lines = self.snapshot_recent_output_lines();
-        Self::parse_scope_variables_from_lines(&lines, variables_ref, start, count)
+        Self::parse_scope_variables_from_lines(
+            &lines,
+            variables_ref,
+            start,
+            count,
+            DebuggerOutputOrigin::BestEffortDebuggeeOutput,
+            ParseIdentity::new(),
+        )
     }
 
     /// Parse evaluate output from debugger lines into a DAP result payload.
@@ -197,6 +207,8 @@ impl DebugAdapter {
         lines: &[String],
         expression: &str,
         allow_correlated_literal: bool,
+        origin: DebuggerOutputOrigin,
+        identity: ParseIdentity,
     ) -> Option<(String, String, Option<PerlValue>)> {
         if lines.is_empty() {
             return None;
@@ -212,7 +224,8 @@ impl DebugAdapter {
                 continue;
             }
 
-            if let Ok((name, value)) = parser.parse_assignment(text) {
+            let input = OriginatedParseInput::new(origin, identity, text);
+            if let Ok((name, value)) = parser.parse_assignment_originated(input) {
                 let rendered = renderer.render(&name, &value);
                 let type_name = rendered.type_name.unwrap_or_else(|| "string".to_string());
                 if name == expression {
@@ -338,8 +351,12 @@ impl DebugAdapter {
 #[cfg(test)]
 mod tests {
     use super::super::*;
+    use crate::parse_origin::{DebuggerOutputOrigin, OriginatedParseInput, ParseIdentity};
     use std::thread;
     use std::time::{Duration, Instant};
+
+    const FIXTURE: DebuggerOutputOrigin = DebuggerOutputOrigin::FixtureOrInstrumentInput;
+    const FIXTURE_IDENTITY: ParseIdentity = ParseIdentity::new();
 
     #[test]
     pub(super) fn test_parse_scope_variables_from_recent_output()
@@ -363,8 +380,14 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let lines = vec!["$zeta = 1".to_string(), "$alpha = 2".to_string(), "$mid = 3".to_string()];
 
-        let (vars, _child_cache) =
-            DebugAdapter::parse_scope_variables_from_lines(&lines, 11, 0, 20);
+        let (vars, _child_cache) = DebugAdapter::parse_scope_variables_from_lines(
+            &lines,
+            11,
+            0,
+            20,
+            FIXTURE,
+            FIXTURE_IDENTITY,
+        );
         let names = vars.iter().map(|v| v.row.name.as_str()).collect::<Vec<_>>();
         assert_eq!(names, vec!["$alpha", "$mid", "$zeta"]);
         Ok(())
@@ -379,10 +402,22 @@ mod tests {
             "@gamma = (5, 6)".to_string(),
         ];
 
-        let (page_one, page_one_children) =
-            DebugAdapter::parse_scope_variables_from_lines(&lines, 11, 0, 1);
-        let (page_two, page_two_children) =
-            DebugAdapter::parse_scope_variables_from_lines(&lines, 11, 1, 1);
+        let (page_one, page_one_children) = DebugAdapter::parse_scope_variables_from_lines(
+            &lines,
+            11,
+            0,
+            1,
+            FIXTURE,
+            FIXTURE_IDENTITY,
+        );
+        let (page_two, page_two_children) = DebugAdapter::parse_scope_variables_from_lines(
+            &lines,
+            11,
+            1,
+            1,
+            FIXTURE,
+            FIXTURE_IDENTITY,
+        );
 
         let first_ref = page_one
             .first()
@@ -572,9 +607,14 @@ mod tests {
     pub(super) fn framed_evaluate_accepts_correlated_literal_output()
     -> Result<(), Box<dyn std::error::Error>> {
         let lines = vec!["42".to_string()];
-        let (value, ty, typed) =
-            DebugAdapter::parse_evaluate_result_from_lines(&lines, "$result", true)
-                .ok_or("framed literal should be accepted")?;
+        let (value, ty, typed) = DebugAdapter::parse_evaluate_result_from_lines(
+            &lines,
+            "$result",
+            true,
+            FIXTURE,
+            FIXTURE_IDENTITY,
+        )
+        .ok_or("framed literal should be accepted")?;
         assert_eq!(value, "42");
         assert_eq!(ty, "integer");
         // A correlated literal carries no typed authority: hex formatting must
@@ -586,7 +626,16 @@ mod tests {
     #[test]
     pub(super) fn framed_evaluate_requires_exact_assignment_name() {
         let lines = vec!["$result_extra = 123".to_string()];
-        assert!(DebugAdapter::parse_evaluate_result_from_lines(&lines, "$result", false).is_none());
+        assert!(
+            DebugAdapter::parse_evaluate_result_from_lines(
+                &lines,
+                "$result",
+                false,
+                FIXTURE,
+                FIXTURE_IDENTITY
+            )
+            .is_none()
+        );
     }
 
     /// `setVariable` / `setExpression` send `p {name} = {value}` then `p {name}` and read
@@ -598,8 +647,14 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let lines = vec!["$x = 5".to_string()];
 
-        let (value, _, typed) = DebugAdapter::parse_evaluate_result_from_lines(&lines, "$x", true)
-            .ok_or("read-back for the named subject should be accepted")?;
+        let (value, _, typed) = DebugAdapter::parse_evaluate_result_from_lines(
+            &lines,
+            "$x",
+            true,
+            FIXTURE,
+            FIXTURE_IDENTITY,
+        )
+        .ok_or("read-back for the named subject should be accepted")?;
         assert_eq!(value, "5");
         // The assignment branch retains typed authority for formatting (#9588).
         assert!(
@@ -609,7 +664,14 @@ mod tests {
 
         // The regression this guards: an empty subject yields nothing for the same output.
         assert!(
-            DebugAdapter::parse_evaluate_result_from_lines(&lines, "", true).is_none(),
+            DebugAdapter::parse_evaluate_result_from_lines(
+                &lines,
+                "",
+                true,
+                FIXTURE,
+                FIXTURE_IDENTITY
+            )
+            .is_none(),
             "an empty subject must not be how set-variable read-back is correlated"
         );
         Ok(())
@@ -618,13 +680,31 @@ mod tests {
     #[test]
     pub(super) fn framed_evaluate_rejects_expression_only_in_assignment_value() {
         let lines = vec![r#"$message = \"$result\""#.to_string()];
-        assert!(DebugAdapter::parse_evaluate_result_from_lines(&lines, "$result", false).is_none());
+        assert!(
+            DebugAdapter::parse_evaluate_result_from_lines(
+                &lines,
+                "$result",
+                false,
+                FIXTURE,
+                FIXTURE_IDENTITY
+            )
+            .is_none()
+        );
     }
 
     #[test]
     pub(super) fn unframed_evaluate_rejects_correlated_literal_without_request_frame() {
         let lines = vec!["42".to_string()];
-        assert!(DebugAdapter::parse_evaluate_result_from_lines(&lines, "$result", false).is_none());
+        assert!(
+            DebugAdapter::parse_evaluate_result_from_lines(
+                &lines,
+                "$result",
+                false,
+                FIXTURE,
+                FIXTURE_IDENTITY
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -796,7 +876,8 @@ mod tests {
     #[test]
     pub(super) fn test_parse_verbose_stack_frame_returns_argument_map() {
         let output = "$ = main::run($value, [1, 2], \"a,b\") called from file `script.pl' line 7";
-        let (frames, arguments) = DebugAdapter::parse_stack_frames_from_text(output);
+        let input = OriginatedParseInput::new(FIXTURE, ParseIdentity::new(), output);
+        let (frames, arguments) = DebugAdapter::parse_stack_frames_from_text(input);
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].id, 1);
         assert_eq!(frames[0].name, "main::run");
@@ -963,7 +1044,7 @@ mod tests {
         adapter.push_recent_output_line_for_test("main::(/test/file1.pl:4):");
         adapter.push_recent_output_line_for_test("main::(/test/file2.pl:5):");
 
-        let response = adapter.handle_stack_trace(1, 1, None);
+        let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
         match response {
             DapMessage::Response { body: Some(body), .. } => {
                 if let Ok(trace_response) =

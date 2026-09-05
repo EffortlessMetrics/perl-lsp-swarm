@@ -177,7 +177,7 @@ fn context_dependent_stack_format_is_not_classified() {
     let error = StackParseError::UnrecognizedFormat("$ = debuggee prose".to_string());
     assert!(
         error.as_fixed_origin().is_none(),
-        "unrecognized stack text waits on debugger-output origin (#8746)"
+        "unrecognized stack text is not a fixed-origin variant; wrap with OriginatedParseInput"
     );
 }
 
@@ -191,7 +191,7 @@ fn context_dependent_variable_parse_variants_are_not_classified() {
     for error in variants {
         assert!(
             error.as_fixed_origin().is_none(),
-            "context-dependent {error:?} waits on debugger-output origin (#8746)"
+            "context-dependent {error:?} is not a fixed-origin variant; wrap with OriginatedParseInput"
         );
     }
 }

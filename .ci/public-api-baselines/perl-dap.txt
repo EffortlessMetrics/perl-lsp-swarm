@@ -10,6 +10,17 @@ pub perl_dap::api::BreakpointError::ParseError(alloc::string::String)
 pub fn perl_dap::breakpoint::BreakpointError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::breakpoint::BreakpointError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::breakpoint::BreakpointError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
+pub enum perl_dap::api::FixedOriginStackParseError<'a>
+pub perl_dap::api::FixedOriginStackParseError::RegexError(&'a regex::error::Error)
+pub fn perl_dap::api::FixedOriginStackParseError<'_>::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
+pub fn perl_dap::api::FixedOriginStackParseError<'a>::clone(&self) -> perl_dap::api::FixedOriginStackParseError<'a>
+pub fn perl_dap::api::FixedOriginStackParseError<'a>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::api::FixedOriginVariableParseError<'a>
+pub perl_dap::api::FixedOriginVariableParseError::MaxDepthExceeded(usize)
+pub perl_dap::api::FixedOriginVariableParseError::RegexError(&'a regex::error::Error)
+pub fn perl_dap::api::FixedOriginVariableParseError<'_>::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
+pub fn perl_dap::api::FixedOriginVariableParseError<'a>::clone(&self) -> perl_dap::api::FixedOriginVariableParseError<'a>
+pub fn perl_dap::api::FixedOriginVariableParseError<'a>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_dap::api::FrameCategory
 pub perl_dap::api::FrameCategory::Core
 pub perl_dap::api::FrameCategory::Eval
@@ -91,11 +102,11 @@ pub fn perl_dap::security::SecurityError::error_class(&self) -> perl_parser_core
 pub enum perl_dap::api::StackParseError
 pub perl_dap::api::StackParseError::RegexError(regex::error::Error)
 pub perl_dap::api::StackParseError::UnrecognizedFormat(alloc::string::String)
+pub fn perl_dap::api::StackParseError::as_fixed_origin(&self) -> core::option::Option<perl_dap::api::FixedOriginStackParseError<'_>>
 pub fn perl_dap::api::StackParseError::from(source: regex::error::Error) -> Self
 pub fn perl_dap::api::StackParseError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn perl_dap::api::StackParseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::api::StackParseError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_dap::api::StackParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub enum perl_dap::api::ValidationError
 pub perl_dap::api::ValidationError::AssignmentOperator(alloc::string::String)
 pub perl_dap::api::ValidationError::Backticks
@@ -125,11 +136,11 @@ pub perl_dap::api::VariableParseError::RegexError(regex::error::Error)
 pub perl_dap::api::VariableParseError::UnrecognizedFormat(alloc::string::String)
 pub perl_dap::api::VariableParseError::UnterminatedCollection
 pub perl_dap::api::VariableParseError::UnterminatedString
+pub fn perl_dap::api::VariableParseError::as_fixed_origin(&self) -> core::option::Option<perl_dap::api::FixedOriginVariableParseError<'_>>
 pub fn perl_dap::api::VariableParseError::from(source: regex::error::Error) -> Self
 pub fn perl_dap::api::VariableParseError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn perl_dap::api::VariableParseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::api::VariableParseError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_dap::api::VariableParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub struct perl_dap::api::AstBreakpointValidator
 pub fn perl_dap::api::AstBreakpointValidator::new(source: &str) -> core::result::Result<Self, perl_dap::breakpoint::BreakpointError>
 pub fn perl_dap::api::AstBreakpointValidator::is_executable_line(&self, line: i64) -> bool
@@ -183,17 +194,22 @@ pub fn perl_dap::api::PerlStackParser::looks_like_frame(line: &str) -> bool
 pub fn perl_dap::api::PerlStackParser::new() -> Self
 pub fn perl_dap::api::PerlStackParser::parse_context(&self, line: &str) -> core::option::Option<(alloc::string::String, alloc::string::String, i64)>
 pub fn perl_dap::api::PerlStackParser::parse_frame(&mut self, line: &str, id: i64) -> core::option::Option<perl_dap::stack::StackFrame>
+pub fn perl_dap::api::PerlStackParser::parse_frame_originated(&mut self, input: perl_dap::parse_origin::OriginatedParseInput<'_>, id: i64) -> core::result::Result<perl_dap::stack::StackFrame, perl_dap::parse_origin::OriginatedParseError<perl_dap::api::StackParseError>>
 pub fn perl_dap::api::PerlStackParser::parse_stack_trace(&mut self, output: &str) -> alloc::vec::Vec<perl_dap::stack::StackFrame>
+pub fn perl_dap::api::PerlStackParser::parse_stack_trace_originated(&mut self, input: perl_dap::parse_origin::OriginatedParseInput<'_>) -> alloc::vec::Vec<perl_dap::stack::StackFrame>
 pub fn perl_dap::api::PerlStackParser::with_auto_ids(self, auto: bool) -> Self
 pub fn perl_dap::api::PerlStackParser::with_starting_id(self, id: i64) -> Self
 pub fn perl_dap::api::PerlStackParser::with_unknown_frames(self, include: bool) -> Self
 pub fn perl_dap::api::PerlStackParser::default() -> perl_dap::api::PerlStackParser
 pub fn perl_dap::api::PerlStackParser::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::api::PerlVariableRenderer
+pub fn perl_dap::api::PerlVariableRenderer::child_entries(&self, value: &perl_dap::value::PerlValue, start: usize, count: usize) -> alloc::vec::Vec<(alloc::string::String, perl_dap::value::PerlValue)>
 pub fn perl_dap::api::PerlVariableRenderer::new() -> Self
+pub fn perl_dap::api::PerlVariableRenderer::render_display(&self, value: &perl_dap::value::PerlValue) -> alloc::string::String
 pub fn perl_dap::api::PerlVariableRenderer::with_max_array_preview(self, count: usize) -> Self
 pub fn perl_dap::api::PerlVariableRenderer::with_max_hash_preview(self, count: usize) -> Self
 pub fn perl_dap::api::PerlVariableRenderer::with_max_string_length(self, length: usize) -> Self
+pub fn perl_dap::api::PerlVariableRenderer::with_policy(self, policy: perl_dap::value_format::ValueFormatPolicy) -> Self
 pub fn perl_dap::api::PerlVariableRenderer::default() -> perl_dap::api::PerlVariableRenderer
 pub fn perl_dap::api::PerlVariableRenderer::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::api::PerlVariableRenderer::render(&self, name: &str, value: &perl_dap::value::PerlValue) -> perl_dap::api::RenderedVariable
@@ -269,8 +285,11 @@ pub fn perl_dap::types::Variable::deserialize<__D>(__deserializer: __D) -> core:
 pub struct perl_dap::api::VariableParser
 pub fn perl_dap::api::VariableParser::new() -> Self
 pub fn perl_dap::api::VariableParser::parse_assignment(&self, line: &str) -> core::result::Result<(alloc::string::String, perl_dap::value::PerlValue), perl_dap::api::VariableParseError>
+pub fn perl_dap::api::VariableParser::parse_assignment_originated(&self, input: perl_dap::parse_origin::OriginatedParseInput<'_>) -> core::result::Result<(alloc::string::String, perl_dap::value::PerlValue), perl_dap::parse_origin::OriginatedParseError<perl_dap::api::VariableParseError>>
 pub fn perl_dap::api::VariableParser::parse_value(&self, text: &str, depth: usize) -> core::result::Result<perl_dap::value::PerlValue, perl_dap::api::VariableParseError>
+pub fn perl_dap::api::VariableParser::parse_value_originated(&self, input: perl_dap::parse_origin::OriginatedParseInput<'_>, depth: usize) -> core::result::Result<perl_dap::value::PerlValue, perl_dap::parse_origin::OriginatedParseError<perl_dap::api::VariableParseError>>
 pub fn perl_dap::api::VariableParser::parse_variables(&self, output: &str) -> alloc::vec::Vec<(alloc::string::String, perl_dap::value::PerlValue)>
+pub fn perl_dap::api::VariableParser::parse_variables_originated(&self, input: perl_dap::parse_origin::OriginatedParseInput<'_>) -> alloc::vec::Vec<(alloc::string::String, perl_dap::value::PerlValue)>
 pub fn perl_dap::api::VariableParser::with_max_depth(self, depth: usize) -> Self
 pub fn perl_dap::api::VariableParser::default() -> perl_dap::api::VariableParser
 pub fn perl_dap::api::VariableParser::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -372,6 +391,7 @@ pub fn perl_dap::backend::capabilities::DebugBackendCapabilities::deserialize<__
 pub struct perl_dap::backend::capabilities::NegotiatedDapCapabilities
 pub perl_dap::backend::capabilities::NegotiatedDapCapabilities::supports_conditional_breakpoints: bool
 pub perl_dap::backend::capabilities::NegotiatedDapCapabilities::supports_data_breakpoints: bool
+pub perl_dap::backend::capabilities::NegotiatedDapCapabilities::supports_evaluate: bool
 pub perl_dap::backend::capabilities::NegotiatedDapCapabilities::supports_evaluate_for_hovers: bool
 pub perl_dap::backend::capabilities::NegotiatedDapCapabilities::supports_function_breakpoints: bool
 pub perl_dap::backend::capabilities::NegotiatedDapCapabilities::supports_hit_conditional_breakpoints: bool
@@ -382,6 +402,12 @@ pub fn perl_dap::backend::capabilities::NegotiatedDapCapabilities::eq(&self, oth
 pub fn perl_dap::backend::capabilities::NegotiatedDapCapabilities::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::backend::capabilities::NegotiatedDapCapabilities::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::backend::capabilities::NegotiatedDapCapabilities::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub const perl_dap::backend::capabilities::INLINE_VALUES_EXTENSION_NEGOTIATION_PROVEN: bool
+pub const perl_dap::backend::capabilities::INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE: &str
+pub const perl_dap::backend::capabilities::SET_EXPRESSION_PROMOTION_PROVEN: bool
+pub const perl_dap::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE: &str
+pub const fn perl_dap::backend::capabilities::advertises_inline_values_extension() -> bool
+pub const fn perl_dap::backend::capabilities::advertises_set_expression() -> bool
 pub fn perl_dap::backend::capabilities::intersect_dap_capabilities(catalog: &perl_dap::backend::capabilities::CatalogDapFlags, backend: &perl_dap::backend::capabilities::DebugBackendCapabilities) -> perl_dap::backend::capabilities::NegotiatedDapCapabilities
 pub mod perl_dap::backend::external_peer
 pub enum perl_dap::backend::external_peer::ExternalPeerMode
@@ -461,7 +487,6 @@ pub struct perl_dap::backend::peer_bridge::DapPeerBridge
 pub fn perl_dap::backend::peer_bridge::DapPeerBridge::dispatch(&mut self, request_seq: i64, command: &str, arguments: core::option::Option<serde_json::value::Value>) -> alloc::vec::Vec<perl_dap::debug_adapter::DapMessage>
 pub fn perl_dap::backend::peer_bridge::DapPeerBridge::new(backend: alloc::boxed::Box<dyn perl_dap::backend::DebugBackend>) -> Self
 pub fn perl_dap::backend::peer_bridge::DapPeerBridge::poll_events(&mut self) -> alloc::vec::Vec<perl_dap::debug_adapter::DapMessage>
-pub fn perl_dap::backend::peer_bridge::run_external_peer_session(stream: std::net::tcp::TcpStream, bridge: perl_dap::backend::peer_bridge::DapPeerBridge, poll_interval: core::time::Duration) -> core::io::error::Result<()>
 pub fn perl_dap::backend::peer_bridge::run_external_peer_session_stdio(bridge: perl_dap::backend::peer_bridge::DapPeerBridge, poll_interval: core::time::Duration) -> core::io::error::Result<()>
 pub mod perl_dap::backend::peer_launch
 pub enum perl_dap::backend::peer_launch::ExternalDebuggerKind
@@ -516,12 +541,15 @@ pub const perl_dap::backend::peer_launch::ENV_PEER_MODE: &str
 pub const perl_dap::backend::peer_launch::ENV_PEER_TOKEN: &str
 pub fn perl_dap::backend::peer_launch::control_mode_env_str(mode: perl_dap::backend::capabilities::ControlMode) -> &'static str
 pub fn perl_dap::backend::peer_launch::prepare_mirror_listen_session(config: &perl_dap::backend::peer_launch::ExternalPeerLaunchConfig) -> core::io::error::Result<(std::net::tcp::TcpListener, perl_dap::backend::peer_launch::PeerListenEndpoint, perl_dap::backend::peer_launch::MirrorPeerBridge)>
-pub fn perl_dap::backend::peer_launch::run_mirror_listen_session_socket(editor: std::net::tcp::TcpStream, peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<perl_dap::backend::external_peer::PeerSessionToken>) -> core::io::error::Result<()>
 pub fn perl_dap::backend::peer_launch::run_mirror_listen_session_stdio(peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<perl_dap::backend::external_peer::PeerSessionToken>) -> core::io::error::Result<()>
 pub fn perl_dap::backend::peer_launch::static_mirror_capabilities() -> serde_json::value::Value
 pub enum perl_dap::backend::BackendError
 pub perl_dap::backend::BackendError::Engine(alloc::string::String)
 pub perl_dap::backend::BackendError::NotConnected
+pub perl_dap::backend::BackendError::PeerReported
+pub perl_dap::backend::BackendError::PeerReported::cause: core::option::Option<perl_dap::peer_protocol::message::PeerFailureCause>
+pub perl_dap::backend::BackendError::PeerReported::command: alloc::string::String
+pub perl_dap::backend::BackendError::PeerReported::message: alloc::string::String
 pub perl_dap::backend::BackendError::Protocol(alloc::string::String)
 pub perl_dap::backend::BackendError::ResourceLimit(alloc::string::String)
 pub perl_dap::backend::BackendError::Timeout(alloc::string::String)
@@ -746,9 +774,7 @@ pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::step_out(&mut self
 pub fn perl_dap::backend::native_perldb::NativePerlDbBackend::variables(&mut self, _variables_ref: perl_dap::model::VariablesRef) -> perl_dap::backend::BackendResult<alloc::vec::Vec<perl_dap::model::DebugVariable>>
 pub fn perl_dap::backend::intersect_dap_capabilities(catalog: &perl_dap::backend::capabilities::CatalogDapFlags, backend: &perl_dap::backend::capabilities::DebugBackendCapabilities) -> perl_dap::backend::capabilities::NegotiatedDapCapabilities
 pub fn perl_dap::backend::prepare_mirror_listen_session(config: &perl_dap::backend::peer_launch::ExternalPeerLaunchConfig) -> core::io::error::Result<(std::net::tcp::TcpListener, perl_dap::backend::peer_launch::PeerListenEndpoint, perl_dap::backend::peer_launch::MirrorPeerBridge)>
-pub fn perl_dap::backend::run_external_peer_session(stream: std::net::tcp::TcpStream, bridge: perl_dap::backend::peer_bridge::DapPeerBridge, poll_interval: core::time::Duration) -> core::io::error::Result<()>
 pub fn perl_dap::backend::run_external_peer_session_stdio(bridge: perl_dap::backend::peer_bridge::DapPeerBridge, poll_interval: core::time::Duration) -> core::io::error::Result<()>
-pub fn perl_dap::backend::run_mirror_listen_session_socket(editor: std::net::tcp::TcpStream, peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<perl_dap::backend::external_peer::PeerSessionToken>) -> core::io::error::Result<()>
 pub fn perl_dap::backend::run_mirror_listen_session_stdio(peer_listener: std::net::tcp::TcpListener, bridge: perl_dap::backend::peer_launch::MirrorPeerBridge, handshake_timeout: core::time::Duration, poll_interval: core::time::Duration, expected_token: core::option::Option<perl_dap::backend::external_peer::PeerSessionToken>) -> core::io::error::Result<()>
 pub fn perl_dap::backend::static_mirror_capabilities() -> serde_json::value::Value
 pub type perl_dap::backend::BackendResult<T> = core::result::Result<T, perl_dap::backend::BackendError>
@@ -1207,6 +1233,131 @@ pub fn perl_dap::model::VariablesRef::fmt(&self, f: &mut core::fmt::Formatter<'_
 pub fn perl_dap::model::VariablesRef::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub fn perl_dap::model::VariablesRef::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::model::VariablesRef::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub mod perl_dap::mutation
+pub enum perl_dap::mutation::FreshReferentKind
+pub perl_dap::mutation::FreshReferentKind::Array
+pub perl_dap::mutation::FreshReferentKind::Hash
+pub fn perl_dap::mutation::FreshReferentKind::clone(&self) -> perl_dap::mutation::FreshReferentKind
+pub fn perl_dap::mutation::FreshReferentKind::eq(&self, other: &perl_dap::mutation::FreshReferentKind) -> bool
+pub fn perl_dap::mutation::FreshReferentKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::mutation::FreshReferentKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub perl_dap::mutation::StructuredRefusal::AggregateTooLarge
+pub perl_dap::mutation::StructuredRefusal::AggregateTooLarge::limit: usize
+pub perl_dap::mutation::StructuredRefusal::DepthExceeded
+pub perl_dap::mutation::StructuredRefusal::DepthExceeded::limit: usize
+pub perl_dap::mutation::StructuredRefusal::DuplicateKey
+pub perl_dap::mutation::StructuredRefusal::DuplicateKey::key: alloc::string::String
+pub perl_dap::mutation::StructuredRefusal::ExponentTooLarge
+pub perl_dap::mutation::StructuredRefusal::ExponentTooLarge::limit: u32
+pub perl_dap::mutation::StructuredRefusal::InputTooLarge
+pub perl_dap::mutation::StructuredRefusal::InputTooLarge::limit: usize
+pub perl_dap::mutation::StructuredRefusal::IntegerOutOfRange
+pub perl_dap::mutation::StructuredRefusal::InvalidSyntax
+pub perl_dap::mutation::StructuredRefusal::InvalidSyntax::offset: usize
+pub perl_dap::mutation::StructuredRefusal::LimitsExceedPinnedProfile
+pub perl_dap::mutation::StructuredRefusal::MissingStructuredPrefix
+pub perl_dap::mutation::StructuredRefusal::ScalarTooLarge
+pub perl_dap::mutation::StructuredRefusal::ScalarTooLarge::limit: usize
+pub perl_dap::mutation::StructuredRefusal::TooManyDigits
+pub perl_dap::mutation::StructuredRefusal::TooManyDigits::limit: usize
+pub perl_dap::mutation::StructuredRefusal::TooManyEntries
+pub perl_dap::mutation::StructuredRefusal::TooManyEntries::limit: usize
+pub perl_dap::mutation::StructuredRefusal::TooManyNodes
+pub perl_dap::mutation::StructuredRefusal::TooManyNodes::limit: usize
+pub fn perl_dap::mutation::StructuredRefusal::clone(&self) -> perl_dap::mutation::StructuredRefusal
+pub fn perl_dap::mutation::StructuredRefusal::eq(&self, other: &perl_dap::mutation::StructuredRefusal) -> bool
+pub fn perl_dap::mutation::StructuredRefusal::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::mutation::StructuredRefusal::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::mutation::StructuredValue
+pub perl_dap::mutation::StructuredValue::Array(alloc::vec::Vec<perl_dap::mutation::StructuredValue>)
+pub perl_dap::mutation::StructuredValue::Bool(bool)
+pub perl_dap::mutation::StructuredValue::Decimal(perl_dap::mutation::ExactDecimal)
+pub perl_dap::mutation::StructuredValue::Integer(i64)
+pub perl_dap::mutation::StructuredValue::Null
+pub perl_dap::mutation::StructuredValue::Object(alloc::vec::Vec<(alloc::string::String, perl_dap::mutation::StructuredValue)>)
+pub perl_dap::mutation::StructuredValue::String(alloc::string::String)
+pub fn perl_dap::mutation::StructuredValue::clone(&self) -> perl_dap::mutation::StructuredValue
+pub fn perl_dap::mutation::StructuredValue::eq(&self, other: &perl_dap::mutation::StructuredValue) -> bool
+pub fn perl_dap::mutation::StructuredValue::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::mutation::StructuredValue::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct perl_dap::mutation::ExactDecimal
+pub fn perl_dap::mutation::ExactDecimal::admitted(canonical: &str) -> core::option::Option<Self>
+pub fn perl_dap::mutation::ExactDecimal::canonical(&self) -> &str
+pub fn perl_dap::mutation::ExactDecimal::clone(&self) -> perl_dap::mutation::ExactDecimal
+pub fn perl_dap::mutation::ExactDecimal::eq(&self, other: &perl_dap::mutation::ExactDecimal) -> bool
+pub fn perl_dap::mutation::ExactDecimal::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::mutation::ExactDecimal::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct perl_dap::mutation::MutationStructuredValueV1
+pub const fn perl_dap::mutation::MutationStructuredValueV1::fingerprint(&self) -> &perl_source_identity::digest::ContentDigest
+pub const fn perl_dap::mutation::MutationStructuredValueV1::schema_version(&self) -> u32
+pub const fn perl_dap::mutation::MutationStructuredValueV1::value(&self) -> &perl_dap::mutation::StructuredValue
+pub fn perl_dap::mutation::MutationStructuredValueV1::clone(&self) -> perl_dap::mutation::MutationStructuredValueV1
+pub fn perl_dap::mutation::MutationStructuredValueV1::eq(&self, other: &perl_dap::mutation::MutationStructuredValueV1) -> bool
+pub fn perl_dap::mutation::MutationStructuredValueV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::mutation::MutationStructuredValueV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct perl_dap::mutation::StructuredMutationLimits
+pub perl_dap::mutation::StructuredMutationLimits::max_absolute_exponent: u32
+pub perl_dap::mutation::StructuredMutationLimits::max_aggregate_bytes: usize
+pub perl_dap::mutation::StructuredMutationLimits::max_depth: usize
+pub perl_dap::mutation::StructuredMutationLimits::max_entries: usize
+pub perl_dap::mutation::StructuredMutationLimits::max_input_bytes: usize
+pub perl_dap::mutation::StructuredMutationLimits::max_nodes: usize
+pub perl_dap::mutation::StructuredMutationLimits::max_scalar_bytes: usize
+pub perl_dap::mutation::StructuredMutationLimits::max_significant_digits: usize
+pub const perl_dap::mutation::StructuredMutationLimits::PINNED_V1_MAXIMA: Self
+pub fn perl_dap::mutation::StructuredMutationLimits::clone(&self) -> perl_dap::mutation::StructuredMutationLimits
+pub fn perl_dap::mutation::StructuredMutationLimits::eq(&self, other: &perl_dap::mutation::StructuredMutationLimits) -> bool
+pub fn perl_dap::mutation::StructuredMutationLimits::default() -> Self
+pub fn perl_dap::mutation::StructuredMutationLimits::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const perl_dap::mutation::MUTATION_STRUCTURED_VALUE_SCHEMA_VERSION: u32
+pub const perl_dap::mutation::STRUCTURED_PREFIX: &str
+pub fn perl_dap::mutation::fresh_referent_kind(value: &perl_dap::mutation::StructuredValue) -> core::option::Option<perl_dap::mutation::FreshReferentKind>
+pub fn perl_dap::mutation::parse_structured_mutation(raw: &str, limits: &perl_dap::mutation::StructuredMutationLimits) -> core::result::Result<perl_dap::mutation::MutationStructuredValueV1, perl_dap::mutation::StructuredRefusal>
+pub fn perl_dap::mutation::structured_payload(raw: &str) -> core::result::Result<&str, perl_dap::mutation::StructuredRefusal>
+pub mod perl_dap::parse_origin
+pub enum perl_dap::parse_origin::DebuggerOutputOrigin
+pub perl_dap::parse_origin::DebuggerOutputOrigin::BestEffortDebuggeeOutput
+pub perl_dap::parse_origin::DebuggerOutputOrigin::DebuggerControlPayload
+pub perl_dap::parse_origin::DebuggerOutputOrigin::FixtureOrInstrumentInput
+pub perl_dap::parse_origin::DebuggerOutputOrigin::PeerProtocolPayload
+pub const fn perl_dap::parse_origin::DebuggerOutputOrigin::as_str(self) -> &'static str
+pub fn perl_dap::parse_origin::DebuggerOutputOrigin::clone(&self) -> perl_dap::parse_origin::DebuggerOutputOrigin
+pub fn perl_dap::parse_origin::DebuggerOutputOrigin::eq(&self, other: &perl_dap::parse_origin::DebuggerOutputOrigin) -> bool
+pub fn perl_dap::parse_origin::DebuggerOutputOrigin::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::parse_origin::DebuggerOutputOrigin::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub struct perl_dap::parse_origin::OriginatedParseError<E>
+pub const fn perl_dap::parse_origin::OriginatedParseError<E>::identity(&self) -> perl_dap::parse_origin::ParseIdentity
+pub const fn perl_dap::parse_origin::OriginatedParseError<E>::origin(&self) -> perl_dap::parse_origin::DebuggerOutputOrigin
+pub const fn perl_dap::parse_origin::OriginatedParseError<E>::parse_error(&self) -> &E
+pub fn perl_dap::parse_origin::OriginatedParseError<perl_dap::api::StackParseError>::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
+pub fn perl_dap::parse_origin::OriginatedParseError<perl_dap::api::VariableParseError>::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
+pub fn perl_dap::parse_origin::OriginatedParseError<E>::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+pub fn perl_dap::parse_origin::OriginatedParseError<E>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::parse_origin::OriginatedParseError<E>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::parse_origin::OriginatedParseInput<'a>
+pub const fn perl_dap::parse_origin::OriginatedParseInput<'a>::attach<E>(self, source: E) -> perl_dap::parse_origin::OriginatedParseError<E>
+pub const fn perl_dap::parse_origin::OriginatedParseInput<'a>::identity(self) -> perl_dap::parse_origin::ParseIdentity
+pub const fn perl_dap::parse_origin::OriginatedParseInput<'a>::new(origin: perl_dap::parse_origin::DebuggerOutputOrigin, identity: perl_dap::parse_origin::ParseIdentity, text: &'a str) -> Self
+pub const fn perl_dap::parse_origin::OriginatedParseInput<'a>::origin(self) -> perl_dap::parse_origin::DebuggerOutputOrigin
+pub const fn perl_dap::parse_origin::OriginatedParseInput<'a>::text(self) -> &'a str
+pub const fn perl_dap::parse_origin::OriginatedParseInput<'a>::with_text<'b>(self, text: &'b str) -> perl_dap::parse_origin::OriginatedParseInput<'b>
+pub fn perl_dap::parse_origin::OriginatedParseInput<'a>::clone(&self) -> perl_dap::parse_origin::OriginatedParseInput<'a>
+pub fn perl_dap::parse_origin::OriginatedParseInput<'a>::eq(&self, other: &perl_dap::parse_origin::OriginatedParseInput<'a>) -> bool
+pub fn perl_dap::parse_origin::OriginatedParseInput<'a>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::parse_origin::ParseIdentity
+pub const fn perl_dap::parse_origin::ParseIdentity::new() -> Self
+pub const fn perl_dap::parse_origin::ParseIdentity::operation_id(self) -> core::option::Option<u64>
+pub const fn perl_dap::parse_origin::ParseIdentity::session_id(self) -> core::option::Option<u64>
+pub const fn perl_dap::parse_origin::ParseIdentity::suspension_generation(self) -> core::option::Option<u64>
+pub const fn perl_dap::parse_origin::ParseIdentity::with_operation_id(self, operation_id: u64) -> Self
+pub fn perl_dap::parse_origin::ParseIdentity::with_operation_id_from_i64(self, operation_id: i64) -> Self
+pub const fn perl_dap::parse_origin::ParseIdentity::with_session_id(self, session_id: u64) -> Self
+pub const fn perl_dap::parse_origin::ParseIdentity::with_suspension_generation(self, suspension_generation: u64) -> Self
+pub fn perl_dap::parse_origin::ParseIdentity::clone(&self) -> perl_dap::parse_origin::ParseIdentity
+pub fn perl_dap::parse_origin::ParseIdentity::eq(&self, other: &perl_dap::parse_origin::ParseIdentity) -> bool
+pub fn perl_dap::parse_origin::ParseIdentity::default() -> perl_dap::parse_origin::ParseIdentity
+pub fn perl_dap::parse_origin::ParseIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::parse_origin::ParseIdentity::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub mod perl_dap::peer_protocol
 pub mod perl_dap::peer_protocol::capabilities
 pub struct perl_dap::peer_protocol::capabilities::HostReportedCapabilities
@@ -1229,6 +1380,7 @@ pub perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::can_list_st
 pub perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::can_list_variables: bool
 pub perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::can_pause: bool
 pub perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::can_report_breakable_lines: bool
+pub perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::can_report_failure_cause: bool
 pub perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::can_report_subroutines: bool
 pub perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::can_set_breakpoints: bool
 pub perl_dap::peer_protocol::capabilities::PeerReportedCapabilities::can_set_function_breakpoints: bool
@@ -1304,6 +1456,16 @@ pub const perl_dap::peer_protocol::message::event::OUTPUT: &str
 pub const perl_dap::peer_protocol::message::event::SOURCE_FACTS: &str
 pub const perl_dap::peer_protocol::message::event::STOPPED: &str
 pub const perl_dap::peer_protocol::message::event::TERMINATED: &str
+pub perl_dap::peer_protocol::message::PeerFailureCause::Debuggee
+pub perl_dap::peer_protocol::message::PeerFailureCause::InvalidRequest
+pub perl_dap::peer_protocol::message::PeerFailureCause::SessionState
+pub perl_dap::peer_protocol::message::PeerFailureCause::Transport
+pub perl_dap::peer_protocol::message::PeerFailureCause::Unrecognized
+pub fn perl_dap::peer_protocol::message::PeerFailureCause::clone(&self) -> perl_dap::peer_protocol::message::PeerFailureCause
+pub fn perl_dap::peer_protocol::message::PeerFailureCause::eq(&self, other: &perl_dap::peer_protocol::message::PeerFailureCause) -> bool
+pub fn perl_dap::peer_protocol::message::PeerFailureCause::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::message::PeerFailureCause::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::message::PeerFailureCause::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub enum perl_dap::peer_protocol::message::PeerMessage
 pub perl_dap::peer_protocol::message::PeerMessage::Event(perl_dap::peer_protocol::message::PeerEvent)
 pub perl_dap::peer_protocol::message::PeerMessage::Request(perl_dap::peer_protocol::message::PeerRequest)
@@ -1334,6 +1496,7 @@ pub fn perl_dap::peer_protocol::message::PeerRequest::serialize<__S>(&self, __se
 pub fn perl_dap::peer_protocol::message::PeerRequest::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_dap::peer_protocol::message::PeerResponse
 pub perl_dap::peer_protocol::message::PeerResponse::body: core::option::Option<serde_json::value::Value>
+pub perl_dap::peer_protocol::message::PeerResponse::cause: core::option::Option<perl_dap::peer_protocol::message::PeerFailureCause>
 pub perl_dap::peer_protocol::message::PeerResponse::command: alloc::string::String
 pub perl_dap::peer_protocol::message::PeerResponse::message: core::option::Option<alloc::string::String>
 pub perl_dap::peer_protocol::message::PeerResponse::request_seq: i64
@@ -1579,6 +1742,16 @@ pub fn perl_dap::peer_protocol::payloads::WireVariable::eq(&self, other: &perl_d
 pub fn perl_dap::peer_protocol::payloads::WireVariable::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::peer_protocol::payloads::WireVariable::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::peer_protocol::payloads::WireVariable::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_dap::peer_protocol::PeerFailureCause::Debuggee
+pub perl_dap::peer_protocol::PeerFailureCause::InvalidRequest
+pub perl_dap::peer_protocol::PeerFailureCause::SessionState
+pub perl_dap::peer_protocol::PeerFailureCause::Transport
+pub perl_dap::peer_protocol::PeerFailureCause::Unrecognized
+pub fn perl_dap::peer_protocol::message::PeerFailureCause::clone(&self) -> perl_dap::peer_protocol::message::PeerFailureCause
+pub fn perl_dap::peer_protocol::message::PeerFailureCause::eq(&self, other: &perl_dap::peer_protocol::message::PeerFailureCause) -> bool
+pub fn perl_dap::peer_protocol::message::PeerFailureCause::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::peer_protocol::message::PeerFailureCause::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::peer_protocol::message::PeerFailureCause::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub enum perl_dap::peer_protocol::PeerFrameError
 pub perl_dap::peer_protocol::PeerFrameError::Framing(perl_lsp_rs_core::transport::framing::FramingError)
 pub perl_dap::peer_protocol::PeerFrameError::Json(alloc::string::String)
@@ -1632,6 +1805,7 @@ pub perl_dap::peer_protocol::PeerReportedCapabilities::can_list_stack: bool
 pub perl_dap::peer_protocol::PeerReportedCapabilities::can_list_variables: bool
 pub perl_dap::peer_protocol::PeerReportedCapabilities::can_pause: bool
 pub perl_dap::peer_protocol::PeerReportedCapabilities::can_report_breakable_lines: bool
+pub perl_dap::peer_protocol::PeerReportedCapabilities::can_report_failure_cause: bool
 pub perl_dap::peer_protocol::PeerReportedCapabilities::can_report_subroutines: bool
 pub perl_dap::peer_protocol::PeerReportedCapabilities::can_set_breakpoints: bool
 pub perl_dap::peer_protocol::PeerReportedCapabilities::can_set_function_breakpoints: bool
@@ -1655,6 +1829,7 @@ pub fn perl_dap::peer_protocol::message::PeerRequest::serialize<__S>(&self, __se
 pub fn perl_dap::peer_protocol::message::PeerRequest::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_dap::peer_protocol::PeerResponse
 pub perl_dap::peer_protocol::PeerResponse::body: core::option::Option<serde_json::value::Value>
+pub perl_dap::peer_protocol::PeerResponse::cause: core::option::Option<perl_dap::peer_protocol::message::PeerFailureCause>
 pub perl_dap::peer_protocol::PeerResponse::command: alloc::string::String
 pub perl_dap::peer_protocol::PeerResponse::message: core::option::Option<alloc::string::String>
 pub perl_dap::peer_protocol::PeerResponse::request_seq: i64
@@ -1835,6 +2010,7 @@ pub struct perl_dap::protocol::EvaluateArguments
 pub perl_dap::protocol::EvaluateArguments::allow_side_effects: core::option::Option<bool>
 pub perl_dap::protocol::EvaluateArguments::context: core::option::Option<alloc::string::String>
 pub perl_dap::protocol::EvaluateArguments::expression: alloc::string::String
+pub perl_dap::protocol::EvaluateArguments::format: core::option::Option<perl_dap::protocol::ValueFormat>
 pub perl_dap::protocol::EvaluateArguments::frame_id: core::option::Option<i64>
 pub fn perl_dap::protocol::EvaluateArguments::clone(&self) -> perl_dap::protocol::EvaluateArguments
 pub fn perl_dap::protocol::EvaluateArguments::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -2135,6 +2311,7 @@ pub fn perl_dap::protocol::SetExceptionBreakpointsArguments::serialize<__S>(&sel
 pub fn perl_dap::protocol::SetExceptionBreakpointsArguments::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_dap::protocol::SetExpressionArguments
 pub perl_dap::protocol::SetExpressionArguments::expression: alloc::string::String
+pub perl_dap::protocol::SetExpressionArguments::format: core::option::Option<perl_dap::protocol::ValueFormat>
 pub perl_dap::protocol::SetExpressionArguments::frame_id: core::option::Option<i64>
 pub perl_dap::protocol::SetExpressionArguments::value: alloc::string::String
 pub fn perl_dap::protocol::SetExpressionArguments::clone(&self) -> perl_dap::protocol::SetExpressionArguments
@@ -2156,6 +2333,7 @@ pub fn perl_dap::protocol::SetFunctionBreakpointsArguments::fmt(&self, f: &mut c
 pub fn perl_dap::protocol::SetFunctionBreakpointsArguments::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::protocol::SetFunctionBreakpointsArguments::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_dap::protocol::SetVariableArguments
+pub perl_dap::protocol::SetVariableArguments::format: core::option::Option<perl_dap::protocol::ValueFormat>
 pub perl_dap::protocol::SetVariableArguments::name: alloc::string::String
 pub perl_dap::protocol::SetVariableArguments::value: alloc::string::String
 pub perl_dap::protocol::SetVariableArguments::variables_reference: i64
@@ -2273,9 +2451,18 @@ pub fn perl_dap::protocol::ThreadsResponseBody::clone(&self) -> perl_dap::protoc
 pub fn perl_dap::protocol::ThreadsResponseBody::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::protocol::ThreadsResponseBody::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::protocol::ThreadsResponseBody::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::protocol::ValueFormat
+pub perl_dap::protocol::ValueFormat::hex: core::option::Option<bool>
+pub fn perl_dap::protocol::ValueFormat::clone(&self) -> perl_dap::protocol::ValueFormat
+pub fn perl_dap::protocol::ValueFormat::eq(&self, other: &perl_dap::protocol::ValueFormat) -> bool
+pub fn perl_dap::protocol::ValueFormat::default() -> perl_dap::protocol::ValueFormat
+pub fn perl_dap::protocol::ValueFormat::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::protocol::ValueFormat::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::protocol::ValueFormat::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_dap::protocol::VariablesArguments
 pub perl_dap::protocol::VariablesArguments::count: core::option::Option<i64>
 pub perl_dap::protocol::VariablesArguments::filter: core::option::Option<alloc::string::String>
+pub perl_dap::protocol::VariablesArguments::format: core::option::Option<perl_dap::protocol::ValueFormat>
 pub perl_dap::protocol::VariablesArguments::start: core::option::Option<i64>
 pub perl_dap::protocol::VariablesArguments::variables_reference: i64
 pub fn perl_dap::protocol::VariablesArguments::clone(&self) -> perl_dap::protocol::VariablesArguments
@@ -2295,12 +2482,482 @@ pub fn perl_dap::ptkdb_bootstrap::perl_single_quoted(s: &str) -> alloc::string::
 pub fn perl_dap::ptkdb_bootstrap::render_env(display: core::option::Option<&str>) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
 pub fn perl_dap::ptkdb_bootstrap::render_launch_command(packet: &perl_dap::model::DebugSessionPacket) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_dap::ptkdb_bootstrap::render_ptkdbrc(packet: &perl_dap::model::DebugSessionPacket, stop_on_entry: bool) -> alloc::string::String
+pub mod perl_dap::reload
+pub enum perl_dap::reload::ChannelSettlement
+pub perl_dap::reload::ChannelSettlement::Acknowledged(alloc::vec::Vec<alloc::string::String>)
+pub perl_dap::reload::ChannelSettlement::NotIssued(alloc::string::String)
+pub perl_dap::reload::ChannelSettlement::Unsettled(perl_dap::reload::UnsettledKind)
+pub fn perl_dap::reload::ChannelSettlement::clone(&self) -> perl_dap::reload::ChannelSettlement
+pub fn perl_dap::reload::ChannelSettlement::eq(&self, other: &perl_dap::reload::ChannelSettlement) -> bool
+pub fn perl_dap::reload::ChannelSettlement::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::reload::CommandPlanError
+pub perl_dap::reload::CommandPlanError::MechanismNotExecutable
+pub perl_dap::reload::CommandPlanError::UnsafeModuleKey
+pub perl_dap::reload::CommandPlanError::UnsafeRuntimePath
+pub const perl_dap::reload::CommandPlanError::ALL: [perl_dap::reload::CommandPlanError; 3]
+pub const fn perl_dap::reload::CommandPlanError::as_str(self) -> &'static str
+pub const fn perl_dap::reload::CommandPlanError::refusal(self) -> perl_dap::reload::LoadedModuleReloadEligibility
+pub fn perl_dap::reload::CommandPlanError::clone(&self) -> perl_dap::reload::CommandPlanError
+pub fn perl_dap::reload::CommandPlanError::eq(&self, other: &perl_dap::reload::CommandPlanError) -> bool
+pub fn perl_dap::reload::CommandPlanError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload::CommandPlanError::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_dap::reload::DapObjectKind
+pub perl_dap::reload::DapObjectKind::AppliedBreakpointInstallation
+pub perl_dap::reload::DapObjectKind::DurableClientBreakpointConfiguration
+pub perl_dap::reload::DapObjectKind::EvaluateReference
+pub perl_dap::reload::DapObjectKind::ExceptionAndCurrentStopFacts
+pub perl_dap::reload::DapObjectKind::FrameReference
+pub perl_dap::reload::DapObjectKind::LoadedSourceObservation
+pub perl_dap::reload::DapObjectKind::ModuleId
+pub perl_dap::reload::DapObjectKind::RetainedRuntimeQueryResult
+pub perl_dap::reload::DapObjectKind::ScopeReference
+pub perl_dap::reload::DapObjectKind::SourceContentRead
+pub perl_dap::reload::DapObjectKind::ThreadReference
+pub perl_dap::reload::DapObjectKind::VariableReference
+pub const perl_dap::reload::DapObjectKind::ALL: [perl_dap::reload::DapObjectKind; 12]
+pub const fn perl_dap::reload::DapObjectKind::as_str(self) -> &'static str
+pub fn perl_dap::reload::DapObjectKind::parse(code: &str) -> core::option::Option<perl_dap::reload::DapObjectKind>
+pub fn perl_dap::reload::DapObjectKind::clone(&self) -> perl_dap::reload::DapObjectKind
+pub fn perl_dap::reload::DapObjectKind::cmp(&self, other: &perl_dap::reload::DapObjectKind) -> core::cmp::Ordering
+pub fn perl_dap::reload::DapObjectKind::eq(&self, other: &perl_dap::reload::DapObjectKind) -> bool
+pub fn perl_dap::reload::DapObjectKind::partial_cmp(&self, other: &perl_dap::reload::DapObjectKind) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_dap::reload::DapObjectKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload::DapObjectKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_dap::reload::GenerationAdvance
+pub perl_dap::reload::GenerationAdvance::Advanced(perl_dap::reload::RuntimeModuleGeneration)
+pub perl_dap::reload::GenerationAdvance::Unchanged(perl_dap::reload::RuntimeModuleGeneration)
+pub fn perl_dap::reload::GenerationAdvance::advanced(self) -> bool
+pub fn perl_dap::reload::GenerationAdvance::code(self) -> &'static str
+pub fn perl_dap::reload::GenerationAdvance::generation(self) -> perl_dap::reload::RuntimeModuleGeneration
+pub fn perl_dap::reload::GenerationAdvance::clone(&self) -> perl_dap::reload::GenerationAdvance
+pub fn perl_dap::reload::GenerationAdvance::eq(&self, other: &perl_dap::reload::GenerationAdvance) -> bool
+pub fn perl_dap::reload::GenerationAdvance::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::reload::GenerationEffect
+pub perl_dap::reload::GenerationEffect::Advance
+pub perl_dap::reload::GenerationEffect::None
+pub const fn perl_dap::reload::GenerationEffect::as_str(self) -> &'static str
+pub fn perl_dap::reload::GenerationEffect::clone(&self) -> perl_dap::reload::GenerationEffect
+pub fn perl_dap::reload::GenerationEffect::eq(&self, other: &perl_dap::reload::GenerationEffect) -> bool
+pub fn perl_dap::reload::GenerationEffect::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload::GenerationEffect::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_dap::reload::IndeterminateCause
+pub perl_dap::reload::IndeterminateCause::AmbiguousAcknowledgement
+pub perl_dap::reload::IndeterminateCause::ReadBackInconclusive
+pub perl_dap::reload::IndeterminateCause::TimeoutAfterMutationBegan
+pub perl_dap::reload::IndeterminateCause::TransportLossAfterMutationBegan
+pub const perl_dap::reload::IndeterminateCause::ALL: [perl_dap::reload::IndeterminateCause; 4]
+pub const fn perl_dap::reload::IndeterminateCause::as_str(self) -> &'static str
+pub fn perl_dap::reload::IndeterminateCause::clone(&self) -> perl_dap::reload::IndeterminateCause
+pub fn perl_dap::reload::IndeterminateCause::eq(&self, other: &perl_dap::reload::IndeterminateCause) -> bool
 pub fn perl_dap::reload_family::WireFailureCause::from(cause: perl_dap::reload::IndeterminateCause) -> Self
+pub fn perl_dap::reload::IndeterminateCause::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload::IndeterminateCause::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_dap::reload::InvalidationDisposition
+pub perl_dap::reload::InvalidationDisposition::AlwaysStale
+pub perl_dap::reload::InvalidationDisposition::PreservedForLaterReconciliation
+pub perl_dap::reload::InvalidationDisposition::ProjectionReprojected
+pub perl_dap::reload::InvalidationDisposition::StaleWhenGenerationAdvanced
+pub const fn perl_dap::reload::InvalidationDisposition::as_str(self) -> &'static str
+pub fn perl_dap::reload::InvalidationDisposition::clone(&self) -> perl_dap::reload::InvalidationDisposition
+pub fn perl_dap::reload::InvalidationDisposition::eq(&self, other: &perl_dap::reload::InvalidationDisposition) -> bool
+pub fn perl_dap::reload::InvalidationDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload::InvalidationDisposition::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_dap::reload::InvalidationPlanError
+pub perl_dap::reload::InvalidationPlanError::DurableConfigurationInvalidated
+pub perl_dap::reload::InvalidationPlanError::StaleIdentitySurvivesPossiblyApplied
+pub perl_dap::reload::InvalidationPlanError::ThreadReferenceNotProjection
+pub const perl_dap::reload::InvalidationPlanError::ALL: [perl_dap::reload::InvalidationPlanError; 3]
+pub const fn perl_dap::reload::InvalidationPlanError::code(self) -> &'static str
+pub fn perl_dap::reload::InvalidationPlanError::clone(&self) -> perl_dap::reload::InvalidationPlanError
+pub fn perl_dap::reload::InvalidationPlanError::eq(&self, other: &perl_dap::reload::InvalidationPlanError) -> bool
+pub fn perl_dap::reload::InvalidationPlanError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::reload::LoadedModuleReloadEligibility
+pub perl_dap::reload::LoadedModuleReloadEligibility::ActiveFrameInTarget
+pub perl_dap::reload::LoadedModuleReloadEligibility::AmbiguousRuntimeMapping
+pub perl_dap::reload::LoadedModuleReloadEligibility::DirtyOrUnsavedSource
+pub perl_dap::reload::LoadedModuleReloadEligibility::EligibleSourceBackedPerlModule
+pub perl_dap::reload::LoadedModuleReloadEligibility::GeneratedOrEvalSource
+pub perl_dap::reload::LoadedModuleReloadEligibility::MainProgramNotModule
+pub perl_dap::reload::LoadedModuleReloadEligibility::NotLoaded
+pub perl_dap::reload::LoadedModuleReloadEligibility::NotStoppedOrNotCommandReady
+pub perl_dap::reload::LoadedModuleReloadEligibility::OutsideLaunchAuthority
+pub perl_dap::reload::LoadedModuleReloadEligibility::SourceFilterOrCompileHookBoundary
+pub perl_dap::reload::LoadedModuleReloadEligibility::SourceNotExactOrStale
+pub perl_dap::reload::LoadedModuleReloadEligibility::UnsupportedRuntime
+pub perl_dap::reload::LoadedModuleReloadEligibility::XsOrNativeModule
+pub const perl_dap::reload::LoadedModuleReloadEligibility::ALL: [perl_dap::reload::LoadedModuleReloadEligibility; 13]
+pub const fn perl_dap::reload::LoadedModuleReloadEligibility::as_str(self) -> &'static str
+pub fn perl_dap::reload::LoadedModuleReloadEligibility::is_admitted(&self) -> bool
+pub fn perl_dap::reload::LoadedModuleReloadEligibility::parse(code: &str) -> core::option::Option<perl_dap::reload::LoadedModuleReloadEligibility>
+pub fn perl_dap::reload::LoadedModuleReloadEligibility::clone(&self) -> perl_dap::reload::LoadedModuleReloadEligibility
+pub fn perl_dap::reload::LoadedModuleReloadEligibility::cmp(&self, other: &perl_dap::reload::LoadedModuleReloadEligibility) -> core::cmp::Ordering
+pub fn perl_dap::reload::LoadedModuleReloadEligibility::eq(&self, other: &perl_dap::reload::LoadedModuleReloadEligibility) -> bool
+pub fn perl_dap::reload::LoadedModuleReloadEligibility::partial_cmp(&self, other: &perl_dap::reload::LoadedModuleReloadEligibility) -> core::option::Option<core::cmp::Ordering>
 pub type perl_dap::reload_family::WireDisposition::Error = ()
 pub fn perl_dap::reload_family::WireDisposition::try_from(eligibility: perl_dap::reload::LoadedModuleReloadEligibility) -> core::result::Result<Self, Self::Error>
+pub fn perl_dap::reload::LoadedModuleReloadEligibility::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload::LoadedModuleReloadEligibility::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_dap::reload::LoadedModuleReloadOutcome
+pub perl_dap::reload::LoadedModuleReloadOutcome::FailedBeforeMutation
+pub perl_dap::reload::LoadedModuleReloadOutcome::FailedBeforeMutation::cause: perl_dap::reload::PreMutationFailureCause
+pub perl_dap::reload::LoadedModuleReloadOutcome::FailedBeforeMutation::phase: perl_dap::reload::ReloadTransactionPhase
+pub perl_dap::reload::LoadedModuleReloadOutcome::IndeterminatePossiblyApplied
+pub perl_dap::reload::LoadedModuleReloadOutcome::IndeterminatePossiblyApplied::cause: perl_dap::reload::IndeterminateCause
+pub perl_dap::reload::LoadedModuleReloadOutcome::IndeterminatePossiblyApplied::phase: perl_dap::reload::ReloadTransactionPhase
+pub perl_dap::reload::LoadedModuleReloadOutcome::Refused
+pub perl_dap::reload::LoadedModuleReloadOutcome::Refused::disposition: perl_dap::reload::LoadedModuleReloadEligibility
+pub perl_dap::reload::LoadedModuleReloadOutcome::Reloaded
+pub fn perl_dap::reload::LoadedModuleReloadOutcome::generation_effect(&self) -> perl_dap::reload::GenerationEffect
+pub fn perl_dap::reload::LoadedModuleReloadOutcome::kind_code(&self) -> &'static str
+pub fn perl_dap::reload::LoadedModuleReloadOutcome::projects_as_clean(&self) -> bool
+pub fn perl_dap::reload::LoadedModuleReloadOutcome::unknown_after_mutation(phase: perl_dap::reload::ReloadTransactionPhase, cause: perl_dap::reload::IndeterminateCause) -> core::result::Result<perl_dap::reload::LoadedModuleReloadOutcome, &'static str>
+pub fn perl_dap::reload::LoadedModuleReloadOutcome::clone(&self) -> perl_dap::reload::LoadedModuleReloadOutcome
+pub fn perl_dap::reload::LoadedModuleReloadOutcome::eq(&self, other: &perl_dap::reload::LoadedModuleReloadOutcome) -> bool
 pub fn perl_dap::reload_family::WireOutcomeKind::from(outcome: &perl_dap::reload::LoadedModuleReloadOutcome) -> Self
+pub fn perl_dap::reload::LoadedModuleReloadOutcome::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload::LoadedModuleReloadOutcome::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_dap::reload::MeasuredStateFact
+pub perl_dap::reload::MeasuredStateFact::CapturedReturnValueKeepsOldCode
+pub perl_dap::reload::MeasuredStateFact::IncEntryRefreshedByRequire
+pub perl_dap::reload::MeasuredStateFact::IncEntryUnchangedByDo
+pub perl_dap::reload::MeasuredStateFact::InstanceDataPersists
+pub perl_dap::reload::MeasuredStateFact::NewSubTakesEffectForNewCalls
+pub perl_dap::reload::MeasuredStateFact::RemovedSubRemainsCallable
+pub const perl_dap::reload::MeasuredStateFact::ALL: [perl_dap::reload::MeasuredStateFact; 6]
+pub const fn perl_dap::reload::MeasuredStateFact::as_str(self) -> &'static str
+pub fn perl_dap::reload::MeasuredStateFact::parse(code: &str) -> core::option::Option<perl_dap::reload::MeasuredStateFact>
+pub fn perl_dap::reload::MeasuredStateFact::clone(&self) -> perl_dap::reload::MeasuredStateFact
+pub fn perl_dap::reload::MeasuredStateFact::eq(&self, other: &perl_dap::reload::MeasuredStateFact) -> bool
+pub fn perl_dap::reload::MeasuredStateFact::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload::MeasuredStateFact::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_dap::reload::MeasurementRecordError
+pub perl_dap::reload::MeasurementRecordError::FactNotAllowedForMechanism
+pub perl_dap::reload::MeasurementRecordError::FactNotAllowedForMechanism::fact: perl_dap::reload::MeasuredStateFact
+pub perl_dap::reload::MeasurementRecordError::FactNotAllowedForMechanism::mechanism: perl_dap::reload::ReloadMechanism
+pub perl_dap::reload::MeasurementRecordError::FactsWithoutPerlIdentity
+pub perl_dap::reload::MeasurementRecordError::MissingObservedFact
+pub perl_dap::reload::MeasurementRecordError::MissingObservedFact::fact: perl_dap::reload::MeasuredStateFact
+pub perl_dap::reload::MeasurementRecordError::UnmeasuredWithoutBoundaries
+pub perl_dap::reload::MeasurementRecordError::UnmeasuredWithoutBoundaries::mechanism: perl_dap::reload::ReloadMechanism
+pub const fn perl_dap::reload::MeasurementRecordError::code(&self) -> &'static str
+pub fn perl_dap::reload::MeasurementRecordError::clone(&self) -> perl_dap::reload::MeasurementRecordError
+pub fn perl_dap::reload::MeasurementRecordError::eq(&self, other: &perl_dap::reload::MeasurementRecordError) -> bool
+pub fn perl_dap::reload::MeasurementRecordError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::reload::MechanismClaim
+pub perl_dap::reload::MechanismClaim::AvailabilityGrantsProductAuthority
+pub perl_dap::reload::MechanismClaim::Available
+pub perl_dap::reload::MechanismClaim::CompileSuccessImpliesReloadSuccess
+pub perl_dap::reload::MechanismClaim::PromptIsAcknowledgement
+pub perl_dap::reload::MechanismClaim::ProvesPackageReplacement
+pub const perl_dap::reload::MechanismClaim::ALL: [perl_dap::reload::MechanismClaim; 5]
+pub const fn perl_dap::reload::MechanismClaim::as_str(self) -> &'static str
+pub fn perl_dap::reload::MechanismClaim::clone(&self) -> perl_dap::reload::MechanismClaim
+pub fn perl_dap::reload::MechanismClaim::eq(&self, other: &perl_dap::reload::MechanismClaim) -> bool
+pub fn perl_dap::reload::MechanismClaim::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::reload::MechanismRecordError
+pub perl_dap::reload::MechanismRecordError::AvailabilityAsProductAuthority
+pub perl_dap::reload::MechanismRecordError::CompileSuccessAsReloadSuccess
+pub perl_dap::reload::MechanismRecordError::PackageReplacementClaimedWithoutProof
+pub perl_dap::reload::MechanismRecordError::PromptAsAcknowledgement
+pub const perl_dap::reload::MechanismRecordError::ALL: [perl_dap::reload::MechanismRecordError; 4]
+pub const fn perl_dap::reload::MechanismRecordError::code(self) -> &'static str
+pub fn perl_dap::reload::MechanismRecordError::clone(&self) -> perl_dap::reload::MechanismRecordError
+pub fn perl_dap::reload::MechanismRecordError::eq(&self, other: &perl_dap::reload::MechanismRecordError) -> bool
+pub fn perl_dap::reload::MechanismRecordError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::reload::ModuleClassification
+pub perl_dap::reload::ModuleClassification::GeneratedOrEval
+pub perl_dap::reload::ModuleClassification::MainProgram
+pub perl_dap::reload::ModuleClassification::SourceBackedPerlModule
+pub perl_dap::reload::ModuleClassification::SourceFilterOrCompileHook
+pub perl_dap::reload::ModuleClassification::XsOrNative
+pub const perl_dap::reload::ModuleClassification::ALL: [perl_dap::reload::ModuleClassification; 5]
+pub const fn perl_dap::reload::ModuleClassification::as_str(self) -> &'static str
+pub fn perl_dap::reload::ModuleClassification::parse(code: &str) -> core::option::Option<perl_dap::reload::ModuleClassification>
+pub fn perl_dap::reload::ModuleClassification::clone(&self) -> perl_dap::reload::ModuleClassification
+pub fn perl_dap::reload::ModuleClassification::eq(&self, other: &perl_dap::reload::ModuleClassification) -> bool
+pub fn perl_dap::reload::ModuleClassification::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload::ModuleClassification::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_dap::reload::PreMutationFailureCause
+pub perl_dap::reload::PreMutationFailureCause::CancelledBeforeMutationBegan
+pub perl_dap::reload::PreMutationFailureCause::PrepareFailed
+pub const perl_dap::reload::PreMutationFailureCause::ALL: [perl_dap::reload::PreMutationFailureCause; 2]
+pub const fn perl_dap::reload::PreMutationFailureCause::as_str(self) -> &'static str
+pub fn perl_dap::reload::PreMutationFailureCause::clone(&self) -> perl_dap::reload::PreMutationFailureCause
+pub fn perl_dap::reload::PreMutationFailureCause::eq(&self, other: &perl_dap::reload::PreMutationFailureCause) -> bool
 pub fn perl_dap::reload_family::WireFailureCause::from(cause: perl_dap::reload::PreMutationFailureCause) -> Self
+pub fn perl_dap::reload::PreMutationFailureCause::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload::PreMutationFailureCause::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_dap::reload::ReloadCapabilityProjection
+pub perl_dap::reload::ReloadCapabilityProjection::InventedStandard(alloc::string::String)
+pub perl_dap::reload::ReloadCapabilityProjection::NamespacedCustom(alloc::string::String)
+pub perl_dap::reload::ReloadCapabilityProjection::Unadvertised
+pub fn perl_dap::reload::ReloadCapabilityProjection::clone(&self) -> perl_dap::reload::ReloadCapabilityProjection
+pub fn perl_dap::reload::ReloadCapabilityProjection::eq(&self, other: &perl_dap::reload::ReloadCapabilityProjection) -> bool
+pub fn perl_dap::reload::ReloadCapabilityProjection::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::reload::ReloadMechanism
+pub perl_dap::reload::ReloadMechanism::ClassRefreshCompatibilitySubject
+pub perl_dap::reload::ReloadMechanism::DoOrRequireHelper
+pub perl_dap::reload::ReloadMechanism::IncDeletionAndRequire
+pub perl_dap::reload::ReloadMechanism::WorkspaceRuntimeHelperObserver
+pub const perl_dap::reload::ReloadMechanism::ALL: [perl_dap::reload::ReloadMechanism; 4]
+pub const fn perl_dap::reload::ReloadMechanism::as_str(self) -> &'static str
+pub fn perl_dap::reload::ReloadMechanism::parse(code: &str) -> core::option::Option<perl_dap::reload::ReloadMechanism>
+pub fn perl_dap::reload::ReloadMechanism::clone(&self) -> perl_dap::reload::ReloadMechanism
+pub fn perl_dap::reload::ReloadMechanism::eq(&self, other: &perl_dap::reload::ReloadMechanism) -> bool
+pub fn perl_dap::reload::ReloadMechanism::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload::ReloadMechanism::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_dap::reload::ReloadRequestPayload
+pub perl_dap::reload::ReloadRequestPayload::DebuggerCommand(alloc::string::String)
+pub perl_dap::reload::ReloadRequestPayload::PerlExpression(alloc::string::String)
+pub perl_dap::reload::ReloadRequestPayload::RawPath(alloc::string::String)
+pub perl_dap::reload::ReloadRequestPayload::TypedModuleSubject
+pub fn perl_dap::reload::ReloadRequestPayload::is_typed(&self) -> bool
+pub fn perl_dap::reload::ReloadRequestPayload::kind_code(&self) -> &'static str
+pub fn perl_dap::reload::ReloadRequestPayload::clone(&self) -> perl_dap::reload::ReloadRequestPayload
+pub fn perl_dap::reload::ReloadRequestPayload::eq(&self, other: &perl_dap::reload::ReloadRequestPayload) -> bool
+pub fn perl_dap::reload::ReloadRequestPayload::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::reload::ReloadTransactionPhase
+pub perl_dap::reload::ReloadTransactionPhase::Admission
+pub perl_dap::reload::ReloadTransactionPhase::CommitGeneration
+pub perl_dap::reload::ReloadTransactionPhase::PostReloadReconciliation
+pub perl_dap::reload::ReloadTransactionPhase::Preflight
+pub perl_dap::reload::ReloadTransactionPhase::Prepare
+pub perl_dap::reload::ReloadTransactionPhase::RuntimeAcknowledgementReadBack
+pub perl_dap::reload::ReloadTransactionPhase::RuntimeMutationBegins
+pub perl_dap::reload::ReloadTransactionPhase::TerminalProjection
+pub const perl_dap::reload::ReloadTransactionPhase::ALL: [perl_dap::reload::ReloadTransactionPhase; 8]
+pub const fn perl_dap::reload::ReloadTransactionPhase::as_str(self) -> &'static str
+pub fn perl_dap::reload::ReloadTransactionPhase::is_mutation_begun(self) -> bool
+pub fn perl_dap::reload::ReloadTransactionPhase::parse(code: &str) -> core::option::Option<perl_dap::reload::ReloadTransactionPhase>
+pub fn perl_dap::reload::ReloadTransactionPhase::clone(&self) -> perl_dap::reload::ReloadTransactionPhase
+pub fn perl_dap::reload::ReloadTransactionPhase::cmp(&self, other: &perl_dap::reload::ReloadTransactionPhase) -> core::cmp::Ordering
+pub fn perl_dap::reload::ReloadTransactionPhase::eq(&self, other: &perl_dap::reload::ReloadTransactionPhase) -> bool
+pub fn perl_dap::reload::ReloadTransactionPhase::partial_cmp(&self, other: &perl_dap::reload::ReloadTransactionPhase) -> core::option::Option<core::cmp::Ordering>
 pub fn perl_dap::reload_family::WirePhase::from(phase: perl_dap::reload::ReloadTransactionPhase) -> Self
+pub fn perl_dap::reload::ReloadTransactionPhase::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload::ReloadTransactionPhase::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_dap::reload::SubjectBindingError
+pub perl_dap::reload::SubjectBindingError::InsufficientSubjectIdentity
+pub const perl_dap::reload::SubjectBindingError::ALL: [perl_dap::reload::SubjectBindingError; 1]
+pub const fn perl_dap::reload::SubjectBindingError::code(self) -> &'static str
+pub fn perl_dap::reload::SubjectBindingError::clone(&self) -> perl_dap::reload::SubjectBindingError
+pub fn perl_dap::reload::SubjectBindingError::eq(&self, other: &perl_dap::reload::SubjectBindingError) -> bool
+pub fn perl_dap::reload::SubjectBindingError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::reload::SurfaceViolation
+pub perl_dap::reload::SurfaceViolation::MissingCorrelationIdentity
+pub perl_dap::reload::SurfaceViolation::PrematureCapabilityAdvertisement
+pub perl_dap::reload::SurfaceViolation::RawClientInputAccepted
+pub perl_dap::reload::SurfaceViolation::StandardCapabilityCollision
+pub perl_dap::reload::SurfaceViolation::StandardFamilyCollision
+pub perl_dap::reload::SurfaceViolation::UnnamespacedFamily
+pub perl_dap::reload::SurfaceViolation::UnversionedFamily
+pub const perl_dap::reload::SurfaceViolation::ALL: [perl_dap::reload::SurfaceViolation; 7]
+pub const fn perl_dap::reload::SurfaceViolation::code(self) -> &'static str
+pub fn perl_dap::reload::SurfaceViolation::clone(&self) -> perl_dap::reload::SurfaceViolation
+pub fn perl_dap::reload::SurfaceViolation::eq(&self, other: &perl_dap::reload::SurfaceViolation) -> bool
+pub fn perl_dap::reload::SurfaceViolation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::reload::UnmeasuredBoundary
+pub perl_dap::reload::UnmeasuredBoundary::ActiveFrameContinuation
+pub perl_dap::reload::UnmeasuredBoundary::ClassRefreshNotInstalled
+pub perl_dap::reload::UnmeasuredBoundary::MroCacheInvalidation
+pub perl_dap::reload::UnmeasuredBoundary::SourceFilterReentry
+pub const perl_dap::reload::UnmeasuredBoundary::ALL: [perl_dap::reload::UnmeasuredBoundary; 4]
+pub const fn perl_dap::reload::UnmeasuredBoundary::as_str(self) -> &'static str
+pub fn perl_dap::reload::UnmeasuredBoundary::parse(code: &str) -> core::option::Option<perl_dap::reload::UnmeasuredBoundary>
+pub fn perl_dap::reload::UnmeasuredBoundary::clone(&self) -> perl_dap::reload::UnmeasuredBoundary
+pub fn perl_dap::reload::UnmeasuredBoundary::eq(&self, other: &perl_dap::reload::UnmeasuredBoundary) -> bool
+pub fn perl_dap::reload::UnmeasuredBoundary::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload::UnmeasuredBoundary::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_dap::reload::UnsettledKind
+pub perl_dap::reload::UnsettledKind::Cancelled
+pub perl_dap::reload::UnsettledKind::Timeout
+pub perl_dap::reload::UnsettledKind::TransportLoss
+pub const perl_dap::reload::UnsettledKind::ALL: [perl_dap::reload::UnsettledKind; 3]
+pub const fn perl_dap::reload::UnsettledKind::as_str(self) -> &'static str
+pub const fn perl_dap::reload::UnsettledKind::post_boundary_cause(self) -> perl_dap::reload::IndeterminateCause
+pub fn perl_dap::reload::UnsettledKind::clone(&self) -> perl_dap::reload::UnsettledKind
+pub fn perl_dap::reload::UnsettledKind::eq(&self, other: &perl_dap::reload::UnsettledKind) -> bool
+pub fn perl_dap::reload::UnsettledKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload::UnsettledKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub struct perl_dap::reload::DapReferenceBinding
+pub perl_dap::reload::DapReferenceBinding::runtime_module_generation: perl_dap::reload::RuntimeModuleGeneration
+pub perl_dap::reload::DapReferenceBinding::stopped_generation: u64
+pub fn perl_dap::reload::DapReferenceBinding::clone(&self) -> perl_dap::reload::DapReferenceBinding
+pub fn perl_dap::reload::DapReferenceBinding::eq(&self, other: &perl_dap::reload::DapReferenceBinding) -> bool
+pub fn perl_dap::reload::DapReferenceBinding::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::reload::LoadedModuleReloadPlan
+pub fn perl_dap::reload::LoadedModuleReloadPlan::admitted_session_generation(&self) -> u64
+pub fn perl_dap::reload::LoadedModuleReloadPlan::admitted_suspension_generation(&self) -> u64
+pub fn perl_dap::reload::LoadedModuleReloadPlan::subject(&self) -> &perl_dap::reload::LoadedModuleSubject
+pub fn perl_dap::reload::LoadedModuleReloadPlan::transaction_phases() -> [perl_dap::reload::ReloadTransactionPhase; 8]
+pub fn perl_dap::reload::LoadedModuleReloadPlan::clone(&self) -> perl_dap::reload::LoadedModuleReloadPlan
+pub fn perl_dap::reload::LoadedModuleReloadPlan::eq(&self, other: &perl_dap::reload::LoadedModuleReloadPlan) -> bool
+pub fn perl_dap::reload::LoadedModuleReloadPlan::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::reload::LoadedModuleSubject
+pub fn perl_dap::reload::LoadedModuleSubject::inc_key(&self) -> &str
+pub fn perl_dap::reload::LoadedModuleSubject::is_current_against(&self, view: &perl_dap::reload::SubjectCurrentnessView) -> bool
+pub fn perl_dap::reload::LoadedModuleSubject::launch_root(&self) -> &str
+pub fn perl_dap::reload::LoadedModuleSubject::logical_source_uri(&self) -> &str
+pub fn perl_dap::reload::LoadedModuleSubject::module_classification(&self) -> perl_dap::reload::ModuleClassification
+pub fn perl_dap::reload::LoadedModuleSubject::observation_generation(&self) -> u64
+pub fn perl_dap::reload::LoadedModuleSubject::operation_identity(&self) -> u64
+pub fn perl_dap::reload::LoadedModuleSubject::perl_identity(&self) -> &str
+pub fn perl_dap::reload::LoadedModuleSubject::resolved_runtime_path(&self) -> &str
+pub fn perl_dap::reload::LoadedModuleSubject::saved_content_digest(&self) -> &str
+pub fn perl_dap::reload::LoadedModuleSubject::session_generation(&self) -> u64
+pub fn perl_dap::reload::LoadedModuleSubject::suspension_generation(&self) -> u64
+pub fn perl_dap::reload::LoadedModuleSubject::clone(&self) -> perl_dap::reload::LoadedModuleSubject
+pub fn perl_dap::reload::LoadedModuleSubject::eq(&self, other: &perl_dap::reload::LoadedModuleSubject) -> bool
+pub fn perl_dap::reload::LoadedModuleSubject::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::reload::MechanismClaims
+pub perl_dap::reload::MechanismClaims::claims: alloc::vec::Vec<perl_dap::reload::MechanismClaim>
+pub perl_dap::reload::MechanismClaims::mechanism: perl_dap::reload::ReloadMechanism
+pub fn perl_dap::reload::MechanismClaims::clone(&self) -> perl_dap::reload::MechanismClaims
+pub fn perl_dap::reload::MechanismClaims::eq(&self, other: &perl_dap::reload::MechanismClaims) -> bool
+pub fn perl_dap::reload::MechanismClaims::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::reload::MechanismMeasurement
+pub perl_dap::reload::MechanismMeasurement::facts: alloc::vec::Vec<perl_dap::reload::MeasuredStateFact>
+pub perl_dap::reload::MechanismMeasurement::mechanism: perl_dap::reload::ReloadMechanism
+pub perl_dap::reload::MechanismMeasurement::perl_identity: core::option::Option<alloc::string::String>
+pub perl_dap::reload::MechanismMeasurement::unmeasured: alloc::vec::Vec<perl_dap::reload::UnmeasuredBoundary>
+pub fn perl_dap::reload::MechanismMeasurement::measured(mechanism: perl_dap::reload::ReloadMechanism, perl_identity: alloc::string::String, facts: alloc::vec::Vec<perl_dap::reload::MeasuredStateFact>, unmeasured: alloc::vec::Vec<perl_dap::reload::UnmeasuredBoundary>) -> Self
+pub fn perl_dap::reload::MechanismMeasurement::unmeasured(mechanism: perl_dap::reload::ReloadMechanism, boundaries: alloc::vec::Vec<perl_dap::reload::UnmeasuredBoundary>) -> Self
+pub fn perl_dap::reload::MechanismMeasurement::clone(&self) -> perl_dap::reload::MechanismMeasurement
+pub fn perl_dap::reload::MechanismMeasurement::eq(&self, other: &perl_dap::reload::MechanismMeasurement) -> bool
+pub fn perl_dap::reload::MechanismMeasurement::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::reload::ReloadAdmissionObservation
+pub perl_dap::reload::ReloadAdmissionObservation::active_frame_in_target: bool
+pub perl_dap::reload::ReloadAdmissionObservation::client_source_matches_saved: bool
+pub perl_dap::reload::ReloadAdmissionObservation::identity_binding_complete: bool
+pub perl_dap::reload::ReloadAdmissionObservation::identity_current: bool
+pub perl_dap::reload::ReloadAdmissionObservation::loaded_in_runtime: bool
+pub perl_dap::reload::ReloadAdmissionObservation::module_classification: perl_dap::reload::ModuleClassification
+pub perl_dap::reload::ReloadAdmissionObservation::runtime_mapping_unambiguous: bool
+pub perl_dap::reload::ReloadAdmissionObservation::runtime_supported: bool
+pub perl_dap::reload::ReloadAdmissionObservation::stopped_and_command_ready: bool
+pub perl_dap::reload::ReloadAdmissionObservation::within_launch_authority: bool
+pub fn perl_dap::reload::ReloadAdmissionObservation::clone(&self) -> perl_dap::reload::ReloadAdmissionObservation
+pub fn perl_dap::reload::ReloadAdmissionObservation::eq(&self, other: &perl_dap::reload::ReloadAdmissionObservation) -> bool
+pub fn perl_dap::reload::ReloadAdmissionObservation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::reload::ReloadCommandPlan
+pub fn perl_dap::reload::ReloadCommandPlan::mutation(&self) -> &[alloc::string::String]
+pub fn perl_dap::reload::ReloadCommandPlan::preflight(&self) -> &[alloc::string::String]
+pub fn perl_dap::reload::ReloadCommandPlan::read_back(&self) -> &[alloc::string::String]
+pub fn perl_dap::reload::ReloadCommandPlan::clone(&self) -> perl_dap::reload::ReloadCommandPlan
+pub fn perl_dap::reload::ReloadCommandPlan::eq(&self, other: &perl_dap::reload::ReloadCommandPlan) -> bool
+pub fn perl_dap::reload::ReloadCommandPlan::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::reload::ReloadExecution
+pub perl_dap::reload::ReloadExecution::generation: perl_dap::reload::GenerationAdvance
+pub perl_dap::reload::ReloadExecution::mechanism: perl_dap::reload::ReloadMechanism
+pub perl_dap::reload::ReloadExecution::mutation_issued: bool
+pub perl_dap::reload::ReloadExecution::outcome: perl_dap::reload::LoadedModuleReloadOutcome
+pub perl_dap::reload::ReloadExecution::phase_reached: perl_dap::reload::ReloadTransactionPhase
+pub fn perl_dap::reload::ReloadExecution::projects_as_clean(&self) -> bool
+pub fn perl_dap::reload::ReloadExecution::clone(&self) -> perl_dap::reload::ReloadExecution
+pub fn perl_dap::reload::ReloadExecution::eq(&self, other: &perl_dap::reload::ReloadExecution) -> bool
+pub fn perl_dap::reload::ReloadExecution::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::reload::ReloadInvalidationPlan
+pub fn perl_dap::reload::ReloadInvalidationPlan::covers_every_kind(&self) -> bool
+pub fn perl_dap::reload::ReloadInvalidationPlan::disposition_for(&self, kind: perl_dap::reload::DapObjectKind) -> core::option::Option<perl_dap::reload::InvalidationDisposition>
+pub fn perl_dap::reload::ReloadInvalidationPlan::from_dispositions(dispositions: &[(perl_dap::reload::DapObjectKind, perl_dap::reload::InvalidationDisposition)]) -> perl_dap::reload::ReloadInvalidationPlan
+pub fn perl_dap::reload::ReloadInvalidationPlan::is_empty(&self) -> bool
+pub fn perl_dap::reload::ReloadInvalidationPlan::len(&self) -> usize
+pub fn perl_dap::reload::ReloadInvalidationPlan::clone(&self) -> perl_dap::reload::ReloadInvalidationPlan
+pub fn perl_dap::reload::ReloadInvalidationPlan::eq(&self, other: &perl_dap::reload::ReloadInvalidationPlan) -> bool
+pub fn perl_dap::reload::ReloadInvalidationPlan::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::reload::ReloadMechanismRecord
+pub perl_dap::reload::ReloadMechanismRecord::limitation_statements: &'static [&'static str]
+pub perl_dap::reload::ReloadMechanismRecord::mechanism: perl_dap::reload::ReloadMechanism
+pub fn perl_dap::reload::ReloadMechanismRecord::all_limitations(&self) -> alloc::vec::Vec<&'static str>
+pub fn perl_dap::reload::ReloadMechanismRecord::clone(&self) -> perl_dap::reload::ReloadMechanismRecord
+pub fn perl_dap::reload::ReloadMechanismRecord::eq(&self, other: &perl_dap::reload::ReloadMechanismRecord) -> bool
+pub fn perl_dap::reload::ReloadMechanismRecord::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::reload::ReloadRequestSurfaceDescriptor
+pub perl_dap::reload::ReloadRequestSurfaceDescriptor::capability: perl_dap::reload::ReloadCapabilityProjection
+pub perl_dap::reload::ReloadRequestSurfaceDescriptor::correlation_identity: core::option::Option<u64>
+pub perl_dap::reload::ReloadRequestSurfaceDescriptor::family: alloc::string::String
+pub perl_dap::reload::ReloadRequestSurfaceDescriptor::family_version: u32
+pub perl_dap::reload::ReloadRequestSurfaceDescriptor::payload: perl_dap::reload::ReloadRequestPayload
+pub fn perl_dap::reload::ReloadRequestSurfaceDescriptor::clone(&self) -> perl_dap::reload::ReloadRequestSurfaceDescriptor
+pub fn perl_dap::reload::ReloadRequestSurfaceDescriptor::eq(&self, other: &perl_dap::reload::ReloadRequestSurfaceDescriptor) -> bool
+pub fn perl_dap::reload::ReloadRequestSurfaceDescriptor::default() -> Self
+pub fn perl_dap::reload::ReloadRequestSurfaceDescriptor::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::reload::RetainedModuleObservations
+pub fn perl_dap::reload::RetainedModuleObservations::is_current(&self, inc_key: &str, current: perl_dap::reload::RuntimeModuleGeneration) -> bool
+pub fn perl_dap::reload::RetainedModuleObservations::is_empty(&self) -> bool
+pub fn perl_dap::reload::RetainedModuleObservations::len(&self) -> usize
+pub const fn perl_dap::reload::RetainedModuleObservations::new() -> perl_dap::reload::RetainedModuleObservations
+pub fn perl_dap::reload::RetainedModuleObservations::record(&mut self, observation: perl_dap::reload::generation::RetainedModuleObservation)
+pub fn perl_dap::reload::RetainedModuleObservations::clone(&self) -> perl_dap::reload::RetainedModuleObservations
+pub fn perl_dap::reload::RetainedModuleObservations::eq(&self, other: &perl_dap::reload::RetainedModuleObservations) -> bool
+pub fn perl_dap::reload::RetainedModuleObservations::default() -> Self
+pub fn perl_dap::reload::RetainedModuleObservations::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::reload::RuntimeModuleGeneration(_)
+pub const perl_dap::reload::RuntimeModuleGeneration::INITIAL: perl_dap::reload::RuntimeModuleGeneration
+pub const fn perl_dap::reload::RuntimeModuleGeneration::distance_to(self, other: perl_dap::reload::RuntimeModuleGeneration) -> core::option::Option<u64>
+pub const fn perl_dap::reload::RuntimeModuleGeneration::is_exhausted(self) -> bool
+pub const fn perl_dap::reload::RuntimeModuleGeneration::new(value: u64) -> perl_dap::reload::RuntimeModuleGeneration
+pub const fn perl_dap::reload::RuntimeModuleGeneration::next(self) -> perl_dap::reload::RuntimeModuleGeneration
+pub fn perl_dap::reload::RuntimeModuleGeneration::clone(&self) -> perl_dap::reload::RuntimeModuleGeneration
+pub fn perl_dap::reload::RuntimeModuleGeneration::cmp(&self, other: &perl_dap::reload::RuntimeModuleGeneration) -> core::cmp::Ordering
+pub fn perl_dap::reload::RuntimeModuleGeneration::eq(&self, other: &perl_dap::reload::RuntimeModuleGeneration) -> bool
+pub fn perl_dap::reload::RuntimeModuleGeneration::partial_cmp(&self, other: &perl_dap::reload::RuntimeModuleGeneration) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_dap::reload::RuntimeModuleGeneration::default() -> perl_dap::reload::RuntimeModuleGeneration
+pub fn perl_dap::reload::RuntimeModuleGeneration::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::reload::RuntimeModuleGeneration::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub struct perl_dap::reload::RuntimeModuleGenerationClock
+pub fn perl_dap::reload::RuntimeModuleGenerationClock::apply(&mut self, outcome: &perl_dap::reload::LoadedModuleReloadOutcome) -> perl_dap::reload::GenerationAdvance
+pub const fn perl_dap::reload::RuntimeModuleGenerationClock::current(&self) -> perl_dap::reload::RuntimeModuleGeneration
+pub const fn perl_dap::reload::RuntimeModuleGenerationClock::new() -> perl_dap::reload::RuntimeModuleGenerationClock
+pub fn perl_dap::reload::RuntimeModuleGenerationClock::clone(&self) -> perl_dap::reload::RuntimeModuleGenerationClock
+pub fn perl_dap::reload::RuntimeModuleGenerationClock::eq(&self, other: &perl_dap::reload::RuntimeModuleGenerationClock) -> bool
+pub fn perl_dap::reload::RuntimeModuleGenerationClock::default() -> Self
+pub fn perl_dap::reload::RuntimeModuleGenerationClock::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::reload::SubjectCandidate
+pub perl_dap::reload::SubjectCandidate::inc_key: alloc::string::String
+pub perl_dap::reload::SubjectCandidate::launch_root: alloc::string::String
+pub perl_dap::reload::SubjectCandidate::logical_source_uri: alloc::string::String
+pub perl_dap::reload::SubjectCandidate::module_classification: core::option::Option<perl_dap::reload::ModuleClassification>
+pub perl_dap::reload::SubjectCandidate::observation_generation: core::option::Option<u64>
+pub perl_dap::reload::SubjectCandidate::operation_identity: u64
+pub perl_dap::reload::SubjectCandidate::perl_identity: alloc::string::String
+pub perl_dap::reload::SubjectCandidate::resolved_runtime_path: alloc::string::String
+pub perl_dap::reload::SubjectCandidate::saved_content_digest: alloc::string::String
+pub perl_dap::reload::SubjectCandidate::session_generation: core::option::Option<u64>
+pub perl_dap::reload::SubjectCandidate::suspension_generation: core::option::Option<u64>
+pub fn perl_dap::reload::SubjectCandidate::bind(&self) -> core::result::Result<perl_dap::reload::LoadedModuleSubject, perl_dap::reload::SubjectBindingError>
+pub fn perl_dap::reload::SubjectCandidate::clone(&self) -> perl_dap::reload::SubjectCandidate
+pub fn perl_dap::reload::SubjectCandidate::eq(&self, other: &perl_dap::reload::SubjectCandidate) -> bool
+pub fn perl_dap::reload::SubjectCandidate::default() -> perl_dap::reload::SubjectCandidate
+pub fn perl_dap::reload::SubjectCandidate::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::reload::SubjectCurrentnessView
+pub perl_dap::reload::SubjectCurrentnessView::observation_generation: u64
+pub perl_dap::reload::SubjectCurrentnessView::perl_identity: alloc::string::String
+pub perl_dap::reload::SubjectCurrentnessView::saved_content_digest: alloc::string::String
+pub perl_dap::reload::SubjectCurrentnessView::session_generation: u64
+pub perl_dap::reload::SubjectCurrentnessView::suspension_generation: u64
+pub fn perl_dap::reload::SubjectCurrentnessView::clone(&self) -> perl_dap::reload::SubjectCurrentnessView
+pub fn perl_dap::reload::SubjectCurrentnessView::eq(&self, other: &perl_dap::reload::SubjectCurrentnessView) -> bool
+pub fn perl_dap::reload::SubjectCurrentnessView::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub trait perl_dap::reload::ReloadRuntimeChannel
+pub fn perl_dap::reload::ReloadRuntimeChannel::currentness_view(&mut self) -> core::option::Option<perl_dap::reload::SubjectCurrentnessView>
+pub fn perl_dap::reload::ReloadRuntimeChannel::run_mutation(&mut self, commands: &[alloc::string::String]) -> perl_dap::reload::ChannelSettlement
+pub fn perl_dap::reload::ReloadRuntimeChannel::run_readonly(&mut self, commands: &[alloc::string::String]) -> perl_dap::reload::ChannelSettlement
+pub fn perl_dap::reload::classify_reload_eligibility(observation: &perl_dap::reload::ReloadAdmissionObservation) -> perl_dap::reload::LoadedModuleReloadEligibility
+pub fn perl_dap::reload::execute_reload<C: perl_dap::reload::ReloadRuntimeChannel + ?core::marker::Sized>(plan: &perl_dap::reload::LoadedModuleReloadPlan, mechanism: perl_dap::reload::ReloadMechanism, channel: &mut C, clock: &mut perl_dap::reload::RuntimeModuleGenerationClock) -> perl_dap::reload::ReloadExecution
+pub fn perl_dap::reload::invalidation_plan_for(outcome: &perl_dap::reload::LoadedModuleReloadOutcome) -> perl_dap::reload::ReloadInvalidationPlan
+pub fn perl_dap::reload::measure_mechanism_on_real_perl(mechanism: perl_dap::reload::ReloadMechanism) -> core::option::Option<core::result::Result<perl_dap::reload::MechanismMeasurement, alloc::string::String>>
+pub const fn perl_dap::reload::mechanism_is_executable(mechanism: perl_dap::reload::ReloadMechanism) -> bool
+pub fn perl_dap::reload::mechanism_records() -> alloc::vec::Vec<perl_dap::reload::ReloadMechanismRecord>
+pub fn perl_dap::reload::phase_permits_outcome(phase: perl_dap::reload::ReloadTransactionPhase, outcome: &perl_dap::reload::LoadedModuleReloadOutcome) -> bool
+pub fn perl_dap::reload::plan_commands(subject: &perl_dap::reload::LoadedModuleSubject, mechanism: perl_dap::reload::ReloadMechanism) -> core::result::Result<perl_dap::reload::ReloadCommandPlan, perl_dap::reload::CommandPlanError>
+pub fn perl_dap::reload::plan_reload(subject: &perl_dap::reload::LoadedModuleSubject, observation: &perl_dap::reload::ReloadAdmissionObservation) -> core::result::Result<perl_dap::reload::LoadedModuleReloadPlan, perl_dap::reload::LoadedModuleReloadEligibility>
+pub fn perl_dap::reload::project_unknown_after_mutation(phase: perl_dap::reload::ReloadTransactionPhase, cause: perl_dap::reload::IndeterminateCause) -> perl_dap::reload::LoadedModuleReloadOutcome
+pub fn perl_dap::reload::reference_is_stale(binding: &perl_dap::reload::DapReferenceBinding, current_runtime_module: perl_dap::reload::RuntimeModuleGeneration, current_stopped: u64) -> bool
+pub fn perl_dap::reload::validate_request_surface(descriptor: &perl_dap::reload::ReloadRequestSurfaceDescriptor) -> core::result::Result<(), perl_dap::reload::SurfaceViolation>
+pub fn perl_dap::reload::verify_invalidation_plan(plan: &perl_dap::reload::ReloadInvalidationPlan, outcome: &perl_dap::reload::LoadedModuleReloadOutcome) -> core::result::Result<(), perl_dap::reload::InvalidationPlanError>
+pub fn perl_dap::reload::verify_measurement(measurement: &perl_dap::reload::MechanismMeasurement) -> core::result::Result<(), perl_dap::reload::MeasurementRecordError>
+pub fn perl_dap::reload::verify_mechanism_claims(claims: &perl_dap::reload::MechanismClaims) -> core::result::Result<(), perl_dap::reload::MechanismRecordError>
 pub mod perl_dap::reload_family
 pub enum perl_dap::reload_family::FamilyNegotiationRefusal
 pub perl_dap::reload_family::FamilyNegotiationRefusal::FamilyAbsent
@@ -2593,6 +3250,11 @@ pub mod perl_dap::shell
 pub fn perl_dap::shell::format_command_args(args: &[alloc::string::String]) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_dap::shell::setup_environment(include_paths: &[std::path::PathBuf]) -> std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>
 pub mod perl_dap::stack
+pub enum perl_dap::stack::FixedOriginStackParseError<'a>
+pub perl_dap::stack::FixedOriginStackParseError::RegexError(&'a regex::error::Error)
+pub fn perl_dap::api::FixedOriginStackParseError<'_>::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
+pub fn perl_dap::api::FixedOriginStackParseError<'a>::clone(&self) -> perl_dap::api::FixedOriginStackParseError<'a>
+pub fn perl_dap::api::FixedOriginStackParseError<'a>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_dap::stack::FrameCategory
 pub perl_dap::stack::FrameCategory::Core
 pub perl_dap::stack::FrameCategory::Eval
@@ -2626,11 +3288,11 @@ pub fn perl_dap::stack::StackFramePresentationHint::deserialize<__D>(__deseriali
 pub enum perl_dap::stack::StackParseError
 pub perl_dap::stack::StackParseError::RegexError(regex::error::Error)
 pub perl_dap::stack::StackParseError::UnrecognizedFormat(alloc::string::String)
+pub fn perl_dap::api::StackParseError::as_fixed_origin(&self) -> core::option::Option<perl_dap::api::FixedOriginStackParseError<'_>>
 pub fn perl_dap::api::StackParseError::from(source: regex::error::Error) -> Self
 pub fn perl_dap::api::StackParseError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn perl_dap::api::StackParseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::api::StackParseError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_dap::api::StackParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub struct perl_dap::stack::PerlFrameClassifier
 pub fn perl_dap::api::PerlFrameClassifier::new() -> Self
 pub fn perl_dap::api::PerlFrameClassifier::with_library_path(self, path: impl core::convert::Into<alloc::string::String>) -> Self
@@ -2643,7 +3305,9 @@ pub fn perl_dap::api::PerlStackParser::looks_like_frame(line: &str) -> bool
 pub fn perl_dap::api::PerlStackParser::new() -> Self
 pub fn perl_dap::api::PerlStackParser::parse_context(&self, line: &str) -> core::option::Option<(alloc::string::String, alloc::string::String, i64)>
 pub fn perl_dap::api::PerlStackParser::parse_frame(&mut self, line: &str, id: i64) -> core::option::Option<perl_dap::stack::StackFrame>
+pub fn perl_dap::api::PerlStackParser::parse_frame_originated(&mut self, input: perl_dap::parse_origin::OriginatedParseInput<'_>, id: i64) -> core::result::Result<perl_dap::stack::StackFrame, perl_dap::parse_origin::OriginatedParseError<perl_dap::api::StackParseError>>
 pub fn perl_dap::api::PerlStackParser::parse_stack_trace(&mut self, output: &str) -> alloc::vec::Vec<perl_dap::stack::StackFrame>
+pub fn perl_dap::api::PerlStackParser::parse_stack_trace_originated(&mut self, input: perl_dap::parse_origin::OriginatedParseInput<'_>) -> alloc::vec::Vec<perl_dap::stack::StackFrame>
 pub fn perl_dap::api::PerlStackParser::with_auto_ids(self, auto: bool) -> Self
 pub fn perl_dap::api::PerlStackParser::with_starting_id(self, id: i64) -> Self
 pub fn perl_dap::api::PerlStackParser::with_unknown_frames(self, include: bool) -> Self
@@ -2741,7 +3405,7 @@ pub fn perl_dap::tcp_attach::TcpAttachSession::disconnect(&mut self) -> anyhow::
 pub fn perl_dap::tcp_attach::TcpAttachSession::is_connected(&self) -> bool
 pub fn perl_dap::tcp_attach::TcpAttachSession::new() -> Self
 pub fn perl_dap::tcp_attach::TcpAttachSession::send_message(&mut self, message: &str) -> anyhow::Result<()>
-pub fn perl_dap::tcp_attach::TcpAttachSession::set_event_sender(&mut self, sender: std::sync::mpsc::Sender<perl_dap::tcp_attach::DapEvent>)
+pub fn perl_dap::tcp_attach::TcpAttachSession::set_event_sender(&mut self, sender: std::sync::mpsc::SyncSender<perl_dap::tcp_attach::DapEvent>)
 pub fn perl_dap::tcp_attach::TcpAttachSession::start_reader(&mut self) -> anyhow::Result<()>
 pub fn perl_dap::tcp_attach::TcpAttachSession::default() -> Self
 pub fn perl_dap::tcp_attach::TcpAttachSession::drop(&mut self)
@@ -2822,6 +3486,18 @@ pub fn perl_dap::value::PerlValue::default() -> perl_dap::value::PerlValue
 pub fn perl_dap::value::PerlValue::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::value::PerlValue::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::value::PerlValue::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub mod perl_dap::value_format
+pub enum perl_dap::value_format::ValueFormatPolicy
+pub perl_dap::value_format::ValueFormatPolicy::Decimal
+pub perl_dap::value_format::ValueFormatPolicy::Hex
+pub fn perl_dap::value_format::ValueFormatPolicy::from_options(options: core::option::Option<&perl_dap::protocol::ValueFormat>) -> Self
+pub fn perl_dap::value_format::ValueFormatPolicy::project_display(self, default_display: &str, typed: core::option::Option<&perl_dap::value::PerlValue>) -> alloc::string::String
+pub fn perl_dap::value_format::ValueFormatPolicy::project_variable(self, row: &perl_dap::types::Variable, typed: core::option::Option<&perl_dap::value::PerlValue>) -> perl_dap::types::Variable
+pub fn perl_dap::value_format::ValueFormatPolicy::render_integer(self, value: i64) -> alloc::string::String
+pub fn perl_dap::value_format::ValueFormatPolicy::clone(&self) -> perl_dap::value_format::ValueFormatPolicy
+pub fn perl_dap::value_format::ValueFormatPolicy::eq(&self, other: &perl_dap::value_format::ValueFormatPolicy) -> bool
+pub fn perl_dap::value_format::ValueFormatPolicy::default() -> perl_dap::value_format::ValueFormatPolicy
+pub fn perl_dap::value_format::ValueFormatPolicy::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub mod perl_dap::var_ref
 pub enum perl_dap::var_ref::ScopeKind
 pub perl_dap::var_ref::ScopeKind::Arguments = 4
@@ -2855,6 +3531,85 @@ pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::fmt(&self, f: &
 pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub mod perl_dap::variables
+pub mod perl_dap::variables::lexical_snapshot
+pub enum perl_dap::variables::lexical_snapshot::NodeOutcome
+pub perl_dap::variables::lexical_snapshot::NodeOutcome::Complete
+pub perl_dap::variables::lexical_snapshot::NodeOutcome::Truncated(perl_dap::variables::lexical_snapshot::TruncationReason)
+pub perl_dap::variables::lexical_snapshot::NodeOutcome::Unavailable(perl_dap::variables::lexical_snapshot::UnavailableReason)
+pub fn perl_dap::variables::lexical_snapshot::NodeOutcome::clone(&self) -> perl_dap::variables::lexical_snapshot::NodeOutcome
+pub fn perl_dap::variables::lexical_snapshot::NodeOutcome::eq(&self, other: &perl_dap::variables::lexical_snapshot::NodeOutcome) -> bool
+pub fn perl_dap::variables::lexical_snapshot::NodeOutcome::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::variables::lexical_snapshot::TruncationReason
+pub perl_dap::variables::lexical_snapshot::TruncationReason::ContainerItemLimit
+pub perl_dap::variables::lexical_snapshot::TruncationReason::DepthLimit
+pub perl_dap::variables::lexical_snapshot::TruncationReason::NodeBudgetExhausted
+pub perl_dap::variables::lexical_snapshot::TruncationReason::ScalarByteLimit
+pub perl_dap::variables::lexical_snapshot::TruncationReason::TotalByteLimit
+pub fn perl_dap::variables::lexical_snapshot::TruncationReason::clone(&self) -> perl_dap::variables::lexical_snapshot::TruncationReason
+pub fn perl_dap::variables::lexical_snapshot::TruncationReason::eq(&self, other: &perl_dap::variables::lexical_snapshot::TruncationReason) -> bool
+pub fn perl_dap::variables::lexical_snapshot::TruncationReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_dap::variables::lexical_snapshot::UnavailableReason
+pub perl_dap::variables::lexical_snapshot::UnavailableReason::InspectionFailed
+pub perl_dap::variables::lexical_snapshot::UnavailableReason::Magical
+pub perl_dap::variables::lexical_snapshot::UnavailableReason::OverloadedStringify
+pub perl_dap::variables::lexical_snapshot::UnavailableReason::Tied
+pub fn perl_dap::variables::lexical_snapshot::UnavailableReason::clone(&self) -> perl_dap::variables::lexical_snapshot::UnavailableReason
+pub fn perl_dap::variables::lexical_snapshot::UnavailableReason::eq(&self, other: &perl_dap::variables::lexical_snapshot::UnavailableReason) -> bool
+pub fn perl_dap::variables::lexical_snapshot::UnavailableReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::variables::lexical_snapshot::CollectionSnapshot
+pub perl_dap::variables::lexical_snapshot::CollectionSnapshot::root: perl_dap::variables::lexical_snapshot::SnapshotNode
+pub perl_dap::variables::lexical_snapshot::CollectionSnapshot::total_nodes_visited: usize
+pub perl_dap::variables::lexical_snapshot::CollectionSnapshot::total_retained_bytes: usize
+pub perl_dap::variables::lexical_snapshot::CollectionSnapshot::truncation: core::option::Option<perl_dap::variables::lexical_snapshot::TruncationReason>
+pub fn perl_dap::variables::lexical_snapshot::CollectionSnapshot::clone(&self) -> perl_dap::variables::lexical_snapshot::CollectionSnapshot
+pub fn perl_dap::variables::lexical_snapshot::CollectionSnapshot::eq(&self, other: &perl_dap::variables::lexical_snapshot::CollectionSnapshot) -> bool
+pub fn perl_dap::variables::lexical_snapshot::CollectionSnapshot::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::variables::lexical_snapshot::SnapshotBudget
+pub perl_dap::variables::lexical_snapshot::SnapshotBudget::max_depth: usize
+pub perl_dap::variables::lexical_snapshot::SnapshotBudget::max_items_per_container: usize
+pub perl_dap::variables::lexical_snapshot::SnapshotBudget::max_scalar_bytes: usize
+pub perl_dap::variables::lexical_snapshot::SnapshotBudget::max_total_bytes: usize
+pub perl_dap::variables::lexical_snapshot::SnapshotBudget::max_total_nodes: usize
+pub const fn perl_dap::variables::lexical_snapshot::SnapshotBudget::defaults() -> Self
+pub fn perl_dap::variables::lexical_snapshot::SnapshotBudget::clone(&self) -> perl_dap::variables::lexical_snapshot::SnapshotBudget
+pub fn perl_dap::variables::lexical_snapshot::SnapshotBudget::eq(&self, other: &perl_dap::variables::lexical_snapshot::SnapshotBudget) -> bool
+pub fn perl_dap::variables::lexical_snapshot::SnapshotBudget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::variables::lexical_snapshot::SnapshotNode
+pub perl_dap::variables::lexical_snapshot::SnapshotNode::children: alloc::vec::Vec<perl_dap::variables::lexical_snapshot::SnapshotNode>
+pub perl_dap::variables::lexical_snapshot::SnapshotNode::kind_label: alloc::string::String
+pub perl_dap::variables::lexical_snapshot::SnapshotNode::name: alloc::string::String
+pub perl_dap::variables::lexical_snapshot::SnapshotNode::outcome: perl_dap::variables::lexical_snapshot::NodeOutcome
+pub perl_dap::variables::lexical_snapshot::SnapshotNode::rendered: core::option::Option<alloc::string::String>
+pub fn perl_dap::variables::lexical_snapshot::SnapshotNode::clone(&self) -> perl_dap::variables::lexical_snapshot::SnapshotNode
+pub fn perl_dap::variables::lexical_snapshot::SnapshotNode::eq(&self, other: &perl_dap::variables::lexical_snapshot::SnapshotNode) -> bool
+pub fn perl_dap::variables::lexical_snapshot::SnapshotNode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::variables::lexical_snapshot::SourceFlags
+pub perl_dap::variables::lexical_snapshot::SourceFlags::magical: bool
+pub perl_dap::variables::lexical_snapshot::SourceFlags::overloaded_stringify: bool
+pub perl_dap::variables::lexical_snapshot::SourceFlags::tied: bool
+pub const perl_dap::variables::lexical_snapshot::SourceFlags::PLAIN: Self
+pub const fn perl_dap::variables::lexical_snapshot::SourceFlags::forbids_enumeration(self) -> bool
+pub const fn perl_dap::variables::lexical_snapshot::SourceFlags::forbids_rendering(self) -> bool
+pub fn perl_dap::variables::lexical_snapshot::SourceFlags::clone(&self) -> perl_dap::variables::lexical_snapshot::SourceFlags
+pub fn perl_dap::variables::lexical_snapshot::SourceFlags::eq(&self, other: &perl_dap::variables::lexical_snapshot::SourceFlags) -> bool
+pub fn perl_dap::variables::lexical_snapshot::SourceFlags::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_dap::variables::lexical_snapshot::SourceValue<'a>
+pub perl_dap::variables::lexical_snapshot::SourceValue::children: core::option::Option<&'a [perl_dap::variables::lexical_snapshot::SourceValue<'a>]>
+pub perl_dap::variables::lexical_snapshot::SourceValue::flags: perl_dap::variables::lexical_snapshot::SourceFlags
+pub perl_dap::variables::lexical_snapshot::SourceValue::kind_label: &'a str
+pub perl_dap::variables::lexical_snapshot::SourceValue::name: &'a str
+pub perl_dap::variables::lexical_snapshot::SourceValue::scalar_text: core::option::Option<&'a str>
+pub fn perl_dap::variables::lexical_snapshot::SourceValue<'a>::container(name: &'a str, kind_label: &'a str, children: &'a [perl_dap::variables::lexical_snapshot::SourceValue<'a>]) -> Self
+pub fn perl_dap::variables::lexical_snapshot::SourceValue<'a>::scalar(name: &'a str, text: &'a str) -> Self
+pub fn perl_dap::variables::lexical_snapshot::SourceValue<'a>::clone(&self) -> perl_dap::variables::lexical_snapshot::SourceValue<'a>
+pub fn perl_dap::variables::lexical_snapshot::SourceValue<'a>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::variables::lexical_snapshot::capture_snapshot(root: perl_dap::variables::lexical_snapshot::SourceValue<'_>, budget: perl_dap::variables::lexical_snapshot::SnapshotBudget) -> perl_dap::variables::lexical_snapshot::CollectionSnapshot
+pub enum perl_dap::variables::FixedOriginVariableParseError<'a>
+pub perl_dap::variables::FixedOriginVariableParseError::MaxDepthExceeded(usize)
+pub perl_dap::variables::FixedOriginVariableParseError::RegexError(&'a regex::error::Error)
+pub fn perl_dap::api::FixedOriginVariableParseError<'_>::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
+pub fn perl_dap::api::FixedOriginVariableParseError<'a>::clone(&self) -> perl_dap::api::FixedOriginVariableParseError<'a>
+pub fn perl_dap::api::FixedOriginVariableParseError<'a>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_dap::variables::PerlValue
 pub perl_dap::variables::PerlValue::Array(alloc::vec::Vec<perl_dap::value::PerlValue>)
 pub perl_dap::variables::PerlValue::Code
@@ -2897,16 +3652,19 @@ pub perl_dap::variables::VariableParseError::RegexError(regex::error::Error)
 pub perl_dap::variables::VariableParseError::UnrecognizedFormat(alloc::string::String)
 pub perl_dap::variables::VariableParseError::UnterminatedCollection
 pub perl_dap::variables::VariableParseError::UnterminatedString
+pub fn perl_dap::api::VariableParseError::as_fixed_origin(&self) -> core::option::Option<perl_dap::api::FixedOriginVariableParseError<'_>>
 pub fn perl_dap::api::VariableParseError::from(source: regex::error::Error) -> Self
 pub fn perl_dap::api::VariableParseError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn perl_dap::api::VariableParseError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::api::VariableParseError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub fn perl_dap::api::VariableParseError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub struct perl_dap::variables::PerlVariableRenderer
+pub fn perl_dap::api::PerlVariableRenderer::child_entries(&self, value: &perl_dap::value::PerlValue, start: usize, count: usize) -> alloc::vec::Vec<(alloc::string::String, perl_dap::value::PerlValue)>
 pub fn perl_dap::api::PerlVariableRenderer::new() -> Self
+pub fn perl_dap::api::PerlVariableRenderer::render_display(&self, value: &perl_dap::value::PerlValue) -> alloc::string::String
 pub fn perl_dap::api::PerlVariableRenderer::with_max_array_preview(self, count: usize) -> Self
 pub fn perl_dap::api::PerlVariableRenderer::with_max_hash_preview(self, count: usize) -> Self
 pub fn perl_dap::api::PerlVariableRenderer::with_max_string_length(self, length: usize) -> Self
+pub fn perl_dap::api::PerlVariableRenderer::with_policy(self, policy: perl_dap::value_format::ValueFormatPolicy) -> Self
 pub fn perl_dap::api::PerlVariableRenderer::default() -> perl_dap::api::PerlVariableRenderer
 pub fn perl_dap::api::PerlVariableRenderer::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::api::PerlVariableRenderer::render(&self, name: &str, value: &perl_dap::value::PerlValue) -> perl_dap::api::RenderedVariable
@@ -2937,8 +3695,11 @@ pub fn perl_dap::api::RenderedVariable::deserialize<__D>(__deserializer: __D) ->
 pub struct perl_dap::variables::VariableParser
 pub fn perl_dap::api::VariableParser::new() -> Self
 pub fn perl_dap::api::VariableParser::parse_assignment(&self, line: &str) -> core::result::Result<(alloc::string::String, perl_dap::value::PerlValue), perl_dap::api::VariableParseError>
+pub fn perl_dap::api::VariableParser::parse_assignment_originated(&self, input: perl_dap::parse_origin::OriginatedParseInput<'_>) -> core::result::Result<(alloc::string::String, perl_dap::value::PerlValue), perl_dap::parse_origin::OriginatedParseError<perl_dap::api::VariableParseError>>
 pub fn perl_dap::api::VariableParser::parse_value(&self, text: &str, depth: usize) -> core::result::Result<perl_dap::value::PerlValue, perl_dap::api::VariableParseError>
+pub fn perl_dap::api::VariableParser::parse_value_originated(&self, input: perl_dap::parse_origin::OriginatedParseInput<'_>, depth: usize) -> core::result::Result<perl_dap::value::PerlValue, perl_dap::parse_origin::OriginatedParseError<perl_dap::api::VariableParseError>>
 pub fn perl_dap::api::VariableParser::parse_variables(&self, output: &str) -> alloc::vec::Vec<(alloc::string::String, perl_dap::value::PerlValue)>
+pub fn perl_dap::api::VariableParser::parse_variables_originated(&self, input: perl_dap::parse_origin::OriginatedParseInput<'_>) -> alloc::vec::Vec<(alloc::string::String, perl_dap::value::PerlValue)>
 pub fn perl_dap::api::VariableParser::with_max_depth(self, depth: usize) -> Self
 pub fn perl_dap::api::VariableParser::default() -> perl_dap::api::VariableParser
 pub fn perl_dap::api::VariableParser::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -2994,6 +3755,17 @@ pub type perl_dap::debug_adapter::var_ref::ScopeKind::Error = perl_dap::debug_ad
 pub fn perl_dap::debug_adapter::var_ref::ScopeKind::try_from(value: i32) -> core::result::Result<Self, Self::Error>
 pub fn perl_dap::debug_adapter::var_ref::ScopeKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::debug_adapter::var_ref::ScopeKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_dap::ValueFormatPolicy
+pub perl_dap::ValueFormatPolicy::Decimal
+pub perl_dap::ValueFormatPolicy::Hex
+pub fn perl_dap::value_format::ValueFormatPolicy::from_options(options: core::option::Option<&perl_dap::protocol::ValueFormat>) -> Self
+pub fn perl_dap::value_format::ValueFormatPolicy::project_display(self, default_display: &str, typed: core::option::Option<&perl_dap::value::PerlValue>) -> alloc::string::String
+pub fn perl_dap::value_format::ValueFormatPolicy::project_variable(self, row: &perl_dap::types::Variable, typed: core::option::Option<&perl_dap::value::PerlValue>) -> perl_dap::types::Variable
+pub fn perl_dap::value_format::ValueFormatPolicy::render_integer(self, value: i64) -> alloc::string::String
+pub fn perl_dap::value_format::ValueFormatPolicy::clone(&self) -> perl_dap::value_format::ValueFormatPolicy
+pub fn perl_dap::value_format::ValueFormatPolicy::eq(&self, other: &perl_dap::value_format::ValueFormatPolicy) -> bool
+pub fn perl_dap::value_format::ValueFormatPolicy::default() -> perl_dap::value_format::ValueFormatPolicy
+pub fn perl_dap::value_format::ValueFormatPolicy::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_dap::VariableReference
 pub perl_dap::VariableReference::Child
 pub perl_dap::VariableReference::Child::index: u32
@@ -3210,6 +3982,7 @@ pub struct perl_dap::EvaluateArguments
 pub perl_dap::EvaluateArguments::allow_side_effects: core::option::Option<bool>
 pub perl_dap::EvaluateArguments::context: core::option::Option<alloc::string::String>
 pub perl_dap::EvaluateArguments::expression: alloc::string::String
+pub perl_dap::EvaluateArguments::format: core::option::Option<perl_dap::protocol::ValueFormat>
 pub perl_dap::EvaluateArguments::frame_id: core::option::Option<i64>
 pub fn perl_dap::protocol::EvaluateArguments::clone(&self) -> perl_dap::protocol::EvaluateArguments
 pub fn perl_dap::protocol::EvaluateArguments::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -3501,6 +4274,7 @@ pub fn perl_dap::protocol::SetExceptionBreakpointsArguments::serialize<__S>(&sel
 pub fn perl_dap::protocol::SetExceptionBreakpointsArguments::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_dap::SetExpressionArguments
 pub perl_dap::SetExpressionArguments::expression: alloc::string::String
+pub perl_dap::SetExpressionArguments::format: core::option::Option<perl_dap::protocol::ValueFormat>
 pub perl_dap::SetExpressionArguments::frame_id: core::option::Option<i64>
 pub perl_dap::SetExpressionArguments::value: alloc::string::String
 pub fn perl_dap::protocol::SetExpressionArguments::clone(&self) -> perl_dap::protocol::SetExpressionArguments
@@ -3522,6 +4296,7 @@ pub fn perl_dap::protocol::SetFunctionBreakpointsArguments::fmt(&self, f: &mut c
 pub fn perl_dap::protocol::SetFunctionBreakpointsArguments::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::protocol::SetFunctionBreakpointsArguments::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_dap::SetVariableArguments
+pub perl_dap::SetVariableArguments::format: core::option::Option<perl_dap::protocol::ValueFormat>
 pub perl_dap::SetVariableArguments::name: alloc::string::String
 pub perl_dap::SetVariableArguments::value: alloc::string::String
 pub perl_dap::SetVariableArguments::variables_reference: i64
@@ -3639,6 +4414,14 @@ pub fn perl_dap::protocol::ThreadsResponseBody::clone(&self) -> perl_dap::protoc
 pub fn perl_dap::protocol::ThreadsResponseBody::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::protocol::ThreadsResponseBody::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_dap::protocol::ThreadsResponseBody::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_dap::ValueFormat
+pub perl_dap::ValueFormat::hex: core::option::Option<bool>
+pub fn perl_dap::protocol::ValueFormat::clone(&self) -> perl_dap::protocol::ValueFormat
+pub fn perl_dap::protocol::ValueFormat::eq(&self, other: &perl_dap::protocol::ValueFormat) -> bool
+pub fn perl_dap::protocol::ValueFormat::default() -> perl_dap::protocol::ValueFormat
+pub fn perl_dap::protocol::ValueFormat::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_dap::protocol::ValueFormat::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_dap::protocol::ValueFormat::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_dap::VariableReferenceError
 pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::clone(&self) -> perl_dap::debug_adapter::var_ref::VariableReferenceError
 pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::eq(&self, other: &perl_dap::debug_adapter::var_ref::VariableReferenceError) -> bool
@@ -3648,6 +4431,7 @@ pub fn perl_dap::debug_adapter::var_ref::VariableReferenceError::error_class(&se
 pub struct perl_dap::VariablesArguments
 pub perl_dap::VariablesArguments::count: core::option::Option<i64>
 pub perl_dap::VariablesArguments::filter: core::option::Option<alloc::string::String>
+pub perl_dap::VariablesArguments::format: core::option::Option<perl_dap::protocol::ValueFormat>
 pub perl_dap::VariablesArguments::start: core::option::Option<i64>
 pub perl_dap::VariablesArguments::variables_reference: i64
 pub fn perl_dap::protocol::VariablesArguments::clone(&self) -> perl_dap::protocol::VariablesArguments
