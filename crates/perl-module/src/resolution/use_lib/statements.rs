@@ -103,15 +103,20 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
                 Some(nl_offset) => idx + nl_offset + 1,
                 None => source.len(),
             };
+            // A trailing comment swallows the newline that would otherwise
+            // trigger the pending heredoc bodies, so drain them at the same
+            // line boundary instead of scanning those bodies as code.
+            let resume = if pending_heredocs.is_empty() {
+                comment_end
+            } else {
+                skip_heredoc_bodies(source, comment_end, &mut pending_heredocs)
+            };
             // If no statement content has been seen yet, advance `start` past
             // the comment so the comment text is not included in the next slice.
             if !has_content {
-                start = comment_end;
+                start = resume;
             }
-            // Skip the iterator past the comment.
-            while i < chars.len() && chars[i].0 < comment_end {
-                i += 1;
-            }
+            i = advance_char_index(&chars, i, resume);
             continue;
         }
 
@@ -186,6 +191,38 @@ fn skip_pod_section(source: &str, start: usize) -> usize {
         .map_or(source.len(), |(_, next)| next)
 }
 
+/// Whether the `<<` at `start` follows a complete term, which makes it the
+/// left-shift operator rather than a heredoc opener.
+///
+/// Perl resolves this by lexer position, and the distinction is observable:
+/// `perl -c` accepts `my $x = 1 <<'EOF';` with no `EOF` line anywhere, so `<<`
+/// after a number is a shift. A preceding bareword is a function call
+/// (`print <<'EOF'`), which leaves `<<` in term position.
+fn follows_complete_term(source: &str, start: usize) -> bool {
+    let before = source[..start].trim_end_matches([' ', '\t']);
+    let Some(last) = before.chars().next_back() else {
+        return false;
+    };
+    if matches!(last, ')' | ']' | '}') {
+        return true;
+    }
+    if !(last.is_ascii_alphanumeric() || last == '_') {
+        return false;
+    }
+
+    let run_start = before
+        .char_indices()
+        .rev()
+        .take_while(|(_, ch)| ch.is_ascii_alphanumeric() || *ch == '_')
+        .last()
+        .map_or(0, |(index, _)| index);
+
+    // A bare number is a term; a sigiled variable ends one; anything else is a
+    // bareword, which in this position is a function call.
+    before[run_start..].chars().all(|ch| ch.is_ascii_digit())
+        || matches!(before[..run_start].chars().next_back(), Some('$' | '@' | '%' | '&'))
+}
+
 /// Recognize a heredoc opener at `start`, returning
 /// `(end, tag, strip_indent, requires_terminator)`.
 ///
@@ -229,10 +266,12 @@ fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bo
         let quote_offset = source[content_start..].find(quote)?;
         let quote_end = content_start + quote_offset;
         let tag = &source[content_start..quote_end];
-        if tag.is_empty() || tag.contains('\n') {
+        if tag.contains('\n') {
             return None;
         }
-        return Some((quote_end + 1, tag.to_string(), strip_indent, spaced_tag_start != tag_start));
+        let requires_terminator =
+            spaced_tag_start != tag_start || follows_complete_term(source, start);
+        return Some((quote_end + 1, tag.to_string(), strip_indent, requires_terminator));
     }
 
     if spaced_tag_start != tag_start || !(first.is_ascii_alphabetic() || first == b'_') {

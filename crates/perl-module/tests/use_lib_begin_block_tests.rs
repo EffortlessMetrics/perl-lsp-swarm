@@ -279,3 +279,79 @@ fn spaced_bareword_is_not_a_heredoc_opener() {
         }])]
     );
 }
+
+/// A trailing comment consumes the newline that drains pending heredoc bodies,
+/// so the drain has to happen at the comment's line boundary instead.
+#[test]
+fn commented_heredoc_openers_do_not_expose_body_pragmas() {
+    let quoted = "my $s = <<'EOF'; # note\nuse lib 'phantom_comment';\nEOF\nuse lib 'real';\n";
+    let bareword = "my $s = <<EOF; # note\nuse lib 'phantom_bareword';\nEOF\nuse lib 'real';\n";
+    let stacked = "my @s = (<<'A', <<'B'); # two\nuse lib 'phantom_a';\nA\nuse lib 'phantom_b';\nB\nuse lib 'real';\n";
+
+    for source in [quoted, bareword, stacked] {
+        assert_eq!(
+            extract_use_lib_operations(source),
+            vec![UseLibAction::Add(vec![UseLibPath {
+                path: "real".to_string(),
+                from_findbin: false,
+            }])],
+            "commented heredoc leaked a body pragma: {source:?}"
+        );
+    }
+}
+
+/// `<<` after a complete term is the left-shift operator, not a heredoc.
+///
+/// Perl decides this by lexer position and it is observable: `perl -c` accepts
+/// `my $x = 1 <<'EOF';` with no `EOF` line anywhere. Treating that as an
+/// unconfirmed heredoc swallowed every later pragma.
+#[test]
+fn shift_after_a_complete_term_does_not_hide_later_pragmas() {
+    let number = "my $x = 1 <<'EOF';\nuse lib 'real';\n";
+    let variable = "my $x = $bits <<'EOF';\nuse lib 'real';\n";
+    let paren = "my $x = ($bits) <<'EOF';\nuse lib 'real';\n";
+
+    for source in [number, variable, paren] {
+        assert_eq!(
+            extract_use_lib_operations(source),
+            vec![UseLibAction::Add(vec![UseLibPath {
+                path: "real".to_string(),
+                from_findbin: false,
+            }])],
+            "shift expression swallowed a later pragma: {source:?}"
+        );
+    }
+}
+
+/// A bareword before `<<` is a function call, which leaves the opener in term
+/// position — so `print <<'EOF'` stays a heredoc and its body stays out.
+#[test]
+fn heredoc_after_a_bareword_call_still_hides_its_body() {
+    let source = "print <<'EOF';\nuse lib 'phantom_print';\nEOF\nuse lib 'real';\n";
+
+    assert_eq!(
+        extract_use_lib_operations(source),
+        vec![UseLibAction::Add(vec![UseLibPath { path: "real".to_string(), from_findbin: false }])]
+    );
+}
+
+/// Perl accepts an empty heredoc delimiter (`<<''`), terminated by a blank
+/// line. Rejecting the opener scanned its body as code.
+#[test]
+fn empty_heredoc_delimiter_bodies_do_not_create_lib_operations() {
+    let source = "my $s = <<'';\nuse lib 'phantom_empty';\n\nuse lib 'real';\n";
+
+    assert_eq!(
+        extract_use_lib_operations(source),
+        vec![UseLibAction::Add(vec![UseLibPath { path: "real".to_string(), from_findbin: false }])]
+    );
+}
+
+/// A term-position heredoc still being typed has no terminator yet. It must
+/// suppress the text below it rather than invent an `@INC` root from it.
+#[test]
+fn unterminated_term_position_heredoc_suppresses_rather_than_invents() {
+    let source = "my $s = <<'EOF';\nuse lib 'phantom_typing';\n";
+
+    assert!(extract_use_lib_operations(source).is_empty());
+}
