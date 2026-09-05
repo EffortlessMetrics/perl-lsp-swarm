@@ -898,6 +898,45 @@ fn the_instruments_own_files_are_classified_by_parser_not_exempted() -> Result<(
             "a string naming the package in {instrument_file} must not"
         );
     }
+    // Two forms the parser branch has to catch, because on these two files it is
+    // the *only* branch and anything it misses is invisible.
+    //
+    // `extern crate` binds the crate without writing a path, so no path visit
+    // sees it.
+    for instrument_file in INSTRUMENT_SELF_FILES {
+        assert!(
+            reaches_audited_package("extern crate perl_ast_v2;", instrument_file),
+            "an `extern crate` in {instrument_file} must reach the denominator"
+        );
+        assert!(
+            reaches_audited_package("extern crate perl_ast_v2 as v2;", instrument_file),
+            "an aliased `extern crate` in {instrument_file} must reach the denominator"
+        );
+        // `syn` does not expand macros, so a path inside one is invisible to
+        // every other arm.
+        assert!(
+            reaches_audited_package("fn f() { some_macro!(perl_ast_v2::Node); }", instrument_file),
+            "a package path inside a macro in {instrument_file} must reach the denominator"
+        );
+        // And the distinction that makes the token scan usable here at all: a
+        // string literal inside a macro is what this module's own fixtures and
+        // assertion messages are made of, and must not register.
+        assert!(
+            !reaches_audited_package(
+                "fn f() { assert!(x, \"use perl_ast_v2 as v2;\"); }",
+                instrument_file
+            ),
+            "a package name inside a string literal in {instrument_file} is not a use"
+        );
+        assert!(
+            !reaches_audited_package(
+                "fn f() { let s = format!(\"{}\", \"perl_ast_v2::Node\"); }",
+                instrument_file
+            ),
+            "a package path inside a string literal in {instrument_file} is not a use"
+        );
+    }
+
     // And the branch is keyed on the path: the same prose in any other file is
     // still a textual reference, so this narrows nothing outside these two.
     assert!(

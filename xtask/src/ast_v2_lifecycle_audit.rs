@@ -1917,6 +1917,54 @@ impl ApiUseVisitor {
     }
 }
 
+/// Whether a macro's token stream writes a path into the audited package.
+///
+/// Token-level, deliberately. `syn` hands a macro body over as an unparsed
+/// stream, and rendering it back to text would put string literals — which is
+/// what the instrument's own fixtures and assertion messages are made of — back
+/// in scope. A `Literal` token is skipped whatever it spells, so
+/// `"use perl_ast_v2 as v2;"` does not register while
+/// `some_macro!(perl_ast_v2::Node)` does.
+///
+/// Path-shaped sequences are rebuilt and handed to `names_package_directly`, so
+/// what counts as "into the package" has one owner rather than a second opinion
+/// living here.
+fn macro_tokens_name_package(tokens: &proc_macro2::TokenStream) -> bool {
+    let mut segments: Vec<String> = Vec::new();
+    let mut after_ident = false;
+    for tree in tokens.clone() {
+        match tree {
+            proc_macro2::TokenTree::Group(group) => {
+                if macro_tokens_name_package(&group.stream()) {
+                    return true;
+                }
+                segments.clear();
+                after_ident = false;
+            }
+            proc_macro2::TokenTree::Ident(ident) => {
+                // Two idents in a row are two paths, not one: `use perl_ast_v2`
+                // must not compose into `use::perl_ast_v2`.
+                if after_ident {
+                    segments.clear();
+                }
+                segments.push(ident.to_string());
+                if names_package_directly(&segments.join("::")) {
+                    return true;
+                }
+                after_ident = true;
+            }
+            proc_macro2::TokenTree::Punct(punct) if punct.as_char() == ':' => {
+                after_ident = false;
+            }
+            _ => {
+                segments.clear();
+                after_ident = false;
+            }
+        }
+    }
+    false
+}
+
 impl<'ast> syn::visit::Visit<'ast> for ApiUseVisitor {
     fn visit_path(&mut self, node: &'ast syn::Path) {
         let rendered =
@@ -1941,6 +1989,27 @@ impl<'ast> syn::visit::Visit<'ast> for ApiUseVisitor {
             self.consider(rendered);
         }
         syn::visit::visit_item_use(self, node);
+    }
+
+    fn visit_item_extern_crate(&mut self, node: &'ast syn::ItemExternCrate) {
+        // `extern crate perl_ast_v2;` binds the crate without ever writing a
+        // path, so no `visit_path` sees it. It is a dependency declaration in
+        // source form, and on the parser-only branch — this module's own two
+        // files — it was the difference between a consumer and an invisible one.
+        self.consider(&node.ident.to_string());
+        syn::visit::visit_item_extern_crate(self, node);
+    }
+
+    fn visit_macro(&mut self, node: &'ast syn::Macro) {
+        // `syn` does not expand macros, so a package path inside one is invisible
+        // to every other arm here. Scanned at *token* level rather than
+        // textually: a string literal is one `Literal` token, so the fixtures and
+        // assertion messages these files are full of — `"use perl_ast_v2 as v2;"`
+        // — do not register, while `some_macro!(perl_ast_v2::Node)` does.
+        if !self.found && macro_tokens_name_package(&node.tokens) {
+            self.found = true;
+        }
+        syn::visit::visit_macro(self, node);
     }
 
     fn visit_attribute(&mut self, node: &'ast syn::Attribute) {
