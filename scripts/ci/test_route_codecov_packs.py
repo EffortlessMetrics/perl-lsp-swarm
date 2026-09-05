@@ -1576,8 +1576,14 @@ class IntegrationTestAugmentationTests(unittest.TestCase):
         ]
         self.assertTrue(dap_cmds, f"expected perl-dap --tests command; got: {rust_pack['commands']}")
         self.assertTrue(parser_cmds, f"expected perl-parser --tests command; got: {rust_pack['commands']}")
-        self.assertTrue(dap_lib_cmds, f"expected perl-dap --lib command; got: {rust_pack['commands']}")
-        self.assertTrue(parser_lib_cmds, f"expected perl-parser --lib command; got: {rust_pack['commands']}")
+        # Neither crate has a changed integration test, so each falls back to a
+        # blanket `--tests`, which already selects the library and the ordinary
+        # binaries.  A separate `--lib` beside it would only re-run that work
+        # (#13499).
+        self.assertFalse(dap_lib_cmds, f"expected no perl-dap --lib command; got: {rust_pack['commands']}")
+        self.assertFalse(
+            parser_lib_cmds, f"expected no perl-parser --lib command; got: {rust_pack['commands']}"
+        )
         # All injected integration-test commands must be single-threaded.
         for cmd in dap_cmds + parser_cmds:
             self.assertIn(

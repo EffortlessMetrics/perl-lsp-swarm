@@ -367,7 +367,17 @@ def augment_rust_focused_commands(
         targets = package_test_targets(crate_name, repo_root)
         if targets is None:
             continue
-        if targets.has_lib:
+        test_targets = test_targets_by_crate.get(crate_name, [])
+        # `cargo test --tests` selects every target with `test = true` -- the
+        # library and the ordinary binaries included, verified against
+        # `cargo test -p perl-ci-hygiene --tests --no-run`, which builds both
+        # `unittests src/lib.rs` and `unittests src/main.rs`.  So when the
+        # route falls back to `--tests`, a separate `--lib` or plain `--bin`
+        # command re-runs work that command already does.  Targets behind
+        # required features are the exception: `--tests` does not enable them,
+        # so they still need their own command (#13499).
+        covered_by_tests_fallback = not test_targets
+        if targets.has_lib and not covered_by_tests_fallback:
             lib_cmd = (
                 f"cargo llvm-cov test --no-report -p {targets.package_name} "
                 "--lib --profile agent --locked"
@@ -375,10 +385,11 @@ def augment_rust_focused_commands(
             if lib_cmd not in commands:
                 commands.append(lib_cmd)
         for binary in targets.binaries:
+            if covered_by_tests_fallback and not binary.required_features:
+                continue
             command = binary_target_command(targets.package_name, binary)
             if command not in commands:
                 commands.append(command)
-        test_targets = test_targets_by_crate.get(crate_name, [])
         if test_targets:
             integration_cmds = [
                 targeted_test_command(targets.package_name, target, features)

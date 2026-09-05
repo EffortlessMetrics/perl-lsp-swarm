@@ -50,14 +50,32 @@ class BinaryTargetRoutingTests(unittest.TestCase):
         root: Path,
         crate_directory: str,
         changed_source: str = "src/changed.rs",
+        with_changed_integration_test: bool = True,
     ) -> list[str]:
-        path = f"crates/{crate_directory}/{changed_source}"
-        selected = router.selected_packs([self._fallback_pack()], [path])
+        """Route one changed source file and return the emitted commands.
+
+        A changed integration test is included by default so the route takes the
+        targeted `--test <name>` branch.  In the other branch the route emits a
+        blanket `--tests`, which already selects the library and the ordinary
+        binaries, so per-target commands are deliberately suppressed there and
+        these target assertions would have nothing to observe.  The suppression
+        itself is proved by `TestsFallbackSuppressionTests`.
+        """
+        paths = [f"crates/{crate_directory}/{changed_source}"]
+        if with_changed_integration_test:
+            paths.append(f"crates/{crate_directory}/tests/routed_smoke.rs")
+        selected = router.selected_packs([self._fallback_pack()], paths)
         self.assertEqual([router.FALLBACK_PACK_ID], [pack["id"] for pack in selected])
-        normalized = router.normalize_pack(selected[0], [path], repo_root=root)
+        normalized = router.normalize_pack(selected[0], paths, repo_root=root)
         return normalized["commands"]
 
-    def test_perl_ci_hygiene_change_registers_binary_unit_target(self) -> None:
+    def test_perl_ci_hygiene_binary_target_is_registered_in_the_targeted_branch(self) -> None:
+        """The real witness crate resolves its bin target from its manifest.
+
+        When a changed integration test replaces the blanket `--tests` with
+        targeted `--test <name>` commands, the binary unit target has no other
+        route and needs its own command.
+        """
         repo_root = Path(__file__).resolve().parents[2]
         commands = self._commands_for(repo_root, "perl-ci-hygiene", "src/cli.rs")
 
@@ -69,8 +87,26 @@ class BinaryTargetRoutingTests(unittest.TestCase):
             "cargo llvm-cov test --no-report -p perl-ci-hygiene --bin perl-ci-hygiene --profile agent --locked",
             commands,
         )
-        self.assertIn(
-            "cargo llvm-cov test --no-report -p perl-ci-hygiene --tests --profile agent --locked -- --test-threads=1",
+        self.assertFalse(any(" --tests " in command for command in commands))
+
+    def test_perl_ci_hygiene_fallback_branch_defers_to_tests(self) -> None:
+        """`--tests` already selects this crate's lib and bin unit targets.
+
+        This is the honest form of the original #13061 witness: the blanket
+        `--tests` command the route has always emitted does register
+        `unittests src/main.rs`, so adding per-target commands beside it would
+        only re-run that work.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        commands = self._commands_for(
+            repo_root, "perl-ci-hygiene", "src/cli.rs", with_changed_integration_test=False
+        )
+
+        self.assertEqual(
+            [
+                "cargo llvm-cov test --no-report -p perl-ci-hygiene "
+                "--tests --profile agent --locked -- --test-threads=1"
+            ],
             commands,
         )
 
@@ -804,7 +840,8 @@ class BinaryTargetRoutingTests(unittest.TestCase):
             commands = router.normalize_pack(selected[0], paths, repo_root=root)["commands"]
 
         self.assertIn(
-            "cargo llvm-cov test --no-report -p surviving --lib --profile agent --locked",
+            "cargo llvm-cov test --no-report -p surviving "
+            "--tests --profile agent --locked -- --test-threads=1",
             commands,
         )
         self.assertTrue(all("removed-crate" not in command for command in commands))
@@ -998,6 +1035,95 @@ class PackageTestTargetsUnitTests(unittest.TestCase):
             root = Path(directory)
             (root / "crates" / "vendored").mkdir(parents=True)
             self.assertIsNone(router.package_test_targets("vendored", root))
+
+
+class TestsFallbackSuppressionTests(unittest.TestCase):
+    """`--tests` selects lib and bin unit targets, so the route must not duplicate them.
+
+    Verified against Cargo directly: `cargo test -p perl-ci-hygiene --tests
+    --no-run` builds both `unittests src/lib.rs` and `unittests src/main.rs`.
+    """
+
+    def _fallback_pack(self) -> dict[str, object]:
+        return {
+            "id": router.FALLBACK_PACK_ID,
+            "files": ["*.rs"],
+            "commands": [],
+            "coverage_filters": ["changed-package-targets"],
+        }
+
+    def _write_package(
+        self, root: Path, crate_directory: str, manifest: str, files: list[str]
+    ) -> None:
+        crate_root = root / "crates" / crate_directory
+        crate_root.mkdir(parents=True)
+        (crate_root / "Cargo.toml").write_text(
+            textwrap.dedent(manifest).lstrip(), encoding="utf-8"
+        )
+        for relative_path in files:
+            path = crate_root / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("// target fixture\n", encoding="utf-8")
+
+    def _commands(self, root: Path, paths: list[str]) -> list[str]:
+        selected = router.selected_packs([self._fallback_pack()], paths)
+        return router.normalize_pack(selected[0], paths, repo_root=root)["commands"]
+
+    def _gated_package(self, root: Path) -> None:
+        self._write_package(
+            root,
+            "gated-directory",
+            """
+            [package]
+            name = "gated"
+            edition = "2021"
+
+            [[bin]]
+            name = "plain"
+            path = "src/bin/plain.rs"
+
+            [[bin]]
+            name = "gated"
+            required-features = ["cli"]
+            """,
+            ["src/lib.rs", "src/main.rs", "src/bin/plain.rs", "src/changed.rs"],
+        )
+
+    def test_fallback_branch_emits_only_tests_and_feature_gated_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._gated_package(root)
+            commands = self._commands(root, ["crates/gated-directory/src/changed.rs"])
+
+        # `--tests` covers the library and the plain binary; the required-feature
+        # binary is unreachable that way and keeps its own command.
+        self.assertFalse(any(" --lib " in command for command in commands))
+        self.assertFalse(any("--bin plain " in command for command in commands))
+        self.assertTrue(
+            any(
+                "--features cli --bin gated " in command for command in commands
+            ),
+            commands,
+        )
+        self.assertTrue(any(" --tests " in command for command in commands))
+
+    def test_targeted_branch_keeps_every_per_target_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._gated_package(root)
+            commands = self._commands(
+                root,
+                [
+                    "crates/gated-directory/src/changed.rs",
+                    "crates/gated-directory/tests/smoke.rs",
+                ],
+            )
+
+        self.assertTrue(any(" --lib " in command for command in commands))
+        self.assertTrue(any("--bin plain " in command for command in commands))
+        self.assertTrue(any("--features cli --bin gated " in command for command in commands))
+        self.assertTrue(any("--test smoke " in command for command in commands))
+        self.assertFalse(any(" --tests " in command for command in commands))
 
 if __name__ == "__main__":
     unittest.main()
