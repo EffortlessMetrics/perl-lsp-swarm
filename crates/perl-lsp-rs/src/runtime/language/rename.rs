@@ -731,12 +731,12 @@ impl LspServer {
                 // match stops at the `->`, so `Module` is that match's final
                 // component while the key names the method `new` — renaming
                 // from the receiver would edit `new`.
-                Some(super::navigation::FqnCursorComponent::Final { name, .. }) => {
-                    if resolved.as_ref().is_some_and(|key| name.as_str() != &*key.name) {
-                        return true;
-                    }
+                Some(super::navigation::FqnCursorComponent::Final { name, .. })
+                    if resolved.as_ref().is_some_and(|key| name.as_str() != &*key.name) =>
+                {
+                    return true;
                 }
-                None => {}
+                Some(super::navigation::FqnCursorComponent::Final { .. }) | None => {}
             }
         }
 
