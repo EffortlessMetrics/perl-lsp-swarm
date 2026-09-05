@@ -248,22 +248,33 @@ fn root_checkout_on_feature_branch_never_offers_root_as_reuse() -> Result<()> {
 }
 
 #[test]
-fn remote_branch_lookup_failure_is_surfaced_not_silently_dropped() -> Result<()> {
+fn remote_branch_lookup_failure_is_typed_not_proven() -> Result<()> {
     // A genuine `refs/remotes/origin/<branch>` lookup failure (not a
-    // legitimate "branch doesn't exist yet" absence) must be visible in the
-    // JSON output via `remote_branch_lookup_error`, not silently collapsed
-    // into the same `remote_branch_sha: null` a brand-new branch would
-    // produce — otherwise a consumer can't tell "safe to ADMIT" apart from
-    // "the instrument itself failed".
+    // legitimate "branch doesn't exist yet" absence) means CREATE versus
+    // RESUME cannot be selected safely. This is identity uncertainty, not
+    // writer liveness, and must reach the aggregate verdict as NOT_PROVEN.
     let (ok, stdout) = run_fixture("remote-branch-lookup-failure.json")?;
     assert!(ok, "writer-admission must always exit 0 (advisory-first): {stdout}");
+    assert!(
+        stdout.contains("\"verdict\": \"NOT_PROVEN\""),
+        "remote branch identity failure must make the typed verdict NOT_PROVEN: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"name\": \"remote-branch-identity\"")
+            && stdout.contains("CREATE versus RESUME is not proven"),
+        "expected the remote-branch-identity check to own the failure: {stdout}"
+    );
     assert!(
         stdout.contains("\"remote_branch_sha\": null"),
         "no SHA was resolved on a lookup failure: {stdout}"
     );
     assert!(
         stdout.contains("\"remote_branch_lookup_error\": \"git rev-parse --verify failed: fatal: not a git repository\""),
-        "expected the lookup failure to be surfaced in guidance, not silently dropped: {stdout}"
+        "expected the lookup failure to remain visible in guidance: {stdout}"
+    );
+    assert!(
+        !stdout.contains("\"name\": \"writer-collision\""),
+        "remote identity failure must not be converted into writer liveness: {stdout}"
     );
     Ok(())
 }
