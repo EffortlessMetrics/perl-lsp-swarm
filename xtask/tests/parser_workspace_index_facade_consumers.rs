@@ -126,6 +126,13 @@ fn code_without_comments(source: &str) -> String {
                 out.push(chars[index]);
                 index += 1;
             }
+        } else if block_depth == 0 && chars[index] == '\'' && !opens_char_literal(&chars, index) {
+            // A lifetime or loop label (`'a`, `'outer`) is code, not a literal.
+            // Treating it as an opening quote would blank everything up to the
+            // next tick — or, with no later tick, the whole rest of the file,
+            // silently hiding every import after it from the guard.
+            out.push(chars[index]);
+            index += 1;
         } else if block_depth == 0 && matches!(chars[index], '"' | '\'') {
             let delimiter = chars[index];
             index += 1;
@@ -148,6 +155,18 @@ fn code_without_comments(source: &str) -> String {
         }
     }
     out
+}
+
+/// Distinguish a character literal from a lifetime or loop label. Both start
+/// with `'`, but only a literal closes: `'x'`, `'\n'`, `'\''`. A tick followed
+/// by an identifier with no closing tick is a lifetime.
+fn opens_char_literal(chars: &[char], index: usize) -> bool {
+    match chars.get(index + 1) {
+        // An escape is only ever a character literal: `'\n'`, `'\''`, `'\\'`.
+        Some('\\') => true,
+        Some(_) => chars.get(index + 2) == Some(&'\''),
+        None => false,
+    }
 }
 
 fn skip_whitespace(chars: &[char], mut index: usize) -> usize {
@@ -696,5 +715,52 @@ use parser::ast::NodeKind;\nuse parser::workspace_refactor::WorkspaceRefactor;\n
     assert_eq!(
         forbidden_facade_references(&code_without_comments(rejected)),
         vec!["perl_parser::workspace_index".to_string()]
+    );
+}
+
+#[test]
+fn lifetimes_do_not_blank_later_imports() {
+    // A lifetime tick must stay code. Treating it as an opening character
+    // literal blanks up to the next tick — and with no later tick, the whole
+    // remainder of the file — hiding imports the guard exists to catch.
+    let paired_lifetimes = "struct Holder<'a> { inner: &'a str }\n\
+use perl_parser::workspace_index::WorkspaceIndex;\n";
+    assert_eq!(
+        forbidden_facade_references(&code_without_comments(paired_lifetimes)),
+        vec!["perl_parser::workspace_index".to_string()],
+        "an import after paired lifetime ticks must stay detectable"
+    );
+
+    let lone_lifetime = "fn borrow<'a>(value: &'a str) -> &'a str { value }\n\
+use perl_parser::document_store::DocumentStore;\n";
+    assert_eq!(
+        forbidden_facade_references(&code_without_comments(lone_lifetime)),
+        vec!["perl_parser::document_store".to_string()],
+        "an import after a lifetime with no closing tick must stay detectable"
+    );
+
+    let labelled_loop = "'outer: loop { break 'outer; }\n\
+use perl_parser::workspace::Workspace;\n";
+    assert_eq!(
+        forbidden_facade_references(&code_without_comments(labelled_loop)),
+        vec!["perl_parser::workspace".to_string()],
+        "an import after a loop label must stay detectable"
+    );
+
+    // Genuine character literals must still be blanked, including the escaped
+    // forms whose payload is itself a quote or backslash.
+    let literals = "let tick = '\\'';\nlet slash = '\\\\';\nlet colon = ':';\n\
+let text = \"perl_parser::workspace_index::WorkspaceIndex\";\n";
+    assert!(
+        forbidden_facade_references(&code_without_comments(literals)).is_empty(),
+        "character and string literals must not create hits"
+    );
+
+    // A lifetime must not let a following string literal leak either.
+    let lifetime_then_literal = "struct Holder<'a>(&'a str);\n\
+let text = \"perl_parser::workspace_index::WorkspaceIndex\";\n";
+    assert!(
+        forbidden_facade_references(&code_without_comments(lifetime_then_literal)).is_empty(),
+        "a string literal after a lifetime must still be blanked"
     );
 }
