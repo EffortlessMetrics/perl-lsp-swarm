@@ -1131,7 +1131,16 @@ impl LspServer {
             return Err(crate::protocol::method_not_advertised());
         }
 
-        if let Some(params) = params {
+        // A request with no `params` is malformed, not a position that cannot be
+        // renamed. `req_uri` and `req_position` below already answer `-32602` for
+        // the fields they read; without this, an absent `params` object skipped
+        // them and fell through to the `null` at the end of this function — the
+        // same conflation `handle_rename_workspace_inner` rejects.
+        let Some(params) = params else {
+            return Err(crate::protocol::invalid_params("Missing required parameter: params"));
+        };
+
+        {
             let uri = req_uri(&params)?;
             let (line, character) = req_position(&params)?;
 

@@ -1694,15 +1694,19 @@ fn test_malformed_rename_requests_are_invalid_params_not_refusals() -> TestResul
         ),
     ];
 
-    // An absent `params` object is the same class of malformed request.
-    let absent = harness.request_raw(json!({
-        "jsonrpc": "2.0", "id": 0, "method": "textDocument/rename"
-    }));
-    assert_eq!(
-        absent.pointer("/error/code").and_then(Value::as_i64),
-        Some(-32602),
-        "rename with no params at all must be invalid params; got: {absent}"
-    );
+    // An absent `params` object is the same class of malformed request, on both
+    // handlers. `prepareRename` answering `null` here while `rename` answered
+    // `-32602` would put the two back out of step on the same input.
+    for method in ["textDocument/rename", "textDocument/prepareRename"] {
+        let absent = harness.request_raw(json!({
+            "jsonrpc": "2.0", "id": 0, "method": method
+        }));
+        assert_eq!(
+            absent.pointer("/error/code").and_then(Value::as_i64),
+            Some(-32602),
+            "{method} with no params at all must be invalid params; got: {absent}"
+        );
+    }
 
     for (params, what) in malformed {
         let envelope = harness.request_raw(json!({
