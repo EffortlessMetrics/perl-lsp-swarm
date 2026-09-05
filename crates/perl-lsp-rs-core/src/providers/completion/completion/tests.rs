@@ -2,7 +2,7 @@ use super::*;
 use crate::providers::file_completion::CWD_LOCK as FILE_COMPLETION_CWD_LOCK;
 use perl_parser_core::Parser;
 use perl_semantic_analyzer::analysis::symbol::{ScopeKind, SymbolExtractor};
-use perl_tdd_support::{must, must_some};
+use perl_tdd_support::{must, must_some, must_some_with};
 use perl_workspace::workspace_index::WorkspaceIndex;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -3124,7 +3124,7 @@ Tools->import(qw(alpha));
     let provider = CompletionProvider::new_with_index_and_source(&ast, before, Some(index.clone()));
     let before_completions = provider.get_completions_with_path(
         before,
-        before.find("al\n").unwrap() + 2,
+        must_some(before.find("al\n")) + 2,
         Some(importer_uri.as_str()),
     );
     assert!(
@@ -8287,7 +8287,7 @@ sub helper { }
     );
 
     // Constants should have Constant kind
-    let pi = completions.iter().find(|c| c.label == "PI").unwrap();
+    let pi = must_some(completions.iter().find(|c| c.label == "PI"));
     assert_eq!(
         pi.kind,
         crate::providers::completion_item::CompletionItemKind::Constant,
@@ -8834,13 +8834,15 @@ fn block_form_package_at_scope_end_is_main() {
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
     let table = SymbolExtractor::new().extract(&ast);
-    let scope_end = table
-        .scopes
-        .values()
-        .filter(|scope| scope.kind == ScopeKind::Package)
-        .map(|scope| scope.location.end)
-        .max()
-        .expect("block-form package scope");
+    let scope_end = must_some_with(
+        table
+            .scopes
+            .values()
+            .filter(|scope| scope.kind == ScopeKind::Package)
+            .map(|scope| scope.location.end)
+            .max(),
+        "block-form package scope",
+    );
     assert_eq!(
         CompletionContext::detect_current_package(&table, scope_end),
         "main",
@@ -9316,7 +9318,7 @@ fn test_foreach_iterator_scoped_to_loop() {
     // The analyzer genuinely lacks the binding: confirm the producer gap
     // rather than an admission rejection, so #7423/#7424 own the fix.
     assert!(
-        provider.symbol_table.symbols.get("loop_item").is_none(),
+        !provider.symbol_table.symbols.contains_key("loop_item"),
         "analyzer now records foreach iterators — revisit this seam for real admission coverage"
     );
 
@@ -9407,4 +9409,69 @@ fn test_incomplete_block_keeps_ancestor_and_excludes_closed_sibling() {
         !labels.iter().any(|l| l.contains("closed_block_only")),
         "ended sibling block must not reactivate during recovery; got {labels:?}"
     );
+}
+
+/// End-to-end guard for the operator/keyword-suppression seam (#11688 review).
+///
+/// `is_in_expression_position` gates `complete_general_context`: a `false` there
+/// is read as permission to offer the whole keyword inventory, statement-only
+/// snippets included. After a comparison, match, defined-or, or fat comma the
+/// cursor sits in a value position, so offering `package` or `sub` would put a
+/// statement where Perl requires an operand.
+///
+/// Measured A/B on this seam: with the old operator exclusions active these
+/// four sites returned 324-326 completions including `package` and `sub`;
+/// without them they return 267-269 with both suppressed.
+///
+/// `use` is deliberately not asserted here. It is still offered in these
+/// positions, but it arrives from the module/import completion path rather
+/// than this keyword branch, so it is a separate pre-existing leak that this
+/// seam does not govern.
+#[test]
+fn value_positions_do_not_offer_statement_only_keywords() -> Result<(), Box<dyn std::error::Error>>
+{
+    const STATEMENT_ONLY: [&str; 2] = ["package", "sub"];
+
+    for source in [
+        "my $x = 1;\nif ($x == ",
+        "my $x = 1;\nif ($x != ",
+        "my $x = 1;\nif ($x <= ",
+        "my $x = 1;\nif ($x >= ",
+        "my $s = 'a';\n$s =~ ",
+        "my $x = 1;\nmy $y = $x // ",
+        "my %h = (key => ",
+    ] {
+        let mut parser = Parser::new(source);
+        let ast = must(parser.parse());
+        let provider = CompletionProvider::new(&ast);
+        let completions = provider.get_completions(source, source.len());
+
+        for keyword in STATEMENT_ONLY {
+            assert!(
+                !completions.iter().any(|c| c.label == keyword),
+                "{keyword:?} is statement-only and must not be offered in the value \
+                 position after {source:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Negative control: a real statement position still offers the statement
+/// keywords, so the guard above cannot pass by suppressing them everywhere.
+#[test]
+fn statement_positions_still_offer_statement_keywords() -> Result<(), Box<dyn std::error::Error>> {
+    let source = "sub f { }\n";
+    let mut parser = Parser::new(source);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(source, source.len());
+
+    for keyword in ["package", "sub"] {
+        assert!(
+            completions.iter().any(|c| c.label == keyword),
+            "a statement position must still offer {keyword:?}"
+        );
+    }
+    Ok(())
 }

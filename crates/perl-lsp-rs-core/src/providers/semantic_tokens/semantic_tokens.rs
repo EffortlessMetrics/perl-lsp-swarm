@@ -1698,6 +1698,7 @@ fn mark_readonly_declaration_operand(
 mod tests {
     use super::*;
     use perl_parser_core::Parser;
+    use perl_tdd_support::must;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Helper to create token tuple
@@ -2981,13 +2982,19 @@ print "ok" foreach @ys;
 
     /// Helper: collect the modifier bits for the first `$name` variable token.
     fn first_var_mods(source: &str, name: &str) -> u32 {
+        must(first_var_mods_inner(source, name))
+    }
+
+    fn first_var_mods_inner(source: &str, name: &str) -> Result<u32, Box<dyn std::error::Error>> {
         let mut parser = Parser::new(source);
-        let ast = parser.parse().expect("parse");
+        let ast = parser.parse().map_err(|error| format!("parse failed: {error:?}"))?;
         let tokens = collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset));
         let lines: Vec<&str> = source.split('\n').collect();
         let mut line = 0u32;
         let mut col = 0u32;
-        let variable_idx = *legend().map.get("variable").expect("variable in legend");
+        let variable_idx = legend().map.get("variable").copied().ok_or_else(|| {
+            format!("variable missing from token legend; got {:?}", legend().map.keys())
+        })?;
         let target = format!("${name}");
         for [delta_line, delta_start, length, token_type, mods] in tokens {
             if delta_line == 0 {
@@ -2997,15 +3004,17 @@ print "ok" foreach @ys;
                 col = delta_start;
             }
             if token_type == variable_idx {
-                let src_line = lines.get(line as usize).expect("line in range");
+                let src_line = lines
+                    .get(line as usize)
+                    .ok_or_else(|| format!("line {line} out of range in source: {source:?}"))?;
                 let painted: String =
                     src_line.chars().skip(col as usize).take(length as usize).collect();
                 if painted == target {
-                    return mods;
+                    return Ok(mods);
                 }
             }
         }
-        panic!("no `${name}` variable token found in source: {source:?}");
+        Err(format!("no `${name}` variable token found in source: {source:?}").into())
     }
 
     const DECLARATION_BIT: u32 = 1; // bit 0

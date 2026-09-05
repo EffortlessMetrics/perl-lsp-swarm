@@ -75,6 +75,7 @@ fn check_field(mut field: FieldAuthority) -> FieldAuthority {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_tdd_support::{must_some, must_some_with};
 
     #[test]
     fn shared_server_fields_do_not_claim_folder_pull_authority() {
@@ -95,7 +96,8 @@ mod tests {
 
     #[test]
     fn formatter_engine_uses_project_and_generic_client_channels_only() {
-        let field = authority_by_id("formatting.engine").expect("missing formatter authority");
+        let field =
+            must_some_with(authority_by_id("formatting.engine"), "missing formatter authority");
 
         assert_eq!(field.owner, ConfigOwner::Server);
         assert!(field.sources.contains(&ConfigSource::ProjectFile));
@@ -109,7 +111,8 @@ mod tests {
         for id in
             ["workspace.perl5lib_precedence", "workspace.use_perl5lib", "workspace.use_system_inc"]
         {
-            let field = authority_by_id(id).unwrap_or_else(|| panic!("missing authority row {id}"));
+            assert!(authority_by_id(id).is_some(), "missing authority row {id}");
+            let field = must_some(authority_by_id(id));
             assert!(
                 !field.sources.contains(&ConfigSource::Environment)
                     && !field.sources.contains(&ConfigSource::SystemProbe),

@@ -443,7 +443,7 @@ fn surviving_new_codes_reach_handlers_while_pl700_stays_withdrawn()
     let has_use_foo_deletion = actions.iter().any(|a| {
         a.kind == CodeActionKind::QuickFix
             && a.edit.changes.iter().any(|change| {
-                (&source[change.location.start..change.location.end]).contains("use Foo;")
+                (source[change.location.start..change.location.end]).contains("use Foo;")
                     && change.new_text.is_empty()
             })
     });

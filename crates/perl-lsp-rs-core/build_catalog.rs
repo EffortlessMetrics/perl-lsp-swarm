@@ -234,33 +234,31 @@ pub fn resolve_catalog_source_with_override(
 #[cfg(test)]
 mod tests {
     use super::resolve_catalog_source_with_override;
-    use perl_test_must::{must_err_with, must_with};
     use std::fs;
     use std::path::PathBuf;
 
     #[test]
-    fn missing_explicit_override_does_not_fall_back_to_workspace_catalog() {
+    fn missing_explicit_override_does_not_fall_back_to_workspace_catalog()
+    -> Result<(), Box<dyn std::error::Error>> {
         let root = std::env::temp_dir().join(format!(
             "perl-lsp-build-catalog-{}",
             std::process::id()
         ));
-        must_with(fs::create_dir_all(&root), "create test catalog directory");
+        fs::create_dir_all(&root)?;
         let workspace_catalog = root.join("features.toml");
         let missing_override = root.join("missing-features.toml");
-        must_with(
-            fs::write(&workspace_catalog, "[meta]\nversion = 'test'\nlsp_version = 'test'\n"),
-            "write fallback workspace catalog",
-        );
+        fs::write(&workspace_catalog, "[meta]\nversion = 'test'\nlsp_version = 'test'\n")?;
 
-        let result = resolve_catalog_source_with_override(
-            &root,
-            Some(PathBuf::from(&missing_override)),
-        );
+        let result =
+            resolve_catalog_source_with_override(&root, Some(PathBuf::from(&missing_override)));
 
-        assert!(result.is_err(), "missing explicit override must be terminal");
-        assert!(must_err_with(result, "missing explicit override must be terminal")
-            .contains("FEATURES_TOML_OVERRIDE path does not exist"));
-        must_with(fs::remove_dir_all(root), "remove test catalog directory");
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => return Err("missing explicit override must be terminal".into()),
+        };
+        assert!(error.contains("FEATURES_TOML_OVERRIDE path does not exist"));
+        fs::remove_dir_all(root)?;
+        Ok(())
     }
 }
 

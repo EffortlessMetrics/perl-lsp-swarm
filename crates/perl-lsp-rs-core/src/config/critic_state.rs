@@ -478,6 +478,7 @@ fn parse_rule_list(
 mod tests {
     use super::super::ProjectConfig;
     use super::*;
+    use perl_tdd_support::must;
 
     fn native_config(root: Option<&str>) -> EffectiveNativeCriticConfig {
         EffectiveNativeCriticConfig {
@@ -554,21 +555,15 @@ mod tests {
     #[test]
     fn accepted_state_serializes_to_one_canonical_representation() {
         let state = EffectiveCriticState::Native(native_config(Some("root-a")));
-        let serialized = serde_json::to_string(&state).unwrap_or_else(|error| {
-            panic!("accepted state must serialize: {error}");
-        });
-        let round_tripped: EffectiveCriticState =
-            serde_json::from_str(&serialized).unwrap_or_else(|error| {
-                panic!("canonical representation must deserialize: {error}");
-            });
+        let serialized = must(serde_json::to_string(&state));
+        let round_tripped: EffectiveCriticState = must(serde_json::from_str(&serialized));
         assert_eq!(state, round_tripped);
         assert!(
             !serialized.contains("engine"),
             "no engine selector may appear in the canonical runtime representation"
         );
 
-        let disabled = serde_json::to_string(&EffectiveCriticState::Disabled)
-            .unwrap_or_else(|error| panic!("disabled must serialize: {error}"));
+        let disabled = must(serde_json::to_string(&EffectiveCriticState::Disabled));
         assert_eq!(disabled, "\"Disabled\"");
     }
 
@@ -632,12 +627,11 @@ mod tests {
             "critic": { "enabled": false }
         }));
 
-        match config.effective_critic_state(Some("root")) {
-            EffectiveCriticState::Disabled => {}
-            EffectiveCriticState::Native(_) => {
-                panic!("disabled state must not expose a native policy object")
-            }
-        }
+        let disabled_state = config.effective_critic_state(Some("root"));
+        assert!(
+            matches!(disabled_state, EffectiveCriticState::Disabled),
+            "disabled state must not expose a native policy object, got {disabled_state:?}"
+        );
         assert!(
             config.effective_critic_state(Some("root")).owning_root().is_none(),
             "disabled carries no policy subject that could run"
@@ -754,7 +748,7 @@ mod tests {
             "critic": { "profile": "strict", "severity": 5 }
         }));
 
-        let state_global = global_config.effective_critic_state(Some("root-b"));
+        let _state_global = global_config.effective_critic_state(Some("root-b"));
         let state_a = root_a_config.effective_critic_state(Some("root-a"));
         let state_b = root_a_config.effective_critic_state(Some("root-b"));
 
@@ -774,10 +768,12 @@ mod tests {
     #[test]
     fn external_residue_has_zero_selection_authority_over_accepted_state() {
         let clean = ServerConfig::default();
-        let mut contaminated = ServerConfig::default();
-        contaminated.critic_engine = CriticEngine::Legacy;
-        contaminated.perlcritic_profile = Some("/discovered/.perlcriticrc".to_string());
-        contaminated.perlcritic_theme = Some("core && !pbp".to_string());
+        let contaminated = ServerConfig {
+            critic_engine: CriticEngine::Legacy,
+            perlcritic_profile: Some("/discovered/.perlcriticrc".to_string()),
+            perlcritic_theme: Some("core && !pbp".to_string()),
+            ..ServerConfig::default()
+        };
 
         assert_eq!(
             clean.effective_critic_state(Some("root")),

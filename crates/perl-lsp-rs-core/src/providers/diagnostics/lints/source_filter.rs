@@ -67,7 +67,7 @@ pub fn check_source_filter_risk(root: &Node, diagnostics: &mut Vec<Diagnostic>) 
 mod tests {
     use super::*;
     use perl_parser::Parser;
-    use perl_tdd_support::must;
+    use perl_tdd_support::{must, must_some_with};
 
     fn filter_diags(source: &str) -> Vec<Diagnostic> {
         let ast = must(Parser::new(source).parse());
@@ -115,7 +115,7 @@ mod tests {
     #[test]
     fn range_is_non_degenerate() {
         let diags = filter_diags("use Filter::Simple;\n");
-        let d = diags.iter().find(|d| is_pl702(d)).expect("expected a PL702 diagnostic");
+        let d = must_some_with(diags.iter().find(|d| is_pl702(d)), "expected a PL702 diagnostic");
         assert!(d.range.0 < d.range.1, "diagnostic range should span the statement: {d:?}");
     }
 }

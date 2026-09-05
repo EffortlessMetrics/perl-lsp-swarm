@@ -33,6 +33,17 @@ fn backend_request() -> BackendRequest {
     }
 }
 
+fn join_worker(
+    worker: thread::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
+    label: &str,
+) -> Result<(), String> {
+    match worker.join() {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(format!("{label} failed: {error}")),
+        Err(payload) => Err(format!("{label} panicked: {payload:?}")),
+    }
+}
+
 #[test]
 fn rejects_remote_http_endpoint() {
     let err = must_err(validate_endpoint("http://api.example.com/v1/chat/completions", false));
@@ -190,15 +201,9 @@ fn redirect_response_is_not_followed_and_does_not_reach_secondary_host()
         provider.stream(&backend_request(), &mut |_chunk: StreamChunk| StreamControl::Continue);
     assert!(result.is_err(), "redirect response must not be treated as SSE success");
 
-    must_with(
-        must_with(redirect_worker.join(), "redirect worker panicked"),
-        "redirect worker failed",
-    );
+    join_worker(redirect_worker, "redirect worker")?;
     thread::sleep(Duration::from_millis(100));
-    must_with(
-        must_with(secondary_worker.join(), "secondary worker panicked"),
-        "secondary worker failed",
-    );
+    join_worker(secondary_worker, "secondary worker")?;
 
     assert!(
         !secondary_hit.load(std::sync::atomic::Ordering::SeqCst),
@@ -341,7 +346,7 @@ fn stream_pins_validated_loopback_ips_for_connect() -> Result<(), Box<dyn std::e
     })?;
     assert!(saw_chunk, "pinned-IP agent must complete SSE against loopback listener");
 
-    must_with(must_with(worker.join(), "worker panicked"), "worker failed");
+    join_worker(worker, "worker")?;
     Ok(())
 }
 

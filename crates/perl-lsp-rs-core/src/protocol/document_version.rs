@@ -286,6 +286,7 @@ pub fn decode_document_version(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_tdd_support::{must, must_some_with};
     use serde_json::json;
 
     // ── absence ──────────────────────────────────────────────────────────────
@@ -404,7 +405,7 @@ mod tests {
     #[test]
     fn version_is_integral_looking_float() {
         // 1.0 serialized as a float — serde_json stores this as N::Float.
-        let value = serde_json::Number::from_f64(1.0).expect("1.0 is finite");
+        let value = must_some_with(serde_json::Number::from_f64(1.0), "1.0 is finite");
         let params = json!({"textDocument": {"version": value}});
         assert_eq!(
             decode_document_version(&params),
@@ -486,7 +487,7 @@ mod tests {
     fn u64_above_i64_max() {
         // Construct a u64 value above i64::MAX directly in the JSON value.
         // serde_json stores this as N::PosInt(u64) with value > i64::MAX.
-        let big: u64 = u64::from(i64::MAX as u64) + 1; // i64::MAX + 1
+        let big: u64 = (i64::MAX as u64) + 1; // i64::MAX + 1
         let value = serde_json::Value::Number(serde_json::Number::from(big));
         let params = json!({"textDocument": {"version": value}});
         assert_eq!(
@@ -598,19 +599,30 @@ mod tests {
     #[test]
     fn client_document_version_as_i32_round_trips() {
         let params = json!({"textDocument": {"version": 999}});
-        let DocumentVersionField::Explicit(v) = decode_document_version(&params).unwrap() else {
-            panic!("expected Explicit");
-        };
-        assert_eq!(v.as_i32(), 999_i32);
+        // The decoded outcome is asserted directly: Err, Absent, or any other
+        // variant is exactly the regression this test exists to catch, so it
+        // fails as an ordinary assertion instead of an unreachable branch.
+        let decoded = decode_document_version(&params);
+        assert!(
+            matches!(&decoded, Ok(DocumentVersionField::Explicit(_))),
+            "expected Ok(Explicit(999)), got {decoded:?}"
+        );
+        if let Ok(DocumentVersionField::Explicit(value)) = decoded {
+            assert_eq!(value.as_i32(), 999_i32);
+        }
     }
 
     #[test]
     fn client_document_version_as_i32_min() {
         let params = json!({"textDocument": {"version": i32::MIN}});
-        let DocumentVersionField::Explicit(v) = decode_document_version(&params).unwrap() else {
-            panic!("expected Explicit");
-        };
-        assert_eq!(v.as_i32(), i32::MIN);
+        let decoded = decode_document_version(&params);
+        assert!(
+            matches!(&decoded, Ok(DocumentVersionField::Explicit(_))),
+            "expected Ok(Explicit(i32::MIN)), got {decoded:?}"
+        );
+        if let Ok(DocumentVersionField::Explicit(value)) = decoded {
+            assert_eq!(value.as_i32(), i32::MIN);
+        }
     }
 
     // ── malformed / missing textDocument envelope ─────────────────────────────
@@ -695,7 +707,7 @@ mod tests {
         // so callers cannot silently bypass the monotonicity gate.
         let current_version = 3_i32;
         let params = json!({"textDocument": {"version": current_version}});
-        let result = decode_document_version(&params).unwrap();
+        let result = must(decode_document_version(&params));
         assert_eq!(result, DocumentVersionField::Explicit(ClientDocumentVersion(3)));
         assert_ne!(result, DocumentVersionField::Absent);
     }

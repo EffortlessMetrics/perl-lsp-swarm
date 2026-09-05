@@ -168,6 +168,7 @@ mod tests {
         CodeActionKind, CodeActionProviderCapability, OneOf, SemanticTokensServerCapabilities,
         TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncSaveOptions,
     };
+    use perl_tdd_support::must_some_with;
     use std::collections::BTreeSet;
 
     /// Feature IDs that `to_feature_ids()` correctly emits but
@@ -486,22 +487,28 @@ mod tests {
     #[test]
     fn text_document_sync_advertises_full_sync_and_open_close() {
         let caps = capabilities_for(BuildFlags::default());
-        match caps.text_document_sync.as_ref() {
-            Some(TextDocumentSyncCapability::Options(opts)) => {
-                assert_eq!(
-                    opts.change,
-                    Some(TextDocumentSyncKind::FULL),
-                    "textDocumentSync.change must be FULL (1) — the server reparses the whole \
-                     document on every didChange; INCREMENTAL would be inaccurate"
-                );
-                assert_eq!(
-                    opts.open_close,
-                    Some(true),
-                    "textDocumentSync.openClose must be true — didOpen/didClose are required \
-                     for workspace tracking"
-                );
-            }
-            other => panic!("expected TextDocumentSyncCapability::Options, got {other:?}"),
+        // The advertised shape is asserted directly: a boolean, None, or any
+        // other variant is exactly the capability regression this test exists
+        // to catch, so it fails as an ordinary assertion instead of an
+        // unreachable branch.
+        assert!(
+            matches!(caps.text_document_sync, Some(TextDocumentSyncCapability::Options(_))),
+            "expected TextDocumentSyncCapability::Options, got {:?}",
+            caps.text_document_sync
+        );
+        if let Some(TextDocumentSyncCapability::Options(opts)) = caps.text_document_sync.as_ref() {
+            assert_eq!(
+                opts.change,
+                Some(TextDocumentSyncKind::FULL),
+                "textDocumentSync.change must be FULL (1) — the server reparses the whole \
+                 document on every didChange; INCREMENTAL would be inaccurate"
+            );
+            assert_eq!(
+                opts.open_close,
+                Some(true),
+                "textDocumentSync.openClose must be true — didOpen/didClose are required \
+                 for workspace tracking"
+            );
         }
     }
 
@@ -527,13 +534,17 @@ mod tests {
         let kinds: Vec<String> = match caps.code_action_provider.as_ref() {
             Some(CodeActionProviderCapability::Options(opts)) => opts
                 .code_action_kinds
-                .as_ref()
-                .expect("code_action_kinds must be Some when code_actions is enabled")
                 .iter()
-                .map(|k| k.as_str().to_string())
+                .flat_map(|kinds| kinds.iter().map(|k| k.as_str().to_string()))
                 .collect(),
-            other => panic!("expected CodeActionProviderCapability::Options, got {other:?}"),
+            _ => Vec::new(),
         };
+        assert!(
+            !kinds.is_empty(),
+            "codeActionProvider must advertise Options with code_action_kinds when \
+             code_actions is enabled, got {:?}",
+            caps.code_action_provider
+        );
 
         // Duplicate the full ordered list from sections.rs::code_action_kinds().
         let expected: &[&str] = &[
@@ -590,13 +601,18 @@ mod tests {
         let flags = BuildFlags { signature_help: true, ..BuildFlags::default() };
         let caps = capabilities_for(flags);
 
-        let triggers = caps
-            .signature_help_provider
-            .as_ref()
-            .expect("signatureHelpProvider must be present when signature_help is enabled")
-            .trigger_characters
-            .as_ref()
-            .expect("signatureHelpProvider.triggerCharacters must be Some");
+        let provider = must_some_with(
+            caps.signature_help_provider.as_ref(),
+            "signatureHelpProvider must be present when signature_help is enabled",
+        );
+        assert!(
+            provider.trigger_characters.is_some(),
+            "signatureHelpProvider.triggerCharacters must be Some"
+        );
+        let triggers = must_some_with(
+            provider.trigger_characters.as_ref(),
+            "signatureHelpProvider.triggerCharacters must be Some",
+        );
 
         // Duplicate the expected list from sections.rs — divergence is the defect.
         let expected: &[&str] = &["(", ","];
@@ -617,13 +633,18 @@ mod tests {
         let flags = BuildFlags { signature_help: true, ..BuildFlags::default() };
         let caps = capabilities_for(flags);
 
-        let retriggers = caps
-            .signature_help_provider
-            .as_ref()
-            .expect("signatureHelpProvider must be present when signature_help is enabled")
-            .retrigger_characters
-            .as_ref()
-            .expect("signatureHelpProvider.retriggerCharacters must be Some");
+        let provider = must_some_with(
+            caps.signature_help_provider.as_ref(),
+            "signatureHelpProvider must be present when signature_help is enabled",
+        );
+        assert!(
+            provider.retrigger_characters.is_some(),
+            "signatureHelpProvider.retriggerCharacters must be Some"
+        );
+        let retriggers = must_some_with(
+            provider.retrigger_characters.as_ref(),
+            "signatureHelpProvider.retriggerCharacters must be Some",
+        );
 
         // Duplicate the expected list from sections.rs.
         let expected: &[&str] = &[",", "@", "%", "{", "["];
@@ -651,10 +672,14 @@ mod tests {
             Some(SemanticTokensServerCapabilities::SemanticTokensOptions(opts)) => {
                 opts.legend.token_types.iter().map(|t| t.as_str().to_string()).collect()
             }
-            other => panic!(
-                "expected SemanticTokensServerCapabilities::SemanticTokensOptions, got {other:?}"
-            ),
+            _ => Vec::new(),
         };
+        assert!(
+            !types.is_empty(),
+            "expected SemanticTokensServerCapabilities::SemanticTokensOptions with a legend, \
+             got {:?}",
+            caps.semantic_tokens_provider
+        );
 
         // Duplicate the full ordered list from sections.rs::semantic_token_types().
         // Index position is the wire format — order matters.
@@ -708,10 +733,14 @@ mod tests {
             Some(SemanticTokensServerCapabilities::SemanticTokensOptions(opts)) => {
                 opts.legend.token_modifiers.iter().map(|m| m.as_str().to_string()).collect()
             }
-            other => panic!(
-                "expected SemanticTokensServerCapabilities::SemanticTokensOptions, got {other:?}"
-            ),
+            _ => Vec::new(),
         };
+        assert!(
+            !modifiers.is_empty(),
+            "expected SemanticTokensServerCapabilities::SemanticTokensOptions with a legend, \
+             got {:?}",
+            caps.semantic_tokens_provider
+        );
 
         // Duplicate the full ordered list from sections.rs::semantic_token_modifiers().
         // Bitmask position matters — order is part of the wire contract.
@@ -749,19 +778,15 @@ mod tests {
         let flags = BuildFlags { document_symbol: true, ..BuildFlags::default() };
         let caps = capabilities_for(flags);
 
-        match caps.document_symbol_provider.as_ref() {
-            Some(OneOf::Left(true)) => {}
-            Some(OneOf::Left(false)) => {
-                panic!(
-                    "documentSymbolProvider must be true when document_symbol is enabled, \
-                     not false"
-                );
-            }
-            other => panic!(
-                "documentSymbolProvider must be Some(true) when document_symbol is enabled, \
-                 got {other:?}"
-            ),
-        }
+        // A boolean false, the Options variant, or absence are each reachable
+        // outcomes of a defective candidate, so the whole shape is asserted
+        // directly instead of routing arms through an unreachable branch.
+        assert!(
+            matches!(caps.document_symbol_provider, Some(OneOf::Left(true))),
+            "documentSymbolProvider must be Some(Left(true)) when document_symbol is enabled \
+             (not false, not Options, not absent), got {:?}",
+            caps.document_symbol_provider
+        );
     }
 
     /// Assert `documentSymbolProvider` is absent when the flag is disabled.
@@ -786,28 +811,28 @@ mod tests {
         let flags = BuildFlags { workspace_symbol_resolve: true, ..BuildFlags::default() };
         let caps = capabilities_for(flags);
 
-        match caps.workspace_symbol_provider.as_ref() {
-            Some(OneOf::Right(opts)) => {
-                assert_eq!(
-                    opts.resolve_provider,
-                    Some(true),
-                    "workspaceSymbolProvider.resolveProvider must be true when \
-                     workspace_symbol_resolve is enabled"
-                );
-            }
-            Some(OneOf::Left(_)) => {
-                panic!(
-                    "expected workspaceSymbolProvider to use the Options variant (with \
-                     resolveProvider), not the simple boolean variant, when \
-                     workspace_symbol_resolve is enabled"
-                );
-            }
-            None => {
-                panic!(
-                    "workspaceSymbolProvider must be advertised when workspace_symbol_resolve \
-                     is enabled"
-                );
-            }
+        let provider = caps.workspace_symbol_provider.as_ref();
+        // Presence, variant shape, and payload are each asserted as ordinary
+        // failures: a boolean variant or absent provider is the regression
+        // this test guards against, not an unreachable branch.
+        assert!(
+            provider.is_some(),
+            "workspaceSymbolProvider must be advertised when workspace_symbol_resolve \
+             is enabled"
+        );
+        assert!(
+            matches!(provider, Some(OneOf::Right(_))),
+            "expected workspaceSymbolProvider to use the Options variant (with \
+             resolveProvider), not the simple boolean variant or another shape, when \
+             workspace_symbol_resolve is enabled, got {provider:?}"
+        );
+        if let Some(OneOf::Right(opts)) = provider {
+            assert_eq!(
+                opts.resolve_provider,
+                Some(true),
+                "workspaceSymbolProvider.resolveProvider must be true when \
+                 workspace_symbol_resolve is enabled"
+            );
         }
     }
 
@@ -837,13 +862,16 @@ mod tests {
         let kinds: Vec<String> = match caps.code_action_provider.as_ref() {
             Some(CodeActionProviderCapability::Options(opts)) => opts
                 .code_action_kinds
-                .as_ref()
-                .expect("code_action_kinds must be Some")
                 .iter()
-                .map(|k| k.as_str().to_string())
+                .flat_map(|kinds| kinds.iter().map(|k| k.as_str().to_string()))
                 .collect(),
-            other => panic!("expected CodeActionProviderCapability::Options, got {other:?}"),
+            _ => Vec::new(),
         };
+        assert!(
+            !kinds.is_empty(),
+            "codeActionProvider must advertise Options with code_action_kinds, got {:?}",
+            caps.code_action_provider
+        );
 
         assert!(
             kinds.iter().any(|k| k == CodeActionKind::QUICKFIX.as_str()),

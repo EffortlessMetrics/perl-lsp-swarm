@@ -1,6 +1,7 @@
 //! Unit tests for the Test2 fact table (`test2_imports`).
 
 use super::*;
+use perl_tdd_support::must_some_with;
 
 #[test]
 fn test2_imports_recognizes_bundles_and_tools() {
@@ -32,7 +33,7 @@ fn test2_imports_bundle_classification() {
 
 #[test]
 fn test2_imports_v0_default_exports_cover_common_tools() {
-    let defaults = module_default_exports("Test2::V0").expect("V0 has a default set");
+    let defaults = must_some_with(module_default_exports("Test2::V0"), "V0 has a default set");
     for expected in [
         "ok",
         "pass",
@@ -77,7 +78,7 @@ fn test2_v1_default_exports_only_t2_and_no_pragmas() {
     // pragmas by default — its tools are methods on the handle, not bare subs
     // (oracle: metacpan Test2::V1 — "Only 1 export by default: T2()", "NO
     // PRAGMAS ARE ENABLED BY DEFAULT").
-    let defaults = module_default_exports("Test2::V1").expect("V1 has a default set");
+    let defaults = must_some_with(module_default_exports("Test2::V1"), "V1 has a default set");
     assert_eq!(defaults, &["T2"], "V1 default-exports only the T2 handle");
 
     let facts = Test2Facts::from_source("use Test2::V1;\n");
@@ -172,12 +173,14 @@ fn v1_import_all_predicate_exact_module_match_boundary() {
     // recognized option and has no effect on that module's own default set.
     // This proves the predicate needs an *exact* "Test2::V1" match, not "any
     // bundle" or "any Test2 module reachable via is_test2_module".
-    let v1 = resolve_import("Test2::V1", "-import").expect("Test2::V1 recognized");
+    let v1 = must_some_with(resolve_import("Test2::V1", "-import"), "Test2::V1 recognized");
     assert!(v1.symbols.contains("subtest"), "-import brings the full bare set into Test2::V1");
     assert!(v1.symbols.contains("ok"));
 
-    let basic =
-        resolve_import("Test2::Tools::Basic", "-import").expect("Test2::Tools::Basic recognized");
+    let basic = must_some_with(
+        resolve_import("Test2::Tools::Basic", "-import"),
+        "Test2::Tools::Basic recognized",
+    );
     assert!(
         !basic.symbols.contains("subtest"),
         "-import has no special meaning outside Test2::V1; Test2::Tools::Basic keeps its own          fixed default set"
@@ -192,14 +195,14 @@ fn v1_pragma_default_predicate_exact_module_match_boundary() {
     // default) and Test2::Suite (pragmas on by default, like Test2::V0). This
     // proves the predicate needs an *exact* "Test2::V1" match, not "any
     // bundle".
-    let v1 = resolve_import("Test2::V1", "").expect("Test2::V1 recognized");
+    let v1 = must_some_with(resolve_import("Test2::V1", ""), "Test2::V1 recognized");
     assert_eq!(
         v1.pragmas,
         Some(Test2Pragmas { strict: false, warnings: false }),
         "Test2::V1 enables no pragmas by default"
     );
 
-    let suite = resolve_import("Test2::Suite", "").expect("Test2::Suite recognized");
+    let suite = must_some_with(resolve_import("Test2::Suite", ""), "Test2::Suite recognized");
     assert_eq!(
         suite.pragmas,
         Some(Test2Pragmas { strict: true, warnings: true }),
@@ -246,7 +249,7 @@ fn test2_imports_no_pragmas_disables_both() {
 
 #[test]
 fn test2_imports_exclusion_removes_symbol() {
-    let resolved = resolve_import("Test2::V0", "'!ok'").expect("recognized module");
+    let resolved = must_some_with(resolve_import("Test2::V0", "'!ok'"), "recognized module");
     assert!(!resolved.symbols.contains("ok"), "!ok excludes ok");
     assert!(resolved.symbols.contains("is"), "other defaults remain");
     // Exclusion alone keeps pragmas on.
@@ -256,7 +259,7 @@ fn test2_imports_exclusion_removes_symbol() {
 #[test]
 fn test2_imports_rename_as_installs_alias_not_original() {
     let resolved =
-        resolve_import("Test2::V0", "ok => {-as => 'my_ok'}").expect("recognized module");
+        must_some_with(resolve_import("Test2::V0", "ok => {-as => 'my_ok'}"), "recognized module");
     assert!(resolved.symbols.contains("my_ok"), "alias my_ok is imported");
     assert!(!resolved.symbols.contains("ok"), "original ok is not imported after rename");
     // A rename is an explicit selection: only the alias is in scope.
@@ -265,15 +268,17 @@ fn test2_imports_rename_as_installs_alias_not_original() {
 
 #[test]
 fn test2_imports_default_tag_keeps_full_set_with_rename() {
-    let resolved =
-        resolve_import("Test2::V0", "':DEFAULT', ok => {-as => 'my_ok'}").expect("recognized");
+    let resolved = must_some_with(
+        resolve_import("Test2::V0", "':DEFAULT', ok => {-as => 'my_ok'}"),
+        "recognized",
+    );
     assert!(resolved.symbols.contains("my_ok"));
     assert!(resolved.symbols.contains("is"), ":DEFAULT restores the default set");
 }
 
 #[test]
 fn test2_imports_explicit_qw_list_replaces_default() {
-    let resolved = resolve_import("Test2::V0", "qw/ok is/").expect("recognized module");
+    let resolved = must_some_with(resolve_import("Test2::V0", "qw/ok is/"), "recognized module");
     assert!(resolved.symbols.contains("ok"));
     assert!(resolved.symbols.contains("is"));
     assert!(!resolved.symbols.contains("like"), "explicit list does not pull in the rest");
@@ -281,7 +286,8 @@ fn test2_imports_explicit_qw_list_replaces_default() {
 
 #[test]
 fn test2_imports_prefix_rename() {
-    let resolved = resolve_import("Test2::V0", "ok => {-prefix => 'my_'}").expect("recognized");
+    let resolved =
+        must_some_with(resolve_import("Test2::V0", "ok => {-prefix => 'my_'}"), "recognized");
     assert!(resolved.symbols.contains("my_ok"));
     assert!(!resolved.symbols.contains("ok"));
 }
@@ -299,17 +305,18 @@ fn test2_imports_standalone_tool_has_no_pragmas() {
 #[test]
 fn test2_imports_compare_standalone_default_is_narrow() {
     // Standalone Test2::Tools::Compare only default-exports is/like.
-    let defaults = module_default_exports("Test2::Tools::Compare").expect("known tool");
+    let defaults = must_some_with(module_default_exports("Test2::Tools::Compare"), "known tool");
     assert_eq!(defaults, &["is", "like"]);
     // But an explicit import of an EXPORT_OK symbol is trusted verbatim.
-    let resolved = resolve_import("Test2::Tools::Compare", "qw/hash array/").expect("recognized");
+    let resolved =
+        must_some_with(resolve_import("Test2::Tools::Compare", "qw/hash array/"), "recognized");
     assert!(resolved.symbols.contains("hash"));
     assert!(resolved.symbols.contains("array"));
 }
 
 #[test]
 fn test2_imports_subtest_tool_standalone_names() {
-    let defaults = module_default_exports("Test2::Tools::Subtest").expect("known tool");
+    let defaults = must_some_with(module_default_exports("Test2::Tools::Subtest"), "known tool");
     assert!(defaults.contains(&"subtest_streamed"));
     assert!(defaults.contains(&"subtest_buffered"));
     // The bundle-level `subtest` alias is not a standalone-tool default name.
@@ -341,7 +348,8 @@ fn test2_imports_non_test2_module_returns_none() {
 
 #[test]
 fn test2_imports_target_option_does_not_drop_exports() {
-    let resolved = resolve_import("Test2::V0", "-target => 'Foo::Bar'").expect("recognized");
+    let resolved =
+        must_some_with(resolve_import("Test2::V0", "-target => 'Foo::Bar'"), "recognized");
     // -target is an option, not a symbol selection, so the default set stays.
     assert!(resolved.symbols.contains("ok"));
     assert!(resolved.symbols.contains("is"));
@@ -387,7 +395,7 @@ fn test2_non_ascii_target_does_not_panic() {
 fn test2_empty_import_list_imports_nothing_and_no_pragmas() {
     // `use Test2::V0 ();` loads the module but does not call import(): no
     // symbols, and no strict/warnings are provided.
-    let resolved = resolve_import("Test2::V0", "()").expect("module still recognized");
+    let resolved = must_some_with(resolve_import("Test2::V0", "()"), "module still recognized");
     assert!(resolved.symbols.is_empty(), "empty () import must import no symbols");
     assert_eq!(resolved.pragmas, None, "empty () import provides no pragmas");
 
@@ -424,12 +432,14 @@ fn use_statements_survive_escaped_quotes() {
 
 /// Resolve with both transform recognizers forced unavailable.
 fn resolve_without_recognizers(module: &str, raw_args: &str) -> ResolvedImportAnalysis {
-    resolve_import_with(module, raw_args, None, None).expect("recognized module")
+    must_some_with(resolve_import_with(module, raw_args, None, None), "recognized module")
 }
 
 fn resolve_with_analysis(module: &str, raw_args: &str) -> ResolvedImportAnalysis {
-    resolve_import_with(module, raw_args, RENAME_AS.as_ref(), RENAME_FIX.as_ref())
-        .expect("recognized module")
+    must_some_with(
+        resolve_import_with(module, raw_args, RENAME_AS.as_ref(), RENAME_FIX.as_ref()),
+        "recognized module",
+    )
 }
 
 #[test]
@@ -519,7 +529,7 @@ fn test2_ordinary_imports_are_unaffected_by_the_transform_guard() {
     for (module, args) in
         [("Test2::V0", ""), ("Test2::Tools::Compare", "qw/is like/"), ("Test2::V0", "':ALL'")]
     {
-        let available = resolve_import(module, args).expect("recognized module");
+        let available = must_some_with(resolve_import(module, args), "recognized module");
         let unavailable = resolve_without_recognizers(module, args);
         assert_eq!(
             available, unavailable.resolved,
@@ -527,7 +537,8 @@ fn test2_ordinary_imports_are_unaffected_by_the_transform_guard() {
         );
     }
 
-    let ordinary = resolve_import("Test2::Tools::Compare", "qw/is like/").expect("recognized");
+    let ordinary =
+        must_some_with(resolve_import("Test2::Tools::Compare", "qw/is like/"), "recognized");
     assert!(ordinary.symbols.contains("is"));
     assert!(ordinary.symbols.contains("like"));
 }
@@ -601,8 +612,9 @@ fn test2_no_recognizer_owned_span_reaches_the_bareword_scan() {
         "ok => {target => \"-prefix => my_\"}",
     ];
 
-    let rename_as = RENAME_AS.as_ref().expect("static -as pattern compiles");
-    let rename_fix = RENAME_FIX.as_ref().expect("static -prefix/-postfix pattern compiles");
+    let rename_as = must_some_with(RENAME_AS.as_ref(), "static -as pattern compiles");
+    let rename_fix =
+        must_some_with(RENAME_FIX.as_ref(), "static -prefix/-postfix pattern compiles");
 
     let owned: Vec<&str> = corpus
         .into_iter()
@@ -1312,7 +1324,8 @@ fn test2_public_resolve_import_still_accepts_a_commented_transform() {
         ("ok => {-prefix => 'x_' # note\n}", "x_ok"),
         ("ok => {-as => 'my_ok' # one\n # two\n}", "my_ok"),
     ] {
-        let resolved = resolve_import("Test2::V0", args).expect("Test2::V0 is a Test2 module");
+        let resolved =
+            must_some_with(resolve_import("Test2::V0", args), "Test2::V0 is a Test2 module");
         assert!(
             resolved.symbols.contains(alias),
             "{args:?}: a comment must not hide the terminator, got {:?}",

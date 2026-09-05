@@ -542,6 +542,53 @@ fn complete_general_context(
     CompletionFlow::SortAndReturn
 }
 
+/// Heuristic: detect if the cursor is in an expression position where statement
+/// keywords (package, sub, use, etc.) would be invalid. Returns true if the
+/// text immediately before the prefix suggests an expression context.
+/// (UX_GAP_02)
+fn is_in_expression_position(source: &str, prefix_start: usize) -> bool {
+    if prefix_start == 0 {
+        return false; // start of file — statement position
+    }
+    // Walk backward past whitespace to find the last non-whitespace char
+    let before = &source[..prefix_start];
+    let trimmed = before.trim_end();
+    let Some(last_char) = trimmed.chars().next_back() else {
+        return false; // blank line — statement position
+    };
+    // Expression indicators: assignment, list, operator contexts.
+    //
+    // Multi-character operators (`==`, `!=`, `<=`, `>=`, `=~`, `//`, `=>`) need
+    // no special case: each ends in a character already listed here, and each
+    // one puts the cursor in a value position. A comparison, a match, a
+    // defined-or, and a fat comma all expect an operand next, so the sole
+    // consumer -- complete_general_context -- must go on suppressing
+    // statement-only keywords there.
+    matches!(
+        last_char,
+        '=' | ','
+            | ';'
+            | '('
+            | '['
+            | '{'
+            | '+'
+            | '-'
+            | '*'
+            | '/'
+            | '%'
+            | '.'
+            | '&'
+            | '|'
+            | '!'
+            | '<'
+            | '>'
+            | '?'
+            | ':'
+            | '~'
+            | '\\'
+    )
+}
+
 #[cfg(test)]
 mod indirect_helper_tests {
     use super::{
@@ -559,35 +606,29 @@ mod indirect_helper_tests {
 
     #[test]
     fn is_indirect_method_word_call_presence_observer() {
-        assert_eq!(is_indirect_method_word("new"), true, "input that reaches call word.chars()");
-        assert_eq!(
-            is_indirect_method_word(""),
-            false,
+        assert!(is_indirect_method_word("new"), "input that reaches call word.chars()");
+        assert!(
+            !is_indirect_method_word(""),
             "input that reaches call chars.next() and takes the empty-word branch"
         );
-        assert_eq!(
-            is_indirect_method_word("Foo"),
-            false,
+        assert!(
+            !is_indirect_method_word("Foo"),
             "input that reaches call first.is_ascii_lowercase() and rejects uppercase receivers"
         );
-        assert_eq!(
+        assert!(
             is_indirect_method_word("_private"),
-            true,
             "input that reaches call first.is_ascii_lowercase() and accepts underscore methods"
         );
-        assert_eq!(
-            is_indirect_method_word("new::Child"),
-            false,
+        assert!(
+            !is_indirect_method_word("new::Child"),
             "input that reaches call word.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')"
         );
-        assert_eq!(
-            is_indirect_method_word("print"),
-            false,
+        assert!(
+            !is_indirect_method_word("print"),
             "input that reaches call INDIRECT_METHOD_EXCLUDED.contains(&word)"
         );
-        assert_eq!(
-            is_indirect_method_word("length"),
-            false,
+        assert!(
+            !is_indirect_method_word("length"),
             "input that reaches call perl_lexer::builtins::builtin_signatures_phf::is_builtin(word)"
         );
     }
@@ -713,31 +754,45 @@ mod indirect_helper_tests {
         assert!(!is_in_expression_position("value ", 6));
         assert!(!is_in_expression_position("   ", 3));
     }
-}
 
-/// Heuristic: detect if the cursor is in an expression position where statement
-/// keywords (package, sub, use, etc.) would be invalid. Returns true if the
-/// text immediately before the prefix suggests an expression context.
-/// (UX_GAP_02)
-fn is_in_expression_position(source: &str, prefix_start: usize) -> bool {
-    if prefix_start == 0 {
-        return false; // start of file — statement position
+    /// A multi-character operator leaves the cursor in a value position, so
+    /// `complete_general_context` must keep suppressing statement-only keywords
+    /// (`package`, `sub`, `use`) there -- Perl wants an operand, not a new
+    /// statement. These held only by accident before: the exclusion list that
+    /// used to deny them was compared against the untrimmed prefix, so it never
+    /// fired in the normal cursor-after-a-space case. Pin both spacings.
+    #[test]
+    fn multi_character_operators_are_expression_positions() {
+        for (source, operator) in [
+            ("if ($a == ", "=="),
+            ("if ($a != ", "!="),
+            ("if ($a <= ", "<="),
+            ("if ($a >= ", ">="),
+            ("$x =~ ", "=~"),
+            ("$a // ", "//"),
+            ("key => ", "=>"),
+        ] {
+            assert!(
+                is_in_expression_position(source, source.len()),
+                "{operator} expects an operand, so this is an expression position: {source:?}"
+            );
+            let tight = source.trim_end();
+            assert!(
+                is_in_expression_position(tight, tight.len()),
+                "{operator} must hold without trailing whitespace too: {tight:?}"
+            );
+        }
     }
-    // Walk backward past whitespace to find the last non-whitespace char
-    let before = &source[..prefix_start];
-    let trimmed = before.trim_end();
-    let Some(last_char) = trimmed.chars().next_back() else {
-        return false; // blank line — statement position
-    };
-    // Expression indicators: assignment, list, operator contexts
-    matches!(
-        last_char,
-        '=' | ',' | ';' | '(' | '[' | '{' | '+' | '-' | '*' | '/' | '%' | '.' | '&' | '|' | '!' | '<' | '>' | '?' | ':' | '~' | '\\'
-    ) && !before.ends_with("=>") // fat comma is a key context, not expression
-    && !before.ends_with("==")
-    && !before.ends_with("!=")
-    && !before.ends_with("<=")
-    && !before.ends_with(">=")
-    && !before.ends_with("=~")
-    && !before.ends_with("//")
+
+    /// Negative control: the exclusions must not swallow a genuine single-character
+    /// expression position that merely ends in one of the same characters.
+    #[test]
+    fn single_character_operators_remain_expression_positions() {
+        for source in ["value = ", "f($a, ", "$h{ ", "$x + ", "cond ? "] {
+            assert!(
+                is_in_expression_position(source, source.len()),
+                "expected an expression position for {source:?}"
+            );
+        }
+    }
 }

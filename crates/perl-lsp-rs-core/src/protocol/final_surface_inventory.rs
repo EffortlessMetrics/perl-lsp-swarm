@@ -275,6 +275,9 @@ fn compat(
 }
 
 /// Stable surface IDs referenced across crates by the runtime census proof.
+// Consumer wiring lives in the `perl-lsp-rs` final-surface census proof
+// (#9662); until it lands these IDs are compile-checked ledger vocabulary.
+#[allow(dead_code)]
 pub mod ids {
     /// Static inline-completion provider advertisement row.
     pub const CAP_INLINE_COMPLETION_PROVIDER: &str = "cap.inlineCompletionProvider";
@@ -425,6 +428,8 @@ pub fn census_pointer_union() -> BTreeSet<String> {
 /// union plus mutation-owned pointers. Runtime initialize responses must be
 /// subsets of this set; the `perl-lsp-rs` final-surface census tests enforce
 /// that against the exact emitted surface.
+// Pending the same consumer wiring as `ids` above (#9662).
+#[allow(dead_code)]
 pub fn covered_final_surface_pointers() -> BTreeSet<String> {
     let mut covered = owned_surface_pointers(&final_surface_rows());
     covered.extend(census_pointer_union());

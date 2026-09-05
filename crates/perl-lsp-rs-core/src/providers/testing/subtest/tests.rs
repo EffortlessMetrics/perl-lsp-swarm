@@ -1,10 +1,11 @@
 //! Tests for Test2 subtest discovery.
 
 use super::*;
+use perl_tdd_support::{must_some_with, must_with};
 
 fn discover(source: &str) -> Vec<DiscoveredSubtest> {
     let mut parser = perl_parser::Parser::new(source);
-    let ast = parser.parse().expect("source parses");
+    let ast = must_with(parser.parse(), "source parses");
     discover_subtests(&ast, source)
 }
 
@@ -118,11 +119,11 @@ fn nearest_subtest_resolves_innermost_at_cursor() {
     let subtests = discover(source);
 
     // Cursor on line 3 (inside inner) resolves to the inner subtest.
-    let inner = nearest_subtest_at_line(&subtests, 3).expect("cursor is inside a subtest");
+    let inner = must_some_with(nearest_subtest_at_line(&subtests, 3), "cursor is inside a subtest");
     assert_eq!(inner.name, SubtestName::Named("inner".to_string()));
 
     // Cursor on line 1 (inside outer, before inner) resolves to outer.
-    let outer = nearest_subtest_at_line(&subtests, 1).expect("cursor is inside a subtest");
+    let outer = must_some_with(nearest_subtest_at_line(&subtests, 1), "cursor is inside a subtest");
     assert_eq!(outer.name, SubtestName::Named("outer".to_string()));
 }
 
@@ -148,7 +149,7 @@ fn buffered_and_streamed_variants_are_discovered() {
 /// runtime document-symbol path does, then nest.
 fn nested_outline(source: &str) -> Vec<DocumentSymbol> {
     let mut parser = perl_parser::Parser::new(source);
-    let ast = parser.parse().expect("source parses");
+    let ast = must_with(parser.parse(), "source parses");
     let core_result =
         crate::providers::document_symbols::source_backed_document_symbols_from_ast(&ast, source);
     let mut outline = core_result.symbols;
@@ -194,10 +195,14 @@ fn lexically_scoped_subtest_nests_under_its_enclosing_sub() {
         find_named(&outline, "inside helper").is_none(),
         "subtest inside a named sub must not float to the outline root; got: {outline:?}"
     );
-    let helper =
-        find_named_deep(&outline, "helper").expect("helper subroutine symbol missing from outline");
-    let nested =
-        find_named(&helper.children, "inside helper").expect("subtest not nested under helper");
+    let helper = must_some_with(
+        find_named_deep(&outline, "helper"),
+        "helper subroutine symbol missing from outline",
+    );
+    let nested = must_some_with(
+        find_named(&helper.children, "inside helper"),
+        "subtest not nested under helper",
+    );
     assert_eq!(nested.detail, "subtest");
     // Same kind as other outline callables (LSP Function).
     assert_eq!(nested.kind, 12);
@@ -224,7 +229,7 @@ fn file_scope_subtest_without_containing_package_stays_top_level() {
         "root-level subtest stays at the outline root; got: {top_names:?}"
     );
     // And it keeps the established conventions.
-    let subtest = find_named(&outline, "user lookup").expect("subtest present");
+    let subtest = must_some_with(find_named(&outline, "user lookup"), "subtest present");
     assert_eq!(subtest.detail, "subtest");
     assert_eq!(subtest.kind, 12);
 }
@@ -237,10 +242,10 @@ fn role_scope_owns_subtest_with_canonical_interface_kind() {
         subtest 'role test' => sub { ok(1); };\n";
     let outline = nested_outline(source);
 
-    let role = find_named_deep(&outline, "My::Role").expect("role symbol missing");
+    let role = must_some_with(find_named_deep(&outline, "My::Role"), "role symbol missing");
     assert_eq!(role.kind, SymbolKind::Role.to_lsp_kind_document_symbol());
     assert_eq!(role.children.len(), 1, "role should own exactly one subtest");
-    let role_subtest = role.children.first().expect("role subtest missing");
+    let role_subtest = must_some_with(role.children.first(), "role subtest missing");
     assert_eq!(role_subtest.name, "role test");
     assert_eq!(role_subtest.kind, SymbolKind::Subroutine.to_lsp_kind_document_symbol());
     assert_eq!(role_subtest.detail, "subtest");
@@ -259,8 +264,8 @@ fn closed_package_block_does_not_own_following_subtest() {
         subtest 'after block' => sub { ok(1); };\n";
     let outline = nested_outline(source);
 
-    let outer = find_named_deep(&outline, "Outer").expect("outer package missing");
-    let inner = find_named(&outer.children, "Inner").expect("inner package missing");
+    let outer = must_some_with(find_named_deep(&outline, "Outer"), "outer package missing");
+    let inner = must_some_with(find_named(&outer.children, "Inner"), "inner package missing");
     assert!(
         find_named(&inner.children, "after block").is_none(),
         "subtest after a closed package block must not remain under Inner"
@@ -278,7 +283,7 @@ fn subtest_insertion_preserves_priority_then_source_order() {
         subtest 'middle' => sub {};\n\
         sub later {}\n";
     let outline = nested_outline(source);
-    let package = find_named_deep(&outline, "P").expect("package missing");
+    let package = must_some_with(find_named_deep(&outline, "P"), "package missing");
     let names: Vec<&str> = package.children.iter().map(|symbol| symbol.name.as_str()).collect();
 
     assert_eq!(
@@ -296,7 +301,7 @@ fn two_sibling_subtests_keep_source_order_inside_their_sub() {
         subtest 'beta' => sub { ok(2); };\n\
         }\n";
     let outline = nested_outline(source);
-    let both = find_named(&outline, "both").expect("both symbol missing");
+    let both = must_some_with(find_named(&outline, "both"), "both symbol missing");
     let names: Vec<&str> = both.children.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names, vec!["alpha", "beta"]);
 }
@@ -315,16 +320,17 @@ fn role_and_statement_package_regions_own_only_their_lexical_members() {
 ";
     let outline = nested_outline(source);
 
-    let role = find_named_deep(&outline, "My::Role").expect("role symbol missing");
+    let role = must_some_with(find_named_deep(&outline, "My::Role"), "role symbol missing");
     assert_eq!(role.kind, 8, "Moo::Role must retain the LSP role kind");
     assert_eq!(
         role.children.iter().map(|child| child.name.as_str()).collect::<Vec<_>>(),
         vec!["role test", "after inner"]
     );
 
-    let inner = find_named_deep(&outline, "Inner").expect("block package symbol missing");
+    let inner = must_some_with(find_named_deep(&outline, "Inner"), "block package symbol missing");
 
-    let before = find_named_deep(&outline, "Before").expect("statement package symbol missing");
+    let before =
+        must_some_with(find_named_deep(&outline, "Before"), "statement package symbol missing");
     assert_eq!(
         before
             .children
@@ -355,9 +361,11 @@ fn dynamic_nested_names_preserve_cardinality_and_source_order() {
         };
 ";
     let outline = nested_outline(source);
-    let package = find_named_deep(&outline, "Dynamic").expect("package symbol missing");
-    let outer =
-        find_named(&package.children, "subtest (dynamic)").expect("dynamic subtest missing");
+    let package = must_some_with(find_named_deep(&outline, "Dynamic"), "package symbol missing");
+    let outer = must_some_with(
+        find_named(&package.children, "subtest (dynamic)"),
+        "dynamic subtest missing",
+    );
     assert_eq!(outer.children.len(), 2);
     assert_eq!(
         outer.children.iter().map(|child| child.name.as_str()).collect::<Vec<_>>(),
@@ -373,7 +381,7 @@ fn new_subtest_keeps_compiler_priority_order_with_mixed_siblings() {
         sub later { return 1; }
 ";
     let outline = nested_outline(source);
-    let package = find_named_deep(&outline, "Mixed").expect("package symbol missing");
+    let package = must_some_with(find_named_deep(&outline, "Mixed"), "package symbol missing");
     let names: Vec<&str> = package.children.iter().map(|child| child.name.as_str()).collect();
     assert_eq!(names, vec!["middle", "later", "$value"]);
 }
@@ -387,7 +395,7 @@ fn ordinary_array_and_hash_follow_callables_in_compiler_priority_order() {
         sub later { return 1; }
 ";
     let outline = nested_outline(source);
-    let package = find_named_deep(&outline, "Collections").expect("package missing");
+    let package = must_some_with(find_named_deep(&outline, "Collections"), "package missing");
     let names: Vec<&str> = package.children.iter().map(|child| child.name.as_str()).collect();
 
     assert_eq!(names, vec!["middle", "later", "@items", "%items_by_name"]);

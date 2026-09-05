@@ -1,6 +1,7 @@
 //! Tests for the TAP reader.
 
 use super::*;
+use perl_tdd_support::must_some_with;
 
 #[test]
 fn parses_simple_pass() {
@@ -63,7 +64,7 @@ fn skip_is_not_a_failure() {
 #[test]
 fn skip_all_plan() {
     let report = parse_tap("1..0 # SKIP no database configured\n");
-    let plan = report.plan.clone().expect("plan present");
+    let plan = must_some_with(report.plan.clone(), "plan present");
     assert_eq!(plan.count, 0);
     assert_eq!(plan.skip_all.as_deref(), Some("no database configured"));
     assert!(report.plan_mismatch().is_none(), "skip-all is not a plan mismatch");
@@ -129,13 +130,13 @@ fn focus_subtest_matches_summary_line_and_inner_failures() {
         "    ok 1 - found\n    not ok 2 - email\nnot ok 1 - user lookup\nok 2 - other\n1..2\n";
     let report = parse_tap(output);
 
-    let focus = focus_subtest(&report, "user lookup").expect("subtest present");
+    let focus = must_some_with(focus_subtest(&report, "user lookup"), "subtest present");
     assert!(focus.found);
     assert!(!focus.passed, "the subtest summary line is `not ok`");
     assert_eq!(focus.inner_failed, 1, "one nested `not ok` belongs to the subtest");
 
     // A passing subtest.
-    let focus_other = focus_subtest(&report, "other").expect("subtest present");
+    let focus_other = must_some_with(focus_subtest(&report, "other"), "subtest present");
     assert!(focus_other.passed);
     assert_eq!(focus_other.inner_failed, 0);
 }
