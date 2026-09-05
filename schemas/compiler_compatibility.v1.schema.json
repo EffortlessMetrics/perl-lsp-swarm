@@ -50,13 +50,13 @@
       }
     },
     "execution_like_rail": {
-      "description": "A rail offering execution evidence names its mechanism; a rail without evidence names none.",
+      "description": "A rail with execution evidence names its mechanism; a rail with no evidence names none. `stale` counts as evidence: it exists but is not currently usable, so it keeps the mechanism that produced it.",
       "allOf": [
         {"$ref": "#/$defs/rail"},
         {
           "if": {
             "properties": {
-              "availability": {"enum": ["available", "partial"]}
+              "availability": {"enum": ["available", "partial", "stale"]}
             },
             "required": ["availability"]
           },
@@ -64,6 +64,10 @@
           "else": {"not": {"required": ["mechanism"]}}
         }
       ]
+    },
+    "unsupported_execution_rail": {
+      "$comment": "Mirrors SUPPORTED_EXECUTION_MECHANISMS in perl-core-harness-types, which currently admits fixture_replay only. A rail whose mechanism is not yet supported cannot carry evidence, so it must be not_available. Promoting such a rail is a deliberate contract change: add its mechanism to that list with the evidence that backs it, and relax this constraint in the same change.",
+      "properties": {"availability": {"const": "not_available"}}
     },
     "selected_execution_rail": {
       "description": "The selected executor recognizes fixture shapes and generates the behavior it reports, so it may name only fixture_replay.",
@@ -76,14 +80,16 @@
       "description": "Only EIR-evaluated evidence reaches this rail. Relabeling a replay receipt does not move it here.",
       "allOf": [
         {"$ref": "#/$defs/execution_like_rail"},
-        {"properties": {"mechanism": {"const": "eir_execution"}}}
+        {"properties": {"mechanism": {"const": "eir_execution"}}},
+        {"$ref": "#/$defs/unsupported_execution_rail"}
       ]
     },
     "differential_oracle_rail": {
       "description": "Only real-Perl differential evidence reaches this rail.",
       "allOf": [
         {"$ref": "#/$defs/execution_like_rail"},
-        {"properties": {"mechanism": {"const": "real_perl_oracle"}}}
+        {"properties": {"mechanism": {"const": "real_perl_oracle"}}},
+        {"$ref": "#/$defs/unsupported_execution_rail"}
       ]
     },
     "non_execution_rail": {

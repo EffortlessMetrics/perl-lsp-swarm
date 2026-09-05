@@ -10011,7 +10011,7 @@ mod tests {
         // The schema is the contract a consumer validates against. If it and
         // `validate_rail_mechanism` disagree, one of them is decoration —
         // which is how the mechanism came to live in prose in the first place.
-        use perl_core_harness_types::CompatibilityRailRole;
+        use perl_core_harness_types::{CompatibilityRailRole, SUPPORTED_EXECUTION_MECHANISMS};
 
         let root = project_root()?;
         let schema: serde_json::Value = serde_json::from_str(&fs::read_to_string(
@@ -10051,6 +10051,52 @@ mod tests {
         // merely left unconstrained.
         if defs["non_execution_rail"]["allOf"][1]["not"]["required"][0] != "mechanism" {
             bail!("schema does not forbid a mechanism on rails representing no execution");
+        }
+
+        // "Has evidence" must mean the same thing in both contracts. `stale`
+        // evidence exists but is not current, so it keeps its mechanism.
+        let evidence: Vec<&str> =
+            defs["execution_like_rail"]["allOf"][1]["if"]["properties"]["availability"]["enum"]
+                .as_array()
+                .ok_or_else(|| color_eyre::eyre::eyre!("schema pins no evidence-bearing states"))?
+                .iter()
+                .map(|state| state.as_str().unwrap_or_default())
+                .collect();
+        if evidence != ["available", "partial", "stale"] {
+            bail!(
+                "schema treats {evidence:?} as evidence-bearing; the validator uses available, partial, and stale"
+            );
+        }
+
+        // A rail whose mechanism is not yet supported must be unable to carry
+        // evidence in the schema too, or a schema-only consumer would accept
+        // evaluation evidence the producer refuses to emit.
+        for (def, role) in [
+            ("selected_execution_rail", CompatibilityRailRole::Execution),
+            ("eir_rail", CompatibilityRailRole::Eir),
+            ("differential_oracle_rail", CompatibilityRailRole::DifferentialOracle),
+        ] {
+            let mechanism = role
+                .admissible_mechanism()
+                .ok_or_else(|| color_eyre::eyre::eyre!("{role} rail declares no mechanism"))?;
+            let supported = SUPPORTED_EXECUTION_MECHANISMS.contains(&mechanism);
+            let constrained = defs[def]["allOf"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|entry| entry["$ref"] == "#/$defs/unsupported_execution_rail");
+            if supported == constrained {
+                bail!(
+                    "{def} carries mechanism {mechanism} (supported={supported}) but its \
+                     not_available constraint is {constrained}; the schema and \
+                     SUPPORTED_EXECUTION_MECHANISMS disagree about which rails may hold evidence"
+                );
+            }
+        }
+        if defs["unsupported_execution_rail"]["properties"]["availability"]["const"]
+            != "not_available"
+        {
+            bail!("the unsupported-rail constraint does not pin availability to not_available");
         }
         Ok(())
     }

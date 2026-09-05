@@ -1266,13 +1266,19 @@ impl fmt::Display for RailMechanismViolation {
 
 /// Reject a rail whose execution-mechanism claim it cannot support.
 ///
-/// An execution-like rail that offers evidence must name the rail that
-/// produced it, so a consumer reads the mechanism instead of inferring it from
-/// `reason`. A rail without evidence names nothing, a mechanism belonging to
-/// another rail is refused outright, and a mechanism outside
+/// An execution-like rail that has evidence must name the rail that produced
+/// it, so a consumer reads the mechanism instead of inferring it from `reason`.
+/// A rail with no evidence names nothing, a mechanism belonging to another rail
+/// is refused outright, and a mechanism outside
 /// [`SUPPORTED_EXECUTION_MECHANISMS`] is refused wherever it appears.
 ///
-/// Together these make an available `eir` or `differential_oracle` rail
+/// "Has evidence" follows [`CompatibilityRailAvailability`] rather than
+/// usability: `Stale` means the evidence exists but its freshness contract
+/// prevents current use, so a stale rail still names the mechanism that
+/// produced it. Dropping it there would force exactly the prose inference this
+/// contract removes. Only `NotAvailable` names nothing.
+///
+/// Together these make an `eir` or `differential_oracle` rail with evidence
 /// unreachable today: each may name only its own mechanism, and neither
 /// mechanism is currently supported. That is the intended result — no EIR or
 /// oracle evidence exists, so no such rail can be published (#8254).
@@ -1282,7 +1288,9 @@ pub fn validate_rail_mechanism(
 ) -> Result<(), RailMechanismViolation> {
     let offers_evidence = matches!(
         rail.availability,
-        CompatibilityRailAvailability::Available | CompatibilityRailAvailability::Partial
+        CompatibilityRailAvailability::Available
+            | CompatibilityRailAvailability::Partial
+            | CompatibilityRailAvailability::Stale
     );
     let Some(admissible) = role.admissible_mechanism() else {
         return match rail.mechanism {
@@ -1771,6 +1779,48 @@ mod tests {
         }
     }
 
+    fn sample_run_state(mode: HarnessMode) -> CompatibilityRunState {
+        CompatibilityRunState {
+            schema_version: RUN_REPORT_SCHEMA_VERSION.into(),
+            mode,
+            files_total: 0,
+            files_passed: 0,
+            files_failed: 0,
+            tap_assertions_total: 0,
+            tap_assertions_passed: 0,
+            baseline_schema_version: "not_available".into(),
+            report_schema_version: RUN_REPORT_SCHEMA_VERSION.into(),
+            evidence_bundle_id: "bundle-1".into(),
+            cluster_count: 0,
+        }
+    }
+
+    /// One observation whose rails are all admissible, so a test can mutate a
+    /// single rail and attribute the resulting violation to that rail.
+    fn sample_observation(debt: CompatibilityDebtState) -> CompatibilityObservation {
+        CompatibilityObservation {
+            observation_bundle_id: "bundle-1".into(),
+            measurement_sha: "a".repeat(40),
+            parse: sample_run_state(HarnessMode::Parse),
+            compile: sample_run_state(HarnessMode::Compile),
+            debt,
+            clusters: CompatibilityClusterState {
+                active_count: 0,
+                unassigned_count: 0,
+                by_status: BTreeMap::new(),
+                history_bundle_id: None,
+            },
+            execution: rail(
+                CompatibilityRailAvailability::Available,
+                Some(ExecutionMechanism::FixtureReplay),
+            ),
+            curated_gold: rail(CompatibilityRailAvailability::NotAvailable, None),
+            differential_oracle: rail(CompatibilityRailAvailability::NotAvailable, None),
+            eir: rail(CompatibilityRailAvailability::NotAvailable, None),
+            claim_boundary: "fixture".into(),
+        }
+    }
+
     #[test]
     fn an_available_execution_rail_names_its_mechanism() {
         // The whole point of the field: an available rail is readable as
@@ -1782,39 +1832,58 @@ mod tests {
     }
 
     #[test]
-    fn an_available_execution_rail_without_a_mechanism_is_rejected() {
-        // This is the pre-#14763 shape: available, with the claim left to prose.
-        for availability in
-            [CompatibilityRailAvailability::Available, CompatibilityRailAvailability::Partial]
-        {
+    fn an_execution_rail_with_evidence_but_no_mechanism_is_rejected() {
+        // This is the pre-#14763 shape: evidence present, claim left to prose.
+        for availability in [
+            CompatibilityRailAvailability::Available,
+            CompatibilityRailAvailability::Partial,
+            CompatibilityRailAvailability::Stale,
+        ] {
             assert_eq!(
                 validate_rail_mechanism(
                     CompatibilityRailRole::Execution,
                     &rail(availability, None)
                 ),
                 Err(RailMechanismViolation::Missing { rail: CompatibilityRailRole::Execution }),
-                "an execution rail offering evidence must name the rail that produced it"
+                "an execution rail with evidence must name the rail that produced it"
             );
         }
     }
 
     #[test]
+    fn a_stale_rail_keeps_the_mechanism_that_produced_its_evidence() {
+        // `Stale` means the evidence exists but is not currently usable. Its
+        // mechanism is still a fact about that evidence, so dropping it would
+        // send a consumer back to `reason` exactly when the rail is most
+        // ambiguous.
+        assert!(
+            validate_rail_mechanism(
+                CompatibilityRailRole::Execution,
+                &rail(
+                    CompatibilityRailAvailability::Stale,
+                    Some(ExecutionMechanism::FixtureReplay)
+                )
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn a_rail_without_evidence_may_not_name_a_mechanism() {
-        for availability in
-            [CompatibilityRailAvailability::NotAvailable, CompatibilityRailAvailability::Stale]
-        {
-            assert_eq!(
-                validate_rail_mechanism(
-                    CompatibilityRailRole::Execution,
-                    &rail(availability, Some(ExecutionMechanism::FixtureReplay))
-                ),
-                Err(RailMechanismViolation::ClaimWithoutEvidence {
-                    rail: CompatibilityRailRole::Execution,
-                    mechanism: ExecutionMechanism::FixtureReplay,
-                }),
-                "an absent rail that names a mechanism is claiming evidence it does not have"
-            );
-        }
+        assert_eq!(
+            validate_rail_mechanism(
+                CompatibilityRailRole::Execution,
+                &rail(
+                    CompatibilityRailAvailability::NotAvailable,
+                    Some(ExecutionMechanism::FixtureReplay)
+                )
+            ),
+            Err(RailMechanismViolation::ClaimWithoutEvidence {
+                rail: CompatibilityRailRole::Execution,
+                mechanism: ExecutionMechanism::FixtureReplay,
+            }),
+            "an absent rail that names a mechanism is claiming evidence it does not have"
+        );
     }
 
     #[test]
@@ -1889,6 +1958,14 @@ mod tests {
                 &rail(CompatibilityRailAvailability::Available, None)
             ),
             Err(RailMechanismViolation::Missing { rail: CompatibilityRailRole::Eir })
+        );
+        // Only a rail with no evidence at all is admissible for EIR today.
+        assert!(
+            validate_rail_mechanism(
+                CompatibilityRailRole::Eir,
+                &rail(CompatibilityRailAvailability::NotAvailable, None)
+            )
+            .is_ok()
         );
     }
 
@@ -1966,7 +2043,7 @@ mod tests {
             "the boundary registry represents no execution"
         );
 
-        let mut claimed_history = clean;
+        let mut claimed_history = clean.clone();
         claimed_history.history.mechanism = Some(ExecutionMechanism::FixtureReplay);
         assert_eq!(
             validate_debt_rail_mechanisms(&claimed_history),
@@ -1975,6 +2052,30 @@ mod tests {
             }),
             "cluster history represents no execution"
         );
+
+        // The whole-object walks are what a producer actually calls, so the
+        // debt rails must be unreachable through them too — testing only the
+        // focused helper would leave the original omission undetected.
+        let observation = sample_observation(clean);
+        assert!(validate_observation_rail_mechanisms(&observation).is_ok());
+        for mutate in [
+            (|debt: &mut CompatibilityDebtState| {
+                debt.registry.mechanism = Some(ExecutionMechanism::FixtureReplay)
+            }) as fn(&mut CompatibilityDebtState),
+            |debt: &mut CompatibilityDebtState| {
+                debt.history.mechanism = Some(ExecutionMechanism::FixtureReplay)
+            },
+        ] {
+            let mut claimed = observation.clone();
+            mutate(&mut claimed.debt);
+            assert_eq!(
+                validate_observation_rail_mechanisms(&claimed),
+                Err(RailMechanismViolation::NotExecutionLike {
+                    mechanism: ExecutionMechanism::FixtureReplay
+                }),
+                "the observation walk must reach the rails nested under debt"
+            );
+        }
     }
 
     #[test]
