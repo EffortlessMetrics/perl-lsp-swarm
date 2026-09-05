@@ -690,8 +690,11 @@ impl<'a> Parser<'a> {
         // Expect =
         self.expect(TokenKind::Assign)?;
 
-        // Tell the lexer to enter format body mode
-        self.tokens.enter_format_mode();
+        // Tell the lexer to enter format body mode. A buffered stream that
+        // cannot honor the entry records an advisory; the format-body expect
+        // below then surfaces the misaligned cache as a typed error instead of
+        // silently accepting a wrongly classified token (#8128).
+        self.observe_contextual_operation(ContextualTokenOp::EnterFormatBody, start)?;
 
         // Get the format body
         let body_token = self.tokens.next()?;

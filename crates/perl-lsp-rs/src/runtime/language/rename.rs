@@ -669,6 +669,119 @@ impl LspServer {
             || Self::offset_is_inside_quoted_string(&doc.text, offset)
     }
 
+    /// True when the cursor is not on a symbol this provider will rename.
+    ///
+    /// Two distinct reasons land here, and both must refuse:
+    ///
+    /// * **It names a package.** Package rename is not implemented —
+    ///   [`build_rename_edit`] declines every non-[`SymKind::Sub`] key, and no
+    ///   same-file path produces an edit for a `package` declaration.
+    /// * **It names a token other than the symbol that would be edited.** For a
+    ///   qualified name the resolver answers with the *callable*, whatever the
+    ///   cursor is on, so renaming from any other component silently edits a
+    ///   symbol the user never pointed at.
+    ///
+    /// The second is the more dangerous: it is a wrong-symbol edit reported as
+    /// success, which is worse than the empty edit #9827 is about — the empty
+    /// one at least leaves the source intact. `prepareRename` refuses these
+    /// positions up front, and the rename handler asks the same question so a
+    /// client that skips `prepareRename` cannot get the wrong edit either.
+    ///
+    /// [`build_rename_edit`]: crate::features::workspace_rename
+    /// [`SymKind::Sub`]: perl_parser::index::SymKind::Sub
+    fn rename_must_refuse_at(doc: &crate::state::DocumentState, offset: usize) -> bool {
+        let parsed = doc.current_parsed();
+        let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) else {
+            return false;
+        };
+
+        // A `package Foo;` / `package Foo { ... }` declaration name. The cursor
+        // classifier below does not resolve a declaration name to a symbol, so
+        // this reads the declaration's own `name_span`, which the AST carries
+        // precisely for cursor-accurate LSP navigation.
+        if Self::offset_is_in_package_name_span(ast, offset) {
+            return true;
+        }
+
+        let current_pkg = crate::declaration::current_package_at(ast, offset);
+        let resolved =
+            crate::declaration::symbol_at_cursor_with_source(ast, offset, current_pkg, &doc.text);
+
+        // A module name that does resolve to a package key — `use Foo::Bar;`.
+        if resolved
+            .as_ref()
+            .is_some_and(|key| matches!(key.kind, perl_parser::index::SymKind::Pack))
+        {
+            return true;
+        }
+
+        // Otherwise ask the question `references.rs` asks, with the classifier
+        // it shares with `navigation.rs`: is the cursor on the token that names
+        // the symbol we are about to act on?
+        #[cfg(feature = "workspace")]
+        if let Ok(fqn_regex) = super::navigation::get_fqn_regex() {
+            let (line_start, line_text) = crate::util::line_window_around_offset(&doc.text, offset);
+            let cursor_in_line = offset.saturating_sub(line_start);
+            match super::navigation::fqn_component_at_cursor(fqn_regex, line_text, cursor_in_line) {
+                // A package component never names the callable: the `Alpha` in
+                // `Alpha::target()` resolves to the sub `target`.
+                Some(super::navigation::FqnCursorComponent::Prefix) => return true,
+                // Nor does a *final* component whose text disagrees with the
+                // resolved key. In `Some::Module->new()` the qualified-name
+                // match stops at the `->`, so `Module` is that match's final
+                // component while the key names the method `new` — renaming
+                // from the receiver would edit `new`.
+                Some(super::navigation::FqnCursorComponent::Final { name, .. })
+                    if resolved.as_ref().is_some_and(|key| name.as_str() != &*key.name) =>
+                {
+                    return true;
+                }
+                Some(super::navigation::FqnCursorComponent::Final { .. }) | None => {}
+            }
+        }
+
+        false
+    }
+
+    /// True when `offset` falls inside the name of a `package` declaration.
+    ///
+    /// Descends only into subtrees that actually span `offset`, matching
+    /// `current_package_at` and `find_node_at_offset`. Without that bound this
+    /// would walk every node in the document on every `prepareRename`, where
+    /// the cursor is usually nowhere near a `package` declaration.
+    fn offset_is_in_package_name_span(ast: &perl_parser_core::Node, offset: usize) -> bool {
+        if offset < ast.location.start || offset > ast.location.end {
+            return false;
+        }
+        if let perl_parser_core::NodeKind::Package { name_span, .. } = &ast.kind
+            && name_span.start <= offset
+            && offset <= name_span.end
+        {
+            return true;
+        }
+        crate::declaration::get_node_children(ast)
+            .into_iter()
+            .any(|child| Self::offset_is_in_package_name_span(child, offset))
+    }
+
+    /// The `textDocument/rename` response for a position the server will not edit.
+    ///
+    /// `rename` is a request, so every path owes the client exactly one response,
+    /// and only `result: null` means "unavailable":
+    ///
+    /// - `Ok(None)` sends *no response at all* — `dispatch/response.rs` treats it
+    ///   as a notification, so a client that sent an id waits until it times out.
+    /// - An empty `WorkspaceEdit` (`{"changes": {}}`, or `{"documentChanges": []}`
+    ///   once `to_workspace_edit_format` converts it) is a *successful* refactor
+    ///   that changed nothing. Editors show no error and no diagnostic; the
+    ///   interaction silently evaporates.
+    ///
+    /// Blocker paths must therefore route here rather than fabricating an empty
+    /// successful edit. See #9827.
+    fn rename_unavailable() -> Result<Option<Value>, JsonRpcError> {
+        Ok(Some(Value::Null))
+    }
+
     fn scoped_lexical_rename_edits(
         &self,
         doc: &crate::state::DocumentState,
@@ -1018,7 +1131,16 @@ impl LspServer {
             return Err(crate::protocol::method_not_advertised());
         }
 
-        if let Some(params) = params {
+        // A request with no `params` is malformed, not a position that cannot be
+        // renamed. `req_uri` and `req_position` below already answer `-32602` for
+        // the fields they read; without this, an absent `params` object skipped
+        // them and fell through to the `null` at the end of this function — the
+        // same conflation `handle_rename_workspace_inner` rejects.
+        let Some(params) = params else {
+            return Err(crate::protocol::invalid_params("Missing required parameter: params"));
+        };
+
+        {
             let uri = req_uri(&params)?;
             let (line, character) = req_position(&params)?;
 
@@ -1028,6 +1150,11 @@ impl LspServer {
             {
                 let offset = self.pos16_to_offset(doc, line, character);
                 if Self::rename_blocked_at(doc, offset) {
+                    return Ok(Some(json!(null)));
+                }
+                // `rename` cannot edit a package/module name, so do not present a
+                // rename box the user's Enter will not act on (#9827).
+                if Self::rename_must_refuse_at(doc, offset) {
                     return Ok(Some(json!(null)));
                 }
 
@@ -1316,6 +1443,22 @@ impl LspServer {
         params: Option<Value>,
         package_local_live_pilot_enabled: bool,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // A malformed request is invalid params, not an unrenameable position.
+        // The destructuring below is permissive, so a missing `newName` or a
+        // non-numeric `position.line` would fall through to the refusal at the
+        // end and answer `null` — telling the client "this position cannot be
+        // renamed" about a request that never named a position.
+        // `handle_prepare_rename` already answers `-32602` here, through these
+        // same two helpers; this makes `rename` agree with its sibling.
+        let Some(validated) = params.as_ref() else {
+            return Err(crate::protocol::invalid_params("Missing required parameter: params"));
+        };
+        let _ = req_uri(validated)?;
+        let _ = req_position(validated)?;
+        if validated.get("newName").and_then(Value::as_str).is_none() {
+            return Err(crate::protocol::invalid_params("Missing required parameter: newName"));
+        }
+
         if let Some(p) = params
             && let (Some(uri), Some(line), Some(ch), Some(new_name)) = (
                 p.get("textDocument").and_then(|t| t.get("uri")).and_then(|s| s.as_str()),
@@ -1324,14 +1467,17 @@ impl LspServer {
                 p.get("newName").and_then(|s| s.as_str()),
             )
         {
-            let rename_starts_in_blocked_context = {
+            let (rename_starts_in_blocked_context, rename_target_refused) = {
                 let documents = self.documents_guard();
                 self.get_document(&documents, uri)
                     .map(|doc| {
                         let offset = self.pos16_to_offset(doc, line as u32, ch as u32);
-                        Self::rename_blocked_at(doc, offset)
+                        (
+                            Self::rename_blocked_at(doc, offset),
+                            Self::rename_must_refuse_at(doc, offset),
+                        )
                     })
-                    .unwrap_or(false)
+                    .unwrap_or((false, false))
             };
             if rename_starts_in_blocked_context {
                 self.record_rename_provider_decision_trace(
@@ -1341,7 +1487,24 @@ impl LspServer {
                     0,
                     "no_edit",
                 );
-                return Ok(Some(self.to_workspace_edit_format(json!({"changes": {}}))));
+                return Self::rename_unavailable();
+            }
+
+            // The cursor is not on a symbol this provider renames — a package
+            // name, or a qualified-name component that is not the callable the
+            // resolver would actually edit. `prepareRename` already refuses
+            // these positions, so a conforming client will not reach this; a
+            // client that skips `prepareRename` still must not get an edit to a
+            // symbol it never pointed at.
+            if rename_target_refused {
+                self.record_rename_provider_decision_trace(
+                    Some(uri),
+                    None,
+                    "unsupported_rename_target",
+                    0,
+                    "no_edit",
+                );
+                return Self::rename_unavailable();
             }
 
             // Check index access mode using routing helper
@@ -1533,9 +1696,7 @@ impl LspServer {
                                             0,
                                             "no_edit",
                                         );
-                                        return Ok(Some(
-                                            self.to_workspace_edit_format(json!({"changes": {}})),
-                                        ));
+                                        return Self::rename_unavailable();
                                     };
 
                                     let guard_edits =
@@ -1632,9 +1793,7 @@ impl LspServer {
                                         0,
                                         "no_edit",
                                     );
-                                    return Ok(Some(
-                                        self.to_workspace_edit_format(json!({"changes": {}})),
-                                    ));
+                                    return Self::rename_unavailable();
                                 }
                                 Some(Err(
                                     RenamePackagePilotIneligibleReason::UnsupportedEditCategory,
@@ -1655,9 +1814,7 @@ impl LspServer {
                                         0,
                                         "no_edit",
                                     );
-                                    return Ok(Some(
-                                        self.to_workspace_edit_format(json!({"changes": {}})),
-                                    ));
+                                    return Self::rename_unavailable();
                                 }
                                 None => {}
                             }
@@ -1811,9 +1968,7 @@ impl LspServer {
                                     "no_edit",
                                 );
                                 drop(documents);
-                                return Ok(Some(
-                                    self.to_workspace_edit_format(json!({"changes": {}})),
-                                ));
+                                return Self::rename_unavailable();
                             };
                             if current_symbol_bare == current_symbol
                                 && sub_declaration_keyword_before(&doc.text, edit_start)
@@ -1844,7 +1999,7 @@ impl LspServer {
                                 "no_edit",
                             );
                             drop(documents);
-                            return Ok(Some(self.to_workspace_edit_format(json!({"changes": {}}))));
+                            return Self::rename_unavailable();
                         }
 
                         // Return WorkspaceEdit with same-file changes only
@@ -1863,10 +2018,11 @@ impl LspServer {
                 }
             }
         }
-        // Explicit blocker paths return empty edits above. If no safe edit path
-        // resolved, return null so clients can treat this as unavailable rather
-        // than as an empty successful refactor.
-        Ok(None)
+        // Every blocker path above routes through `rename_unavailable`. If no safe
+        // edit path resolved, answer with the same `result: null` so clients treat
+        // this as unavailable rather than as an empty successful refactor — and so
+        // the request is actually answered instead of left to time out.
+        Self::rename_unavailable()
     }
 
     /// Validate if a string is a valid Perl identifier
@@ -2404,13 +2560,35 @@ mod tests {
             .handle_rename_workspace(Some(rename_params(request_uri, line, character, "renamed")))?
             .ok_or("missing lexical sub rename result")?;
 
-        let changes = rename_result
+        // Three claims, none of them conditional.
+        //
+        // The request is answered rather than failing closed on a not-ready
+        // index — carried by the `?` above, which would propagate the readiness
+        // error the package-scoped sibling test asserts.
+        //
+        // No edit may be sourced from the not-ready index, whatever shape the
+        // answer takes. Counted over any edit map present, so a refusal scores
+        // zero rather than skipping the check.
+        let foreign_file_edits = rename_result
             .get("changes")
             .and_then(Value::as_object)
-            .ok_or("missing lexical sub rename changes")?;
-        assert!(
-            changes.is_empty() || (changes.len() == 1 && changes.contains_key(request_uri)),
-            "lexical sub rename must not use partial workspace facts: {rename_result}"
+            .map_or(0, |changes| changes.keys().filter(|uri| uri.as_str() != request_uri).count());
+        assert_eq!(
+            foreign_file_edits, 0,
+            "lexical sub rename must not use workspace facts from a not-ready index: {rename_result}"
+        );
+
+        // And the answer today is a refusal, pinned exactly. This position
+        // produced `{"changes": {}}` before #9827 and produces `null` now;
+        // neither is an edit. If it ever does start producing the same-file
+        // edit, that is a deliberate improvement and this assertion is the
+        // place it has to be acknowledged — not a shape change that slips
+        // through a tolerant branch.
+        assert_eq!(
+            rename_result,
+            Value::Null,
+            "lexical sub rename under a not-ready index must report the position \
+             as unavailable: {rename_result}"
         );
 
         Ok(())
@@ -3242,6 +3420,66 @@ mod tests {
         let comment = "# \"commented\"\nmy $x = 1;";
         let code_after_comment = comment.find("my $x").ok_or("missing code after comment")?;
         assert!(!LspServer::offset_is_inside_quoted_string(comment, code_after_comment));
+
+        Ok(())
+    }
+
+    /// `prepareRename` refuses package names and nothing else (#9827).
+    ///
+    /// The refusal has to be narrow: a blanket null would "fix" the silent no-op
+    /// by removing rename from the editor entirely. Each package position below
+    /// is therefore paired with an ordinary identifier — in the same file, and
+    /// for the block form inside the very same declaration — that must still
+    /// prepare normally.
+    #[test]
+    fn prepare_rename_refuses_package_names_without_refusing_ordinary_symbols()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let uri = "file:///workspace/lib/Greeter.pm";
+        let source = "package Greeter;\nuse Helper::Util;\nmy $note = 1;\nsub greet { return $note; }\npackage Inner { sub ping { return 2; } }\n";
+        server.test_apply_did_open(uri, source, 1)?;
+
+        let prepare_at =
+            |needle: &str, delta: usize| -> Result<Value, Box<dyn std::error::Error>> {
+                let offset = source.find(needle).ok_or("fixture position missing")? + delta;
+                let (line, character) = {
+                    let before = &source[..offset];
+                    let line = before.matches('\n').count();
+                    let line_start = before.rfind('\n').map_or(0, |idx| idx + 1);
+                    (line, source[line_start..offset].chars().map(char::len_utf16).sum::<usize>())
+                };
+                Ok(server
+                    .handle_prepare_rename(Some(serde_json::json!({
+                        "textDocument": { "uri": uri },
+                        "position": { "line": line, "character": character }
+                    })))?
+                    .ok_or("prepareRename produced no response")?)
+            };
+
+        for (needle, delta, what) in [
+            ("Greeter;", 2, "a statement-form package declaration name"),
+            ("Helper::Util", 2, "a module name in a use statement"),
+            ("Inner {", 2, "a block-form package declaration name"),
+        ] {
+            assert_eq!(
+                prepare_at(needle, delta)?,
+                serde_json::json!(null),
+                "prepareRename must not offer a rename box on {what}"
+            );
+        }
+
+        for (needle, delta, what) in [
+            ("greet {", 2, "a subroutine declared inside a package"),
+            ("$note = 1", 2, "a lexical variable"),
+            ("ping {", 2, "a subroutine inside a package block"),
+        ] {
+            let prepared = prepare_at(needle, delta)?;
+            assert_ne!(
+                prepared,
+                serde_json::json!(null),
+                "the package refusal must not reach {what}; got null"
+            );
+        }
 
         Ok(())
     }
