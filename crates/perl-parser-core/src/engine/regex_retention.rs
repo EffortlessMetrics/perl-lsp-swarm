@@ -679,6 +679,7 @@ struct PendingGeometrySession {
 }
 
 impl PendingGeometrySession {
+    /// Open a session bound to the exact buffer `source` names.
     fn for_source(id: u64, source: &str) -> Self {
         Self {
             id,
@@ -688,6 +689,11 @@ impl PendingGeometrySession {
         }
     }
 
+    /// The stand-in used when a guard finds no entry of its own to retire.
+    ///
+    /// Its `id` is `0`, which [`next_session_id`] never issues, and its null
+    /// address matches no live buffer — so it can neither be mistaken for a real
+    /// session nor admit geometry through [`Self::owns`].
     fn empty() -> Self {
         Self { id: 0, source_ptr: 0, source_len: 0, geometries: Vec::new() }
     }

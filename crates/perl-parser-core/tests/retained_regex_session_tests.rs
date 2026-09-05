@@ -18,6 +18,10 @@ if ($s =~ m/foo/zz) { }
 my $y = $s =~ s/(x)/y/gr;
 "#;
 
+/// Retain a table the caller-driven way: begin a session, drive the parse, finish.
+///
+/// A parse that yields no tree still finishes the session with `None` rather than
+/// being skipped, because abandoning a guard is itself behavior under test.
 fn session_table(source: &str) -> perl_parser_core::RegexAnalysisTable {
     let session = RetainedRegexSession::begin(source);
     let mut parser = Parser::new(source);

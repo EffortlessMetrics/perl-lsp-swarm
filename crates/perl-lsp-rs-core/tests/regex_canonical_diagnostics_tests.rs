@@ -46,6 +46,10 @@ fn parse_with_retention(
     }
 }
 
+/// Diagnostics as a caller holding a retained table sees them: the parse runs inside
+/// a session, and the resulting table is handed to the provider.
+///
+/// Pairs with [`compatibility_diagnostics`]; the two must not share a parse helper.
 fn canonical_diagnostics(source: &str) -> Vec<Diagnostic> {
     let (ast, errors, table) = parse_with_retention(source);
     DiagnosticsProvider::new()
@@ -66,6 +70,8 @@ fn parse_without_retention(
     (Arc::new(output.ast), output.diagnostics)
 }
 
+/// Diagnostics as a caller with no retained table sees them, which is what the
+/// "compatibility path is unchanged" assertions compare against.
 fn compatibility_diagnostics(source: &str) -> Vec<Diagnostic> {
     let (ast, errors) = parse_without_retention(source);
     DiagnosticsProvider::new().get_diagnostics(&ast, &errors, source, None)
