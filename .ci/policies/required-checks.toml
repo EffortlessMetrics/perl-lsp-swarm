@@ -143,12 +143,12 @@ producer = "repository-job"
 workflow = ".github/workflows/ci-nightly.yml"
 job = "test-coverage"
 workflow_result = "propagate"
-events = ["pull_request", "schedule", "workflow_dispatch"]
+events = ["schedule", "workflow_dispatch"]
 required = false
 policy_role = "advisory"
 applicability = "conditional"
 enforcement = "neither"
-reason = "Coverage is advisory and expensive; the workflow selects it for scheduled, manual, or labelled coverage runs."
+reason = "Coverage is advisory and expensive; the workflow selects it only for scheduled or explicitly manual coverage runs."
 
 [[checks]]
 name = "codecov/patch"
