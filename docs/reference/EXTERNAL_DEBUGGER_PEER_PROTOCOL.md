@@ -113,7 +113,7 @@ peer that cannot step never causes the editor to show a step button that fails.
 | `canSetBreakpoints`        | source breakpoints                     |
 | `+ canConditionBreakpoints`| `supportsConditionalBreakpoints`       |
 | `canSetFunctionBreakpoints`| `supportsFunctionBreakpoints`          |
-| `canEvaluate`              | `supportsEvaluateForHovers`, evaluate  |
+| `canEvaluate`              | evaluate (watch / repl / clipboard)    |
 | `canListVariables`         | variables + scopes                     |
 | `canListStack`             | stackTrace                             |
 | `canStep`                  | continue / next / stepIn / stepOut     |
@@ -121,6 +121,12 @@ peer that cannot step never causes the editor to show a step button that fails.
 
 A v1 peer never negotiates logpoints, hit-conditions, data breakpoints, or
 set-variable; those stay off.
+
+`supportsEvaluateForHovers` is **not** in that table: no peer capability can
+enable it. Hover promises a *pure inspection of the selected frame*, which is a
+narrower claim than `canEvaluate`, and no backend has proven that path yet — so
+the host advertises it `false` in every mode and refuses `evaluate` requests
+whose `context` is `hover` before they reach the peer (#9573).
 
 ## 5. Events (peer → host)
 

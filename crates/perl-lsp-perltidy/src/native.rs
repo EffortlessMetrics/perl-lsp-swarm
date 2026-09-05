@@ -21,7 +21,7 @@ mod terminal_sequence;
 
 pub use edit_application::{EditApplicationError, EditSpec, PositionEncoding, apply_edits_exact};
 pub use implementation::*;
-pub use line_ending::inferred_line_ending;
+pub use line_ending::{inferred_line_ending, inferred_line_ending_at};
 pub use outcome::*;
 pub use terminal_sequence::{
     FinalNewlinePolicy, PolicyOutcome, TerminalChange, TerminalNewlineEvidence, TerminalRun,
