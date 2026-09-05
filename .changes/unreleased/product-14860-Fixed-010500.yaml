@@ -4,6 +4,6 @@ kind: Fixed
 body: Hover on a special variable interpolated inside a double-quoted string (for example `$!` in `die "Cannot open: $!"`) returns its documentation again; the #4967 proven-code routing had failed it closed with the rest of the literal, while builtin and keyword cards inside strings stay suppressed (#14860).
 time: 2026-09-06T01:05:00Z
 custom:
-  PR: "PENDING"
+  PR: "14871"
   Slug: hover-interpolated-special-variable-island
   Breaking: "no"
