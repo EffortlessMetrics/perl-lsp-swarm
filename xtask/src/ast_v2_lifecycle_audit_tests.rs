@@ -1810,6 +1810,52 @@ fn a_forwarding_reexport_must_terminate_in_the_inventory() -> Result<()> {
 }
 
 #[test]
+fn each_forwarding_hop_resolves_in_its_own_crate() -> Result<()> {
+    // The crate a relative target belongs to is the crate of the path the chain
+    // is standing on. Deriving it once from the origin file meant that after a
+    // hop into another crate, that crate's own relative target was resolved
+    // against the origin — a namespace neither path belongs to.
+    //
+    // Three rows: crate A forwards into crate B, B forwards through a local
+    // relative path, and that lands on the audited package. Crate A also
+    // carries a same-named `shim` path, so a second hop that retained the
+    // origin context would resolve into A and terminate on the wrong chain.
+    let rows = reexport_rows(&[
+        ("rx:a", "crate_a::ast_v2", "crates/crate-a/src/lib.rs:1"),
+        ("rx:a-shim", "crate_a::shim::ast_v2", "crates/crate-a/src/shim.rs:1"),
+        ("rx:b", "crate_b::ast_v2", "crates/crate-b/src/lib.rs:1"),
+        ("rx:b-shim", "crate_b::shim::ast_v2", "crates/crate-b/src/shim.rs:1"),
+    ])?;
+    let chain = sources(&[
+        // A forwards into B.
+        ("crates/crate-a/src/lib.rs", "pub use crate_b::ast_v2;"),
+        // A's own `shim` is a dead end that names the package nowhere. If the
+        // second hop resolved `shim` against A, it would land here.
+        ("crates/crate-a/src/shim.rs", "pub use crate_b::ast_v2;"),
+        // B forwards through its own relative `shim`.
+        ("crates/crate-b/src/lib.rs", "pub use shim::ast_v2;"),
+        // B's `shim` terminates on the package.
+        ("crates/crate-b/src/shim.rs", "pub use perl_ast_v2 as ast_v2;"),
+    ]);
+    reconcile_reexport_inventory(&rows, &chain)?;
+
+    // And the chain still has to terminate: break only B's shim and the whole
+    // chain fails, which proves the walk actually traverses all three hops
+    // rather than stopping early on the first inventoried match.
+    let broken = sources(&[
+        ("crates/crate-a/src/lib.rs", "pub use crate_b::ast_v2;"),
+        ("crates/crate-a/src/shim.rs", "pub use crate_b::ast_v2;"),
+        ("crates/crate-b/src/lib.rs", "pub use shim::ast_v2;"),
+        ("crates/crate-b/src/shim.rs", "pub use somewhere_else::ast_v2;"),
+    ]);
+    assert!(
+        reconcile_reexport_inventory(&rows, &broken).is_err(),
+        "a chain whose final hop leaves the inventory must be rejected"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_forwarding_target_does_not_resolve_through_another_crate() -> Result<()> {
     // A bare `ast_v2` is a suffix of several inventoried paths across crates.
     // Taking the first suffix match made the answer depend on map order and let

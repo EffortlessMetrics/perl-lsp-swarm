@@ -1080,6 +1080,12 @@ fn resolve_forwarding(
 ) -> Result<()> {
     let mut current = rendered.to_string();
     let mut visited: BTreeSet<String> = BTreeSet::new();
+    // The crate a relative target is resolved against is the crate of the path
+    // the chain is standing on, not the crate it started in. Deriving it once
+    // from the origin file meant that after a hop into another crate, that
+    // crate's own relative target was resolved against the origin — accepting
+    // or rejecting on a namespace neither path belongs to.
+    let mut crate_root = crate_root_of(file);
     loop {
         if names_package_directly(&current) {
             return Ok(());
@@ -1099,7 +1105,6 @@ fn resolve_forwarding(
         // `ast_v2` is a suffix of four inventoried paths across three crates,
         // so "first match wins" made resolution depend on map order and let a
         // local module validate through another crate's genuine chain.
-        let crate_root = crate_root_of(file);
         let mut segments: Vec<&str> = target.split("::").collect();
         let mut landed: Option<String> = None;
         while !segments.is_empty() {
@@ -1127,6 +1132,9 @@ fn resolve_forwarding(
                  documents nothing."
             );
         }
+        // Standing on `path` now: its own crate is the namespace the next
+        // relative target belongs to.
+        crate_root = path.split("::").next().map(str::to_string);
         let Some(next) = target_of.get(&path) else {
             bail!(
                 "`{file}` re-exports `{binding}` from `{rendered}`, whose chain reaches `{path}` \
