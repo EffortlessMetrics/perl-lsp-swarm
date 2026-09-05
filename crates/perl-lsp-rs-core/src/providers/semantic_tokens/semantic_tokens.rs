@@ -2991,6 +2991,7 @@ print "ok" foreach @ys;
         let mut col = 0u32;
         let variable_idx = *must_some_with(legend().map.get("variable"), "variable in legend");
         let target = format!("${name}");
+        let mut found = None;
         for [delta_line, delta_start, length, token_type, mods] in tokens {
             if delta_line == 0 {
                 col = col.saturating_add(delta_start);
@@ -3003,11 +3004,12 @@ print "ok" foreach @ys;
                 let painted: String =
                     src_line.chars().skip(col as usize).take(length as usize).collect();
                 if painted == target {
-                    return mods;
+                    found = Some(mods);
+                    break;
                 }
             }
         }
-        panic!("no `${name}` variable token found in source: {source:?}");
+        must_some_with(found, format!("no `${name}` variable token found in source: {source:?}"))
     }
 
     const DECLARATION_BIT: u32 = 1; // bit 0

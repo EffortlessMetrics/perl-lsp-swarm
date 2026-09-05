@@ -490,10 +490,13 @@ mod tests {
         let caps = capabilities_for(BuildFlags::default());
         let sync = caps.text_document_sync.as_ref();
         let message = format!("expected TextDocumentSyncCapability::Options, got {sync:?}");
-        let opts = match sync {
-            Some(TextDocumentSyncCapability::Options(opts)) => opts,
-            _ => must_some_with(None, message),
-        };
+        let opts = must_some_with(
+            match sync {
+                Some(TextDocumentSyncCapability::Options(opts)) => Some(opts),
+                _ => None,
+            },
+            message,
+        );
         assert_eq!(
             opts.change,
             Some(TextDocumentSyncKind::FULL),
@@ -529,16 +532,20 @@ mod tests {
 
         let provider = caps.code_action_provider.as_ref();
         let message = format!("expected CodeActionProviderCapability::Options, got {provider:?}");
-        let kinds: Vec<String> = match provider {
-            Some(CodeActionProviderCapability::Options(opts)) => must_some_with(
-                opts.code_action_kinds.as_ref(),
-                "code_action_kinds must be Some when code_actions is enabled",
-            )
-            .iter()
-            .map(|k| k.as_str().to_string())
-            .collect(),
-            _ => must_some_with(None, message),
-        };
+        let opts = must_some_with(
+            match provider {
+                Some(CodeActionProviderCapability::Options(opts)) => Some(opts),
+                _ => None,
+            },
+            message,
+        );
+        let kinds: Vec<String> = must_some_with(
+            opts.code_action_kinds.as_ref(),
+            "code_action_kinds must be Some when code_actions is enabled",
+        )
+        .iter()
+        .map(|k| k.as_str().to_string())
+        .collect();
 
         // Duplicate the full ordered list from sections.rs::code_action_kinds().
         let expected: &[&str] = &[
@@ -656,14 +663,19 @@ mod tests {
         let flags = BuildFlags { semantic_tokens: true, ..BuildFlags::default() };
         let caps = capabilities_for(flags);
 
-        let types: Vec<String> = match caps.semantic_tokens_provider.as_ref() {
-            Some(SemanticTokensServerCapabilities::SemanticTokensOptions(opts)) => {
-                opts.legend.token_types.iter().map(|t| t.as_str().to_string()).collect()
-            }
-            other => panic!(
-                "expected SemanticTokensServerCapabilities::SemanticTokensOptions, got {other:?}"
-            ),
-        };
+        let provider = caps.semantic_tokens_provider.as_ref();
+        let message = format!(
+            "expected SemanticTokensServerCapabilities::SemanticTokensOptions, got {provider:?}"
+        );
+        let opts = must_some_with(
+            match provider {
+                Some(SemanticTokensServerCapabilities::SemanticTokensOptions(opts)) => Some(opts),
+                _ => None,
+            },
+            message,
+        );
+        let types: Vec<String> =
+            opts.legend.token_types.iter().map(|t| t.as_str().to_string()).collect();
 
         // Duplicate the full ordered list from sections.rs::semantic_token_types().
         // Index position is the wire format — order matters.
@@ -713,14 +725,19 @@ mod tests {
         let flags = BuildFlags { semantic_tokens: true, ..BuildFlags::default() };
         let caps = capabilities_for(flags);
 
-        let modifiers: Vec<String> = match caps.semantic_tokens_provider.as_ref() {
-            Some(SemanticTokensServerCapabilities::SemanticTokensOptions(opts)) => {
-                opts.legend.token_modifiers.iter().map(|m| m.as_str().to_string()).collect()
-            }
-            other => panic!(
-                "expected SemanticTokensServerCapabilities::SemanticTokensOptions, got {other:?}"
-            ),
-        };
+        let provider = caps.semantic_tokens_provider.as_ref();
+        let message = format!(
+            "expected SemanticTokensServerCapabilities::SemanticTokensOptions, got {provider:?}"
+        );
+        let opts = must_some_with(
+            match provider {
+                Some(SemanticTokensServerCapabilities::SemanticTokensOptions(opts)) => Some(opts),
+                _ => None,
+            },
+            message,
+        );
+        let modifiers: Vec<String> =
+            opts.legend.token_modifiers.iter().map(|m| m.as_str().to_string()).collect();
 
         // Duplicate the full ordered list from sections.rs::semantic_token_modifiers().
         // Bitmask position matters — order is part of the wire contract.
@@ -758,19 +775,12 @@ mod tests {
         let flags = BuildFlags { document_symbol: true, ..BuildFlags::default() };
         let caps = capabilities_for(flags);
 
-        match caps.document_symbol_provider.as_ref() {
-            Some(OneOf::Left(true)) => {}
-            Some(OneOf::Left(false)) => {
-                panic!(
-                    "documentSymbolProvider must be true when document_symbol is enabled, \
-                     not false"
-                );
-            }
-            other => panic!(
-                "documentSymbolProvider must be Some(true) when document_symbol is enabled, \
-                 got {other:?}"
-            ),
-        }
+        let value = caps.document_symbol_provider.as_ref();
+        assert!(
+            matches!(value, Some(OneOf::Left(true))),
+            "documentSymbolProvider must be Some(true) when document_symbol is enabled, \
+             got {value:?}"
+        );
     }
 
     /// Assert `documentSymbolProvider` is absent when the flag is disabled.
@@ -795,29 +805,24 @@ mod tests {
         let flags = BuildFlags { workspace_symbol_resolve: true, ..BuildFlags::default() };
         let caps = capabilities_for(flags);
 
-        match caps.workspace_symbol_provider.as_ref() {
-            Some(OneOf::Right(opts)) => {
-                assert_eq!(
-                    opts.resolve_provider,
-                    Some(true),
-                    "workspaceSymbolProvider.resolveProvider must be true when \
-                     workspace_symbol_resolve is enabled"
-                );
-            }
-            Some(OneOf::Left(_)) => {
-                panic!(
-                    "expected workspaceSymbolProvider to use the Options variant (with \
-                     resolveProvider), not the simple boolean variant, when \
-                     workspace_symbol_resolve is enabled"
-                );
-            }
-            None => {
-                panic!(
-                    "workspaceSymbolProvider must be advertised when workspace_symbol_resolve \
-                     is enabled"
-                );
-            }
-        }
+        let value = caps.workspace_symbol_provider.as_ref();
+        let message = format!(
+            "expected workspaceSymbolProvider to use the Options variant (with \
+             resolveProvider) when workspace_symbol_resolve is enabled, got {value:?}"
+        );
+        let opts = must_some_with(
+            match value {
+                Some(OneOf::Right(opts)) => Some(opts),
+                _ => None,
+            },
+            message,
+        );
+        assert_eq!(
+            opts.resolve_provider,
+            Some(true),
+            "workspaceSymbolProvider.resolveProvider must be true when \
+             workspace_symbol_resolve is enabled"
+        );
     }
 
     /// Assert `codeActionProvider` is absent when `code_actions` is disabled —
@@ -843,15 +848,20 @@ mod tests {
         let flags = BuildFlags { code_actions: true, ..BuildFlags::default() };
         let caps = capabilities_for(flags);
 
-        let kinds: Vec<String> = match caps.code_action_provider.as_ref() {
-            Some(CodeActionProviderCapability::Options(opts)) => {
-                must_some_with(opts.code_action_kinds.as_ref(), "code_action_kinds must be Some")
-                    .iter()
-                    .map(|k| k.as_str().to_string())
-                    .collect()
-            }
-            other => panic!("expected CodeActionProviderCapability::Options, got {other:?}"),
-        };
+        let provider = caps.code_action_provider.as_ref();
+        let message = format!("expected CodeActionProviderCapability::Options, got {provider:?}");
+        let opts = must_some_with(
+            match provider {
+                Some(CodeActionProviderCapability::Options(opts)) => Some(opts),
+                _ => None,
+            },
+            message,
+        );
+        let kinds: Vec<String> =
+            must_some_with(opts.code_action_kinds.as_ref(), "code_action_kinds must be Some")
+                .iter()
+                .map(|k| k.as_str().to_string())
+                .collect();
 
         assert!(
             kinds.iter().any(|k| k == CodeActionKind::QUICKFIX.as_str()),

@@ -19,7 +19,7 @@ use super::{
 use crate::features::policy::FeatureProfile;
 use crate::protocol::capabilities::{capabilities_json, get_supported_commands};
 use crate::protocol::final_surface_inventory::{census_profiles, flatten_surface_pointers};
-use perl_test_must::{must_err_with, must_some_with};
+use perl_test_must::{must_err_with, must_some_with, must_with};
 
 /// Minimal client evidence: no declarations at all.
 fn bare_client() -> ClientSurfaceEvidence {
@@ -40,10 +40,7 @@ fn bare_inputs(profile: FeatureProfile) -> SurfaceInputs {
 }
 
 fn build_ok(inputs: &SurfaceInputs) -> EffectiveLspSurface {
-    match EffectiveLspSurface::build(inputs) {
-        Ok(surface) => surface,
-        Err(error) => panic!("surface construction refused: {error}"),
-    }
+    must_with(EffectiveLspSurface::build(inputs), "surface construction refused")
 }
 
 // ---------------------------------------------------------------------------
@@ -243,18 +240,27 @@ fn inline_completion_selector_cannot_be_static_and_planned_simultaneously() {
     inputs.client = client;
     let surface = build_ok(&inputs);
 
-    let outcome = surface.families.get(&CapabilityFamily::InlineCompletion).unwrap();
-    match outcome {
-        FamilyOutcome::Downgraded(
-            DowngradeReason::DynamicRegistrationPreferred { selector: "inlineCompletionProvider" },
-            inner,
-        ) => {
-            assert!(
-                matches!(inner.as_ref(), FamilyOutcome::PlannedDynamic(_)),
-                "retained variant is the plan, not a second static copy: {outcome:?}"
-            );
-        }
-        other => panic!("expected downgraded-to-planned-dynamic, got {other:?}"),
+    let outcome = must_some_with(
+        surface.families.get(&CapabilityFamily::InlineCompletion),
+        "InlineCompletion family must be present",
+    );
+    assert!(
+        matches!(
+            outcome,
+            FamilyOutcome::Downgraded(
+                DowngradeReason::DynamicRegistrationPreferred {
+                    selector: "inlineCompletionProvider"
+                },
+                _
+            )
+        ),
+        "expected downgraded-to-planned-dynamic, got {outcome:?}"
+    );
+    if let FamilyOutcome::Downgraded(_, inner) = outcome {
+        assert!(
+            matches!(inner.as_ref(), FamilyOutcome::PlannedDynamic(_)),
+            "retained variant is the plan, not a second static copy: {outcome:?}"
+        );
     }
     assert!(
         surface.server_capabilities.get("inlineCompletionProvider").is_none(),
@@ -297,16 +303,18 @@ fn watcher_registration_requires_claimed_support_active_symbol_and_no_jetbrains_
     };
 
     let admitted = build_ok(&base());
-    match admitted.registration_plan.registrations.as_slice() {
-        [
-            PlannedDynamic {
+    let registrations = admitted.registration_plan.registrations.as_slice();
+    assert!(
+        matches!(
+            registrations,
+            [PlannedDynamic {
                 registration_id: "perl-didChangeWatchedFiles",
                 method: "workspace/didChangeWatchedFiles",
                 options_shape: RegistrationOptionsShape::Watchers { relative_pattern: true },
-            },
-        ] => {}
-        other => panic!("expected watcher registration with relative patterns, got {other:?}"),
-    }
+            }]
+        ),
+        "expected watcher registration with relative patterns, got {registrations:?}"
+    );
     assert_eq!(
         admitted.watcher_registration_decision,
         WatcherPlanDecision::Planned,

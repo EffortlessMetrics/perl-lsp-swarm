@@ -2080,10 +2080,13 @@ mod tests {
         let left_value =
             with_digest.observed_field("PERL5LIB").and_then(|field| field.normalized_value());
         let left_message = format!("expected digest-only evidence, got {left_value:?}");
-        let left_digest = match left_value {
-            Some(NormalizedValue::DigestOnly(digest)) => digest,
-            _ => must_some_with(None, left_message),
-        };
+        let left_digest = must_some_with(
+            match left_value {
+                Some(NormalizedValue::DigestOnly(digest)) => Some(digest),
+                _ => None,
+            },
+            left_message,
+        );
 
         let distinct = finish(
             ConfigurationProvenanceClass::ProcessEnvironment,
@@ -2103,10 +2106,13 @@ mod tests {
         let right_value =
             distinct.observed_field("PERL5LIB").and_then(|field| field.normalized_value());
         let right_message = format!("expected digest-only evidence, got {right_value:?}");
-        let right_digest = match right_value {
-            Some(NormalizedValue::DigestOnly(digest)) => digest,
-            _ => must_some_with(None, right_message),
-        };
+        let right_digest = must_some_with(
+            match right_value {
+                Some(NormalizedValue::DigestOnly(digest)) => Some(digest),
+                _ => None,
+            },
+            right_message,
+        );
         assert_ne!(left_digest, right_digest);
         assert!(left_digest.starts_with("sha256:"));
     }

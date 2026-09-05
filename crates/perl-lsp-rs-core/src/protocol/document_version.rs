@@ -600,18 +600,28 @@ mod tests {
     #[test]
     fn client_document_version_as_i32_round_trips() {
         let params = json!({"textDocument": {"version": 999}});
-        let DocumentVersionField::Explicit(v) = must(decode_document_version(&params)) else {
-            panic!("expected Explicit");
-        };
+        let value = must(decode_document_version(&params));
+        let v = must_some_with(
+            match value {
+                DocumentVersionField::Explicit(v) => Some(v),
+                DocumentVersionField::Absent => None,
+            },
+            format!("expected Explicit, got {value:?}"),
+        );
         assert_eq!(v.as_i32(), 999_i32);
     }
 
     #[test]
     fn client_document_version_as_i32_min() {
         let params = json!({"textDocument": {"version": i32::MIN}});
-        let DocumentVersionField::Explicit(v) = must(decode_document_version(&params)) else {
-            panic!("expected Explicit");
-        };
+        let value = must(decode_document_version(&params));
+        let v = must_some_with(
+            match value {
+                DocumentVersionField::Explicit(v) => Some(v),
+                DocumentVersionField::Absent => None,
+            },
+            format!("expected Explicit, got {value:?}"),
+        );
         assert_eq!(v.as_i32(), i32::MIN);
     }
 
