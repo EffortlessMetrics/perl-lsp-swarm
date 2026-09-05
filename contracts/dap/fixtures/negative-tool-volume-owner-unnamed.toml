@@ -1,7 +1,7 @@
 schema_version = "kubernetes_dap_workspace_profile_fixture.v1"
-fixture_id = "negative-init-image-perl"
+fixture_id = "negative-tool-volume-owner-unnamed"
 expectation = "reject"
-expected_rejection = "init_image_perl_substitution_forbidden"
+expected_rejection = "tool_mount_not_read_only"
 
 [profile]
 profile_id = "acme-dev-injected-tool"
@@ -32,7 +32,7 @@ architecture = "amd64"
 container_matches = true
 
 [profile.perl]
-authority = "init_image"
+authority = "project_container"
 interpreter_path = "/usr/local/bin/perl"
 version = "5.38.2"
 include_roots = ["/workspace/lib"]
@@ -50,7 +50,7 @@ copied_digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 post_copy_verified = true
 exec_mode = "0555"
 tool_mount = "read_only"
-tool_volume_owner = "init-container:perl-dap-inject"
+tool_volume_owner = "  "
 target_arch = "amd64"
 libc = "glibc"
 

@@ -302,16 +302,21 @@
       "additionalProperties": false,
       "required": [
         "source_identity",
+        "build_revision",
         "artifact_digest",
         "copied_digest",
         "post_copy_verified",
         "exec_mode",
         "tool_mount",
+        "tool_volume_owner",
         "target_arch",
         "libc"
       ],
       "properties": {
         "source_identity": {
+          "$ref": "#/$defs/candidate_string"
+        },
+        "build_revision": {
           "$ref": "#/$defs/candidate_string"
         },
         "artifact_digest": {
@@ -328,6 +333,9 @@
         },
         "tool_mount": {
           "$ref": "#/$defs/tool_mount"
+        },
+        "tool_volume_owner": {
+          "$ref": "#/$defs/candidate_string"
         },
         "target_arch": {
           "$ref": "#/$defs/candidate_string"

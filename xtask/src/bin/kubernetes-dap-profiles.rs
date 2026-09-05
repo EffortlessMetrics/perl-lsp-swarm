@@ -407,34 +407,60 @@ fn validate_issue_ref(name: &str, value: &str) -> Result<()> {
 /// how `adapter_binary_path_version_hash_target` sat unenforced. A contract
 /// that declares a fact absent from this table is now rejected, so the
 /// advertised coverage cannot outrun the gate again.
-const FACT_ENFORCEMENT: &[(&str, RejectionReason)] = &[
-    ("image_digest_and_build_identity", RejectionReason::ImageIdentityNotExact),
-    ("image_libc_identity", RejectionReason::LoaderContractMismatch),
-    ("adapter_binary_path_version_hash_target", RejectionReason::AdapterIdentityIncomplete),
-    ("project_perl_path_version_environment", RejectionReason::ProjectPerlIdentityMismatch),
-    ("exact_workspace_root_and_source_paths", RejectionReason::SourceNamespaceMismatch),
-    ("non_root_security_resource_cleanup", RejectionReason::SecurityContextMissing),
-    ("no_network_listener", RejectionReason::NetworkListenerForbidden),
+/// Every required fact an admitted-profile row may declare, bound to the typed
+/// rejections this validator actually emits when the fact is missing or false.
+///
+/// The contract's own header claims each row is "mechanically enforced by
+/// `--check`". Before this table that claim was prose: `required_facts` was
+/// checked for name shape and duplicates only, so a declared fact could inflate
+/// the generated coverage story without any admission consequence — which is
+/// how `adapter_binary_path_version_hash_target` sat unenforced. A contract
+/// that declares a fact absent from this table is now rejected, so the
+/// advertised coverage cannot outrun the gate again.
+///
+/// Several fact names are compound (`..._and_build_revision`,
+/// `tool_volume_ownership_and_...`, `non_root_security_resource_cleanup`), so
+/// the mapping is one-to-many on purpose: a row must name a rejection for each
+/// concept in the fact, or the table would reproduce the very defect it exists
+/// to prevent by asserting enforcement for a half nothing checks.
+const FACT_ENFORCEMENT: &[(&str, &[RejectionReason])] = &[
+    ("image_digest_and_build_identity", &[RejectionReason::ImageIdentityNotExact]),
+    (
+        "image_libc_identity",
+        &[RejectionReason::ImageIdentityNotExact, RejectionReason::LoaderContractMismatch],
+    ),
+    ("adapter_binary_path_version_hash_target", &[RejectionReason::AdapterIdentityIncomplete]),
+    ("project_perl_path_version_environment", &[RejectionReason::ProjectPerlIdentityMismatch]),
+    ("exact_workspace_root_and_source_paths", &[RejectionReason::SourceNamespaceMismatch]),
+    (
+        "non_root_security_resource_cleanup",
+        &[
+            RejectionReason::SecurityContextMissing,
+            RejectionReason::ResourceProfileMissing,
+            RejectionReason::CleanupOwnershipMissing,
+        ],
+    ),
+    ("no_network_listener", &[RejectionReason::NetworkListenerForbidden]),
     (
         "injection_source_artifact_digest_and_build_revision",
-        RejectionReason::InjectionSourceUnbound,
+        &[RejectionReason::InjectionSourceUnbound, RejectionReason::ArtifactDigestUnverified],
     ),
-    ("injected_artifact_libc_identity", RejectionReason::LoaderContractMismatch),
-    ("copy_and_post_copy_digest_verification", RejectionReason::ArtifactDigestUnverified),
-    ("executable_mode", RejectionReason::ExecutableModeInvalid),
+    ("injected_artifact_libc_identity", &[RejectionReason::LoaderContractMismatch]),
+    ("copy_and_post_copy_digest_verification", &[RejectionReason::ArtifactDigestUnverified]),
+    ("executable_mode", &[RejectionReason::ExecutableModeInvalid]),
     (
         "host_container_os_libc_architecture_loader_compatibility",
-        RejectionReason::LoaderContractMismatch,
+        &[RejectionReason::LoaderContractMismatch],
     ),
-    ("tool_volume_ownership_and_read_only_mount", RejectionReason::ToolMountNotReadOnly),
+    ("tool_volume_ownership_and_read_only_mount", &[RejectionReason::ToolMountNotReadOnly]),
     (
         "project_container_perl_authority_not_init_image_perl",
-        RejectionReason::InitImagePerlSubstitutionForbidden,
+        &[RejectionReason::InitImagePerlSubstitutionForbidden],
     ),
 ];
 
-fn enforcement_for_fact(key: &str) -> Option<RejectionReason> {
-    FACT_ENFORCEMENT.iter().find(|(fact, _)| *fact == key).map(|(_, reason)| *reason)
+fn enforcement_for_fact(key: &str) -> Option<&'static [RejectionReason]> {
+    FACT_ENFORCEMENT.iter().find(|(fact, _)| *fact == key).map(|(_, reasons)| *reasons)
 }
 
 fn validate_fact_key(profile_id: &str, key: &str) -> Result<()> {
@@ -791,11 +817,20 @@ struct ImageIdentity {
 #[serde(deny_unknown_fields)]
 struct InjectedArtifact {
     source_identity: String,
+    /// Build/source revision of the artifact. `ImageIdentity` has always
+    /// carried one; the contract's
+    /// `injection_source_artifact_digest_and_build_revision` fact names it for
+    /// the injected path too, and nothing carried it.
+    build_revision: String,
     artifact_digest: String,
     copied_digest: String,
     post_copy_verified: bool,
     exec_mode: String,
     tool_mount: ToolMount,
+    /// Owner of the shared tool volume. The read-only mount says how the volume
+    /// is mounted; it does not say who owns it, and the contract's
+    /// `tool_volume_ownership_and_read_only_mount` fact names both.
+    tool_volume_owner: String,
     target_arch: String,
     libc: String,
 }
@@ -1173,6 +1208,12 @@ impl ProfileDocument {
                         )),
                     );
                 }
+                if artifact.build_revision.trim().is_empty() {
+                    return rejection(
+                        RejectionReason::InjectionSourceUnbound,
+                        why("injected artifact names no build/source revision".into()),
+                    );
+                }
                 if artifact.libc.trim().is_empty() {
                     return rejection(
                         RejectionReason::LoaderContractMismatch,
@@ -1228,6 +1269,12 @@ impl ProfileDocument {
                     return rejection(
                         RejectionReason::ToolMountNotReadOnly,
                         why("the shared tool volume must mount read-only into the workspace container".into()),
+                    );
+                }
+                if artifact.tool_volume_owner.trim().is_empty() {
+                    return rejection(
+                        RejectionReason::ToolMountNotReadOnly,
+                        why("the shared tool volume declares no owner".into()),
                     );
                 }
                 if self.image.is_some() {
@@ -2452,13 +2499,16 @@ mod tests {
             .collect();
         for row in &contract.admitted_profiles {
             for fact in &row.required_facts {
-                let reason = enforcement_for_fact(fact)
+                let reasons = enforcement_for_fact(fact)
                     .with_context(|| format!("required fact {fact:?} has no typed enforcement"))?;
-                assert!(
-                    covered.contains(reason.as_str()),
-                    "required fact {fact:?} maps to {} with no negative fixture",
-                    reason.as_str()
-                );
+                assert!(!reasons.is_empty(), "required fact {fact:?} names no rejection");
+                for reason in reasons {
+                    assert!(
+                        covered.contains(reason.as_str()),
+                        "required fact {fact:?} maps to {} with no negative fixture",
+                        reason.as_str()
+                    );
+                }
             }
         }
         Ok(())
@@ -2580,6 +2630,39 @@ mod tests {
             load_fixtures(staging.path(), &schemas.fixture).is_err(),
             "a fixture id that no longer matches its file stem must fail the gate"
         );
+        Ok(())
+    }
+
+    /// The contract names both halves of
+    /// `injection_source_artifact_digest_and_build_revision` and
+    /// `tool_volume_ownership_and_read_only_mount`. Nothing carried the second
+    /// half of either, so the enforcement table would have asserted coverage
+    /// for a concept the model could not express.
+    #[test]
+    fn injected_artifact_names_its_build_revision() -> Result<()> {
+        let fixtures = committed_fixtures()?;
+        let base = find_fixture(&fixtures, POSITIVE_INJECTED_TOOL)?;
+        for revision in ["", "   "] {
+            let mut profile = base.profile.clone();
+            let artifact =
+                profile.artifact.as_mut().context("injected fixture must name its artifact")?;
+            artifact.build_revision = revision.into();
+            assert_rejected_with(&profile, RejectionReason::InjectionSourceUnbound)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shared_tool_volume_names_its_owner() -> Result<()> {
+        let fixtures = committed_fixtures()?;
+        let base = find_fixture(&fixtures, POSITIVE_INJECTED_TOOL)?;
+        for owner in ["", "   "] {
+            let mut profile = base.profile.clone();
+            let artifact =
+                profile.artifact.as_mut().context("injected fixture must name its artifact")?;
+            artifact.tool_volume_owner = owner.into();
+            assert_rejected_with(&profile, RejectionReason::ToolMountNotReadOnly)?;
+        }
         Ok(())
     }
 }

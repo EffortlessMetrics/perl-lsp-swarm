@@ -44,11 +44,13 @@ perl_identity = "/usr/local/bin/perl@5.38.2"
 
 [profile.artifact]
 source_identity = "@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+build_revision = "artifact-2026-08-25-9f8e7d"
 artifact_digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 copied_digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 post_copy_verified = true
 exec_mode = "0555"
 tool_mount = "read_only"
+tool_volume_owner = "init-container:perl-dap-inject"
 target_arch = "amd64"
 libc = "glibc"
 
