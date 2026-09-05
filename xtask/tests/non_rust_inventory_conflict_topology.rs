@@ -17,15 +17,26 @@ fn project_root() -> Result<PathBuf> {
         .ok_or_else(|| eyre!("xtask must live below the repository root"))
 }
 
+fn bounded_first_line(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
+        .chars()
+        .take(160)
+        .collect()
+}
+
 fn run(command: &mut Command, label: &str) -> Result<Output> {
     let output = command.output().with_context(|| format!("running {label}"))?;
-    ensure!(
-        output.status.success(),
-        "{label} failed (status={}):\nstdout:\n{}\nstderr:\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    if !output.status.success() {
+        let stderr = bounded_first_line(&output.stderr);
+        let stdout = bounded_first_line(&output.stdout);
+        return Err(eyre!(
+            "{label} failed (status={}): stderr=`{stderr}` stdout=`{stdout}`",
+            output.status
+        ));
+    }
     Ok(output)
 }
 
@@ -149,9 +160,9 @@ esac
         .context("running git merge-tree for independent candidates")?;
     ensure!(
         merge.status.success(),
-        "unrelated candidates conflict after the generated hook; stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&merge.stdout),
-        String::from_utf8_lossy(&merge.stderr)
+        "unrelated candidates conflict after the generated hook: stderr=`{}` stdout=`{}`",
+        bounded_first_line(&merge.stderr),
+        bounded_first_line(&merge.stdout)
     );
 
     Ok(())
