@@ -1013,6 +1013,125 @@ fn generic_shapes_that_differ_only_in_bounds_or_defaults_do_not_collide() -> Res
 }
 
 #[test]
+fn associated_consts_and_types_inside_an_impl_produce_rows() -> Result<()> {
+    // The item-level walk was fixed to bail on unmodelled public items, but the
+    // impl arm still matched only `Fn` and skipped the rest — so `pub const
+    // LIMIT` inside an impl produced no row and no error. Same silent vanish,
+    // one level down.
+    let derived = derive_public_items(
+        "pub struct S;\nimpl S { pub const LIMIT: usize = 4; pub type Alias = u8; pub fn f() {} }",
+    )?;
+    let paths: BTreeSet<&str> = derived.iter().map(|item| item.path.as_str()).collect();
+    for expected in
+        ["perl_ast_v2::S::LIMIT", "perl_ast_v2::S::Alias", "perl_ast_v2::S::f", "perl_ast_v2::S"]
+    {
+        assert!(paths.contains(expected), "{expected} vanished; got {paths:?}");
+    }
+    // A private associated item is still correctly skipped.
+    let private = derive_public_items("pub struct S;\nimpl S { const HIDDEN: u8 = 1; }")?;
+    assert!(private.iter().all(|item| item.path != "perl_ast_v2::S::HIDDEN"));
+    Ok(())
+}
+
+#[test]
+fn signature_contract_changes_that_keep_the_name_still_move_the_shape() -> Result<()> {
+    // `fn f()`, `const fn f()`, `unsafe fn f()` and `fn f<T: Clone>()` all
+    // rendered as `fn f() -> ()`, so four different public contracts shared one
+    // shape and any of those changes could land under an unmoved row.
+    let shape_of = |src: &str| -> Result<String> {
+        derive_public_items(src)?
+            .iter()
+            .find(|item| item.kind == "associated_fn")
+            .map(|item| item.shape.clone())
+            .ok_or_else(|| color_eyre::eyre::eyre!("no associated fn derived from {src}"))
+    };
+    let plain = shape_of("pub struct S;\nimpl S { pub fn f() {} }")?;
+    for (label, src) in [
+        ("const", "pub struct S;\nimpl S { pub const fn f() {} }"),
+        ("unsafe", "pub struct S;\nimpl S { pub unsafe fn f() {} }"),
+        ("generic", "pub struct S;\nimpl S { pub fn f<T: Clone>() {} }"),
+        ("where clause", "pub struct S;\nimpl S { pub fn f<T>() where T: Clone {} }"),
+    ] {
+        assert_ne!(plain, shape_of(src)?, "{label} collided with a plain fn");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_below_threshold_row_cannot_authorize_a_retain_ruling() -> Result<()> {
+    // The law was only a non-emptiness check, so any row placed in
+    // `independent_lifecycle_evidence_ids` authorized `retain` — including
+    // `ev:registry-publication`, which the ruling's own text calls below the
+    // threshold. Qualification is now a property of the evidence.
+    let mut value = real_value()?;
+    value["ruling"]["ruling"] = Value::String("retain".to_string());
+    value["ruling"]["independent_lifecycle_evidence_ids"] =
+        Value::Array(vec![Value::String("ev:registry-publication".to_string())]);
+    assert_rejected(&value, "does not meet the threshold")?;
+
+    // And a row cannot simply declare itself qualifying: only a reverse
+    // dependency can carry the flag.
+    let mut value = real_value()?;
+    row_mut(&mut value, "external_evidence", "evidence_id", "ev:registry-publication")?["meets_independent_lifecycle_threshold"] =
+        Value::Bool(true);
+    assert_rejected(&value, "only a reverse dependency can carry it")
+}
+
+#[test]
+fn an_absorb_ruling_cannot_stand_beside_qualifying_evidence() -> Result<()> {
+    // The consistency rule in the other direction: if the audit's own evidence
+    // said the package earns an independent lifecycle, `absorb` would be
+    // contradicting it.
+    let mut value = real_value()?;
+    row_mut(&mut value, "external_evidence", "evidence_id", "ev:reverse-dependencies")?["meets_independent_lifecycle_threshold"] =
+        Value::Bool(true);
+    assert_rejected(&value, "cannot stand while its own evidence")
+}
+
+#[test]
+fn a_new_public_reexport_alias_must_move_the_inventory() -> Result<()> {
+    // `reconcile_reexport_sites` only proved authored rows point at live lines.
+    // It never asked the opposite question, so a second `pub use perl_ast_v2 as
+    // other;` in an already-inventoried file changed no checked set.
+    let derived =
+        derive_public_reexports("pub use perl_ast_v2 as v2;\npub use perl_ast_v2 as alt;");
+    let aliases: BTreeSet<&str> = derived.iter().map(|(alias, _)| alias.as_str()).collect();
+    assert!(aliases.contains("v2"), "the inventoried alias must be derived: {aliases:?}");
+    assert!(aliases.contains("alt"), "a second alias must be derived too: {aliases:?}");
+
+    // A private `use` is not a re-export and must not be derived.
+    assert!(derive_public_reexports("use perl_ast_v2 as internal;").is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_grouped_canonical_import_enters_the_denominator() -> Result<()> {
+    // `use perl_ast::{v2, Node};` names none of the four scan tokens, because
+    // the canonical path is split by the braces. The audit recorded this as a
+    // known limitation; it is now detected instead.
+    assert!(!mentions_audited_package("use perl_ast::{v2, Node};"));
+    assert_eq!(parsed_api_use("use perl_ast::{v2, Node};"), Some(true));
+    assert!(references_package_api_in_code("use perl_ast::{v2, Node};", "crates/a/src/lib.rs"));
+    Ok(())
+}
+
+#[test]
+fn an_unparseable_file_that_never_names_the_package_is_not_a_consumer() -> Result<()> {
+    // Discovery and classification take opposite defaults on a parse failure,
+    // deliberately. Failing closed in discovery flagged a 590-line Perl fixture
+    // with zero mentions of the package, which would have forced a meaningless
+    // inventory row on an unrelated file.
+    assert_eq!(parsed_api_use("this is not valid rust {{{"), None);
+    let scanned = derive_reference_files(&repo_root_for_tests()?)?;
+    assert!(
+        !scanned
+            .contains("crates/perl-lsp-rs/tests/fixtures/parser/comprehensive_syntax_fixtures.rs"),
+        "a fixture that never names the package must not be pulled into the denominator"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_private_macro_is_skipped_but_an_exported_one_stops_the_audit() -> Result<()> {
     // Macros and extern blocks carry no visibility, so the private-item skip
     // cannot reach them. Bailing on all of them would block an ordinary

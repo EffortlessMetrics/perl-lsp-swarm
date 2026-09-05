@@ -71,7 +71,7 @@ const V2_CRATE_PATH: &str = "perl_ast_v2";
 /// together with the manifest bytes; patching around it silently is exactly what
 /// the pin exists to prevent.
 pub const PINNED_CANONICAL_DIGEST: &str =
-    "6C480EE983ACB350B0FDD916ED546457FF0C1AC367BBEF8F9180B6C2060E9197";
+    "BEB60C057125F5A2A4E2DAE40099240A59A6E32215E882DBCB0E4081AC330375";
 
 // ---------------------------------------------------------------------------
 // Code-owned v1 vocabularies. A cardinality check lets a repinned manifest
@@ -80,8 +80,16 @@ pub const PINNED_CANONICAL_DIGEST: &str =
 // ---------------------------------------------------------------------------
 
 /// Item kinds the derivation can emit and a row may claim.
-const V1_ITEM_KINDS: [&str; 6] =
-    ["type_alias", "struct", "enum", "enum_variant", "associated_fn", "trait_impl"];
+const V1_ITEM_KINDS: [&str; 8] = [
+    "type_alias",
+    "struct",
+    "enum",
+    "enum_variant",
+    "associated_fn",
+    "associated_const",
+    "associated_type",
+    "trait_impl",
+];
 
 /// How one v2 public item relates to the production AST.
 ///
@@ -255,6 +263,10 @@ struct ExternalEvidenceRow {
     observed_at: String,
     instrument: String,
     lifecycle_weight: String,
+    /// Whether this observation actually clears the issue's independent-lifecycle
+    /// bar. Authored, but constrained: only a `reverse_dependency` row may set
+    /// it, so a ruling cannot be authorized by listing a below-threshold row.
+    meets_independent_lifecycle_threshold: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -402,18 +414,65 @@ fn collect_public_items(
                     }
                     None => {
                         for impl_item in &item_impl.items {
-                            let syn::ImplItem::Fn(method) = impl_item else {
-                                continue;
-                            };
-                            if !is_public(&method.vis) {
-                                continue;
+                            // Associated consts and types are public API too. The
+                            // first version matched only `Fn` and skipped the rest,
+                            // so `pub const LIMIT` inside an impl produced no row
+                            // and no error — the same silent vanish the item-level
+                            // walk was fixed for, one level down.
+                            match impl_item {
+                                syn::ImplItem::Fn(method) => {
+                                    if !is_public(&method.vis) {
+                                        continue;
+                                    }
+                                    derived.push(DerivedItem {
+                                        path: format!(
+                                            "{module_path}::{self_name}::{}",
+                                            method.sig.ident
+                                        ),
+                                        kind: "associated_fn".to_string(),
+                                        shape: render_signature(&method.sig)?,
+                                    });
+                                }
+                                syn::ImplItem::Const(konst) => {
+                                    if !is_public(&konst.vis) {
+                                        continue;
+                                    }
+                                    derived.push(DerivedItem {
+                                        path: format!(
+                                            "{module_path}::{self_name}::{}",
+                                            konst.ident
+                                        ),
+                                        kind: "associated_const".to_string(),
+                                        shape: format!(
+                                            "const {}: {}",
+                                            konst.ident,
+                                            render_type(&konst.ty)?
+                                        ),
+                                    });
+                                }
+                                syn::ImplItem::Type(assoc) => {
+                                    if !is_public(&assoc.vis) {
+                                        continue;
+                                    }
+                                    derived.push(DerivedItem {
+                                        path: format!(
+                                            "{module_path}::{self_name}::{}",
+                                            assoc.ident
+                                        ),
+                                        kind: "associated_type".to_string(),
+                                        shape: format!(
+                                            "type {}{} = {}",
+                                            assoc.ident,
+                                            render_generics(&assoc.generics)?,
+                                            render_type(&assoc.ty)?
+                                        ),
+                                    });
+                                }
+                                syn::ImplItem::Macro(_) | syn::ImplItem::Verbatim(_) => bail!(
+                                    "`{module_path}::{self_name}` contains an impl item this                                      derivation cannot model; it must be handled explicitly                                      rather than skipped."
+                                ),
+                                _ => {}
                             }
-                            let method_name = method.sig.ident.to_string();
-                            derived.push(DerivedItem {
-                                path: format!("{module_path}::{self_name}::{method_name}"),
-                                kind: "associated_fn".to_string(),
-                                shape: render_signature(&method.sig)?,
-                            });
                         }
                     }
                 }
@@ -756,6 +815,32 @@ fn render_fields(fields: &syn::Fields, context: FieldContext) -> Result<String> 
 }
 
 fn render_signature(sig: &syn::Signature) -> Result<String> {
+    // Qualifiers, ABI and generics are all public contract. Rendering only the
+    // name and arguments made `fn f()`, `const fn f()`, `unsafe fn f()` and
+    // `fn f<T: Clone>()` share one shape, so any of those changes could land
+    // under an unmoved row.
+    let mut qualifiers = String::new();
+    if sig.constness.is_some() {
+        qualifiers.push_str("const ");
+    }
+    if sig.asyncness.is_some() {
+        qualifiers.push_str("async ");
+    }
+    // syn 3 models this as a three-state `Safety`, not an Option, so `safe` and
+    // `unsafe` are distinguished from an unqualified fn rather than collapsed.
+    match &sig.safety {
+        syn::Safety::Safe(_) => qualifiers.push_str("safe "),
+        syn::Safety::Unsafe(_) => qualifiers.push_str("unsafe "),
+        syn::Safety::Default => {}
+    }
+    if let Some(abi) = &sig.abi {
+        let name =
+            abi.name.as_ref().map_or_else(|| "\"C\"".to_string(), |n| format!("{:?}", n.value()));
+        qualifiers.push_str(&format!("extern {name} "));
+    }
+    let generics = render_generics(&sig.generics)?;
+    let variadic = if sig.variadic.is_some() { ", ..." } else { "" };
+
     let mut inputs = Vec::new();
     for input in &sig.inputs {
         match input {
@@ -805,7 +890,11 @@ fn render_signature(sig: &syn::Signature) -> Result<String> {
         syn::ReturnType::Default => "()".to_string(),
         syn::ReturnType::Type(_, ty) => render_type(ty)?,
     };
-    Ok(format!("fn {}({}) -> {output}", sig.ident, inputs.join(", ")))
+    Ok(format!(
+        "{qualifiers}fn {}{generics}({}{variadic}) -> {output}",
+        sig.ident,
+        inputs.join(", ")
+    ))
 }
 
 /// Render a type deterministically.
@@ -1025,15 +1114,27 @@ pub fn references_package_api_in_code(text: &str, path: &str) -> bool {
     if !path.ends_with(".rs") {
         return false;
     }
-    let Ok(file) = syn::parse_file(text) else {
-        // Rust this crate cannot parse cannot be shown *not* to use the API.
-        // Erring toward "this is a consumer" forces a human classification
-        // rather than letting an unreadable file take a non-gating role.
-        return true;
-    };
+    // Rust this crate cannot parse cannot be shown *not* to use the API. In the
+    // classification direction the file is already known to reference the
+    // package, so erring toward "this is a consumer" forces a human decision
+    // rather than letting an unreadable file take a non-gating role.
+    parsed_api_use(text).unwrap_or(true)
+}
+
+/// Whether a Rust file reaches the package's API, or `None` if it cannot be
+/// parsed.
+///
+/// This returns `Option` rather than picking a default because the two callers
+/// want opposite ones. Discovery asks "does this file reference the package at
+/// all", and an unparseable file that names it nowhere is not a consumer —
+/// defaulting to `true` there flagged a 590-line Perl fixture with zero
+/// mentions of the package. Classification asks "is a reference we already
+/// found actually code", where not knowing must not let a real consumer hide.
+pub fn parsed_api_use(text: &str) -> Option<bool> {
+    let file = syn::parse_file(text).ok()?;
     let mut visitor = ApiUseVisitor { found: false };
     syn::visit::visit_file(&mut visitor, &file);
-    visitor.found
+    Some(visitor.found)
 }
 
 /// Collects any path, `use` tree, or doc attribute that reaches the package.
@@ -1187,7 +1288,29 @@ pub fn derive_reference_files(repo_root: &Path) -> Result<BTreeSet<String>> {
                 // dependency or import; skipping it is not a silent loss.
                 continue;
             };
-            if mentions_audited_package(&text) {
+            // The text scan alone is not a sufficient filter for Rust. A grouped
+            // canonical import — `use perl_ast::{v2, Node};` — contains none of
+            // the tokens, so a file reaching the package the documented way was
+            // decided irrelevant before the syntax-aware visitor ever saw it.
+            // Rust files are therefore judged by the union: the token scan
+            // catches crate-name strings, the parser catches real imports.
+            // Discovery takes the opposite default from classification on a
+            // parse failure: an unparseable file that names the package nowhere
+            // is not a consumer. Failing closed here flagged a 590-line Perl
+            // fixture with zero mentions of the package, which would have forced
+            // a meaningless inventory row.
+            // Parsing is only needed for the forms the token scan cannot see —
+            // a grouped import such as `use perl_ast::{v2, Node};`. Any such
+            // import must open a brace directly after one of these two crate
+            // names, so this substring test is a sound prefilter rather than a
+            // second guess at the answer. It matters: parsing every Rust file
+            // under the scan roots took this suite from ~1.2s to ~40s, a cost
+            // the whole repository's `cargo test -p xtask --lib` lane would have
+            // paid. The narrower filter keeps it near the original.
+            let worth_parsing = relative.ends_with(".rs")
+                && (text.contains("perl_ast::{") || text.contains("perl_parser_core::{"));
+            let parsed_use = if worth_parsing { parsed_api_use(&text) } else { None };
+            if mentions_audited_package(&text) || parsed_use.unwrap_or(false) {
                 found.insert(relative);
             }
         }
@@ -1703,13 +1826,56 @@ fn validate_ruling(m: &Manifest) -> Result<()> {
         }
     }
 
-    // The issue's threshold, executable: package existence, docs.rs metadata,
-    // publish allowlisting or experimental branding do not meet it.
-    if m.ruling.ruling == "retain" && m.ruling.independent_lifecycle_evidence_ids.is_empty() {
-        bail!(
+    // The issue's threshold, executable. A non-empty list was not enough: any
+    // row could be made to authorize `retain` merely by being placed in the
+    // array, including `ev:registry-publication`, which the ruling's own text
+    // calls below the threshold. Qualification is now a property of the
+    // evidence, and only a reverse dependency can carry it — publication,
+    // download volume and an unavailable instrument are all explicitly below
+    // the bar the issue set.
+    for row in &m.external_evidence {
+        if row.meets_independent_lifecycle_threshold && row.class != "reverse_dependency" {
+            bail!(
+                "external evidence {} claims to meet the independent-lifecycle threshold, but its \
+                 class is `{}`. Package existence, publication, download volume and an \
+                 unavailable instrument are all below that threshold; only a reverse dependency \
+                 can carry it.",
+                row.evidence_id,
+                row.class
+            );
+        }
+    }
+
+    let qualifying: BTreeSet<&str> = m
+        .external_evidence
+        .iter()
+        .filter(|row| row.meets_independent_lifecycle_threshold)
+        .map(|row| row.evidence_id.as_str())
+        .collect();
+
+    for evidence_id in &m.ruling.independent_lifecycle_evidence_ids {
+        if !qualifying.contains(evidence_id.as_str()) {
+            bail!(
+                "the ruling names {evidence_id} as independent-lifecycle evidence, but that row \
+                 does not meet the threshold. Placing a row in this list does not make it qualify."
+            );
+        }
+    }
+
+    match m.ruling.ruling.as_str() {
+        "retain" if m.ruling.independent_lifecycle_evidence_ids.is_empty() => bail!(
             "a `retain` ruling must name independent-lifecycle evidence. Package existence, \
              publish allowlisting or docs metadata alone do not meet the threshold."
-        );
+        ),
+        // The consistency rule in the other direction: if qualifying evidence
+        // existed, `absorb` would be contradicting the evidence it carries.
+        "absorb" if !qualifying.is_empty() => bail!(
+            "the ruling is `absorb`, but {:?} meet(s) the independent-lifecycle threshold. An \
+             absorb ruling cannot stand while its own evidence says the package earns an \
+             independent lifecycle.",
+            qualifying
+        ),
+        _ => {}
     }
 
     // Download volume is consistent with CI, docs.rs and mirror traffic. It may
@@ -1792,6 +1958,7 @@ fn reconcile_with_source(m: &Manifest, repo_root: &Path) -> Result<()> {
     reconcile_parity_counterparts(m, repo_root)?;
     reconcile_consumers(m, repo_root)?;
     reconcile_reexport_sites(m, repo_root)?;
+    reconcile_derived_reexports(m, repo_root)?;
     reconcile_package_surface_sites(m, repo_root)?;
     Ok(())
 }
@@ -1971,6 +2138,91 @@ fn reconcile_reexport_sites(m: &Manifest, repo_root: &Path) -> Result<()> {
                 file,
                 actual.trim()
             );
+        }
+    }
+    Ok(())
+}
+
+/// Derive every public re-export of the audited package from one Rust file, as
+/// `(alias, rendered target)` pairs.
+///
+/// `reconcile_reexport_sites` alone only proved that authored rows still point
+/// at a live line. It never asked the opposite question, so a second
+/// `pub use perl_ast_v2 as other;` added to an already-inventoried file changed
+/// no checked set and passed silently.
+pub fn derive_public_reexports(text: &str) -> Vec<(String, String)> {
+    let Ok(file) = syn::parse_file(text) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for item in &file.items {
+        let syn::Item::Use(item_use) = item else {
+            continue;
+        };
+        if !is_public(&item_use.vis) {
+            continue;
+        }
+        let mut paths = Vec::new();
+        flatten_use_tree(&item_use.tree, "", &mut paths);
+        let mut aliases = Vec::new();
+        collect_use_aliases(&item_use.tree, "", &mut aliases);
+        for (alias, rendered) in aliases.into_iter().zip(paths) {
+            if API_USE_FORM.is_match(&format!("{rendered}::")) {
+                found.push((alias, rendered));
+            }
+        }
+    }
+    found
+}
+
+/// Collect the name each leaf of a `use` tree binds, in the same order as
+/// [`flatten_use_tree`] renders their paths.
+fn collect_use_aliases(tree: &syn::UseTree, prefix: &str, out: &mut Vec<String>) {
+    match tree {
+        syn::UseTree::Path(node) => collect_use_aliases(&node.tree, &node.ident.to_string(), out),
+        syn::UseTree::Name(node) => out.push(node.ident.to_string()),
+        syn::UseTree::Rename(node) => out.push(node.rename.to_string()),
+        syn::UseTree::Glob(_) => out.push(format!("{prefix}::*")),
+        syn::UseTree::Group(node) => {
+            for item in &node.items {
+                collect_use_aliases(item, prefix, out);
+            }
+        }
+    }
+}
+
+/// Every public re-export the sources expose must have a row, and every row must
+/// still describe a live one.
+fn reconcile_derived_reexports(m: &Manifest, repo_root: &Path) -> Result<()> {
+    let mut files: BTreeSet<String> = BTreeSet::new();
+    for row in &m.reexport_paths {
+        let (file, _) = split_site(&row.site, &row.reexport_id)?;
+        files.insert(file);
+    }
+
+    for file in &files {
+        let Ok(text) = std::fs::read_to_string(repo_root.join(file)) else {
+            continue;
+        };
+        for (alias, rendered) in derive_public_reexports(&text) {
+            let covered = m.reexport_paths.iter().any(|row| {
+                let Ok((row_file, _)) = split_site(&row.site, &row.reexport_id) else {
+                    return false;
+                };
+                &row_file == file
+                    && (row.path.ends_with(&format!("::{alias}"))
+                        || row.path.contains(&format!("{{{alias}"))
+                        || row.path.contains(&format!(" {alias}"))
+                        || row.path.contains(&format!("::{alias},"))
+                        || row.path.ends_with(&alias))
+            });
+            if !covered {
+                bail!(
+                    "`{file}` publicly re-exports the audited package as `{alias}` (from \
+                     `{rendered}`) with no matching re-export row. A new public alias in an \
+                     already-inventoried file must still move the inventory."
+                );
+            }
         }
     }
     Ok(())

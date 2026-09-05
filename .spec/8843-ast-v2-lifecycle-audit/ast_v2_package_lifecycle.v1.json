@@ -1341,7 +1341,8 @@
       "observed": "perl-ast-v2 is genuinely published on crates.io: 13 versions from 0.12.0 through 0.17.0, none yanked, created 2026-03-30, last updated 2026-06-28. The crate's registry repository field points at github.com/EffortlessMetrics/perl-lsp. Publication is real, so the package is a live semver surface and cannot be treated as deletable internal code.",
       "observed_at": "2026-09-05",
       "instrument": "GET https://crates.io/api/v1/crates/perl-ast-v2",
-      "lifecycle_weight": "Establishes a real compatibility obligation. Does not by itself establish an independent lifecycle: the repository publishes the whole crate set on one coordinated cadence."
+      "lifecycle_weight": "Establishes a real compatibility obligation. Does not by itself establish an independent lifecycle: the repository publishes the whole crate set on one coordinated cadence.",
+      "meets_independent_lifecycle_threshold": false
     },
     {
       "evidence_id": "ev:reverse-dependencies",
@@ -1349,7 +1350,8 @@
       "observed": "crates.io reports 4 reverse dependencies in total, and every one is this project's own published crate: perl-ast, perl-error, perl-parser-core, perl-tokenizer. perl-error and perl-tokenizer pin ^0.12.2 and are absorbed packages, so those are historical versions rather than current dependents. Zero third-party reverse dependents were observed.",
       "observed_at": "2026-09-05",
       "instrument": "GET https://crates.io/api/v1/crates/perl-ast-v2/reverse_dependencies?per_page=100",
-      "lifecycle_weight": "This is the decisive column. No external party depends on the package for a proposition that perl_ast::v2 does not already provide, so the independent-lifecycle threshold is not met."
+      "lifecycle_weight": "This is the decisive column. No external party depends on the package for a proposition that perl_ast::v2 does not already provide, so the independent-lifecycle threshold is not met.",
+      "meets_independent_lifecycle_threshold": false
     },
     {
       "evidence_id": "ev:download-volume",
@@ -1357,7 +1359,8 @@
       "observed": "6412 total downloads, 5007 of them recent.",
       "observed_at": "2026-09-05",
       "instrument": "GET https://crates.io/api/v1/crates/perl-ast-v2",
-      "lifecycle_weight": "Deliberately classified as non-evidence. Download counts are consistent with CI, docs.rs builds and registry mirrors, and the loader structurally forbids a ruling from resting on this row."
+      "lifecycle_weight": "Deliberately classified as non-evidence. Download counts are consistent with CI, docs.rs builds and registry mirrors, and the loader structurally forbids a ruling from resting on this row.",
+      "meets_independent_lifecycle_threshold": false
     },
     {
       "evidence_id": "ev:external-source-search",
@@ -1365,7 +1368,8 @@
       "observed": "No instrument available in this environment enumerates non-registry external source use, such as a vendored copy or a private fork. Absence of third-party reverse dependencies is therefore evidence about the registry graph specifically, not a proof that no code anywhere imports the package.",
       "observed_at": "2026-09-05",
       "instrument": "none available",
-      "lifecycle_weight": "This unknown is exactly why the ruling is absorb-with-forwarding rather than delete. An unknown external consumer is preserved by the forwarding package and broken by deletion."
+      "lifecycle_weight": "This unknown is exactly why the ruling is absorb-with-forwarding rather than delete. An unknown external consumer is preserved by the forwarding package and broken by deletion.",
+      "meets_independent_lifecycle_threshold": false
     },
     {
       "evidence_id": "ev:coordinated-release",
@@ -1373,7 +1377,8 @@
       "observed": "The published version series tracks the workspace version rather than a package-specific cadence: the manifest inherits version.workspace, Cargo.toml:235 pins the workspace dependency at 0.17.0, and docs/release/0.14.0/dry-run-receipt.md treats perl-ast-v2 as one of the coordinated publishable crates. No release in the series is specific to this package.",
       "observed_at": "2026-09-05",
       "instrument": "crates.io version list joined with repository manifests and release receipts",
-      "lifecycle_weight": "Directly addresses the first clause of the retain threshold: there is no separate semver or release cadence to preserve."
+      "lifecycle_weight": "Directly addresses the first clause of the retain threshold: there is no separate semver or release cadence to preserve.",
+      "meets_independent_lifecycle_threshold": false
     }
   ],
   "ruling": {
@@ -1417,7 +1422,7 @@
     "Per-variant consumer attribution was resolved by alias-aware analysis of each consumer file, because v1 and v2 share 16 variant names. That analysis is authored input to this manifest, not a check the loader re-runs; the loader verifies that every consumer id resolves and that every named production counterpart still exists.",
     "External evidence is a point-in-time registry observation from 2026-09-05. It ages, and the loader cannot refresh it.",
     "This audit does not claim v2 is parity-complete, does not move source, does not change AST semantics, and does not authorize removing the published package.",
-    "The role-downgrade check classifies a doc comment (`///`, `//!`) as code, because a doctest inside one is compiled and run and is therefore real API use. Two residual gaps remain: `//` inside a string literal is still treated as a comment marker and truncates the rest of that line, and a doctest that reaches the package only through a name the API pattern does not match would not be seen. No non-gating Rust consumer currently carries a doc-comment API reference, so neither gap is live, but a future consumer row must not treat this check as reliable doctest detection.",
+    "The role-downgrade check parses each Rust consumer with syn and inspects paths, use trees and doc attributes. It classifies a doc comment (`///`, `//!`) as code, because a doctest inside one is compiled and run and is therefore real API use. An earlier revision stripped comments textually and was defeated by ordinary source \u2014 a glob string containing `/*` opened a block comment that swallowed the rest of the file, and `//` inside a string literal ate the rest of its line. Parsing removed that class rather than patching it. The residual gap is narrower: a doctest reaching the package only through a name the API pattern does not match would still not be seen, and a file this crate cannot parse is treated as a consumer rather than analysed.",
     "The `equivalent` relation is asserted at field level only \u2014 same field names, same field types, and no child Node through which the differing node contract could leak. It never claims the two enclosing Node contracts are interchangeable."
   ]
 }
