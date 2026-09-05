@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12735 |
-| Rust-family files | 3982 |
-| Non-Rust files | 8753 |
-| Allowlisted | 6514 |
+| Total tracked files | 12743 |
+| Rust-family files | 3986 |
+| Non-Rust files | 8757 |
+| Allowlisted | 6518 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -20,7 +20,7 @@
 | documentation | 2856 |
 | generated | 2 |
 | production | 357 |
-| test | 2111 |
+| test | 2115 |
 | tooling | 686 |
 | unclassified | 2239 |
 
@@ -4285,6 +4285,7 @@
 | `crates/perl-semantic-analyzer/docs/dependency-boundary-audit.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-semantic-facts/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-semantic-facts/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-semantic-facts/tests/data/dancer2_two_x_dsl_registry_oracle.tsv` | test | `non-rust-semantic-facts-dancer2-dsl-oracle-tsv` | semantic-facts/framework-adapters |
 | `crates/perl-source-identity/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-source-identity/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-subprocess-runtime/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
@@ -7159,6 +7160,9 @@
 | `test_corpus/real_projects/catalyst_skeleton/lib/Catalyst/Response.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `test_corpus/real_projects/catalyst_skeleton/lib/Catalyst/Utils.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `test_corpus/real_projects/catalyst_skeleton/t/basic.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
+| `test_corpus/real_projects/dancer2_2x_skeleton/lib/Dancer2.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
+| `test_corpus/real_projects/dancer2_2x_skeleton/lib/Dancer2/Core/DSL.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
+| `test_corpus/real_projects/dancer2_2x_skeleton/t/basic.t` | test | `non-rust-perl-tests` | parser/lsp-fixtures |
 | `test_corpus/real_projects/dancer2_skeleton/lib/Dancer2.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `test_corpus/real_projects/dancer2_skeleton/lib/Dancer2/Core/App.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |
 | `test_corpus/real_projects/dancer2_skeleton/lib/Dancer2/Core/DSL.pm` | test | `non-rust-perl-modules` | parser/lsp-fixtures |

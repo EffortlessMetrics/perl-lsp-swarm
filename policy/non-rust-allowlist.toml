@@ -152,7 +152,6 @@ created = "2026-08-26"
 review_after = "2027-02-26"
 
 [[allow]]
-<<<<<<< HEAD
 id = "non-rust-semantic-facts-dancer2-dsl-oracle-tsv"
 path = "crates/perl-semantic-facts/tests/data/dancer2_two_x_dsl_registry_oracle.tsv"
 kind = "test_fixture_data"
@@ -165,7 +164,9 @@ covered_by = [
   "cargo test -p perl-semantic-facts --all-targets --locked",
 ]
 created = "2026-08-30"
-=======
+review_after = "2027-02-28"
+
+[[allow]]
 id = "non-rust-ripr-facts-packet-goldens"
 glob = "crates/perl-ripr-facts/tests/golden/*.json"
 kind = "test_fixture"
@@ -178,7 +179,6 @@ covered_by = [
   "cargo test -p perl-ripr-facts --test packet_characterization --locked",
 ]
 created = "2026-08-31"
->>>>>>> origin/main
 review_after = "2027-02-28"
 
 [[allow]]
