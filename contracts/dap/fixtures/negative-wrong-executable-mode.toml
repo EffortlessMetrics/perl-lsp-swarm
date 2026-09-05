@@ -9,7 +9,6 @@ install_mode = "injected_tool"
 deployment_mode = "workspace_container_process"
 sharing_mode = "dedicated_workspace"
 resource_profile = "dap-subject-medium"
-cleanup_owner = "process-tree:adapter-parent/pod:kubelet"
 
 [profile.transport]
 transport = "stdio"
@@ -52,6 +51,7 @@ exec_mode = "0777"
 tool_mount = "read_only"
 tool_volume_owner = "init-container:perl-dap-inject"
 target_arch = "amd64"
+os = "linux"
 libc = "glibc"
 
 [profile.security]
@@ -110,3 +110,7 @@ binary_path = "/usr/local/bin/perl-dap"
 version = "0.17.0"
 hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 target = "x86_64-unknown-linux-gnu"
+
+[profile.cleanup_owner]
+process_tree = "adapter-parent"
+pod = "kubelet"

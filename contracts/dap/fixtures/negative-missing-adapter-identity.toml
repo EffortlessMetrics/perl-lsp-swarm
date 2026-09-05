@@ -9,7 +9,6 @@ install_mode = "project_image"
 deployment_mode = "workspace_container_process"
 sharing_mode = "dedicated_workspace"
 resource_profile = "dap-subject-medium"
-cleanup_owner = "process-tree:adapter-parent/pod:kubelet"
 
 [profile.transport]
 transport = "stdio"
@@ -47,6 +46,7 @@ repository = "registry.example/acme/dev"
 digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 build_revision = "build-2026-08-25-a1b2c3"
 architecture = "amd64"
+os = "linux"
 libc = "glibc"
 
 [profile.security]
@@ -99,3 +99,7 @@ evidence = ["crates/perl-dap/tests/dap_step_through_tests.rs"]
 cell_id = "termination_disconnect_cleanup"
 claimed_state = "evidence_backed"
 evidence = ["crates/perl-dap/tests/dap_session_cleanup_e2e.rs"]
+
+[profile.cleanup_owner]
+process_tree = "adapter-parent"
+pod = "kubelet"

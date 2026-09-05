@@ -423,47 +423,100 @@ fn validate_issue_ref(name: &str, value: &str) -> Result<()> {
 /// the mapping is one-to-many on purpose: a row must name a rejection for each
 /// concept in the fact, or the table would reproduce the very defect it exists
 /// to prevent by asserting enforcement for a half nothing checks.
-const FACT_ENFORCEMENT: &[(&str, &[RejectionReason])] = &[
-    ("image_digest_and_build_identity", &[RejectionReason::ImageIdentityNotExact]),
+const FACT_ENFORCEMENT: &[(&str, InstallMode, &[RejectionReason])] = &[
+    (
+        "image_digest_and_build_identity",
+        InstallMode::ProjectImage,
+        &[RejectionReason::ImageIdentityNotExact],
+    ),
     (
         "image_libc_identity",
+        InstallMode::ProjectImage,
         &[RejectionReason::ImageIdentityNotExact, RejectionReason::LoaderContractMismatch],
     ),
-    ("adapter_binary_path_version_hash_target", &[RejectionReason::AdapterIdentityIncomplete]),
-    ("project_perl_path_version_environment", &[RejectionReason::ProjectPerlIdentityMismatch]),
-    ("exact_workspace_root_and_source_paths", &[RejectionReason::SourceNamespaceMismatch]),
+    (
+        "adapter_binary_path_version_hash_target",
+        InstallMode::ProjectImage,
+        &[RejectionReason::AdapterIdentityIncomplete],
+    ),
+    (
+        "project_perl_path_version_environment",
+        InstallMode::ProjectImage,
+        &[RejectionReason::ProjectPerlIdentityMismatch],
+    ),
+    (
+        "exact_workspace_root_and_source_paths",
+        InstallMode::ProjectImage,
+        &[RejectionReason::SourceNamespaceMismatch],
+    ),
     (
         "non_root_security_resource_cleanup",
+        InstallMode::ProjectImage,
         &[
             RejectionReason::SecurityContextMissing,
             RejectionReason::ResourceProfileMissing,
             RejectionReason::CleanupOwnershipMissing,
         ],
     ),
-    ("no_network_listener", &[RejectionReason::NetworkListenerForbidden]),
+    (
+        "no_network_listener",
+        InstallMode::ProjectImage,
+        &[RejectionReason::NetworkListenerForbidden],
+    ),
     (
         "injection_source_artifact_digest_and_build_revision",
+        InstallMode::InjectedTool,
         &[RejectionReason::InjectionSourceUnbound, RejectionReason::ArtifactDigestUnverified],
     ),
-    ("injected_artifact_libc_identity", &[RejectionReason::LoaderContractMismatch]),
-    ("copy_and_post_copy_digest_verification", &[RejectionReason::ArtifactDigestUnverified]),
-    ("executable_mode", &[RejectionReason::ExecutableModeInvalid]),
     (
-        "host_container_os_libc_architecture_loader_compatibility",
+        "injected_artifact_libc_identity",
+        InstallMode::InjectedTool,
         &[RejectionReason::LoaderContractMismatch],
     ),
-    ("tool_volume_ownership_and_read_only_mount", &[RejectionReason::ToolMountNotReadOnly]),
+    (
+        "copy_and_post_copy_digest_verification",
+        InstallMode::InjectedTool,
+        &[RejectionReason::ArtifactDigestUnverified],
+    ),
+    ("executable_mode", InstallMode::InjectedTool, &[RejectionReason::ExecutableModeInvalid]),
+    (
+        "host_container_os_libc_architecture_loader_compatibility",
+        InstallMode::InjectedTool,
+        &[RejectionReason::LoaderContractMismatch],
+    ),
+    (
+        "tool_volume_ownership_and_read_only_mount",
+        InstallMode::InjectedTool,
+        &[RejectionReason::ToolMountNotReadOnly],
+    ),
     (
         "project_container_perl_authority_not_init_image_perl",
+        InstallMode::InjectedTool,
         &[RejectionReason::InitImagePerlSubstitutionForbidden],
     ),
 ];
 
-fn enforcement_for_fact(key: &str) -> Option<&'static [RejectionReason]> {
-    FACT_ENFORCEMENT.iter().find(|(fact, _)| *fact == key).map(|(_, reasons)| *reasons)
+/// Facts are scoped to the install mode whose admission path enforces them. A
+/// `project_image` row listing `executable_mode` would otherwise pass the
+/// global name check while declaring a fact its own admission path never
+/// reaches.
+fn enforcement_for_fact(mode: InstallMode, key: &str) -> Option<&'static [RejectionReason]> {
+    FACT_ENFORCEMENT
+        .iter()
+        .find(|(fact, fact_mode, _)| *fact == key && *fact_mode == mode)
+        .map(|(_, _, reasons)| *reasons)
 }
 
-fn validate_fact_key(profile_id: &str, key: &str) -> Result<()> {
+/// Facts every admitted row of this mode must still declare.
+fn required_facts_for_mode(mode: InstallMode) -> Vec<&'static str> {
+    FACT_ENFORCEMENT
+        .iter()
+        .filter(|(_, fact_mode, _)| *fact_mode == mode)
+        .map(|(fact, _, _)| *fact)
+        .collect()
+}
+
+fn validate_fact_key(profile_id: &str, mode: InstallMode, key: &str) -> Result<()> {
     let valid = !key.is_empty()
         && key
             .bytes()
@@ -473,11 +526,12 @@ fn validate_fact_key(profile_id: &str, key: &str) -> Result<()> {
     if !valid {
         bail!("admitted profile {profile_id} has malformed required fact key {key:?}");
     }
-    if enforcement_for_fact(key).is_none() {
+    if enforcement_for_fact(mode, key).is_none() {
         bail!(
             "admitted profile {profile_id} declares required fact {key:?} with no typed \
-             enforcement; add it to FACT_ENFORCEMENT with the rejection the validator emits, \
-             or remove the claim"
+             enforcement for install mode {}; add it to FACT_ENFORCEMENT with the rejection the \
+             validator emits on that admission path, or remove the claim",
+            mode.as_str()
         );
     }
     Ok(())
@@ -574,10 +628,24 @@ impl ProfileContract {
             }
             let mut seen = BTreeMap::new();
             for fact in &row.required_facts {
-                validate_fact_key(&row.profile_id, fact)?;
+                validate_fact_key(&row.profile_id, row.install_mode, fact)?;
                 if seen.insert(fact.as_str(), ()).is_some() {
                     bail!("admitted profile {profile_id} repeats required fact {fact:?}");
                 }
+            }
+            // A row may not quietly drop a fact its own admission path enforces:
+            // the generated coverage story would then understate the gate while
+            // the earlier check only stops it overstating.
+            let missing: Vec<&str> = required_facts_for_mode(row.install_mode)
+                .into_iter()
+                .filter(|fact| !seen.contains_key(fact))
+                .collect();
+            if !missing.is_empty() {
+                bail!(
+                    "admitted profile {profile_id} omits required facts {missing:?} that its \
+                     {} admission path enforces",
+                    row.install_mode.as_str()
+                );
             }
         }
 
@@ -810,6 +878,7 @@ struct ImageIdentity {
     digest: String,
     build_revision: String,
     architecture: String,
+    os: String,
     libc: String,
 }
 
@@ -832,7 +901,17 @@ struct InjectedArtifact {
     /// `tool_volume_ownership_and_read_only_mount` fact names both.
     tool_volume_owner: String,
     target_arch: String,
+    os: String,
     libc: String,
+}
+
+/// `process_tree_and_pod_cleanup_owner` requires both owners by name. A single
+/// free-form string admitted `"owner"`, proving neither.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct CleanupOwner {
+    process_tree: String,
+    pod: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -944,7 +1023,7 @@ struct ProfileDocument {
     artifact: Option<InjectedArtifact>,
     adapter: Option<AdapterIdentity>,
     resource_profile: Option<String>,
-    cleanup_owner: Option<String>,
+    cleanup_owner: Option<CleanupOwner>,
     security: SecurityDisposition,
     dap_claims: Vec<DapCellClaim>,
     service_exposure: Option<ServiceExposure>,
@@ -1155,6 +1234,25 @@ impl ProfileDocument {
                 why("project Perl/environment or launch-plan authority facts are incomplete".into()),
             );
         }
+        if !is_normalized_workspace_path(&self.perl.interpreter_path) {
+            return rejection(
+                RejectionReason::ProjectPerlIdentityMismatch,
+                why(format!(
+                    "project Perl interpreter path {:?} is not an absolute normalized path",
+                    self.perl.interpreter_path
+                )),
+            );
+        }
+        if let Some(root) =
+            self.perl.include_roots.iter().find(|root| !is_normalized_workspace_path(root))
+        {
+            return rejection(
+                RejectionReason::ProjectPerlIdentityMismatch,
+                why(format!(
+                    "project Perl include root {root:?} is not an absolute normalized path"
+                )),
+            );
+        }
         if self.launch_plan.perl_identity != self.derived_perl_identity() {
             return rejection(
                 RejectionReason::ProjectPerlIdentityMismatch,
@@ -1314,6 +1412,22 @@ impl ProfileDocument {
                 )),
             );
         }
+        // For `injected_tool` the copied artifact is the adapter binary, so the
+        // declared adapter hash must be the bytes the copy verified. (No such
+        // binding exists for `project_image`: an image digest is not its
+        // adapter's digest.)
+        if let InstallMode::InjectedTool = self.install_mode
+            && let Some(artifact) = &self.artifact
+            && adapter.hash != artifact.copied_digest
+        {
+            return rejection(
+                RejectionReason::AdapterIdentityIncomplete,
+                why(format!(
+                    "adapter hash {:?} is not the verified copied artifact {:?}",
+                    adapter.hash, artifact.copied_digest
+                )),
+            );
+        }
         if adapter.version.trim().is_empty() || adapter.target.trim().is_empty() {
             return rejection(
                 RejectionReason::AdapterIdentityIncomplete,
@@ -1321,7 +1435,7 @@ impl ProfileDocument {
             );
         }
 
-        let (subject_architecture, subject_libc) = match self.install_mode {
+        let (subject_architecture, subject_os, subject_libc) = match self.install_mode {
             InstallMode::ProjectImage => {
                 let image = self.image.as_ref().ok_or_else(|| {
                     Rejection::new(
@@ -1329,7 +1443,7 @@ impl ProfileDocument {
                         why("project_image requires an exact project image identity".into()),
                     )
                 })?;
-                (image.architecture.as_str(), image.libc.as_str())
+                (image.architecture.as_str(), image.os.as_str(), image.libc.as_str())
             }
             InstallMode::InjectedTool => {
                 let artifact = self.artifact.as_ref().ok_or_else(|| {
@@ -1338,7 +1452,7 @@ impl ProfileDocument {
                         why("injected_tool requires an exact injected artifact description".into()),
                     )
                 })?;
-                (artifact.target_arch.as_str(), artifact.libc.as_str())
+                (artifact.target_arch.as_str(), artifact.os.as_str(), artifact.libc.as_str())
             }
         };
         if subject_architecture != self.loader.architecture {
@@ -1347,6 +1461,17 @@ impl ProfileDocument {
                 why(format!(
                     "loader contract architecture {:?} does not match subject architecture {:?}",
                     self.loader.architecture, subject_architecture
+                )),
+            );
+        }
+        // `host_container_os_libc_architecture_loader_compatibility` names the
+        // operating system first. It was declared and never compared.
+        if subject_os != self.loader.os {
+            return rejection(
+                RejectionReason::LoaderContractMismatch,
+                why(format!(
+                    "loader contract os {:?} does not match subject os {:?}",
+                    self.loader.os, subject_os
                 )),
             );
         }
@@ -1382,20 +1507,20 @@ impl ProfileDocument {
             Some(_) => {}
         }
 
-        match self.cleanup_owner.as_deref() {
-            None => {
-                return rejection(
-                    RejectionReason::CleanupOwnershipMissing,
-                    why("no process-tree/pod cleanup owner is declared".into()),
-                );
-            }
-            Some(owner) if owner.trim().is_empty() => {
-                return rejection(
-                    RejectionReason::CleanupOwnershipMissing,
-                    why("cleanup owner is empty".into()),
-                );
-            }
-            Some(_) => {}
+        let Some(cleanup) = &self.cleanup_owner else {
+            return rejection(
+                RejectionReason::CleanupOwnershipMissing,
+                why("no process-tree/pod cleanup owner is declared".into()),
+            );
+        };
+        if cleanup.process_tree.trim().is_empty() || cleanup.pod.trim().is_empty() {
+            return rejection(
+                RejectionReason::CleanupOwnershipMissing,
+                why(format!(
+                    "both owners must be named; got process tree {:?} and pod {:?}",
+                    cleanup.process_tree, cleanup.pod
+                )),
+            );
         }
 
         let security = &self.security;
@@ -2499,7 +2624,7 @@ mod tests {
             .collect();
         for row in &contract.admitted_profiles {
             for fact in &row.required_facts {
-                let reasons = enforcement_for_fact(fact)
+                let reasons = enforcement_for_fact(row.install_mode, fact)
                     .with_context(|| format!("required fact {fact:?} has no typed enforcement"))?;
                 assert!(!reasons.is_empty(), "required fact {fact:?} names no rejection");
                 for reason in reasons {
@@ -2664,5 +2789,90 @@ mod tests {
             assert_rejected_with(&profile, RejectionReason::ToolMountNotReadOnly)?;
         }
         Ok(())
+    }
+
+    /// A fact scoped to the other install mode must not satisfy the name check.
+    #[test]
+    fn a_required_fact_from_the_other_install_mode_is_rejected() -> Result<()> {
+        let mut contract = committed_contract()?;
+        let row = &mut contract.admitted_profiles[0];
+        assert_eq!(row.install_mode, InstallMode::ProjectImage);
+        row.required_facts.push("executable_mode".into());
+        assert!(
+            contract.validate().is_err(),
+            "a project_image row may not declare an injected-tool-only fact"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dropping_a_required_fact_is_rejected() -> Result<()> {
+        let mut contract = committed_contract()?;
+        contract.admitted_profiles[0].required_facts.retain(|fact| fact != "no_network_listener");
+        assert!(
+            contract.validate().is_err(),
+            "a row may not drop a fact its own admission path enforces"
+        );
+        Ok(())
+    }
+
+    /// The loader-compatibility fact names the operating system first, and it
+    /// was declared on `loader` but compared against nothing.
+    #[test]
+    fn loader_operating_system_is_compared() -> Result<()> {
+        let fixtures = committed_fixtures()?;
+        for id in [POSITIVE_PROJECT_IMAGE, POSITIVE_INJECTED_TOOL] {
+            let mut profile = find_fixture(&fixtures, id)?.profile.clone();
+            profile.loader.os = "darwin".into();
+            assert_rejected_with(&profile, RejectionReason::LoaderContractMismatch)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_perl_paths_must_be_absolute_and_normalized() -> Result<()> {
+        let fixtures = committed_fixtures()?;
+        let base = find_fixture(&fixtures, POSITIVE_PROJECT_IMAGE)?;
+        let mut relative = base.profile.clone();
+        relative.perl.interpreter_path = "perl".into();
+        relative.launch_plan.perl_identity = "perl@5.38.2".into();
+        assert_rejected_with(&relative, RejectionReason::ProjectPerlIdentityMismatch)?;
+
+        for root in ["lib", "", "/workspace/../etc"] {
+            let mut profile = base.profile.clone();
+            profile.perl.include_roots.push(root.into());
+            assert_rejected_with(&profile, RejectionReason::ProjectPerlIdentityMismatch)?;
+        }
+        Ok(())
+    }
+
+    /// Both owners, by name. `cleanup_owner = "owner"` proved neither.
+    #[test]
+    fn cleanup_ownership_names_both_owners() -> Result<()> {
+        let fixtures = committed_fixtures()?;
+        let base = find_fixture(&fixtures, POSITIVE_PROJECT_IMAGE)?;
+        let mutations: Vec<Box<dyn Fn(&mut CleanupOwner)>> = vec![
+            Box::new(|owner| owner.process_tree = String::new()),
+            Box::new(|owner| owner.pod = "   ".into()),
+        ];
+        for mutate in mutations {
+            let mut profile = base.profile.clone();
+            let owner =
+                profile.cleanup_owner.as_mut().context("positive fixture must name its owners")?;
+            mutate(owner);
+            assert_rejected_with(&profile, RejectionReason::CleanupOwnershipMissing)?;
+        }
+        Ok(())
+    }
+
+    /// For `injected_tool` the copied artifact is the adapter binary; the
+    /// declared adapter hash must be those verified bytes.
+    #[test]
+    fn injected_adapter_hash_is_the_copied_artifact() -> Result<()> {
+        let fixtures = committed_fixtures()?;
+        let mut profile = find_fixture(&fixtures, POSITIVE_INJECTED_TOOL)?.profile.clone();
+        let adapter = profile.adapter.as_mut().context("injected fixture must name its adapter")?;
+        adapter.hash = format!("sha256:{}", "c".repeat(64));
+        assert_rejected_with(&profile, RejectionReason::AdapterIdentityIncomplete)
     }
 }

@@ -78,10 +78,11 @@ In-workspace Kubernetes DAP subject admission: one environment subject composed 
 
 ## Fixture matrix
 
-2 positive and 51 negative deterministic fixtures.
+2 positive and 56 negative deterministic fixtures.
 
 | Fixture | Expectation | Typed outcome |
 | --- | --- | --- |
+| `negative-adapter-hash-not-copied-artifact` | `reject` | reject `adapter_identity_incomplete` |
 | `negative-adapter-hash-not-exact` | `reject` | reject `adapter_identity_incomplete` |
 | `negative-adapter-kubectl-port-forward` | `reject` | reject `adapter_owned_cluster_access_forbidden` |
 | `negative-adapter-path-unnamed` | `reject` | reject `adapter_identity_incomplete` |
@@ -91,6 +92,7 @@ In-workspace Kubernetes DAP subject admission: one environment subject composed 
 | `negative-attach-process-id` | `reject` | reject `attach_injection_unsupported` |
 | `negative-baseline-perl-row` | `reject` | reject `baseline_perl_substitution_forbidden` |
 | `negative-capability-catalog-claim` | `reject` | reject `capability_catalog_inheritance_forbidden` |
+| `negative-cleanup-pod-owner-unnamed` | `reject` | reject `cleanup_ownership_missing` |
 | `negative-container-loader-mismatch` | `reject` | reject `loader_contract_mismatch` |
 | `negative-digest-mismatch-after-copy` | `reject` | reject `artifact_digest_unverified` |
 | `negative-digest-only-injection-source` | `reject` | reject `injection_source_unbound` |
@@ -103,6 +105,7 @@ In-workspace Kubernetes DAP subject admission: one environment subject composed 
 | `negative-injected-tool-with-image` | `reject` | reject `install_mode_identity_conflict` |
 | `negative-injection-revision-unnamed` | `reject` | reject `injection_source_unbound` |
 | `negative-kubernetes-api-rbac` | `reject` | reject `kubernetes_api_dependency_forbidden` |
+| `negative-loader-os-mismatch` | `reject` | reject `loader_contract_mismatch` |
 | `negative-lsp-profile-inheritance` | `reject` | reject `lsp_profile_projection_forbidden` |
 | `negative-missing-adapter-identity` | `reject` | reject `adapter_identity_incomplete` |
 | `negative-missing-cleanup-owner` | `reject` | reject `cleanup_ownership_missing` |
@@ -115,6 +118,8 @@ In-workspace Kubernetes DAP subject admission: one environment subject composed 
 | `negative-post-copy-unverified` | `reject` | reject `artifact_digest_unverified` |
 | `negative-project-image-with-artifact` | `reject` | reject `install_mode_identity_conflict` |
 | `negative-project-perl-plan-differs` | `reject` | reject `project_perl_identity_mismatch` |
+| `negative-relative-perl-include-root` | `reject` | reject `project_perl_identity_mismatch` |
+| `negative-relative-perl-interpreter` | `reject` | reject `project_perl_identity_mismatch` |
 | `negative-secrets-unredacted` | `reject` | reject `security_context_missing` |
 | `negative-security-context-root` | `reject` | reject `security_context_missing` |
 | `negative-service-account-token-used` | `reject` | reject `service_account_token_forbidden` |

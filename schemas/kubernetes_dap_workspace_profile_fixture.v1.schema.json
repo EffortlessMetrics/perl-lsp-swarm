@@ -277,6 +277,7 @@
         "digest",
         "build_revision",
         "architecture",
+        "os",
         "libc"
       ],
       "properties": {
@@ -290,6 +291,9 @@
           "$ref": "#/$defs/candidate_string"
         },
         "architecture": {
+          "$ref": "#/$defs/candidate_string"
+        },
+        "os": {
           "$ref": "#/$defs/candidate_string"
         },
         "libc": {
@@ -310,6 +314,7 @@
         "tool_mount",
         "tool_volume_owner",
         "target_arch",
+        "os",
         "libc"
       ],
       "properties": {
@@ -338,6 +343,9 @@
           "$ref": "#/$defs/candidate_string"
         },
         "target_arch": {
+          "$ref": "#/$defs/candidate_string"
+        },
+        "os": {
           "$ref": "#/$defs/candidate_string"
         },
         "libc": {
@@ -618,7 +626,7 @@
           "$ref": "#/$defs/candidate_string"
         },
         "cleanup_owner": {
-          "$ref": "#/$defs/candidate_string"
+          "$ref": "#/$defs/cleanup_owner"
         },
         "security": {
           "$ref": "#/$defs/security_disposition"
@@ -681,6 +689,22 @@
           "$ref": "#/$defs/candidate_string"
         },
         "target": {
+          "$ref": "#/$defs/candidate_string"
+        }
+      }
+    },
+    "cleanup_owner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "process_tree",
+        "pod"
+      ],
+      "properties": {
+        "process_tree": {
+          "$ref": "#/$defs/candidate_string"
+        },
+        "pod": {
           "$ref": "#/$defs/candidate_string"
         }
       }

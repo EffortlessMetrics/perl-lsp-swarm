@@ -1,7 +1,7 @@
 schema_version = "kubernetes_dap_workspace_profile_fixture.v1"
-fixture_id = "negative-attach-process-id"
+fixture_id = "negative-relative-perl-interpreter"
 expectation = "reject"
-expected_rejection = "attach_injection_unsupported"
+expected_rejection = "project_perl_identity_mismatch"
 
 [profile]
 profile_id = "acme-dev-project-image"
@@ -32,14 +32,14 @@ container_matches = true
 
 [profile.perl]
 authority = "project_container"
-interpreter_path = "/usr/local/bin/perl"
+interpreter_path = "perl"
 version = "5.38.2"
 include_roots = ["/workspace/lib"]
 dependency_authority = "carton.snapshot@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 
 [profile.launch_plan]
 authority = "#4841-launch-plan-v3"
-perl_identity = "/usr/local/bin/perl@5.38.2"
+perl_identity = "perl@5.38.2"
 
 [profile.image]
 repository = "registry.example/acme/dev"
@@ -59,9 +59,6 @@ network_listener = false
 writable_paths_declared = true
 secrets_redacted_from_receipts = true
 adapter_selection_isolation = true
-
-[profile.attach]
-process_id_targeting = true
 
 [[profile.dap_claims]]
 cell_id = "initialize"

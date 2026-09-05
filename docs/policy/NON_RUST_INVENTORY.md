@@ -6,17 +6,17 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12790 |
+| Total tracked files | 12792 |
 | Rust-family files | 3982 |
-| Non-Rust files | 8808 |
-| Allowlisted | 6569 |
+| Non-Rust files | 8810 |
+| Allowlisted | 6571 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 556 |
+| config | 558 |
 | documentation | 2857 |
 | generated | 2 |
 | production | 357 |
@@ -3786,6 +3786,7 @@
 | `contracts/dap/fixtures/negative-fabricated-dap-evidence.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-init-image-perl.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-injected-tool-with-image.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-injection-revision-unnamed.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-kubernetes-api-rbac.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-lsp-profile-inheritance.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-missing-adapter-identity.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
@@ -3810,6 +3811,7 @@
 | `contracts/dap/fixtures/negative-source-parent-traversal.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-standalone-deployment.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-tag-only-image.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-tool-volume-owner-unnamed.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-unbound-injection-source.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-unrelated-injection-source.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-writable-paths-undisclosed.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
