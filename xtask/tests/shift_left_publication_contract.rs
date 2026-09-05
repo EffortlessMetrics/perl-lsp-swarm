@@ -454,18 +454,23 @@ fn ratchet_rejects_weakened_proof_and_provider_drift() -> Result<(), Box<dyn std
         "restoring a retired provider-only boundary heading must fail"
     );
 
-    let relocated = codex
-        .replacen(
-            "trace the changed production path",
-            "trace the changed runtime path",
-            1,
-        )
-        .replacen(
-            "## PR review index",
-            "trace the changed production path\\n\\n## PR review index",
-            1,
-        );
+    // Genuine relocation: lift the review-index body out of its own section and
+    // re-seat it above the heading. Every marker stays present in the document
+    // but none remains inside the section that must carry it, which is exactly
+    // the scoping law `validate_provider_skill` enforces. Derived from the
+    // section rather than from hardcoded prose so the fixture cannot silently
+    // stop matching when the guidance is reworded.
+    let index_body = section(&codex, "## PR review index").map_err(contract_error)?.to_owned();
+    let relocated = codex.replacen(&index_body, "", 1).replacen(
+        "## PR review index",
+        &format!("{}\n## PR review index", index_body.trim()),
+        1,
+    );
     assert_ne!(relocated, codex, "provider-marker relocation fixture must apply");
+    assert!(
+        relocated.contains("The order is load-bearing"),
+        "relocation fixture must keep the markers in the document, only outside the section"
+    );
     assert!(
         validate_provider_skill("Codex", &relocated).is_err(),
         "moving a provider marker outside the PR review-index section must fail"
