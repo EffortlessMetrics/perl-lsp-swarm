@@ -947,6 +947,50 @@ fn package_directory(root: &Path, package: &str) -> Option<String> {
 ///
 /// See [`feature_usage_closure`] for why the closure rather than the
 /// declaring package is the sound unit of evidence.
+/// Manifest evidence that a feature activates a production target.
+///
+/// Returns one synthetic site per `[[bin]]`/`[[example]]` target whose
+/// `required-features` names `feature`, shaped as a manifest fragment so the
+/// rendered evidence says where the activation comes from. `[[test]]` and
+/// `[[bench]]` targets are test-side and add no production evidence.
+fn required_feature_target_sites(
+    crate_dir: &str,
+    manifest: &toml::Value,
+    feature: &str,
+) -> Result<Vec<String>, ActivationError> {
+    let mut sites = Vec::new();
+    for kind in ["bin", "example"] {
+        let Some(targets) = manifest.get(kind) else {
+            continue;
+        };
+        let targets = targets.as_array().ok_or_else(|| {
+            ActivationError::new(format!(
+                "crates/{crate_dir}/Cargo.toml: `[[{kind}]]` must be an array of tables"
+            ))
+        })?;
+        for target in targets {
+            let Some(required) = target.get("required-features") else {
+                continue;
+            };
+            let required = required.as_array().ok_or_else(|| {
+                ActivationError::new(format!(
+                    "crates/{crate_dir}/Cargo.toml: `[[{kind}]]` required-features must be an array"
+                ))
+            })?;
+            if !required.iter().any(|value| value.as_str() == Some(feature)) {
+                continue;
+            }
+            let name = target.get("name").and_then(toml::Value::as_str).ok_or_else(|| {
+                ActivationError::new(format!(
+                    "crates/{crate_dir}/Cargo.toml: `[[{kind}]]` requiring feature `{feature}` has no name"
+                ))
+            })?;
+            sites.push(format!("crates/{crate_dir}/Cargo.toml#{kind}.{name}.required-features"));
+        }
+    }
+    Ok(sites)
+}
+
 fn collect_feature_usage(
     root: &Path,
     index: &GateIndex,
@@ -975,6 +1019,13 @@ fn collect_feature_usage(
     let manifest: toml::Value = toml::from_str(&text).map_err(|error| {
         ActivationError::new(format!("crates/{crate_dir}/Cargo.toml: invalid TOML: {error}"))
     })?;
+    // A `[[bin]]` or `[[example]]` target that requires the feature is a
+    // production activation site even when every `cfg(feature)` text site
+    // lives under `tests/`: Cargo builds that target only with the feature
+    // on, so the feature gates a shipped command, not a test API. Record the
+    // manifest target as a non-test site so usage evidence cannot prove the
+    // feature test-only.
+    sites.extend(required_feature_target_sites(crate_dir, &manifest, feature)?);
     let Some(entries) = manifest
         .get("features")
         .and_then(toml::Value::as_table)

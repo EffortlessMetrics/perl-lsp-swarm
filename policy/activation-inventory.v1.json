@@ -9,8 +9,8 @@
       "rule": "cargo-bench-targets",
       "authority": "crates/*/Cargo.toml",
       "emits": "benchmark",
-      "considered": 14,
-      "emitted": 14,
+      "considered": 15,
+      "emitted": 15,
       "not_seeded_reason": "every [[bench]] target is emitted; nothing is filtered"
     },
     {
@@ -18,7 +18,7 @@
       "authority": "crates/*/Cargo.toml",
       "emits": "test_api",
       "considered": 78,
-      "emitted": 27,
+      "emitted": 26,
       "not_seeded_reason": "a feature is seeded when its NAME declares test-only intent (test-*, expose_*, experimental-*, stress-tests, slow_tests, integration-test) or its USAGE proves it (at least one cfg(feature = \"...\") site, all under tests/ or benches/). Each row records which signal settled it. A feature with no cfg sites at all is not seeded by usage: an unused feature is neither shown to gate tests nor shown not to. A feature gating both production and test code is seeded only if its name declares the intent, since gating production code is what an exposed test API does"
     },
     {
@@ -149,6 +149,36 @@
         "authority": "crates/perl-lexer/Cargo.toml"
       },
       "owner": "perl-lexer",
+      "promotion": {
+        "state": "not_evaluated"
+      }
+    },
+    {
+      "surface_id": "bench:perl-lsp-perltidy/native_pipeline_benchmark",
+      "class": "benchmark",
+      "class_authority": {
+        "kind": "derived",
+        "authority": "crates/perl-lsp-perltidy/Cargo.toml",
+        "rule": "cargo-bench-targets"
+      },
+      "semantic_authority": "crates/perl-lsp-perltidy/Cargo.toml#bench.native_pipeline_benchmark",
+      "consumers": [
+        "crates/perl-lsp-perltidy"
+      ],
+      "compile_profiles": [
+        "bench"
+      ],
+      "registration": {
+        "state": "established",
+        "authority": "crates/perl-lsp-perltidy/Cargo.toml",
+        "detail": "[[bench]] name = \"native_pipeline_benchmark\""
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": "crates/perl-lsp-perltidy/Cargo.toml"
+      },
+      "owner": "perl-lsp-perltidy",
       "promotion": {
         "state": "not_evaluated"
       }
@@ -885,37 +915,6 @@
         "state": "not_evaluated"
       },
       "notes": "test_api by name: the feature's own spelling declares test-only intent"
-    },
-    {
-      "surface_id": "cargo-feature:perl-parser/cli",
-      "class": "test_api",
-      "class_authority": {
-        "kind": "derived",
-        "authority": "crates/perl-parser/Cargo.toml",
-        "rule": "cargo-test-features"
-      },
-      "semantic_authority": "crates/perl-parser/Cargo.toml#features.cli",
-      "consumers": [
-        "crates/perl-parser"
-      ],
-      "compile_profiles": [
-        "cli"
-      ],
-      "registration": {
-        "state": "established",
-        "authority": "crates/perl-parser/Cargo.toml",
-        "detail": "[features] cli = []"
-      },
-      "proof_references": [],
-      "publication": {
-        "state": "not_applicable",
-        "authority": "crates/perl-parser/Cargo.toml"
-      },
-      "owner": "perl-parser",
-      "promotion": {
-        "state": "not_evaluated"
-      },
-      "notes": "test_api by usage: every cfg(feature = \"...\") site for this feature is under tests/ or benches/"
     },
     {
       "surface_id": "cargo-feature:perl-parser/constant-advanced",

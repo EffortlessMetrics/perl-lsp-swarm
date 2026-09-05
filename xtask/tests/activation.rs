@@ -65,10 +65,10 @@ const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
     ("product", 16),
     ("preview", 2),
     ("compatibility_shim", 1),
-    ("test_api", 27),
+    ("test_api", 26),
     ("lab", 21),
     ("oracle", 1),
-    ("benchmark", 14),
+    ("benchmark", 15),
     ("gate", 80),
 ];
 
@@ -650,6 +650,23 @@ fn test_api_rule_seeds_features_whose_usage_proves_them_test_only() -> TestResul
 }
 
 #[test]
+fn test_api_rule_does_not_seed_a_feature_required_by_a_production_target() -> TestResult {
+    // `perl-parser/cli` has exactly one `cfg(feature = "cli")` text site and it
+    // is under `tests/`, but the `perl-parse` binary declares
+    // `required-features = ["cli"]`. Cargo builds that command only with the
+    // feature on, so it gates a shipped surface. Usage evidence alone would
+    // have mislabeled it test-only; the manifest target must win.
+    let inventory = activation::validate(&repo_root()).map_err(|error| error.to_string())?;
+    let row = inventory.rows.iter().find(|row| row.surface_id == "cargo-feature:perl-parser/cli");
+    assert!(
+        row.is_none(),
+        "a feature required by a `[[bin]]` target must not be a test_api row, got class {:?}",
+        row.map(|row| &row.class)
+    );
+    Ok(())
+}
+
+#[test]
 fn test_api_rule_keeps_name_declared_features_that_gate_production_code() -> TestResult {
     // The control that stops a usage-only rule from replacing the name rule.
     // `expose_lsp_test_api` and `test-fallbacks` have `cfg` sites under
@@ -686,7 +703,7 @@ fn every_test_api_row_records_which_signal_classified_it() -> TestResult {
             }
         }
     }
-    assert_eq!((by_name, by_usage), (13, 14), "test_api signal split drifted");
+    assert_eq!((by_name, by_usage), (13, 13), "test_api signal split drifted");
     Ok(())
 }
 
