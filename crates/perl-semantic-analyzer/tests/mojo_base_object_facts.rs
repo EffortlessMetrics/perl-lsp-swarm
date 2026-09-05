@@ -746,3 +746,45 @@ fn a_declaration_inside_defer_declares_no_accessor() {
     let facts = only_facts(code);
     assert_eq!(member_names(&facts), ["always"]);
 }
+
+#[test]
+fn a_has_inside_a_callback_block_declares_no_accessor() {
+    // `map`, `grep` and `sort` run their block once per element, so a `has`
+    // inside one runs zero times for an empty list and many times otherwise —
+    // never exactly once at package load. A nested early phaser still runs on
+    // schedule, so it keeps its accessor, the same rule that applies inside
+    // any other deferred region.
+    let code = concat!(
+        "package App;\n",
+        "use Mojo::Base -base;\n",
+        "map { has 'in_map'; } (1, 2, 3);\n",
+        "my @kept = grep { has 'in_grep'; } (1, 2);\n",
+        "map { BEGIN { has('phaser_in_map'); } } (1);\n",
+        "has 'always';\n",
+    );
+    let facts = only_facts(code);
+    assert_eq!(member_names(&facts), ["phaser_in_map", "always"]);
+}
+
+#[test]
+fn an_array_reference_declaration_keeps_its_accessors_when_options_follow() {
+    // `attr` binds `($self, $attrs, $value, %kv)`, so trailing options are
+    // legal alongside an array-reference name list and every listed accessor
+    // is still generated. The parser puts the options in the same hash literal
+    // as the default, which previously made the whole declaration
+    // unrecognisable and dropped both accessors silently.
+    let code = "package App;\nuse Mojo::Base -base;\nhas [qw(a b)] => undef, weak => 1;\n";
+    let declared = declarations(code, FileId(1), "gen-1");
+    assert_eq!(declared.len(), 2, "both listed names are still declared");
+    assert_eq!(declared[0].unmodeled_options, ["weak"], "the option key is recorded, not dropped");
+    let facts = only_facts(code);
+    assert_eq!(member_names(&facts), ["a", "b"]);
+    // Same limitation the flat option-bearing form already carries: an
+    // unmodeled option can change what a read yields, but not the write
+    // contract.
+    assert!(
+        facts.reader_results[0].limitations().contains(&CallableResultLimitation::Unsupported),
+        "an unmodeled option limits the read result"
+    );
+    assert_eq!(facts.setter_results[0].relation, CallableResultRelation::ReceiverSelf);
+}

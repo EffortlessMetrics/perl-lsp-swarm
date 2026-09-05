@@ -84,8 +84,10 @@
 //! - `has NAME [, DEFAULT]` is an ordinary `has(...)` function call;
 //! - `has [LIST]` parses as an index expression over the `has` bareword
 //!   (`Binary { op: "[]" }`), because the bracket follows the identifier;
-//! - `has [LIST] => DEFAULT` wraps that index expression as the key of a
-//!   one-pair hash literal.
+//! - `has [LIST] => DEFAULT` wraps that index expression as the key of the
+//!   hash literal's first pair; trailing `%kv` options become its later pairs,
+//!   so `has [qw(a b)] => undef, weak => 1;` is one declaration with an option
+//!   list rather than an unrecognised shape.
 
 use crate::analysis::dancer2_handler_targets::SubroutineTargetIndex;
 use crate::ast::{Node, NodeKind};
@@ -306,6 +308,25 @@ impl WalkState<'_> {
                 self.walk_deferring(node, current_package, true);
                 return;
             }
+            // A block passed to a function is a callback body: `map`, `grep`,
+            // `sort` and the List::Util family all run it once per element, so
+            // a `has` inside one runs zero or many times rather than exactly
+            // once. Keying on the block's *position* — an argument of a call —
+            // rather than on a list of known function names keeps this correct
+            // for any block-taking function, including user-defined ones.
+            NodeKind::FunctionCall { .. } => {
+                for child in node.children() {
+                    if matches!(child.kind, NodeKind::Block { .. }) {
+                        let enclosing = self.deferred;
+                        self.deferred = true;
+                        self.walk(child, current_package);
+                        self.deferred = enclosing;
+                    } else {
+                        self.walk(child, current_package);
+                    }
+                }
+                return;
+            }
             // A collected `has` statement is fully consumed here: descending
             // into its operands would re-observe them as ordinary source. In a
             // deferred position nothing is collected, so the statement is left
@@ -412,14 +433,17 @@ fn parse_has_expression(expression: &Node) -> Option<ParsedHas> {
         // `has [LIST] => DEFAULT;` — the index expression becomes the key of a
         // one-pair hash literal.
         NodeKind::HashLiteral { pairs } => {
-            let [(key, value)] = pairs.as_slice() else {
-                return None;
-            };
+            // Trailing `%kv` options land in the same hash literal, so
+            // `has [qw(a b)] => undef, weak => 1;` arrives as several pairs.
+            // `Mojo::Base::attr` binds `($self, $attrs, $value, %kv)` and
+            // generates every listed accessor regardless, so the extra pairs
+            // are option keys rather than a reason to reject the declaration.
+            let ((key, value), options) = pairs.split_first()?;
             let list = has_index_list(key)?;
             Some(ParsedHas {
                 names: names_from_operand(list),
                 default: classify_default(value),
-                unmodeled_options: Vec::new(),
+                unmodeled_options: options.iter().map(|(key, _)| option_key_name(key)).collect(),
             })
         }
         _ => None,
@@ -537,18 +561,22 @@ fn default_and_options(rest: &[Node]) -> (MojoBaseAttributeDefault, Vec<String>)
             Vec::new(),
         );
     }
-    let keys = options
-        .iter()
-        .step_by(2)
-        .map(|key| match &key.kind {
-            NodeKind::String { value, .. } => {
-                unquote(value).unwrap_or_else(|| "<empty>".to_string())
-            }
-            NodeKind::Identifier { name } => name.clone(),
-            _ => "<computed>".to_string(),
-        })
-        .collect();
+    let keys = options.iter().step_by(2).map(option_key_name).collect();
     (classify_default(default), keys)
+}
+
+/// Recorded spelling of one `%kv` option key.
+///
+/// Shared by both declaration shapes that can carry options — the flat operand
+/// list (`has app => undef, weak => 1;`) and the array-reference form
+/// (`has [qw(a b)] => undef, weak => 1;`) — so one spelling cannot be recorded
+/// two different ways depending on which branch parsed it.
+fn option_key_name(key: &Node) -> String {
+    match &key.kind {
+        NodeKind::String { value, .. } => unquote(value).unwrap_or_else(|| "<empty>".to_string()),
+        NodeKind::Identifier { name } => name.clone(),
+        _ => "<computed>".to_string(),
+    }
 }
 
 /// Classify one default operand.
