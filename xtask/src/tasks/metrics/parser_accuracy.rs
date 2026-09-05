@@ -47,8 +47,9 @@ use crate::tasks::metrics::parser_accuracy_metamorphic_registry;
 use crate::tasks::metrics::ratchet::MetricReceipt;
 use crate::utils::project_root;
 use xtask::parser_accuracy_legacy_population::{
-    LEGACY_QUARANTINED_METRICS, LegacyFixtureInput, build_legacy_whitespace_population,
-    is_canonical_population_identity, legacy_whitespace_case_applies,
+    LEGACY_QUARANTINED_METRICS, LEGACY_WHITESPACE_AGGREGATE_METRIC, LegacyFixtureInput,
+    build_legacy_whitespace_population, is_canonical_population_identity,
+    legacy_whitespace_case_applies,
 };
 
 mod failure_packet;
@@ -67,8 +68,6 @@ const NEXT_POINTER_STATUS_RECEIPT: &str = "docs/project/status/parser_accuracy_n
 const SAFETY_FLOOR_METRICS: &[(&str, f64)] =
     &[("dynamic_false_precision_count", 0.0), ("fast_path_wrong_result_count", 0.0)];
 
-/// Aggregate metric name bound to the retained legacy whitespace population.
-const LEGACY_WHITESPACE_AGGREGATE_METRIC: &str = "whitespace_invariance_rate";
 /// Transformation profile for the quarantined legacy EOF-comment observation.
 const LEGACY_COMMENT_PROFILE: &str = "eof_comment.legacy.v1";
 /// Transformation profile for the quarantined legacy LF-to-CRLF observation.
@@ -6306,6 +6305,15 @@ fn validate_legacy_population_evidence(artifact: &ParserAccuracyArtifact) -> Res
     if population.aggregate_metric.is_empty() {
         bail!("legacy population aggregate_metric must not be empty");
     }
+    // The retained population is the whitespace one; naming another quarantined
+    // row as its aggregate would bind that row's observations to the whitespace
+    // profile and counts.
+    if population.aggregate_metric != LEGACY_WHITESPACE_AGGREGATE_METRIC {
+        bail!(
+            "legacy population aggregate_metric must be {LEGACY_WHITESPACE_AGGREGATE_METRIC}, got {}",
+            population.aggregate_metric
+        );
+    }
     if population.manifest_schema_version == 0 {
         bail!("legacy population manifest_schema_version must be positive");
     }
@@ -10221,6 +10229,20 @@ sub dynamic_boundary_case {
             validate_legacy_population_evidence(&artifact(stale, vec![aggregate_row(3, 0.5)]))
                 .is_err(),
             "a population total that differs from the scored fixture count must be refused"
+        );
+
+        // A different quarantined row named as the aggregate, with the
+        // whitespace profile and applied count on that row, would otherwise
+        // bind comment observations to the whitespace population.
+        let mut misbound = test_legacy_population();
+        misbound.aggregate_metric = "comment_invariance_rate".to_string();
+        let mut misbound_row = aggregate_row(2, 0.5);
+        if let MetricRow::InvestigationOnly { metric, .. } = &mut misbound_row {
+            *metric = "comment_invariance_rate".to_string();
+        }
+        assert!(
+            validate_legacy_population_evidence(&artifact(misbound, vec![misbound_row])).is_err(),
+            "a non-whitespace aggregate declaration must be refused"
         );
 
         // The schema's `uniqueItems` on the declaration must hold here too.

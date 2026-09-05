@@ -7,7 +7,8 @@
 
 use super::{FORBIDDEN_TRUST_FIELDS, ParserAccuracyArtifactSummary, ParserAccuracyMetricSummary};
 use xtask::parser_accuracy_legacy_population::{
-    LEGACY_QUARANTINED_METRICS, is_canonical_population_identity,
+    LEGACY_QUARANTINED_METRICS, LEGACY_WHITESPACE_AGGREGATE_METRIC,
+    is_canonical_population_identity,
 };
 
 /// Fail-closed consumption of the typed trust and disposition contract.
@@ -48,6 +49,12 @@ pub(super) fn trust_disposition_is_fail_closed(artifact: &ParserAccuracyArtifact
         return false;
     }
 
+    // The retained population is the whitespace one; any other quarantined row
+    // declared as its aggregate would bind that row to the whitespace profile
+    // and counts. Mirrors the generator's refusal.
+    if population.aggregate_metric != LEGACY_WHITESPACE_AGGREGATE_METRIC {
+        return false;
+    }
     // The declared aggregate must appear in its own quarantine list, or the
     // two declarations disagree about what this population covers.
     if !population.quarantined_metrics.contains(&population.aggregate_metric) {

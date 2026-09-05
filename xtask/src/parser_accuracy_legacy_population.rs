@@ -21,6 +21,13 @@ pub const LEGACY_POPULATION_SCHEMA_VERSION: u32 = 1;
 /// Profile identity for the quarantined trailing-whitespace observation.
 pub const LEGACY_WHITESPACE_PROFILE: &str = "trailing_horizontal_whitespace.legacy.v1";
 
+/// The one aggregate metric the retained whitespace population may declare.
+///
+/// `build_legacy_whitespace_population` always names this metric, so a
+/// population declaring any other quarantined row as its aggregate would bind
+/// unrelated observations to the whitespace population's profile and counts.
+pub const LEGACY_WHITESPACE_AGGREGATE_METRIC: &str = "whitespace_invariance_rate";
+
 /// Current authored parser-accuracy manifest.
 pub const DEFAULT_PARSER_ACCURACY_MANIFEST: &str =
     "crates/perl-corpus/fixtures/parser_accuracy/manifest.json";

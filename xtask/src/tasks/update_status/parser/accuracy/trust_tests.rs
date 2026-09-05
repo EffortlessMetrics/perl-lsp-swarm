@@ -204,6 +204,30 @@ fn fail_closed_reader_rejects_missing_or_stale_population_evidence() {
         "a duplicated aggregate row must fail closed"
     );
 
+    // A non-whitespace quarantined metric declared as the aggregate, with an
+    // otherwise matching row (whitespace profile, applied count), must fail
+    // closed: the retained population only ever produces the whitespace
+    // aggregate, so this would bind comment observations to it.
+    let misbound_aggregate = artifact_json(
+        population_json(serde_json::json!({ "aggregate_metric": "comment_invariance_rate" })),
+        vec![serde_json::json!({
+            "state": "investigation_only",
+            "metric": "comment_invariance_rate",
+            "value": 0.5,
+            "sample_count": 2,
+            "transformation_profile": "trailing_horizontal_whitespace.legacy.v1",
+            "evidence_class": "investigation_only",
+            "terminal_disposition": "not_proven",
+            "reason": "legacy_hash_oracle_untrusted",
+            "packet_policy": "none",
+            "floor_eligible": false,
+        })],
+    );
+    assert!(
+        !trust_disposition_is_fail_closed(&parse(&misbound_aggregate)),
+        "a non-whitespace aggregate declaration must fail closed"
+    );
+
     // The schema forbids extra properties here. `confidence` is legal on
     // measured and insufficient rows but not on this variant.
     let stray_field = artifact_json(
