@@ -8,10 +8,10 @@
 mod cpan_test_helpers;
 
 use cpan_test_helpers::assert_clean_parse;
-use perl_parser_core::hir::{
-    lower_ast, AccessMode, HirBody, HirExpr, HirExprId, HirFile, SubscriptKind,
-};
 use perl_parser_core::Parser;
+use perl_parser_core::hir::{
+    AccessMode, HirBody, HirExpr, HirExprId, HirFile, SubscriptKind, lower_ast,
+};
 
 const DELETE_SOURCE: &str = r#"
 sub tree_minimum {
