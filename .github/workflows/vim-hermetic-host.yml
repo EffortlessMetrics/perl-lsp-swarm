@@ -110,7 +110,42 @@ jobs:
           # satisfies the Rust registry validator (internal consistency) and
           # this lane (an independent passing run) without the two ever being
           # compared. That is the gap this step closes.
-          receipt="docs/receipts/lsp-clients/actual/vim.json"
+          # The receipt path is DERIVED from the policy row, never hard-coded.
+          # `lsp_client_support_registry` validates whichever `actual_client`
+          # evidence entry the Vim row names, so a hard-coded path here would
+          # decouple the two gates again: repointing that entry at a new
+          # self-consistent receipt would have the registry validate the
+          # replacement while this lane kept reproducing the old file. Reading
+          # the same selector both gates read keeps them on one subject;
+          # missing or duplicate entries fail closed rather than picking one.
+          receipt="$(python3 - <<'SELECT'
+          import sys, tomllib
+
+          with open("policy/lsp-client-support.toml", "rb") as handle:
+              registry = tomllib.load(handle)
+
+          rows = [row for row in registry.get("client", []) if row.get("id") == "vim"]
+          if len(rows) != 1:
+              sys.exit(f"expected exactly one vim client row, found {len(rows)}")
+
+          paths = [
+              entry["path"]
+              for entry in rows[0].get("evidence", [])
+              if entry.get("kind") == "actual_client"
+          ]
+          if len(paths) != 1:
+              sys.exit(
+                  f"expected exactly one vim actual_client evidence entry, found {len(paths)}: {paths}"
+              )
+
+          print(paths[0])
+          SELECT
+          )"
+          echo "policy-selected receipt: ${receipt}"
+          [ -f "${receipt}" ] || {
+            echo "::error::policy names a vim actual_client receipt that does not exist: ${receipt}"
+            exit 1
+          }
           generated="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/run/hermetic/raw/initialize.json"
 
           # 1. The promoted artifact triad must describe the bytes this run produced.
