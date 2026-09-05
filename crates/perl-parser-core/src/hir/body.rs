@@ -503,7 +503,10 @@ pub enum DeclStorageClass {
 }
 
 impl DeclStorageClass {
-    fn from_str(s: &str) -> Self {
+    /// Classify a declarator keyword. `pub(crate)` so flat PIR lowering can
+    /// ask the same question body lowering does, rather than keeping a second
+    /// list of which keywords are real declarators.
+    pub(crate) fn from_str(s: &str) -> Self {
         match s {
             "my" => DeclStorageClass::My,
             "our" => DeclStorageClass::Our,

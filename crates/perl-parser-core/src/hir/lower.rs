@@ -3285,6 +3285,24 @@ impl<'a> BodyBuilder2<'a> {
         VariableKind::Package
     }
 
+    /// Whether `expr_id` is already an assignment whose target is the same
+    /// variable a declaration-shaped node names.
+    ///
+    /// Distinguishes `field $x += 1` — where the lowered initializer is the
+    /// complete operation over `$x` — from `field $x = ($y += 1)`, where the
+    /// inner assignment targets a different variable and the outer write to
+    /// `$x` is real.
+    fn assign_targets_same_variable(&self, expr_id: HirExprId, sigil: &str, name: &str) -> bool {
+        let Some(HirExpr::Assign { lhs, .. }) = self.exprs.get(expr_id.0) else {
+            return false;
+        };
+        let wanted = sigil_from_str(sigil);
+        matches!(
+            self.exprs.get(lhs.0),
+            Some(HirExpr::Variable(var)) if var.name == name && var.sigil == wanted
+        )
+    }
+
     fn lower_statement(&mut self, node: &Node) -> HirStmtId {
         let range = node.location;
 
@@ -3367,6 +3385,19 @@ impl<'a> BodyBuilder2<'a> {
 
                     // Lower the RHS.
                     let rhs_id = self.lower_expr(init_node);
+
+                    // A compound legacy call (`field $x += 1`) already lowered
+                    // to a complete read-modify-write over the same target.
+                    // Wrapping it in a second simple assignment would publish
+                    // `x = (x += 1)` — one spurious write on top of the modify
+                    // it already performs. Real declarations keep the wrapper:
+                    // `my $x = ($y += 1)` genuinely writes two variables, and
+                    // the same-target check leaves it alone.
+                    if is_legacy_call
+                        && self.assign_targets_same_variable(rhs_id, sigil_str, &var_name)
+                    {
+                        return rhs_id;
+                    }
 
                     // Assign node spanning from variable to end of initializer.
                     let assign_range = SourceLocation {

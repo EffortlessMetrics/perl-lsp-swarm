@@ -205,7 +205,21 @@ impl Lowerer {
     }
 
     fn lower_variable_decl(&mut self, item: &HirItem, decl: &crate::hir::VariableDecl) {
+        // A declaration-shaped legacy call (`field $x = 1`) reaches flat
+        // lowering as a `VariableDecl` too, but it declares nothing. Emitting
+        // the write below would publish a lexical binding the program never
+        // creates — the same false fact body PIR stopped publishing. Flat
+        // lowering carries no scope cursor, so it cannot resolve the argument's
+        // real storage; declaring the omission is honest where guessing is not.
+        let is_legacy_call =
+            DeclStorageClass::from_str(&decl.declarator) == DeclStorageClass::Unknown;
+        if is_legacy_call {
+            *self.unsupported.entry("LegacyFieldCall").or_insert(0) += 1;
+        }
         for variable in &decl.variables {
+            if is_legacy_call {
+                continue;
+            }
             let anchor = PirSourceAnchor::explicit(variable.range, item.id);
             let operation = if is_stash_declarator(&decl.declarator) {
                 PirOperation::StashWrite {
