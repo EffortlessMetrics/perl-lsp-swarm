@@ -24,8 +24,8 @@ use xtask::vim_host_recovery_run::recovery_journey;
 use xtask::vim_host_recovery_run::{
     CELL_CURRENT_RESULT, CELL_DOCUMENT_REPLAY, CELL_EXPLICIT_RESTART,
     CELL_INITIALIZED_NEW_GENERATION, CELL_OLD_GENERATION_REJECTED, CELL_RETRY_OR_MANUAL,
-    CELL_SHUTDOWN_CLEANUP, CELL_UNEXPECTED_EXIT, OPENED_FILE_REL, RecoveryFixtureVariant,
-    StimulusRecord, evaluate_recovery_observation, extract_recovery_wire,
+    CELL_SHUTDOWN_CLEANUP, CELL_UNEXPECTED_EXIT, GOVERNED_ROOT_REL, OPENED_FILE_REL,
+    RecoveryFixtureVariant, StimulusRecord, evaluate_recovery_observation, extract_recovery_wire,
     materialize_recovery_fixture, stimulus_ledger_is_complete,
 };
 use xtask::vim_host_run::vim_host_runner::{
@@ -641,6 +641,38 @@ fn the_stimulus_matcher_binds_only_the_serving_server_process() -> Result<()> {
         !unix_args_match_serving_server("/ws/target/debug/perllsp --tcp", &needle),
         "a non-stdio launch of the candidate must not match"
     );
+    Ok(())
+}
+
+#[test]
+fn the_governed_root_binding_requires_a_leading_separator() -> Result<()> {
+    use xtask::vim_host_recovery_run::uri_ends_with_segment;
+
+    // The governed root, in the spellings the client actually reports.
+    ensure!(uri_ends_with_segment(
+        "file:///home/runner/work/fixture/workspace/project",
+        GOVERNED_ROOT_REL
+    ));
+    ensure!(uri_ends_with_segment(
+        "file:///home/runner/work/fixture/workspace/project/",
+        GOVERNED_ROOT_REL
+    ));
+    ensure!(uri_ends_with_segment(
+        r#"file:///C:\work\fixture\workspace\project"#,
+        GOVERNED_ROOT_REL
+    ));
+    ensure!(uri_ends_with_segment("file:///workspace/project", GOVERNED_ROOT_REL));
+    // A root whose last components merely end with the governed spelling is
+    // a different directory. Without the leading-separator requirement this
+    // passes, and the root binding silently accepts a decoy.
+    ensure!(!uri_ends_with_segment("file:///w/otherworkspace/project", GOVERNED_ROOT_REL));
+    ensure!(!uri_ends_with_segment("file:///w/workspace/projectile", GOVERNED_ROOT_REL));
+    // The decoy root of the journey's own fixture is the parent, never the
+    // governed root.
+    ensure!(!uri_ends_with_segment(
+        "file:///home/runner/work/fixture/workspace",
+        GOVERNED_ROOT_REL
+    ));
     Ok(())
 }
 

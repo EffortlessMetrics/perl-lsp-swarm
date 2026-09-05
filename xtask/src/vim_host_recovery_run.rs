@@ -1068,11 +1068,15 @@ fn cell_result(observed: bool, ok: bool) -> ObservationResult {
 
 /// Whether a `file://` URI ends with the expected relative directory segment,
 /// on every host's path spelling (mirrors the #10946 helper).
-fn uri_ends_with_segment(uri: &str, segment: &str) -> bool {
+/// Whether `uri` names a directory whose trailing path components are
+/// exactly `segment`. The leading separator is required: without it a URI
+/// ending in `otherworkspace/project` would satisfy the governed root
+/// `workspace/project`, which is precisely the decoy-root confusion the
+/// recovery journey exists to reject.
+pub fn uri_ends_with_segment(uri: &str, segment: &str) -> bool {
     let normalized = uri.replace('\\', "/");
     normalized.trim_end_matches('/').ends_with(&format!("/{segment}"))
         || normalized.trim_end_matches('/') == format!("file:///{segment}")
-        || normalized.ends_with(segment)
 }
 
 /// The expected honest per-generation result of the governed document: the
