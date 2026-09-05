@@ -287,7 +287,10 @@ def package_test_targets(crate_name: str, repo_root: Path = REPO_ROOT) -> Packag
         binaries[name] = BinaryTestTarget(name, _target_features(target))
 
     edition = _package_edition(crate_name, package, repo_root)
-    default_autobins = not (edition == "2015" and explicit_bins)
+    # Cargo disables edition-2015 auto-discovery when the manifest defines ANY
+    # target manually, not only a [[bin]]; an explicit [lib] counts.
+    manual_target_declared = bool(explicit_bins) or explicit_lib is not None
+    default_autobins = not (edition == "2015" and manual_target_declared)
     if package.get("autobins", default_autobins) is not False:
         src_root = crate_root / "src"
 

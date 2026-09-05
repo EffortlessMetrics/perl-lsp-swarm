@@ -652,5 +652,32 @@ class BinaryTargetRoutingTests(unittest.TestCase):
         self.assertFalse(any(" --bin " in command for command in commands))
 
 
+    def test_edition_2015_explicit_lib_alone_disables_autodiscovery(self) -> None:
+        """An explicit [lib] is a manual target and suppresses 2015 autobins."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "lib-only-2015",
+                """
+                [package]
+                name = "lib-only-2015"
+                version = "0.0.0"
+                edition = "2015"
+
+                [lib]
+                path = "src/lib.rs"
+                """,
+                ["src/lib.rs", "src/main.rs", "src/changed.rs"],
+            )
+
+            commands = self._commands_for(root, "lib-only-2015")
+
+        self.assertIn(
+            "cargo llvm-cov test --no-report -p lib-only-2015 --lib --profile agent --locked",
+            commands,
+        )
+        self.assertFalse(any(" --bin " in command for command in commands))
+
 if __name__ == "__main__":
     unittest.main()
