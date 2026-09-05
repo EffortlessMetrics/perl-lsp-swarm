@@ -92,8 +92,8 @@ pub use environment::builder::{
     AmbientEnvironmentObservation, BuildSystemFactDeclaration, EnvironmentInputReceipt,
     EnvironmentRejectionReason, EnvironmentSnapshotReceipts, EnvironmentSnapshotSlot,
     IncludeRootDeclaration, InterpreterDeclaration, Perl5LibDeclaration,
-    RejectedIncludeEntryReceipt, SystemIncDeclaration, WorkspaceEnvironmentDeclaration,
-    rejected_include_entries,
+    RejectedIncludeEntryReceipt, SnapshotInstallOutcome, SystemIncDeclaration,
+    WorkspaceEnvironmentDeclaration, rejected_include_entries,
 };
 pub use environment::{
     BuildSystemFactRef, BuildSystemKind, EnvironmentBuildError, EnvironmentFingerprint,

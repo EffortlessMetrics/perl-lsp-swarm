@@ -424,18 +424,27 @@ impl WorkspaceEnvironmentDeclaration {
                 // are conditional on there being entries to contribute.
                 let fingerprints: Vec<String> =
                     entries.iter().map(|root| root.normalized.clone()).collect();
-                // `ExplicitEnvironment` is precedence class 6 of the #4833
-                // contract — "explicitly enabled environment activation" — and is
-                // deliberately distinct from class 7 ambient. The ambient labelling
-                // PLSP-SPEC-0022 requires is carried by the `Disabled` arm above
-                // (Ambient + Denied). `source_id` names where the *activation
-                // policy* came from, which is client settings; the entry values
-                // themselves remain process-environment material.
+                // Two labels, two different questions.
+                //
+                // `authority` is the precedence class, and it must stay
+                // `ExplicitEnvironment` — #4833 class 6, "explicitly enabled
+                // environment activation". It cannot be `Ambient`: the landed model
+                // rejects an accepted ambient input outright
+                // (`EnvironmentValidationError::AmbientInputAccepted`), so an
+                // ambient-classed PERL5LIB could never contribute a search path,
+                // which would defeat the very opt-in PLSP-SPEC-0022 permits.
+                //
+                // `source_id` is provenance, and it is `process_environment` like
+                // both sibling arms. The client setting decides *whether* PERL5LIB
+                // is honoured; it never supplies the entries. Naming settings here
+                // would make the one arm that actually contributes paths the one arm
+                // whose receipt hides their ambient origin — exactly the misreport
+                // PLSP-SPEC-0022 guards against.
                 let input = EnvironmentInput::new(
                     "include.perl5lib",
                     EnvironmentInputAuthority::ExplicitEnvironment,
                     EnvironmentInputState::Accepted,
-                    "client_settings",
+                    "process_environment",
                     Some(list_fingerprint("perl5lib_entries", &fingerprints)),
                     if entries.is_empty() {
                         "perl5lib_activation_enabled_without_entries"
@@ -867,6 +876,26 @@ pub struct EnvironmentSnapshotSlot {
     snapshot: Option<Arc<ProjectEnvironmentSnapshot>>,
 }
 
+/// Outcome of an [`EnvironmentSnapshotSlot::install`].
+///
+/// Installation can decline, so the outcome is returned rather than assumed.
+/// Callers that genuinely do not care must say so explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub enum SnapshotInstallOutcome {
+    /// The snapshot became the slot's current environment.
+    Installed,
+    /// The snapshot was compiled from an older configuration generation than
+    /// the one already installed and was declined. The slot still holds the
+    /// newer snapshot.
+    Obsolete {
+        /// Generation the slot continues to hold.
+        installed: u64,
+        /// Generation of the declined snapshot.
+        declined: u64,
+    },
+}
+
 impl EnvironmentSnapshotSlot {
     /// Create an empty slot.
     #[must_use]
@@ -874,15 +903,32 @@ impl EnvironmentSnapshotSlot {
         Self::default()
     }
 
-    /// Install a snapshot, replacing any previous snapshot.
+    /// Install a snapshot, replacing any previous snapshot from the same or an
+    /// older configuration generation.
     ///
     /// The slot's generation tag is derived from the snapshot's own
-    /// [`ProjectEnvironmentSnapshot::configuration_generation`], so a
-    /// snapshot can never be installed under a tag it was not compiled
-    /// from and stale readers fail closed.
-    pub fn install(&mut self, snapshot: Arc<ProjectEnvironmentSnapshot>) {
-        self.generation = snapshot.configuration_generation;
+    /// [`ProjectEnvironmentSnapshot::configuration_generation`], so a snapshot
+    /// can never be installed under a tag it was not compiled from.
+    ///
+    /// The tag is also monotonic. Compilations can finish out of order — a
+    /// generation-8 compile that started earlier may complete after a
+    /// generation-9 one — and overwriting on arrival order would roll the slot
+    /// backward, leaving [`Self::current`] advertising a superseded environment
+    /// as authoritative while readers asking for generation 9 lose data that is
+    /// still valid. An older snapshot is therefore declined and reported as
+    /// [`SnapshotInstallOutcome::Obsolete`] rather than silently dropped, so a
+    /// producer can tell "my work was superseded" from "my work landed".
+    ///
+    /// An equal generation still replaces, so recompiling the same generation
+    /// is a refresh rather than a no-op.
+    pub fn install(&mut self, snapshot: Arc<ProjectEnvironmentSnapshot>) -> SnapshotInstallOutcome {
+        let declined = snapshot.configuration_generation;
+        if self.snapshot.is_some() && declined < self.generation {
+            return SnapshotInstallOutcome::Obsolete { installed: self.generation, declined };
+        }
+        self.generation = declined;
         self.snapshot = Some(snapshot);
+        SnapshotInstallOutcome::Installed
     }
 
     /// The generation tag of the installed snapshot, if any.
@@ -922,8 +968,8 @@ mod tests {
         EnvironmentLimitation, EnvironmentPathRef, EnvironmentRejectionReason,
         EnvironmentSnapshotReceipts, EnvironmentSnapshotSlot, IncludeEntry, IncludeEntryRole,
         InterpreterDeclaration, Perl5LibDeclaration, ProjectEnvironmentSnapshotBuilder,
-        SystemIncDeclaration, WorkspaceEnvironmentDeclaration, WorkspaceTrust,
-        rejected_include_entries,
+        SnapshotInstallOutcome, SystemIncDeclaration, WorkspaceEnvironmentDeclaration,
+        WorkspaceTrust, rejected_include_entries,
     };
 
     /// Self-source for the deny-fs proof; embedded at compile time so the
@@ -1397,10 +1443,10 @@ mod tests {
                 .compile()?;
 
         let mut slot = EnvironmentSnapshotSlot::new();
-        slot.install(std::sync::Arc::new(older));
+        assert_eq!(slot.install(std::sync::Arc::new(older)), SnapshotInstallOutcome::Installed);
         assert!(slot.current_for_generation(7).is_some());
 
-        slot.install(std::sync::Arc::new(newer));
+        assert_eq!(slot.install(std::sync::Arc::new(newer)), SnapshotInstallOutcome::Installed);
         assert_eq!(slot.generation(), Some(8));
         assert!(
             slot.current_for_generation(7).is_none(),
@@ -1464,6 +1510,111 @@ mod tests {
                 super::rejection_reason(&snapshot, input).is_none(),
                 input.state.is_active(),
                 "rejection reason must be present exactly when the input is inactive"
+            );
+        }
+        Ok(())
+    }
+
+    /// Compilations can finish out of order, so arrival order must not decide
+    /// which environment is current. A generation-8 compile completing after a
+    /// generation-9 one must be declined and reported, not silently installed:
+    /// otherwise `current` advertises a superseded environment as authoritative
+    /// and readers asking for generation 9 lose data that is still valid.
+    #[test]
+    fn an_out_of_order_older_snapshot_is_declined_not_installed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let newer =
+            WorkspaceEnvironmentDeclaration::new("workspace:s1", 9, WorkspaceTrust::Trusted)
+                .with_user_include_roots([root("site", "path:site")])
+                .compile()?;
+        let older =
+            WorkspaceEnvironmentDeclaration::new("workspace:s1", 8, WorkspaceTrust::Trusted)
+                .with_user_include_roots([root("lib", "path:lib")])
+                .compile()?;
+
+        let mut slot = EnvironmentSnapshotSlot::new();
+        assert_eq!(slot.install(std::sync::Arc::new(newer)), SnapshotInstallOutcome::Installed);
+
+        // The late arrival is declined, and the producer is told why rather than
+        // left to assume its work landed.
+        assert_eq!(
+            slot.install(std::sync::Arc::new(older)),
+            SnapshotInstallOutcome::Obsolete { installed: 9, declined: 8 }
+        );
+
+        // All three read paths still report the newer environment.
+        assert_eq!(slot.generation(), Some(9));
+        let (tag, held) = slot.current().ok_or("the newer snapshot must be retained")?;
+        assert_eq!(tag, 9);
+        assert_eq!(held.configuration_generation, 9);
+        let held_roots: Vec<_> =
+            held.active_include_entries().map(|entry| entry.path.normalized.clone()).collect();
+        assert_eq!(held_roots, vec!["site".to_string()], "the older roots must not have landed");
+        assert!(slot.current_for_generation(9).is_some());
+        assert!(
+            slot.current_for_generation(8).is_none(),
+            "the declined generation must not become readable"
+        );
+        Ok(())
+    }
+
+    /// Monotonic does not mean frozen: recompiling the same generation is a
+    /// refresh and must replace, or a producer could never correct a snapshot
+    /// without a configuration change it has no reason to make.
+    #[test]
+    fn reinstalling_the_same_generation_refreshes() -> Result<(), Box<dyn std::error::Error>> {
+        let first =
+            WorkspaceEnvironmentDeclaration::new("workspace:s1", 4, WorkspaceTrust::Trusted)
+                .with_user_include_roots([root("lib", "path:lib")])
+                .compile()?;
+        let corrected =
+            WorkspaceEnvironmentDeclaration::new("workspace:s1", 4, WorkspaceTrust::Trusted)
+                .with_user_include_roots([root("site", "path:site")])
+                .compile()?;
+
+        let mut slot = EnvironmentSnapshotSlot::new();
+        assert_eq!(slot.install(std::sync::Arc::new(first)), SnapshotInstallOutcome::Installed);
+        assert_eq!(slot.install(std::sync::Arc::new(corrected)), SnapshotInstallOutcome::Installed);
+
+        let (_, held) = slot.current().ok_or("the refreshed snapshot must be present")?;
+        let held_roots: Vec<_> =
+            held.active_include_entries().map(|entry| entry.path.normalized.clone()).collect();
+        assert_eq!(held_roots, vec!["site".to_string()]);
+        Ok(())
+    }
+
+    /// PLSP-SPEC-0022 requires every PERL5LIB receipt to carry its ambient
+    /// origin. The opt-in decides whether the entries are honoured; it never
+    /// supplies them, so provenance stays `process_environment` in every arm —
+    /// including, and especially, the one arm that actually contributes paths.
+    #[test]
+    fn every_perl5lib_receipt_keeps_its_ambient_provenance()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let states = [
+            Perl5LibDeclaration::NotSupplied,
+            Perl5LibDeclaration::Disabled {
+                observed_value_fingerprint: Some(Digest::of("/ambient/perl5lib")),
+            },
+            Perl5LibDeclaration::Enabled { entries: Vec::new() },
+            Perl5LibDeclaration::Enabled { entries: vec![root("lib", "path:lib")] },
+        ];
+
+        for state in states {
+            let snapshot =
+                WorkspaceEnvironmentDeclaration::new("workspace:s1", 6, WorkspaceTrust::Trusted)
+                    .with_perl5lib(state)
+                    .compile()?;
+            let perl5lib = snapshot
+                .inputs
+                .iter()
+                .find(|input| {
+                    input.semantic_key.contains("perl5lib")
+                        || input.semantic_key.contains("PERL5LIB")
+                })
+                .ok_or("every PERL5LIB state must report an input")?;
+            assert_eq!(
+                perl5lib.source_id, "process_environment",
+                "PERL5LIB values are ambient in every arm; the client setting only gates them"
             );
         }
         Ok(())
@@ -1727,7 +1878,7 @@ mod tests {
         assert!(slot.current().is_none());
         assert!(slot.generation().is_none());
 
-        slot.install(std::sync::Arc::new(snapshot));
+        assert_eq!(slot.install(std::sync::Arc::new(snapshot)), SnapshotInstallOutcome::Installed);
         assert_eq!(slot.generation(), Some(7));
         let (_, installed) = slot.current().ok_or("installed snapshot must be present")?;
         assert_eq!(installed.workspace_id, "workspace:s1");
@@ -1738,7 +1889,7 @@ mod tests {
             WorkspaceEnvironmentDeclaration::new("workspace:s1", 8, WorkspaceTrust::Trusted)
                 .with_user_include_roots([root("site", "path:site")])
                 .compile()?;
-        slot.install(std::sync::Arc::new(refreshed));
+        assert_eq!(slot.install(std::sync::Arc::new(refreshed)), SnapshotInstallOutcome::Installed);
         assert!(slot.current_for_generation(7).is_none());
         assert!(slot.current_for_generation(8).is_some());
         Ok(())
@@ -1760,14 +1911,14 @@ mod tests {
         assert_eq!(gen8.configuration_generation, 8);
 
         let mut slot = EnvironmentSnapshotSlot::new();
-        slot.install(std::sync::Arc::new(gen7));
+        assert_eq!(slot.install(std::sync::Arc::new(gen7)), SnapshotInstallOutcome::Installed);
         assert_eq!(slot.generation(), Some(7));
 
         // Installing a newer snapshot over a slot tagged 7 must retag from
         // the snapshot itself: the reported tag tracks the embedded
         // generation, and the stale generation-7 read fails closed instead
         // of serving generation-8 data under the old tag.
-        slot.install(std::sync::Arc::new(gen8));
+        assert_eq!(slot.install(std::sync::Arc::new(gen8)), SnapshotInstallOutcome::Installed);
         assert_eq!(slot.generation(), Some(8));
         let (tag, installed) = slot.current().ok_or("installed snapshot must be present")?;
         assert_eq!(tag, installed.configuration_generation);
