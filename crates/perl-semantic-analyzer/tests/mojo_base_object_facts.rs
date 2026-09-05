@@ -537,3 +537,53 @@ fn every_minted_family_stays_aligned_one_to_one() {
         assert_eq!(facts.setter_results[index].envelope.entity_id, Some(member.member.entity_id));
     }
 }
+
+#[test]
+fn a_declaration_in_an_end_block_declares_no_accessor() {
+    // `END` runs at process shutdown, after the program it would serve has
+    // finished. An accessor installed there exists for no part of the run, so
+    // reporting it as a class member is an overclaim. Every earlier phase
+    // (`BEGIN`, `UNITCHECK`, `CHECK`, `INIT`) completes before the run phase,
+    // so those accessors do exist and must still mint.
+    let code = concat!(
+        "package App;\n",
+        "use Mojo::Base -base;\n",
+        "END { has 'shutdown_only'; }\n",
+        "BEGIN { has 'compile_time'; }\n",
+        "INIT { has 'init_time'; }\n",
+        "has 'always';\n",
+    );
+    let facts = only_facts(code);
+    assert_eq!(member_names(&facts), ["compile_time", "init_time", "always"]);
+}
+
+#[test]
+fn a_package_other_than_the_activating_one_mints_nothing() {
+    // The activation owns `App`. Asking for `Other`'s members under it must
+    // fail closed: neither `Other`'s `has` calls nor an `Other inherits
+    // Mojo::Base` edge are established by an activation `Other` never made.
+    let code = concat!(
+        "package App;\n",
+        "use Mojo::Base -base;\n",
+        "package Other;\n",
+        "has 'borrowed';\n",
+    );
+    let declarations = declarations(code, FileId(1), "gen-1");
+    assert_eq!(
+        declarations.len(),
+        1,
+        "`Other`'s declaration really is extracted; only minting may reject it"
+    );
+    let detection = detection("9.34", "gen-1");
+    let site = must_some(sites(code, FileId(1), "gen-1").into_iter().next());
+    let activation = mojo_base_activation_facts(&detection, &site.anchor, &site.evidence);
+    assert!(activation.is_exact(), "the `App` activation itself is exact");
+    assert_eq!(activation.package.as_deref(), Some("App"));
+    let facts =
+        mojo_base_object_facts(&detection, &activation, FileId(1), Some("Other"), &declarations);
+    assert!(facts.members.is_empty(), "`App`'s activation cannot generate accessors for `Other`");
+    assert!(
+        facts.parents.is_empty(),
+        "`App`'s activation cannot make `Other` inherit from Mojo::Base"
+    );
+}

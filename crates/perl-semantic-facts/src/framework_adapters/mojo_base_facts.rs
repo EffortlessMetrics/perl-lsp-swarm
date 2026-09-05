@@ -390,9 +390,14 @@ pub fn mojo_base_parent_identity(
 /// import's source interval but not its file, and the parent relationship is
 /// anchored in that file.
 ///
-/// A declaration must belong to the activation on **four** counts, because the
-/// carriers arrive as a plain slice a caller could mismatch against the
-/// activation:
+/// `package` must be the package that made the activation. It is checked
+/// against `activation.package` and the whole call fails closed on a
+/// mismatch, so a caller cannot borrow one package's activation to establish
+/// another package's accessors or inheritance.
+///
+/// A declaration must then belong to that activation on **four** counts,
+/// because the carriers arrive as a plain slice a caller could mismatch
+/// against the activation:
 ///
 /// - the same owning package;
 /// - the same file as the activating import, so a same-named package in
@@ -418,6 +423,13 @@ pub fn mojo_base_object_facts(
 ) -> MojoBaseObjectFacts {
     let mut facts = MojoBaseObjectFacts::default();
     if !detection.is_detected() || !activation.is_exact() {
+        return facts;
+    }
+    // The activation already knows which package imported `Mojo::Base`. Asking
+    // it for a different package's members must fail closed rather than trust
+    // the caller: an activation `App` made establishes neither `Other`'s
+    // accessors nor an `Other inherits Mojo::Base` edge.
+    if activation.package.as_deref() != package {
         return facts;
     }
     let generation = &activation.source_generation;

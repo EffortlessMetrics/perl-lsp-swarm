@@ -134,6 +134,16 @@ struct WalkState<'a> {
 /// A bare lexical block is deliberately absent: `{ has 'x'; }` at package level
 /// executes exactly once, like any other package statement.
 fn owns_runtime_control_flow(node: &Node) -> bool {
+    if let NodeKind::PhaseBlock { phase, .. } = &node.kind {
+        // Phase blocks are separated by *when* they run, not by whether they
+        // run. `BEGIN`, `UNITCHECK`, `CHECK` and `INIT` all complete before the
+        // run phase, so an accessor installed there exists for the whole
+        // program and is an ordinary class member. `END` runs at process
+        // shutdown, after the program it would serve has finished — that
+        // accessor exists for no part of the run, so reporting it as a member
+        // would be an overclaim.
+        return phase == "END";
+    }
     matches!(
         node.kind,
         NodeKind::If { .. }
