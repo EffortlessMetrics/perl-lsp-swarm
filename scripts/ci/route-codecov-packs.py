@@ -356,11 +356,25 @@ def augment_rust_focused_commands(
             commands.append(cmd)
     test_targets_by_crate = changed_integration_test_targets(paths, repo_root)
     for crate_name in changed_crates(paths):
-        if not (repo_root / "crates" / crate_name / "Cargo.toml").is_file():
+        crate_root = repo_root / "crates" / crate_name
+        if not (crate_root / "Cargo.toml").is_file():
             # `git diff` reports deleted sources, so a candidate that removes or
             # renames a crate still names it here with no manifest left to read.
-            # There is nothing to instrument; a manifest that exists but is
+            # Either way there is no Cargo package to pass to `-p`, so the only
+            # available action is to skip; a manifest that exists but is
             # malformed stays a hard error.
+            #
+            # Aborting instead would cost every *other* crate its coverage over
+            # one unroutable directory, and `crates/` legitimately contains a
+            # manifest-less directory today (`crates/tree-sitter-perl`).  A
+            # surviving directory is still anomalous, so say so on stderr rather
+            # than dropping its sources silently.
+            if crate_root.is_dir():
+                print(
+                    f"warning: changed crate {crate_name} has sources but no Cargo.toml; "
+                    "omitting it from coverage routing",
+                    file=sys.stderr,
+                )
             continue
         targets = package_test_targets(crate_name, repo_root)
         if targets.has_lib:

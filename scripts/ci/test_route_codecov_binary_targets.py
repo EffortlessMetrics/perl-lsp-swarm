@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -745,6 +747,72 @@ class BinaryTargetRoutingTests(unittest.TestCase):
                 router.augment_rust_focused_commands(
                     [], ["crates/broken-directory/src/changed.rs"], repo_root=root
                 )
+
+
+    def test_manifestless_crate_directory_warns_and_keeps_routing(self) -> None:
+        """Sources with no manifest are unroutable, but must not go unmentioned.
+
+        A directory under `crates/` with no `Cargo.toml` is not a Cargo package,
+        so there is no `-p` to emit and skipping is the only available action.
+        Aborting would cost every other changed crate its coverage, and this
+        repository legitimately contains such a directory
+        (`crates/tree-sitter-perl`).  The omission is therefore reported on
+        stderr instead of being silent.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "surviving-directory",
+                """
+                [package]
+                name = "surviving"
+                version = "0.0.0"
+                edition = "2024"
+                """,
+                ["src/lib.rs"],
+            )
+            orphan = root / "crates" / "orphan-directory" / "src"
+            orphan.mkdir(parents=True)
+            (orphan / "lib.rs").write_text("// fixture\n", encoding="utf-8")
+            changed = [
+                "crates/orphan-directory/src/lib.rs",
+                "crates/surviving-directory/src/changed.rs",
+            ]
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                commands = router.augment_rust_focused_commands([], changed, repo_root=root)
+
+        self.assertTrue(any(" -p surviving " in command for command in commands))
+        self.assertFalse(any("orphan" in command for command in commands))
+        self.assertIn("orphan-directory", stderr.getvalue())
+
+    def test_deleted_crate_skip_is_quiet(self) -> None:
+        """A fully removed crate is ordinary, not anomalous, so it warns nothing."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "surviving-directory",
+                """
+                [package]
+                name = "surviving"
+                version = "0.0.0"
+                edition = "2024"
+                """,
+                ["src/lib.rs"],
+            )
+            changed = [
+                "crates/removed-directory/src/lib.rs",
+                "crates/surviving-directory/src/changed.rs",
+            ]
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                router.augment_rust_focused_commands([], changed, repo_root=root)
+
+        self.assertEqual("", stderr.getvalue())
 
 
 class WorkspaceTargetOracleTests(unittest.TestCase):
