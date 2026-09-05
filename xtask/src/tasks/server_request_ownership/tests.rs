@@ -1057,6 +1057,68 @@ impl Server {
     Ok(())
 }
 
+/// A nested item does not end the body that declares it. The scanner bounded a
+/// `fn` at the next `fn` in the file, so a send written after an inner helper
+/// fell outside its own function: the forwarder never joined the closure and
+/// its callers stopped being scanned, with no finding raised. `syn` gives the
+/// real body; this pins that it stays that way.
+#[test]
+fn a_forwarder_whose_send_follows_a_nested_fn_still_propagates()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (emitted, findings) = scan_synthetic(
+        r#"
+impl Server {
+    pub fn forward(&self, method: &str, params: Value) {
+        fn shape(params: &Value) -> Value {
+            params.clone()
+        }
+        self.send_request(method, shape(&params));
+    }
+
+    pub fn emit_after_nested(&self) {
+        self.forward("workspace/codeLens/refresh", params);
+    }
+}
+"#,
+    )?;
+
+    assert_eq!(
+        emitted.get("workspace/codeLens/refresh").map(Vec::as_slice),
+        Some(["src/runtime/synthetic.rs#emit_after_nested".to_string()].as_slice()),
+        "an inner helper must not truncate the forwarder that declares it"
+    );
+    assert!(findings.is_empty(), "{findings:?}");
+    Ok(())
+}
+
+/// The same confusion on the attribution side: picking the last `fn` declared
+/// *before* a send credited an inner helper with its enclosing function's
+/// emission, naming the wrong symbol in the row's `emitters` cell.
+#[test]
+fn a_send_after_a_nested_fn_is_attributed_to_the_enclosing_fn()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (emitted, findings) = scan_synthetic(
+        r#"
+impl Server {
+    pub fn request_code_lens_refresh(&self) {
+        fn shape(params: &Value) -> Value {
+            params.clone()
+        }
+        self.send_request("workspace/codeLens/refresh", shape(&params));
+    }
+}
+"#,
+    )?;
+
+    assert_eq!(
+        emitted.get("workspace/codeLens/refresh").map(Vec::as_slice),
+        Some(["src/runtime/synthetic.rs#request_code_lens_refresh".to_string()].as_slice()),
+        "the enclosing function owns the send, not the helper declared above it"
+    );
+    assert!(findings.is_empty(), "{findings:?}");
+    Ok(())
+}
+
 /// `method: &str` in a signature is not evidence that a helper sends anything.
 /// Treating every such helper as a forwarder turned its literal-argument
 /// callers into phantom requests — and its identifier-argument callers into
