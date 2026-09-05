@@ -42,7 +42,6 @@ catalog:
   - dap.core
   - dap.exceptions.die
   - dap.exceptions.warn
-  - dap.inline_values
   - dap.loaded_sources
   - dap.modules
   - dap.pause

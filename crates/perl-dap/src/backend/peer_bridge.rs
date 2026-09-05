@@ -362,6 +362,26 @@ impl DapPeerBridge {
                     out.push(self.event("terminated", None));
                 }
             }
+            Some(DapRequestRoute::InlineValues) => {
+                // #9089: the custom inline-values extension is fail-closed in
+                // every frontend until a versioned negotiation contract is
+                // proven. This frontend neither advertises nor negotiates it
+                // (`capabilities_body` carries no `supportsInlineValues`), so
+                // the single authority refuses the request — explicitly, on
+                // its own route, before any backend access — rather than
+                // falling through to the lenient success-empty compatibility
+                // acknowledgement the native adapter rejects.
+                out.push(self.response(
+                    request_seq,
+                    command,
+                    false,
+                    None,
+                    Some(
+                        crate::backend::capabilities::INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE
+                            .to_string(),
+                    ),
+                ));
+            }
             None | Some(_) => {
                 // #9568: setExpression is `native_only` in the route table, so
                 // the peer-availability filter reduces it to `None` before this
@@ -538,6 +558,10 @@ impl DapPeerBridge {
             // One source with the setExpression request gate (#9568), gated on
             // the peer authority rather than the native one.
             "supportsSetExpression": self.advertised_set_expression(),
+            // #8354: pinned through the shared negotiation authority conjunct,
+            // so no catalog/backend/handler fact can widen the wire value while
+            // the exact mutation proof is absent. The adapter-side
+            // setVariable gate refuses on the same authority.
             "supportsSetVariable": negotiated.supports_set_variable,
         })
     }
@@ -1557,6 +1581,34 @@ mod tests {
         let out = b.dispatch(1, "initialize", Some(json!({ "adapterID": "perl" })));
         let caps = must_some(as_response(&out[0])?.2);
         assert_eq!(caps["supportsEvaluateForHovers"], false);
+        Ok(())
+    }
+
+    /// #9089: the peer bridge refuses the routed inlineValues extension on its
+    /// own explicit dispatch route — the refusal must not fall through to the
+    /// lenient success-empty compatibility acknowledgement, for an extension
+    /// this mode neither advertises nor negotiates.
+    #[test]
+    fn peer_bridge_refuses_inline_values() -> Result<(), String> {
+        let mut b = bridge();
+
+        let out = b.dispatch(
+            2,
+            "inlineValues",
+            Some(json!({ "source": { "path": "script.pl" }, "startLine": 1, "endLine": 2 })),
+        );
+        match &out[0] {
+            DapMessage::Response { success, body, message, .. } => {
+                assert!(!success, "inlineValues must be refused in peer mode, not acked");
+                assert!(body.is_none(), "a refused inlineValues response carries no body");
+                assert_eq!(
+                    message.as_deref(),
+                    Some(crate::backend::capabilities::INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE),
+                    "the refusal must be the single deterministic #9089 message"
+                );
+            }
+            other => return Err(format!("expected response, got {other:?}")),
+        }
         Ok(())
     }
 

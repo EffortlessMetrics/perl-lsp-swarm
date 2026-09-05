@@ -378,6 +378,122 @@ pub(crate) fn peer_bridge_hover_admission(
 /// profile cannot advertise one thing and enforce another.
 pub(crate) const MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS: bool = false;
 
+/// Whether an exact native-launch `setVariable` mutation path has been proven
+/// (#8354).
+///
+/// DAP's `supportsSetVariable` is a promise that a `setVariable` request
+/// assigns a named variable inside a *stopped* session through a correlated,
+/// read-back-verified broker transaction with retained-currentness and public
+/// evidence. `perl-dap` has no such path yet: the live handler screens textual
+/// target/value input and writes raw perl5db commands without exact target
+/// resolution, scalar RHS parsing, correlated read-back, or the atomic
+/// value-authority transition the mutation contract requires. Advertising the
+/// capability would invite editors to mutate a paused program through an
+/// uncorrelated textual command channel.
+///
+/// Flipping this to `true` requires the complete re-enable gate recorded on
+/// #8354 (wire/option contract, exact target resolution, scalar RHS parse,
+/// serialized broker transaction, correlated read-back, atomic value-authority
+/// transition, and the #8368 same-candidate exact public proof with #7363/#7364
+/// promotion). Nothing else — not `dap.core`, not backend `set_variable`, not
+/// handler/type presence, not `DebugBackendCapabilities::full()`, not
+/// setExpression evidence — may widen it.
+pub(crate) const EXACT_SET_VARIABLE_MUTATION_PROVEN: bool = false;
+
+/// The single authority for the advertised `supportsSetVariable` value.
+///
+/// This deliberately consumes no catalog flag, backend flag, or handler-presence
+/// signal. `setVariable` support is gated on a proof that does not exist yet, so
+/// the value is derived from [`EXACT_SET_VARIABLE_MUTATION_PROVEN`] alone
+/// (#8354).
+#[must_use]
+pub(crate) const fn advertises_set_variable() -> bool {
+    EXACT_SET_VARIABLE_MUTATION_PROVEN
+}
+
+/// Refusal message used when a `setVariable` request is declined (#8354).
+pub(crate) const SET_VARIABLE_UNSUPPORTED_MESSAGE: &str = "setVariable is not supported: \
+     supportsSetVariable is advertised false because perl-dap has no exact mutation path yet \
+     (#8354)";
+
+/// Whether a mode must refuse this `setVariable` request as unsupported.
+///
+/// The invariant every mode holds: **a mode refuses every `setVariable` request
+/// exactly when it does not advertise `supportsSetVariable`.** While the
+/// capability is closed this is unconditional — unlike hover (#9573) there is no
+/// request subset that stays legitimate, so the gate fires before argument
+/// parsing, target/value screening, reference lookup, or any broker traffic.
+///
+/// `advertised_set_variable` is the value the mode puts on the wire, so
+/// advertisement and enforcement can never disagree. Passing it explicitly (the
+/// hover-promotion pattern) keeps the gate provable in both directions without
+/// mutating the authority constant: if a mode's advertisement ever opens, its
+/// refusal must close, and vice versa (#8354).
+#[must_use]
+pub(crate) const fn refuse_set_variable(advertised_set_variable: bool) -> bool {
+    !advertised_set_variable
+}
+
+/// Whether the custom inline-values extension has a proven, versioned
+/// negotiation contract (#9089).
+///
+/// DAP's `supportsInlineValues` is a *standard* capability promise. The
+/// `inlineValues` request this crate routes is a Perl-specific custom extension:
+/// per the protocol-authority table it is the one `Extension`-class row, not a
+/// request the pinned upstream schema defines. Advertising the standard flag
+/// from the `dap.inline_values` catalog row made ordinary DAP clients see a
+/// faux-standard capability and conflated "a variable occurrence exists in the
+/// source text" with "the runtime debugger observes a current value for it".
+///
+/// Flipping this to `true` requires the re-enable gate recorded on #9089: a
+/// collision-resistant, versioned, explicitly negotiated extension identity
+/// kept outside standard DAP capability and conformance accounting, with
+/// session-bound opt-in and separate static/runtime response modes. Until then
+/// the extension stays disabled: unnegotiated clients — which is every client —
+/// receive an explicit refusal, and no standard capability cell advertises it.
+pub const INLINE_VALUES_EXTENSION_NEGOTIATION_PROVEN: bool = false;
+
+/// The single authority for the advertised inline-values extension value.
+///
+/// This deliberately consumes no catalog flag, backend flag, or handler-presence
+/// signal. The extension is gated on a negotiation contract that does not exist
+/// yet, so the value is derived from
+/// [`INLINE_VALUES_EXTENSION_NEGOTIATION_PROVEN`] alone (#9089).
+#[must_use]
+pub const fn advertises_inline_values_extension() -> bool {
+    INLINE_VALUES_EXTENSION_NEGOTIATION_PROVEN
+}
+
+/// Refusal message used when the custom `inlineValues` request is declined
+/// (#9089).
+///
+/// Deterministic and input-independent: every unnegotiated request — whatever
+/// its source, range, or format — receives this exact message, so the gate's
+/// output cannot leak anything about the input it refused.
+pub const INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE: &str = "inlineValues is not supported: \
+     the perl-dap inline-values extension is disabled because no versioned negotiation \
+     contract has been proven yet (#9089)";
+
+/// Whether a mode must refuse this custom `inlineValues` request.
+///
+/// The invariant every mode holds: **a mode serves the extension exactly when
+/// it advertises it.** `advertised_inline_values` is the value that *this* mode
+/// puts on the wire, so admission and advertisement can never disagree.
+///
+/// This matters at promotion time, not just today. If the refusal ignored the
+/// advertised value, flipping [`INLINE_VALUES_EXTENSION_NEGOTIATION_PROVEN`]
+/// would advertise the extension while the handler still rejected every
+/// request — the same capability-versus-behaviour contradiction #9089 exists to
+/// remove, only pointing the other way.
+///
+/// Modes stay independent: each passes its own advertised value, so promoting
+/// the native gate does not silently open a mirror or external-peer path that
+/// has no negotiation of its own.
+#[must_use]
+pub(crate) fn refuse_inline_values_extension(advertised_inline_values: bool) -> bool {
+    !advertised_inline_values
+}
+
 /// Whether the exact setExpression proof-and-promotion gate has passed (#9568).
 ///
 /// DAP's `supportsSetExpression` promises that a `setExpression` request can
@@ -533,7 +649,11 @@ pub fn intersect_dap_capabilities(
             && catalog.core
             && backend.evaluate,
         supports_evaluate: catalog.core && backend.evaluate,
-        supports_set_variable: catalog.core && backend.set_variable,
+        // #8354: setVariable is gated on an exact mutation proof that does not
+        // exist yet. The catalog ∩ backend intersection still applies (decision
+        // D6) so that re-enabling the gate cannot over-advertise, but neither
+        // conjunct can widen the capability on its own.
+        supports_set_variable: advertises_set_variable() && catalog.core && backend.set_variable,
     }
 }
 
@@ -680,7 +800,14 @@ mod tests {
         assert!(n.supports_log_points);
         assert!(n.supports_function_breakpoints);
         assert!(n.supports_data_breakpoints);
-        assert!(n.supports_set_variable);
+        // #8354: setVariable is excluded from "everything" for the same reason
+        // hover is: its exact mutation proof does not exist yet, so a fully
+        // capable catalog and backend must still not advertise it.
+        assert!(
+            !n.supports_set_variable,
+            "an exact setVariable mutation proof does not exist (#8354); \
+             catalog.core and backend.set_variable must not widen it"
+        );
         // General evaluation is available with a full catalog and backend...
         assert!(n.supports_evaluate);
         // ...but hover stays closed regardless: it is a narrower promise than
@@ -766,6 +893,64 @@ mod tests {
             !advertises_evaluate_for_hovers(),
             "the single hover authority must report false until #9573's re-enable gate passes"
         );
+    }
+
+    /// The #8354 floor: no catalog/backend combination may advertise setVariable.
+    #[test]
+    fn set_variable_capability_is_closed_for_every_catalog_and_backend_combination() {
+        let catalogs = [
+            all_catalog(),
+            CatalogDapFlags { core: false, ..all_catalog() },
+            CatalogDapFlags {
+                core: true,
+                breakpoints_basic: false,
+                hit_condition: false,
+                logpoints: false,
+                watchpoints: false,
+                function_breakpoints: false,
+            },
+        ];
+        let backends = [
+            DebugBackendCapabilities::full(),
+            DebugBackendCapabilities::none(),
+            DebugBackendCapabilities::ptkdb_v1_defaults(),
+            // A backend that claims set-variable but nothing else: the exact
+            // shape that would tempt `catalog.core && backend.set_variable`
+            // into a true.
+            DebugBackendCapabilities { set_variable: true, ..DebugBackendCapabilities::none() },
+        ];
+
+        for catalog in &catalogs {
+            for backend in &backends {
+                let n = intersect_dap_capabilities(catalog, backend);
+                assert!(
+                    !n.supports_set_variable,
+                    "setVariable advertised for catalog {catalog:?} + backend {backend:?}"
+                );
+            }
+        }
+
+        assert!(
+            !advertises_set_variable(),
+            "the single setVariable authority must report false until #8354's \
+             re-enable gate passes"
+        );
+    }
+
+    /// #8354 promotion safety: refusal follows advertisement in BOTH directions.
+    ///
+    /// The gate constant is `false` today, so testing only the current value
+    /// would leave the promotion path unproven. Passing the advertised value
+    /// explicitly exercises the flipped state without mutating the constant:
+    /// while a mode advertises false it refuses every request; if a promoted
+    /// mode advertises true it must stop refusing. Anything else republishes
+    /// the capability-versus-behaviour contradiction #8354 removes.
+    #[test]
+    fn set_variable_refusal_tracks_the_advertised_capability_in_both_directions() {
+        // Closed: every request is refused, independent of its content.
+        assert!(refuse_set_variable(false));
+        // Open: the refusal must disappear exactly when advertisement opens.
+        assert!(!refuse_set_variable(true));
     }
 
     /// #9573 promotion safety: refusal follows advertisement in BOTH directions.
@@ -866,6 +1051,54 @@ mod tests {
     fn control_mode_defaults_to_mirror() {
         assert_eq!(ControlMode::default(), ControlMode::Mirror);
         assert_eq!(DebugBackendCapabilities::none().control_mode, ControlMode::Mirror);
+    }
+
+    /// The #9089 floor: the single inline-values extension authority is closed
+    /// until a versioned negotiation contract is proven, and it consumes no
+    /// catalog signal.
+    #[test]
+    fn inline_values_extension_authority_is_closed_until_negotiation_is_proven() {
+        assert!(
+            !advertises_inline_values_extension(),
+            "the inline-values extension must stay disabled until #9089's negotiation \
+             gate passes"
+        );
+        // The authority is a constant function of the promotion constant only;
+        // assert both spellings agree so a future edit cannot decouple them.
+        assert_eq!(
+            advertises_inline_values_extension(),
+            INLINE_VALUES_EXTENSION_NEGOTIATION_PROVEN
+        );
+    }
+
+    /// #9089 promotion safety: refusal follows advertisement in BOTH directions.
+    ///
+    /// The gate constant is `false` today, so testing only the current value
+    /// would leave the promotion path unproven. Passing `advertised` explicitly
+    /// exercises the flipped state without mutating the constant: when a mode
+    /// advertises the extension it must stop refusing it; when it does not, it
+    /// must refuse.
+    #[test]
+    fn inline_values_refusal_tracks_the_advertised_value_in_both_directions() {
+        assert!(
+            refuse_inline_values_extension(false),
+            "a mode that does not advertise the extension must refuse it"
+        );
+        assert!(
+            !refuse_inline_values_extension(true),
+            "a mode that advertises the extension must stop refusing it, or promotion \
+             would advertise a request the handler still rejects"
+        );
+    }
+
+    /// #9089: the refusal message is input-independent by construction.
+    #[test]
+    fn inline_values_refusal_message_is_deterministic() {
+        assert_eq!(
+            INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE,
+            "inlineValues is not supported: the perl-dap inline-values extension is \
+             disabled because no versioned negotiation contract has been proven yet (#9089)"
+        );
     }
 
     /// The #9568 floor: the single setExpression authority is closed until the

@@ -1218,7 +1218,10 @@ print "result: $final\n";
                 "supportsEvaluateForHovers",
                 crate::backend::capabilities::advertises_evaluate_for_hovers(),
             ),
-            ("supportsSetVariable", crate::feature_catalog::has_feature("dap.core")),
+            // #8354: bound to the setVariable authority, not to `dap.core`.
+            // setVariable is gated on an exact mutation proof, so the catalog
+            // row cannot decide this one.
+            ("supportsSetVariable", crate::backend::capabilities::advertises_set_variable()),
             ("supportsValueFormattingOptions", crate::feature_catalog::has_feature("dap.core")),
             ("supportTerminateDebuggee", crate::feature_catalog::has_feature("dap.core")),
             ("supportsLogPoints", crate::backend::capabilities::advertises_log_points()),
@@ -1232,7 +1235,14 @@ print "result: $final\n";
                 crate::feature_catalog::has_feature("dap.exceptions.die")
                     || crate::feature_catalog::has_feature("dap.exceptions.warn"),
             ),
-            ("supportsInlineValues", crate::feature_catalog::has_feature("dap.inline_values")),
+            // #9089: bound to the inline-values extension authority, not to
+            // `dap.inline_values`. The routed `inlineValues` request is a
+            // project extension, so the catalog row cannot decide this one
+            // while its negotiation contract is unproven.
+            (
+                "supportsInlineValues",
+                crate::backend::capabilities::advertises_inline_values_extension(),
+            ),
             ("supportsTerminateRequest", crate::feature_catalog::has_feature("dap.core")),
             ("supportsCompletionsRequest", crate::feature_catalog::has_feature("dap.completions")),
             ("supportsModulesRequest", crate::feature_catalog::has_feature("dap.modules")),
@@ -2087,8 +2097,14 @@ print "result: $final\n";
         Ok(())
     }
 
+    /// #9089: the negotiation gate refuses before path validation, so a
+    /// traversal path receives the authority refusal — not a path-validation
+    /// error. The fixture self-validates that the requested path genuinely
+    /// escapes the workspace root, so the test cannot silently pass on a safe
+    /// path.
     #[test]
-    fn test_inline_values_rejects_traversal() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_inline_values_refusal_precedes_traversal_validation()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut adapter = DebugAdapter::new();
         adapter.handle_request(1, "initialize", None);
 
@@ -2096,11 +2112,35 @@ print "result: $final\n";
         *lock_or_recover(&adapter.workspace_root, "test.workspace_root") =
             Some(dir.path().to_path_buf());
 
+        // Self-validation: resolve the fixture lexically against the
+        // canonical workspace root and require that it escapes — otherwise
+        // this test exercises no traversal at all and would pass on a safe
+        // path.
+        let traversal = "../../../etc/passwd";
+        let canonical_root = dir.path().canonicalize()?;
+        let joined = canonical_root.join(traversal);
+        let mut resolved: Vec<std::path::Component<'_>> = Vec::new();
+        for component in joined.components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    resolved.pop();
+                }
+                std::path::Component::CurDir => {}
+                other => resolved.push(other),
+            }
+        }
+        let resolved: std::path::PathBuf = resolved.iter().collect();
+        assert!(
+            !resolved.starts_with(&canonical_root),
+            "fixture must escape the workspace root: {resolved:?} must not be under \
+             {canonical_root:?}"
+        );
+
         let response = adapter.handle_request(
             2,
             "inlineValues",
             Some(json!({
-                "source": {"path": "../../../etc/passwd"},
+                "source": {"path": traversal},
                 "startLine": 1,
                 "endLine": 1
             })),
@@ -2110,9 +2150,13 @@ print "result: $final\n";
                 assert!(!success, "inlineValues with traversal path should fail");
                 assert_eq!(command, "inlineValues");
                 let msg = message.as_deref().unwrap_or("");
-                assert!(
-                    msg.contains("Path validation failed"),
-                    "should report path validation failure, got: {msg}"
+                // #9089: the negotiation gate refuses before path validation
+                // and any filesystem read, so even a traversal path receives
+                // the authority refusal rather than a path-validation error.
+                assert_eq!(
+                    msg,
+                    crate::backend::capabilities::INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE,
+                    "should report the negotiation refusal, got: {msg}"
                 );
             }
             _ => return Err("Expected response".into()),
