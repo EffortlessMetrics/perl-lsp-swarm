@@ -332,51 +332,81 @@ fn declared_observation_slots_match_the_driver_receipt_keys() -> Result<(), Box<
     Ok(())
 }
 
-/// Depth of the last balanced top-level form, or the byte offset where the
-/// driver's parenthesis nesting first goes negative.
+/// The driver with every string literal and `;` comment blanked out.
 ///
 /// Reads elisp the way the Emacs reader does for this purpose: string
-/// literals, backslash escapes, character literals, and `;` comments cannot
-/// contribute parentheses. Anything left is real structure.
-fn driver_form_balance(driver: &str) -> Result<usize, String> {
-    let bytes: Vec<char> = driver.chars().collect();
-    let (mut depth, mut top_level_forms) = (0i32, 0usize);
+/// contents, backslash escapes, character literals, and comments cannot
+/// contribute structure or sentinels. What survives is real code, so the
+/// checks below cannot be fooled by a parenthesis or a keyword that only
+/// ever appears inside a docstring or a regexp.
+fn driver_code_only(driver: &str) -> String {
+    let source: Vec<char> = driver.chars().collect();
+    let mut code = String::with_capacity(driver.len());
     let (mut in_string, mut in_comment) = (false, false);
     let mut index = 0;
-    while index < bytes.len() {
-        let current = bytes[index];
-        if in_string {
+    while index < source.len() {
+        let current = source[index];
+        let keep = if in_string {
             match current {
-                '\\' => index += 1,
-                '"' => in_string = false,
-                _ => {}
+                '\\' => {
+                    index += 1;
+                    false
+                }
+                '"' => {
+                    in_string = false;
+                    false
+                }
+                _ => false,
             }
         } else if in_comment {
             if current == '\n' {
                 in_comment = false;
+                true
+            } else {
+                false
             }
         } else {
             match current {
                 // `?(` and `?\)` are characters, not structure.
-                '?' if index + 1 < bytes.len() => {
-                    index += if bytes[index + 1] == '\\' { 2 } else { 1 };
+                '?' if index + 1 < source.len() => {
+                    index += if source[index + 1] == '\\' { 2 } else { 1 };
+                    false
                 }
-                '"' => in_string = true,
-                ';' => in_comment = true,
-                '(' => depth += 1,
-                ')' => {
-                    depth -= 1;
-                    if depth < 0 {
-                        return Err(format!("unbalanced `)` at character {index}"));
-                    }
-                    if depth == 0 {
-                        top_level_forms += 1;
-                    }
+                '"' => {
+                    in_string = true;
+                    false
                 }
-                _ => {}
+                ';' => {
+                    in_comment = true;
+                    false
+                }
+                _ => true,
             }
-        }
+        };
+        code.push(if keep { current } else { ' ' });
         index += 1;
+    }
+    code
+}
+
+/// Count of balanced top-level forms, or the offset of the first `)` that
+/// closes more than was open.
+fn driver_form_balance(code: &str) -> Result<usize, String> {
+    let (mut depth, mut top_level_forms) = (0i32, 0usize);
+    for (index, current) in code.char_indices() {
+        match current {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth < 0 {
+                    return Err(format!("unbalanced `)` at character {index}"));
+                }
+                if depth == 0 {
+                    top_level_forms += 1;
+                }
+            }
+            _ => {}
+        }
     }
     if depth != 0 {
         return Err(format!("{depth} form(s) left open at end of driver"));
@@ -384,18 +414,60 @@ fn driver_form_balance(driver: &str) -> Result<usize, String> {
     Ok(top_level_forms)
 }
 
-/// The instrument has to be readable before any of its stock-seam
-/// guarantees mean anything: an unbalanced driver cannot load in batch
-/// Emacs, so it reaches neither its observation path nor its typed
-/// refusal, and every textual seam assertion above passes vacuously.
+/// Keyword sentinels the receipt may carry.
 ///
-/// This is the cheapest check that can falsify instrument reachability
-/// without an Emacs toolchain on the runner.
+/// `json-serialize` recognizes `t` for JSON true and these two keywords
+/// for false and null. Every other keyword in a receipt value — `:true`
+/// and `:json-false` are the tempting ones — is an ordinary symbol it
+/// refuses outright, so the write signals instead of producing a receipt.
+const RECEIPT_SENTINELS: [&str; 2] = [":false", ":null"];
+
+/// A refusal that cannot be written is not a refusal.
+///
+/// The typed-refusal branches are exactly the paths that run when no
+/// session exists, so an unserializable sentinel there means the honest
+/// outcomes — missing candidate, failed connect, unreadable initialize
+/// evidence — produce nothing at all, while the success path still
+/// writes. The record's fail-closed claim depends on the opposite.
+#[test]
+fn driver_receipt_uses_only_serializable_sentinels() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let code = driver_code_only(&read(&root, DRIVER)?);
+
+    let mut used: Vec<String> = Vec::new();
+    for (index, _) in code.match_indices(':') {
+        let keyword: String = code[index..]
+            .chars()
+            .take_while(|c| *c == ':' || c.is_ascii_lowercase() || *c == '-')
+            .collect();
+        // `[[:space:]]` and friends live in strings, which are already
+        // blanked; a bare `:` in code starts a keyword.
+        if keyword.len() > 1 && !used.contains(&keyword) {
+            used.push(keyword);
+        }
+    }
+    // Negative control: the driver does serialize negative answers, so a
+    // scan that found no keywords at all would pass vacuously.
+    assert!(
+        used.iter().any(|keyword| keyword == ":null"),
+        "sentinel scan recovered no receipt keywords: {used:?}"
+    );
+
+    let unserializable: Vec<&String> =
+        used.iter().filter(|keyword| !RECEIPT_SENTINELS.contains(&keyword.as_str())).collect();
+    assert!(
+        unserializable.is_empty(),
+        "json-serialize accepts only {RECEIPT_SENTINELS:?} plus `t`; driver also uses {unserializable:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn root_probe_driver_is_a_readable_elisp_program() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
     let driver = read(&root, DRIVER)?;
-    let forms = driver_form_balance(&driver).map_err(|error| format!("{DRIVER}: {error}"))?;
+    let forms = driver_form_balance(&driver_code_only(&driver))
+        .map_err(|error| format!("{DRIVER}: {error}"))?;
     // Negative control on the reader: a driver whose parentheses all hid
     // inside strings would balance trivially at zero forms.
     assert!(

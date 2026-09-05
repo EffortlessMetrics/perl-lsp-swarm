@@ -165,7 +165,7 @@ old exact-server check recorded zero survivors for exactly that case."
                                    ;; log serialize as an observed null.
                                    `((session_established . t)
                                      (initialize_root_uri . :null)
-                                     (manual_action_required . :true)
+                                     (manual_action_required . t)
                                      (refusal_reason . ,(cdr root-uri))))))
                            ;; Observe while alive, then end the session
                            ;; here only; final cleanup verification stays
@@ -175,14 +175,14 @@ old exact-server check recorded zero survivors for exactly that case."
                              (error nil))
                            observed)
                        '((session_established . :false)
-                         (manual_action_required . :true)
+                         (manual_action_required . t)
                          (refusal_reason . "no_live_session"))))
                  (error
                   `((session_established . :false)
-                    (manual_action_required . :true)
+                    (manual_action_required . t)
                     (refusal_reason . ,(perl-lsp-root-probe--error-token err)))))
              '((session_established . :false)
-               (manual_action_required . :true)
+               (manual_action_required . t)
                (refusal_reason . "candidate_executable_not_supplied"))))
           (library-facts (perl-lsp-root-probe--library-facts))
           (cleanup-live-servers 0)
