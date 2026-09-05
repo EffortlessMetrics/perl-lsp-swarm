@@ -599,10 +599,13 @@ fn parse_on_phase(buf: &str) -> Option<String> {
     let header = header.strip_prefix('(').unwrap_or(header);
     let arguments = split_cpanfile_arguments(header);
     let first = arguments.first()?;
+    // The bareword must be the whole argument, not a prefix of it: `on test()`
+    // decides its phase by calling `test`, so accepting the leading `test`
+    // would fix a phase the cpanfile never chose.
     let phase = sole_plain_literal(first).or_else(|| {
-        let bareword: String =
-            first.trim_start().chars().take_while(|&ch| is_identifier_char(ch)).collect();
-        (!bareword.is_empty()).then_some(bareword)
+        let bareword = first.trim();
+        (!bareword.is_empty() && bareword.chars().all(is_identifier_char))
+            .then(|| bareword.to_string())
     })?;
     CPANFILE_PHASES.contains(&phase.as_str()).then_some(phase)
 }
@@ -1470,6 +1473,33 @@ mod tests {
             facts.prereqs
         );
         assert!(facts.prereqs.iter().any(|p| p.module == "Moo"));
+    }
+
+    #[test]
+    fn cpanfile_called_barewords_do_not_fix_a_phase() {
+        // A bareword prefix is not a phase: `on test()` calls `test` and uses
+        // its return value, so the phase is chosen at run time.
+        for header in [
+            "on test() => sub",
+            "on(test() => sub",
+            "on test->phase => sub",
+            "on test.'x' => sub",
+            "on test[0] => sub",
+        ] {
+            let content = format!("{header} {{ requires 'Leak'; }};\nrequires 'Moo';\n");
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), &content);
+
+            assert!(
+                !facts.prereqs.iter().any(|p| p.module == "Leak"),
+                "{header} names its phase at run time: {:?}",
+                facts.prereqs
+            );
+            assert!(
+                facts.prereqs.iter().any(|p| p.module == "Moo"),
+                "the block still closes: {:?}",
+                facts.prereqs
+            );
+        }
     }
 
     #[test]
