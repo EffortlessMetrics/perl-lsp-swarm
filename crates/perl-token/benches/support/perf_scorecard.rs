@@ -100,9 +100,17 @@ pub(crate) fn resolve_artifact_path(
         return Some(find_repo_root(cwd)?.join(TRACKED_ARTIFACT_RELATIVE_PATH));
     }
     if let Some(target_dir) = cargo_target_dir.filter(|path| !path.as_os_str().is_empty()) {
-        return Some(target_dir.join(LOCAL_ARTIFACT_FILE_NAME));
+        let candidate = target_dir.join(LOCAL_ARTIFACT_FILE_NAME);
+        // `CARGO_TARGET_DIR=docs/project/status` must not bypass the publish gate.
+        if !is_tracked_docs_artifact(&candidate) {
+            return Some(candidate);
+        }
     }
     Some(find_repo_root(cwd)?.join("target").join(LOCAL_ARTIFACT_FILE_NAME))
+}
+
+pub(crate) fn is_tracked_docs_artifact(path: &Path) -> bool {
+    path.ends_with(Path::new(TRACKED_ARTIFACT_RELATIVE_PATH))
 }
 
 fn find_artifact_path() -> Option<PathBuf> {

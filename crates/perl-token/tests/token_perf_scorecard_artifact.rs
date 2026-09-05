@@ -6,8 +6,8 @@
 mod perf_scorecard;
 
 use perf_scorecard::{
-    PUBLISH_ENV, ScoreMetric, TRACKED_ARTIFACT_RELATIVE_PATH, publish_requested_from,
-    resolve_artifact_path, write_metric,
+    PUBLISH_ENV, ScoreMetric, TRACKED_ARTIFACT_RELATIVE_PATH, is_tracked_docs_artifact,
+    publish_requested_from, resolve_artifact_path, write_metric,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,10 +28,6 @@ fn make_repo_layout(root: &Path) {
 
 fn sample(name_tag: u64) -> ScoreMetric {
     ScoreMetric { iterations: 5, median_ns: name_tag, p95_ns: name_tag + 1 }
-}
-
-fn is_tracked_docs_artifact(path: &Path) -> bool {
-    path.ends_with(Path::new(TRACKED_ARTIFACT_RELATIVE_PATH))
 }
 
 #[test]
@@ -127,5 +123,29 @@ fn missing_repo_markers_without_target_dir_does_not_invent_a_docs_path() {
     let root = unique_temp_dir("no-repo");
     assert!(resolve_artifact_path(&root, None, false).is_none());
     assert!(resolve_artifact_path(&root, None, true).is_none());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn cargo_target_dir_collision_with_tracked_docs_does_not_publish() {
+    let root = unique_temp_dir("collision");
+    make_repo_layout(&root);
+    let colliding = root.join("docs/project/status");
+    let path = resolve_artifact_path(&root, Some(&colliding), false)
+        .expect("collision must fall back to repo target");
+    assert!(
+        !is_tracked_docs_artifact(&path),
+        "CARGO_TARGET_DIR pointing at the status dir must not select tracked docs: {path:?}"
+    );
+    assert_eq!(path, root.join("target/token_performance_scorecard.json"));
+
+    let relative = Path::new("docs/project/status");
+    let relative_path = resolve_artifact_path(&root, Some(relative), false)
+        .expect("relative collision must fall back to repo target");
+    assert!(
+        !is_tracked_docs_artifact(&relative_path),
+        "relative CARGO_TARGET_DIR collision must not select tracked docs: {relative_path:?}"
+    );
+    assert_eq!(relative_path, root.join("target/token_performance_scorecard.json"));
     let _ = fs::remove_dir_all(&root);
 }
