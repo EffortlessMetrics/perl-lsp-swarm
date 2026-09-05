@@ -8,8 +8,9 @@
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{HirFile, lower_ast};
 use perl_parser_core::pir::{
-    PIR_RECEIPT_VERSION, PirCallee, PirContext, PirDynamicBoundaryKind, PirEdgeKind, PirGraph,
-    PirLoweringMode, PirMethod, PirOperation, lower_hir, lower_hir_bodies, lower_hir_with_identity,
+    PIR_RECEIPT_VERSION, PirAccessMode, PirCallee, PirContext, PirDynamicBoundaryKind, PirEdgeKind,
+    PirEvaluationDemand, PirGraph, PirLoweringMode, PirMethod, PirOperation, lower_hir,
+    lower_hir_bodies, lower_hir_with_identity,
 };
 use perl_tdd_support::must_some;
 
@@ -27,7 +28,6 @@ fn op_names(graph: &PirGraph) -> Vec<&'static str> {
 fn first_op<'a, T>(graph: &'a PirGraph, select: impl Fn(&'a PirOperation) -> Option<T>) -> T {
     must_some(graph.nodes.iter().find_map(|node| select(&node.operation)))
 }
-
 #[test]
 fn empty_source_yields_empty_graph() {
     let graph = lower("");
@@ -40,7 +40,6 @@ fn empty_source_yields_empty_graph() {
     assert_eq!(graph.receipt.lowering_mode, PirLoweringMode::HirV0);
     assert!(!graph.receipt.provider_behavior_changed);
 }
-
 #[test]
 fn lexical_declaration_writes_lvalue_and_assigns() {
     let graph = lower("my $x = 1;");
@@ -48,7 +47,11 @@ fn lexical_declaration_writes_lvalue_and_assigns() {
 
     // The declared write target is a known lvalue; the statement-level
     // assignment is void. Neither is silently promoted past what HIR proves.
-    assert_eq!(graph.nodes[0].context, PirContext::Lvalue);
+    assert_eq!(graph.nodes[0].access, Some(PirAccessMode::Write));
+    // The declared place's own value context is not proven by the flat path
+    // (`my ($x) = ...` assigns in list context with a scalar sigil), so it is
+    // reported as Unknown, never borrowed from the statement's Void.
+    assert_eq!(graph.nodes[0].context, PirContext::Unknown);
     assert_eq!(graph.nodes[1].context, PirContext::Void);
     assert_eq!(graph.nodes[2].context, PirContext::Unknown);
 
@@ -59,7 +62,6 @@ fn lexical_declaration_writes_lvalue_and_assigns() {
     assert_eq!(name.sigil, "$");
     assert_eq!(name.name, "x");
 }
-
 #[test]
 fn literal_operands_precede_enclosing_pir_parents() {
     let assignment = lower("my $x = 1;");
@@ -113,7 +115,6 @@ fn literal_operands_precede_enclosing_pir_parents() {
             && edge.to == Some(call_id)
     }));
 }
-
 #[test]
 fn call_operand_precedes_enclosing_pir_parent() {
     // #4848 Slice 2 widened the operand-splice reuse — previously only `Literal`
@@ -145,7 +146,6 @@ fn call_operand_precedes_enclosing_pir_parent() {
         edge.kind == PirEdgeKind::Fallthrough && edge.from == assign_id && edge.to == Some(call_id)
     }));
 }
-
 #[test]
 fn multi_operand_initializer_literals_all_precede_assignment() {
     let graph = lower("my $x = 1 + 2;");
@@ -179,7 +179,6 @@ fn multi_operand_initializer_literals_all_precede_assignment() {
             && literal_ids.iter().any(|literal_id| edge.to == Some(*literal_id))
     }));
 }
-
 #[test]
 fn bare_literal_after_initializer_is_not_attached_to_previous_assignment() {
     let graph = lower("my $x = 1; 42;");
@@ -208,7 +207,6 @@ fn bare_literal_after_initializer_is_not_attached_to_previous_assignment() {
             && edge.to == Some(assignment_id)
     }));
 }
-
 #[test]
 fn deferred_control_flow_nodes_are_not_literal_parents() {
     let graph = lower("if (1) { 2 }");
@@ -227,7 +225,6 @@ fn deferred_control_flow_nodes_are_not_literal_parents() {
                 .is_some_and(|node| matches!(node.operation, PirOperation::Literal { .. }))
     }));
 }
-
 #[test]
 fn our_declaration_is_a_stash_write_with_package() {
     let graph = lower("package Acme; our @items = (1, 2);");
@@ -239,7 +236,6 @@ fn our_declaration_is_a_stash_write_with_package() {
     assert_eq!(symbol.name, "items");
     assert_eq!(symbol.package.as_deref(), Some("Acme"));
 }
-
 #[test]
 fn local_declaration_is_a_stash_write() {
     // `local` dynamically scopes a package/global slot, so it lowers to a stash
@@ -252,7 +248,6 @@ fn local_declaration_is_a_stash_write() {
     assert_eq!(symbol.sigil, "$");
     assert_eq!(symbol.name, "x");
 }
-
 #[test]
 fn named_call_splits_package_qualifier() {
     let graph = lower("Bar::baz();");
@@ -265,7 +260,6 @@ fn named_call_splits_package_qualifier() {
         PirCallee::Named { name: "baz".to_string(), package: Some("Bar".to_string()) }
     );
 }
-
 #[test]
 fn deep_qualified_call_preserves_full_package_path() {
     // The qualifier split keeps the full package path (`rsplit_once`), so the
@@ -280,7 +274,6 @@ fn deep_qualified_call_preserves_full_package_path() {
         PirCallee::Named { name: "foo".to_string(), package: Some("A::B".to_string()) }
     );
 }
-
 #[test]
 fn unqualified_call_has_no_package() {
     let graph = lower("foo(1, 2, 3);");
@@ -301,7 +294,6 @@ fn unqualified_call_has_no_package() {
     );
     assert_eq!(context, PirContext::Unknown);
 }
-
 #[test]
 fn method_call_lowers_receiver_and_method() {
     let graph = lower("$obj->frobnicate(1, 2);");
@@ -312,7 +304,6 @@ fn method_call_lowers_receiver_and_method() {
     assert_eq!(method, PirMethod::Named("frobnicate".to_string()));
     assert_eq!(arg_count, 2);
 }
-
 #[test]
 fn coderef_call_links_to_dynamic_boundary() {
     let graph = lower("my $cb; $cb->(1);");
@@ -338,7 +329,6 @@ fn coderef_call_links_to_dynamic_boundary() {
         && edge.to.is_none()
         && edge.kind == PirEdgeKind::DynamicExit));
 }
-
 #[test]
 fn each_coderef_call_links_its_own_boundary() {
     // Two independent coderef calls and a nested one. Each dynamic Call must
@@ -373,37 +363,31 @@ fn each_coderef_call_links_its_own_boundary() {
     assert_eq!(linked_boundaries.len(), 3);
     assert_eq!(graph.receipt.dynamic_boundary_counts.get("DynamicCallee"), Some(&3));
 }
-
 #[test]
 fn eval_string_is_a_dynamic_boundary() {
     let graph = lower(r#"eval "$code";"#);
     assert_eq!(graph.receipt.dynamic_boundary_counts.get("EvalExpression"), Some(&1));
 }
-
 #[test]
 fn symbolic_string_reference_is_a_dynamic_boundary() {
     let graph = lower("no strict 'refs'; my $v = ${\"name\"};");
     assert_eq!(graph.receipt.dynamic_boundary_counts.get("SymbolicReference"), Some(&1));
 }
-
 #[test]
 fn ordinary_runtime_reference_is_not_a_dynamic_boundary() {
     let graph = lower("no strict 'refs'; my $v = ${$name};");
     assert!(!graph.receipt.dynamic_boundary_counts.contains_key("SymbolicReference"));
 }
-
 #[test]
 fn typeglob_assignment_is_a_runtime_stash_mutation_boundary() {
     let graph = lower("*alias = $thing;");
     assert_eq!(graph.receipt.dynamic_boundary_counts.get("RuntimeStashMutation"), Some(&1));
 }
-
 #[test]
 fn autoload_declaration_is_a_dynamic_boundary() {
     let graph = lower("sub AUTOLOAD { }");
     assert_eq!(graph.receipt.dynamic_boundary_counts.get("Autoload"), Some(&1));
 }
-
 #[test]
 fn dynamic_boundary_nodes_anchor_to_the_boundary_range() {
     let graph = lower(r#"eval "$code";"#);
@@ -416,7 +400,6 @@ fn dynamic_boundary_nodes_anchor_to_the_boundary_range() {
     assert_eq!(boundary.source_anchor.kind.name(), "DynamicBoundary");
     assert!(boundary.source_anchor.is_anchored());
 }
-
 #[test]
 fn every_lowered_node_preserves_a_source_anchor() {
     let graph = lower("package Foo; my $x = bar(); $obj->m(); our $y;");
@@ -425,7 +408,6 @@ fn every_lowered_node_preserves_a_source_anchor() {
     assert_eq!(graph.receipt.source_anchor_coverage.anchored, graph.nodes.len());
     assert_eq!(graph.receipt.source_anchor_coverage.total(), graph.nodes.len());
 }
-
 #[test]
 fn unlowered_constructs_are_counted_not_dropped() {
     let graph = lower("package Foo; use strict; sub f {}");
@@ -437,7 +419,6 @@ fn unlowered_constructs_are_counted_not_dropped() {
     assert_eq!(unsupported.get("UseDecl"), Some(&1));
     assert_eq!(unsupported.get("SubDecl"), Some(&1));
 }
-
 #[test]
 fn receipt_counts_are_consistent_with_nodes() {
     let graph = lower("my $x = 1; foo(); $obj->m(); eval '1';");
@@ -453,7 +434,6 @@ fn receipt_counts_are_consistent_with_nodes() {
     assert!(!graph.receipt.provider_behavior_changed);
     assert!(graph.receipt.ambient_inputs.is_empty());
 }
-
 #[test]
 fn consecutive_nodes_in_a_scope_are_linked_by_fallthrough() {
     let graph = lower("foo(); bar(); baz();");
@@ -462,7 +442,6 @@ fn consecutive_nodes_in_a_scope_are_linked_by_fallthrough() {
     // Three sequential calls in the file scope produce two fallthrough edges.
     assert_eq!(fallthroughs, 2);
 }
-
 #[test]
 fn lowering_is_deterministic() {
     let mut parser = Parser::new("package Foo; my $x = bar(); $obj->m(); eval '1'; our @z;");
@@ -473,7 +452,6 @@ fn lowering_is_deterministic() {
     let second = lower_hir(&hir);
     assert_eq!(first, second);
 }
-
 #[test]
 fn source_identity_is_threaded_into_the_receipt() {
     let mut parser = Parser::new("my $x = 1;");
@@ -486,7 +464,6 @@ fn source_identity_is_threaded_into_the_receipt() {
     let anonymous = lower_hir(&hir);
     assert!(anonymous.receipt.source_identity.is_none());
 }
-
 #[test]
 fn node_lookup_round_trips() {
     let graph = lower("my $x = 1;");
@@ -495,7 +472,6 @@ fn node_lookup_round_trips() {
     }
     assert!(graph.node(perl_parser_core::pir::PirId::from_index(9999)).is_none());
 }
-
 #[test]
 fn multi_variable_declaration_produces_one_write_per_variable() {
     // `my ($a, $b) = (1, 2)` must produce two LexicalWrite nodes (one for each
@@ -519,14 +495,13 @@ fn multi_variable_declaration_produces_one_write_per_variable() {
     assert!(names.contains(&"b"), "expected write for $b");
 
     // Every write is an lvalue; the assignment is void.
-    assert!(writes.iter().all(|n| n.context == PirContext::Lvalue));
+    assert!(writes.iter().all(|n| n.access == Some(PirAccessMode::Write)));
 
     let assigns: Vec<_> =
         graph.nodes.iter().filter(|n| matches!(n.operation, PirOperation::Assign)).collect();
     assert_eq!(assigns.len(), 1);
     assert_eq!(assigns[0].context, PirContext::Void);
 }
-
 #[test]
 fn named_callee_leading_colons_do_not_produce_empty_package() {
     // `::foo` has a leading `::` that `rsplit_once("::")` splits into ("", "foo").
@@ -542,7 +517,6 @@ fn named_callee_leading_colons_do_not_produce_empty_package() {
     // package must be None (not Some("")) — the empty part is dropped.
     assert_eq!(callee, PirCallee::Named { name: "foo".to_string(), package: None });
 }
-
 #[test]
 fn two_consecutive_coderef_calls_each_link_to_their_own_boundary() {
     // Two back-to-back coderef calls must each link to their own
@@ -578,7 +552,6 @@ fn two_consecutive_coderef_calls_each_link_to_their_own_boundary() {
     // Receipt must count two DynamicCallee boundaries.
     assert_eq!(graph.receipt.dynamic_boundary_counts.get("DynamicCallee"), Some(&2));
 }
-
 #[test]
 fn control_flow_branch_shell_is_now_lowered_to_branch() {
     // Since #8196, BranchShell lowers to PirOperation::Branch instead of being
@@ -592,7 +565,82 @@ fn control_flow_branch_shell_is_now_lowered_to_branch() {
     // The graph is no longer empty — a Branch node was produced.
     assert!(!graph.is_empty());
 }
+#[test]
+fn control_flow_loop_shell_lowers_to_truth_test_demand() {
+    let graph = lower("while ($condition) { 1 }");
+    let loop_node = must_some(
+        graph.nodes.iter().find(|node| matches!(node.operation, PirOperation::Loop { .. })),
+    );
 
+    assert_eq!(loop_node.demand, PirEvaluationDemand::TruthTest);
+    assert_eq!(graph.receipt.demand_counts.get("TruthTest"), Some(&1));
+}
+#[test]
+fn mutating_regex_targets_are_read_modify_write() {
+    for (source, expected_access) in [
+        ("$value =~ s/a/b/;", PirAccessMode::ReadModifyWrite),
+        ("$value =~ s/a/b/r;", PirAccessMode::Read),
+        ("$value =~ tr/a/b/;", PirAccessMode::ReadModifyWrite),
+        ("$value =~ tr/a/b/r;", PirAccessMode::Read),
+        // A match reads its place and never writes it, so it must not share
+        // the in-place `s///` classification.
+        ("$value =~ /a/;", PirAccessMode::Read),
+        ("$value !~ /a/;", PirAccessMode::Read),
+    ] {
+        let graph = lower(source);
+        let regex_node = must_some(graph.nodes.iter().find(|node| {
+            matches!(
+                node.operation,
+                PirOperation::Substitution { .. }
+                    | PirOperation::Transliteration { .. }
+                    | PirOperation::Match { .. }
+            )
+        }));
+        assert_eq!(regex_node.access, Some(expected_access), "access classification for {source}");
+        assert_eq!(graph.receipt.access_counts.get(expected_access.name()), Some(&1));
+    }
+}
+#[test]
+fn non_place_operations_carry_no_access_fact() {
+    // `my $x = foo(1);` lowers a place write plus three value-only nodes. Only
+    // the place write may claim an access mode; an assignment expression, a
+    // call, and a literal touch no place and must not be reported as reads.
+    let graph = lower("my $x = foo(1);");
+    assert_eq!(op_names(&graph), vec!["LexicalWrite", "Assign", "Call", "Literal"]);
+
+    assert_eq!(graph.nodes[0].access, Some(PirAccessMode::Write));
+    assert!(graph.nodes[1..].iter().all(|node| node.access.is_none()), "{:?}", graph.nodes);
+
+    // The receipt counts place-accessing nodes only, so it cannot report a
+    // read that no node performed.
+    assert_eq!(graph.receipt.access_counts.get("Read"), None);
+    assert_eq!(graph.receipt.access_counts.values().sum::<usize>(), 1);
+}
+#[test]
+fn expression_target_regex_operations_carry_no_access_fact() {
+    // A regex bound to a call result has no place to read or write, even for
+    // an in-place `s///`; only a named place or `$_` yields an access fact.
+    let bound_to_expression = lower("foo() =~ s/a/b/;");
+    let regex_node = must_some(
+        bound_to_expression
+            .nodes
+            .iter()
+            .find(|node| matches!(node.operation, PirOperation::Substitution { .. })),
+    );
+    assert_eq!(regex_node.access, None);
+
+    // HIR never classifies the implicit `$_` topic as a place (`DefaultTopic`
+    // is a PIR vocabulary item that lowering does not yet construct), so a
+    // bare `s///` also carries no access fact rather than an invented one.
+    let bound_to_topic = lower("s/a/b/;");
+    let topic_node = must_some(
+        bound_to_topic
+            .nodes
+            .iter()
+            .find(|node| matches!(node.operation, PirOperation::Substitution { .. })),
+    );
+    assert_eq!(topic_node.access, None);
+}
 #[test]
 fn control_flow_loop_shell_lowers_to_loop_operation() {
     // Since #8196, LoopShell lowers to PirOperation::Loop instead of being
@@ -605,7 +653,6 @@ fn control_flow_loop_shell_lowers_to_loop_operation() {
     // The graph is no longer empty — a Loop node was produced.
     assert!(!graph.is_empty());
 }
-
 #[test]
 fn control_flow_control_transfer_return_lowers_to_return_operation() {
     // Since #8196, ControlTransferKind::Return lowers to PirOperation::Return.
@@ -617,7 +664,6 @@ fn control_flow_control_transfer_return_lowers_to_return_operation() {
     // The graph is no longer empty — a Return node was produced.
     assert!(!graph.is_empty());
 }
-
 #[test]
 fn control_flow_statement_modifier_is_counted_not_dropped() {
     // PIR v0 reserves but does not yet lower StatementModifierShell
@@ -627,7 +673,6 @@ fn control_flow_statement_modifier_is_counted_not_dropped() {
     assert_eq!(graph.receipt.operation_counts.get("Literal"), Some(&1));
     assert!(!graph.is_empty());
 }
-
 #[test]
 fn all_four_control_flow_kinds_in_same_fixture() {
     // Verify that a fixture exercising all four control-flow HIR variants
@@ -689,7 +734,6 @@ $x = 1 if $y;                   # StatementModifierShell
     // Graph is no longer empty — Branch and Loop nodes were produced.
     assert!(!graph.is_empty(), "graph must have at least the Branch and Loop nodes");
 }
-
 #[test]
 fn unless_block_lowers_to_branch_not_statement_modifier() {
     // `unless` block form (not postfix) lowers to BranchShell, which since #8196
@@ -702,7 +746,6 @@ fn unless_block_lowers_to_branch_not_statement_modifier() {
     assert_eq!(graph.receipt.operation_counts.get("Branch"), Some(&1));
     assert!(!graph.receipt.unsupported_construct_counts.contains_key("StatementModifierShell"));
 }
-
 #[test]
 fn foreach_loop_lowers_to_loop_operation() {
     // `for my $x (LIST)` and `foreach` forms lower to LoopShell, which since
@@ -715,7 +758,6 @@ fn foreach_loop_lowers_to_loop_operation() {
     // `next` is a ControlTransfer — still unsupported.
     assert_eq!(graph.receipt.unsupported_construct_counts.get("ControlTransfer"), Some(&1));
 }
-
 #[test]
 fn multiple_statement_modifiers_each_counted() {
     // Each postfix modifier is a separate StatementModifierShell node, so they
