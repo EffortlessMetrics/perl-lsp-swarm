@@ -19,7 +19,7 @@
       "controlling_issue": 80001,
       "evidence": {
         "kind": "repository_receipt",
-        "ref": "repo:receipts/release-scope/observation.json@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ref": "repo:EffortlessMetrics/perl-lsp-swarm:receipts/release-scope/observation.json@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
       }
     },
@@ -32,7 +32,7 @@
       "controlling_issue": 80002,
       "evidence": {
         "kind": "repository_receipt",
-        "ref": "repo:receipts/release-scope/observation.json@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ref": "repo:EffortlessMetrics/perl-lsp-swarm:receipts/release-scope/observation.json@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
       }
     },
@@ -45,7 +45,7 @@
       "controlling_issue": 80003,
       "evidence": {
         "kind": "repository_receipt",
-        "ref": "repo:receipts/release-scope/observation.json@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ref": "repo:EffortlessMetrics/perl-lsp-swarm:receipts/release-scope/observation.json@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
       }
     },
@@ -58,7 +58,7 @@
       "controlling_issue": 80004,
       "evidence": {
         "kind": "repository_receipt",
-        "ref": "repo:receipts/release-scope/observation.json@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ref": "repo:EffortlessMetrics/perl-lsp-swarm:receipts/release-scope/observation.json@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
       }
     },
@@ -71,7 +71,7 @@
       "controlling_issue": 80005,
       "evidence": {
         "kind": "repository_receipt",
-        "ref": "repo:receipts/release-scope/observation.json@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ref": "repo:EffortlessMetrics/perl-lsp-swarm:receipts/release-scope/observation.json@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
       }
     }
@@ -82,7 +82,7 @@
       "status": "resolved",
       "proof": {
         "kind": "repository_receipt",
-        "ref": "repo:receipts/blockers/native-critic.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "ref": "repo:EffortlessMetrics/perl-lsp-swarm:receipts/blockers/native-critic.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
       }
     },
@@ -91,7 +91,7 @@
       "status": "bounded_limitation",
       "proof": {
         "kind": "repository_receipt",
-        "ref": "repo:receipts/blockers/text-sync.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "ref": "repo:EffortlessMetrics/perl-lsp-swarm:receipts/blockers/text-sync.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
       }
     }
@@ -114,7 +114,7 @@
       "statement": "The accepted installed text synchronization envelope is full-document UTF-16.",
       "evidence": {
         "kind": "repository_receipt",
-        "ref": "repo:receipts/claims/full-document-utf16.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "ref": "repo:EffortlessMetrics/perl-lsp-swarm:receipts/claims/full-document-utf16.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
       }
     },
@@ -124,7 +124,7 @@
       "statement": "Normal installed Critic behavior is Rust-native and process-free.",
       "evidence": {
         "kind": "repository_receipt",
-        "ref": "repo:receipts/claims/native-critic-only.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "ref": "repo:EffortlessMetrics/perl-lsp-swarm:receipts/claims/native-critic-only.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
       }
     },
@@ -134,7 +134,7 @@
       "statement": "VS Code is the primary installed editor; other editors retain bounded standard-LSP compatibility.",
       "evidence": {
         "kind": "repository_receipt",
-        "ref": "repo:receipts/claims/vscode-primary.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "ref": "repo:EffortlessMetrics/perl-lsp-swarm:receipts/claims/vscode-primary.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
       }
     }
@@ -144,7 +144,7 @@
     "digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
     "evidence": {
       "kind": "repository_receipt",
-      "ref": "repo:receipts/release-topology/final.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "ref": "repo:EffortlessMetrics/perl-lsp-swarm:receipts/release-topology/final.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
     }
   },
@@ -152,7 +152,7 @@
     "subject_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "evidence": {
       "kind": "repository_receipt",
-      "ref": "repo:receipts/installed/public-beta.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "ref": "repo:EffortlessMetrics/perl-lsp-swarm:receipts/installed/public-beta.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     }
   },
@@ -160,7 +160,7 @@
     "subject_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "evidence": {
       "kind": "repository_receipt",
-      "ref": "repo:receipts/release-integrity/final.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "ref": "repo:EffortlessMetrics/perl-lsp-swarm:receipts/release-integrity/final.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     }
   },
@@ -168,7 +168,7 @@
     "subject_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "evidence": {
       "kind": "repository_receipt",
-      "ref": "repo:receipts/release-lineage/final.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "ref": "repo:EffortlessMetrics/perl-lsp:receipts/release-lineage/final.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     }
   },
