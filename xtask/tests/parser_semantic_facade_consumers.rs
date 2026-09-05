@@ -35,6 +35,15 @@
 //! cannot fit in one, and a `'` that does not close after a single character
 //! is a lifetime and is left alone.
 //!
+//! Known boundary (over-reporting, not hiding): a rename applies for the whole
+//! source. A nested scope that rebinds the same short name to an unrelated
+//! module would still be read as facade-rooted. Respecting Rust lexical scope
+//! would mean tracking block, `mod`, and function boundaries inside what is
+//! otherwise a normalizing scanner, bought for a false positive that fails
+//! loudly and is absorbed by an owned `TEMPORARY_EXCEPTIONS` entry. Reviewed
+//! and accepted rather than overlooked (#14300 owns the shared alias
+//! primitive for this guard and its TDD sibling).
+//!
 //! Crate renames are resolved first: `use perl_parser as pp;` makes `pp` an
 //! additional path head for that source, and violations are always reported
 //! under the crate's real name so a rename cannot change the message.
