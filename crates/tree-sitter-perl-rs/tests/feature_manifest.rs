@@ -1,0 +1,190 @@
+use std::collections::BTreeSet;
+use std::ffi::OsString;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+const OVERLAY_ONLY_PACKAGES: [&str; 2] = ["perl-module", "perl-semantic-analyzer"];
+
+type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+fn crate_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn manifest_path() -> PathBuf {
+    crate_root().join("Cargo.toml")
+}
+
+fn manifest_text() -> Result<String, std::io::Error> {
+    fs::read_to_string(manifest_path())
+}
+
+fn normalize_whitespace(value: &str) -> String {
+    value.split_ascii_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn cargo_binary() -> OsString {
+    std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"))
+}
+
+fn resolved_normal_packages(feature_args: &[&str]) -> TestResult<BTreeSet<String>> {
+    let output = Command::new(cargo_binary())
+        .arg("tree")
+        .arg("--manifest-path")
+        .arg(manifest_path())
+        .args([
+            "--package",
+            "tree-sitter-perl-rs",
+            "--locked",
+            "--edges",
+            "normal",
+            "--prefix",
+            "none",
+        ])
+        .args(feature_args)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("cargo tree failed for {feature_args:?}: {stderr}").into());
+    }
+
+    let stdout = String::from_utf8(output.stdout)?;
+    Ok(stdout
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .map(str::to_owned)
+        .collect())
+}
+
+fn assert_packages_absent(graph: &BTreeSet<String>, label: &str) {
+    for package in OVERLAY_ONLY_PACKAGES {
+        assert!(
+            !graph.contains(package),
+            "{label} resolved overlay-only package {package}: {graph:?}"
+        );
+    }
+}
+
+fn assert_packages_present(graph: &BTreeSet<String>, label: &str) {
+    for package in ["perl-module", "perl-pragma", "perl-semantic-analyzer"] {
+        assert!(
+            graph.contains(package),
+            "{label} did not resolve semantic-overlay package {package}: {graph:?}"
+        );
+    }
+}
+
+fn assert_cfg_owned(source: &str, item: &str, path: &Path) {
+    let expected = format!("#[cfg(feature = \"semantic-overlay\")]\n{item}");
+    assert!(
+        normalize_whitespace(source).contains(&normalize_whitespace(&expected)),
+        "{} does not feature-own {item:?}",
+        path.display()
+    );
+}
+
+#[test]
+fn semantic_overlay_feature_owns_its_upper_dependencies() -> TestResult {
+    let manifest = manifest_text()?;
+
+    for expected in [
+        "default = []",
+        "queries = [\"dep:regex\"]",
+        "semantic-overlay = [\n    \"dep:perl-module\",\n    \"dep:perl-pragma\",\n    \"dep:perl-semantic-analyzer\",\n]",
+        "perl-module = { workspace = true, optional = true }",
+        "perl-pragma = { workspace = true, optional = true }",
+        "perl-semantic-analyzer = { workspace = true, optional = true }",
+        "name = \"semantic_overlay_queries\"\nrequired-features = [\"semantic-overlay\"]",
+        "name = \"semantic_overlay_tests\"\nrequired-features = [\"semantic-overlay\"]",
+        "\"examples/**\"",
+    ] {
+        assert!(
+            normalize_whitespace(&manifest).contains(&normalize_whitespace(expected)),
+            "manifest contract missing {expected:?}"
+        );
+    }
+
+    for relative_path in ["examples/semantic_overlay_queries.rs", "tests/semantic_overlay_tests.rs"]
+    {
+        let path = crate_root().join(relative_path);
+        assert!(path.is_file(), "manifest contract path missing {}", path.display());
+    }
+
+    // The facade is one module on this layout, so the ledger names every
+    // overlay-owned item in `lib.rs` rather than a gated `mod` declaration.
+    // Each item is matched together with the attribute immediately above it, so
+    // deleting a single gate fails here even though the crate still compiles
+    // with the feature on.
+    let lib_path = crate_root().join("src/lib.rs");
+    let lib = fs::read_to_string(&lib_path)?;
+
+    // The three direct upper-stack imports the feature owns. These are the
+    // edges that make the dependency graph assertions below reachable at all.
+    for import in [
+        "use perl_module::parse_module_import_head;",
+        "use perl_pragma::{PragmaState, PragmaTracker};",
+        "use perl_semantic_analyzer::semantic::SemanticModel;",
+    ] {
+        assert_cfg_owned(&lib, import, &lib_path);
+    }
+
+    // The three public overlay types. Each gate sits above the item's doc
+    // comment, so the first doc line is what anchors the assertion.
+    for doc_anchor in [
+        "/// Experimental semantic overlay query handle.",
+        "/// Symbol definition returned by [`SemanticOverlay`] queries.",
+        "/// Import statement visible at a specific source offset.",
+    ] {
+        assert_cfg_owned(&lib, doc_anchor, &lib_path);
+    }
+
+    // The entry point and its body: a gate on the signature alone would still
+    // admit a body that resolved the overlay unconditionally.
+    assert_cfg_owned(
+        &lib,
+        "pub fn semantic_overlay(&self) -> SemanticOverlay<'_> {\n        SemanticOverlay { tree: self }\n    }",
+        &lib_path,
+    );
+
+    // The query implementations and the crate-private traversal helper they
+    // are the only callers of.
+    assert_cfg_owned(&lib, "impl<'tree> SemanticOverlay<'tree> {", &lib_path);
+    assert_cfg_owned(&lib, "fn collect_visible_use_imports(", &lib_path);
+
+    Ok(())
+}
+
+#[test]
+fn default_and_query_graphs_exclude_overlay_only_packages() -> TestResult {
+    let base = resolved_normal_packages(&["--no-default-features"])?;
+    assert_packages_absent(&base, "no-default-features graph");
+    assert!(
+        base.contains("perl-pragma"),
+        "no-default-features graph did not resolve parser-owned transitive edge perl-pragma through perl-parser-core: {base:?}"
+    );
+
+    let queries = resolved_normal_packages(&["--no-default-features", "--features", "queries"])?;
+    assert_packages_absent(&queries, "queries-only graph");
+    assert!(
+        queries.contains("perl-pragma"),
+        "queries-only graph did not resolve parser-owned transitive edge perl-pragma through perl-parser-core: {queries:?}"
+    );
+    assert!(queries.contains("regex"), "queries-only graph did not resolve regex: {queries:?}");
+
+    Ok(())
+}
+
+#[test]
+fn semantic_overlay_and_all_feature_graphs_include_overlay_packages() -> TestResult {
+    let overlay =
+        resolved_normal_packages(&["--no-default-features", "--features", "semantic-overlay"])?;
+    assert_packages_present(&overlay, "semantic-overlay graph");
+
+    let all = resolved_normal_packages(&["--all-features"])?;
+    assert_packages_present(&all, "all-features graph");
+    assert!(all.contains("regex"), "all-features graph did not resolve regex: {all:?}");
+
+    Ok(())
+}

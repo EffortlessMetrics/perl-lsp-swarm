@@ -50,12 +50,15 @@
 )]
 
 use perl_ast::{Node as AstNode, NodeKind};
+#[cfg(feature = "semantic-overlay")]
 use perl_module::parse_module_import_head;
 use perl_parser_core::{
     ParseOutput, Parser as CoreParser,
     incremental::{FallbackReason as CoreFallbackReason, IncrementalEdit, IncrementalState},
 };
+#[cfg(feature = "semantic-overlay")]
 use perl_pragma::{PragmaState, PragmaTracker};
+#[cfg(feature = "semantic-overlay")]
 use perl_semantic_analyzer::semantic::SemanticModel;
 use std::ops::{ControlFlow, Range};
 
@@ -450,6 +453,7 @@ impl ParseFailure {
     }
 }
 
+#[cfg(feature = "semantic-overlay")]
 /// Experimental semantic overlay query handle.
 ///
 /// This API is intentionally limited while the facade integration is in development.
@@ -460,6 +464,7 @@ pub struct SemanticOverlay<'tree> {
     tree: &'tree Tree,
 }
 
+#[cfg(feature = "semantic-overlay")]
 /// Symbol definition returned by [`SemanticOverlay`] queries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -476,6 +481,7 @@ pub struct OverlayDefinition {
     pub end_byte: usize,
 }
 
+#[cfg(feature = "semantic-overlay")]
 /// Import statement visible at a specific source offset.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -559,11 +565,13 @@ impl Tree {
     }
 
     /// Returns the experimental semantic overlay query handle for this tree.
+    #[cfg(feature = "semantic-overlay")]
     pub fn semantic_overlay(&self) -> SemanticOverlay<'_> {
         SemanticOverlay { tree: self }
     }
 }
 
+#[cfg(feature = "semantic-overlay")]
 impl<'tree> SemanticOverlay<'tree> {
     /// Resolve a symbol definition at a byte offset in the source.
     pub fn definition_at_offset(&self, offset: usize) -> Option<OverlayDefinition> {
@@ -964,6 +972,7 @@ fn ast_child_with_field(node: &AstNode, index: usize) -> Option<(Option<FieldId>
     found
 }
 
+#[cfg(feature = "semantic-overlay")]
 fn collect_visible_use_imports(
     node: &AstNode,
     source: &str,
