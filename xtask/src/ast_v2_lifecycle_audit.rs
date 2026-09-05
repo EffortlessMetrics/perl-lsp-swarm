@@ -88,7 +88,7 @@ const V2_CRATE_PATH: &str = "perl_ast_v2";
 /// together with the manifest bytes; patching around it silently is exactly what
 /// the pin exists to prevent.
 pub const PINNED_CANONICAL_DIGEST: &str =
-    "1156D372762E30C42D5902C6787885B8F95EDF47215C0228F4B25691C269C2D4";
+    "ECF96EA8236FC2D65BB533EB8BF79F82D4B0C409EF9EA1063F0420C99F15C986";
 
 // ---------------------------------------------------------------------------
 // Code-owned v1 vocabularies. A cardinality check lets a repinned manifest
@@ -834,6 +834,14 @@ fn render_where_predicate(predicate: &syn::WherePredicate) -> Result<String> {
 /// before and after — a target-specific removal or a layout change landed under
 /// an unmoved row.
 const CONTRACT_ATTRIBUTES: [&str; 4] = ["cfg", "cfg_attr", "repr", "deprecated"];
+
+/// Whether a rendered `use` target names the audited package itself, rather
+/// than forwarding through a local path that happens to be called `ast_v2`.
+fn names_package_directly(rendered: &str) -> bool {
+    contains_token(rendered, "perl_ast_v2")
+        || rendered.contains("perl_ast::v2")
+        || REEXPORTED_TYPE_PATH.is_match(rendered)
+}
 
 /// Render an explicit enum discriminant.
 ///
@@ -2545,6 +2553,10 @@ fn reconcile_reexport_inventory(
         claimed.iter().any(|path| path == binding || path.ends_with(&format!("::{binding}")))
     };
 
+    // Every public path the inventory knows about, for chaining forwarding
+    // re-exports back to a direct one.
+    let all_claimed: BTreeSet<String> = claimed_by_file.values().flatten().cloned().collect();
+
     // Direction one: nothing may publish the package publicly without a row.
     // The earlier form only looked inside files a row already named, so a first
     // public re-export in any other file — a new crate forwarding the package,
@@ -2559,6 +2571,49 @@ fn reconcile_reexport_inventory(
                      `{rendered}`) with no matching re-export row. A new public path to the \
                      package must move the compatibility inventory."
                 );
+            }
+            // Half of these rows forward through a local path rather than
+            // naming the package: `pub use engine::ast_v2;`. The pattern that
+            // recognizes them cannot tell that from `pub use unrelated::ast_v2;`
+            // — a same-named module of some other package — because telling
+            // them apart needs name resolution, which this instrument does not
+            // do and this issue's ceiling does not authorize.
+            //
+            // What it can require is that a forwarding target terminate in the
+            // inventory rather than anywhere: swapping one to an unrelated
+            // `ast_v2` then names a path no row describes, and fails. The
+            // residual is recorded rather than implied away — this chains rows
+            // to rows, it does not prove the far end resolves to the package.
+            if !names_package_directly(rendered) {
+                let target = rendered
+                    .trim_start_matches("crate::")
+                    .trim_start_matches("self::")
+                    .trim_start_matches("super::");
+                // The target may name an item *through* an inventoried path —
+                // `ast_v2::DiagnosticId` reaches the package through the
+                // inventoried `perl_parser_core::ast_v2` — so each module
+                // prefix of the target is a candidate, not only the whole.
+                let mut segments: Vec<&str> = target.split("::").collect();
+                let mut chained = false;
+                while !segments.is_empty() {
+                    let candidate = segments.join("::");
+                    if all_claimed
+                        .iter()
+                        .any(|path| *path == candidate || path.ends_with(&format!("::{candidate}")))
+                    {
+                        chained = true;
+                        break;
+                    }
+                    segments.pop();
+                }
+                if !chained {
+                    bail!(
+                        "`{file}` re-exports `{binding}` from `{rendered}`, which names neither \
+                         the audited package directly nor any inventoried public path. A \
+                         forwarding re-export must terminate in the inventory, or the row \
+                         describes a path to something else."
+                    );
+                }
             }
         }
     }

@@ -1485,6 +1485,49 @@ fn a_public_reexport_inside_a_public_module_is_a_public_path() -> Result<()> {
 }
 
 #[test]
+fn a_forwarding_reexport_must_terminate_in_the_inventory() -> Result<()> {
+    // Half the real rows forward through a local path rather than naming the
+    // package — `pub use engine::ast_v2;` — and the pattern that recognizes
+    // those cannot tell them from `pub use unrelated::ast_v2;`, a same-named
+    // module of some other package. Telling those apart needs name resolution
+    // this instrument does not do. What it can require is that the target
+    // terminate in the inventory, so swapping one for an unrelated module names
+    // a path no row describes.
+    let rows = reexport_rows(&[
+        ("rx:direct", "the_crate::engine::ast_v2", "crates/c/src/engine/mod.rs:1"),
+        ("rx:forward", "the_crate::ast_v2", "crates/c/src/lib.rs:1"),
+    ])?;
+
+    let chained = sources(&[
+        ("crates/c/src/engine/mod.rs", "pub use perl_ast_v2 as ast_v2;"),
+        ("crates/c/src/lib.rs", "pub use engine::ast_v2;"),
+    ]);
+    reconcile_reexport_inventory(&rows, &chained)?;
+
+    // `crate::`-rooted forwarding is the same chain written differently and
+    // must reconcile identically, or the rule would fire on ordinary style.
+    let rooted = sources(&[
+        ("crates/c/src/engine/mod.rs", "pub use perl_ast_v2 as ast_v2;"),
+        ("crates/c/src/lib.rs", "pub use crate::engine::ast_v2;"),
+    ]);
+    reconcile_reexport_inventory(&rows, &rooted)?;
+
+    let unrelated = sources(&[
+        ("crates/c/src/engine/mod.rs", "pub use perl_ast_v2 as ast_v2;"),
+        ("crates/c/src/lib.rs", "pub use some_other_package::ast_v2;"),
+    ]);
+    let Err(err) = reconcile_reexport_inventory(&rows, &unrelated) else {
+        bail!("a row must not stay live on a forwarding path to an unrelated module");
+    };
+    let rendered = format!("{err:?}");
+    assert!(
+        rendered.contains("some_other_package::ast_v2"),
+        "the rejection must name the target that leaves the inventory: {rendered}"
+    );
+    Ok(())
+}
+
+#[test]
 fn two_modules_exporting_one_alias_are_two_compatibility_paths() -> Result<()> {
     // Carrying only the leaf alias collapsed `a::ast_v2` and `b::ast_v2` into
     // one indistinguishable binding, so a single row covered both and a real
@@ -1528,19 +1571,28 @@ fn a_grouped_reexport_row_claims_each_name_it_lists() -> Result<()> {
     // whole row path, which would call an alias covered because its letters
     // happened to appear somewhere in the text; the row now resolves to the
     // exact set of names it publishes, and both must stay live.
-    let rows = reexport_rows(&[(
-        "rx:types",
-        "perl_parser_core::{DiagnosticId, MissingKind}",
-        "crates/perl-parser-core/src/lib.rs:97",
-    )])?;
+    // Both rows are present because the grouped one forwards through the local
+    // `ast_v2` alias, and a forwarding target has to terminate in the
+    // inventory — the same chain the real crate has.
+    let rows = reexport_rows(&[
+        (
+            "rx:types",
+            "perl_parser_core::{DiagnosticId, MissingKind}",
+            "crates/perl-parser-core/src/lib.rs:97",
+        ),
+        ("rx:module", "perl_parser_core::ast_v2", "crates/perl-parser-core/src/lib.rs:101"),
+    ])?;
+    let module = "pub use perl_ast_v2 as ast_v2;\n";
     let both = sources(&[(
         "crates/perl-parser-core/src/lib.rs",
-        "pub use ast_v2::{DiagnosticId, MissingKind};",
+        &format!("{module}pub use ast_v2::{{DiagnosticId, MissingKind}};"),
     )]);
     reconcile_reexport_inventory(&rows, &both)?;
 
-    let halved =
-        sources(&[("crates/perl-parser-core/src/lib.rs", "pub use ast_v2::{DiagnosticId};")]);
+    let halved = sources(&[(
+        "crates/perl-parser-core/src/lib.rs",
+        &format!("{module}pub use ast_v2::{{DiagnosticId}};"),
+    )]);
     let Err(err) = reconcile_reexport_inventory(&rows, &halved) else {
         bail!("dropping one name of a grouped row must be rejected");
     };

@@ -162,6 +162,12 @@ that a `retain` ruling must name independent-lifecycle evidence.
   private fork. Recorded as an explicit `unavailable` evidence row rather than
   allowed to read as zero. This unknown is precisely why the ruling is
   absorb-with-forwarding rather than delete.
+- A re-export is recognised by path form, not by name resolution. Three of the
+  six rows forward through a local path — `pub use engine::ast_v2;` — rather
+  than naming the package, and nothing in the instrument distinguishes that from
+  a same-named module of another package. The loader requires a forwarding
+  target to terminate in an inventoried path, so an unrelated module fails the
+  check; it does not prove the far end of the chain resolves to `perl-ast-v2`.
 - Package/release surface rows are checked, not derived. The loader confirms the
   line each row names still mentions the package; it does not read the workspace
   manifest or the publish policy as data. A new surface is therefore not
