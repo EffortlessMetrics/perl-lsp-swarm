@@ -858,7 +858,11 @@ impl LspServer {
         let Some(index) = region_index else {
             return false;
         };
-        let (start, end) = Self::token_byte_bounds_of(text, offset);
+        // Punctuation variables (`$!`, `$^W`, `@+`) have no word-token bounds,
+        // so the candidate span comes from the same extractor that names them;
+        // sigiled identifiers fall back to word bounds.
+        let (start, end) = Self::special_variable_byte_bounds_of(text, offset)
+            .unwrap_or_else(|| Self::token_byte_bounds_of(text, offset));
         if start >= end || !matches!(text.as_bytes().get(start), Some(b'$' | b'@')) {
             return false;
         }
@@ -875,6 +879,18 @@ impl LspServer {
         let escaping_backslashes =
             bytes[region.start..start].iter().rev().take_while(|b| **b == b'\\').count();
         escaping_backslashes % 2 == 0
+    }
+
+    /// Byte span of the punctuation or caret special variable that
+    /// [`Self::extract_special_variable`] names at `offset`, anchored at the
+    /// sigil it found (cursor on the sigil or on the punctuation).
+    fn special_variable_byte_bounds_of(text: &str, offset: usize) -> Option<(usize, usize)> {
+        let name = Self::extract_special_variable(text, offset)?;
+        let start = [Some(offset), offset.checked_sub(1), offset.checked_sub(2)]
+            .into_iter()
+            .flatten()
+            .find(|pos| text.get(*pos..).is_some_and(|rest| rest.starts_with(name.as_str())))?;
+        Some((start, start + name.len()))
     }
 
     /// Extract hover information from the token fallback path.
