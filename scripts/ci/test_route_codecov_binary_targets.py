@@ -1167,5 +1167,153 @@ class TestsFallbackSuppressionTests(unittest.TestCase):
         self.assertTrue(any("--test smoke " in command for command in commands))
         self.assertFalse(any(" --tests " in command for command in commands))
 
+
+class IntegrationTargetFeatureTests(unittest.TestCase):
+    """Manifest `[[test]]` identity and required features reach the command.
+
+    Cargo rejects `--test <name>` outright when the target is renamed or its
+    required features are missing:
+
+        error: target `incremental_parse_snapshot` in package `perl-parser`
+        requires the features: `incremental`
+
+    Source-level `#![cfg(feature = ...)]` scanning alone does not see them.
+    """
+
+    def _fallback_pack(self) -> dict[str, object]:
+        return {
+            "id": router.FALLBACK_PACK_ID,
+            "files": ["*.rs"],
+            "commands": [],
+            "coverage_filters": ["changed-package-targets"],
+        }
+
+    def _write_package(
+        self, root: Path, crate_directory: str, manifest: str, files: list[str]
+    ) -> None:
+        crate_root = root / "crates" / crate_directory
+        crate_root.mkdir(parents=True)
+        (crate_root / "Cargo.toml").write_text(
+            textwrap.dedent(manifest).lstrip(), encoding="utf-8"
+        )
+        for relative_path, contents in files:
+            path = crate_root / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(contents, encoding="utf-8")
+
+    def _targeted_command(self, root: Path, crate_directory: str, test_file: str) -> str:
+        paths = [
+            f"crates/{crate_directory}/src/changed.rs",
+            f"crates/{crate_directory}/tests/{test_file}",
+        ]
+        selected = router.selected_packs([self._fallback_pack()], paths)
+        commands = router.normalize_pack(selected[0], paths, repo_root=root)["commands"]
+        targeted = [command for command in commands if " --test " in command]
+        self.assertEqual(1, len(targeted), commands)
+        return targeted[0]
+
+    def test_manifest_features_reach_a_test_with_no_source_cfg(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_package(
+                root,
+                "gated-test-directory",
+                """
+                [package]
+                name = "gated-test"
+                edition = "2021"
+
+                [[test]]
+                name = "snapshot"
+                required-features = ["incremental"]
+                """,
+                [
+                    ("src/lib.rs", "// lib\n"),
+                    ("src/changed.rs", "// changed\n"),
+                    ("tests/snapshot.rs", "// no crate-level cfg gate\n"),
+                ],
+            )
+            command = self._targeted_command(root, "gated-test-directory", "snapshot.rs")
+
+        self.assertIn("--features incremental", command)
+        self.assertIn("--test snapshot ", command)
+
+    def test_manifest_and_source_features_are_merged(self) -> None:
+        """The two gates can name different features; both are required."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_package(
+                root,
+                "dual-gate-directory",
+                """
+                [package]
+                name = "dual-gate"
+                edition = "2021"
+
+                [[test]]
+                name = "capability"
+                path = "tests/capability.rs"
+                required-features = ["test-helpers"]
+                """,
+                [
+                    ("src/lib.rs", "// lib\n"),
+                    ("src/changed.rs", "// changed\n"),
+                    ("tests/capability.rs", '#![cfg(feature = "phase2")]\n'),
+                ],
+            )
+            command = self._targeted_command(root, "dual-gate-directory", "capability.rs")
+
+        self.assertIn("--features phase2,test-helpers", command)
+
+    def test_manifest_target_name_overrides_the_file_stem(self) -> None:
+        """A renamed `[[test]]` must be selected by its declared name."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_package(
+                root,
+                "renamed-test-directory",
+                """
+                [package]
+                name = "renamed-test"
+                edition = "2021"
+
+                [[test]]
+                name = "declared_name"
+                path = "tests/file_stem.rs"
+                """,
+                [
+                    ("src/lib.rs", "// lib\n"),
+                    ("src/changed.rs", "// changed\n"),
+                    ("tests/file_stem.rs", "// renamed target\n"),
+                ],
+            )
+            command = self._targeted_command(root, "renamed-test-directory", "file_stem.rs")
+
+        self.assertIn("--test declared_name ", command)
+        self.assertNotIn("--test file_stem ", command)
+
+    def test_undeclared_test_file_still_uses_its_stem(self) -> None:
+        """Negative control: autodiscovered tests keep the existing behavior."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_package(
+                root,
+                "plain-test-directory",
+                """
+                [package]
+                name = "plain-test"
+                edition = "2021"
+                """,
+                [
+                    ("src/lib.rs", "// lib\n"),
+                    ("src/changed.rs", "// changed\n"),
+                    ("tests/smoke.rs", "// plain\n"),
+                ],
+            )
+            command = self._targeted_command(root, "plain-test-directory", "smoke.rs")
+
+        self.assertIn("--test smoke ", command)
+        self.assertNotIn("--features", command)
+
 if __name__ == "__main__":
     unittest.main()

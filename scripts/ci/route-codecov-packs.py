@@ -89,15 +89,65 @@ def changed_integration_test_targets(
         if not filename.endswith(".rs"):
             continue
         crate_name = parts[1]
-        target = Path(filename).stem
+        declared = manifest_test_targets(crate_name, repo_root)
+        # A manifest `[[test]]` may rename its target away from the file stem,
+        # and it may gate the target behind features the source never mentions.
+        # Cargo rejects `--test <name>` outright when either is missed, so the
+        # manifest wins on identity and its features merge with the source cfg
+        # gates (#13499).
+        target, manifest_features = declared.get(
+            f"tests/{filename}", (Path(filename).stem, ())
+        )
         key = (crate_name, target)
         if key in seen:
             continue
         seen.add(key)
-        result.setdefault(crate_name, []).append(
-            (target, tuple(required_features_for_test(path, repo_root)))
-        )
+        features = set(manifest_features) | set(required_features_for_test(path, repo_root))
+        result.setdefault(crate_name, []).append((target, tuple(sorted(features))))
     return result
+
+
+def manifest_test_targets(
+    crate_name: str, repo_root: Path = REPO_ROOT
+) -> dict[str, tuple[str, tuple[str, ...]]]:
+    """Map each declared `[[test]]` source path to its target name and features.
+
+    Cargo resolves a pathless `[[test]]` against `tests/<name>.rs`, so both
+    forms are indexed by the path they occupy.
+    """
+    manifest_path = repo_root / "crates" / crate_name / "Cargo.toml"
+    if not manifest_path.is_file():
+        return {}
+    try:
+        manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        # Target derivation reports manifest problems with a precise error;
+        # feature discovery must not raise a second, noisier one.
+        return {}
+    declared: dict[str, tuple[str, tuple[str, ...]]] = {}
+    entries = manifest.get("test")
+    if not isinstance(entries, list):
+        return declared
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        raw_path = entry.get("path")
+        source = (
+            str(PurePosixPath(raw_path.replace("\\", "/")))
+            if isinstance(raw_path, str) and raw_path
+            else f"tests/{name}.rs"
+        )
+        raw_features = entry.get("required-features")
+        features = (
+            tuple(sorted({f for f in raw_features if isinstance(f, str) and f}))
+            if isinstance(raw_features, list)
+            else ()
+        )
+        declared[source] = (name, features)
+    return declared
 
 
 def required_features_for_test(path: str, repo_root: Path = REPO_ROOT) -> list[str]:
