@@ -6,6 +6,7 @@ body: >-
   and extend the PR review-convergence test suite with writer-set-staleness
   regression coverage (a reviewer who posts a fix disposition cannot verify
   their own fix). Internal control-plane tooling; no product behavior change.
+time: 2026-07-11T20:29:10Z
 custom:
   PR: "3913"
   Breaking: "no"

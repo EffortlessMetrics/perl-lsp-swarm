@@ -8,6 +8,10 @@
       "invocation_sha256": "04a692651ff6257474f4d8b7552eea2ab0b259ce9b0c1fc2596a1a9e77f03517"
     },
     {
+      "id": "parser.cli.continued_read_failure_stats",
+      "invocation_sha256": "0d1ed3f64b8f8c25c2f878bbacf3eec77662b91319c4329b85b5832a6cdb26c6"
+    },
+    {
       "id": "parser.command_line.oneliners",
       "invocation_sha256": "562d66111ff70e436552bfb60f662804c475f19d5d22beb7227028128cdf9349"
     },
@@ -70,6 +74,10 @@
     {
       "id": "parser.red_black_tree_access_paths",
       "invocation_sha256": "bda2415c986c80554803c795134977c94e6052d57d6782c5dc4cf217932f2e0d"
+    },
+    {
+      "id": "parser.red_black_tree_delete_fixup",
+      "invocation_sha256": "3c3cbd0ebcac31428f7890ed4e11af02b54841b6b36cb1e41be0374478563f57"
     },
     {
       "id": "parser.ripr.seam_proof",

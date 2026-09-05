@@ -31,7 +31,10 @@ greet("Alice", "Hello");
     let ast = ast_for(src)?;
     let hints = parameter_hints(&ast, &dummy_pos, None);
 
-    let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+    let labels: Vec<&str> = hints
+        .iter()
+        .filter_map(|h| perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h))
+        .collect();
 
     assert!(
         labels.contains(&"name:"),
@@ -57,7 +60,10 @@ say_it("hello world");
     let ast = ast_for(src)?;
     let hints = parameter_hints(&ast, &dummy_pos, None);
 
-    let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+    let labels: Vec<&str> = hints
+        .iter()
+        .filter_map(|h| perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h))
+        .collect();
 
     assert!(
         !labels.contains(&"msg:"),
@@ -81,7 +87,10 @@ old_style(1, 2);
     let ast = ast_for(src)?;
     let hints = parameter_hints(&ast, &dummy_pos, None);
 
-    let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+    let labels: Vec<&str> = hints
+        .iter()
+        .filter_map(|h| perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h))
+        .collect();
 
     assert!(labels.contains(&"x:"), "Should hint x: for @_ unpacking sub; labels: {labels:?}");
     assert!(labels.contains(&"y:"), "Should hint y: for @_ unpacking sub; labels: {labels:?}");
@@ -100,7 +109,12 @@ open(FH, "<", "file.txt");
     let hints = parameter_hints(&ast, &dummy_pos, None);
 
     // Count how many "filehandle:" labels there are -- should be exactly 1
-    let count = hints.iter().filter(|h| h["label"].as_str() == Some("filehandle:")).count();
+    let count = hints
+        .iter()
+        .filter(|h| {
+            perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h) == Some("filehandle:")
+        })
+        .count();
     assert_eq!(count, 1, "Should have exactly one filehandle: hint; hints: {hints:#?}");
     Ok(())
 }
@@ -117,7 +131,10 @@ connect_db("localhost", 5432, "mydb");
     let ast = ast_for(src)?;
     let hints = parameter_hints(&ast, &dummy_pos, None);
 
-    let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+    let labels: Vec<&str> = hints
+        .iter()
+        .filter_map(|h| perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h))
+        .collect();
 
     assert!(labels.contains(&"host:"), "Expected 'host:'; labels: {labels:?}");
     assert!(labels.contains(&"port:"), "Expected 'port:'; labels: {labels:?}");
@@ -137,7 +154,10 @@ log_msg("info", "hello", "world");
     let ast = ast_for(src)?;
     let hints = parameter_hints(&ast, &dummy_pos, None);
 
-    let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+    let labels: Vec<&str> = hints
+        .iter()
+        .filter_map(|h| perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h))
+        .collect();
 
     // "level:" should be hinted
     assert!(labels.contains(&"level:"), "Expected 'level:' hint; labels: {labels:?}");
@@ -157,7 +177,7 @@ some_external_function("a", "b");
 
     let user_labels: Vec<&str> = hints
         .iter()
-        .filter_map(|h| h["label"].as_str())
+        .filter_map(|h| perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h))
         .filter(|l| *l == "a:" || *l == "b:")
         .collect();
 
@@ -204,7 +224,7 @@ $fmt->render("hello %s", 10);
 
     let method_labels: Vec<&str> = hints
         .iter()
-        .filter_map(|h| h["label"].as_str())
+        .filter_map(|h| perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h))
         .filter(|l| *l == "template:" || *l == "limit:")
         .collect();
 
@@ -239,7 +259,10 @@ $h->process("ab", 3);
     let ast = ast_for(src)?;
     let hints = parameter_hints(&ast, &dummy_pos, None);
 
-    let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+    let labels: Vec<&str> = hints
+        .iter()
+        .filter_map(|h| perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h))
+        .collect();
 
     // The invocant ($self) is skipped; only $data and $count should be hinted.
     assert!(
@@ -273,7 +296,10 @@ $fmt->render("hello %s", 10);
     let method_hints: Vec<&serde_json::Value> =
         hints.iter().filter(|h| h["data"]["functionName"].as_str() == Some("render")).collect();
 
-    let labels: Vec<&str> = method_hints.iter().filter_map(|h| h["label"].as_str()).collect();
+    let labels: Vec<&str> = method_hints
+        .iter()
+        .filter_map(|h| perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h))
+        .collect();
 
     assert!(
         labels.contains(&"template:"),
@@ -295,7 +321,9 @@ $fmt->render("hello %s", 10);
     let template_hint = method_hints
         .iter()
         .copied()
-        .find(|h| h["label"].as_str() == Some("template:"))
+        .find(|h| {
+            perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h) == Some("template:")
+        })
         .ok_or("template hint must exist")?;
     assert_eq!(
         template_hint["data"]["paramIndex"].as_u64(),
@@ -305,7 +333,9 @@ $fmt->render("hello %s", 10);
     let limit_hint = method_hints
         .iter()
         .copied()
-        .find(|h| h["label"].as_str() == Some("limit:"))
+        .find(|h| {
+            perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h) == Some("limit:")
+        })
         .ok_or("limit hint must exist")?;
     assert_eq!(
         limit_hint["data"]["paramIndex"].as_u64(),
@@ -327,7 +357,10 @@ $obj->process("value");
     let ast = ast_for(src)?;
     let hints = parameter_hints(&ast, &dummy_pos, None);
 
-    let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+    let labels: Vec<&str> = hints
+        .iter()
+        .filter_map(|h| perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h))
+        .collect();
 
     assert!(
         !labels.contains(&"item:"),
@@ -362,7 +395,10 @@ connect_db("localhost", 5432, "mydb");
     let ast = ast_for(src)?;
     let hints = parameter_hints(&ast, &dummy_pos, None);
 
-    let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+    let labels: Vec<&str> = hints
+        .iter()
+        .filter_map(|h| perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h))
+        .collect();
 
     assert!(labels.contains(&"host:"), "Expected 'host:'; labels: {labels:?}");
     assert!(labels.contains(&"port:"), "Expected 'port:'; labels: {labels:?}");
@@ -396,7 +432,10 @@ $obj->format_output("tmpl", "arg2");
 
     let hints = parameter_hints_with_resolver(&ast, &dummy_pos, None, Some(&resolver));
 
-    let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+    let labels: Vec<&str> = hints
+        .iter()
+        .filter_map(|h| perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h))
+        .collect();
 
     assert!(
         labels.contains(&"template:"),
@@ -413,7 +452,9 @@ $obj->format_output("tmpl", "arg2");
     // SignatureHelp consumer that uses the same index convention.
     let template_hint = hints
         .iter()
-        .find(|h| h["label"].as_str() == Some("template:"))
+        .find(|h| {
+            perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h) == Some("template:")
+        })
         .ok_or("template hint must exist")?;
     assert_eq!(
         template_hint["data"]["paramIndex"].as_u64(),
@@ -423,7 +464,9 @@ $obj->format_output("tmpl", "arg2");
     );
     let data_hint = hints
         .iter()
-        .find(|h| h["label"].as_str() == Some("data:"))
+        .find(|h| {
+            perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h) == Some("data:")
+        })
         .ok_or("data hint must exist")?;
     assert_eq!(
         data_hint["data"]["paramIndex"].as_u64(),
@@ -473,7 +516,10 @@ My::Class->create("name", 42);
 
     let hints = parameter_hints_with_resolver(&ast, &dummy_pos, None, Some(&resolver));
 
-    let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+    let labels: Vec<&str> = hints
+        .iter()
+        .filter_map(|h| perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h))
+        .collect();
 
     assert!(
         labels.contains(&"name:"),
@@ -487,15 +533,19 @@ My::Class->create("name", 42);
     // id:   is emitted for call-site i=1 → paramIndex = i+1 = 2.
     let name_hint = hints
         .iter()
-        .find(|h| h["label"].as_str() == Some("name:"))
+        .find(|h| {
+            perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h) == Some("name:")
+        })
         .ok_or("name hint must exist")?;
     assert_eq!(
         name_hint["data"]["paramIndex"].as_u64(),
         Some(1),
         "name: paramIndex must be 1 (class is index 0 in declaration); hint: {name_hint}"
     );
-    let id_hint =
-        hints.iter().find(|h| h["label"].as_str() == Some("id:")).ok_or("id hint must exist")?;
+    let id_hint = hints
+        .iter()
+        .find(|h| perl_lsp_rs_core::providers::inlay_hints::inlay_hint_label_str(h) == Some("id:"))
+        .ok_or("id hint must exist")?;
     assert_eq!(
         id_hint["data"]["paramIndex"].as_u64(),
         Some(2),
