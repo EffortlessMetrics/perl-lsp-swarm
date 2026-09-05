@@ -1,17 +1,15 @@
-// The hermetic runner substrate is consumed progressively by the sibling
-// actual-host verdict targets (#7126/#7721/#7727); this contract target
-// exercises only the schema/event/receipt core, so under-consumed substrate
-// items are expected rather than drift.
+// The contract target exercises the schema/event core and the shared runner
+// failure paths (#8734). Items consumed only by `emacs_host_run` remain in
+// this included support module so both surfaces share one implementation.
 #![allow(dead_code)]
-#![allow(unused_imports)]
 
 #[path = "support/emacs_host_runner.rs"]
 mod emacs_host_runner;
 
-use anyhow::{Result, ensure};
+use anyhow::{Context as _, Result, bail, ensure};
 use emacs_host_runner::{
     DRIVER_SCHEMA_VERSION, DriverEvent, DriverEventKind, RUN_PLAN_SCHEMA_VERSION,
-    default_not_proven_diagnostics, validate_driver_events,
+    default_not_proven_diagnostics, parse_driver_event_prefix, validate_driver_events,
 };
 use std::collections::BTreeMap;
 use xtask::editor_client_compat::{DiagnosticMode, DiagnosticsIdentity};
@@ -50,6 +48,16 @@ fn complete_events() -> Vec<DriverEvent> {
         event(10, DriverEventKind::ShutdownStarted),
         event(11, DriverEventKind::ShutdownCompleted),
     ]
+}
+
+fn events_jsonl(events: &[DriverEvent]) -> Result<String> {
+    let mut lines = Vec::new();
+    for event in events {
+        lines.push(
+            serde_json::to_string(event).context("serializing driver event for prefix fixture")?,
+        );
+    }
+    Ok(lines.join("\n"))
 }
 
 #[test]
@@ -123,6 +131,67 @@ fn schema_drift_is_rejected() {
     assert!(validate_driver_events(&drifted, true).is_err());
 }
 
+#[test]
+fn incomplete_prefix_may_leave_a_host_action_open() -> Result<()> {
+    let prefix = complete_events();
+    let open = &prefix[..7];
+    validate_driver_events(open, false)?;
+    assert!(validate_driver_events(open, true).is_err());
+    Ok(())
+}
+
+/// JSON-decodable is not lifecycle evidence. The prefix parser must stop at
+/// schema drift, a sequence gap, or a reordered lifecycle event so a later
+/// `shutdown_completed` cannot become `last_completed_barrier`.
+#[test]
+fn event_prefix_stops_at_semantic_invalidity() -> Result<()> {
+    let valid = &complete_events()[..5];
+    let valid_jsonl = events_jsonl(valid)?;
+
+    let mut wrong_schema = event(6, DriverEventKind::ShutdownCompleted);
+    wrong_schema.schema_version = "emacs_host_driver.v2".to_string();
+    let schema_stream = format!("{valid_jsonl}\n{}", serde_json::to_string(&wrong_schema)?);
+    let schema_prefix = parse_driver_event_prefix(schema_stream.as_bytes());
+    ensure!(
+        schema_prefix.len() == 5
+            && schema_prefix.last().map(|e| e.kind) == Some(DriverEventKind::WorkspaceReady),
+        "wrong schema after a valid prefix must not mint shutdown_completed, got {:?}",
+        schema_prefix.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
+
+    let mut gapped = event(7, DriverEventKind::ShutdownCompleted);
+    gapped.sequence = 7;
+    let gap_stream = format!("{valid_jsonl}\n{}", serde_json::to_string(&gapped)?);
+    let gap_prefix = parse_driver_event_prefix(gap_stream.as_bytes());
+    ensure!(
+        gap_prefix.len() == 5,
+        "a sequence gap must drop the gapped shutdown event, got {} events",
+        gap_prefix.len()
+    );
+
+    let mut reordered = complete_events();
+    reordered.swap(1, 2);
+    for (index, observation) in reordered.iter_mut().enumerate() {
+        observation.sequence = (index + 1) as u64;
+    }
+    let reordered_prefix = parse_driver_event_prefix(events_jsonl(&reordered)?.as_bytes());
+    ensure!(
+        reordered_prefix.len() == 2
+            && reordered_prefix[0].kind == DriverEventKind::HostStarted
+            && reordered_prefix[1].kind == DriverEventKind::RegistrationSelected,
+        "reordered lifecycle events must keep only the ordered prefix, got {:?}",
+        reordered_prefix.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
+
+    let open = parse_driver_event_prefix(events_jsonl(&complete_events()[..7])?.as_bytes());
+    ensure!(
+        open.len() == 7 && open.last().map(|e| e.kind) == Some(DriverEventKind::HostActionStarted),
+        "an in-progress host action must stay in the prefix, got {} events",
+        open.len()
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Bundled-Eglot client subject (#7778 slice 1): the adapter, the subject
 // registry, and the run-plan builder are checked-in surfaces, so CI can
@@ -131,7 +200,6 @@ fn schema_drift_is_rejected() {
 // hosts only; a host that is not provided is never reported green.
 // ---------------------------------------------------------------------------
 
-use anyhow::Context as _;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -703,7 +771,7 @@ fn released_adapter_defines_entrypoint_and_declared_package_resolution() -> Resu
         "the resolved library must be proven to be the declared package file"
     );
     assert!(
-        adapter.contains("did not resolve to the declared package file"),
+        adapter.contains("did not resolve to the declared client file"),
         "a foreign resolution must fail the run with a typed reason"
     );
     // Released identity requires the version header, not just the digest.
@@ -738,7 +806,7 @@ fn released_adapter_defines_entrypoint_and_declared_package_resolution() -> Resu
         "digests must be computed over raw bytes, including the binary package archive"
     );
     assert!(
-        adapter.contains("released Eglot library did not resolve after require"),
+        adapter.contains("external Eglot library did not resolve after require"),
         "an unresolvable library must fail with a typed reason, not a nil file-truename error"
     );
     Ok(())
@@ -951,6 +1019,808 @@ fn released_subject_never_searches_the_host_installation() -> Result<()> {
         !host_run_task::EmacsClientSubject::ReleasedEglotGnuElpa123
             .resolves_client_source_from_installation(),
         "a released subject resolves its source only through declared package inputs"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Shared-runner supervision (#8734): timeout, process-tree cleanup, capture
+// bounds, redaction, and fail-closed receipt construction. Every scenario
+// drives `run_owned_process` over the same hermetic layout later Emacs
+// consumers use. There is no second test-only supervisor.
+// ---------------------------------------------------------------------------
+
+use std::collections::BTreeSet;
+use std::process::{Command, Stdio};
+use xtask::editor_client_compat::{
+    CapabilityBasis, CapabilityIdentity, CleanupResult, FailureClass, JourneyCell,
+    ObservationResult, PositionEncodingBasis,
+};
+
+const FAKE_HOST_ENTRY_TEST: &str = "runner_support_fake_host_child_entry";
+
+fn descendant_still_running(pid: u32) -> bool {
+    if cfg!(windows) {
+        Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+            .stdin(Stdio::null())
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
+            .unwrap_or(true)
+    } else {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(true)
+    }
+}
+
+fn snapshot_uses_pid_args_lines(text: &str) -> bool {
+    text.lines().filter(|line| !line.trim().is_empty()).all(|line| {
+        let mut parts = line.splitn(2, ' ');
+        parts.next().is_some_and(|pid| pid.chars().all(|ch| ch.is_ascii_digit()))
+            && parts.next().is_some()
+    })
+}
+
+#[test]
+fn runner_support_fake_host_child_entry() {
+    if let Ok(mode) = std::env::var(emacs_host_runner::FAKE_HOST_MODE_ENV) {
+        emacs_host_runner::run_fake_host_entry(&mode);
+    }
+}
+
+fn run_fake_scenario(
+    root: &Path,
+    mode: &str,
+    tag: &str,
+    timeout_ms: u64,
+) -> Result<(emacs_host_runner::EmacsHostRunPlan, emacs_host_runner::ProcessObservation)> {
+    let (plan, layout) = emacs_host_runner::supervision_plan(root, tag, timeout_ms)?;
+    let host_executable =
+        std::env::current_exe().context("locating this test binary for fake-host re-entry")?;
+    let mut command = emacs_host_runner::supervision_command(
+        &host_executable,
+        FAKE_HOST_ENTRY_TEST,
+        &plan,
+        &layout,
+        mode,
+    )?;
+    let observation = emacs_host_runner::run_owned_process(&mut command, &plan, &layout)?;
+    Ok((plan, observation))
+}
+
+fn durable_artifact(root: &Path, id: &str) -> Result<Vec<u8>> {
+    fs::read(root.join("artifacts").join(id))
+        .with_context(|| format!("reading retained artifact {id}"))
+}
+
+fn not_proven_capabilities() -> CapabilityIdentity {
+    CapabilityIdentity {
+        initialize_snapshot_sha256: format!("sha256:{}", "0".repeat(64)),
+        position_encodings_offered: Vec::new(),
+        position_encoding_basis: PositionEncodingBasis::NotProven,
+        position_encoding_selected: None,
+    }
+}
+
+fn supervision_receipt(
+    plan: &emacs_host_runner::EmacsHostRunPlan,
+    observation: &emacs_host_runner::ProcessObservation,
+    result: ObservationResult,
+) -> xtask::editor_client_compat::EditorClientCompatReceipt {
+    let (result, failure_class, limitations) = match result {
+        ObservationResult::Pass => (ObservationResult::Pass, None, Vec::new()),
+        other => {
+            (other, Some(FailureClass::Cleanup), vec!["cleanup evidence incomplete".to_string()])
+        }
+    };
+    emacs_host_runner::build_receipt(
+        plan,
+        observation,
+        not_proven_capabilities(),
+        default_not_proven_diagnostics(),
+        vec![JourneyCell {
+            id: plan.identity.journey_selector.clone(),
+            capability_basis: CapabilityBasis::NotApplicable,
+            observed: observation.passed_process_boundary(),
+            result: ObservationResult::NotProven,
+            evidence: Vec::new(),
+            limitation: Some(
+                "supervision fixture: process-boundary observation only; host lifecycle \
+                 and client behavior stay unobserved"
+                    .to_string(),
+            ),
+        }],
+        result,
+        failure_class,
+        limitations,
+        "supervision-only receipt: unobserved journey and diagnostic cells stay not_proven"
+            .to_string(),
+    )
+}
+
+struct LeakGuard {
+    pids: Vec<u32>,
+}
+
+impl Drop for LeakGuard {
+    fn drop(&mut self) {
+        for pid in &self.pids {
+            emacs_host_runner::stop_test_descendant(*pid);
+        }
+    }
+}
+
+/// Windows `tasklist` rows expose image name, not argv. The parser must keep
+/// that identity so a unique `perllsp-{tag}.exe` leak can be attributed.
+#[test]
+fn windows_tasklist_snapshot_parses_image_and_pid() -> Result<()> {
+    let lines = emacs_host_runner::parse_windows_process_snapshot(
+        "\"perllsp-leakneg.exe\",\"4242\",\"Console\",\"1\",\"1,024 K\"\n",
+    )?;
+    ensure!(lines.len() == 1);
+    ensure!(lines[0].pid == 4242);
+    ensure!(lines[0].args == "perllsp-leakneg.exe");
+    Ok(())
+}
+
+/// The comparison is scoped to the exact candidate identity: a decoy with the
+/// same basename in another directory is not this run's leak.
+#[test]
+fn process_set_comparison_is_scoped_to_the_exact_candidate_needle() -> Result<()> {
+    let before = emacs_host_runner::parse_process_snapshot("10 /usr/bin/ps\n")?;
+    let after = emacs_host_runner::parse_process_snapshot(
+        "10 /usr/bin/ps\n20 /tmp/run/perllsp --stdio\n30 /another/checkout/perllsp --stdio\n",
+    )?;
+    ensure!(
+        emacs_host_runner::surviving_processes(&before, &after, "/tmp/run/perllsp").len() == 1,
+        "the exact candidate path is this run's leak"
+    );
+    ensure!(
+        emacs_host_runner::surviving_processes(&before, &after, "/missing/perllsp").is_empty(),
+        "a needle that never appeared cannot be credited as a leak"
+    );
+    ensure!(
+        emacs_host_runner::surviving_processes(&before, &after, "/another/checkout/perllsp").len()
+            == 1,
+        "a different runtime executable is a different identity"
+    );
+    let prefix_sharing = emacs_host_runner::parse_process_snapshot(
+        "10 /usr/bin/ps\n40 /tmp/run/perllsp-helper --stdio\n",
+    )?;
+    ensure!(
+        emacs_host_runner::surviving_processes(&before, &prefix_sharing, "/tmp/run/perllsp")
+            .is_empty(),
+        "a prefix-sharing executable must not be this run's leak or timeout-kill target"
+    );
+    Ok(())
+}
+
+#[test]
+fn clean_status_zero_run_passes_only_with_observed_clean_process_set() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (_plan, observation) = run_fake_scenario(root.path(), "clean", "cleanpos", 30_000)?;
+    ensure!(observation.status_code == Some(0), "the clean scenario must exit zero");
+    ensure!(!observation.timed_out && !observation.kill_requested);
+    ensure!(
+        observation.cleanup == CleanupResult::Pass,
+        "a proven-clean process set with an orderly exit must pass cleanup, got {:?} ({})",
+        observation.cleanup,
+        observation.cleanup_detail
+    );
+    ensure!(observation.driver_complete);
+    ensure!(
+        observation.last_completed_barrier.as_deref() == Some("shutdown_completed"),
+        "the last completed barrier must be observed, got {:?}",
+        observation.last_completed_barrier
+    );
+    ensure!(observation.passed_process_boundary());
+    Ok(())
+}
+
+/// Parsed before/after process snapshots use the same `pid args` lines. An
+/// unparseable after-probe still keeps the raw forensic text.
+#[test]
+fn process_snapshots_use_pid_args_lines_when_parseable() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (plan, layout) = emacs_host_runner::supervision_plan(root.path(), "snapfmt", 30_000)?;
+    let host_executable =
+        std::env::current_exe().context("locating this test binary for fake-host re-entry")?;
+    let mut command = emacs_host_runner::supervision_command(
+        &host_executable,
+        FAKE_HOST_ENTRY_TEST,
+        &plan,
+        &layout,
+        "clean",
+    )?;
+    let observation = emacs_host_runner::run_owned_process(&mut command, &plan, &layout)?;
+    ensure!(observation.status_code == Some(0));
+    ensure!(observation.cleanup == CleanupResult::Pass);
+    let before = fs::read_to_string(layout.process_snapshot_before())
+        .context("reading before process snapshot")?;
+    let after = fs::read_to_string(layout.process_snapshot_after())
+        .context("reading after process snapshot")?;
+    ensure!(
+        snapshot_uses_pid_args_lines(&before) && snapshot_uses_pid_args_lines(&after),
+        "durable snapshots must use pid-args lines when the probe parsed; before={before:?} after={after:?}"
+    );
+    Ok(())
+}
+
+/// A status-0 host that emits `shutdown_completed` while leaking its candidate
+/// descendant must fail cleanup. `shutdown_completed` is not cleanup proof.
+#[test]
+fn clean_exit_with_leaked_candidate_descendant_fails_cleanup() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (plan, observation) =
+        run_fake_scenario(root.path(), "leak_descendant_clean_exit", "leakneg", 60_000)?;
+    let _guard =
+        LeakGuard { pids: observation.surviving_processes.iter().map(|line| line.pid).collect() };
+    if observation.status_code != Some(0) {
+        let fixture_stderr = durable_artifact(root.path(), "emacs/driver-stderr.log")
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_else(|_| "<unreadable>".to_string());
+        bail!(
+            "the host itself must exit zero to discriminate the leak path, got {:?}; \
+             host stderr head: {}",
+            observation.status_code,
+            fixture_stderr.chars().take(400).collect::<String>()
+        );
+    }
+    ensure!(
+        observation.cleanup == CleanupResult::Fail,
+        "a leaked candidate descendant must fail cleanup even on clean exit, got {:?} ({})",
+        observation.cleanup,
+        observation.cleanup_detail
+    );
+    ensure!(
+        !observation.surviving_processes.is_empty(),
+        "the surviving descendant must be recorded in the ledger"
+    );
+    let leaked_pids: Vec<u32> =
+        observation.surviving_processes.iter().map(|line| line.pid).collect();
+    ensure!(
+        leaked_pids.iter().all(|pid| !descendant_still_running(*pid)),
+        "run_owned_process must reap the observed clean-exit leak before returning; still running {:?}",
+        leaked_pids
+            .iter()
+            .copied()
+            .filter(|pid| descendant_still_running(*pid))
+            .collect::<Vec<_>>()
+    );
+    ensure!(
+        !observation.passed_process_boundary(),
+        "an orphaned descendant must never satisfy the passing boundary"
+    );
+
+    let fabrication = supervision_receipt(&plan, &observation, ObservationResult::Pass);
+    let error = fabrication
+        .validate()
+        .err()
+        .context("a leaked-descendant observation must not validate as a passing receipt")?;
+    ensure!(
+        error.to_string().contains("proven process cleanup"),
+        "the refusal must name the cleanup proof gap: {error:#}"
+    );
+    supervision_receipt(&plan, &observation, ObservationResult::NotProven)
+        .validate()
+        .context("the honest fail-closed receipt must validate")?;
+    Ok(())
+}
+
+/// A candidate process already alive before `run_owned_process` must fail
+/// cleanup closed as `NotProven`. The survivor diff excludes baseline
+/// matches, so only this pre-launch check prevents a leaked prior run from
+/// looking clean.
+#[test]
+fn pre_existing_candidate_makes_cleanup_not_proven() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (plan, layout) = emacs_host_runner::supervision_plan(root.path(), "preexist", 30_000)?;
+    let ready_marker = layout.temp_directory.join("preexist-descendant-ready");
+    let leaked_pid = emacs_host_runner::spawn_preexisting_candidate(
+        &plan.paths.candidate_executable,
+        &ready_marker,
+        FAKE_HOST_ENTRY_TEST,
+    )?;
+    let _guard = LeakGuard { pids: vec![leaked_pid] };
+    let host_executable =
+        std::env::current_exe().context("locating this test binary for fake-host re-entry")?;
+    let mut command = emacs_host_runner::supervision_command(
+        &host_executable,
+        FAKE_HOST_ENTRY_TEST,
+        &plan,
+        &layout,
+        "clean",
+    )?;
+    let observation = emacs_host_runner::run_owned_process(&mut command, &plan, &layout)?;
+    ensure!(
+        observation.status_code == Some(0),
+        "the clean host must still exit zero; cleanup fail-closed is the discriminator, got {:?}",
+        observation.status_code
+    );
+    ensure!(
+        observation.cleanup == CleanupResult::NotProven,
+        "a pre-existing candidate must make cleanup not_proven, got {:?} ({})",
+        observation.cleanup,
+        observation.cleanup_detail
+    );
+    ensure!(
+        observation.cleanup_detail.contains("already present"),
+        "the ledger must name the pre-existing attribution failure, got {}",
+        observation.cleanup_detail
+    );
+    ensure!(
+        !observation.passed_process_boundary(),
+        "a pre-existing candidate must never satisfy the passing boundary"
+    );
+    Ok(())
+}
+
+#[test]
+fn timeout_records_last_completed_barrier_and_stays_not_proven() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (plan, observation) =
+        run_fake_scenario(root.path(), "hang_after_workspace_ready", "timeoutneg", 1_500)?;
+    ensure!(observation.timed_out && observation.kill_requested);
+    ensure!(
+        observation.last_completed_barrier.as_deref() == Some("workspace_ready"),
+        "the last completed barrier must be recorded on timeout, got {:?}",
+        observation.last_completed_barrier
+    );
+    ensure!(
+        observation.cleanup != CleanupResult::Pass,
+        "timeout can never be credited as a passing cleanup"
+    );
+    ensure!(!observation.passed_process_boundary());
+    let ledger: serde_json::Value =
+        serde_json::from_slice(&durable_artifact(root.path(), "emacs/process-ledger.json")?)
+            .context("timeout ledger must be readable JSON")?;
+    ensure!(
+        ledger["schema_version"] == "editor_host.process_ledger.v1",
+        "the process ledger must keep the shared schema id, got {:?}",
+        ledger["schema_version"]
+    );
+    ensure!(
+        ledger["exit_class"] == "timed_out",
+        "a deadline kill must record exit_class timed_out, got {:?}",
+        ledger["exit_class"]
+    );
+    supervision_receipt(&plan, &observation, ObservationResult::NotProven)
+        .validate()
+        .context("the timed-out receipt must still validate honestly")?;
+    Ok(())
+}
+
+/// Timeout/force cleanup must reap this run's leaked candidate descendant, not
+/// only the host PID. A hang after a leak must not leave the descendant alive.
+#[test]
+fn timeout_reaps_this_run_leaked_descendant() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (_plan, observation) =
+        run_fake_scenario(root.path(), "leak_descendant_then_hang", "timeoutreap", 20_000)?;
+    let _guard =
+        LeakGuard { pids: observation.surviving_processes.iter().map(|line| line.pid).collect() };
+    ensure!(
+        observation.timed_out && observation.kill_requested,
+        "the hang scenario must hit the runner deadline"
+    );
+    ensure!(
+        observation.last_completed_barrier.as_deref() == Some("workspace_ready"),
+        "barriers emitted before the hang must survive timeout, got {:?}",
+        observation.last_completed_barrier
+    );
+    ensure!(
+        observation.surviving_processes.is_empty(),
+        "timeout must reap this-run candidate survivors, still observed {:?}",
+        observation
+            .surviving_processes
+            .iter()
+            .map(|line| format!("{} {}", line.pid, line.args))
+            .collect::<Vec<_>>()
+    );
+    ensure!(
+        observation.cleanup != CleanupResult::Pass,
+        "reaping on timeout is not an orderly shutdown pass, got {:?} ({})",
+        observation.cleanup,
+        observation.cleanup_detail
+    );
+    ensure!(!observation.passed_process_boundary());
+    Ok(())
+}
+
+/// A truncated trailing JSONL line must keep the valid prefix so timeout still
+/// records the last completed barrier instead of wiping the stream.
+#[test]
+fn truncated_trailing_event_line_keeps_prior_barrier() -> Result<()> {
+    let host_started = serde_json::json!({
+        "schema_version": emacs_host_runner::DRIVER_SCHEMA_VERSION,
+        "sequence": 1,
+        "event": "host_started",
+        "details": {"subject": "emacs"},
+    });
+    let workspace_ready = serde_json::json!({
+        "schema_version": emacs_host_runner::DRIVER_SCHEMA_VERSION,
+        "sequence": 2,
+        "event": "workspace_ready",
+        "details": {},
+    });
+    let bytes = format!("{host_started}\n{workspace_ready}\n{{\"schema_version\":\"");
+    let events = emacs_host_runner::parse_driver_event_prefix(bytes.as_bytes());
+    ensure!(events.len() == 2, "the valid prefix must be kept, got {} events", events.len());
+    ensure!(events[1].kind == DriverEventKind::WorkspaceReady);
+    ensure!(
+        emacs_host_runner::parse_driver_events(bytes.as_bytes(), false).is_err(),
+        "the strict parser must still refuse a truncated trailing line"
+    );
+
+    let root = tempfile::tempdir()?;
+    let (_plan, observation) =
+        run_fake_scenario(root.path(), "partial_event_then_hang", "partialevt", 1_500)?;
+    ensure!(observation.timed_out && observation.kill_requested);
+    ensure!(
+        observation.last_completed_barrier.as_deref() == Some("workspace_ready"),
+        "a truncated trailing event line must not erase the last barrier, got {:?}",
+        observation.last_completed_barrier
+    );
+    ensure!(!observation.driver_complete);
+    ensure!(observation.cleanup != CleanupResult::Pass);
+    Ok(())
+}
+
+/// A complete lifecycle plus trailing garbage must keep the last barrier and
+/// still refuse driver completeness / the passing process boundary.
+#[test]
+fn complete_lifecycle_with_trailing_garbage_cannot_pass() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (_plan, observation) =
+        run_fake_scenario(root.path(), "complete_then_trailing_garbage", "trailgarb", 30_000)?;
+    ensure!(observation.status_code == Some(0), "the host itself must exit zero");
+    ensure!(
+        observation.last_completed_barrier.as_deref() == Some("shutdown_completed"),
+        "the valid prefix must keep the completed ladder, got {:?}",
+        observation.last_completed_barrier
+    );
+    ensure!(
+        !observation.driver_complete,
+        "trailing garbage after a complete ladder cannot count as a complete driver stream"
+    );
+    ensure!(
+        !observation.passed_process_boundary(),
+        "a corrupted event stream cannot satisfy the passing process boundary"
+    );
+    Ok(())
+}
+
+#[test]
+fn malformed_driver_stream_fails_closed_with_bounded_diagnostics() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (plan, observation) =
+        run_fake_scenario(root.path(), "garbage_events", "garbageneg", 30_000)?;
+    ensure!(
+        !observation.driver_complete,
+        "malformed driver output cannot count as a complete host run"
+    );
+    ensure!(
+        !observation.passed_process_boundary(),
+        "an incomplete driver stream cannot satisfy the passing boundary"
+    );
+    let retained =
+        String::from_utf8_lossy(&durable_artifact(root.path(), "emacs/driver-events.jsonl")?)
+            .into_owned();
+    ensure!(
+        retained.contains("\"schema_version\":\"emacs_host_driver.v1\""),
+        "the malformed stream prefix must be retained for diagnostics"
+    );
+    supervision_receipt(&plan, &observation, ObservationResult::NotProven)
+        .validate()
+        .context("a malformed-stream receipt must validate as honest fail-closed evidence")?;
+    Ok(())
+}
+
+#[test]
+fn nonzero_driver_failure_yields_failed_observation_evidence() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (_plan, observation) =
+        run_fake_scenario(root.path(), "driver_failed_exit3", "failedneg", 30_000)?;
+    ensure!(observation.status_code == Some(3));
+    ensure!(
+        observation.cleanup != CleanupResult::Pass,
+        "an abnormal exit cannot claim a passing cleanup"
+    );
+    ensure!(!observation.passed_process_boundary());
+    ensure!(
+        observation.events.iter().any(|event| event.kind == DriverEventKind::DriverFailed),
+        "the recorded stream must retain the driver's own failure event"
+    );
+    Ok(())
+}
+
+#[test]
+fn oversized_captures_carry_explicit_truncation_integrity_metadata() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (_plan, observation) =
+        run_fake_scenario(root.path(), "oversize_output", "boundspos", 30_000)?;
+    ensure!(observation.status_code == Some(0));
+    let bounds: serde_json::Value =
+        serde_json::from_slice(&durable_artifact(root.path(), "emacs/capture-bounds.json")?)
+            .context("capture bounds must be structured JSON")?;
+    ensure!(
+        bounds["schema_version"] == "emacs_host_capture_bounds.v1",
+        "bounds carry their own schema version"
+    );
+    let rows = bounds["captures"].as_array().context("bounds enumerate every retained capture")?;
+    let stdout_row = rows
+        .iter()
+        .find(|row| row["id"] == "emacs/driver-stdout.log")
+        .context("the oversize stdout capture must have a bounds row")?;
+    ensure!(
+        stdout_row["truncated"] == true,
+        "oversize output must declare truncation instead of presenting it as complete"
+    );
+    let original = stdout_row["original_byte_count"].as_u64().context("original size")?;
+    let retained = stdout_row["retained_byte_count"].as_u64().context("retained size")?;
+    ensure!(original > retained, "the original stream was larger than the retention bound");
+    let identity = stdout_row["full_stream_sha256"].as_str().context("full-stream identity")?;
+    ensure!(
+        identity.len() == "sha256:".len() + 64 && identity.starts_with("sha256:"),
+        "the full sanitized stream identity must be a sha256 value"
+    );
+    let retained_bytes = durable_artifact(root.path(), "emacs/driver-stdout.log")?;
+    ensure!(
+        retained_bytes.len() as u64 == retained,
+        "the retained artifact size must match the bounds row"
+    );
+    use sha2::Digest as _;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(&retained_bytes);
+    let retained_identity = format!(
+        "sha256:{}",
+        hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+    );
+    ensure!(
+        identity != retained_identity,
+        "full-stream identity must not be the hash of the truncated prefix"
+    );
+    for row in rows {
+        if row["id"] != "emacs/driver-stdout.log" {
+            ensure!(row["truncated"] == false, "{} must declare completeness", row["id"]);
+            ensure!(
+                row["original_byte_count"] == row["retained_byte_count"],
+                "{} byte counts must agree when complete",
+                row["id"]
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn chatty_output_never_persists_raw_private_paths() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (_plan, observation) = run_fake_scenario(root.path(), "chatty_paths", "redactpos", 30_000)?;
+    ensure!(
+        observation.status_code == Some(0),
+        "redaction must not corrupt the supervised run itself"
+    );
+    let retained =
+        String::from_utf8_lossy(&durable_artifact(root.path(), "emacs/driver-stdout.log")?)
+            .into_owned();
+    ensure!(
+        retained.contains("<RUN_ROOT>"),
+        "the hermetic run root must be normalized in durable evidence; retained stdout head: {:?}",
+        retained.chars().take(400).collect::<String>()
+    );
+    for private in [
+        "/home/observer/.netrc",
+        "C:\\Users\\observer\\secret-token.txt",
+        "\\Users\\observer\\secret-token.txt",
+    ] {
+        ensure!(
+            !retained.contains(private),
+            "raw private-looking values must not survive into durable artifacts: {private}"
+        );
+    }
+    for snapshot_name in ["processes-before.txt", "processes-after.txt"] {
+        let snapshot = fs::read_to_string(root.path().join("raw").join(snapshot_name))
+            .with_context(|| format!("reading persisted {snapshot_name}"))?;
+        for private in [
+            "/home/observer/.netrc",
+            "C:\\Users\\observer\\secret-token.txt",
+            "\\Users\\observer\\secret-token.txt",
+        ] {
+            ensure!(
+                !snapshot.contains(private),
+                "{snapshot_name} must not persist raw private-looking process-table text: {private}"
+            );
+        }
+    }
+    let ledger: serde_json::Value =
+        serde_json::from_slice(&durable_artifact(root.path(), "emacs/process-ledger.json")?)
+            .context("ledger must be readable JSON")?;
+    ensure!(
+        ledger["snapshot_persist"] == "ok",
+        "process snapshots must persist, got {:?}",
+        ledger["snapshot_persist"]
+    );
+    Ok(())
+}
+
+#[test]
+fn capture_bounds_serialization_is_deterministic_across_runs() -> Result<()> {
+    let first = tempfile::tempdir()?;
+    let second = tempfile::tempdir()?;
+    let (_first_plan, first_observation) =
+        run_fake_scenario(first.path(), "clean", "detfirst", 30_000)?;
+    let (_second_plan, second_observation) =
+        run_fake_scenario(second.path(), "clean", "detsecond", 30_000)?;
+    ensure!(first_observation.status_code == Some(0));
+    ensure!(second_observation.status_code == Some(0));
+    let stable_rows = |root: &Path| -> Result<Vec<(String, String)>> {
+        let bounds: serde_json::Value =
+            serde_json::from_slice(&durable_artifact(root, "emacs/capture-bounds.json")?)?;
+        Ok(bounds["captures"]
+            .as_array()
+            .context("bounds enumerate captures")?
+            .iter()
+            .filter(|row| row["id"] != "emacs/process-ledger.json")
+            .map(|row| {
+                (
+                    row["id"].as_str().unwrap_or_default().to_string(),
+                    row["full_stream_sha256"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect())
+    };
+    ensure!(
+        stable_rows(first.path())? == stable_rows(second.path())?,
+        "identical runs must derive identical content identities"
+    );
+    Ok(())
+}
+
+#[test]
+fn separate_streams_remain_separate_artifacts() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (_plan, observation) = run_fake_scenario(root.path(), "clean", "separapos", 30_000)?;
+    let ids: BTreeSet<String> = observation.artifacts.iter().map(|item| item.id.clone()).collect();
+    for required in [
+        "emacs/driver-stdout.log",
+        "emacs/driver-stderr.log",
+        "emacs/driver-events.jsonl",
+        "emacs/client.log",
+        "emacs/perllsp.stderr",
+        "emacs/initialize.json",
+        "emacs/process-ledger.json",
+        "emacs/capture-bounds.json",
+    ] {
+        ensure!(ids.contains(required), "{required} must be retained separately");
+    }
+    let ledger: serde_json::Value =
+        serde_json::from_slice(&durable_artifact(root.path(), "emacs/process-ledger.json")?)
+            .context("ledger must be readable JSON")?;
+    ensure!(ledger["pid"].is_u64(), "the ledger records the supervised host pid");
+    ensure!(
+        ledger["schema_version"] == "editor_host.process_ledger.v1",
+        "the process ledger must keep the shared schema id, got {:?}",
+        ledger["schema_version"]
+    );
+    ensure!(
+        ledger["exit_class"] == "success",
+        "a status-0 host must record exit_class success, got {:?}",
+        ledger["exit_class"]
+    );
+    ensure!(
+        ledger["last_completed_barrier"] == serde_json::json!("shutdown_completed"),
+        "the ledger records the final completed barrier"
+    );
+    Ok(())
+}
+
+#[test]
+fn oversized_host_file_artifacts_bound_memory_and_fail_closed() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (_plan, observation) =
+        run_fake_scenario(root.path(), "oversize_host_files", "filebounds", 30_000)?;
+    ensure!(observation.status_code == Some(0));
+    ensure!(!observation.driver_complete, "an oversized event stream cannot certify completeness");
+    ensure!(
+        observation.last_completed_barrier.as_deref() == Some("shutdown_completed"),
+        "the valid prefix still records the last barrier, got {:?}",
+        observation.last_completed_barrier
+    );
+    ensure!(
+        !observation.passed_process_boundary(),
+        "truncated host files cannot pass the process boundary"
+    );
+    let bounds: serde_json::Value =
+        serde_json::from_slice(&durable_artifact(root.path(), "emacs/capture-bounds.json")?)
+            .context("capture bounds must be structured JSON")?;
+    let rows = bounds["captures"].as_array().context("bounds enumerate every retained capture")?;
+    let ledger: serde_json::Value =
+        serde_json::from_slice(&durable_artifact(root.path(), "emacs/process-ledger.json")?)
+            .context("ledger must be readable JSON")?;
+    ensure!(
+        ledger["event_stream"] == "truncated",
+        "the ledger must name event-stream truncation, got {:?}",
+        ledger["event_stream"]
+    );
+    ensure!(
+        ledger["schema_version"] == "editor_host.process_ledger.v1",
+        "oversized runs still emit the shared ledger schema"
+    );
+    for id in [
+        "emacs/driver-events.jsonl",
+        "emacs/client.log",
+        "emacs/perllsp.stderr",
+        "emacs/initialize.json",
+    ] {
+        let row = rows.iter().find(|row| row["id"] == id).with_context(|| {
+            format!("{id} must have a bounds row when the host file exceeds the capture window")
+        })?;
+        ensure!(row["truncated"] == true, "{id} must declare truncation");
+        let original = row["original_byte_count"].as_u64().context("original size")?;
+        let retained = row["retained_byte_count"].as_u64().context("retained size")?;
+        ensure!(original > retained, "{id} original stream was larger than the retention bound");
+        let identity = row["full_stream_sha256"].as_str().context("full-stream identity")?;
+        let retained_bytes = durable_artifact(root.path(), id)?;
+        ensure!(
+            retained_bytes.len() as u64 == retained,
+            "{id} retained artifact size must match the bounds row"
+        );
+        use sha2::Digest as _;
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(&retained_bytes);
+        let retained_identity = format!(
+            "sha256:{}",
+            hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+        );
+        ensure!(
+            identity != retained_identity,
+            "{id} full-stream identity must not be the hash of the retained window"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn receipts_fail_closed_through_the_production_validator() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (plan, clean) = run_fake_scenario(root.path(), "clean", "receiptpos", 30_000)?;
+    ensure!(clean.cleanup == CleanupResult::Pass);
+
+    let manufactured = supervision_receipt(&plan, &clean, ObservationResult::Pass);
+    let error = manufactured
+        .validate()
+        .err()
+        .context("an all-not-proven receipt cannot claim an overall pass")?;
+    ensure!(
+        error.to_string().contains("position encoding")
+            || error.to_string().contains("proven process cleanup")
+            || error.to_string().contains("diagnostic"),
+        "the refusal must name unobserved evidence: {error}"
+    );
+
+    let honest = supervision_receipt(&plan, &clean, ObservationResult::NotProven);
+    honest
+        .validate()
+        .context("honest not-proven supervision receipts validate against production law")?;
+    ensure!(honest.journey.len() == 1, "the fixture derives exactly one fail-closed journey cell");
+    ensure!(
+        honest.journey[0].result == ObservationResult::NotProven,
+        "the supervised journey cell must stay not_proven, never synthesized"
+    );
+    ensure!(
+        honest.diagnostics.advertised_mode == DiagnosticMode::NotProven,
+        "unobserved diagnostics must stay not_proven"
+    );
+    ensure!(
+        honest.process_cleanup == CleanupResult::Pass,
+        "receipt must carry the observed cleanup disposition unchanged"
     );
     Ok(())
 }

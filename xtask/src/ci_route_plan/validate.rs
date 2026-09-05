@@ -9,8 +9,11 @@ use super::{
 /// Closed requested-profile vocabulary owned by `ci_route_profile.v1`
 /// (#10178). The lib-side domain cannot import the binary-side authority, so
 /// this set mirrors it for validation only; the authority remains the
-/// derivation owner and the adapter projects its exact value.
-const KNOWN_PROFILES: &[&str] = &["commit", "pr_fast", "merge_gate", "nightly", "all", "release"];
+/// derivation owner and the adapter projects its exact value. The #10179
+/// schema drift test consumes this list so the checked-in JSON-Schema
+/// projection cannot silently drift from the typed vocabulary.
+pub const KNOWN_PROFILES: &[&str] =
+    &["commit", "pr_fast", "merge_gate", "nightly", "all", "release"];
 
 pub(super) fn validate(plan: &CiRoutePlanV1) -> Result<(), String> {
     if plan.schema != CI_ROUTE_PLAN_SCHEMA {
@@ -67,6 +70,20 @@ pub(super) fn validate(plan: &CiRoutePlanV1) -> Result<(), String> {
 
     if plan.summary != summarize(&plan.rows)? {
         return Err("route-plan summary does not reconcile to rows".to_string());
+    }
+
+    // Fingerprint agreement runs last: every field-level check above
+    // surfaces its specific refusal first, and only a fully consistent
+    // plan gets its semantic identity recomputed. The stored field must
+    // equal the recomputed digest — fingerprint movement alone cannot
+    // validate (#10179).
+    let recomputed = plan.semantic_fingerprint_of()?;
+    if plan.semantic_fingerprint != recomputed {
+        return Err(format!(
+            "semantic fingerprint {} does not equal the recomputed digest {} of the canonical \
+             semantic projection",
+            plan.semantic_fingerprint, recomputed
+        ));
     }
     Ok(())
 }

@@ -1,0 +1,431 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/native_neovim_train.v1.schema.json",
+  "title": "Native Neovim train implementation manifest v1",
+  "description": "Stable reviewed programme data for the native built-in-LSP Neovim train (#11392): node/proposition identities, roles, claim-profile membership, typed relationships, writer/conflict metadata, proof/spec references, and agent stop/transfer contracts. The manifest never infers current implementation state, derives a live frontier, inspects GitHub, launches Neovim, evaluates receipts, promotes support, or embeds mutable GitHub/task/agent state; no scheduler, global train database, tracked frontier, host runner, receipt schema, product behavior, support verdict, or external mutation lives in these bytes. Typed relationship semantics consume train_edge_contract.v1 (#10858) through declared adaptations without a universal train schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "node_id": {
+      "type": "string",
+      "pattern": "^nv_[a-z0-9_]+$",
+      "minLength": 3
+    },
+    "external_id": {
+      "type": "string",
+      "pattern": "^ext_[a-z0-9_]+$"
+    },
+    "edge_target": {
+      "oneOf": [
+        { "$ref": "#/$defs/node_id" },
+        { "$ref": "#/$defs/external_id" }
+      ]
+    },
+    "role": {
+      "enum": ["controller", "implementation", "proof", "registry", "docs", "maintenance", "external"]
+    },
+    "proposition_family": {
+      "enum": [
+        "core_baseline", "atomic_deep", "parser_artifact_deep", "lifecycle_race_deep",
+        "version_platform", "install_channels", "upstream_external", "virtual_documents",
+        "support_docs", "dap_sidecar", "host_instrument", "release_envelope", "control_plane"
+      ]
+    },
+    "evidence_stage": {
+      "enum": ["not_started", "derived_static", "focused_proof", "landed_current_tree"],
+      "description": "Static declaration of where the row stands in the proof lifecycle. Never derived from live state."
+    },
+    "dependency_class": {
+      "enum": [
+        "requires_implementation",
+        "requires_behavior_for_claim",
+        "consumes_if_available",
+        "nonblocking_sidecar",
+        "external_submission",
+        "external_acceptance",
+        "released_public"
+      ],
+      "description": "Closed local dependency classes bound to shared train_edge_contract.v1 kinds via .spec/10858-train-edge-contract/adaptations.json rows; external_* classes carry their exact stage in class."
+    },
+    "reason_class": {
+      "enum": ["not_proven", "pending_external_stage", "explicit_limitation", "out_of_scope", "superseded"]
+    },
+    "candidate_disposition": {
+      "enum": [
+        "merged_current_candidate_for_probe",
+        "ready_no_candidate",
+        "current_candidate",
+        "restack_candidate",
+        "salvage_only",
+        "superseded_or_replace",
+        "controller_only",
+        "external_manual_boundary",
+        "not_proven"
+      ]
+    },
+    "provenance_ref": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 160
+    },
+    "fan_in": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["children", "satisfaction_source"],
+      "properties": {
+        "children": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/node_id" }
+        },
+        "satisfaction_source": {
+          "const": "independently_terminal_child_propositions",
+          "description": "Fan-in never manufactures child success from issue, pull request, workflow run, or file state."
+        }
+      }
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "class", "provenance"],
+      "properties": {
+        "target": { "$ref": "#/$defs/edge_target" },
+        "class": { "$ref": "#/$defs/dependency_class" },
+        "stage": {
+          "enum": ["external_submission", "external_acceptance", "released_public_availability"],
+          "description": "Required exactly when class binds an external checkpoint kind; must equal the class-declared stage."
+        },
+        "provenance": { "$ref": "#/$defs/provenance_ref" }
+      }
+    },
+    "release_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "active_predecessor", "selecting_authority", "selection_subject",
+        "selected_value", "invalidation_rule", "provenance"
+      ],
+      "properties": {
+        "active_predecessor": { "$ref": "#/$defs/node_id" },
+        "selecting_authority": { "type": "string", "minLength": 1 },
+        "selection_subject": { "type": "string", "minLength": 1 },
+        "selected_value": { "type": "string", "minLength": 1 },
+        "invalidation_rule": { "type": "string", "minLength": 1 },
+        "provenance": { "$ref": "#/$defs/provenance_ref" }
+      }
+    },
+    "writer_slot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["conflict_key"],
+      "properties": {
+        "conflict_key": {
+          "type": "string",
+          "pattern": "^neovim\\.train\\.[a-z0-9_.]+$"
+        },
+        "parallel_group": {
+          "type": "string",
+          "pattern": "^$|^[A-Z][A-Z0-9_]*$",
+          "description": "Cohort marker: identical family plus identical parallel_group forms one sibling cohort; cohort members may never carry requires_implementation edges between each other."
+        }
+      }
+    },
+    "host_roles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instrument_role"],
+      "properties": {
+        "instrument_role": {
+          "enum": ["toolchain", "action_observation", "receipt_catalog", "ci_routing", "support_ledger"]
+        }
+      },
+      "description": "Host-toolchain/action/receipt/instrument roles. Instrument-bearing rows are structurally excluded from behavioral profile membership."
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id", "role", "proposition_family", "one_pr_result",
+        "claim_ceiling", "evidence_stage"
+      ],
+      "properties": {
+        "node_id": { "$ref": "#/$defs/node_id" },
+        "role": { "$ref": "#/$defs/role" },
+        "proposition_family": { "$ref": "#/$defs/proposition_family" },
+        "issue": {
+          "type": "integer",
+          "minimum": 100,
+          "description": "Primary GitHub issue anchor; unique across nodes when present. Absent for planning-created leaves and landed-PR reconciliation anchors."
+        },
+        "controller": { "$ref": "#/$defs/node_id" },
+        "lane": { "type": "string", "minLength": 2 },
+        "buildable": {
+          "type": "boolean",
+          "description": "True only for rows a single coherent PR may construct. Controllers are never emitted as direct builder work."
+        },
+        "one_pr_result": { "type": "string", "minLength": 10 },
+        "claim_ceiling": { "type": "string", "minLength": 10 },
+        "evidence_stage": { "$ref": "#/$defs/evidence_stage" },
+        "writer_slot": { "$ref": "#/$defs/writer_slot" },
+        "dependencies": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dependency" }
+        },
+        "release_gates": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/release_gate" }
+        },
+        "fan_in": { "$ref": "#/$defs/fan_in" },
+        "requires_actual_host": {
+          "type": "boolean",
+          "description": "When true the row must bind the shared host execution authority (#10894) as a dependency and cite #7777/#10527 generic actual-editor evidence anchors."
+        },
+        "host_toolchain_action_receipt_roles": { "$ref": "#/$defs/host_roles" },
+        "claim_profiles_affected": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 4 }
+        },
+        "claim_profiles_not_affected": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 4 }
+        },
+        "owned_authorities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 3 },
+          "description": "Authority tokens this row exclusively owns after landing."
+        },
+        "authorities_consumed_not_owned": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 3 }
+        },
+        "forbidden_adjacent_authorities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 3 }
+        },
+        "allowed_components_touch_surface": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 3 }
+        },
+        "bdd_scenario_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^bdd\\.[a-z0-9_.]+$" }
+        },
+        "fixture_expectation_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 6 }
+        },
+        "proof_spec_references": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/provenance_ref" }
+        },
+        "cheapest_discriminating_falsifier": { "type": "string", "minLength": 20 },
+        "focused_proof_generation_owner": { "type": "string", "minLength": 8 },
+        "negative_controls": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 8 }
+        },
+        "review_map_requirements": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 8 }
+        },
+        "rollback_shape": { "type": "string", "minLength": 15 },
+        "codex_stop_transfer_condition": { "type": "string", "minLength": 15 },
+        "successors_unlocked": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 3 }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "buildable": { "const": true } },
+            "required": ["buildable"]
+          },
+          "then": {
+            "required": [
+              "cheapest_discriminating_falsifier", "focused_proof_generation_owner",
+              "negative_controls", "review_map_requirements", "rollback_shape",
+              "codex_stop_transfer_condition", "writer_slot"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": { "role": { "const": "controller" } },
+            "required": ["role"]
+          },
+          "then": {
+            "properties": { "buildable": { "const": false } },
+            "description": "Controllers appear for navigation/fan-in but can never be emitted as direct builder work."
+          }
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema", "schema_version", "manifest_id", "programme", "authority_planes",
+    "selecting_authorities", "external_authorities", "claim_profiles",
+    "candidate_reconciliation", "revision_governance", "nodes"
+  ],
+  "properties": {
+    "schema": { "const": "native_neovim_train.v1" },
+    "schema_version": { "const": 1 },
+    "manifest_id": {
+      "type": "string",
+      "const": "native_neovim_train.v1",
+      "description": "Stable identity of this versioned implementation manifest."
+    },
+    "programme": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "planning_issue"],
+      "properties": {
+        "name": { "type": "string", "const": "native-neovim-train" },
+        "train_controller_issue": { "type": "integer" },
+        "product_controller_issue": { "type": "integer" },
+        "governance_issue": { "type": "integer" },
+        "typed_edge_contract": { "type": "string" },
+        "shared_mechanics_seam": { "type": "string" },
+        "specification_issues": {
+          "type": "array", "uniqueItems": true, "items": { "type": "integer" }
+        },
+        "generic_editor_evidence_issues": {
+          "type": "array", "uniqueItems": true, "items": { "type": "integer" }
+        },
+        "shared_host_execution_issues": {
+          "type": "array", "uniqueItems": true, "items": { "type": "integer" }
+        },
+        "planning_issue": { "type": "integer" }
+      }
+    },
+    "authority_planes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["plane", "owns", "never_substitutes"],
+        "properties": {
+          "plane": { "type": "string", "minLength": 5 },
+          "owns": { "type": "string", "minLength": 10 },
+          "never_substitutes": { "type": "string", "minLength": 10 }
+        }
+      }
+    },
+    "selecting_authorities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "subject", "allowed_values", "invalidation_rule"],
+        "properties": {
+          "id": { "type": "string", "minLength": 3 },
+          "subject": { "type": "string", "minLength": 5 },
+          "allowed_values": {
+            "type": "array", "minItems": 1, "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "controller_node": { "$ref": "#/$defs/node_id" },
+          "invalidation_rule": { "type": "string", "minLength": 10 }
+        }
+      }
+    },
+    "external_authorities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "subject"],
+        "properties": {
+          "id": { "$ref": "#/$defs/external_id" },
+          "subject": { "type": "string", "minLength": 5 }
+        }
+      }
+    },
+    "claim_profiles": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "description": "Exactly the six stable profiles: native_neovim_configuration, native_neovim_core, release_v0_18_bounded, native_neovim_deep_lifecycle, native_neovim_first_class, programme closeout.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "definition", "members"],
+        "properties": {
+          "id": { "type": "string", "minLength": 6 },
+          "definition": { "type": "string", "minLength": 20 },
+          "selecting_authority": {
+            "type": "string",
+            "description": "Required exactly when the profile consumes one selectable branch of a selecting authority."
+          },
+          "selection_subject": { "type": "string" },
+          "members": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "$ref": "#/$defs/node_id" }
+          },
+          "universal_member_policy": {
+            "const": "all_nodes_terminal_with_explicit_disposition",
+            "description": "Closeout covers every node terminally rather than enumerating optional passing cells."
+          },
+          "allowed_terminal_limitation_states": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "$ref": "#/$defs/reason_class" }
+          }
+        },
+        "anyOf": [
+          { "required": ["universal_member_policy"] },
+          { "required": ["members"], "properties": { "members": { "minItems": 1 } } }
+        ]
+      }
+    },
+    "candidate_reconciliation": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["pr", "node_id", "disposition", "note"],
+        "properties": {
+          "pr": { "type": "integer", "minimum": 100 },
+          "node_id": { "$ref": "#/$defs/node_id" },
+          "disposition": { "$ref": "#/$defs/candidate_disposition" },
+          "note": { "type": "string", "minLength": 10 }
+        }
+      }
+    },
+    "revision_governance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner_node", "owner_issue", "rule", "prohibition"],
+      "properties": {
+        "owner_node": { "$ref": "#/$defs/node_id" },
+        "owner_issue": { "type": "integer" },
+        "rule": { "type": "string", "minLength": 30 },
+        "prohibition": { "type": "string", "minLength": 30 }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 40,
+      "items": { "$ref": "#/$defs/node" }
+    }
+  }
+}

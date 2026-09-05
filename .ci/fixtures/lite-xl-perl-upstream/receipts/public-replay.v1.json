@@ -1,0 +1,437 @@
+{
+  "claim_boundary": {
+    "all_platforms": "not_proven",
+    "journey_routes_cross_inference": "forbidden",
+    "lsp_support_rows": "unchanged",
+    "support_projection": "not_proven"
+  },
+  "cleanup": {
+    "adapter_orphans": null,
+    "debuggee_orphans": null
+  },
+  "configuration": {
+    "config_sha256": null,
+    "driver_sha256": null,
+    "instrument_sha256": null
+  },
+  "currentness": {
+    "invalidators": [
+      "Lite XL release",
+      "lite-xl-lsp package/version change",
+      "language_perl package/version change",
+      "lsp_perl package/version/manifest/assets change",
+      "perllsp release artifact change",
+      "root/watcher/WorkspaceEdit/lifecycle implementation change",
+      "text-sync advertisement change (#7713)",
+      "platform/architecture change",
+      "#11178 ledger revision (scenario-ID set or boundary change)"
+    ]
+  },
+  "discriminators": {
+    "ambient_path_satisfies_no_row": null,
+    "managed_row_not_satisfied_by_ambient_path": null,
+    "second_perl_server_absent": null,
+    "wrong_root_same_basename_rejected": null
+  },
+  "gates": {
+    "blockers": [
+      "#9008 has no committed exact-source Lite XL real-host pass",
+      "the acceptance manifest records no released Lite XL build",
+      "the acceptance manifest records no public lite-xl-lsp/language_perl/lsp_perl package releases",
+      "the acceptance manifest records no public perllsp release asset with a verified digest"
+    ],
+    "exact_source_lite_xl_receipt": "absent",
+    "public_language_perl_package_release": "absent",
+    "public_lite_xl_lsp_package_release": "absent",
+    "public_lsp_perl_package_release": "absent",
+    "public_perllsp_release_asset": "absent",
+    "released_lite_xl_build": "absent"
+  },
+  "host": {
+    "build": null,
+    "product": null,
+    "version": null
+  },
+  "issue": 9012,
+  "journey": {
+    "lite_xl.bdd.activate.01": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.activate.02": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.activate.03": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.activate.04": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.activate.05": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.activate.06": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.activate.07": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.activate.08": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.activate.09": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.edit.01": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.edit.02": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.edit.03": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.edit.04": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.edit.05": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.edit.06": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.edit.07": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.edit.08": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.edit.09": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.edit.10": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.edit.11": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.edit.12": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.lifecycle.01": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.lifecycle.02": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.lifecycle.03": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.lifecycle.04": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.lifecycle.05": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.lifecycle.06": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.lifecycle.07": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.lifecycle.08": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.lifecycle.09": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.lifecycle.10": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.lifecycle.11": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.opt.01": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.opt.02": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.opt.03": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.opt.04": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.opt.05": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.opt.06": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.opt.07": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.opt.08": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.protocol.01": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.protocol.02": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.protocol.03": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.protocol.04": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.protocol.05": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.protocol.06": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.protocol.07": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.protocol.08": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.protocol.09": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.protocol.10": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.protocol.11": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.protocol.12": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.protocol.13": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.read.01": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.read.02": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.read.03": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.read.04": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.read.05": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.read.06": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.read.07": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.read.08": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.read.09": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.read.10": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.read.11": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.support.01": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.support.02": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.support.03": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.support.04": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.support.05": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.support.06": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.support.07": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.support.08": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.support.09": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.wire.01": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.wire.02": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.wire.03": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.wire.04": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.wire.05": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.wire.06": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.wire.07": {
+      "evidence": null,
+      "result": "not_proven"
+    },
+    "lite_xl.bdd.wire.08": {
+      "evidence": null,
+      "result": "not_proven"
+    }
+  },
+  "ledger_relative_path": ".spec/11178-lite-xl-bdd-journeys/acceptance.md",
+  "ledger_sha256": "sha256:4dd0e5b0ea27677069ce11694e1af2d2f1e1fcd39f4e5b69d38fa50ae4b2aae7",
+  "limitations": [
+    "no released Lite XL + public perllsp route replayed yet (#9012 blocked_external)",
+    "no managed lsp_perl publication exists to install through ordinary lpm lifecycle (#9010)",
+    "journey cells inherit nothing from exact-source #9008 evidence by design"
+  ],
+  "observed_at": "2026-08-27T00:00:00Z",
+  "packages": {
+    "language_perl": {
+      "ref": null,
+      "sha256": null,
+      "version": null
+    },
+    "lite_xl_lsp": {
+      "ref": null,
+      "sha256": null,
+      "version": null
+    },
+    "lsp_perl": {
+      "ref": null,
+      "sha256": null,
+      "version": null
+    }
+  },
+  "platform": {
+    "architecture": null,
+    "os": null
+  },
+  "profile": {
+    "candidate_source_checkout_absent": true,
+    "explicit_server_binary_override_absent": true,
+    "hand_populated_package_cache_absent": true,
+    "manual_plugin_replacement_absent": true,
+    "other_perl_server_selected_absent": true,
+    "path_candidate_satisfying_public_row_absent": true,
+    "prior_public_package_state_absent": true,
+    "relabeled_receipt_absent": true
+  },
+  "result": "blocked_external",
+  "schema_version": "lite_xl_public_artifact_replay_receipt.v1",
+  "server": {
+    "binary_sha256": null,
+    "install_route": null,
+    "installed_path": null,
+    "process_argv": null,
+    "process_path": null,
+    "version_output": null
+  },
+  "stage": "released_public_artifact",
+  "workspace": {
+    "fixture_id": null,
+    "fixture_sha256": null,
+    "root_identity": null
+  }
+}

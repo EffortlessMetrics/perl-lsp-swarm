@@ -1,0 +1,99 @@
+# Standalone installer archive-safety policy (#8352).
+#
+# Shell (`scripts/install.sh`) and PowerShell (`install.ps1`) embed these
+# limits and membership rules. Tests assert the adapters keep the same
+# identifiers. This file is not read at install time: standalone installers
+# must remain self-contained without a git checkout.
+#
+# Semantic sibling: Zed receipt helpers under scripts/zed_assets/ (path,
+# link, duplicate, unexpected-executable). Transport implementations stay
+# uncoupled. Managed VS Code envelope remains #7432.
+
+schema_version = 1
+policy_id = "standalone-archive-safety.v1"
+owner = "#8352"
+created = "2026-08-26"
+review_after = "2026-11-26"
+
+[limits]
+max_compressed_bytes = 268435456
+max_uncompressed_bytes = 536870912
+max_entry_bytes = 268435456
+max_entries = 32
+max_path_bytes = 255
+max_path_depth = 3
+
+[path]
+# Components are ASCII [A-Za-z0-9._-] only. This rejects separator aliases,
+# Unicode-normalization collisions, ADS markers, and reserved device names.
+allowed_component_charset = "A-Za-z0-9._-"
+reject_empty_current_parent_components = true
+reject_absolute_paths = true
+reject_windows_drive_unc_prefixes = true
+reject_backslash_separators = true
+reject_alternate_data_streams = true
+reject_windows_reserved_device_names = true
+reject_trailing_dot_or_space_components = true
+
+[entries]
+admit_regular_files = true
+admit_package_directory = true
+reject_links = true
+reject_special_types = true
+reject_duplicate_normalized_paths = true
+reject_case_fold_collisions = true
+reject_unexpected_executables = true
+allowed_executable_basenames_posix = ["perllsp", "perl-dap"]
+allowed_executable_basenames_windows = ["perllsp.exe", "perl-dap.exe"]
+
+# POSIX-only. The sections above are shared with the PowerShell/zip adapter;
+# these rules describe tar mechanics that have no zip counterpart, so they stay
+# out of the shared contract (#11508).
+[posix_inspection]
+# PAX ('x'/'g') and GNU long name/link ('L'/'K') records can rewrite the path
+# of the entry that follows them, so they fail closed rather than being
+# interpreted or skipped.
+reject_extended_headers = true
+# Entry name, type, and mode come from the ustar/GNU header fields, not from
+# `tar -t` / `tar -tv` output. Listing renderings are implementation-specific:
+# BusyBox tar prints a hardlink with a regular-file type char and strips
+# leading `/` and `../` from names, so a listing-derived classification admits
+# links and absolute-path members that GNU and bsdtar reject (#11508).
+entry_classification = "ustar_header_fields"
+verify_header_checksum = true
+reject_nonportable_header_name_bytes = true
+# Tar profiles the adversarial corpus is required to exercise. Inspection does
+# not depend on the profile. Like the rest of this file these keys are
+# declarative and are not read at install time; the requirement is enforced by
+# the archive-safety driver under PERL_LSP_REQUIRE_TAR_PROFILES=1, which CI
+# sets. Absent profiles are reported NOT_PROVEN and fail the run there.
+proven_extractor_profiles = ["gnu", "libarchive", "busybox"]
+bind_extractor_profile_in_receipt = true
+
+[layout]
+posix_kind = "nested_package_dir"
+windows_kind = "flat_or_nested_package_dir"
+package_dir_pattern = "perllsp-{version}-{target}"
+required_members_posix = [
+  "perllsp",
+  "perl-dap",
+  "README.md",
+  "LICENSE-APACHE",
+  "LICENSE-MIT",
+  "SHA256SUMS.txt",
+]
+required_members_windows = [
+  "perllsp.exe",
+  "perl-dap.exe",
+  "README.md",
+  "LICENSE-APACHE",
+  "LICENSE-MIT",
+  "SHA256SUMS.txt",
+]
+
+[receipt]
+bind_archive_sha256 = true
+bind_policy_id = true
+bind_layout_kind = true
+bind_member_sha256 = true
+forbid_private_paths = true

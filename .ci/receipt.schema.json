@@ -34,6 +34,9 @@
     },
     "diff_config": {
       "$ref": "#/$defs/diff_config"
+    },
+    "ux_scorecard": {
+      "$ref": "#/$defs/ux_scorecard"
     }
   },
   "$defs": {
@@ -86,6 +89,31 @@
           "enum": ["manual", "pre-push", "pre-commit", "ci-pr", "ci-merge", "ci-nightly", "ci-release"],
           "default": "manual"
         }
+      }
+    },
+    "ux_scorecard": {
+      "type": "object",
+      "description": "Editor UX scorecard metrics embedded by the UX scorecard task",
+      "additionalProperties": false,
+      "required": [
+        "hover_correctness_pct",
+        "completion_top1_pct",
+        "completion_top5_pct",
+        "definition_exact_hit_pct",
+        "symbol_correctness_pct",
+        "diagnostics_correct_pct",
+        "rename_success_pct",
+        "cross_file_success_pct"
+      ],
+      "properties": {
+        "hover_correctness_pct": { "type": ["number", "null"] },
+        "completion_top1_pct": { "type": ["number", "null"] },
+        "completion_top5_pct": { "type": ["number", "null"] },
+        "definition_exact_hit_pct": { "type": ["number", "null"] },
+        "symbol_correctness_pct": { "type": ["number", "null"] },
+        "diagnostics_correct_pct": { "type": ["number", "null"] },
+        "rename_success_pct": { "type": ["number", "null"] },
+        "cross_file_success_pct": { "type": ["number", "null"] }
       }
     },
     "toolchain": {
@@ -192,6 +220,12 @@
           "type": ["string", "null"],
           "description": "CI run/job identifier",
           "examples": ["12345678", null]
+        },
+        "ci_run_attempt": {
+          "type": ["integer", "null"],
+          "description": "Provider retry attempt for the same CI run identifier",
+          "minimum": 1,
+          "examples": [2, null]
         },
         "ci_run_url": {
           "type": ["string", "null"],
@@ -359,7 +393,29 @@
         },
         "test_execution_reached": {
           "type": "boolean",
-          "description": "For cargo-test-class gates: whether the gate's full captured log contains a `running N tests` preamble or a `test result:` summary line, proving the linked test binary began executing. False on a compile-only timeout (#11797). Reflects the final recorded attempt when retry_count produced more than one attempt: each retry truncates the gate log, so earlier attempts' reachability is not represented by this field or anywhere else in the receipt; the final attempt's retry trailer names earlier timeouts without their reach evidence."
+          "description": "Diagnostic only: for cargo-test-class gates, whether the final measured attempt reached the linked test binary. When attempt history is present this must equal its final measured row and must be absent when that row is unknown. This field does not authorize the gate status."
+        },
+        "test_execution_reached_attempts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "items": {
+            "type": "object",
+            "required": ["attempt", "test_execution_reached"],
+            "additionalProperties": false,
+            "properties": {
+              "attempt": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3
+              },
+              "test_execution_reached": {
+                "type": ["boolean", "null"],
+                "description": "True when measured reached, false when measured compile-only, null when the attempt log could not be read."
+              }
+            }
+          },
+          "description": "Diagnostic per-attempt test-binary reach evidence in execution order. Attempt ordinals must be contiguous from 1; receipt loading rejects missing or duplicate ordinals. An omitted field means the gate was not a cargo-test invocation or no attempt executed."
         }
       }
     },

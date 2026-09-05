@@ -986,14 +986,10 @@ fn test_snippet_completion() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Check it has a snippet with placeholders
-    #[allow(clippy::collapsible_if)]
-    if let Some(insert_text) = sub_item.get("insertText") {
-        if let Some(text) = insert_text.as_str() {
-            assert!(
-                text.contains("${") || text == "sub",
-                "Insert text should be a snippet or 'sub'"
-            );
-        }
+    if let Some(insert_text) = sub_item.get("insertText")
+        && let Some(text) = insert_text.as_str()
+    {
+        assert!(text.contains("${") || text == "sub", "Insert text should be a snippet or 'sub'");
     }
 
     // Check if it's a snippet kind (15) or keyword kind (14)

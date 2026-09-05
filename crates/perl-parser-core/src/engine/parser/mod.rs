@@ -56,18 +56,19 @@
 
 use crate::{
     ast::{GotoTargetForm, Node, NodeKind, SourceLocation},
-    error::{
-        BudgetTracker, ParseError, ParseOutput, ParseResult, ParseStopCause, RecoveryKind,
-        RecoverySite,
-    },
+    error::{ParseError, ParseOutput, ParseResult, ParseStopCause, RecoveryKind, RecoverySite},
     heredoc_collector::{self, HeredocContent, PendingHeredoc, collect_at_declaration_offsets},
     quote_parser,
-    token_stream::{Token, TokenKind, TokenStream},
+    token_stream::{ContextualOpResult, ContextualTokenOp, Token, TokenKind, TokenStream},
 };
+use perl_lexer::LexerMode;
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::sync::atomic::AtomicBool;
+
+mod operation;
+use operation::ParserOperationContext;
+pub use operation::{ParserConfigIdentity, ParserOperationId};
 
 /// Strip Perl-style line comments from `qw()` content.
 ///
@@ -106,12 +107,22 @@ pub(crate) struct ParserDecisionTrace {
 ///
 /// Construct with [`Parser::new`] and call [`Parser::parse`] to obtain an AST.
 /// Non-fatal syntax errors are collected and can be accessed via [`Parser::errors`].
+///
+/// Every ordinary strict or recovery-aware parse owns one
+/// [`ParserConfigIdentity`] and one live operation context (budget identity,
+/// live [`crate::BudgetTracker`], cancellation-probe handle, operation
+/// identity, and terminal-state accumulator). Production recursion depth is
+/// checked, recorded, and unwound through that context. [`parse_with_recovery`]
+/// returns the live tracker, not a post-hoc reconstruction.
+///
+/// [`crate::parser_context::ParserContext`] is a parallel AST-v2 helper and is
+/// not this production authority (#8700 B04 / #7105).
 pub struct Parser<'a> {
     /// Token stream providing access to lexed Perl script content
     tokens: TokenStream<'a>,
-    /// Current recursion depth for overflow protection during complex Perl script parsing
-    recursion_depth: usize,
-    /// Current structural block depth for nested Perl blocks.
+    /// Syntactic block nesting for `NestingTooDeep`. This is not the
+    /// production resource-control depth; that lives on the operation
+    /// context tracker and is governed by [`Parser::with_depth`].
     block_depth: usize,
     /// Position tracking for error reporting and AST location information
     last_end_position: usize,
@@ -134,19 +145,12 @@ pub struct Parser<'a> {
     /// Delimiter from an unrecognised heredoc introducer whose body leaked into
     /// the ordinary token stream.  Only the matching bareword may be exempted.
     heredoc_recovery_tag: Option<String>,
-    /// Start time of parsing for timeout enforcement (specifically heredocs)
-    heredoc_start_time: Option<Instant>,
     /// Collection of parse errors encountered during parsing (for error recovery)
     errors: Vec<ParseError>,
-    /// Terminal stop cause recorded by a parser branch that ends the parse
-    /// early while still returning `Ok` (the lexer-budget `UnknownRest` stop).
-    /// `parse_with_recovery` consumes it on the success path so a truncated
-    /// AST is never reported as a clean completion.
-    ok_path_stop_cause: Option<ParseStopCause>,
-    /// Optional cancellation flag for cooperative cancellation from the LSP server.
-    cancellation_flag: Option<Arc<AtomicBool>>,
-    /// Counter to amortize cancellation checks (only check every 64 statements)
-    cancellation_check_counter: usize,
+    /// Live production operation context. Fresh counters, terminal state, and
+    /// operation identity start at each [`Parser::parse`] / [`Parser::parse_with_recovery`]
+    /// entry; configuration and the cancellation-probe handle are retained.
+    operation: ParserOperationContext,
     /// Semantic decision events emitted by the actual production route in unit tests,
     /// capped at [`MAX_DECISION_TRACE`] entries.
     #[cfg(test)]
@@ -161,8 +165,8 @@ pub struct Parser<'a> {
 // number of function frames between recursion checks (about 20-30
 // for the precedence parsing chain). 128 * 30 = ~3840 frames which
 // is safe. Real Perl code rarely exceeds 20-30 nesting levels.
-const MAX_RECURSION_DEPTH: usize = 128;
-const MAX_BLOCK_NESTING_DEPTH: usize = 512;
+pub(crate) const MAX_RECURSION_DEPTH: usize = 128;
+pub(crate) const MAX_BLOCK_NESTING_DEPTH: usize = 512;
 
 impl<'a> Parser<'a> {
     /// Create a new parser for the provided Perl source.
@@ -185,9 +189,35 @@ impl<'a> Parser<'a> {
     /// // Parser ready to parse the source
     /// ```
     pub fn new(input: &'a str) -> Self {
+        Self::with_production_config(input, ParserConfigIdentity::production_default())
+    }
+
+    /// Construct a parser with an explicit production configuration identity.
+    ///
+    /// [`Parser::new`] and [`Parser::new_with_recovery_config`] select
+    /// [`ParserConfigIdentity::production_default`] through this same path.
+    pub fn with_production_config(input: &'a str, config: ParserConfigIdentity) -> Self {
+        Self::assemble(TokenStream::new(input), input, config, None)
+    }
+
+    /// Immutable configuration identity selected for this parser.
+    pub fn config_identity(&self) -> ParserConfigIdentity {
+        self.operation.config()
+    }
+
+    /// Identity of the current (or last-started) parse operation.
+    pub fn operation_id(&self) -> ParserOperationId {
+        self.operation.operation_id()
+    }
+
+    fn assemble(
+        tokens: TokenStream<'a>,
+        source: &'a str,
+        config: ParserConfigIdentity,
+        cancellation: Option<Arc<AtomicBool>>,
+    ) -> Self {
         Parser {
-            tokens: TokenStream::new(input),
-            recursion_depth: 0,
+            tokens,
             block_depth: 0,
             last_end_position: 0,
             in_for_loop_init: false,
@@ -196,14 +226,11 @@ impl<'a> Parser<'a> {
             pending_heredocs: VecDeque::new(),
             custom_attribute_handlers: HashSet::new(),
             attribute_handlers_enabled: false,
-            src_bytes: input.as_bytes(),
+            src_bytes: source.as_bytes(),
             byte_cursor: 0,
             heredoc_recovery_tag: None,
-            heredoc_start_time: None,
             errors: Vec::new(),
-            ok_path_stop_cause: None,
-            cancellation_flag: None,
-            cancellation_check_counter: 0,
+            operation: ParserOperationContext::new(config, cancellation),
             #[cfg(test)]
             decision_trace: Vec::new(),
             #[cfg(test)]
@@ -251,9 +278,12 @@ impl<'a> Parser<'a> {
     ///
     /// See the cancellation usage example above.
     pub fn new_with_cancellation(input: &'a str, cancellation_flag: Arc<AtomicBool>) -> Self {
-        let mut p = Parser::new(input);
-        p.cancellation_flag = Some(cancellation_flag);
-        p
+        Self::assemble(
+            TokenStream::new(input),
+            input,
+            ParserConfigIdentity::production_default(),
+            Some(cancellation_flag),
+        )
     }
 
     /// Create a parser from pre-lexed tokens, skipping the lexer pass.
@@ -282,12 +312,16 @@ impl<'a> Parser<'a> {
     ///
     /// # Context-sensitive token disambiguation
     ///
-    /// The standard parser uses `relex_as_term` to re-lex ambiguous tokens (e.g.
-    /// `/` as division vs. regex) in context-sensitive positions. When using
-    /// pre-lexed tokens the kind is fixed from the original lex pass, so the
-    /// original parse context must have been correct. In practice this means
+    /// The standard parser directs contextual token operations (issue #8128) to
+    /// re-classify ambiguous tokens (e.g. `/` as division vs. regex) in
+    /// context-sensitive positions. A buffered stream cannot re-derive
+    /// classifications: each request returns a typed fallback requirement that
+    /// this parser records as an [`ParseError::Advisory`] diagnostic while
+    /// continuing with the cached classification. In practice this means
     /// `from_tokens` is safe to use when the token stream comes from a previous
-    /// successful parse of the same source.
+    /// successful parse of the same source, where the cached kinds already
+    /// reflect every parser-directed correction; advisory diagnostics for
+    /// fallback requirements indicate a misaligned or stale token cache.
     ///
     /// # Examples
     ///
@@ -326,30 +360,15 @@ impl<'a> Parser<'a> {
     ///
     /// See the pre-lexed token example above.
     pub fn from_tokens(tokens: Vec<Token>, source: &'a str) -> Self {
-        Parser {
-            tokens: TokenStream::from_vec(tokens),
-            recursion_depth: 0,
-            block_depth: 0,
-            last_end_position: 0,
-            in_for_loop_init: false,
-            in_class_body: 0,
-            at_stmt_start: true,
-            pending_heredocs: VecDeque::new(),
-            custom_attribute_handlers: HashSet::new(),
-            attribute_handlers_enabled: false,
-            src_bytes: source.as_bytes(),
-            byte_cursor: 0,
-            heredoc_recovery_tag: None,
-            heredoc_start_time: None,
-            errors: Vec::new(),
-            ok_path_stop_cause: None,
-            cancellation_flag: None,
-            cancellation_check_counter: 0,
-            #[cfg(test)]
-            decision_trace: Vec::new(),
-            #[cfg(test)]
-            bypass_unknown_lowercase_bareword_decision: false,
-        }
+        Self::assemble(
+            // Retain the exact source identity so contextual operation
+            // fallbacks distinguish missing source from missing checkpoint
+            // authority (#8128).
+            TokenStream::from_vec_with_source(tokens, source),
+            source,
+            ParserConfigIdentity::production_default(),
+            None,
+        )
     }
 
     #[cfg(test)]
@@ -384,15 +403,7 @@ impl<'a> Parser<'a> {
     /// Returns `Err(ParseError::Cancelled)` if the cancellation flag has been set.
     #[inline]
     fn check_cancelled(&mut self) -> ParseResult<()> {
-        self.cancellation_check_counter = self.cancellation_check_counter.wrapping_add(1);
-        if self.cancellation_check_counter & 63 == 0 {
-            if let Some(ref flag) = self.cancellation_flag {
-                if flag.load(Ordering::Relaxed) {
-                    return Err(ParseError::Cancelled);
-                }
-            }
-        }
-        Ok(())
+        self.operation.probe_cancellation()
     }
 
     /// Create a new parser with custom enhanced recovery configuration.
@@ -418,7 +429,7 @@ impl<'a> Parser<'a> {
     /// assert_eq!(parser.errors().len(), 0);
     /// ```
     pub fn new_with_recovery_config(input: &'a str, _config: ()) -> Self {
-        Parser::new(input)
+        Self::with_production_config(input, ParserConfigIdentity::production_default())
     }
 
     /// Parse the source and return the AST for the Parse stage.
@@ -443,21 +454,19 @@ impl<'a> Parser<'a> {
     /// # Ok::<(), perl_parser_core::ParseError>(())
     /// ```
     pub fn parse(&mut self) -> ParseResult<Node> {
-        // Clear operation-scoped terminal state at entry: a previous
-        // operation on this same parser instance (for example a `parse()`
-        // that returned `Ok` after a lexer-budget `UnknownRest` stop) may
-        // have left its cause stored. Without this reset, the *next*
-        // operation would consume the previous operation's cause through
-        // `parse_with_recovery`'s success arm and report a clean, already-
-        // at-EOF parse as truncated.
-        self.ok_path_stop_cause = None;
+        // Fresh operation-local state: no counter, depth, terminal, or
+        // cancellation-check state leaks from a previous parse on this instance.
+        self.begin_operation();
         // Check cancellation before starting — handles pre-set flags immediately.
-        if let Some(ref flag) = self.cancellation_flag {
-            if flag.load(Ordering::Relaxed) {
-                return Err(ParseError::Cancelled);
-            }
+        if self.operation.is_pre_cancelled() {
+            return Err(ParseError::Cancelled);
         }
         self.parse_program()
+    }
+
+    fn begin_operation(&mut self) {
+        self.operation.begin();
+        self.block_depth = 0;
     }
 
     /// Get all parse errors collected during parsing
@@ -484,14 +493,69 @@ impl<'a> Parser<'a> {
         &self.errors
     }
 
+    /// Observe a parser-directed contextual token operation (issue #8128).
+    ///
+    /// Applied, replayed, and not-required outcomes continue silently: the
+    /// requested classification is in force. A buffered stream that cannot
+    /// honor the request records an [`ParseError::Advisory`] so the
+    /// conservative continuation with cached classification is observable and
+    /// never reported as an application, and returns `Ok(())` — callers keep
+    /// parsing with the tokens the stream still holds.
+    fn observe_contextual_operation(
+        &mut self,
+        operation: ContextualTokenOp,
+        location: usize,
+    ) -> ParseResult<()> {
+        let label = operation.label();
+        match self.tokens.apply_contextual(operation) {
+            ContextualOpResult::AppliedLive
+            | ContextualOpResult::AppliedReplay
+            | ContextualOpResult::NotRequired => Ok(()),
+            ContextualOpResult::FallbackRequired { reason } => {
+                self.errors.push(ParseError::Advisory {
+                    message: format!(
+                        "{label} requires a rebuild through a live lexer ({reason:?}); \
+                         continuing with cached classification"
+                    ),
+                    location,
+                });
+                Ok(())
+            }
+            ContextualOpResult::Unsupported => {
+                self.errors.push(ParseError::Advisory {
+                    message: format!(
+                        "{label} is not supported for this stream state; \
+                         continuing with cached classification"
+                    ),
+                    location,
+                });
+                Ok(())
+            }
+        }
+    }
+
+    /// Reclassify the head lookahead token as a term-context token (issue
+    /// #8128). Used where the parser knows a `/` classified as division must
+    /// become a regex delimiter; on a buffered stream that refuses the
+    /// operation an advisory records the conservative continuation.
+    fn reclassify_head_as_term(&mut self) -> ParseResult<()> {
+        let location = self.tokens.peek()?.start();
+        self.observe_contextual_operation(
+            ContextualTokenOp::ReclassifyFromBoundary { expected_context: LexerMode::ExpectTerm },
+            location,
+        )
+    }
+
     /// Parse with error recovery and return comprehensive output.
     ///
     /// This method is preferred for LSP Analyze workflows and always returns
     /// a `ParseOutput` containing the AST and any collected diagnostics.
+    /// `budget_usage` is the live operation tracker, not a post-hoc
+    /// reconstruction from diagnostics.
     ///
     /// # Returns
     ///
-    /// `ParseOutput` with the AST and diagnostics collected during parsing.
+    /// `ParseOutput` with the AST, diagnostics, and the live budget tracker.
     ///
     /// # Examples
     ///
@@ -508,7 +572,7 @@ impl<'a> Parser<'a> {
             // recorded a terminal stop while returning Ok (the lexer-budget
             // `UnknownRest` stop leaves a partial AST): consume that recorded
             // cause here so truncation is never reported as clean completion.
-            Ok(node) => (node, self.ok_path_stop_cause.take()),
+            Ok(node) => (node, self.operation.take_terminal()),
             Err(e) => {
                 // If parse() returned Err, it was a non-recoverable error (e.g. cancellation,
                 // recursion limit, or nesting limit). Record the typed stop cause at this branch —
@@ -516,7 +580,7 @@ impl<'a> Parser<'a> {
                 // cause stored before the terminal error is superseded by it and dropped, so
                 // nothing leaks into a later operation on this same parser.
                 let cause = ParseStopCause::from_parse_error(&e);
-                let _ = self.ok_path_stop_cause.take();
+                let _ = self.operation.take_terminal();
 
                 // Ensure the terminal error is recorded in the diagnostic vector, but only
                 // once — `Cancelled` in particular can already be present from prior work.
@@ -535,11 +599,9 @@ impl<'a> Parser<'a> {
             }
         };
 
-        let mut budget_usage = BudgetTracker::new();
-        budget_usage.errors_emitted = self.errors.len();
-        // terminated_early is derived from stop_cause inside finish() to preserve
-        // the ParseOutput invariant: terminated_early == stop_cause.is_some().
-        ParseOutput::finish(ast, self.errors.clone(), budget_usage, stop_cause)
+        // Return the live tracker that governed this operation. Uncharged
+        // dimensions (tokens/nodes/diagnostics) stay at zero until B02.
+        ParseOutput::finish(ast, self.errors.clone(), self.operation.take_tracker(), stop_cause)
     }
 }
 
@@ -631,6 +693,52 @@ mod strip_qw_comments_unit_tests {
     fn test_strip_basic() {
         let result = strip_qw_comments("foo # comment\n bar");
         assert_eq!(result.split_whitespace().collect::<Vec<_>>(), vec!["foo", "bar"]);
+    }
+}
+
+#[cfg(test)]
+mod operation_context_unit_tests {
+    use super::*;
+
+    #[test]
+    fn with_depth_unwinds_on_injected_early_return() {
+        let mut parser = Parser::new("1");
+        let result: ParseResult<()> = parser.with_depth(|p| {
+            assert_eq!(p.operation.tracker().current_depth, 1);
+            Err(ParseError::Cancelled)
+        });
+        assert!(result.is_err());
+        assert_eq!(parser.operation.tracker().current_depth, 0);
+        assert_eq!(parser.operation.tracker().max_depth_reached, 1);
+    }
+
+    #[test]
+    fn with_depth_unwinds_on_success() {
+        let mut parser = Parser::new("1");
+        let value = parser
+            .with_depth(|p| {
+                assert_eq!(p.operation.tracker().current_depth, 1);
+                Ok(7_u8)
+            })
+            .expect("success path");
+        assert_eq!(value, 7);
+        assert_eq!(parser.operation.tracker().current_depth, 0);
+        assert_eq!(parser.operation.tracker().max_depth_reached, 1);
+    }
+
+    #[test]
+    fn nested_with_depth_retains_max() {
+        let mut parser = Parser::new("1");
+        parser
+            .with_depth(|p| {
+                p.with_depth(|inner| {
+                    assert_eq!(inner.operation.tracker().current_depth, 2);
+                    Ok(())
+                })
+            })
+            .expect("nested depth");
+        assert_eq!(parser.operation.tracker().current_depth, 0);
+        assert_eq!(parser.operation.tracker().max_depth_reached, 2);
     }
 }
 

@@ -9,8 +9,8 @@
 //! - **Building/Degraded state**: Open document search only (partial results)
 
 use super::{
-    AtomicBool, AtomicI32, BackingFileTransition, GLOBAL_CANCELLATION_REGISTRY, IndexCoordinator,
-    JsonRpcError, JsonRpcId, LspServer, LspWorkspaceSymbol, Mutex, Ordering,
+    AtomicBool, AtomicI32, BackingFileTransition, DocumentState, GLOBAL_CANCELLATION_REGISTRY,
+    IndexCoordinator, JsonRpcError, JsonRpcId, LspServer, LspWorkspaceSymbol, Mutex, Ordering,
     PendingWorkspaceConfigurationRequest, PerlLspCancellationToken, ServerRequestId, Value,
     WorkspaceFolderState, best_workspace_folder_for_doc, json, outbound, uri_to_fs_path,
 };
@@ -37,7 +37,7 @@ use perl_parser::workspace_index::{
     DegradationReason, EarlyExitReason, IndexState, ResourceKind, SymbolKind,
 };
 #[cfg(feature = "workspace")]
-use perl_parser_core::source_file::{is_perl_source_path, is_perl_source_uri};
+use perl_parser_core::source_file::is_perl_source_path;
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 use perl_semantic_facts::{
     Confidence, Provenance, ProviderFactFreshness, ProviderFactSourceKind, ProviderFallbackState,
@@ -46,6 +46,8 @@ use perl_workspace::folder::extract_workspace_folder_change;
 #[cfg(feature = "workspace")]
 use perl_workspace::ignore::is_skipped_dir_name;
 use std::collections::{HashMap, HashSet};
+#[cfg(feature = "workspace")]
+use std::io::Read;
 
 /// Serialize a slice of typed values to a JSON array (#4995).
 fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
@@ -72,6 +74,14 @@ const WORKSPACE_CONFIGURATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(30
 #[allow(dead_code)]
 fn is_perl_source_file(path: &Path) -> bool {
     is_perl_source_path(path)
+}
+
+// Production classification goes through `read_perl_source_file`'s
+// same-object byte classification; this URI-shaped wrapper is retained for
+// the test suite that pins the URI-to-disk classification contract.
+#[cfg(all(feature = "workspace", test))]
+fn is_perl_source_uri_on_disk(uri: &str) -> bool {
+    uri_to_fs_path(uri).is_some_and(|path| is_perl_source_path(&path))
 }
 
 #[cfg(feature = "workspace")]
@@ -102,7 +112,7 @@ fn is_permission_denied_error(e: &std::io::Error) -> bool {
 }
 
 #[cfg(feature = "workspace")]
-use crate::util::read_text_file_with_encoding;
+use crate::util::{decode_text_bytes, read_text_file_with_encoding};
 #[cfg(feature = "workspace")]
 use perl_workspace::monitoring::{IndexingPhase, WorkspaceIndexingReceipt};
 
@@ -115,6 +125,131 @@ pub(crate) fn read_watched_file_content(uri: &str, purpose: &str) -> Option<Stri
             None
         }
     })
+}
+
+/// Read a discovered object's raw bytes for indexing without blocking on
+/// non-regular objects (#14074 review).
+///
+/// Discovery snapshots regular files, but an object can be replaced before
+/// the scan's read: opening a FIFO (or device/socket) for reading blocks
+/// forever on Unix and would wedge the indexing slot, blocking every future
+/// scan. The regular-file screen therefore runs on BOTH sides of the open:
+/// before it, so a standing non-regular object is never opened at all, and
+/// again on the opened handle, so an object swapped into the stat-to-open
+/// window fails closed instead of feeding same-object byte classification
+/// from a non-regular object. `Ok(None)` means the object is not a regular
+/// file; `Err` is a transient read failure.
+#[cfg(feature = "workspace")]
+fn read_regular_file_bytes(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
+    if let Ok(metadata) = std::fs::metadata(path)
+        && !metadata.is_file()
+    {
+        return Ok(None);
+    }
+    let mut file = std::fs::File::open(path)?;
+    if !file.metadata()?.is_file() {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(Some(bytes))
+}
+
+/// Classify and read a workspace source file under one admission policy.
+///
+/// `admission` is the single Perl admission authority (#14186): recognized
+/// extensions and discovery-admitted formats (`.xs`, `.i`, normalized
+/// configured extras) admit by path; extensionless candidates classify from
+/// the shebang window of the bytes actually read. `Ok(None)` means the
+/// object was read but is not admitted Perl source, so callers must treat
+/// prior facts for it as stale.
+#[cfg(feature = "workspace")]
+pub(crate) fn read_perl_source_file(
+    path: &Path,
+    admission: &super::file_discovery::DiscoveryConfig,
+) -> std::io::Result<Option<String>> {
+    // Screen non-regular objects before opening: opening a FIFO for reading
+    // can block on Unix, and watcher/discovery threads call this helper
+    // directly. Classification still decides from actual bytes below, so an
+    // object swapped into this screen window stays fail-closed.
+    if let Ok(metadata) = std::fs::metadata(path)
+        && !metadata.is_file()
+    {
+        return Ok(None);
+    }
+    let mut file = std::fs::File::open(path)?;
+    // Re-check the OPENED handle (#14074 review): an object swapped into the
+    // stat-to-open window fails closed here instead of feeding classification
+    // from a non-regular object, and on platforms whose non-regular opens do
+    // not block this is the rejection point.
+    if !file.metadata()?.is_file() {
+        return Ok(None);
+    }
+    // Classify from a bounded prefix before paying for an unbounded read of a
+    // large extensionless non-Perl artifact. The admission authority inspects
+    // only the shebang window for extensionless paths, so the prefix is
+    // sufficient for every path it can classify, and extension admission
+    // short-circuits on the path.
+    const CLASSIFICATION_PROBE_BYTES: u64 = 4096;
+    let mut prefix = Vec::new();
+    (&mut file).take(CLASSIFICATION_PROBE_BYTES).read_to_end(&mut prefix)?;
+    if !admission.admits_bytes(path, &prefix) {
+        return Ok(None);
+    }
+    let mut bytes = prefix;
+    file.read_to_end(&mut bytes)?;
+    Ok(Some(decode_text_bytes(&bytes)))
+}
+
+/// Most-specific containing root's admission policy for `path` (#14186).
+///
+/// Overlapping (nested) roots resolve to the folder whose root contains the
+/// path with the most components, so a looser parent policy can never admit
+/// a file inside a stricter nested root. Paths outside every current root
+/// admit built-ins only.
+#[cfg(feature = "workspace")]
+fn most_specific_admission(
+    admission_roots: &[(std::path::PathBuf, super::file_discovery::DiscoveryConfig)],
+    path: &Path,
+) -> super::file_discovery::DiscoveryConfig {
+    admission_roots
+        .iter()
+        .filter(|(root, _)| path.starts_with(root))
+        .max_by_key(|(root, _)| root.components().count())
+        .map(|(_, admission)| admission.clone())
+        .unwrap_or_default()
+}
+
+/// Remap a descendant path under a renamed directory root onto the new
+/// root's URI (#14074 review). Component-wise, so a descendant like
+/// `<old>/sub/a.pm` lands at `<new>/sub/a.pm` and sibling names never
+/// participate.
+#[cfg(feature = "workspace")]
+fn remap_descendant_uri(
+    old_root_path: &Path,
+    document_path: &Path,
+    new_root_uri: &str,
+) -> Option<String> {
+    let relative = document_path.strip_prefix(old_root_path).ok()?;
+    let new_root_path = uri_to_fs_path(new_root_uri)?;
+    let new_path = new_root_path.join(relative);
+    url::Url::from_file_path(&new_path).ok().map(|url| url.to_string())
+}
+
+/// Final-seam admission decision for the startup scan (#13308, #14186).
+///
+/// One admission authority: the seam consults the same `DiscoveryConfig`
+/// policy that discovered the path — recognized Perl extensions, built-in
+/// `.xs`/`.i`, normalized configured extras, and extensionless shebang
+/// classification from the bytes actually read — so discovery admission and
+/// final-seam admission can no longer disagree.
+#[cfg(feature = "workspace")]
+fn indexing_seam_admits_perl_source(
+    path: &Path,
+    bytes: &[u8],
+    admission: &super::file_discovery::DiscoveryConfig,
+) -> bool {
+    admission.admits_bytes(path, bytes)
 }
 
 /// RAII guard that clears the `indexing_in_progress` flag on drop.
@@ -142,14 +277,54 @@ impl Drop for IndexingGuard {
     }
 }
 
+/// Sendable projection of the server's open-document map for the indexing
+/// thread (#14186).
+///
+/// # SAFETY
+/// Same invariant as `LspServer`'s unsafe `Send`/`Sync` impls: the
+/// `*const Node` pointers inside `DocumentState` are only ever dereferenced
+/// under the wrapping mutex. This handle is consumed exclusively through
+/// [`LspServer::documents_open_in`], which reads key membership and never
+/// touches document contents, so moving a clone into the indexing thread
+/// cannot create aliasing on the raw pointers.
+#[cfg(feature = "workspace")]
+#[derive(Clone)]
+struct OpenDocumentsHandle {
+    documents: Arc<Mutex<HashMap<String, DocumentState>>>,
+}
+
+#[cfg(feature = "workspace")]
+impl OpenDocumentsHandle {
+    /// Whether any URI spelling variant of `uri` is currently open.
+    fn is_open(&self, uri: &str) -> bool {
+        LspServer::documents_open_in(&self.documents.lock(), uri)
+    }
+}
+
+#[cfg(feature = "workspace")]
+#[allow(unsafe_code)]
+unsafe impl Send for OpenDocumentsHandle {}
+
+#[cfg(feature = "workspace")]
+#[allow(unsafe_code)]
+unsafe impl Sync for OpenDocumentsHandle {}
+
 #[cfg(feature = "workspace")]
 #[derive(Clone)]
 struct IndexingResources {
     coordinator: Arc<IndexCoordinator>,
     workspace_folders: Arc<Mutex<Vec<WorkspaceFolderState>>>,
+    /// Open-document handle for the seam's open-buffer authority: the
+    /// indexing thread has no `LspServer`, so reclassification clears share
+    /// the exact openness denominator via [`LspServer::documents_open_in`]
+    /// (#14186).
+    documents: OpenDocumentsHandle,
     indexing_in_progress: Arc<AtomicBool>,
     indexing_rescan_pending: Arc<AtomicBool>,
     indexing_transition_lock: Arc<Mutex<()>>,
+    #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+    indexing_commit_gate:
+        Arc<std::sync::Mutex<Option<super::readiness::WorkspaceIndexingStartGate>>>,
     invocation_count: Arc<std::sync::atomic::AtomicUsize>,
     outbound: outbound::OutboundSender,
     work_done_progress: bool,
@@ -429,9 +604,31 @@ impl LspServer {
                 tracing::debug!(
                     "Workspace symbol: skipping stale workspace index tier, using open-doc fallback"
                 );
-                return self.search_open_documents_for_symbols(query, cap);
+                // The canonical Dancer2 entries are computed from open
+                // documents' current snapshots, so they stay available on
+                // the stale-index fallback path (#8928).
+                let dancer2_entries = self.dancer2_workspace_symbols_typed(query, cap);
+                let fallback = self.search_open_documents_for_symbols(query, cap)?;
+                let merged = match fallback {
+                    Some(Value::Array(mut items)) => {
+                        for entry in dancer2_entries {
+                            if let Ok(value) = serde_json::to_value(&entry)
+                                && items.len() < cap
+                            {
+                                items.push(value);
+                            }
+                        }
+                        Some(Value::Array(items))
+                    }
+                    other => other,
+                };
+                return Ok(merged);
             }
 
+            // Canonical Dancer2 entries (#8928) are computed BEFORE the
+            // index coordinator guard is taken: the computation re-enters
+            // module resolution and readiness state internally.
+            let dancer2_entries = self.dancer2_workspace_symbols_typed(query, cap);
             let access_mode = route_index_access(self.coordinator());
 
             match access_mode {
@@ -448,6 +645,10 @@ impl LspServer {
                             Some(cap),
                         ),
                     );
+                    // Canonical Dancer2 route entries (#8928): labeled
+                    // framework projections from open-document canonical
+                    // facts, bounded by the same cap.
+                    symbols.extend(dancer2_entries);
 
                     // Convert to LSP format with cooperative yielding.
                     // No .take(cap) needed — the search functions already apply the cap.
@@ -971,6 +1172,99 @@ impl LspServer {
         candidates
     }
 
+    /// Canonical Dancer2 workspace-symbol entries (#8928).
+    ///
+    /// Labeled `[Dancer2 route]` entries computed from the canonical facts
+    /// of each open document's current snapshot. This is the read-only
+    /// slice: index-side publication of canonical framework entities belongs
+    /// to the canonical shard seam, not to a provider-local second index.
+    /// Empty query returns no framework entries (browse behavior stays with
+    /// the source index).
+    #[cfg(feature = "workspace")]
+    fn dancer2_workspace_symbols_typed(
+        &self,
+        query: &str,
+        cap: usize,
+    ) -> Vec<perl_workspace::workspace_index::WorkspaceSymbol> {
+        use perl_lsp_rs_core::providers::dancer2::{
+            DANCER2_HOOK_LABEL, DANCER2_ROUTE_LABEL, dancer2_workspace_entities,
+        };
+        use perl_parser_core::position::{Position, Range as ByteRange};
+        use perl_symbol::SymbolKind;
+
+        if query.is_empty() || cap == 0 {
+            return Vec::new();
+        }
+        let lower_query = query.to_ascii_lowercase();
+        let docs: Vec<(String, std::sync::Arc<crate::state::ParsedSnapshot>, String)> = {
+            let documents = self.documents_guard();
+            documents
+                .iter()
+                .filter_map(|(uri, doc)| {
+                    doc.current_parsed()
+                        .map(|snapshot| (uri.clone(), snapshot, doc.text_arc.to_string()))
+                })
+                .collect()
+        };
+
+        let mut entries = Vec::new();
+        for (doc_uri, snapshot, text) in docs {
+            let Some(ast) = snapshot.ast() else { continue };
+            let context =
+                self.dancer2_request_context(&doc_uri, &text, snapshot.content_hash(), ast);
+            if !context.activations.has_exact() {
+                continue;
+            }
+            for entity in dancer2_workspace_entities(&context.facts) {
+                if !entity.bare_name.to_ascii_lowercase().contains(&lower_query) {
+                    continue;
+                }
+                let ((sl, sc), (el, ec)) = {
+                    let documents = self.documents_guard();
+                    self.get_document(&documents, &doc_uri)
+                        .map(|doc| {
+                            (
+                                self.offset_to_pos16(
+                                    doc,
+                                    usize::try_from(entity.start).unwrap_or(0),
+                                ),
+                                self.offset_to_pos16(doc, usize::try_from(entity.end).unwrap_or(0)),
+                            )
+                        })
+                        .unwrap_or(((0, 0), (0, 0)))
+                };
+                let package = entity
+                    .canonical_name
+                    .rsplit_once("::")
+                    .map(|(container, _)| container.to_string())
+                    .unwrap_or_else(|| "main".to_string());
+                let label = if entity.is_route { DANCER2_ROUTE_LABEL } else { DANCER2_HOOK_LABEL };
+                entries.push(perl_workspace::workspace_index::WorkspaceSymbol {
+                    name: format!("{} {label}", entity.bare_name),
+                    kind: SymbolKind::Subroutine,
+                    uri: doc_uri.clone(),
+                    range: ByteRange::new(
+                        Position::new(usize::try_from(entity.start).unwrap_or(0), sl, sc),
+                        Position::new(usize::try_from(entity.end).unwrap_or(0), el, ec),
+                    ),
+                    qualified_name: Some(entity.canonical_name.clone()),
+                    documentation: Some(
+                        "Canonical Dancer2 framework projection anchored to the source declaration; virtual entry, no generated body"
+                            .to_string(),
+                    ),
+                    container_name: Some(package),
+                    has_body: false,
+                    workspace_folder_uri: None,
+                    is_lexical: false,
+                });
+                if entries.len() >= cap {
+                    return entries;
+                }
+            }
+        }
+        entries
+    }
+
     /// Search open documents for symbols (non-workspace stub)
     #[cfg(not(feature = "workspace"))]
     fn search_open_documents_for_symbols(
@@ -1264,6 +1558,7 @@ impl LspServer {
     /// Updates both ServerConfig and WorkspaceConfig when the client
     /// notifies of configuration changes.
     pub(super) fn handle_did_change_configuration(&self, params: Option<Value>) {
+        self.invalidate_workspace_identity();
         if let Some(params) = params
             && let Some(settings) = params.get("settings")
         {
@@ -1435,6 +1730,16 @@ impl LspServer {
                 if let Err(e) = self.refresh_controller.refresh_all(self) {
                     tracing::warn!(error = %e, "Failed to refresh client after config change");
                 }
+
+                self.invalidate_workspace_identity();
+
+                let open_uris: Vec<String> = {
+                    let documents = self.documents.lock();
+                    documents.keys().cloned().collect()
+                };
+                for open_uri in open_uris {
+                    self.publish_diagnostics_debounced(&open_uri);
+                }
             }
         }
 
@@ -1489,18 +1794,18 @@ impl LspServer {
                         coordinator.notify_parse_complete(&uri);
                     }
                 }
-                FileChangeType::CREATED | FileChangeType::CHANGED => {
+                FileChangeType::CREATED | FileChangeType::CHANGED
                     // CREATED and CHANGED are debounced so that bulk operations
                     // (git checkout, formatter rewrites, etc.) coalesce into a
                     // single batch rather than triggering many sequential file reads.
-                    if !self.schedule_file_watcher_uri(&uri) {
-                        // `false` means the event was NOT queued: no debouncer
-                        // is installed (unit-test path), or the coalescer
-                        // reported Overflowed/Unavailable/ShuttingDown (#8064).
-                        // Either way, fall through to immediate synchronous
-                        // processing so degraded modes never lose events.
-                        self.process_file_watcher_uri_immediate(&uri);
-                    }
+                    if !self.schedule_file_watcher_uri(&uri) =>
+                {
+                    // `false` means the event was NOT queued: no debouncer
+                    // is installed (unit-test path), or the coalescer
+                    // reported Overflowed/Unavailable/ShuttingDown (#8064).
+                    // Either way, fall through to immediate synchronous
+                    // processing so degraded modes never lose events.
+                    self.process_file_watcher_uri_immediate(&uri);
                 }
                 _ => {}
             }
@@ -1521,6 +1826,99 @@ impl LspServer {
         for uri in &uris {
             self.process_file_watcher_uri_immediate(uri);
         }
+    }
+
+    /// Evict every indexed URI whose filesystem path is a descendant of
+    /// `uri`'s path (#14186 review).
+    ///
+    /// The catch-all watcher/file-operation contract (#13308) delivers
+    /// directory delete and rename events; the exact-URI eviction cannot
+    /// reach indexed descendants under the old prefix, so they would stay
+    /// searchable after the directory moved or vanished. Component-wise
+    /// prefix matching keeps sibling names like `dir2` safe.
+    ///
+    /// Open-buffer authority (#8041, #14074 review): an open descendant is
+    /// the buffer-backed subject, so it must observe the same handoff
+    /// contract as the exact-URI seam — its backing-file-derived index
+    /// facts are removed, and the caller's transition (deleted, or renamed
+    /// to the remapped destination URI) is recorded so didSave/didClose can
+    /// complete the handoff instead of the backing file vanishing silently.
+    /// `renamed_to` carries the new directory URI for rename events and
+    /// stays `None` for deletions.
+    #[cfg(feature = "workspace")]
+    pub(crate) fn evict_index_descendants(&self, uri: &str, renamed_to: Option<&str>) {
+        let Some(deleted_path) = uri_to_fs_path(uri) else {
+            return;
+        };
+        let Some(coordinator) = self.coordinator() else {
+            return;
+        };
+        for document in coordinator.index().document_store().all_documents() {
+            let Some(document_path) = uri_to_fs_path(&document.uri) else {
+                continue;
+            };
+            if document_path != deleted_path && document_path.starts_with(&deleted_path) {
+                if self.document_is_open(&document.uri) {
+                    let transition = match renamed_to {
+                        None => BackingFileTransition::Deleted,
+                        Some(new_root_uri) => {
+                            let Some(new_uri) =
+                                remap_descendant_uri(&deleted_path, &document_path, new_root_uri)
+                            else {
+                                tracing::debug!(
+                                    uri = %document.uri,
+                                    parent = %uri,
+                                    "Could not remap open descendant under renamed directory; \
+                                     leaving handoff to a later lifecycle event"
+                                );
+                                coordinator.index().clear_file(&document.uri);
+                                continue;
+                            };
+                            BackingFileTransition::RenamedOrMoved { new_uri }
+                        }
+                    };
+                    self.record_backing_file_transition(&document.uri, transition);
+                    tracing::debug!(
+                        uri = %document.uri,
+                        parent = %uri,
+                        "Recorded backing transition for open descendant of deleted or \
+                         renamed directory (#8041)"
+                    );
+                }
+                coordinator.index().clear_file(&document.uri);
+                tracing::debug!(
+                    uri = %document.uri,
+                    parent = %uri,
+                    "Evicted indexed descendant of deleted or renamed directory"
+                );
+            }
+        }
+    }
+
+    /// Discovery admission policy for a filesystem path (#14186).    ///
+    /// The containing workspace folder's configured extras (normalized by
+    /// [`super::file_discovery::DiscoveryConfig::new`]) layered over the
+    /// built-in admission set, resolved against the most specific containing
+    /// root; paths outside every folder admit built-ins only, so runtime
+    /// seams can never admit a file through another folder's policy.
+    #[cfg(feature = "workspace")]
+    pub(crate) fn discovery_admission_config(
+        &self,
+        path: &Path,
+    ) -> super::file_discovery::DiscoveryConfig {
+        let folders = self.workspace_folders.lock();
+        let admission_roots = folders
+            .iter()
+            .filter_map(|folder| {
+                let root = folder.path.clone().or_else(|| uri_to_fs_path(&folder.uri))?;
+                let admission = super::file_discovery::DiscoveryConfig::new(
+                    folder.effective_workspace_config.discovery_extra_extensions.clone(),
+                    Vec::new(),
+                );
+                Some((root, admission))
+            })
+            .collect::<Vec<_>>();
+        most_specific_admission(&admission_roots, path)
     }
 
     /// Re-index a single URI from the file system.
@@ -1561,15 +1959,53 @@ impl LspServer {
 
         let mut loaded_content: Option<String> = None;
 
-        // Re-index the file if it is a Perl source file.
+        // Clear any prior disk-backed facts before classifying the current
+        // path. This is required when an indexed extensionless Perl script
+        // loses its shebang: it is no longer a Perl source, but its old
+        // symbols must not remain searchable. Open documents returned above
+        // and therefore retain buffer authority.
         #[cfg(feature = "workspace")]
-        if let Some(coordinator) = self.coordinator()
-            && is_perl_source_uri(uri)
-        {
-            if loaded_content.is_none() {
-                loaded_content = read_watched_file_content(uri, "re-indexing");
-            }
+        if let Some(coordinator) = self.coordinator() {
+            let disk_classification: Option<bool> = if let Some(path) = uri_to_fs_path(uri) {
+                // One admission authority (#14186): classify under the
+                // containing folder's discovery policy so discovery-only
+                // formats (.xs/.i/configured extras) keep their index facts
+                // on watched changes instead of being cleared.
+                let admission = self.discovery_admission_config(&path);
+                match read_perl_source_file(&path, &admission) {
+                    Ok(content) => {
+                        loaded_content = content;
+                        Some(loaded_content.is_some())
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            "Failed to read file for re-indexing ({}): {}",
+                            path.display(),
+                            e
+                        );
+                        if e.kind() == std::io::ErrorKind::NotFound {
+                            let _transition = self.indexing_transition_lock.lock();
+                            if !self.document_is_open(uri) {
+                                coordinator.index().clear_file(uri);
+                            }
+                        }
+                        // A transient read failure (save/replace window,
+                        // permission change, sharing violation) must not evict
+                        // existing facts: keep prior index state until a later
+                        // event confirms the disk content, mirroring the
+                        // rename destination branch.
+                        None
+                    }
+                }
+            } else {
+                Some(false)
+            };
 
+            // Re-check after the disk read/classification. If didOpen raced
+            // this watcher event, do not clear its prior disk facts here;
+            // the open buffer remains authoritative and its own lifecycle
+            // will reconcile the index.
+            let _transition = self.indexing_transition_lock.lock();
             if self.document_is_open(uri) {
                 self.record_backing_file_transition(uri, BackingFileTransition::Changed);
                 tracing::debug!(
@@ -1577,22 +2013,26 @@ impl LspServer {
                      buffer remains authoritative; disk re-index skipped (#8041)",
                     uri
                 );
-                if let Some(coordinator) = self.coordinator() {
-                    coordinator.notify_parse_complete(uri);
-                }
+                coordinator.notify_parse_complete(uri);
                 return;
             }
 
             let workspace_index = coordinator.index();
-            if let Ok(url) = url::Url::parse(uri)
-                && let Some(content) = loaded_content.as_ref()
-            {
-                // Clear old index data before re-indexing
+            // An unknown disk state (transient read failure above) keeps the
+            // existing facts instead of clearing them.
+            if let Some(is_perl_source) = disk_classification {
                 workspace_index.clear_file(uri);
-                match workspace_index.index_file(url, content.clone()) {
-                    Ok(()) => tracing::debug!("Re-indexed file: {}", uri),
-                    Err(e) => {
-                        tracing::warn!("Failed to re-index file {}: {}", uri, e);
+
+                // Re-index the file if it is a Perl source file.
+                if is_perl_source
+                    && let Ok(url) = url::Url::parse(uri)
+                    && let Some(content) = loaded_content.as_ref()
+                {
+                    match workspace_index.index_file(url, content.clone()) {
+                        Ok(()) => tracing::debug!("Re-indexed file: {}", uri),
+                        Err(e) => {
+                            tracing::warn!("Failed to re-index file {}: {}", uri, e);
+                        }
                     }
                 }
             }
@@ -1792,37 +2232,10 @@ impl LspServer {
                     continue;
                 }
 
-                // Index the new file if it's a Perl file
-                // Note: Mutation operation - use coordinator with lifecycle tracking
-                #[cfg(feature = "workspace")]
-                if let Some(coordinator) = self.coordinator()
-                    && is_perl_source_uri(uri)
-                    && let Some(path) = uri_to_fs_path(uri)
-                {
-                    match read_text_file_with_encoding(&path) {
-                        Ok(content) => {
-                            coordinator.notify_change(uri);
-                            if let Ok(url) = url::Url::parse(uri) {
-                                match coordinator.index().index_file(url, content) {
-                                    Ok(()) => {
-                                        tracing::debug!("Indexed new file: {}", uri)
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!("Failed to index new file {}: {}", uri, e)
-                                    }
-                                }
-                            }
-                            coordinator.notify_parse_complete(uri);
-                        }
-                        Err(e) => {
-                            tracing::debug!(
-                                "Failed to read new file for indexing ({}): {}",
-                                path.display(),
-                                e
-                            );
-                        }
-                    }
-                }
+                // Explicit creates use the same filesystem-byte classifier as
+                // watched changes. This keeps extensionless shebang scripts
+                // live and evicts their facts when the shebang is removed.
+                self.process_file_watcher_uri_immediate(uri);
             }
 
             // Trigger client refresh after file creations
@@ -1867,35 +2280,54 @@ impl LspServer {
                 // resolved by the client's own didSave/didClose/didOpen
                 // lifecycle. Silently retargeting the buffer would change its
                 // identity without that authority.
-                let old_document_open = self.document_is_open(&old_uri);
-                if old_document_open {
-                    self.record_backing_file_transition(
-                        &old_uri,
-                        BackingFileTransition::RenamedOrMoved { new_uri: new_uri.clone() },
-                    );
-                }
-
                 // Update the index for the renamed file
                 // Note: Mutation operation - use coordinator with lifecycle tracking
                 #[cfg(feature = "workspace")]
                 if let Some(coordinator) = self.coordinator() {
+                    let _transition = self.indexing_transition_lock.lock();
+                    let old_document_open = self.document_is_open(&old_uri);
+                    if old_document_open {
+                        self.record_backing_file_transition(
+                            &old_uri,
+                            BackingFileTransition::RenamedOrMoved { new_uri: new_uri.clone() },
+                        );
+                    }
+
                     coordinator.notify_change(&old_uri);
                     coordinator.notify_change(&new_uri);
 
                     // Remove old file from index so old/new identities never
                     // coexist as current workspace facts.
                     coordinator.index().remove_file(&old_uri);
+                    // A renamed directory URI must carry its indexed
+                    // descendants away with it (#14186 review); per-file
+                    // didRename events re-index them at their new paths.
+                    // Open descendants record the same RenamedOrMoved
+                    // backing handoff as the exact-URI seam (#14074
+                    // review).
+                    self.evict_index_descendants(&old_uri, Some(&new_uri));
 
                     // Index new file if it's a Perl file. When a document is
                     // open at the new URI, its buffer — not disk bytes — is
                     // authoritative for that subject, so skip disk indexing.
-                    if is_perl_source_uri(&new_uri)
-                        && !self.document_is_open(&new_uri)
-                        && let Some(path) = uri_to_fs_path(&new_uri)
-                    {
-                        match read_text_file_with_encoding(&path) {
-                            Ok(content) => {
-                                if let Ok(url) = url::Url::parse(&new_uri) {
+                    if let Some(path) = uri_to_fs_path(&new_uri) {
+                        // One admission authority (#14186): the rename
+                        // destination classifies under the containing
+                        // folder's discovery policy, matching the watcher
+                        // and startup seams.
+                        let admission = self.discovery_admission_config(&path);
+                        match read_perl_source_file(&path, &admission) {
+                            Ok(Some(content)) => {
+                                // Match the create/watcher authority rule:
+                                // disk I/O can race didOpen, so the decision
+                                // must be made again after the read completes.
+                                if self.document_is_open(&new_uri) {
+                                    tracing::debug!(
+                                        new_uri,
+                                        "File opened while rename read was in flight — indexing skipped"
+                                    );
+                                } else if let Ok(url) = url::Url::parse(&new_uri) {
+                                    coordinator.index().clear_file(&new_uri);
                                     match coordinator.index().index_file(url, content) {
                                         Ok(()) => {
                                             tracing::debug!("Indexed renamed file: {}", new_uri)
@@ -1908,12 +2340,22 @@ impl LspServer {
                                     }
                                 }
                             }
+                            Ok(None) => {
+                                if !self.document_is_open(&new_uri) {
+                                    coordinator.index().clear_file(&new_uri);
+                                }
+                            }
                             Err(e) => {
                                 tracing::debug!(
                                     "Failed to read renamed file for indexing ({}): {}",
                                     path.display(),
                                     e
                                 );
+                                if e.kind() == std::io::ErrorKind::NotFound
+                                    && !self.document_is_open(&new_uri)
+                                {
+                                    coordinator.index().clear_file(&new_uri);
+                                }
                             }
                         }
                     }
@@ -2011,6 +2453,22 @@ impl LspServer {
                 tracing::warn!(error = %e, "Failed to refresh client after workspace folder changes");
             }
 
+            self.invalidate_workspace_identity();
+
+            // Legacy push clients never observe `workspace/diagnostic/refresh`
+            // (the action above is pull-only), so their already-open documents
+            // would keep stale PL900 rows after a folder reload installs a new
+            // `[perl].version` until the next edit or reopen. Schedule push
+            // republish for every open document; the sink boundary re-validates
+            // currency and the debouncer coalesces the burst (#13195 review).
+            let open_uris: Vec<String> = {
+                let documents = self.documents.lock();
+                documents.keys().cloned().collect()
+            };
+            for open_uri in open_uris {
+                self.publish_diagnostics_debounced(&open_uri);
+            }
+
             // Rebuild workspace index after folder changes
             #[cfg(feature = "workspace")]
             self.start_workspace_indexing();
@@ -2034,9 +2492,12 @@ impl LspServer {
         Self::start_workspace_indexing_with_resources(IndexingResources {
             coordinator,
             workspace_folders: Arc::clone(&self.workspace_folders),
+            documents: OpenDocumentsHandle { documents: Arc::clone(&self.documents) },
             indexing_in_progress: Arc::clone(&self.indexing_in_progress),
             indexing_rescan_pending: Arc::clone(&self.indexing_rescan_pending),
             indexing_transition_lock: Arc::clone(&self.indexing_transition_lock),
+            #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+            indexing_commit_gate: Arc::clone(&self.indexing_commit_gate),
             invocation_count: Arc::clone(&self.workspace_indexing_invocation_count),
             outbound: self.outbound.clone(),
             work_done_progress: self.client_capabilities.lock().work_done_progress_support,
@@ -2079,6 +2540,7 @@ impl LspServer {
 
         let current_workspace_folders = Arc::clone(&resources.workspace_folders);
         let indexing_transition_lock = Arc::clone(&resources.indexing_transition_lock);
+        let open_documents = resources.documents;
         let coordinator = resources.coordinator;
 
         // Ensure workspace folders are set in the index before indexing starts
@@ -2126,6 +2588,8 @@ impl LspServer {
         }
         let permission_denied_shown = resources.permission_denied_shown;
         let readiness_receipt = resources.readiness_receipt;
+        #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+        let indexing_commit_gate = resources.indexing_commit_gate;
         #[cfg(any(test, feature = "expose_lsp_test_api"))]
         let readiness_start_gate = resources.readiness_start_gate;
         #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -2154,6 +2618,26 @@ impl LspServer {
                 send_progress_create(&outbound, progress_create_id);
                 send_progress_begin(&outbound);
             }
+
+            // One admission authority (#14186): each folder's configured
+            // extras are normalized through `DiscoveryConfig::new` and paired
+            // with its root. The final seam resolves every path against the
+            // most-specific containing root, so nested roots are never
+            // over-admitted by a looser parent policy and raw config
+            // spellings (".FOO", " BAR ") admit exactly what discovery's
+            // authority admits.
+            let admission_roots: Vec<(std::path::PathBuf, super::file_discovery::DiscoveryConfig)> =
+                workspace_folders
+                    .iter()
+                    .filter_map(|folder| {
+                        let root = folder.path.clone().or_else(|| uri_to_fs_path(&folder.uri))?;
+                        let admission = super::file_discovery::DiscoveryConfig::new(
+                            folder.effective_workspace_config.discovery_extra_extensions.clone(),
+                            Vec::new(),
+                        );
+                        Some((root, admission))
+                    })
+                    .collect();
 
             let mut files: Vec<std::path::PathBuf> = Vec::new();
             let mut early_exit: Option<(EarlyExitReason, u64, usize, usize)> = None;
@@ -2255,8 +2739,27 @@ impl LspServer {
                 }
 
                 let read_started = Instant::now();
-                let content = match read_text_file_with_encoding(&path) {
-                    Ok(c) => c,
+                // #13308: read the raw bytes once and classify from the same
+                // object that will be indexed. Discovery classified paths
+                // earlier; an extensionless path rewritten or a symlink
+                // retargeted between discovery and this final read must not
+                // have its new non-Perl content indexed as Perl.
+                // #14074 review: the regular-file screens in
+                // `read_regular_file_bytes` keep a discovered path replaced
+                // by a FIFO from blocking this read in
+                // stat-to-open-swap windows — a blocked read would hold the
+                // indexing slot forever and block every future scan.
+                let source_bytes = match read_regular_file_bytes(&path) {
+                    Ok(Some(bytes)) => bytes,
+                    Ok(None) => {
+                        indexing_receipt.record_phase(IndexingPhase::Read, read_started.elapsed());
+                        tracing::debug!(
+                            path = %path.display(),
+                            "Startup scan skipped a discovered path replaced by a \
+                             non-regular object"
+                        );
+                        continue;
+                    }
                     Err(e) => {
                         indexing_receipt.record_phase(IndexingPhase::Read, read_started.elapsed());
                         indexing_receipt.record_read_error();
@@ -2317,6 +2820,41 @@ impl LspServer {
                     }
                 };
                 indexing_receipt.record_phase(IndexingPhase::Read, read_started.elapsed());
+                // The seam resolves the most-specific containing folder's
+                // policy, so a discovered file can only be rejected when its
+                // content changed after discovery (reclassification) or a
+                // stricter nested root owns the path.
+                let admission = most_specific_admission(&admission_roots, &path);
+                if !indexing_seam_admits_perl_source(&path, &source_bytes, &admission) {
+                    tracing::debug!(
+                        path = %path.display(),
+                        "Startup scan skipped non-Perl content reclassified at the \
+                         final indexing seam"
+                    );
+                    // #14186: a previously indexed script that lost its Perl
+                    // identity between scans must not keep stale searchable
+                    // facts. Clear under the same transition/open-buffer
+                    // authority the watcher reclassification path uses.
+                    if let Ok(url) = Url::from_file_path(&path) {
+                        let uri = url.to_string();
+                        let _transition = indexing_transition_lock.lock();
+                        // Method call on purpose: the closure must capture
+                        // the whole `OpenDocumentsHandle` (whose unsafe
+                        // Send/Sync carries the pointer-safety invariant),
+                        // not the raw `Arc<Mutex<HashMap<..>>>` field that
+                        // disjoint closure capture would otherwise select.
+                        if !open_documents.is_open(&uri) {
+                            coordinator.index().clear_file(&uri);
+                            tracing::debug!(
+                                uri,
+                                "Cleared stale facts for file reclassified out of Perl \
+                                 at the startup seam"
+                            );
+                        }
+                    }
+                    continue;
+                }
+                let content = crate::util::decode_source_bytes(&source_bytes).into_text();
                 let Ok(url) = Url::from_file_path(&path) else {
                     indexing_receipt.record_index_error();
                     continue;
@@ -2326,15 +2864,37 @@ impl LspServer {
                 let indexed_uri = url.to_string();
                 let index_result = {
                     let _transition = indexing_transition_lock.lock();
+                    #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+                    crate::runtime::readiness::notify_indexing_commit_gate(&indexing_commit_gate);
                     let current_folders = current_workspace_folders.lock();
-                    if path_is_in_current_workspace(&path, &current_folders) {
-                        Some(coordinator.index().index_file(url, content))
-                    } else {
+                    if !path_is_in_current_workspace(&path, &current_folders) {
                         tracing::debug!(
                             path = %path.display(),
                             "Skipping file from workspace folder removed during indexing"
                         );
                         None
+                    } else if open_documents.is_open(&indexed_uri) {
+                        // Open-buffer authority (#8041, #14186): didOpen can
+                        // insert during the read-to-lock window above. The
+                        // recheck and the commit share this critical section,
+                        // so a buffer inserted before the commit is seen here
+                        // and its disk re-index is skipped; a didOpen that
+                        // waits on this lock commits the buffer afterwards.
+                        // Either way the disk bytes read before the lock can
+                        // never replace live buffer facts.
+                        tracing::debug!(
+                            uri = %indexed_uri,
+                            "Open document inserted during startup scan — buffer \
+                             remains authoritative; disk re-index skipped"
+                        );
+                        // The disk was not indexed, but the URI's workspace
+                        // facts are current through buffer authority, so the
+                        // readiness receipt observes it as ready (the
+                        // buffer's own lifecycle owns those facts).
+                        readiness_receipt.lock().record_indexed_uri(&indexed_uri, Instant::now());
+                        None
+                    } else {
+                        Some(coordinator.index().index_file(url, content))
                     }
                 };
                 let Some(index_result) = index_result else {
@@ -2359,6 +2919,64 @@ impl LspServer {
                     }
                 } else {
                     indexing_receipt.record_index_error();
+                }
+            }
+
+            // Cross-scan declassification reconciliation (#14186 review):
+            // discovery cannot re-return an extensionless path whose shebang
+            // is already gone, so a script declassified between scans never
+            // reaches the final seam and its earlier facts would survive.
+            // Re-audit indexed extensionless URIs under the scanned roots and
+            // evict exactly those the admission authority rejects on current
+            // disk bytes — the same evidence a watcher CHANGED event applies.
+            // Only a scan that ran to completion reconciles: a budget-limited
+            // scan proves nothing about absence.
+            if early_exit.is_none() {
+                for indexed in coordinator.index().document_store().all_documents() {
+                    let uri = indexed.uri.clone();
+                    let Some(path) = uri_to_fs_path(&uri) else {
+                        continue;
+                    };
+                    if path.extension().is_some() {
+                        // Extension-bearing paths re-enter discovery by path
+                        // alone; only extensionless scripts declassify without
+                        // discovery noticing.
+                        continue;
+                    }
+                    if !admission_roots.iter().any(|(root, _)| path.starts_with(root)) {
+                        continue;
+                    }
+                    // Read and classify OUTSIDE the transition lock (#14074
+                    // review): `read_perl_source_file` screens non-regular
+                    // objects before opening, so a regular-file-to-FIFO
+                    // replacement cannot block this read, and the lock never
+                    // spans disk I/O — a blocked read holding the lock would
+                    // wedge every didOpen transition behind it. `Ok(None)`
+                    // means the object is not admitted Perl source on current
+                    // disk bytes — the same evidence a watcher CHANGED event
+                    // applies. Unreadable objects are transient; keep facts
+                    // until a later event confirms disk content. Openness is
+                    // snapshotted before the read and re-checked after it,
+                    // matching the watcher seam's race discipline (#8041).
+                    if open_documents.is_open(&uri) {
+                        continue;
+                    }
+                    let admission = most_specific_admission(&admission_roots, &path);
+                    let admitted = read_perl_source_file(&path, &admission)
+                        .map(|content| content.is_some())
+                        .unwrap_or(true);
+                    let _transition = indexing_transition_lock.lock();
+                    if open_documents.is_open(&uri) {
+                        continue;
+                    }
+                    if !admitted {
+                        coordinator.index().clear_file(&uri);
+                        tracing::debug!(
+                            uri,
+                            "Rescan reconciliation cleared declassified extensionless \
+                             script facts"
+                        );
+                    }
                 }
             }
 
@@ -2769,6 +3387,7 @@ mod tests {
     use serde_json::{Value, json};
     use std::io::{self, Write};
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn workspace_symbol_resolve_missing_params_name_method_and_field() {
@@ -2778,6 +3397,319 @@ mod tests {
 
         assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
         assert_eq!(err.message, "workspace/symbol/resolve: missing required parameter 'params'");
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn filesystem_watcher_classifier_accepts_shebang_files_but_not_uri_only_names()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let perl_path = directory.path().join("tool");
+        let shell_path = directory.path().join("shell-tool");
+        std::fs::write(&perl_path, "#!/usr/bin/env perl\n1;\n")?;
+        std::fs::write(&shell_path, "#!/bin/sh # perl\necho hi\n")?;
+        let perl_uri = url::Url::from_file_path(&perl_path).map_err(|_| "invalid Perl URI")?;
+        let shell_uri = url::Url::from_file_path(&shell_path).map_err(|_| "invalid shell URI")?;
+
+        assert!(!perl_parser_core::source_file::is_perl_source_uri(perl_uri.as_str()));
+        assert!(super::is_perl_source_uri_on_disk(perl_uri.as_str()));
+        assert!(!super::is_perl_source_uri_on_disk(shell_uri.as_str()));
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn file_lifecycle_paths_index_extensionless_shebang_scripts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let old_path = directory.path().join("tool");
+        let new_path = directory.path().join("renamed-tool");
+        std::fs::write(&old_path, "#!/usr/bin/env perl\nsub created_tool { 1 }\n1;\n")?;
+        let old_uri = url::Url::from_file_path(&old_path).map_err(|_| "invalid old URI")?;
+        let new_uri = url::Url::from_file_path(&new_path).map_err(|_| "invalid new URI")?;
+
+        let mut server = LspServer::new();
+        server.index_coordinator =
+            Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
+                IndexResourceLimits::default(),
+                IndexPerformanceCaps::default(),
+            )));
+
+        server.handle_did_create_files(Some(json!({
+            "files": [{ "uri": old_uri.to_string() }]
+        })))?;
+        let created = server
+            .coordinator()
+            .ok_or("missing index coordinator")?
+            .index()
+            .find_symbols("created_tool");
+        assert_eq!(created.len(), 1, "didCreateFiles must index an extensionless Perl script");
+
+        std::fs::write(&old_path, "#!/usr/bin/env perl\nsub changed_tool { 1 }\n1;\n")?;
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": old_uri.to_string(), "type": 2 }]
+        })))?;
+        let changed = server
+            .coordinator()
+            .ok_or("missing index coordinator")?
+            .index()
+            .find_symbols("changed_tool");
+        assert_eq!(changed.len(), 1, "watched changes must re-index an extensionless Perl script");
+
+        std::fs::write(&old_path, "plain text after the shebang is removed\n")?;
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": old_uri.to_string(), "type": 2 }]
+        })))?;
+        let stale = server
+            .coordinator()
+            .ok_or("missing index coordinator")?
+            .index()
+            .find_symbols("changed_tool");
+        assert!(stale.is_empty(), "removing the shebang must evict stale workspace symbols");
+
+        std::fs::write(&old_path, "#!/usr/bin/env perl\nsub changed_tool { 1 }\n1;\n")?;
+        std::fs::rename(&old_path, &new_path)?;
+        server.handle_did_rename_files(Some(json!({
+            "files": [{ "oldUri": old_uri.to_string(), "newUri": new_uri.to_string() }]
+        })))?;
+        let renamed = server
+            .coordinator()
+            .ok_or("missing index coordinator")?
+            .index()
+            .find_symbols("changed_tool");
+        assert_eq!(renamed.len(), 1, "renames must index an extensionless Perl script");
+        assert!(
+            server
+                .coordinator()
+                .ok_or("missing index coordinator")?
+                .index()
+                .file_symbols(old_uri.as_str())
+                .is_empty(),
+            "renames must remove the old extensionless file identity"
+        );
+        assert_eq!(
+            server
+                .coordinator()
+                .ok_or("missing index coordinator")?
+                .index()
+                .file_symbols(new_uri.as_str())
+                .len(),
+            1,
+            "renames must retain the new extensionless file identity"
+        );
+        Ok(())
+    }
+
+    #[cfg(all(feature = "workspace", unix))]
+    #[test]
+    fn changed_events_retain_facts_when_the_disk_read_fails()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir()?;
+        let script_path = directory.path().join("transient-tool");
+        let script_uri = url::Url::from_file_path(&script_path).map_err(|_| "invalid URI")?;
+        std::fs::write(&script_path, "#!/usr/bin/env perl\nsub transient_tool { 1 }\n1;\n")?;
+
+        let mut server = LspServer::new();
+        server.index_coordinator =
+            Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
+                IndexResourceLimits::default(),
+                IndexPerformanceCaps::default(),
+            )));
+
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": script_uri.to_string(), "type": 2 }]
+        })))?;
+        let index = server.coordinator().ok_or("missing index coordinator")?.index();
+        assert!(
+            index
+                .file_symbols(script_uri.as_str())
+                .iter()
+                .any(|symbol| symbol.name == "transient_tool"),
+            "the readable script must be indexed by its changed event"
+        );
+
+        // A permission change makes the next read fail with an error that is
+        // not NotFound. The facts indexed before the failure must survive the
+        // event instead of being evicted as confirmed non-Perl content.
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o000))?;
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": script_uri.to_string(), "type": 2 }]
+        })))?;
+        assert!(
+            index
+                .file_symbols(script_uri.as_str())
+                .iter()
+                .any(|symbol| symbol.name == "transient_tool"),
+            "a transient read failure must retain existing facts"
+        );
+
+        // A later confirmed read still reconciles the index.
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o644))?;
+        std::fs::write(&script_path, "#!/usr/bin/env perl\nsub transient_tool_v2 { 1 }\n1;\n")?;
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": script_uri.to_string(), "type": 2 }]
+        })))?;
+        assert!(
+            index
+                .file_symbols(script_uri.as_str())
+                .iter()
+                .any(|symbol| symbol.name == "transient_tool_v2"),
+            "a confirmed later read must refresh the retained facts"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn file_lifecycle_events_never_index_disk_bytes_behind_open_buffer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let create_path = directory.path().join("created-tool");
+        let change_path = directory.path().join("changed-tool");
+        let old_path = directory.path().join("old-tool");
+        let rename_path = directory.path().join("renamed-tool");
+        let create_uri =
+            url::Url::from_file_path(&create_path).map_err(|_| "invalid create URI")?;
+        let change_uri =
+            url::Url::from_file_path(&change_path).map_err(|_| "invalid change URI")?;
+        let old_uri = url::Url::from_file_path(&old_path).map_err(|_| "invalid old URI")?;
+        let rename_uri =
+            url::Url::from_file_path(&rename_path).map_err(|_| "invalid rename URI")?;
+
+        std::fs::write(&create_path, "#!/usr/bin/env perl\nsub disk_create { 1 }\n1;\n")?;
+        std::fs::write(&change_path, "#!/usr/bin/env perl\nsub disk_change { 1 }\n1;\n")?;
+        std::fs::write(&old_path, "#!/usr/bin/env perl\nsub disk_rename { 1 }\n1;\n")?;
+
+        let mut server = LspServer::new();
+        server.index_coordinator =
+            Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
+                IndexResourceLimits::default(),
+                IndexPerformanceCaps::default(),
+            )));
+
+        // A synchronously observed didOpen is the deterministic stand-in for
+        // the lifecycle race: every disk operation must re-check this same
+        // authority before mutating the workspace index.
+        server.test_apply_did_open(create_uri.as_str(), "sub buffer_create { 1 }\n1;\n", 1)?;
+        let index = server.coordinator().ok_or("missing index coordinator")?.index();
+        assert!(
+            index
+                .file_symbols(create_uri.as_str())
+                .iter()
+                .any(|symbol| symbol.name == "buffer_create"),
+            "didOpen must publish buffer_create facts before a create event"
+        );
+        server.handle_did_create_files(Some(json!({
+            "files": [{ "uri": create_uri.to_string() }]
+        })))?;
+
+        server.test_apply_did_open(change_uri.as_str(), "sub buffer_change { 1 }\n1;\n", 1)?;
+        assert!(
+            index
+                .file_symbols(change_uri.as_str())
+                .iter()
+                .any(|symbol| symbol.name == "buffer_change"),
+            "didOpen must publish buffer_change facts before a watcher event"
+        );
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [{ "uri": change_uri.to_string(), "type": 2 }]
+        })))?;
+
+        index.index_initial_file(
+            url::Url::parse(old_uri.as_str())?,
+            "#!/usr/bin/env perl\nsub disk_rename { 1 }\n1;\n".to_string(),
+        )?;
+        std::fs::rename(&old_path, &rename_path)?;
+        server.test_apply_did_open(rename_uri.as_str(), "sub buffer_rename { 1 }\n1;\n", 1)?;
+        assert!(
+            index
+                .file_symbols(rename_uri.as_str())
+                .iter()
+                .any(|symbol| symbol.name == "buffer_rename"),
+            "didOpen must publish buffer_rename facts before a rename event"
+        );
+        server.handle_did_rename_files(Some(json!({
+            "files": [{ "oldUri": old_uri.to_string(), "newUri": rename_uri.to_string() }]
+        })))?;
+
+        for disk_symbol in ["disk_create", "disk_change", "disk_rename"] {
+            assert!(
+                index.find_symbols(disk_symbol).is_empty(),
+                "open-buffer lifecycle must not index disk symbol {disk_symbol}"
+            );
+        }
+        assert!(
+            index.file_symbols(old_uri.as_str()).is_empty(),
+            "rename must remove the old index identity"
+        );
+        let renamed_symbols = index.file_symbols(rename_uri.as_str());
+        assert!(
+            renamed_symbols.iter().any(|symbol| symbol.name == "buffer_rename"),
+            "rename must preserve the new open-buffer facts"
+        );
+        assert!(
+            renamed_symbols.iter().all(|symbol| symbol.uri == rename_uri.as_str()),
+            "rename must keep every surviving fact on the new URI identity"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn failed_file_lifecycle_reads_clear_stale_closed_file_facts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let create_path = directory.path().join("created-tool");
+        let old_path = directory.path().join("old-tool");
+        let new_path = directory.path().join("renamed-tool");
+        let create_uri =
+            url::Url::from_file_path(&create_path).map_err(|_| "invalid create URI")?;
+        let old_uri = url::Url::from_file_path(&old_path).map_err(|_| "invalid old URI")?;
+        let new_uri = url::Url::from_file_path(&new_path).map_err(|_| "invalid new URI")?;
+
+        let mut server = LspServer::new();
+        server.index_coordinator =
+            Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
+                IndexResourceLimits::default(),
+                IndexPerformanceCaps::default(),
+            )));
+        let index = server.coordinator().ok_or("missing index coordinator")?.index();
+
+        index.index_initial_file(
+            url::Url::parse(create_uri.as_str())?,
+            "sub stale_create { 1 }\n1;\n".to_string(),
+        )?;
+        std::fs::write(&create_path, "not Perl source\n")?;
+        server.handle_did_create_files(Some(json!({
+            "files": [{ "uri": create_uri.to_string() }]
+        })))?;
+        assert!(
+            index.find_symbols("stale_create").is_empty(),
+            "failed create classification must clear stale closed-file facts"
+        );
+
+        index.index_initial_file(
+            url::Url::parse(old_uri.as_str())?,
+            "sub stale_old { 1 }\n1;\n".to_string(),
+        )?;
+        index.index_initial_file(
+            url::Url::parse(new_uri.as_str())?,
+            "sub stale_new { 1 }\n1;\n".to_string(),
+        )?;
+        server.handle_did_rename_files(Some(json!({
+            "files": [{ "oldUri": old_uri.to_string(), "newUri": new_uri.to_string() }]
+        })))?;
+        assert!(
+            index.find_symbols("stale_old").is_empty(),
+            "rename must remove the old file identity"
+        );
+        assert!(
+            index.find_symbols("stale_new").is_empty(),
+            "failed rename read must clear stale destination facts"
+        );
+        Ok(())
     }
 
     /// #8262 counterexample: the case-sensitive name-index prefix search returns
@@ -3039,6 +3971,29 @@ mod tests {
         );
         assert_eq!(current_engine, perl_lsp_rs_core::config::CriticEngine::Native);
         Ok(())
+    }
+
+    #[test]
+    fn configuration_change_invalidates_identity_before_and_after_application() {
+        let server = LspServer::new();
+        let before = server.workspace_identity_generation.load(Ordering::SeqCst);
+
+        server.test_handle_did_change_configuration(Some(json!({
+            "settings": {
+                "perl": {
+                    "workspace": {
+                        "resolutionTimeout": 123
+                    }
+                }
+            }
+        })));
+
+        let after = server.workspace_identity_generation.load(Ordering::SeqCst);
+        assert!(
+            after >= before + 2,
+            "configuration changes must invalidate both before and after application: \
+             before={before}, after={after}"
+        );
     }
 
     #[test]
@@ -3767,6 +4722,941 @@ mod tests {
         ) {
             return Err("follow-up scan could not claim the released slot".into());
         }
+        Ok(())
+    }
+
+    /// Shared harness: server + coordinator bound to a temp workspace folder.
+    #[cfg(feature = "workspace")]
+    fn gated_scan_server(dir: &tempfile::TempDir) -> Result<LspServer, Box<dyn std::error::Error>> {
+        let folder_uri = url::Url::from_directory_path(dir.path())
+            .map_err(|_| "invalid workspace folder path")?
+            .to_string();
+        let mut server = LspServer::new();
+        server.index_coordinator = Some(Arc::new(IndexCoordinator::with_limits_and_caps(
+            IndexResourceLimits::default(),
+            IndexPerformanceCaps { initial_scan_budget_ms: 30_000, ..Default::default() },
+        )));
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(dir.path().to_path_buf()),
+        );
+        Ok(server)
+    }
+
+    /// Shared harness variant: the workspace folder carries an explicit
+    /// effective workspace config (extra discovery extensions, ...).
+    #[cfg(feature = "workspace")]
+    fn configured_scan_server(
+        dir: &tempfile::TempDir,
+        config: crate::state::WorkspaceConfig,
+    ) -> Result<LspServer, Box<dyn std::error::Error>> {
+        let folder_uri = url::Url::from_directory_path(dir.path())
+            .map_err(|_| "invalid workspace folder path")?
+            .to_string();
+        let mut server = LspServer::new();
+        server.index_coordinator = Some(Arc::new(IndexCoordinator::with_limits_and_caps(
+            IndexResourceLimits::default(),
+            IndexPerformanceCaps { initial_scan_budget_ms: 30_000, ..Default::default() },
+        )));
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(dir.path().to_path_buf())
+                .with_effective_workspace_config(config),
+        );
+        Ok(server)
+    }
+
+    /// Shared harness: block until the background scan releases the indexing
+    /// slot.
+    #[cfg(feature = "workspace")]
+    fn wait_for_indexing_completion(server: &LspServer) -> Result<(), Box<dyn std::error::Error>> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while server.indexing_in_progress.load(std::sync::atomic::Ordering::Acquire) {
+            if std::time::Instant::now() >= deadline {
+                return Err("indexing thread did not finish before timeout".into());
+            }
+            std::thread::yield_now();
+        }
+        Ok(())
+    }
+
+    /// #14074 review regression: a discovered path replaced by a writer-less
+    /// FIFO before the scan's read must not block the read. The commit gate
+    /// parks the scan before the (lexically later) swapped file is read, so
+    /// the swap lands inside the discovery-to-read window; unfixed code
+    /// blocks in `std::fs::read` forever holding the indexing slot, fails
+    /// the completion deadline, and blocks every future scan.
+    #[cfg(all(feature = "workspace", unix))]
+    #[test]
+    fn startup_scan_does_not_wedge_when_discovered_file_becomes_fifo()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let gate_path = dir.path().join("aaa_gate.pl");
+        let swapped_path = dir.path().join("zzz_swapped.pm");
+        std::fs::write(&gate_path, "package Gate;\nsub gate_holder { 1 }\n1;\n")?;
+        std::fs::write(&swapped_path, "package Swapped;\nsub swapped_symbol { 1 }\n1;\n")?;
+        let server = gated_scan_server(&dir)?;
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        server.test_gate_indexing_commit(started_tx, release_rx);
+        server.start_workspace_indexing();
+        // The scan is now paused at the first file's commit seam, before
+        // `zzz_swapped.pm` is read.
+        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        std::fs::remove_file(&swapped_path)?;
+        let fifo = std::process::Command::new("mkfifo")
+            .arg(&swapped_path)
+            .status()
+            .map_err(|err| std::io::Error::other(format!("failed to spawn mkfifo: {err}")))?;
+        if !fifo.success() {
+            return Err("mkfifo could not create the FIFO fixture".into());
+        }
+        release_tx.send(())?;
+        wait_for_indexing_completion(&server)?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("Gate::gate_holder").is_none() {
+            return Err("scan lost the control file's symbols".into());
+        }
+        if coordinator.index().find_definition("Swapped::swapped_symbol").is_some() {
+            return Err("a FIFO-replaced path's bytes were indexed as Perl".into());
+        }
+        Ok(())
+    }
+
+    /// #13308 regression: an extensionless path that discovery classified as
+    /// Perl must be reclassified from the bytes actually read at the final
+    /// indexing seam. The first (lexically) file's commit fires the commit
+    /// gate, the test rewrites the not-yet-read second file to non-Perl
+    /// content, and the scan must skip it instead of indexing it as Perl.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn startup_scan_reclassifies_swapped_content_at_final_seam()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let gate_path = dir.path().join("aaa_gate.pl");
+        let swapped_path = dir.path().join("zzz_swapped_script");
+        std::fs::write(&gate_path, "package Gate;\nsub gate_holder { 1 }\n1;\n")?;
+        std::fs::write(
+            &swapped_path,
+            "#!/usr/bin/env perl\npackage Swapped;\nsub swapped_symbol { 1 }\n1;\n",
+        )?;
+        let server = gated_scan_server(&dir)?;
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        server.test_gate_indexing_commit(started_tx, release_rx);
+        server.start_workspace_indexing();
+        // The scan is now paused holding `indexing_transition_lock` at the
+        // first file's commit seam, before `zzz_swapped_script` is read.
+        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        // The replacement keeps the symbol text but loses the Perl shebang:
+        // unfixed code indexes it (shell content as Perl), fixed code must
+        // reject it at the seam, so the assertion discriminates both ways.
+        std::fs::write(
+            &swapped_path,
+            "#!/bin/sh\npackage Swapped;\nsub swapped_symbol { 1 }\n1;\n",
+        )?;
+        release_tx.send(())?;
+        wait_for_indexing_completion(&server)?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("Gate::gate_holder").is_none() {
+            return Err("startup scan lost the control file's symbols".into());
+        }
+        if coordinator.index().find_definition("Swapped::swapped_symbol").is_some() {
+            return Err("startup scan indexed non-Perl content swapped in after discovery".into());
+        }
+        Ok(())
+    }
+
+    /// #13308 companion control: without the swap, extensionless shebang
+    /// scripts are still indexed by the startup scan, proving the seam
+    /// reclassification does not over-reject.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn startup_scan_still_indexes_extensionless_perl_scripts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let plain_path = dir.path().join("Plain.pl");
+        let script_path = dir.path().join("deploy_hook");
+        std::fs::write(&plain_path, "package Plain;\nsub plain_symbol { 1 }\n1;\n")?;
+        std::fs::write(
+            &script_path,
+            "#!/usr/bin/env perl\npackage Hook;\nsub hook_symbol { 1 }\n1;\n",
+        )?;
+        let server = gated_scan_server(&dir)?;
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("Plain::plain_symbol").is_none() {
+            return Err("startup scan lost extension file symbols".into());
+        }
+        if coordinator.index().find_definition("Hook::hook_symbol").is_none() {
+            return Err("startup scan no longer indexes extensionless shebang scripts".into());
+        }
+        Ok(())
+    }
+
+    /// #14186 regression (P1): discovery admits `.xs`/`.i` as built-in
+    /// discovery-only formats, and the final startup seam must keep that
+    /// admission instead of silently dropping their workspace symbols.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn startup_scan_indexes_xs_and_swig_discovery_formats() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let xs_path = dir.path().join("Native.xs");
+        let swig_path = dir.path().join("Api.i");
+        std::fs::write(&xs_path, "package Native;\nsub native_symbol { 1 }\n1;\n")?;
+        std::fs::write(&swig_path, "package Swig;\nsub swig_symbol { 1 }\n1;\n")?;
+        let server = gated_scan_server(&dir)?;
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("Native::native_symbol").is_none() {
+            return Err("startup scan dropped discovery-admitted .xs symbols".into());
+        }
+        if coordinator.index().find_definition("Swig::swig_symbol").is_none() {
+            return Err("startup scan dropped discovery-admitted .i symbols".into());
+        }
+        Ok(())
+    }
+
+    /// #14186 regression: raw user-config spellings of extra extensions
+    /// (`".FOO"`) are normalized by the same `DiscoveryConfig` authority
+    /// discovery uses, so a discovered `asset.foo` is not dropped at the
+    /// final seam because the seam lookup stayed raw.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn startup_scan_admits_raw_spelled_extra_extensions() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let asset_path = dir.path().join("asset.foo");
+        std::fs::write(&asset_path, "package Asset;\nsub asset_symbol { 1 }\n1;\n")?;
+        let mut config = crate::state::WorkspaceConfig::default();
+        config.discovery_extra_extensions = vec![".FOO".to_string()];
+        let server = configured_scan_server(&dir, config)?;
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("Asset::asset_symbol").is_none() {
+            return Err("startup scan dropped a file admitted via a raw \".FOO\" \
+                        extra-extension spelling"
+                .into());
+        }
+        Ok(())
+    }
+
+    /// #14186 regression (stale reclassified symbols): a script indexed by an
+    /// earlier scan that loses its shebang must have its stale symbols
+    /// cleared by the next startup scan instead of staying searchable until
+    /// some watcher event happens to arrive.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn startup_scan_clears_stale_symbols_when_script_loses_shebang()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let control_path = dir.path().join("aaa_control.pl");
+        let script_path = dir.path().join("deploy_hook");
+        std::fs::write(&control_path, "package Control;\nsub control_symbol { 1 }\n1;\n")?;
+        std::fs::write(
+            &script_path,
+            "#!/usr/bin/env perl\npackage Hook;\nsub hook_symbol { 1 }\n1;\n",
+        )?;
+        let server = gated_scan_server(&dir)?;
+        // Scan 1: the script still carries its shebang, so its symbols land
+        // in the workspace index.
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        {
+            let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+            if coordinator.index().find_definition("Hook::hook_symbol").is_none() {
+                return Err("fixture: first scan must index the shebang script".into());
+            }
+        }
+
+        // Scan 2: the script is discovered while it still has its shebang,
+        // but loses it before the final read — the scan pauses at the first
+        // file's commit seam so the swap lands inside the discovery→read
+        // window and the seam reclassification actually fires.
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        server.test_gate_indexing_commit(started_tx, release_rx);
+        server.start_workspace_indexing();
+        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        std::fs::write(&script_path, "#!/bin/sh\npackage Hook;\nsub hook_symbol { 1 }\n1;\n")?;
+        release_tx.send(())?;
+        wait_for_indexing_completion(&server)?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("Hook::hook_symbol").is_some() {
+            return Err("stale symbols from a de-shebanged script survived a rescan".into());
+        }
+        if coordinator.index().find_definition("Control::control_symbol").is_none() {
+            return Err("rescan lost the control file's symbols".into());
+        }
+        Ok(())
+    }
+
+    /// #14186 regression: a watched disk change to a discovery-only format
+    /// (`.xs`) classifies under the containing folder's discovery policy and
+    /// keeps its index facts instead of clearing them.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn watched_change_keeps_discovery_only_format_facts() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let xs_path = dir.path().join("Native.xs");
+        std::fs::write(&xs_path, "package Native;\nsub native_symbol { 1 }\n1;\n")?;
+        let server = gated_scan_server(&dir)?;
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        {
+            let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+            if coordinator.index().find_definition("Native::native_symbol").is_none() {
+                return Err("fixture: startup scan must index the .xs file".into());
+            }
+        }
+
+        std::fs::write(
+            &xs_path,
+            "package Native;\nsub native_symbol { 1 }\nsub updated_symbol { 2 }\n1;\n",
+        )?;
+        let uri = url::Url::from_file_path(&xs_path).map_err(|_| "invalid .xs uri")?.to_string();
+        server.process_file_watcher_uri_immediate(&uri);
+
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("Native::native_symbol").is_none() {
+            return Err("watched .xs change cleared discovery-only format facts".into());
+        }
+        if coordinator.index().find_definition("Native::updated_symbol").is_none() {
+            return Err("watched .xs change did not refresh the index from disk".into());
+        }
+        Ok(())
+    }
+
+    /// #14186: extra-extension policies stay folder-scoped. Folder B, which
+    /// configures no extras, must not index B-side `.foo` files even while
+    /// folder A's policy admits A-side ones.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn multi_root_extra_extensions_stay_folder_scoped() -> Result<(), Box<dyn std::error::Error>> {
+        let dir_a = tempfile::tempdir()?;
+        let dir_b = tempfile::tempdir()?;
+        std::fs::write(
+            dir_a.path().join("plant.foo"),
+            "package Plant;\nsub plant_symbol { 1 }\n1;\n",
+        )?;
+        std::fs::write(
+            dir_b.path().join("other.foo"),
+            "package Other;\nsub other_symbol { 1 }\n1;\n",
+        )?;
+        std::fs::write(
+            dir_b.path().join("control.pm"),
+            "package BControl;\nsub b_control_symbol { 1 }\n1;\n",
+        )?;
+
+        let mut config_a = crate::state::WorkspaceConfig::default();
+        config_a.discovery_extra_extensions = vec![".FOO".to_string()];
+        let mut server = LspServer::new();
+        server.index_coordinator = Some(Arc::new(IndexCoordinator::with_limits_and_caps(
+            IndexResourceLimits::default(),
+            IndexPerformanceCaps { initial_scan_budget_ms: 30_000, ..Default::default() },
+        )));
+        for (dir, config) in [(&dir_a, Some(config_a)), (&dir_b, None)].into_iter() {
+            let folder_uri = url::Url::from_directory_path(dir.path())
+                .map_err(|_| "invalid workspace folder path")?
+                .to_string();
+            let mut folder =
+                crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                    .with_path(dir.path().to_path_buf());
+            if let Some(config) = config {
+                folder = folder.with_effective_workspace_config(config);
+            }
+            server.workspace_folders.lock().push(folder);
+        }
+
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("Plant::plant_symbol").is_none() {
+            return Err("folder A's configured .foo policy lost its own files".into());
+        }
+        if coordinator.index().find_definition("Other::other_symbol").is_some() {
+            return Err(
+                "folder B indexed a .foo file no folder policy covering B configures".into()
+            );
+        }
+        if coordinator.index().find_definition("BControl::b_control_symbol").is_none() {
+            return Err("folder B lost its ordinary .pm symbols".into());
+        }
+        Ok(())
+    }
+
+    /// #14186 review regression (nested roots): a parent folder's extra
+    /// extension must not admit files inside a stricter nested root. The
+    /// startup seam resolves every path against the most-specific containing
+    /// folder, not the folder whose scan happened to discover it.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn nested_root_extra_extension_wins_over_parent() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let nested = dir.path().join("nested");
+        std::fs::create_dir_all(&nested)?;
+        std::fs::write(dir.path().join("top.foo"), "package Top;\nsub top_symbol { 1 }\n1;\n")?;
+        std::fs::write(nested.join("inner.foo"), "package Inner;\nsub inner_symbol { 1 }\n1;\n")?;
+        std::fs::write(
+            nested.join("inner.pm"),
+            "package InnerCtl;\nsub inner_ctl_symbol { 1 }\n1;\n",
+        )?;
+
+        let mut parent_config = crate::state::WorkspaceConfig::default();
+        parent_config.discovery_extra_extensions = vec![".FOO".to_string()];
+        let mut server = LspServer::new();
+        server.index_coordinator = Some(Arc::new(IndexCoordinator::with_limits_and_caps(
+            IndexResourceLimits::default(),
+            IndexPerformanceCaps { initial_scan_budget_ms: 30_000, ..Default::default() },
+        )));
+        let parent_folder_uri = url::Url::from_directory_path(dir.path())
+            .map_err(|_| "invalid parent folder path")?
+            .to_string();
+        let nested_folder_uri = url::Url::from_directory_path(&nested)
+            .map_err(|_| "invalid nested folder path")?
+            .to_string();
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(parent_folder_uri)
+                .with_path(dir.path().to_path_buf())
+                .with_effective_workspace_config(parent_config),
+        );
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(nested_folder_uri)
+                .with_path(nested.clone()),
+        );
+
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("Top::top_symbol").is_none() {
+            return Err("parent root's configured .foo policy lost its own files".into());
+        }
+        if coordinator.index().find_definition("Inner::inner_symbol").is_some() {
+            return Err(
+                "parent's .foo policy admitted a file inside the stricter nested root".into()
+            );
+        }
+        if coordinator.index().find_definition("InnerCtl::inner_ctl_symbol").is_none() {
+            return Err("nested root lost its ordinary .pm symbols".into());
+        }
+        Ok(())
+    }
+
+    /// #14186 review regression (open-buffer authority at the startup seam):
+    /// an admitted file whose editor buffer was open before the scan must
+    /// keep its live buffer facts — the scan's disk read can never replace
+    /// them, and the commit critical section rechecks openness before
+    /// committing.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn startup_scan_defers_to_open_buffer_for_admitted_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let control_path = dir.path().join("aaa_control.pl");
+        let subject_path = dir.path().join("subject.pl");
+        std::fs::write(&control_path, "package Control;\nsub control_symbol { 1 }\n1;\n")?;
+        std::fs::write(&subject_path, "package Disk;\nsub disk_symbol { 1 }\n1;\n")?;
+        let server = gated_scan_server(&dir)?;
+
+        let subject_uri =
+            url::Url::from_file_path(&subject_path).map_err(|_| "invalid subject uri")?.to_string();
+        server.did_open(json!({
+            "textDocument": {
+                "uri": subject_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "package Buffer;\nsub buffer_symbol { 1 }\n1;\n"
+            }
+        }))?;
+        // didOpen commits the buffer facts through its own lifecycle; wait
+        // for that fixture commit so the assertion below observes the scan's
+        // effect on live facts, not a race against didOpen's background task.
+        {
+            let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while coordinator.index().find_definition("Buffer::buffer_symbol").is_none() {
+                if std::time::Instant::now() >= deadline {
+                    return Err("fixture: didOpen never committed the buffer facts".into());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("Buffer::buffer_symbol").is_none() {
+            return Err("startup scan displaced the open buffer's live facts".into());
+        }
+        if coordinator.index().find_definition("Disk::disk_symbol").is_some() {
+            return Err("startup scan committed disk bytes behind an open document".into());
+        }
+        if coordinator.index().find_definition("Control::control_symbol").is_none() {
+            return Err("startup scan lost the closed control file's symbols".into());
+        }
+        Ok(())
+    }
+
+    /// #14186 review regression (cross-scan declassification): discovery
+    /// cannot re-return an extensionless script whose shebang is already
+    /// gone, so the final seam never sees it. A completed rescan must
+    /// reconcile such stale entries away instead of keeping them searchable
+    /// until a watcher event happens to arrive.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn rescan_clears_symbols_for_script_declassified_between_scans()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let control_path = dir.path().join("aaa_control.pl");
+        let script_path = dir.path().join("deploy_hook");
+        std::fs::write(&control_path, "package Control;\nsub control_symbol { 1 }\n1;\n")?;
+        std::fs::write(
+            &script_path,
+            "#!/usr/bin/env perl\npackage Hook;\nsub hook_symbol { 1 }\n1;\n",
+        )?;
+        let server = gated_scan_server(&dir)?;
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        {
+            let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+            if coordinator.index().find_definition("Hook::hook_symbol").is_none() {
+                return Err("fixture: first scan must index the shebang script".into());
+            }
+        }
+
+        // The shebang is lost BEFORE the rescan starts, so discovery never
+        // returns the path and the final seam cannot reclassify it.
+        std::fs::write(&script_path, "#!/bin/sh\npackage Hook;\nsub hook_symbol { 1 }\n1;\n")?;
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("Hook::hook_symbol").is_some() {
+            return Err(
+                "stale symbols from a script declassified between scans survived a rescan".into()
+            );
+        }
+        if coordinator.index().find_definition("Control::control_symbol").is_none() {
+            return Err("rescan lost the control file's symbols".into());
+        }
+        Ok(())
+    }
+
+    /// #14074 review regression: the cross-scan reconciliation must screen
+    /// non-regular objects before opening and must never span disk I/O while
+    /// holding `indexing_transition_lock`. A regular-file-to-FIFO replacement
+    /// would otherwise block the scan's read inside the lock and wedge every
+    /// didOpen transition behind it. On unfixed code the reconciliation read
+    /// blocks forever on the writer-less FIFO, so the scan never completes
+    /// and the completion deadline fails the test. Discovery skips non-regular
+    /// objects, so only the reconciliation pass can touch this URI.
+    #[cfg(all(feature = "workspace", unix))]
+    #[test]
+    fn rescan_reconciliation_does_not_wedge_on_fifo_replaced_script()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let control_path = dir.path().join("aaa_control.pl");
+        let script_path = dir.path().join("deploy_hook");
+        std::fs::write(&control_path, "package Control;\nsub control_symbol { 1 }\n1;\n")?;
+        std::fs::write(
+            &script_path,
+            "#!/usr/bin/env perl\npackage Hook;\nsub hook_symbol { 1 }\n1;\n",
+        )?;
+        let server = gated_scan_server(&dir)?;
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        {
+            let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+            if coordinator.index().find_definition("Hook::hook_symbol").is_none() {
+                return Err("fixture: first scan must index the shebang script".into());
+            }
+        }
+
+        // Replace the indexed extensionless script with a writer-less FIFO.
+        // Opening it for reading blocks forever; only a non-regular-object
+        // screen can keep the reconciliation from wedging.
+        std::fs::remove_file(&script_path)?;
+        let fifo = std::process::Command::new("mkfifo")
+            .arg(&script_path)
+            .status()
+            .map_err(|err| std::io::Error::other(format!("failed to spawn mkfifo: {err}")))?;
+        if !fifo.success() {
+            return Err("mkfifo could not create the FIFO fixture".into());
+        }
+
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("Hook::hook_symbol").is_some() {
+            return Err(
+                "stale symbols from a script replaced by a non-regular object survived a rescan"
+                    .into(),
+            );
+        }
+        if coordinator.index().find_definition("Control::control_symbol").is_none() {
+            return Err("rescan lost the control file's symbols".into());
+        }
+        Ok(())
+    }
+
+    /// #14186 review regression (directory events): deleting a directory URI
+    /// must evict every indexed descendant, not just the exact URI.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn directory_delete_evicts_descendant_symbols() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let nested = dir.path().join("pkg");
+        std::fs::create_dir_all(&nested)?;
+        std::fs::write(nested.join("a.pm"), "package PkgA;\nsub pkg_a_symbol { 1 }\n1;\n")?;
+        std::fs::write(nested.join("b.pm"), "package PkgB;\nsub pkg_b_symbol { 1 }\n1;\n")?;
+        std::fs::write(
+            dir.path().join("sibling.pm"),
+            "package Sibling;\nsub sibling_symbol { 1 }\n1;\n",
+        )?;
+        let server = gated_scan_server(&dir)?;
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        let nested_uri = url::Url::from_directory_path(&nested)
+            .map_err(|_| "invalid nested directory uri")?
+            .to_string();
+        server.handle_did_delete_files(Some(json!({ "files": [{ "uri": nested_uri }] })))?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("PkgA::pkg_a_symbol").is_some()
+            || coordinator.index().find_definition("PkgB::pkg_b_symbol").is_some()
+        {
+            return Err("directory delete left indexed descendant symbols searchable".into());
+        }
+        if coordinator.index().find_definition("Sibling::sibling_symbol").is_none() {
+            return Err("directory delete evicted files outside the deleted directory".into());
+        }
+        Ok(())
+    }
+
+    /// #14074 review regression (open-buffer authority): an open descendant
+    /// of a deleted directory must receive the same recorded backing handoff
+    /// as the exact-URI seam, so didSave/didClose can complete the transition
+    /// instead of the backing file vanishing silently.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn directory_delete_records_backing_transition_for_open_descendant()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let nested = dir.path().join("pkg");
+        std::fs::create_dir_all(&nested)?;
+        let child_path = nested.join("open_child.pm");
+        let child_source = "package OpenChild;\nsub open_child_symbol { 1 }\n1;\n";
+        std::fs::write(&child_path, child_source)?;
+        std::fs::write(nested.join("closed.pm"), "package Closed;\nsub closed_symbol { 1 }\n1;\n")?;
+        let server = gated_scan_server(&dir)?;
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        let child_uri = url::Url::from_directory_path(&child_path)
+            .map_err(|_| "invalid child uri")?
+            .to_string();
+        server.did_open(json!({
+            "textDocument": {
+                "uri": child_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": child_source
+            }
+        }))?;
+
+        let nested_uri = url::Url::from_directory_path(&nested)
+            .map_err(|_| "invalid nested directory uri")?
+            .to_string();
+        server.handle_did_delete_files(Some(json!({ "files": [{ "uri": nested_uri }] })))?;
+
+        assert!(
+            server.document_is_open(&child_uri),
+            "the open descendant's buffer must survive the directory delete"
+        );
+        assert_eq!(
+            server.take_backing_file_transition(&child_uri),
+            Some(BackingFileTransition::Deleted),
+            "the open descendant must inherit the exact-URI seam's Deleted handoff"
+        );
+        assert_eq!(
+            server.take_backing_file_transition(&child_uri),
+            None,
+            "the backing handoff must resolve exactly once"
+        );
+        Ok(())
+    }
+
+    /// #14074 review regression (open-buffer authority): an open descendant
+    /// of a renamed directory must record the same RenamedOrMoved backing
+    /// handoff as the exact-URI seam, with its destination remapped under
+    /// the new root, while closed descendants lose their old-root facts.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn directory_rename_records_backing_transition_for_open_descendant()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let old_nested = dir.path().join("pkg");
+        std::fs::create_dir_all(&old_nested)?;
+        let child_path = old_nested.join("open_child.pm");
+        let child_source = "package OpenChild;\nsub open_child_symbol { 1 }\n1;\n";
+        std::fs::write(&child_path, child_source)?;
+        std::fs::write(
+            old_nested.join("closed.pm"),
+            "package Closed;\nsub closed_symbol { 1 }\n1;\n",
+        )?;
+        let server = gated_scan_server(&dir)?;
+        server.start_workspace_indexing();
+        wait_for_indexing_completion(&server)?;
+
+        let child_uri = url::Url::from_directory_path(&child_path)
+            .map_err(|_| "invalid child uri")?
+            .to_string();
+        server.did_open(json!({
+            "textDocument": {
+                "uri": child_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": child_source
+            }
+        }))?;
+
+        let new_nested = dir.path().join("pkg2");
+        std::fs::rename(&old_nested, &new_nested)?;
+        let old_nested_uri = url::Url::from_directory_path(&old_nested)
+            .map_err(|_| "invalid old directory uri")?
+            .to_string();
+        let new_nested_uri = url::Url::from_directory_path(&new_nested)
+            .map_err(|_| "invalid new directory uri")?
+            .to_string();
+        server.handle_did_rename_files(Some(json!({
+            "files": [{ "oldUri": old_nested_uri, "newUri": new_nested_uri }]
+        })))?;
+
+        let expected_child_uri = url::Url::from_file_path(new_nested.join("open_child.pm"))
+            .map_err(|_| "invalid remapped child uri")?
+            .to_string();
+        assert!(
+            server.document_is_open(&child_uri),
+            "the open descendant's buffer stays bound to its original URI"
+        );
+        // The exact-URI seam records its transition under the handler's
+        // normalized URI spelling, so the descendant handoff is compared
+        // through the same denominator.
+        let recorded = server.take_backing_file_transition(&child_uri);
+        assert!(
+            matches!(&recorded, Some(BackingFileTransition::RenamedOrMoved { .. })),
+            "the open descendant must inherit the exact-URI seam's RenamedOrMoved \
+             handoff, got {recorded:?}"
+        );
+        if let Some(BackingFileTransition::RenamedOrMoved { new_uri }) = recorded {
+            assert_eq!(
+                server.normalize_uri_key(&new_uri),
+                server.normalize_uri_key(&expected_child_uri),
+                "the recorded descendant destination must remap under the new root"
+            );
+        }
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        assert!(
+            coordinator.index().find_definition("Closed::closed_symbol").is_none(),
+            "a closed descendant of the renamed directory must not keep old-root facts"
+        );
+        Ok(())
+    }
+
+    /// Shared harness for the transition-lock insertion-wait proof: pause the
+    /// real scan at its commit seam, then run `didOpen` on a thread and prove
+    /// the handler cannot complete (and therefore cannot insert the document)
+    /// while the scan holds `indexing_transition_lock`.
+    #[cfg(feature = "workspace")]
+    fn assert_did_open_waits_for_indexing_transition(
+        server: Arc<LspServer>,
+        uri: String,
+        params: Value,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        server.test_gate_indexing_commit(started_tx, release_rx);
+        server.start_workspace_indexing();
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| "scan never reached its commit gate")?;
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let did_open_server = Arc::clone(&server);
+        let handle = std::thread::spawn(move || {
+            let result = did_open_server.test_handle_did_open(Some(params));
+            let _ = done_tx.send(());
+            result
+        });
+
+        // The insertion-side lock must make didOpen wait: while the scan
+        // holds the transition lock, the handler must neither complete nor
+        // insert its document. A server whose didOpen insertion-side lock
+        // was removed surfaces either as an early handler completion or as
+        // the document appearing in `documents` during the hold (the parsed
+        // branch would only later block in its background commit task).
+        // `recv_timeout` blocks until the didOpen thread actually signals,
+        // so the poll wakes immediately on completion instead of burning the
+        // 10ms sleep quantum per check.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1_500);
+        let outcome = loop {
+            // Timeout and Disconnected both mean "not completed yet" here;
+            // the poll continues to the open-document and deadline checks.
+            if done_rx.recv_timeout(std::time::Duration::from_millis(10)).is_ok() {
+                break Some("didOpen completed while the scan held the indexing transition lock");
+            }
+            if server.document_is_open(&uri) {
+                break Some(
+                    "didOpen inserted its document while the scan held the indexing transition lock",
+                );
+            }
+            if std::time::Instant::now() >= deadline {
+                break None;
+            }
+        };
+        if let Some(violation) = outcome {
+            release_tx.send(()).ok();
+            let _ = handle.join();
+            return Err(violation.into());
+        }
+        release_tx.send(())?;
+        let result = handle.join().map_err(|_| "didOpen thread panicked")?;
+        result.map_err(|err| {
+            std::io::Error::other(format!("didOpen failed after the gate released: {err}")).into()
+        })
+    }
+
+    /// #13308 regression (parsed branch): didOpen's document insertion waits
+    /// for the background scan's commit critical section, and the live index
+    /// ends up reflecting the open buffer rather than the disk content.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn did_open_parsed_insertion_waits_for_indexing_transition_lock()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let script_path = dir.path().join("script.pl");
+        std::fs::write(&script_path, "package Disk;\nsub disk_symbol { 1 }\n1;\n")?;
+        let script_uri =
+            url::Url::from_file_path(&script_path).map_err(|_| "invalid script URI")?.to_string();
+        let server = Arc::new(gated_scan_server(&dir)?);
+        let params = json!({
+            "textDocument": {
+                "uri": script_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "package Disk;\nsub buffer_symbol { 1 }\n1;\n",
+            }
+        });
+        assert_did_open_waits_for_indexing_transition(
+            Arc::clone(&server),
+            script_uri.clone(),
+            params,
+        )?;
+
+        // In unit tests (no tokio runtime) the background live-index commit
+        // runs synchronously inside didOpen, so the index is settled now.
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        if coordinator.index().find_definition("Disk::buffer_symbol").is_none() {
+            return Err("final live index does not reflect the opened buffer".into());
+        }
+        if coordinator.index().find_definition("Disk::disk_symbol").is_some() {
+            return Err("final live index kept stale disk symbols over the open buffer".into());
+        }
+        Ok(())
+    }
+
+    /// #13308 regression (template guard branch): the guarded no-parse
+    /// insertion takes the same transition lock.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn did_open_template_insertion_waits_for_indexing_transition_lock()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("gate.pl"), "package Gate;\n1;\n")?;
+        let server = Arc::new(gated_scan_server(&dir)?);
+        let template_uri = url::Url::from_file_path(dir.path().join("layout.ep"))
+            .map_err(|_| "invalid template URI")?
+            .to_string();
+        let params = json!({
+            "textDocument": {
+                "uri": template_uri,
+                "languageId": "html",
+                "version": 1,
+                "text": "%= content\n",
+            }
+        });
+        assert_did_open_waits_for_indexing_transition(Arc::clone(&server), template_uri, params)?;
+        Ok(())
+    }
+
+    /// #13308 regression (oversized guard branch): the size-limit insertion
+    /// takes the same transition lock.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn did_open_oversized_insertion_waits_for_indexing_transition_lock()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("gate.pl"), "package Gate;\n1;\n")?;
+        let server = Arc::new(gated_scan_server(&dir)?);
+        let big_uri = url::Url::from_file_path(dir.path().join("big.pl"))
+            .map_err(|_| "invalid big-file URI")?
+            .to_string();
+        let oversized_text = "# padding line\n".repeat(90_000);
+        let params = json!({
+            "textDocument": {
+                "uri": big_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": oversized_text,
+            }
+        });
+        assert_did_open_waits_for_indexing_transition(Arc::clone(&server), big_uri, params)?;
+        Ok(())
+    }
+
+    /// #13308 regression (binary guard branch): the binary-content insertion
+    /// takes the same transition lock.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn did_open_binary_insertion_waits_for_indexing_transition_lock()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("gate.pl"), "package Gate;\n1;\n")?;
+        let server = Arc::new(gated_scan_server(&dir)?);
+        let binary_uri = url::Url::from_file_path(dir.path().join("blob.pl"))
+            .map_err(|_| "invalid binary URI")?
+            .to_string();
+        let params = json!({
+            "textDocument": {
+                "uri": binary_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "package Bin;\nmy $payload = \"a\u{0}b\";\n1;\n",
+            }
+        });
+        assert_did_open_waits_for_indexing_transition(Arc::clone(&server), binary_uri, params)?;
         Ok(())
     }
 

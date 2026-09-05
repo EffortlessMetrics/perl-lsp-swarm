@@ -644,11 +644,11 @@ mod tests {
     #[test]
     fn replay_crossing_cached_suffix_is_detected() {
         let replayed =
-            [Token::new_checked(TokenKind::Identifier, "long", 10, 20).expect("valid token")];
+            [Token::new_checked(TokenKind::Identifier, "longXXXXXX", 10, 20).expect("valid token")];
         let overlapping_suffix =
             [Token::new_checked(TokenKind::Identifier, "suffix", 18, 24).expect("valid token")];
         let adjacent_suffix =
-            [Token::new_checked(TokenKind::Identifier, "suffix", 20, 24).expect("valid token")];
+            [Token::new_checked(TokenKind::Identifier, "suffix", 20, 26).expect("valid token")];
 
         assert!(replay_crosses_cached_suffix(&replayed, &overlapping_suffix));
         assert!(!replay_crosses_cached_suffix(&replayed, &adjacent_suffix));

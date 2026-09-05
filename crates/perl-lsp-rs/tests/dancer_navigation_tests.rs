@@ -58,13 +58,20 @@ mod dancer_navigation_tests {
         assert_eq!(def_uri, uri, "Definition should stay in the same file");
         assert_eq!(def_line, 1, "Definition should point to `sub helper`");
 
-        // Discriminating control: the inline route itself must be navigable under
-        // exact Dancer2 activation (regression in route synthesis would drop this).
+        // #8928: the legacy route-path Subroutine synthesis is retired for
+        // admitted forms. Route navigation now comes from the canonical
+        // facts and requires exact activation evidence (a resolved Dancer2
+        // module with version evidence); without it there is zero framework
+        // navigation. The positive canonical path is proven over the
+        // skeleton fixture in perl-lsp-ux-tests
+        // (ux_scenario_69_dancer2_provider_cutover). In this unit server no
+        // Dancer2 module is resolvable, so the route pattern must NOT
+        // produce a framework navigation target.
         let route_resp = goto_def(code, uri, "/status", 2)?;
-        let (route_uri, route_line, _) = semantic::first_location(&route_resp)
-            .ok_or("Expected goto-definition to resolve the inline route symbol")?;
-        assert_eq!(route_uri, uri, "Route definition should stay in the same file");
-        assert_eq!(route_line, 2, "Route definition should point at the route line");
+        assert!(
+            semantic::first_location(&route_resp).is_none(),
+            "no activation evidence: no framework route navigation (#8928)"
+        );
         Ok(())
     }
 
@@ -78,18 +85,38 @@ mod dancer_navigation_tests {
         server.open_document(uri, code);
         let (line, character) = semantic::find_pos(code, "/status", 1);
         let before = server.get_definition(uri, line, character);
+        // #8928: without a resolvable versioned Dancer2 module the
+        // activation is not exact, so the framework route navigation is
+        // absent even while `use Dancer2` is present (zero output without
+        // #8914 activation evidence). The positive canonical path is proven
+        // over the skeleton fixture in perl-lsp-ux-tests
+        // (ux_scenario_69_dancer2_provider_cutover).
         assert!(
-            semantic::first_location(&before).is_some(),
-            "route symbol should be navigable while `use Dancer2` is present"
+            semantic::first_location(&before).is_none(),
+            "no activation evidence: no framework route navigation while `use Dancer2` is present (#8928)"
         );
 
-        let changed = "get '/status' => sub { 'ok' };\n";
+        // Discriminating control: neither state may produce a framework
+        // navigation target for the route pattern (the positive canonical
+        // path is scenario 69), while ordinary Perl navigation keeps working
+        // after the removal so the absence is the framework contract, not a
+        // dead server.
+        let changed = "get '/status' => sub { 'ok' };
+sub route_helper { 1 }
+route_helper();
+";
         server.change_document(uri, changed, 2);
         let (line, character) = semantic::find_pos(changed, "/status", 0);
         let after = server.get_definition(uri, line, character);
         assert!(
             semantic::first_location(&after).is_none(),
-            "removing `use Dancer2` must drop the stale route navigation"
+            "removing `use Dancer2` must not leave any route navigation"
+        );
+        let (helper_line, helper_char) = semantic::find_pos(changed, "route_helper();", 2);
+        let helper_after = server.get_definition(uri, helper_line, helper_char);
+        assert!(
+            semantic::first_location(&helper_after).is_some(),
+            "ordinary Perl navigation keeps working after the activation removal"
         );
         server.shutdown();
         Ok(())

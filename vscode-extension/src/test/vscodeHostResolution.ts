@@ -1,7 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-export type HostResolutionDisposition = 'unavailable' | 'network' | 'cache' | 'runner' | 'unknown';
+export const HOST_RESOLUTION_FAILURE_RECEIPT_NAME = 'vscode_host_resolution_failure.json';
+
+export type HostResolutionDisposition = 'unavailable' | 'network' | 'cache' | 'runner';
 
 export interface HostResolutionFailureReceipt {
   schema_version: 1;
@@ -12,6 +14,13 @@ export interface HostResolutionFailureReceipt {
   arch: string;
   disposition: HostResolutionDisposition;
   error: string;
+}
+
+export type VsCodeHostResolver = (options: { version: string }) => Promise<string>;
+
+export interface ResolvedVsCodeHost {
+  executablePath: string;
+  requestedVersion: string;
 }
 
 function errorText(error: unknown): string {
@@ -27,6 +36,17 @@ export function classifyHostResolutionError(error: unknown): HostResolutionDispo
   if (message.includes('cache')) {
     return 'cache';
   }
+  // Catalog misses must win over broad network tokens: `@vscode/test-electron`
+  // reports `Invalid version <id>` while still showing "Resolving version...",
+  // and archive/CDN misses often look like `Failed to download ... HTTP 404`.
+  if (
+    message.includes('404') ||
+    message.includes('invalid version') ||
+    message.includes('not found') ||
+    message.includes('release')
+  ) {
+    return 'unavailable';
+  }
   if (
     message.includes('network') ||
     message.includes('econn') ||
@@ -41,10 +61,10 @@ export function classifyHostResolutionError(error: unknown): HostResolutionDispo
   if (message.includes('runner') || message.includes('spawn')) {
     return 'runner';
   }
-  if (message.includes('version') || message.includes('release') || message.includes('404')) {
+  if (message.includes('version')) {
     return 'unavailable';
   }
-  return 'unknown';
+  return 'runner';
 }
 
 export function buildHostResolutionFailureReceipt(
@@ -69,10 +89,37 @@ export function writeHostResolutionFailureReceipt(
   error: unknown,
 ): string {
   fs.mkdirSync(receiptsRoot, { recursive: true });
-  const receiptPath = path.join(receiptsRoot, 'vscode_host_resolution_failure.json');
+  const receiptPath = path.join(receiptsRoot, HOST_RESOLUTION_FAILURE_RECEIPT_NAME);
   fs.writeFileSync(
     receiptPath,
     `${JSON.stringify(buildHostResolutionFailureReceipt(requestedVersion, error), null, 2)}\n`,
   );
   return receiptPath;
+}
+
+/**
+ * Resolve a VS Code host through the injected downloader. On resolver
+ * rejection, write the structured failure packet first, then rethrow the
+ * original error. Never retries a different version (including stable).
+ */
+export async function downloadVsCodeHostOrWriteFailureReceipt(
+  receiptsRoot: string,
+  requestedVersion: string,
+  resolver: VsCodeHostResolver,
+): Promise<ResolvedVsCodeHost> {
+  try {
+    const executablePath = await resolver({ version: requestedVersion });
+    return { executablePath, requestedVersion };
+  } catch (error: unknown) {
+    try {
+      const receiptPath = writeHostResolutionFailureReceipt(receiptsRoot, requestedVersion, error);
+      process.stderr.write(
+        `VS Code host resolution blocked (${classifyHostResolutionError(error)}) for requested ${requestedVersion}; receipt ${receiptPath}\n`,
+      );
+    } catch (receiptError: unknown) {
+      const detail = receiptError instanceof Error ? receiptError.message : String(receiptError);
+      process.stderr.write(`Unable to write VS Code host-resolution receipt: ${detail}\n`);
+    }
+    throw error;
+  }
 }

@@ -6,6 +6,7 @@
 #![deny(unsafe_code)]
 #![warn(rust_2018_idioms)]
 #![warn(missing_docs)]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 /// Line index for byte <-> (line, col) mapping.
 #[derive(Clone, Debug)]
@@ -93,6 +94,11 @@ impl LineIndex {
     /// Returns `None` when:
     /// - `line` is out of range (same as [`position_to_byte`]).
     /// - `column` is past the end of the line (UTF-16 length of the line text).
+    ///   On a non-final line the terminator is the boundary: for LF lines the
+    ///   `'\n'` itself is the last addressable position, and a CRLF sequence
+    ///   counts as one terminator whose interior is not addressable. Any
+    ///   position at or beyond the start of the next line is rejected (#9837),
+    ///   matching [`position_to_byte`] and [`position_to_byte_checked`].
     /// - `column` points into the middle of a UTF-16 surrogate pair (the
     ///   interior of a supplementary character, U+10000..=U+10FFFF).
     ///
@@ -103,10 +109,19 @@ impl LineIndex {
     #[must_use]
     pub fn position_to_byte_utf16(&self, text: &str, line: usize, column: usize) -> Option<usize> {
         let line_start = *self.line_starts.get(line)?;
-        // Determine where this line's content ends (exclusive).  For non-final
-        // lines that includes the '\n' byte itself so positions pointing at the
-        // newline are accepted.  For the final line we use text_len.
-        let line_end = self.line_starts.get(line + 1).copied().unwrap_or(self.text_len);
+        // Determine where this line's content ends (exclusive). Exclude the
+        // whole terminator — `'\n'`, or the two-byte CRLF sequence — so the
+        // next line's first byte cannot resolve through this line (#9837).
+        let line_end = self.line_starts.get(line + 1).map_or(self.text_len, |next_start| {
+            let terminator_len = if *next_start >= 2
+                && text.as_bytes().get(*next_start - 2..*next_start) == Some(b"\r\n")
+            {
+                2
+            } else {
+                1
+            };
+            next_start.saturating_sub(terminator_len)
+        });
         let line_text = text.get(line_start..line_end)?;
 
         // Walk the line, accumulating UTF-16 units until we reach `column`.
@@ -123,8 +138,10 @@ impl LineIndex {
             utf16_units += ch_utf16;
         }
 
-        // `column` == total UTF-16 length of the line is the one-past-end
-        // position (valid for range ends).
+        // `column` == total UTF-16 length of the line content is the start of
+        // the terminator on a non-final line (addressable, valid for range
+        // ends) and `text_len` on the final line. One further points at the
+        // next line and is rejected (#9837).
         if utf16_units == column { Some(line_start + line_text.len()) } else { None }
     }
 

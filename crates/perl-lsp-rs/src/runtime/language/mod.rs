@@ -20,6 +20,7 @@ mod agent_context;
 mod code_actions;
 mod colors;
 mod completion;
+mod dancer2;
 mod document_links;
 mod formatting;
 mod formatting_policy;

@@ -80,7 +80,7 @@ impl<'a> Parser<'a> {
 
     fn parse_unary_inner(&mut self) -> ParseResult<Node> {
         if self.peek_kind() == Some(TokenKind::Slash) {
-            self.tokens.relex_as_term();
+            self.reclassify_head_as_term()?;
         }
 
         if self.is_contextual_await_start() {
@@ -195,9 +195,8 @@ impl<'a> Parser<'a> {
                         .tokens
                         .peek_second()
                         .is_ok_and(|t| t.kind() == TokenKind::FatArrow)
-                    {
-                        if let Some(kw_kind) = self.peek_kind() {
-                            if Self::is_word_op_keyword(kw_kind) {
+                        && let Some(kw_kind) = self.peek_kind()
+                            && Self::is_word_op_keyword(kw_kind) {
                                 let kw_token = self.tokens.next()?;
                                 let end = kw_token.end();
                                 return Ok(Node::new(
@@ -207,8 +206,6 @@ impl<'a> Parser<'a> {
                                     SourceLocation { start, end },
                                 ));
                             }
-                        }
-                    }
 
                     // Regular unary minus
                     let operand = self.parse_power()?;
@@ -299,8 +296,8 @@ impl<'a> Parser<'a> {
 
                     // AC1: Disambiguate typeglob (*foo) from multiplication (*)
                     // If TokenKind is Star and it is followed by an identifier or {
-                    if op_token.kind() == TokenKind::Star {
-                        if let Some(next_kind) = self.peek_kind() {
+                    if op_token.kind() == TokenKind::Star
+                        && let Some(next_kind) = self.peek_kind() {
                             let next_text = self.tokens.peek()?.text.to_string();
                             let next_is_sigil_identifier = next_kind == TokenKind::Identifier
                                 && next_text
@@ -517,7 +514,6 @@ impl<'a> Parser<'a> {
                                 _ => {}
                             }
                         }
-                    }
 
                     // Check if we're at EOF or a terminator (for standalone operators)
                     if self.tokens.is_eof() || self.is_at_statement_end() {

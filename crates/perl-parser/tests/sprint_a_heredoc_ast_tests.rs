@@ -107,7 +107,7 @@ EOF
 
     // Heredoc body should be consumed (not parsed as identifier)
     assert!(
-        !sexp.contains("(identifier line)"),
+        !sexp.contains("(identifier (name line))"),
         "Heredoc body should be consumed, not parsed as identifier"
     );
     Ok(())
@@ -169,12 +169,12 @@ EOF2
     let sexp = root.to_sexp();
 
     // Both variables should be present
-    assert!(sexp.contains("(variable $ x)"), "Variable $x should be present");
-    assert!(sexp.contains("(variable $ y)"), "Variable $y should be present");
+    assert!(sexp.contains("(variable (sigil $) (name x))"), "Variable $x should be present");
+    assert!(sexp.contains("(variable (sigil $) (name y))"), "Variable $y should be present");
 
     // Heredoc bodies should be consumed
-    assert!(!sexp.contains("(identifier foo)"), "First heredoc body should be consumed");
-    assert!(!sexp.contains("(identifier bar)"), "Second heredoc body should be consumed");
+    assert!(!sexp.contains("(identifier (name foo))"), "First heredoc body should be consumed");
+    assert!(!sexp.contains("(identifier (name bar))"), "Second heredoc body should be consumed");
     Ok(())
 }
 
@@ -203,7 +203,7 @@ EOF
     let sexp = root.to_sexp();
     assert!(sexp.contains("say"), "say statement should be present after heredoc");
     assert!(
-        !sexp.contains("(identifier content)"),
+        !sexp.contains("(identifier (name content))"),
         "Heredoc body should be consumed in eval block"
     );
     Ok(())
@@ -240,7 +240,7 @@ EOF2
 
     // Bodies should be consumed correctly
     let sexp = root.to_sexp();
-    assert!(!sexp.contains("(identifier first)"), "First heredoc body should be consumed");
-    assert!(!sexp.contains("(identifier second)"), "Second heredoc body should be consumed");
+    assert!(!sexp.contains("(identifier (name first))"), "First heredoc body should be consumed");
+    assert!(!sexp.contains("(identifier (name second))"), "Second heredoc body should be consumed");
     Ok(())
 }

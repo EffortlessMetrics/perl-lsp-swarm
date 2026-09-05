@@ -9,7 +9,6 @@
 
 #![allow(dead_code)]
 #![allow(clippy::assertions_on_constants)]
-#![allow(clippy::collapsible_if)]
 // Integration tests print diagnostic output for CI troubleshooting; this is
 // not the LSP server's stdio transport, so print_stdout/print_stderr don't
 // apply the way they do to production code.
@@ -1294,22 +1293,6 @@ impl LspHarness {
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(4);
 
-        // Detect CI environments which need longer timeouts
-        let is_ci = std::env::var("CI").is_ok()
-            || std::env::var("GITHUB_ACTIONS").is_ok()
-            || std::env::var("TRAVIS").is_ok()
-            || std::env::var("CIRCLECI").is_ok()
-            || std::env::var("JENKINS_URL").is_ok();
-
-        // Detect containerized/constrained environments
-        let is_constrained = std::env::var("DOCKER_CONTAINER").is_ok()
-            || std::path::Path::new("/.dockerenv").exists()
-            || std::env::var("KUBERNETES_SERVICE_HOST").is_ok();
-
-        // Detect WSL environment (often has different performance characteristics)
-        let is_wsl = std::env::var("WSL_DISTRO_NAME").is_ok() || std::env::var("WSLENV").is_ok();
-        let is_windows = cfg!(windows);
-
         // Base timeout calculation with thread contention
         let base_timeout = match thread_count {
             0..=1 => Duration::from_millis(800), // Very high contention: much longer timeout
@@ -1319,18 +1302,8 @@ impl LspHarness {
             _ => Duration::from_millis(200),     // Very low contention: shorter timeout
         };
 
-        // Apply environment multipliers for reliability
-        let multiplier = if is_ci && is_constrained {
-            2.5 // CI + containerized: most constrained
-        } else if is_ci {
-            2.0 // CI environments: longer for reliability
-        } else if is_constrained {
-            1.8 // Containerized: some overhead
-        } else if is_wsl {
-            1.5 // WSL: moderate overhead
-        } else {
-            1.0 // Local development: optimal
-        };
+        let multiplier = load_scaling_factor();
+        let is_windows = cfg!(windows);
 
         // Apply performance test optimization
         let final_timeout = if std::env::var("PERL_LSP_PERFORMANCE_TEST").is_ok() {
@@ -1348,6 +1321,40 @@ impl LspHarness {
 
         // Cap maximum timeout to prevent tests from hanging indefinitely
         final_timeout.min(Duration::from_secs(30))
+    }
+}
+
+/// Environment load-scaling factor shared by the harness adaptive timeout and
+/// wall-clock performance budgets (#12784): 1.0 on an unconstrained local box,
+/// up to 2.5 on a containerized CI runner. Extracted so performance tests can
+/// scale their budgets by exactly the factor the harness already applies,
+/// instead of duplicating the environment detection.
+pub fn load_scaling_factor() -> f64 {
+    // Detect CI environments which need longer timeouts
+    let is_ci = std::env::var("CI").is_ok()
+        || std::env::var("GITHUB_ACTIONS").is_ok()
+        || std::env::var("TRAVIS").is_ok()
+        || std::env::var("CIRCLECI").is_ok()
+        || std::env::var("JENKINS_URL").is_ok();
+
+    // Detect containerized/constrained environments
+    let is_constrained = std::env::var("DOCKER_CONTAINER").is_ok()
+        || std::path::Path::new("/.dockerenv").exists()
+        || std::env::var("KUBERNETES_SERVICE_HOST").is_ok();
+
+    // Detect WSL environment (often has different performance characteristics)
+    let is_wsl = std::env::var("WSL_DISTRO_NAME").is_ok() || std::env::var("WSLENV").is_ok();
+
+    if is_ci && is_constrained {
+        2.5 // CI + containerized: most constrained
+    } else if is_ci {
+        2.0 // CI environments: longer for reliability
+    } else if is_constrained {
+        1.8 // Containerized: some overhead
+    } else if is_wsl {
+        1.5 // WSL: moderate overhead
+    } else {
+        1.0 // Local development: optimal
     }
 }
 

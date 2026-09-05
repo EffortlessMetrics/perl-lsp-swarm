@@ -3,7 +3,6 @@ use perl_parser::{Parser, ast::NodeKind};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[test]
-#[allow(clippy::collapsible_if)]
 fn test_qwerty_not_quote_operator() -> TestResult {
     let code = r#"
 # This comment has qwerty in it
@@ -21,26 +20,26 @@ my $x = FOO;
 
         for stmt in statements {
             // Check for use constant qw(FOO BAR)
-            if let NodeKind::Use { module, args, .. } = &stmt.kind {
-                if module == "constant" {
-                    found_use = true;
-                    // Should have captured FOO and BAR as arguments
-                    assert!(
-                        args.contains(&"qw(FOO BAR)".to_string()),
-                        "Expected use constant to have qw(FOO BAR) argument, got {:?}",
-                        args
-                    );
-                }
+            if let NodeKind::Use { module, args, .. } = &stmt.kind
+                && module == "constant"
+            {
+                found_use = true;
+                // Should have captured FOO and BAR as arguments
+                assert!(
+                    args.contains(&"qw(FOO BAR)".to_string()),
+                    "Expected use constant to have qw(FOO BAR) argument, got {:?}",
+                    args
+                );
             }
 
             // Check for my $qwerty = 1
-            if let NodeKind::VariableDeclaration { variable, initializer, .. } = &stmt.kind {
-                if let NodeKind::Variable { sigil, name } = &variable.kind {
-                    if sigil == "$" && name == "qwerty" {
-                        found_qwerty_var = true;
-                        assert!(initializer.is_some(), "Expected $qwerty to have an initializer");
-                    }
-                }
+            if let NodeKind::VariableDeclaration { variable, initializer, .. } = &stmt.kind
+                && let NodeKind::Variable { sigil, name } = &variable.kind
+                && sigil == "$"
+                && name == "qwerty"
+            {
+                found_qwerty_var = true;
+                assert!(initializer.is_some(), "Expected $qwerty to have an initializer");
             }
         }
 
@@ -53,27 +52,24 @@ my $x = FOO;
 }
 
 #[test]
-#[allow(clippy::collapsible_if)]
 fn test_real_qw_operator() -> TestResult {
     let code = "my @list = qw(foo bar baz);";
     let mut parser = Parser::new(code);
     let ast = parser.parse()?;
 
     // Verify that real qw() is parsed correctly
-    if let NodeKind::Program { statements } = &ast.kind {
-        if let Some(stmt) = statements.first() {
-            if let NodeKind::VariableDeclaration { initializer, .. } = &stmt.kind {
-                assert!(initializer.is_some(), "Expected initializer for qw() assignment");
-                // The qw() should produce some kind of list/array
-                return Ok(());
-            }
-        }
+    if let NodeKind::Program { statements } = &ast.kind
+        && let Some(stmt) = statements.first()
+        && let NodeKind::VariableDeclaration { initializer, .. } = &stmt.kind
+    {
+        assert!(initializer.is_some(), "Expected initializer for qw() assignment");
+        // The qw() should produce some kind of list/array
+        return Ok(());
     }
     Err("Failed to find expected structure".into())
 }
 
 #[test]
-#[allow(clippy::collapsible_if)]
 fn test_identifier_starting_with_q() -> TestResult {
     let code = r#"
 my $query = "SELECT * FROM users";
@@ -88,10 +84,10 @@ my $question = "What?";
         let mut found_vars = Vec::new();
 
         for stmt in statements {
-            if let NodeKind::VariableDeclaration { variable, .. } = &stmt.kind {
-                if let NodeKind::Variable { name, .. } = &variable.kind {
-                    found_vars.push(name.clone());
-                }
+            if let NodeKind::VariableDeclaration { variable, .. } = &stmt.kind
+                && let NodeKind::Variable { name, .. } = &variable.kind
+            {
+                found_vars.push(name.clone());
             }
         }
 

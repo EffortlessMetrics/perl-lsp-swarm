@@ -1,0 +1,14 @@
+{
+  "schema": "fixture.v1",
+  "packet_id": "parser-limited",
+  "selector": "fixture.subject",
+  "rail_id": "fixture.parser-limited",
+  "subject": "parser-limited@fixture-tree",
+  "source_result": "pass_with_declared_limitations",
+  "state": "current",
+  "supersedes": null,
+  "digest": "sha256:3798c15854bcabe82db3f7728822eb28c3c9e7eb762956355aba9c71473a4fdb",
+  "limitations": ["harness subset only"],
+  "nonclaims": [],
+  "detail": {}
+}

@@ -2,6 +2,7 @@
 //!
 //! Covers: VarKind, SymbolKind, LSP mappings, derived traits, serde round-trips,
 //! category predicates, convenience constructors, and edge cases.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use std::collections::HashSet;
 

@@ -1,0 +1,9 @@
+project: product
+component: Editor integration
+kind: Fixed
+body: VS Code inline completion now runs through one provider owner instead of two competing registrations, and forwards the editor's actual trigger kind, selected completion, and cancellation. Explicit invocations previously reached the server labelled as automatic, which the server refuses before any backend call, so streamed AI suggestions could never appear.
+time: 2026-08-29T17:45:00Z
+custom:
+  PR: "13796"
+  Slug: vscode-inline-completion-single-provider-owner
+  Breaking: "no"

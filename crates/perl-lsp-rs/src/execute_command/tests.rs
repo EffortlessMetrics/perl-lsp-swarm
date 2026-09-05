@@ -405,6 +405,245 @@ fn test_explain_provider_decision_rejects_non_object_request_receipt()
 }
 
 #[test]
+fn test_explain_provider_decision_rejects_oversized_receipt_id()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+    let result = provider.execute_command(
+        "perl.explainProviderDecision",
+        vec![json!({
+            "provider": "rename",
+            "receipt_id": "a".repeat(65_536)
+        })],
+    );
+
+    let error = match result {
+        Ok(value) => {
+            return Err(format!("oversized receipt_id should reject the request: {value}").into());
+        }
+        Err(error) => error,
+    };
+    assert!(
+        error.contains("receipt_id") && error.contains("too long"),
+        "error should name receipt_id and the length bound, got: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_explain_provider_decision_rejects_oversized_scenario()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+    let result = provider.execute_command(
+        "perl.explainProviderDecision",
+        vec![json!({
+            "provider": "rename",
+            "scenario": "s".repeat(65_536)
+        })],
+    );
+
+    let error = match result {
+        Ok(value) => {
+            return Err(format!("oversized scenario should reject the request: {value}").into());
+        }
+        Err(error) => error,
+    };
+    assert!(
+        error.contains("scenario") && error.contains("too long"),
+        "error should name scenario and the length bound, got: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_explain_provider_decision_bounds_echo_fields_not_transport_input()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+
+    // This is deliberately a negative control for the claim: an unrelated
+    // unknown member of the same size is still materialized and ignored by
+    // this handler. The guard protects the fields that enter the explanation
+    // and response, not the generic JSON frame or every request allocation.
+    let result = provider.execute_command(
+        "perl.explainProviderDecision",
+        vec![json!({
+            "provider": "rename",
+            "receipt_id": "safe-receipt",
+            "ignored_large_member": "x".repeat(65_536),
+        })],
+    )?;
+    assert_eq!(
+        result.get("receipt_id").and_then(Value::as_str),
+        Some("safe-receipt"),
+        "a valid echo field remains available when an unrelated large member is ignored"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_explain_provider_decision_preserves_uri_and_digest_identifier_shapes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+
+    // The v1 schema preserves caller-supplied strings. In particular, digest
+    // and URI-like identifiers may contain punctuation outside the old
+    // implementation vocabulary and must round-trip unchanged (#2758).
+    for (field, value) in [
+        ("receipt_id", "sha256:0123456789abcdef0123456789abcdef"),
+        ("receipt_id", "urn:perl-lsp:receipt/2026-08-27?kind=provider"),
+        ("scenario", "release/v0.18?mode=explain&host=vim"),
+        ("scenario", "résumé-navigation"),
+    ] {
+        let mut request = json!({ "provider": "rename" });
+        request[field] = json!(value);
+        let result = provider.execute_command("perl.explainProviderDecision", vec![request])?;
+        assert_eq!(
+            result.get(field).and_then(Value::as_str),
+            Some(value),
+            "schema-compatible {field} must round-trip unchanged"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn test_explain_provider_decision_rejects_empty_identifier()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+    for field in ["receipt_id", "scenario"] {
+        let mut request = json!({ "provider": "rename" });
+        request[field] = json!("");
+        let result = provider.execute_command("perl.explainProviderDecision", vec![request]);
+        let error = match result {
+            Ok(value) => return Err(format!("empty {field} should reject: {value}").into()),
+            Err(error) => error,
+        };
+        assert!(error.contains(field) && error.contains("must not be empty"), "{error}");
+    }
+    Ok(())
+}
+
+#[test]
+fn test_explain_provider_decision_preserves_tracked_identifier_shapes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+
+    // Every shape below is harvested from tracked receipts, snapshots, UX
+    // scenarios, or documented defaults: lower-case hyphenated ids, underscored
+    // UX scenarios, `.rs` file labels, and markdown-anchor document receipts.
+    // The explanation-field law must accept each unchanged (#2758).
+    for (receipt_id, scenario) in [
+        ("semantic-shadow-compare", Some("mojolicious-safe-delete")),
+        ("runtime-request", Some("realbaseline-rename-fallback-noise")),
+        (
+            "docs/project/status/provider_confidence_matrix.md#goto-definition",
+            Some("dynamic-boundary-navigation"),
+        ),
+        (
+            "docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md#code-action-documentation",
+            Some("ux_scenario_30_mojolicious_navigation_quality"),
+        ),
+        ("safe-delete-runtime", Some("ux_scenario_01_simple_file.rs")),
+    ] {
+        let result = provider.execute_command(
+            "perl.explainProviderDecision",
+            vec![json!({
+                "provider": "rename",
+                "receipt_id": receipt_id,
+                "scenario": scenario,
+            })],
+        )?;
+        assert_eq!(
+            result.get("receipt_id").and_then(Value::as_str),
+            Some(receipt_id),
+            "legitimate receipt_id must round-trip unchanged"
+        );
+        assert_eq!(
+            result.get("scenario").and_then(Value::as_str),
+            scenario,
+            "legitimate scenario must round-trip unchanged"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn test_explain_provider_decision_accepts_identifier_bound_at_limit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+
+    // An echo field of exactly 1024 bytes is accepted; one more byte fails
+    // closed with the named-field diagnostic for either field (#2758).
+    for field in ["receipt_id", "scenario"] {
+        let at_limit = "a".repeat(1024);
+        let mut request = json!({ "provider": "rename" });
+        request[field] = json!(at_limit);
+        let result = provider.execute_command("perl.explainProviderDecision", vec![request])?;
+        assert_eq!(
+            result.get(field).and_then(Value::as_str).map(str::len),
+            Some(1024),
+            "{field} at the explanation-field bound must round-trip unchanged"
+        );
+
+        let over_limit = "a".repeat(1025);
+        let mut request = json!({ "provider": "rename" });
+        request[field] = json!(over_limit);
+        let result = provider.execute_command("perl.explainProviderDecision", vec![request]);
+        let error = match result {
+            Ok(value) => {
+                return Err(format!("{field} over the bound should reject: {value}").into());
+            }
+            Err(error) => error,
+        };
+        assert!(
+            error.contains(field) && error.contains("too long"),
+            "error should name {field} and the length bound, got: {error}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn test_explain_provider_decision_bounds_multibyte_identifiers_by_bytes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = ExecuteCommandProvider::new();
+
+    // U+00E9 occupies two UTF-8 bytes: 512 repetitions are exactly 1024
+    // bytes, while 513 repetitions are 1026 bytes. This rejects a
+    // character-count implementation of the byte bound (#2758).
+    for field in ["receipt_id", "scenario"] {
+        let at_limit = "é".repeat(512);
+        let mut request = json!({ "provider": "rename" });
+        request[field] = json!(at_limit);
+        let result = provider.execute_command("perl.explainProviderDecision", vec![request])?;
+        assert_eq!(
+            result.get(field).and_then(Value::as_str).map(str::len),
+            Some(1024),
+            "{field} at the multibyte byte bound must round-trip unchanged"
+        );
+
+        let over_limit = "é".repeat(513);
+        let mut request = json!({ "provider": "rename" });
+        request[field] = json!(over_limit);
+        let result = provider.execute_command("perl.explainProviderDecision", vec![request]);
+        let error = match result {
+            Ok(value) => {
+                return Err(format!(
+                    "multibyte {field} over the byte bound should reject: {value}"
+                )
+                .into());
+            }
+            Err(error) => error,
+        };
+        assert!(
+            error.contains(field) && error.contains("too long"),
+            "error should name {field} and the byte length bound, got: {error}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn test_explain_provider_decision_defaults_to_live_provider_receipt()
 -> Result<(), Box<dyn std::error::Error>> {
     let provider = ExecuteCommandProvider::new();
@@ -2147,9 +2386,9 @@ fn test_perl_run_subtest_missing_subroutine_arg() -> Result<(), Box<dyn std::err
 // --- Windows binary-planting RCE regression (#3028) ---
 //
 // These tests verify that `run_test_command` and `command_exists` never let a
-// planted binary in the LSP workspace root (CWD) execute.  They serialize CWD
-// mutation with a static Mutex and restore the original CWD after each test
-// regardless of outcome.
+// planted binary in the LSP workspace root (CWD) execute.  The parent test
+// process never changes its own CWD; child-process `current_dir` configuration
+// supplies the hostile workspace instead.
 //
 // The chain being guarded: `executeCommand("perl.runTests")` →
 // `run_tests` → `command_exists("yath")` / `command_exists("prove")` /
@@ -2164,10 +2403,15 @@ fn test_perl_run_subtest_missing_subroutine_arg() -> Result<(), Box<dyn std::err
 #[cfg(windows)]
 #[test]
 fn test_command_exists_ignores_planted_cwd_binary() {
+    const CHILD: &str = "PERL_LSP_CWD_RCE_EXISTS_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let provider = ExecuteCommandProvider::new();
+        assert!(!provider.command_exists("definitely_not_real_3028.bat"));
+        println!("PERL_LSP_CWD_RCE_EXISTS_CHILD_RAN");
+        return;
+    }
+
     use std::io::Write as _;
-    use std::sync::Mutex;
-    static CWD_LOCK: Mutex<()> = Mutex::new(());
-    let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
     let unique = format!("rce_exists_{}", std::process::id());
     let workspace = std::env::temp_dir().join(unique);
@@ -2182,19 +2426,25 @@ fn test_command_exists_ignores_planted_cwd_binary() {
         writeln!(f, "echo PWNED").expect("write bat");
     }
 
-    let original_cwd = std::env::current_dir().expect("capture cwd");
-    std::env::set_current_dir(&workspace).expect("enter temp workspace");
-
-    let provider = ExecuteCommandProvider::new();
-    let exists = provider.command_exists("definitely_not_real_3028.bat");
-
-    std::env::set_current_dir(&original_cwd).expect("restore cwd");
+    let output =
+        std::process::Command::new(std::env::current_exe().expect("resolve test executable"))
+            .arg("execute_command::tests::test_command_exists_ignores_planted_cwd_binary")
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(CHILD, "1")
+            .current_dir(&workspace)
+            .output()
+            .expect("run isolated CWD child");
     let _ = std::fs::remove_dir_all(&workspace);
 
+    assert!(output.status.success(), "isolated CWD child failed: {output:?}");
     assert!(
-        !exists,
-        "SECURITY: command_exists reported true for a tool only present in the CWD — \
-         a planted binary would now be invoked via run_test_command (#3028)"
+        String::from_utf8_lossy(&output.stdout).contains("PERL_LSP_CWD_RCE_EXISTS_CHILD_RAN"),
+        "fully qualified child selector must execute exactly the intended test; output: {output:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "child harness must report one executed test, not an empty exact-filter selection; output: {output:?}"
     );
 }
 
@@ -2207,10 +2457,18 @@ fn test_command_exists_ignores_planted_cwd_binary() {
 #[cfg(windows)]
 #[test]
 fn test_run_test_command_does_not_execute_planted_cwd_binary() {
+    const CHILD: &str = "PERL_LSP_CWD_RCE_RUN_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let workspace = std::env::current_dir().expect("capture child workspace");
+        let dummy_t = workspace.join("dummy.t");
+        let provider = ExecuteCommandProvider::with_workspace_roots(vec![workspace]);
+        let result = provider.run_test_command("pwned_3028.bat", &dummy_t);
+        assert!(result.is_err(), "child must fail closed: {result:?}");
+        println!("PERL_LSP_CWD_RCE_RUN_CHILD_RAN");
+        return;
+    }
+
     use std::io::Write as _;
-    use std::sync::Mutex;
-    static CWD_LOCK: Mutex<()> = Mutex::new(());
-    let _guard = CWD_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
     let unique = format!("rce_run_{}", std::process::id());
     let workspace = std::env::temp_dir().join(&unique);
@@ -2229,21 +2487,28 @@ fn test_run_test_command_does_not_execute_planted_cwd_binary() {
     let dummy_t = workspace.join("dummy.t");
     std::fs::write(&dummy_t, "use Test::More;\ndone_testing;\n").expect("create dummy test");
 
-    let original_cwd = std::env::current_dir().expect("capture cwd");
-    std::env::set_current_dir(&workspace).expect("enter temp workspace");
-
-    let provider = ExecuteCommandProvider::with_workspace_roots(vec![workspace.clone()]);
-    // Drive run_test_command with the bare name of the planted batch file.
-    // The resolver must fail closed before spawning anything.
-    let result = provider.run_test_command("pwned_3028.bat", &dummy_t);
-
-    std::env::set_current_dir(&original_cwd).expect("restore cwd");
+    let output =
+        std::process::Command::new(std::env::current_exe().expect("resolve test executable"))
+            .arg(
+                "execute_command::tests::test_run_test_command_does_not_execute_planted_cwd_binary",
+            )
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(CHILD, "1")
+            .current_dir(&workspace)
+            .output()
+            .expect("run isolated CWD child");
     let marker_exists = marker.exists();
     let _ = std::fs::remove_dir_all(&workspace);
 
+    assert!(output.status.success(), "isolated CWD child failed: {output:?}");
     assert!(
-        result.is_err(),
-        "run_test_command must fail closed for a not-on-PATH bare name; got: {result:?}"
+        String::from_utf8_lossy(&output.stdout).contains("PERL_LSP_CWD_RCE_RUN_CHILD_RAN"),
+        "fully qualified child selector must execute exactly the intended test; output: {output:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "child harness must report one executed test, not an empty exact-filter selection; output: {output:?}"
     );
     assert!(
         !marker_exists,

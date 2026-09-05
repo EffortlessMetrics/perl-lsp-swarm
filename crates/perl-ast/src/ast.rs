@@ -2,8 +2,8 @@
 //!
 //! This module defines the comprehensive AST node types that represent parsed Perl code
 //! during the Parse → Index → Navigate → Complete → Analyze stages. The design is optimized
-//! for both direct use in Rust analysis and for generating tree-sitter compatible
-//! S-expressions during large workspace processing operations.
+//! for both direct use in Rust analysis and for a native debug S-expression projection
+//! (`Node::to_sexp`) during diagnostics. That projection is not Tree-sitter compatibility.
 //!
 //! # LSP Workflow Integration
 //!
@@ -51,7 +51,7 @@
 //! assert_eq!(node.kind.kind_name(), "VariableDeclaration");
 //! ```
 //!
-//! ## Tree-sitter S-expression Generation
+//! ## Native debug S-expression
 //!
 //! ```rust
 //! use perl_ast::{Node, NodeKind, SourceLocation};
@@ -110,7 +110,6 @@
 pub use perl_position_tracking::SourceLocation;
 // Re-export Token and TokenKind from perl-token for AST error nodes
 pub use perl_token::{Token, TokenKind};
-use std::cell::Cell;
 use std::fmt;
 #[cfg(test)]
 use std::ops::ControlFlow;
@@ -119,9 +118,10 @@ use strum::VariantNames as _;
 /// Maximum AST traversal depth for recursive *read* operations that still
 /// use a call-stack guard.
 ///
-/// Guards [`Node::to_sexp`] against stack-overflow panics on pathologically
-/// deep ASTs. Configured complete/truncated rendering of that projection is
-/// owned by issue 8832.
+/// Historical recursive-render ceiling. [`Node::to_sexp`] and
+/// [`Node::render_debug_sexp`] no longer consult it; those walks are iterative
+/// and use caller-selected [`NativeDebugSexpLimits`]. Exact whole-tree reads
+/// also ignore this constant.
 ///
 /// Chosen at 512: typical Perl code nests fewer than 100 levels deep;
 /// 512 provides a comfortable safety margin while staying well within
@@ -134,22 +134,6 @@ use strum::VariantNames as _;
 /// this ceiling. [`Debug`] uses its own conservative budgets
 /// (`NODE_DEBUG_MAX_*`). See [`Node`] for the full depth-safety disposition.
 pub const MAX_AST_DEPTH: usize = 512;
-
-thread_local! {
-    /// Per-thread recursion depth counter used by [`Node::to_sexp`].
-    ///
-    /// Incremented on entry and decremented on exit, so interleaved calls on
-    /// separate trees (e.g. in the same thread between tests) always start from 0.
-    static TO_SEXP_DEPTH: Cell<usize> = const { Cell::new(0) };
-}
-
-struct ToSexpDepthGuard;
-
-impl Drop for ToSexpDepthGuard {
-    fn drop(&mut self) {
-        TO_SEXP_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
-    }
-}
 
 /// Discriminant for the three semantically distinct forms of Perl's `goto` statement.
 ///
@@ -318,13 +302,15 @@ define_field_ids! {
 ///   worker completes without overflowing the thread stack, and the
 ///   rendering stays at or under the byte bound. This is not machine
 ///   identity, equality, serialization, or a durable metric oracle.
-///   Callers that need configured complete or truncated state use the
-///   typed renderer tracked by issue 8832.
+///   Configured complete/truncated native debug rendering is
+///   [`Node::render_debug_sexp`].
 ///
 /// Exact whole-tree reads such as [`Node::count_nodes`] and
 /// [`Node::find_deepest_containing_offset`] are iterative over the canonical
 /// child visit table and do not silently truncate. Bounded variants return
-/// [`AstReadResult`]. [`Node::to_sexp`] remains separately depth-guarded.
+/// [`AstReadResult`]. [`Node::render_debug_sexp`] is iterative and returns
+/// [`NativeDebugSexpResult`]. [`Node::to_sexp`] is a `String` wrapper over that
+/// engine and cannot prove completeness.
 ///
 /// # Examples
 ///
@@ -406,695 +392,9 @@ impl Node {
         (kind, self.location)
     }
 
-    /// Convert the AST to a tree-sitter compatible S-expression.
-    ///
-    /// Produces a parenthesized representation compatible with tree-sitter's
-    /// S-expression format, useful for debugging and snapshot testing.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use perl_ast::{Node, NodeKind, SourceLocation};
-    ///
-    /// let loc = SourceLocation { start: 0, end: 2 };
-    /// let num = Node::new(NodeKind::Number { value: "42".to_string() }, loc);
-    /// let program = Node::new(
-    ///     NodeKind::Program { statements: vec![num] },
-    ///     loc,
-    /// );
-    /// let sexp = program.to_sexp();
-    /// assert!(sexp.starts_with("(source_file"));
-    /// ```
-    pub fn to_sexp(&self) -> String {
-        let depth = TO_SEXP_DEPTH.with(|d| {
-            let v = d.get();
-            d.set(v + 1);
-            v
-        });
-        let _depth_guard = ToSexpDepthGuard;
-        if depth >= MAX_AST_DEPTH {
-            "(depth_limit_exceeded)".to_string()
-        } else {
-            self.to_sexp_impl()
-        }
-    }
-
-    /// Inner implementation of S-expression serialisation, called by [`to_sexp`].
-    ///
-    /// Separated so that the public entry-point can enforce the depth guard
-    /// without touching the 600-line match.
-    fn to_sexp_impl(&self) -> String {
-        match &self.kind {
-            NodeKind::Program { statements } => {
-                let stmts =
-                    statements.iter().map(|s| s.to_sexp_inner()).collect::<Vec<_>>().join(" ");
-                format!("(source_file {})", stmts)
-            }
-
-            NodeKind::ExpressionStatement { expression } => {
-                format!("(expression_statement {})", expression.to_sexp())
-            }
-
-            NodeKind::VariableDeclaration { declarator, variable, attributes, initializer } => {
-                let attrs_str = if attributes.is_empty() {
-                    String::new()
-                } else {
-                    format!(" (attributes {})", attributes.join(" "))
-                };
-                if let Some(init) = initializer {
-                    format!(
-                        "({}_declaration {}{}{})",
-                        declarator,
-                        variable.to_sexp(),
-                        attrs_str,
-                        init.to_sexp()
-                    )
-                } else {
-                    format!("({}_declaration {}{})", declarator, variable.to_sexp(), attrs_str)
-                }
-            }
-
-            NodeKind::VariableListDeclaration {
-                declarator,
-                variables,
-                attributes,
-                initializer,
-            } => {
-                let vars = variables.iter().map(|v| v.to_sexp()).collect::<Vec<_>>().join(" ");
-                let attrs_str = if attributes.is_empty() {
-                    String::new()
-                } else {
-                    format!(" (attributes {})", attributes.join(" "))
-                };
-                if let Some(init) = initializer {
-                    format!(
-                        "({}_declaration ({}){}{})",
-                        declarator,
-                        vars,
-                        attrs_str,
-                        init.to_sexp()
-                    )
-                } else {
-                    format!("({}_declaration ({}){})", declarator, vars, attrs_str)
-                }
-            }
-
-            NodeKind::NestedVariableList { items } => {
-                let item_sexps = items.iter().map(|i| i.to_sexp()).collect::<Vec<_>>().join(" ");
-                format!("(nested_variable_list {})", item_sexps)
-            }
-
-            NodeKind::Variable { sigil, name } => {
-                // Format expected by bless parsing tests: (variable $ name)
-                format!("(variable {} {})", sigil, sexp_escape(name))
-            }
-
-            NodeKind::VariableWithAttributes { variable, attributes } => {
-                let attrs = attributes.join(" ");
-                format!("({} (attributes {}))", variable.to_sexp(), attrs)
-            }
-
-            NodeKind::Assignment { lhs, rhs, op } => {
-                format!(
-                    "(assignment_{} {} {})",
-                    op.replace("=", "assign"),
-                    lhs.to_sexp(),
-                    rhs.to_sexp()
-                )
-            }
-
-            NodeKind::Binary { op, left, right } => {
-                // Tree-sitter format: (binary_op left right)
-                let op_name = format_binary_operator(op);
-                format!("({} {} {})", op_name, left.to_sexp(), right.to_sexp())
-            }
-
-            NodeKind::ArraySlice { target, indices } => {
-                format!("(array_slice {} {})", target.to_sexp(), indices.to_sexp())
-            }
-
-            NodeKind::HashSlice { target, keys } => {
-                format!("(hash_slice {} {})", target.to_sexp(), keys.to_sexp())
-            }
-
-            NodeKind::KeyValueSlice { target, keys } => {
-                format!("(key_value_slice {} {})", target.to_sexp(), keys.to_sexp())
-            }
-
-            NodeKind::ChainedComparison { operands, ops } => {
-                let mut parts = Vec::with_capacity(operands.len() + ops.len());
-                for (i, operand) in operands.iter().enumerate() {
-                    parts.push(operand.to_sexp());
-                    if let Some(op) = ops.get(i) {
-                        parts.push(op.clone());
-                    }
-                }
-                format!("(chained_comparison {})", parts.join(" "))
-            }
-
-            NodeKind::Ternary { condition, then_expr, else_expr } => {
-                format!(
-                    "(ternary {} {} {})",
-                    condition.to_sexp(),
-                    then_expr.to_sexp(),
-                    else_expr.to_sexp()
-                )
-            }
-
-            NodeKind::Unary { op, operand } => {
-                // Tree-sitter format: (unary_op operand)
-                let op_name = format_unary_operator(op);
-                format!("({} {})", op_name, operand.to_sexp())
-            }
-
-            NodeKind::Diamond => "(diamond)".to_string(),
-
-            NodeKind::Ellipsis => "(ellipsis)".to_string(),
-
-            NodeKind::Undef => "(undef)".to_string(),
-
-            NodeKind::Readline { filehandle } => {
-                if let Some(fh) = filehandle {
-                    format!("(readline {})", fh)
-                } else {
-                    "(readline)".to_string()
-                }
-            }
-
-            NodeKind::Glob { pattern } => {
-                format!("(glob {})", pattern)
-            }
-            NodeKind::Typeglob { name } => {
-                format!("(typeglob {})", name)
-            }
-
-            NodeKind::Number { value } => {
-                // Format expected by bless parsing tests: (number value)
-                format!("(number {})", value)
-            }
-
-            NodeKind::String { value, interpolated } => {
-                // Escape quotes in string value to prevent S-expression parsing issues
-                let escaped_value = value.replace('\\', "\\\\").replace('"', "\\\"");
-
-                // Format based on interpolation status
-                if *interpolated {
-                    format!("(string_interpolated \"{}\")", escaped_value)
-                } else {
-                    format!("(string \"{}\")", escaped_value)
-                }
-            }
-
-            NodeKind::VString { value } => {
-                // Escape quotes in version string to prevent S-expression parsing issues
-                let escaped_value = value.replace('\\', "\\\\").replace('"', "\\\"");
-                format!("(vstring \"{}\")", escaped_value)
-            }
-
-            NodeKind::Heredoc { delimiter, content, interpolated, indented, command, .. } => {
-                let type_str = if *command {
-                    "heredoc_command"
-                } else if *indented {
-                    if *interpolated { "heredoc_indented_interpolated" } else { "heredoc_indented" }
-                } else if *interpolated {
-                    "heredoc_interpolated"
-                } else {
-                    "heredoc"
-                };
-                format!("({} {:?} {:?})", type_str, delimiter, content)
-            }
-
-            NodeKind::ArrayLiteral { elements } => {
-                let elems = elements.iter().map(|e| e.to_sexp()).collect::<Vec<_>>().join(" ");
-                format!("(array {})", elems)
-            }
-
-            NodeKind::HashLiteral { pairs } => {
-                let kvs = pairs
-                    .iter()
-                    .map(|(k, v)| format!("({} {})", k.to_sexp(), v.to_sexp()))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                format!("(hash {})", kvs)
-            }
-
-            NodeKind::Block { statements } => {
-                let stmts = statements.iter().map(|s| s.to_sexp()).collect::<Vec<_>>().join(" ");
-                format!("(block {})", stmts)
-            }
-
-            NodeKind::Eval { block } => {
-                format!("(eval {})", block.to_sexp())
-            }
-
-            NodeKind::Do { block } => {
-                format!("(do {})", block.to_sexp())
-            }
-
-            NodeKind::Defer { block } => {
-                format!("(defer {})", block.to_sexp())
-            }
-
-            NodeKind::Try { body, catch_blocks, finally_block } => {
-                let mut parts = vec![format!("(try {})", body.to_sexp())];
-
-                for (var, block) in catch_blocks {
-                    if let Some((v, _)) = var {
-                        parts.push(format!("(catch {} {})", v, block.to_sexp()));
-                    } else {
-                        parts.push(format!("(catch {})", block.to_sexp()));
-                    }
-                }
-
-                if let Some(finally) = finally_block {
-                    parts.push(format!("(finally {})", finally.to_sexp()));
-                }
-
-                parts.join(" ")
-            }
-
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch, keyword } => {
-                let kw = keyword.as_deref().unwrap_or("if");
-                let mut parts =
-                    vec![format!("({} {} {})", kw, condition.to_sexp(), then_branch.to_sexp())];
-
-                for (cond, block) in elsif_branches {
-                    parts.push(format!("(elsif {} {})", cond.to_sexp(), block.to_sexp()));
-                }
-
-                if let Some(else_block) = else_branch {
-                    parts.push(format!("(else {})", else_block.to_sexp()));
-                }
-
-                parts.join(" ")
-            }
-
-            NodeKind::LabeledStatement { label, statement } => {
-                format!("(labeled_statement {} {})", label, statement.to_sexp())
-            }
-
-            NodeKind::While { condition, body, continue_block, keyword } => {
-                let kw = keyword.as_deref().unwrap_or("while");
-                let mut s = format!("({} {} {})", kw, condition.to_sexp(), body.to_sexp());
-                if let Some(cont) = continue_block {
-                    s.push_str(&format!(" (continue {})", cont.to_sexp()));
-                }
-                s
-            }
-            NodeKind::Tie { variable, package, args } => {
-                let mut s = format!("(tie {} {}", variable.to_sexp(), package.to_sexp());
-                for arg in args {
-                    s.push_str(&format!(" {}", arg.to_sexp()));
-                }
-                s.push(')');
-                s
-            }
-            NodeKind::Untie { variable } => {
-                format!("(untie {})", variable.to_sexp())
-            }
-            NodeKind::For { init, condition, update, body, continue_block } => {
-                let init_str =
-                    init.as_ref().map(|i| i.to_sexp()).unwrap_or_else(|| "()".to_string());
-                let cond_str =
-                    condition.as_ref().map(|c| c.to_sexp()).unwrap_or_else(|| "()".to_string());
-                let update_str =
-                    update.as_ref().map(|u| u.to_sexp()).unwrap_or_else(|| "()".to_string());
-                let mut result =
-                    format!("(for {} {} {} {})", init_str, cond_str, update_str, body.to_sexp());
-                if let Some(cont) = continue_block {
-                    result.push_str(&format!(" (continue {})", cont.to_sexp()));
-                }
-                result
-            }
-
-            NodeKind::Foreach { variable, list, body, continue_block } => {
-                let cont = if let Some(cb) = continue_block {
-                    format!(" {}", cb.to_sexp())
-                } else {
-                    String::new()
-                };
-                format!(
-                    "(foreach {} {} {}{})",
-                    variable.to_sexp(),
-                    list.to_sexp(),
-                    body.to_sexp(),
-                    cont
-                )
-            }
-
-            NodeKind::Given { expr, body } => {
-                format!("(given {} {})", expr.to_sexp(), body.to_sexp())
-            }
-
-            NodeKind::When { condition, body } => {
-                format!("(when {} {})", condition.to_sexp(), body.to_sexp())
-            }
-
-            NodeKind::Default { body } => {
-                format!("(default {})", body.to_sexp())
-            }
-
-            NodeKind::StatementModifier { statement, modifier, condition } => {
-                format!(
-                    "(statement_modifier_{} {} {})",
-                    modifier,
-                    statement.to_sexp(),
-                    condition.to_sexp()
-                )
-            }
-
-            NodeKind::Subroutine {
-                name,
-                prototype,
-                signature,
-                attributes,
-                body,
-                name_span: _,
-                declarator: _,
-            } => {
-                if let Some(sub_name) = name {
-                    // Named subroutine - bless test expected format: (sub name () block)
-                    let mut parts = vec![sub_name.clone()];
-
-                    // Add attributes if present (before prototype/signature)
-                    if !attributes.is_empty() {
-                        for attr in attributes {
-                            parts.push(format!(":{}", attr));
-                        }
-                    }
-
-                    // Add prototype/signature - use () for empty prototype
-                    if let Some(proto) = prototype {
-                        parts.push(format!("({})", proto.to_sexp()));
-                    } else if signature.is_some() {
-                        // If there's a signature but no prototype, still show ()
-                        parts.push("()".to_string());
-                    } else {
-                        parts.push("()".to_string());
-                    }
-
-                    // Add body
-                    parts.push(body.to_sexp());
-
-                    // Format: (sub name [attrs...] ()(block ...)) - space between name and (), no space between () and block
-                    if parts.len() >= 3 && parts[parts.len() - 2] == "()" {
-                        let name_and_attrs = parts[0..parts.len() - 2].join(" ");
-                        let proto = &parts[parts.len() - 2];
-                        let body = &parts[parts.len() - 1];
-                        format!("(sub {} {}{})", name_and_attrs, proto, body)
-                    } else {
-                        format!("(sub {})", parts.join(" "))
-                    }
-                } else {
-                    // Anonymous subroutine - tree-sitter format
-                    let mut parts = Vec::new();
-
-                    // Add attributes if present
-                    if !attributes.is_empty() {
-                        let attrs: Vec<String> = attributes
-                            .iter()
-                            .map(|_attr| "(attribute (attribute_name))".to_string())
-                            .collect();
-                        parts.push(format!("(attrlist {})", attrs.join("")));
-                    }
-
-                    // Add prototype if present
-                    if let Some(proto) = prototype {
-                        parts.push(proto.to_sexp());
-                    }
-
-                    // Add signature if present
-                    if let Some(sig) = signature {
-                        parts.push(sig.to_sexp());
-                    }
-
-                    // Add body
-                    parts.push(body.to_sexp());
-
-                    format!("(anonymous_subroutine_expression {})", parts.join(""))
-                }
-            }
-
-            NodeKind::Prototype { content: _ } => "(prototype)".to_string(),
-
-            NodeKind::Signature { parameters } => {
-                let params = parameters.iter().map(|p| p.to_sexp()).collect::<Vec<_>>().join(" ");
-                format!("(signature {})", params)
-            }
-
-            NodeKind::MandatoryParameter { variable } => {
-                format!("(mandatory_parameter {})", variable.to_sexp())
-            }
-
-            NodeKind::OptionalParameter { variable, default_value } => {
-                format!("(optional_parameter {} {})", variable.to_sexp(), default_value.to_sexp())
-            }
-
-            NodeKind::SlurpyParameter { variable } => {
-                format!("(slurpy_parameter {})", variable.to_sexp())
-            }
-
-            NodeKind::NamedParameter { variable, .. } => {
-                format!("(named_parameter {})", variable.to_sexp())
-            }
-
-            NodeKind::Method { name, name_span: _, signature, attributes, body } => {
-                let block_contents = match &body.kind {
-                    NodeKind::Block { statements } => {
-                        statements.iter().map(|s| s.to_sexp()).collect::<Vec<_>>().join(" ")
-                    }
-                    _ => body.to_sexp(),
-                };
-
-                let mut parts = vec![format!("(method_name {name})")];
-
-                // Add signature if present
-                if let Some(sig) = signature {
-                    parts.push(sig.to_sexp());
-                }
-
-                // Add attributes if present
-                if !attributes.is_empty() {
-                    let attrs: Vec<String> = attributes
-                        .iter()
-                        .map(|_attr| "(attribute (attribute_name))".to_string())
-                        .collect();
-                    parts.push(format!("(attrlist {})", attrs.join("")));
-                }
-
-                parts.push(format!("(block {})", block_contents));
-                format!("(method_declaration_statement {})", parts.join(" "))
-            }
-
-            NodeKind::Return { value } => {
-                if let Some(val) = value {
-                    format!("(return {})", val.to_sexp())
-                } else {
-                    "(return)".to_string()
-                }
-            }
-
-            NodeKind::LoopControl { op, label } => {
-                if let Some(l) = label {
-                    format!("({} {})", op, l)
-                } else {
-                    format!("({})", op)
-                }
-            }
-
-            NodeKind::Goto { target, form } => {
-                let form_str = match form {
-                    GotoTargetForm::Label => "label",
-                    GotoTargetForm::Sub => "sub",
-                    GotoTargetForm::Expr => "expr",
-                };
-                format!("(goto :{} {})", form_str, target.to_sexp())
-            }
-
-            NodeKind::MethodCall { object, method, args } => {
-                let args_str = args.iter().map(|a| a.to_sexp()).collect::<Vec<_>>().join(" ");
-                format!("(method_call {} {} ({}))", object.to_sexp(), method, args_str)
-            }
-
-            NodeKind::FunctionCall { name, args } => {
-                // Special handling for functions that should use call format in tree-sitter tests
-                if is_call_form_function(name) {
-                    let args_str = args.iter().map(|a| a.to_sexp()).collect::<Vec<_>>().join(" ");
-                    if args.is_empty() {
-                        format!("(call {} ())", name)
-                    } else {
-                        format!("(call {} ({}))", name, args_str)
-                    }
-                } else {
-                    // Tree-sitter format varies by context
-                    let args_str = args.iter().map(|a| a.to_sexp()).collect::<Vec<_>>().join(" ");
-                    if args.is_empty() {
-                        "(function_call_expression (function))".to_string()
-                    } else {
-                        format!("(ambiguous_function_call_expression (function) {})", args_str)
-                    }
-                }
-            }
-
-            NodeKind::AmperCall { name, args } => {
-                let args_str = args.iter().map(|a| a.to_sexp()).collect::<Vec<_>>().join(" ");
-                if args.is_empty() {
-                    format!("(amper_call &{})", name)
-                } else {
-                    format!("(amper_call &{} ({}))", name, args_str)
-                }
-            }
-
-            NodeKind::IndirectCall { method, object, args } => {
-                let args_str = args.iter().map(|a| a.to_sexp()).collect::<Vec<_>>().join(" ");
-                format!("(indirect_call {} {} ({}))", method, object.to_sexp(), args_str)
-            }
-
-            NodeKind::Regex { pattern, replacement, modifiers, has_embedded_code } => {
-                let risk_marker = if *has_embedded_code { " (risk:code)" } else { "" };
-                format!("(regex {:?} {:?} {:?}{})", pattern, replacement, modifiers, risk_marker)
-            }
-
-            NodeKind::Match { expr, pattern, modifiers, has_embedded_code, negated } => {
-                let risk_marker = if *has_embedded_code { " (risk:code)" } else { "" };
-                let op = if *negated { "not_match" } else { "match" };
-                format!(
-                    "({} {} (regex {:?} {:?}{}))",
-                    op,
-                    expr.to_sexp(),
-                    pattern,
-                    modifiers,
-                    risk_marker
-                )
-            }
-
-            NodeKind::Substitution {
-                expr,
-                pattern,
-                replacement,
-                modifiers,
-                has_embedded_code,
-                negated,
-            } => {
-                let risk_marker = if *has_embedded_code { " (risk:code)" } else { "" };
-                let neg_marker = if *negated { " (negated)" } else { "" };
-                format!(
-                    "(substitution {} {:?} {:?} {:?}{}{})",
-                    expr.to_sexp(),
-                    pattern,
-                    replacement,
-                    modifiers,
-                    risk_marker,
-                    neg_marker
-                )
-            }
-
-            NodeKind::Transliteration { expr, search, replace, modifiers, negated } => {
-                let neg_marker = if *negated { " (negated)" } else { "" };
-                format!(
-                    "(transliteration {} {:?} {:?} {:?}{})",
-                    expr.to_sexp(),
-                    search,
-                    replace,
-                    modifiers,
-                    neg_marker
-                )
-            }
-
-            NodeKind::Package { name, block, name_span: _ } => {
-                if let Some(blk) = block {
-                    format!("(package {} {})", name, blk.to_sexp())
-                } else {
-                    format!("(package {})", name)
-                }
-            }
-
-            NodeKind::Use { module, args, has_filter_risk } => {
-                let risk_marker = if *has_filter_risk { " (risk:filter)" } else { "" };
-                if args.is_empty() {
-                    format!("(use {}{})", module, risk_marker)
-                } else {
-                    let args_str = args.join(" ");
-                    format!("(use {} ({}){})", module, args_str, risk_marker)
-                }
-            }
-
-            NodeKind::No { module, args, has_filter_risk } => {
-                let risk_marker = if *has_filter_risk { " (risk:filter)" } else { "" };
-                if args.is_empty() {
-                    format!("(no {}{})", module, risk_marker)
-                } else {
-                    let args_str = args.join(" ");
-                    format!("(no {} ({}){})", module, args_str, risk_marker)
-                }
-            }
-
-            NodeKind::PhaseBlock { phase, phase_span: _, block } => {
-                format!("({} {})", phase, block.to_sexp())
-            }
-
-            NodeKind::DataSection { marker, body } => {
-                if let Some(body_text) = body {
-                    format!("(data_section {} \"{}\")", marker, body_text.escape_default())
-                } else {
-                    format!("(data_section {})", marker)
-                }
-            }
-
-            NodeKind::Class { name, name_span: _, parents, body } => {
-                if parents.is_empty() {
-                    format!("(class {} {})", name, body.to_sexp())
-                } else {
-                    format!("(class {} :isa({}) {})", name, parents.join(","), body.to_sexp())
-                }
-            }
-
-            NodeKind::Format { name, name_span: _, body } => {
-                format!("(format {} {:?})", name, body)
-            }
-
-            NodeKind::Identifier { name } => {
-                // Format expected by tests: (identifier name)
-                format!("(identifier {})", name)
-            }
-
-            NodeKind::Error { message, partial, .. } => {
-                if let Some(node) = partial {
-                    format!("(ERROR \"{}\" {})", message.escape_default(), node.to_sexp())
-                } else {
-                    format!("(ERROR \"{}\")", message.escape_default())
-                }
-            }
-            NodeKind::MissingExpression => "(missing_expression)".to_string(),
-            NodeKind::MissingStatement => "(missing_statement)".to_string(),
-            NodeKind::MissingIdentifier => "(missing_identifier)".to_string(),
-            NodeKind::MissingBlock => "(missing_block)".to_string(),
-            NodeKind::UnknownRest => "(UNKNOWN_REST)".to_string(),
-        }
-    }
-
-    /// Convert the AST to S-expression format that unwraps expression statements in programs
-    pub fn to_sexp_inner(&self) -> String {
-        match &self.kind {
-            NodeKind::ExpressionStatement { expression } => {
-                // Check if this is an anonymous subroutine - if so, keep it wrapped
-                match &expression.kind {
-                    NodeKind::Subroutine { name, .. } if name.is_none() => {
-                        // Anonymous subroutine should remain wrapped in expression statement
-                        self.to_sexp()
-                    }
-                    _ => {
-                        // In the inner format, other expression statements are unwrapped
-                        expression.to_sexp()
-                    }
-                }
-            }
-            _ => {
-                // For all other node types, use regular to_sexp
-                self.to_sexp()
-            }
-        }
-    }
+    // Native debug S-expression projection (`to_sexp`, `render_debug_sexp`,
+    // `Display`) lives in `node_sexp`. Typed terminality is
+    // `NativeDebugSexpResult`; `to_sexp` cannot prove completeness.
 
     /// Collect direct child nodes into a vector for convenience APIs.
     ///
@@ -1241,11 +541,17 @@ impl Drop for Node {
 mod node_clone;
 mod node_debug;
 mod node_eq;
+mod node_sexp;
 mod read_cursor;
 
 pub use node_debug::{
     NODE_DEBUG_MAX_BYTES, NODE_DEBUG_MAX_CHILDREN, NODE_DEBUG_MAX_DEPTH, NODE_DEBUG_MAX_NODES,
     NODE_DEBUG_MAX_PAYLOAD_CHARS, NODE_DEBUG_TRUNCATION_MARKER,
+};
+pub use node_sexp::{
+    NATIVE_DEBUG_SEXP_DEPTH_LIMIT_MARKER, NATIVE_DEBUG_SEXP_GRAMMAR,
+    NativeDebugSexpInstrumentCause, NativeDebugSexpLimits, NativeDebugSexpOmitted,
+    NativeDebugSexpResult, NativeDebugSexpTruncation, NativeDebugSexpWork,
 };
 pub use read_cursor::{
     AstReadExact, AstReadInstrumentCause, AstReadLimits, AstReadPath, AstReadPathStep,
@@ -2033,8 +1339,12 @@ pub enum NodeKind {
     DataSection {
         /// Section marker (__DATA__ or __END__)
         marker: String,
+        /// Source location span of the marker token itself, for precise navigation
+        marker_span: Option<SourceLocation>,
         /// Content following the marker (if any)
         body: Option<String>,
+        /// Source location span of the payload text following the marker, if any
+        body_span: Option<SourceLocation>,
     },
 
     /// Class declaration (Perl 5.38+ with `use feature 'class'`)
@@ -2458,13 +1768,6 @@ impl fmt::Display for NodeKind {
     }
 }
 
-impl fmt::Display for Node {
-    /// Formats as the tree-sitter compatible S-expression.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_sexp())
-    }
-}
-
 /// Format unary operator for S-expression output
 fn format_unary_operator(op: &str) -> String {
     match op {
@@ -2657,21 +1960,6 @@ fn format_binary_operator(op: &str) -> String {
 
         // Default case for unknown operators
         _ => format!("binary_{}", op.replace(' ', "_")),
-    }
-}
-
-/// Escape a string for safe embedding in an S-expression (#2130).
-///
-/// Wraps the string in double quotes and escapes special characters
-/// (parentheses, whitespace, double quotes, backslashes, and control
-/// characters) so that variable names or other identifiers containing these
-/// characters don't produce malformed S-expression output.
-fn sexp_escape(s: &str) -> String {
-    if s.chars().any(|c| c == '(' || c == ')' || c == '"' || c == '\\' || c.is_whitespace()) {
-        let escaped = s.chars().flat_map(char::escape_default).collect::<String>();
-        format!("\"{escaped}\"")
-    } else {
-        s.to_string()
     }
 }
 
@@ -2889,7 +2177,12 @@ mod tests {
                 phase_span: None,
                 block: Box::new(dummy_node()),
             },
-            NodeKind::DataSection { marker: String::new(), body: None },
+            NodeKind::DataSection {
+                marker: String::new(),
+                marker_span: None,
+                body: None,
+                body_span: None,
+            },
             NodeKind::Class {
                 name: String::new(),
                 name_span: None,
@@ -3427,7 +2720,7 @@ mod tests {
 // Depth-guard regression tests (--lib coverage for Codecov/Patch 95)
 // ---------------------------------------------------------------------------
 //
-// These tests verify that `to_sexp` stays depth-guarded (#8832) and that
+// These tests verify that `to_sexp` stays iterative (#8832) and that
 // exact whole-tree reads (`count_nodes`, `find_deepest_containing_offset`)
 // complete iteratively on a pathologically deep input (50 000 levels).
 //
@@ -3488,34 +2781,56 @@ mod depth_guard_tests {
 
     #[test]
     fn to_sexp_does_not_overflow_on_deep_input() -> TestResult {
-        // 50 000 levels deep: without the depth guard this stack-overflows.
+        // 50 000 levels deep: the iterative engine must complete without a fake node.
+        struct CountingWriter(usize);
+        impl std::fmt::Write for CountingWriter {
+            fn write_str(&mut self, s: &str) -> std::fmt::Result {
+                self.0 = self.0.saturating_add(s.len());
+                Ok(())
+            }
+        }
+
         let deep = deep_chain(50_000);
-        // Must return without panicking.
-        let sexp = deep.to_sexp();
+        let mut writer = CountingWriter(0);
+        match deep.render_debug_sexp(&mut writer, NativeDebugSexpLimits::unbounded()) {
+            NativeDebugSexpResult::Complete { work } => {
+                assert_eq!(work.nodes_visited, 50_001);
+                assert_eq!(work.bytes_written, writer.0);
+                assert!(work.bytes_written > 0);
+            }
+            other => {
+                return Err(format!("deep unbounded render must Complete, got {other:?}").into());
+            }
+        }
         drop(deep);
-        assert!(!sexp.is_empty(), "must produce non-empty output");
-        // The truncation marker must appear somewhere in the output.
-        assert!(
-            sexp.contains("depth_limit_exceeded"),
-            "expected depth-limit truncation marker in sexp output, got: {sexp:.120}..."
-        );
         Ok(())
     }
 
     #[test]
-    fn to_sexp_depth_counter_resets_between_calls() -> TestResult {
-        // Calling to_sexp on a deep tree must not permanently raise the thread-local
-        // counter, so a second independent call returns a fresh result.
+    fn to_sexp_nested_calls_do_not_share_renderer_state() -> TestResult {
+        struct CountingWriter(usize);
+        impl std::fmt::Write for CountingWriter {
+            fn write_str(&mut self, s: &str) -> std::fmt::Result {
+                self.0 = self.0.saturating_add(s.len());
+                Ok(())
+            }
+        }
+
         let deep = deep_chain(50_000);
-        let _ = deep.to_sexp();
+        let mut writer = CountingWriter(0);
+        let first = deep.render_debug_sexp(&mut writer, NativeDebugSexpLimits::unbounded());
+        assert!(
+            matches!(first, NativeDebugSexpResult::Complete { .. }),
+            "deep render must Complete before the nested shallow call"
+        );
         drop(deep);
 
-        // Second call: shallow tree, must NOT see the depth_limit_exceeded marker.
         let shallow = Node::new(NodeKind::Number { value: "7".to_string() }, loc());
         let sexp2 = shallow.to_sexp();
+        assert_eq!(sexp2, "(number (value 7))");
         assert!(
             !sexp2.contains("depth_limit_exceeded"),
-            "depth counter must reset after the first call; got: {sexp2}"
+            "nested/sequential renders must be isolated; got: {sexp2}"
         );
         Ok(())
     }

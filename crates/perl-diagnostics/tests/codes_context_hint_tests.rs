@@ -3,6 +3,7 @@
 //! Issue #2316: users see cryptic codes like `unexpected_rbrace_expr` and
 //! disable diagnostics thinking the LSP is broken. Each code should return
 //! an actionable hint string.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_diagnostics::codes::DiagnosticCode;
 

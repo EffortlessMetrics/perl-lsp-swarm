@@ -82,7 +82,7 @@ and Rust Small proof.
 
 ## PR ladder
 
-Each row is one PR. Branch from clean `origin/master`. Do **not** combine.
+Each row is one PR. Branch from clean `origin/main`. Do **not** combine.
 
 | #     | Branch                                  | Title                                                          | Tracking      | Notes                                                                                   |
 | ----- | --------------------------------------- | -------------------------------------------------------------- | ------------- | --------------------------------------------------------------------------------------- |
@@ -201,8 +201,8 @@ The lane answers: "Did tests execute this parser/lexer/AST surface, and
 did branch coverage regress beyond the accepted baseline budget?"
 
 It does not answer correctness, completeness, or release readiness — see
-`docs/development/RUST_1_95_ROLLOUT.md` and `docs/project/status/` for the
-relevant evidence lanes.
+[`verification-ladder.md`](verification-ladder.md) and `docs/project/status/`
+for the relevant evidence lanes.
 
 The local branch-coverage source of truth is `.ci/coverage-baseline.txt`.
 Codecov project/patch statuses are informational until stable data is
@@ -216,8 +216,8 @@ solely for JUnit.
 ## PR Cov-4 — README edits
 
 ```diff
-- <img src="https://codecov.io/gh/EffortlessMetrics/perl-lsp/branch/master/graph/badge.svg" alt="code coverage" />
-+ <img src="https://codecov.io/gh/EffortlessMetrics/perl-lsp/branch/master/graph/badge.svg" alt="Codecov parser branch coverage" />
+- <img src="https://codecov.io/gh/EffortlessMetrics/perl-lsp/branch/main/graph/badge.svg" alt="code coverage" />
++ <img src="https://codecov.io/gh/EffortlessMetrics/perl-lsp/branch/main/graph/badge.svg" alt="Codecov parser branch coverage" />
 - <img src="https://img.shields.io/badge/MSRV-1.93-blue" alt="MSRV" />
 + <img src="https://img.shields.io/badge/MSRV-1.95-blue" alt="MSRV" />
 ```
@@ -306,7 +306,7 @@ When extracting:
 
 ## PR Cov-8 — Optional ratchet calibration
 
-Only after several stable `master` scheduled/manual runs with the new
+Only after several stable `main` scheduled/manual runs with the new
 `parser-branch` flag. Update `.ci/coverage-baseline.txt`:
 
 - Raise `baseline_branch_coverage` only when actuals are consistently above
@@ -362,7 +362,7 @@ or release readiness.
 - Scope matches PR title:
 - Files touched are expected:
 - No duplicate coverage upload lane:
-- Codecov patch gate remains blocking; project coverage remains burn-down:
+- Codecov patch gate remains advisory; project coverage remains burn-down:
 - Codecov comments remain disabled:
 - Coverage / Test Analytics distinction preserved:
 - Local validation:
@@ -383,7 +383,7 @@ or release readiness.
 
 ## References
 
-- `docs/development/RUST_1_95_ROLLOUT.md` — parallel rollout ladder.
+- `verification-ladder.md` — current layered proof ladder.
 - `.ci/coverage-baseline.txt` — source of truth for the local ratchet.
 - `scripts/check-coverage-baseline.sh`, `scripts/update-coverage-baseline.sh` — ratchet tooling.
 - `.github/workflows/ci-nightly.yml::test-coverage` — current coverage lane.
@@ -465,7 +465,7 @@ the failure mode this rail exists to prevent.
 cargo xtask coverage-ratchet
 
 # PR-fast gate receipt (records what was actually verified pre-merge).
-cargo xtask gates --tier pr-fast --base origin/master --receipt
+cargo xtask gates --tier pr-fast --base origin/main --receipt
 
 # Confirm Codecov surface is registered under file policy (Cov-6).
 cargo xtask check-file-policy --mode advisory

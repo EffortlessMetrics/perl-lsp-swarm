@@ -35,9 +35,40 @@
 //! assert_eq!(TokenKind::Identifier.display_name(), "identifier");
 //! assert_eq!(TokenKind::Eof.display_name(), "end of input");
 //! ```
+//!
+//! # Evolution policy (#2898)
+//!
+//! | Type | Disposition |
+//! |------|-------------|
+//! | [`TokenKind`] | closed / exhaustive public enum |
+//! | [`Token`], [`TokenRef`], [`TokenSpan`], [`TokenSpanError`], [`TokenCategory`], [`TokenKindMetadata`] | `#[non_exhaustive]` |
+//! | `TokenOrigin`, `TokenStatus` | not types in this crate |
+//!
+//! ```compile_fail
+//! use perl_token::TokenOrigin;
+//! ```
+//!
+//! ```compile_fail
+//! use perl_token::TokenStatus;
+//! ```
+//!
+//! Crate-private construction after proven invariants (`from_ordered`,
+//! `from_valid_parts`) is not part of the public API:
+//!
+//! ```compile_fail
+//! use perl_token::TokenSpan;
+//! let _ = TokenSpan::from_ordered(0, 1);
+//! ```
+//!
+//! ```compile_fail
+//! use perl_token::{Token, TokenKind};
+//! use std::sync::Arc;
+//! let _ = Token::from_valid_parts(TokenKind::Identifier, Arc::from("x"), 0, 1);
+//! ```
 
 #![warn(missing_docs)]
 #![cfg_attr(test, allow(clippy::expect_used, clippy::unwrap_used, clippy::panic))]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 mod kind;
 mod span;
@@ -103,6 +134,15 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("Identifier"));
         assert!(msg.contains("7"));
+    }
+
+    #[test]
+    fn token_span_error_display_text_length_mismatch() {
+        let err = TokenSpanError::TextLengthMismatch { text_len: 5, span_len: 1, start: 0, end: 1 };
+        let msg = err.to_string();
+        assert!(msg.contains("5"));
+        assert!(msg.contains("1"));
+        assert!(msg.contains("0"));
     }
 
     // --- Token ---
@@ -200,6 +240,81 @@ mod tests {
             Token::unknown_at("?", 5, 3),
             Err(TokenSpanError::EndBeforeStart { start: 5, end: 3 })
         );
+    }
+
+    #[test]
+    fn token_new_checked_allows_geometry_only_unknown_rest() {
+        // The budget-stop recovery representation: empty text over a non-empty
+        // span. The payload-free geometry is the signal the parser's typed
+        // `lexer_budget_exhausted` stop cause is keyed on (#14158); it must
+        // construct instead of falling through to a silent `Eof`.
+        let tok = Token::new_checked(TokenKind::UnknownRest, "", 12, 70_013)
+            .expect("geometry-only UnknownRest is a legal recovery representation");
+        assert_eq!(tok.kind(), TokenKind::UnknownRest);
+        assert_eq!(tok.start(), 12);
+        assert_eq!(tok.end(), 70_013);
+        assert!(tok.is_geometry_only());
+    }
+
+    #[test]
+    fn token_new_checked_still_rejects_wrong_width_non_empty_text() {
+        // The width contract stays in force for every payload-bearing token.
+        assert_eq!(
+            Token::new_checked(TokenKind::UnknownRest, "a", 12, 70_013),
+            Err(TokenSpanError::TextLengthMismatch {
+                text_len: 1,
+                span_len: 70_001,
+                start: 12,
+                end: 70_013
+            })
+        );
+    }
+
+    #[test]
+    fn token_unknown_rest_at_builds_payload_free_geometry() {
+        let tok = Token::unknown_rest_at(7, 9).expect("non-empty span");
+        assert!(tok.is_geometry_only());
+        assert!(tok.text.is_empty());
+        // Empty and reversed spans are rejected: geometry-only still requires
+        // a real span to identify the unparsed remainder.
+        assert_eq!(
+            Token::unknown_rest_at(7, 7),
+            Err(TokenSpanError::EmptySpanNotAllowed { kind: TokenKind::UnknownRest, at: 7 })
+        );
+        assert_eq!(
+            Token::unknown_rest_at(9, 7),
+            Err(TokenSpanError::EndBeforeStart { start: 9, end: 7 })
+        );
+    }
+
+    #[test]
+    fn token_ref_to_owned_token_preserves_geometry_only_unknown_rest() {
+        let view =
+            TokenRef::new_checked(TokenKind::UnknownRest, "", 12, 70_013).expect("legal view");
+        assert!(view.is_geometry_only());
+        let owned = view.to_owned_token();
+        assert_eq!(owned.kind(), TokenKind::UnknownRest);
+        assert!(owned.is_geometry_only());
+    }
+
+    #[test]
+    fn token_ref_to_owned_token_preserves_payload_unknown_rest_text() {
+        // The bounded EOF-inside-budget heredoc arm is the only
+        // payload-carrying `UnknownRest` the lexer emits (crate-level
+        // budget-stop recovery contract); its text must survive the
+        // borrowed-to-owned round trip.
+        let view =
+            TokenRef::new_checked(TokenKind::UnknownRest, "body\n", 12, 17).expect("legal view");
+        assert!(!view.is_geometry_only());
+        let owned: Token = view.into();
+        assert_eq!(owned.kind(), TokenKind::UnknownRest);
+        assert_eq!(&*owned.text, "body\n");
+        assert_eq!(owned.start(), 12);
+        assert_eq!(owned.end(), 17);
+        assert!(!owned.is_geometry_only());
+
+        let rebuilt = owned.as_ref_token().to_owned_token();
+        assert_eq!(rebuilt, owned);
     }
 
     #[test]
@@ -597,6 +712,14 @@ mod tests {
         assert_eq!(
             TokenRef::new_checked(TokenKind::Identifier, "", 5, 5),
             Err(TokenSpanError::EmptySpanNotAllowed { kind: TokenKind::Identifier, at: 5 })
+        );
+    }
+
+    #[test]
+    fn token_ref_new_checked_rejects_text_length_mismatch() {
+        assert_eq!(
+            TokenRef::new_checked(TokenKind::Identifier, "hello", 0, 1),
+            Err(TokenSpanError::TextLengthMismatch { text_len: 5, span_len: 1, start: 0, end: 1 })
         );
     }
 }

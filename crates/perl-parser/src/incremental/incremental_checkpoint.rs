@@ -828,6 +828,14 @@ mod tests {
     use perl_parser_core::token_stream::TokenKind;
     use perl_tdd_support::{must, must_some};
 
+    /// Cache-geometry tests care about span overlap, not identifier spelling.
+    /// Pad a single label character so `text.len()` matches `end - start`.
+    fn ident_at(label: char, start: usize, end: usize) -> Token {
+        let width = end.saturating_sub(start);
+        let text = label.to_string().repeat(width);
+        Token::new_checked(TokenKind::Identifier, text, start, end).expect("valid token")
+    }
+
     #[test]
     fn retain_shifted_cached_token_keeps_valid_geometry() {
         let token = Token::new_checked(TokenKind::Identifier, "x", 10, 11).expect("valid token");
@@ -842,10 +850,10 @@ mod tests {
     fn retain_shifted_cached_token_does_not_drop_clamped_empty_identifier() {
         let token = Token::new_checked(TokenKind::Identifier, "x", 1, 2).expect("valid token");
         let shifted = retain_shifted_cached_token(&token, 0, 0);
-        assert_eq!(shifted.kind(), TokenKind::Unknown);
+        assert_eq!(shifted.kind(), TokenKind::Eof);
         assert_eq!(shifted.start(), 0);
         assert_eq!(shifted.end(), 0);
-        assert_eq!(&*shifted.text, "x");
+        assert_eq!(&*shifted.text, "");
     }
 
     #[test]
@@ -1017,10 +1025,10 @@ mod tests {
     fn test_invalidate_range_splits_segment_and_preserves_non_overlapping_tokens() {
         let mut cache = TokenCache::new();
         let tokens = vec![
-            Token::new_checked(TokenKind::Identifier, "a", 0, 10).expect("valid token"),
-            Token::new_checked(TokenKind::Identifier, "b", 10, 20).expect("valid token"),
-            Token::new_checked(TokenKind::Identifier, "c", 20, 30).expect("valid token"),
-            Token::new_checked(TokenKind::Identifier, "d", 30, 40).expect("valid token"),
+            ident_at('a', 0, 10),
+            ident_at('b', 10, 20),
+            ident_at('c', 20, 30),
+            ident_at('d', 30, 40),
         ];
         cache.cache_tokens(0, 40, tokens);
 
@@ -1065,10 +1073,7 @@ mod tests {
     fn test_invalidate_range_non_overlapping_preserves_all_segments() {
         // A range that doesn't touch any segment must leave the cache intact.
         let mut cache = TokenCache::new();
-        let tokens = vec![
-            Token::new_checked(TokenKind::Identifier, "a", 0, 10).expect("valid token"),
-            Token::new_checked(TokenKind::Identifier, "b", 10, 20).expect("valid token"),
-        ];
+        let tokens = vec![ident_at('a', 0, 10), ident_at('b', 10, 20)];
         cache.cache_tokens(0, 20, tokens);
 
         // Invalidate a range entirely after the cached segment — no overlap.
@@ -1090,10 +1095,10 @@ mod tests {
         // on both sides must produce two sub-segments, neither empty.
         let mut cache = TokenCache::new();
         let tokens = vec![
-            Token::new_checked(TokenKind::Identifier, "a", 0, 5).expect("valid token"),
-            Token::new_checked(TokenKind::Identifier, "b", 5, 10).expect("valid token"),
-            Token::new_checked(TokenKind::Identifier, "c", 10, 15).expect("valid token"),
-            Token::new_checked(TokenKind::Identifier, "d", 15, 20).expect("valid token"),
+            ident_at('a', 0, 5),
+            ident_at('b', 5, 10),
+            ident_at('c', 10, 15),
+            ident_at('d', 15, 20),
         ];
         cache.cache_tokens(0, 20, tokens);
 
@@ -1116,21 +1121,9 @@ mod tests {
     #[test]
     fn test_get_segments_in_range_returns_only_overlapping_segments_in_order() {
         let mut cache = TokenCache::new();
-        cache.cache_tokens(
-            30,
-            40,
-            vec![Token::new_checked(TokenKind::Identifier, "c", 30, 40).expect("valid token")],
-        );
-        cache.cache_tokens(
-            0,
-            10,
-            vec![Token::new_checked(TokenKind::Identifier, "a", 0, 10).expect("valid token")],
-        );
-        cache.cache_tokens(
-            15,
-            25,
-            vec![Token::new_checked(TokenKind::Identifier, "b", 15, 25).expect("valid token")],
-        );
+        cache.cache_tokens(30, 40, vec![ident_at('c', 30, 40)]);
+        cache.cache_tokens(0, 10, vec![ident_at('a', 0, 10)]);
+        cache.cache_tokens(15, 25, vec![ident_at('b', 15, 25)]);
 
         let segments = cache.get_segments_in_range(8, 31);
 
@@ -1149,30 +1142,11 @@ mod tests {
     #[test]
     fn test_add_segment_replaces_overlaps_without_dropping_neighbors() {
         let mut cache = TokenCache::new();
-        cache.cache_tokens(
-            0,
-            10,
-            vec![Token::new_checked(TokenKind::Identifier, "a", 0, 10).expect("valid token")],
-        );
-        cache.cache_tokens(
-            20,
-            30,
-            vec![Token::new_checked(TokenKind::Identifier, "b", 20, 30).expect("valid token")],
-        );
-        cache.cache_tokens(
-            40,
-            50,
-            vec![Token::new_checked(TokenKind::Identifier, "c", 40, 50).expect("valid token")],
-        );
+        cache.cache_tokens(0, 10, vec![ident_at('a', 0, 10)]);
+        cache.cache_tokens(20, 30, vec![ident_at('b', 20, 30)]);
+        cache.cache_tokens(40, 50, vec![ident_at('c', 40, 50)]);
 
-        cache.add_segment(TokenSegment::new(
-            25,
-            45,
-            vec![
-                Token::new_checked(TokenKind::Identifier, "replacement", 25, 45)
-                    .expect("valid token"),
-            ],
-        ));
+        cache.add_segment(TokenSegment::new(25, 45, vec![ident_at('r', 25, 45)]));
 
         assert_eq!(cache.segments.len(), 2, "new segment should replace both overlaps");
         assert_eq!(cache.segments[0].start, 0, "non-overlapping prefix segment should remain");
@@ -1195,22 +1169,8 @@ mod tests {
     #[test]
     fn test_token_lookup_and_segment_counts_span_multiple_segments() {
         let mut cache = TokenCache::new();
-        cache.cache_tokens(
-            0,
-            20,
-            vec![
-                Token::new_checked(TokenKind::Identifier, "a", 0, 5).expect("valid token"),
-                Token::new_checked(TokenKind::Identifier, "b", 10, 20).expect("valid token"),
-            ],
-        );
-        cache.cache_tokens(
-            30,
-            50,
-            vec![
-                Token::new_checked(TokenKind::Identifier, "c", 30, 35).expect("valid token"),
-                Token::new_checked(TokenKind::Identifier, "d", 45, 50).expect("valid token"),
-            ],
-        );
+        cache.cache_tokens(0, 20, vec![ident_at('a', 0, 5), ident_at('b', 10, 20)]);
+        cache.cache_tokens(30, 50, vec![ident_at('c', 30, 35), ident_at('d', 45, 50)]);
 
         let before = must_some(cache.get_tokens_before(35));
         let after = must_some(cache.get_tokens_from(10));
@@ -1229,10 +1189,7 @@ mod tests {
         // positions in their pre-edit coordinates so Phase-3 byte_shift can
         // apply exactly once when the cached tokens are consumed.
         let mut cache = TokenCache::new();
-        let tokens = vec![
-            Token::new_checked(TokenKind::Identifier, "x", 100, 110).expect("valid token"),
-            Token::new_checked(TokenKind::Identifier, "y", 110, 120).expect("valid token"),
-        ];
+        let tokens = vec![ident_at('x', 100, 110), ident_at('y', 110, 120)];
         cache.cache_tokens(100, 120, tokens);
 
         // Simulate an insertion of 5 bytes before position 50 (before the segment).

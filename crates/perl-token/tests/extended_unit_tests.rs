@@ -12,6 +12,7 @@
 //! - Edge cases: whitespace variants, escapes, high-bit ASCII, long text
 //! - Iterator / collection patterns
 //! - Reflexivity, symmetry, transitivity of PartialEq
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_token::{Token, TokenKind};
 use std::sync::Arc;
@@ -309,7 +310,7 @@ fn token_eq_transitivity() {
 }
 
 #[test]
-fn token_eq_reflexive_for_all_kinds() {
+fn token_eq_same_kind_independent_construction() {
     let kinds = [
         TokenKind::My,
         TokenKind::Assign,
@@ -323,8 +324,9 @@ fn token_eq_reflexive_for_all_kinds() {
         TokenKind::Try,
     ];
     for kind in &kinds {
-        let tok = Token::new_checked(*kind, "x", 0, 1).expect("valid token");
-        assert_eq!(tok, tok);
+        let left = Token::new_checked(*kind, "x", 0, 1).expect("valid token");
+        let right = Token::new_checked(*kind, "x", 0, 1).expect("valid token");
+        assert_eq!(left, right);
     }
 }
 

@@ -47,6 +47,27 @@
 -- rewrite the frame, remove after the second send) and the duplicate-frame
 -- cases fail again.
 --
+-- Exact client response obligations extension (#10785): the result-vs-error
+-- branch is explicit at admission (non-nil error argument selects the error
+-- branch and must be a real JSON-RPC error object, else one typed internal
+-- error wraps it) and the send loop encodes exactly that member - a queued
+-- result:false reaches the wire as result:false. One accepted server-request
+-- id gets exactly one terminal response: duplicate handler attempts are
+-- rejected with "rejected_duplicate" until the frame is written, then the id
+-- starts clean; string ids echo verbatim beside numeric twins (#11183);
+-- write failures keep the obligation queued with lifecycle classification;
+-- stop() disposes pending/answered/queued obligations per generation.
+-- Red-first vs CURRENT MAIN before this patch: false collapses into an
+-- error frame with null error (member-less on the wire), duplicates
+-- double-send, and malformed error payloads pass through as garbage - so
+-- those cases MUST fail there (null/empty-shape results passed on pristine
+-- too via truthy sentinels and stay as contract pins).
+-- Mutation falsifiers of the PATCHED module (each verified):
+--   1. restore `if result then ... else ... end` truthiness branching in
+--      push_response -> the false-result and invalid-payload cases fail;
+--   2. delete the answered-id duplicate guard -> the duplicate-rejection
+--      case fails.
+--
 -- Red-first baseline: run this suite against CURRENT MAIN before the #10833
 -- patch. There the hit-rate admission dropper silently discards saturated
 -- didChange/watched-files/hover/response pushes and push_* returns nil, so
@@ -179,6 +200,10 @@ local function fresh_server(opts)
     notification_list = {},
     raw_list = {},
     request_listeners = {},
+    -- #10785 obligation correlation; the PRISTINE pre-#10785 module never
+    -- consults these, so the same fixture stays red-first compatible.
+    pending_response_ids = {},
+    answered_response_ids = {},
     current_request = 0,
     proc = { running = function() return true end },
   }, { __index = server_module })
@@ -685,6 +710,182 @@ do
   replacement:send_response_signal({ id = 1, result = {} })
   ok(not ran,
     "an old-generation response id correlates into no replacement state")
+end
+
+-- ---------------------------------------------------------------------------
+-- Exact client response obligations (#10785)
+-- ---------------------------------------------------------------------------
+
+---Decodes every recorded wire frame.
+local function decoded_wire(server)
+  local frames = {}
+  for _, frame_data in ipairs(server.wire) do
+    local ok_decode, decoded = pcall(json.decode, frame_data)
+    if ok_decode then frames[#frames + 1] = decoded end
+  end
+  return frames
+end
+
+do
+  -- false_result_reaches_the_wire_as_false: Lua truthiness decides nothing;
+  -- the admission-time branch travels verbatim to the encoded frame.
+  local s = fresh_server()
+  local d = s:push_response("test/falseResult", 9, false)
+  ok(d == "queued" and #s.response_list == 1,
+    "a false-result obligation queues with an explicit disposition")
+  s:process_client_responses()
+  local frames = decoded_wire(s)
+  ok(#frames == 1 and frames[1].id == 9
+    and frames[1].result == false and frames[1].error == nil,
+    "result:false encodes as result:false, never as an error frame")
+end
+
+do
+  -- unknown_method_string_id_echo: the generic on_request path answers an
+  -- unhandled server request with exactly one MethodNotFound that echoes
+  -- the exact original id value and type (#10785 ID addendum). The reply is
+  -- synchronous, so the obligation transitions accepted -> answered inside
+  -- one dispatch and releases its marker once written.
+  local s = fresh_server()
+  s:send_request_signal({ method = "client/doesNotExist", id = "s-13" })
+  ok(s.answered_response_ids["s-13"] == true,
+    "an accepted-and-synchronously-answered request holds its answered marker")
+  s:process_client_responses()
+  local frames = decoded_wire(s)
+  ok(#frames == 1 and frames[1].id == "s-13"
+    and type(frames[1].error) == "table"
+    and frames[1].error.code == -32601,
+    "unknown-method requests answer once with the exact string id echoed")
+end
+
+do
+  -- duplicate_handler_attempt_rejected: one accepted id gets one terminal
+  -- response; the second attempt is a typed rejection, not a second frame.
+  local s = fresh_server()
+  local first = s:push_response("window/showDocument", 20, { success = true })
+  local second = s:push_response("window/showDocument", 20, { success = false })
+  ok(first == "queued" and second == "rejected_duplicate",
+    "a second handler attempt for one id is rejected with a typed disposition")
+  ok(#s.response_list == 1,
+    "only one terminal response stays queued for the answered id")
+  s:process_client_responses()
+  ok(#decoded_wire(s) == 1,
+    "exactly one frame is ever written for the answered request")
+  -- Occurrence-scoped correlation (#10657 review): flushing does NOT
+  -- release the guard - a late asynchronous handler replay stays rejected;
+  -- only a genuinely new request occurrence with that id re-arms it.
+  ok(s:push_response("window/showDocument", 20, { success = false })
+    == "rejected_duplicate",
+    "a late replay after a flushed reply is still rejected")
+  -- A genuinely new request occurrence with that id re-arms the guard: a
+  -- deferring handler accepts it without answering synchronously.
+  s:add_request_listener("window/showDocument", function() end)
+  s:send_request_signal({ method = "window/showDocument", id = 20 })
+  ok(s:push_response("window/showDocument", 20, { success = true }) == "queued",
+    "a genuinely new request occurrence with that id starts clean")
+end
+
+do
+  -- invalid_error_payloads_wrapped: non-error-object payloads become one
+  -- typed internal error each instead of malformed or member-less frames.
+  local s = fresh_server()
+  s:push_response("bad/stringError", 14, nil, "boom")
+  s:push_response("bad/partialError", 15, nil, { message = "no code" })
+  s:push_response("bad/typedError", 16, nil,
+    { code = "not-a-number", message = {} })
+  s:process_client_responses()
+  local frames = decoded_wire(s)
+  ok(#frames == 3 and type(frames[1].error) == "table"
+    and frames[1].error.code == -32603,
+    "a non-table error payload answers one typed internal error frame")
+  ok(type(frames[2].error) == "table" and frames[2].error.code == -32603,
+    "an error object missing code answers one typed internal error frame")
+  ok(type(frames[3].error) == "table" and frames[3].error.code == -32603
+    and type(frames[3].error.message) == "string",
+    "wrong-typed error fields answer one valid typed internal error frame")
+end
+
+do
+  -- full_response_matrix_burst: every valid JSON-RPC shape crosses the wire
+  -- once, in order, with exact ids and members - including falsey results,
+  -- explicit null, empty array/object, numeric/string id twins, and a large
+  -- retained numeric id per the #11183 policy.
+  local s = fresh_server()
+  s:push_response("m", 1, "small")
+  s:push_response("m", 9007199254740992, "large")
+  s:push_response("m", "str-1", "string twin")
+  s:push_response("m", 2, false)
+  s:push_response("m", 3, json.null)
+  s:push_response("m", 4, json.array({}))
+  s:push_response("m", 5, {})
+  s:push_response("m", 6, nil, { code = -32601, message = "Method not found" })
+  ok(#s.response_list == 8,
+    "the whole mixed-shape burst stays queued without any dropping")
+  s:process_client_responses()
+  local frames = decoded_wire(s)
+  ok(#frames == 8, "all eight obligations reach the wire exactly once")
+  ok(frames[1].id == 1 and frames[1].result == "small",
+    "small numeric ids echo exactly")
+  ok(frames[2].id == 9007199254740992 and frames[2].result == "large",
+    "large retained numeric ids echo exactly")
+  ok(frames[3].id == "str-1" and type(frames[3].id) == "string"
+    and frames[3].result == "string twin",
+    "string ids echo verbatim beside their numeric twin")
+  ok(frames[4].result == false and frames[4].error == nil,
+    "false rides in the result member inside a burst")
+  ok(json.is_null(frames[5].result),
+    "explicit null results stay null")
+  ok(json.is_array(frames[6].result) and json.encode(frames[6].result) == "[]",
+    "empty arrays stay explicitly typed empty arrays")
+  ok(json.is_object(frames[7].result) and json.encode(frames[7].result) == "{}",
+    "empty objects stay explicitly typed empty objects")
+  ok(frames[8].error ~= nil and frames[8].result == nil
+    and frames[8].error.code == -32601,
+    "errors encode only in the error member")
+  ok(#s.response_list == 0, "the burst fully drains the obligation queue")
+end
+
+do
+  -- write_failure_classification_and_recovery: a failed transport write
+  -- keeps the obligation queued (never counted as delivered), classifies
+  -- through the lifecycle path, and recovers exactly once while holding
+  -- the duplicate guard until the frame is truly out.
+  local s = fresh_server()
+  s.write_request = function() return false end
+  s:push_response("m", 30, { ok = true })
+  s:process_client_responses()
+  ok(#s.wire == 0 and #s.response_list == 1 and s.shutdown_calls >= 1,
+    "a failed write keeps the obligation queued with lifecycle classification")
+  ok(s:push_response("m", 30, { ok = true }) == "rejected_duplicate",
+    "the duplicate guard holds while the obligation is still unsent")
+  s.write_request = function(self, data)
+    self.wire[#self.wire + 1] = data
+    return true
+  end
+  s:process_client_responses()
+  local frames = decoded_wire(s)
+  ok(#frames == 1 and frames[1].id == 30 and #s.response_list == 0,
+    "recovered transport delivers the owed response exactly once")
+end
+
+do
+  -- generation_teardown_disposes_obligations: stop() clears queued replies
+  -- and both obligation maps so old-generation ids cannot leak into or be
+  -- satisfied by a replacement server. A deferring listener models a
+  -- handler whose terminal reply has not been produced yet.
+  local s = fresh_server()
+  s:add_request_listener("deferred/x", function() end)
+  s:send_request_signal({ method = "deferred/x", id = "p-1" })
+  s:push_response("queued/y", 41, true)
+  ok(#s.response_list == 1 and #s.wire == 0,
+    "a deferring handler leaves its obligation pending without wire traffic")
+  ok(s.pending_response_ids["p-1"] == true and s.answered_response_ids[41] == true,
+    "accepted and answered obligations are tracked per generation")
+  s:stop()
+  ok(next(s.pending_response_ids) == nil
+    and next(s.answered_response_ids) == nil
+    and #s.response_list == 0,
+    "teardown clears unanswered ids, queued replies, and answered markers")
 end
 
 print(string.format("%d passed, %d failed", passed, failed))

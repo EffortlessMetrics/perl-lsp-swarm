@@ -349,8 +349,8 @@ mod corpus_gap_tests {
                 !sexp.contains("ERROR"),
                 "expected no ERROR nodes for hash-slice qw delimiter form, got: {sexp}"
             );
-            assert!(sexp.contains("\"red\""), "expected red key in qw list, got: {sexp}");
-            assert!(sexp.contains("\"blue\""), "expected blue key in qw list, got: {sexp}");
+            assert!(sexp.contains("(value red)"), "expected red key in qw list, got: {sexp}");
+            assert!(sexp.contains("(value blue)"), "expected blue key in qw list, got: {sexp}");
         }
 
         Ok(())
@@ -373,7 +373,7 @@ mod corpus_gap_tests {
             "expected no ERROR nodes for postfix deref in grep/map, got: {sexp}"
         );
         assert!(sexp.contains("enabled"), "expected enabled key in AST, got: {sexp}");
-        assert!(sexp.contains("\"owner\""), "expected owner key in AST, got: {sexp}");
+        assert!(sexp.contains("(value owner)"), "expected owner key in AST, got: {sexp}");
         Ok(())
     }
 

@@ -22,10 +22,8 @@ pub(in crate::providers::completion::completion) fn collect_used_module_names(
 
 fn walk(node: &Node, modules: &mut HashSet<String>) {
     match &node.kind {
-        NodeKind::Use { module, .. } => {
-            if is_importable_module(module) {
-                modules.insert(module.clone());
-            }
+        NodeKind::Use { module, .. } if is_importable_module(module) => {
+            modules.insert(module.clone());
         }
         NodeKind::Program { statements } | NodeKind::Block { statements } => {
             for stmt in statements {

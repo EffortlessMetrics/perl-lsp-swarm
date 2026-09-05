@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 6116,
-  "reason": "Repairs the grammar regression from #6116's landed change (2a0497a8a): the trailing-comma fix leaves the grammar at 13660 bytes (was recorded 13346 from the broken state) and the vsix baseline reconciles to total 1711981 (1711667 + 314 + total_bytes correction). Size-only delta: no file added, removed, or loosened; out/extension.js unchanged; grammar scope fixes restore #6116's intended anchoring. Composed on top of the accepted #7845/#9842/#11985 baselines.",
-  "base_baseline_file_sha256": "5c173b406230338b16676a0795ad19242ae3817f96b7d390c60d23300f5b96e9",
-  "candidate_baseline_file_sha256": "18c71611c572f227fff586fed8e8a8f85f9cedabd7c9f5febe72464c09e6f7f5",
-  "base_inventory_sha256": "3e26c061c62287bf6bb97092be08fe450d0ed6bd1a347141c3acccd40c806d3f",
-  "candidate_inventory_sha256": "124e8ae60936f4b50e724e0d6341bb662818dc3324c3790cb08e03bac854b655"
+  "owner_issue": 14718,
+  "reason": "Corrects a stale size-only row. rolldown 1.2.6 (#14702) emits out/extension.js at 1636669 bytes where 1.2.5 emitted 1636125; the baseline landed in #14680 was measured against 1.2.5 and the two changes crossed. Measured twice from a clean npm ci at the current main. The 29-file package is unchanged: no file additions, removals, or permission loosening.",
+  "base_baseline_file_sha256": "ead549f99a68d55a78f83a3b94d6e95cfc860be529d79813b6bc6ff13e070a75",
+  "candidate_baseline_file_sha256": "a966dac61b30ed8f950dc9910b5dfaf354ff131cf797dcd7ea24f6b1fa756c2a",
+  "base_inventory_sha256": "a526f424818662c8ec573c84cd9360eccfff0e3ee7a56d7123c4df047fdc02df",
+  "candidate_inventory_sha256": "71c92a4b4282c160e4db6417312fa3622a9ba9a8266bce7fbe6172b9ad5004f1"
 }

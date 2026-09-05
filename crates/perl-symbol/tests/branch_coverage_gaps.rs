@@ -6,6 +6,7 @@
 //!   - `cursor/mod.rs`:   81.58% branch (14 of 76 missed)
 //!
 //! No production code is modified; this file only adds tests.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_ast::{GotoTargetForm, Node, NodeKind, SourceLocation};
 use perl_symbol::SymbolKind;

@@ -74,6 +74,19 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
 
 ## Behavior
 
+- When a ripr evidence lane is killed by platform runner teardown instead of
+  failing on findings (#6807, #12563, #12771), the gate classifies the lane log
+  through `scripts/ci/classify-ripr-lane-termination` and emits a
+  machine-checkable `RIPR_GATE_VERDICT` into its run log. The boundary: a
+  genuine gap receipt ("quality gate failed") always classifies ripr-failure,
+  so real reds are never auto-retried; only positive teardown evidence (runner
+  shutdown signal, exit-143, or operation-canceled) yields
+  `classification=infra-no-proof`, handed to `ripr-infra-retry.yml` strictly as
+  data for exactly one automatic same-head retry while run attempt is 1. A
+  second eviction surfaces `RIPR_GATE_VERDICT=not-proven-infra-retry-exhausted`
+  loudly and falls back to the documented manual rerun. Silenced or unreadable
+  lane logs fail closed to ripr-failure. The gate never greens on absent
+  evidence.
 - Produces diff-scoped PR evidence under `target/ripr/pr/`.
 - Produces the repo-wide RIPR+ baseline receipt at
   `target/receipts/quality/ripr-plus.json`.
