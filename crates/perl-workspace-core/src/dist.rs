@@ -62,6 +62,10 @@ const CPANFILE_PHASES: &[&str] = &["configure", "build", "test", "runtime", "dev
 const META_V1_PHASED_REQUIRES: &[(&str, &str)] =
     &[("configure_requires", "configure"), ("build_requires", "build")];
 /// cpanfile statement keywords → (relation, phase).
+///
+/// Order matters: the longest keyword must come first, because
+/// `starts_with_cpanfile_keyword` takes the first prefix match and
+/// `configure_requires` shares a suffix with `requires`.
 const CPANFILE_KEYWORDS: &[(&str, &str, &str)] = &[
     ("configure_requires", "requires", "configure"),
     ("build_requires", "requires", "build"),
@@ -141,6 +145,196 @@ pub fn parse_meta_json(file_id: FileId, content: &str) -> Option<DistMetadataFac
     })
 }
 
+/// Perl statement modifiers that make a declaration conditional.
+const CPANFILE_STATEMENT_MODIFIERS: &[&str] =
+    &["if", "unless", "while", "until", "for", "foreach", "when"];
+/// Quote-like operators this scanner recognizes, with how many delimited parts
+/// each takes. Order matters: the longest word must come first, so `qq`, `qw`,
+/// `qr`, and `tr` are not read as `q` or `t`.
+const CPANFILE_QUOTE_LIKE: &[(&str, usize)] =
+    &[("qq", 1), ("qw", 1), ("qr", 1), ("tr", 2), ("q", 1), ("m", 1), ("s", 2), ("y", 2)];
+/// Delimiters accepted after a quote-like operator. Deliberately narrow: a
+/// wider set would read ordinary syntax such as `s => 1` as a substitution.
+const CPANFILE_QUOTE_LIKE_DELIMITERS: &[char] =
+    &['/', '{', '(', '[', '<', '|', '!', '~', '^', '\'', '"'];
+
+/// What one character of cpanfile text is, once comments and string literals
+/// are recognized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CpanfileChar {
+    /// Code outside any comment or string literal.
+    Code,
+    /// A string literal, including its delimiters: statement text that cannot
+    /// open a block, close one, or end a statement.
+    Literal,
+    /// A `#` comment, which is not statement text at all.
+    Comment,
+}
+
+/// One lexical pass over cpanfile text.
+///
+/// This is the single place that knows where Perl comments and string literals
+/// begin and end. Block tracking, statement splitting, module and version
+/// extraction, and statement-modifier detection all read this classification
+/// rather than each re-deriving quote state, which is how an unbalanced brace
+/// inside a quote-like literal used to swallow every later declaration.
+///
+/// Known limits, all fail-closed for the block scan: a bare `/.../` regex is
+/// not separable from division without a real parser, and heredocs, POD, and
+/// `__END__`/`__DATA__` sections are treated as ordinary code.
+struct CpanfileLex {
+    /// Per-character classification, parallel to the source characters.
+    class: Vec<CpanfileChar>,
+    /// Content ranges of plain single- and double-quoted literals, in source
+    /// order.
+    plain: Vec<(usize, usize)>,
+}
+
+fn is_identifier_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_'
+}
+
+/// The delimiter that closes `open`.
+fn closing_delimiter(open: char) -> char {
+    match open {
+        '(' => ')',
+        '[' => ']',
+        '{' => '}',
+        '<' => '>',
+        other => other,
+    }
+}
+
+/// Consume the delimited section opening at `chars[start]`, returning the index
+/// just past its closing delimiter, or `None` when it is never closed.
+///
+/// Bracketing delimiters nest; every other delimiter closes on its first
+/// unescaped repeat.
+fn skip_delimited(chars: &[char], start: usize) -> Option<usize> {
+    let open = *chars.get(start)?;
+    let close = closing_delimiter(open);
+    let nests = close != open;
+    let mut depth = 1_usize;
+    let mut index = start + 1;
+    while index < chars.len() {
+        match chars[index] {
+            '\\' => index += 1,
+            ch if nests && ch == open => depth += 1,
+            ch if ch == close => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index + 1);
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
+/// If the identifier `word`, ending at `word_end`, is a quote-like operator
+/// whose delimiter follows, return the index just past the whole literal.
+fn quote_like_literal_end(chars: &[char], word: &str, word_end: usize) -> Option<usize> {
+    let &(_, parts) = CPANFILE_QUOTE_LIKE.iter().find(|(operator, _)| *operator == word)?;
+    let mut cursor = word_end;
+    while chars.get(cursor).is_some_and(|ch| ch.is_whitespace()) {
+        cursor += 1;
+    }
+    let open = *chars.get(cursor)?;
+    if !CPANFILE_QUOTE_LIKE_DELIMITERS.contains(&open) {
+        return None;
+    }
+    let mut end = skip_delimited(chars, cursor)?;
+    if parts == 2 {
+        end = if closing_delimiter(open) == open {
+            // `s/a/b/` shares its middle delimiter between both parts.
+            skip_delimited(chars, end - 1)?
+        } else {
+            // `s{a}{b}` opens a fresh pair, possibly after whitespace.
+            let mut second = end;
+            while chars.get(second).is_some_and(|ch| ch.is_whitespace()) {
+                second += 1;
+            }
+            skip_delimited(chars, second)?
+        };
+    }
+    // Trailing modifiers, as in `qr/.../i`.
+    while chars.get(end).is_some_and(char::is_ascii_alphabetic) {
+        end += 1;
+    }
+    Some(end)
+}
+
+impl CpanfileLex {
+    /// Classify every character of `chars`.
+    fn scan(chars: &[char]) -> Self {
+        let mut class = vec![CpanfileChar::Code; chars.len()];
+        let mut plain = Vec::new();
+        let mut index = 0;
+        while index < chars.len() {
+            let ch = chars[index];
+            if ch == '#' {
+                while index < chars.len() && chars[index] != '\n' {
+                    class[index] = CpanfileChar::Comment;
+                    index += 1;
+                }
+                continue;
+            }
+            if ch == '\'' || ch == '"' {
+                // An unterminated literal runs to the end of the file, and has
+                // no closing delimiter to exclude from its content.
+                let (content_end, literal_end) = skip_delimited(chars, index)
+                    .map_or((chars.len(), chars.len()), |end| (end - 1, end));
+                plain.push((index + 1, content_end));
+                for slot in &mut class[index..literal_end] {
+                    *slot = CpanfileChar::Literal;
+                }
+                index = literal_end;
+                continue;
+            }
+            // A sigil binds its variable name, so `$q{...}` subscripts a hash
+            // rather than opening a `q{...}` literal.
+            if matches!(ch, '$' | '@' | '%' | '&') {
+                index += 1;
+                while chars.get(index).is_some_and(|&next| is_identifier_char(next)) {
+                    index += 1;
+                }
+                continue;
+            }
+            if ch.is_alphabetic() || ch == '_' {
+                let mut word_end = index;
+                while chars.get(word_end).is_some_and(|&next| is_identifier_char(next)) {
+                    word_end += 1;
+                }
+                let word: String = chars[index..word_end].iter().collect();
+                if let Some(end) = quote_like_literal_end(chars, &word, word_end) {
+                    for slot in &mut class[index..end] {
+                        *slot = CpanfileChar::Literal;
+                    }
+                    index = end;
+                } else {
+                    index = word_end;
+                }
+                continue;
+            }
+            index += 1;
+        }
+        Self { class, plain }
+    }
+
+    /// Whether `index` is code outside any comment or string literal.
+    fn is_code(&self, index: usize) -> bool {
+        self.class.get(index) == Some(&CpanfileChar::Code)
+    }
+
+    /// Whether `index` is statement text: code or a string literal, but not a
+    /// comment.
+    fn is_statement_text(&self, index: usize) -> bool {
+        self.class.get(index) != Some(&CpanfileChar::Comment)
+    }
+}
+
 /// Parse a `cpanfile` for its unconditional prerequisites (heuristic statement
 /// scan — no Perl parser). Name/version/abstract are not declared in a cpanfile.
 ///
@@ -149,41 +343,40 @@ pub fn parse_meta_json(file_id: FileId, content: &str) -> Option<DistMetadataFac
 /// deliberately ignored because this fact type cannot retain their predicates.
 #[must_use]
 pub fn parse_cpanfile(file_id: FileId, content: &str) -> DistMetadataFacts {
-    let cleaned = strip_comments(content);
+    let chars: Vec<char> = content.chars().collect();
+    let lex = CpanfileLex::scan(&chars);
     let mut prereqs = Vec::new();
     let mut block_stack: Vec<CpanfileBlock> = Vec::new();
     let mut buf = String::new();
-    let mut quote = None;
-    let mut escaped = false;
-    for ch in cleaned.chars() {
-        if let Some(delimiter) = quote {
-            buf.push(ch);
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == delimiter {
-                quote = None;
+    // How many hash/array subscripts are open in the current statement. Their
+    // braces are expression syntax, not blocks, so they must not change scope.
+    let mut subscript_depth = 0_usize;
+
+    for (index, &ch) in chars.iter().enumerate() {
+        // A string literal stays statement text; a comment is not text at all.
+        if !lex.is_code(index) {
+            if lex.is_statement_text(index) {
+                buf.push(ch);
             }
             continue;
         }
-
-        match ch {
-            '\'' | '"' => {
-                quote = Some(ch);
-                buf.push(ch);
+        if subscript_depth > 0 {
+            match ch {
+                '{' | '[' => subscript_depth += 1,
+                '}' | ']' => subscript_depth -= 1,
+                _ => {}
             }
+            buf.push(ch);
+            continue;
+        }
+        match ch {
             ';' => {
-                match active_cpanfile_scope(&block_stack) {
-                    CpanfileScope::TopLevel => {
-                        handle_cpanfile_statement(&buf, None, &mut prereqs);
-                    }
-                    CpanfileScope::Phase(phase) => {
-                        handle_cpanfile_statement(&buf, Some(phase), &mut prereqs);
-                    }
-                    CpanfileScope::Unsupported => {}
-                }
+                flush_cpanfile_statement(&buf, &block_stack, &mut prereqs);
                 buf.clear();
+            }
+            '{' if opens_hash_subscript(&buf) => {
+                subscript_depth = 1;
+                buf.push(ch);
             }
             '{' => {
                 let block = if matches!(block_stack.last(), Some(CpanfileBlock::Unsupported)) {
@@ -197,26 +390,14 @@ pub fn parse_cpanfile(file_id: FileId, content: &str) -> DistMetadataFacts {
                 buf.clear();
             }
             '}' => {
-                match active_cpanfile_scope(&block_stack) {
-                    CpanfileScope::TopLevel => {
-                        handle_cpanfile_statement(&buf, None, &mut prereqs);
-                    }
-                    CpanfileScope::Phase(phase) => {
-                        handle_cpanfile_statement(&buf, Some(phase), &mut prereqs);
-                    }
-                    CpanfileScope::Unsupported => {}
-                }
+                flush_cpanfile_statement(&buf, &block_stack, &mut prereqs);
                 buf.clear();
                 block_stack.pop();
             }
             _ => buf.push(ch),
         }
     }
-    match active_cpanfile_scope(&block_stack) {
-        CpanfileScope::TopLevel => handle_cpanfile_statement(&buf, None, &mut prereqs),
-        CpanfileScope::Phase(phase) => handle_cpanfile_statement(&buf, Some(phase), &mut prereqs),
-        CpanfileScope::Unsupported => {}
-    }
+    flush_cpanfile_statement(&buf, &block_stack, &mut prereqs);
 
     prereqs.sort_by(|a, b| {
         (&a.phase, &a.relation, &a.module).cmp(&(&b.phase, &b.relation, &b.module))
@@ -243,6 +424,44 @@ fn active_cpanfile_scope(block_stack: &[CpanfileBlock]) -> CpanfileScope<'_> {
         None => CpanfileScope::TopLevel,
         Some(CpanfileBlock::Phase(phase)) => CpanfileScope::Phase(phase.as_str()),
         Some(CpanfileBlock::Unsupported) => CpanfileScope::Unsupported,
+    }
+}
+
+/// Publish whatever prereq the buffered statement declares, under the innermost
+/// block's scope. A statement inside an unsupported block publishes nothing.
+fn flush_cpanfile_statement(buf: &str, block_stack: &[CpanfileBlock], out: &mut Vec<Prereq>) {
+    match active_cpanfile_scope(block_stack) {
+        CpanfileScope::TopLevel => handle_cpanfile_statement(buf, None, out),
+        CpanfileScope::Phase(phase) => handle_cpanfile_statement(buf, Some(phase), out),
+        CpanfileScope::Unsupported => {}
+    }
+}
+
+/// Whether a `{` directly after `buf` subscripts or dereferences a variable
+/// rather than opening a block.
+///
+/// `$versions{if}` and `$h->{unless}` are expressions whose braces must not
+/// change block scope. `sub {` and `if (...) {` stay blocks and keep their
+/// fail-closed treatment, so a conditional declaration is never promoted.
+fn opens_hash_subscript(buf: &str) -> bool {
+    let chars: Vec<char> = buf.chars().collect();
+    match chars.last() {
+        // A chained subscript: `$h{a}{b}`, `$h->[0]{b}`.
+        Some('}' | ']') => true,
+        // A dereference block: `${name}`, `@{$ref}`.
+        Some('$' | '@' | '%') => true,
+        // An arrow dereference: `$h->{k}`.
+        Some('>') => chars.len() >= 2 && chars[chars.len() - 2] == '-',
+        // A variable name, which must carry a sigil. Without the sigil check
+        // `sub {` would read as a subscript and stop suppressing conditionals.
+        Some(&last) if is_identifier_char(last) => {
+            let mut start = chars.len();
+            while start > 0 && is_identifier_char(chars[start - 1]) {
+                start -= 1;
+            }
+            start > 0 && matches!(chars[start - 1], '$' | '@' | '%')
+        }
+        _ => false,
     }
 }
 
@@ -276,35 +495,34 @@ fn handle_cpanfile_statement(buf: &str, block_phase: Option<&str>, out: &mut Vec
     }
 }
 
-/// Recognize statement modifiers outside the plain quoted literals supported by
-/// this scanner. This is not a general Perl lexer: quote-like operators remain a
-/// separate lexical boundary. Whole words avoid rejecting `if_required`, while
-/// quote/escape state keeps literal module and version text out of this check.
+/// Whether the statement carries a postfix statement modifier, which makes the
+/// declaration conditional.
+///
+/// A modifier word only counts at the statement's own bracket depth. That keeps
+/// an expression such as `$versions{if}` or `qw(unless)` from reading as a
+/// condition, while `requires 'Win32' if $^O eq 'MSWin32';` is still rejected.
 fn has_cpanfile_statement_modifier(statement: &str) -> bool {
-    let mut quote = None;
-    let mut escaped = false;
-    let mut word = String::new();
-    for ch in statement.chars().chain(std::iter::once(' ')) {
-        if let Some(delimiter) = quote {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == delimiter {
-                quote = None;
+    let chars: Vec<char> = statement.chars().collect();
+    let lex = CpanfileLex::scan(&chars);
+    let mut depth = 0_usize;
+    let mut word_start = None;
+    for index in 0..=chars.len() {
+        if lex.is_code(index) && is_identifier_char(chars[index]) {
+            let _ = word_start.get_or_insert(index);
+            continue;
+        }
+        if let Some(start) = word_start.take() {
+            let word: String = chars[start..index].iter().collect();
+            if depth == 0 && CPANFILE_STATEMENT_MODIFIERS.contains(&word.as_str()) {
+                return true;
             }
-            continue;
         }
-        if ch.is_alphanumeric() || ch == '_' {
-            word.push(ch);
-            continue;
-        }
-        if matches!(word.as_str(), "if" | "unless" | "while" | "until" | "for" | "foreach" | "when") {
-            return true;
-        }
-        word.clear();
-        if matches!(ch, '\'' | '"') {
-            quote = Some(ch);
+        if lex.is_code(index) {
+            match chars[index] {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
         }
     }
     false
@@ -374,44 +592,18 @@ fn json_scalar_string(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// Strip `#` comments from cpanfile source, preserving `#` inside quotes.
-fn strip_comments(content: &str) -> String {
-    let mut out = String::with_capacity(content.len());
-    for line in content.lines() {
-        let mut in_single = false;
-        let mut in_double = false;
-        for ch in line.chars() {
-            match ch {
-                '\'' if !in_double => in_single = !in_single,
-                '"' if !in_single => in_double = !in_double,
-                '#' if !in_single && !in_double => break,
-                _ => {}
-            }
-            out.push(ch);
-        }
-        out.push('\n');
-    }
-    out
-}
-
-/// Extract single- or double-quoted string literals from a statement.
+/// Extract plain single- or double-quoted string literals from a statement.
+///
+/// Quote-like operator bodies are deliberately excluded: this scanner reads
+/// module and version text only from literals it can read without evaluating
+/// Perl.
 fn quoted_strings(statement: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut chars = statement.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '\'' || ch == '"' {
-            let quote = ch;
-            let mut literal = String::new();
-            for c in chars.by_ref() {
-                if c == quote {
-                    break;
-                }
-                literal.push(c);
-            }
-            out.push(literal);
-        }
-    }
-    out
+    let chars: Vec<char> = statement.chars().collect();
+    CpanfileLex::scan(&chars)
+        .plain
+        .into_iter()
+        .map(|(start, end)| chars[start..end].iter().collect())
+        .collect()
 }
 
 #[cfg(test)]
@@ -591,6 +783,148 @@ mod tests {
     }
 
     #[test]
+    fn cpanfile_quote_like_literals_do_not_swallow_later_declarations() {
+        // An unbalanced brace inside a quote-like literal must stay literal
+        // text. Before the shared lexer each of these opened an unsupported
+        // block that never closed, dropping every later declaration.
+        for literal in
+            [r"qr/\{/", r"q{\{}", "qq(})", "qw( { )", "m|{|", "s/{/}/", r"s{\{}{}", r"tr{\{}{x}"]
+        {
+            let content = format!("my $x = {literal};\nrequires 'Path::Tiny';\n");
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), &content);
+            assert!(
+                facts.prereqs.iter().any(|p| p.module == "Path::Tiny" && p.phase == "runtime"),
+                "literal {literal} must not suppress later declarations: {:?}",
+                facts.prereqs
+            );
+        }
+    }
+
+    #[test]
+    fn cpanfile_unbalanced_quote_like_delimiter_stays_fail_closed() {
+        // `q{ {{ }` never closes, so it is not valid Perl and the file would
+        // not run. The scanner must not invent facts from it; suppressing the
+        // rest of the file is the safe reading of unparsable source.
+        let content = "my $x = q{ {{ };\nrequires 'Path::Tiny';\n";
+        let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+
+        assert!(
+            facts.prereqs.is_empty(),
+            "unbalanced delimiters must not publish facts: {:?}",
+            facts.prereqs
+        );
+    }
+
+    #[test]
+    fn cpanfile_quote_like_bodies_are_not_module_names() {
+        // `qw(...)` is not a literal this scanner can read a module name from.
+        let content = "requires qw(Not::A::Fact);\nrequires 'Real::Fact';\n";
+        let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+
+        assert!(facts.prereqs.iter().any(|p| p.module == "Real::Fact"));
+        assert!(
+            !facts.prereqs.iter().any(|p| p.module == "Not::A::Fact"),
+            "quote-like bodies are not read as module text: {:?}",
+            facts.prereqs
+        );
+    }
+
+    #[test]
+    fn cpanfile_bareword_subscripts_are_not_conditions() {
+        // A modifier word used as a hash key is an expression, not a postfix
+        // condition, and must not suppress an unconditional declaration.
+        for expression in [
+            "$versions{if}",
+            "$versions->{unless}",
+            "$versions{while}{until}",
+            "$list[0]{for}",
+            "${default}",
+        ] {
+            let content = format!("requires 'Foo', {expression};\n");
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), &content);
+            assert!(
+                facts.prereqs.iter().any(|p| p.module == "Foo" && p.phase == "runtime"),
+                "{expression} is a version expression, not a condition: {:?}",
+                facts.prereqs
+            );
+        }
+    }
+
+    #[test]
+    fn cpanfile_subscript_braces_do_not_leak_block_scope() {
+        // The subscript must not open a block that swallows the next statement.
+        let content = "requires 'First', $versions{if};\nrequires 'Second';\n";
+        let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+
+        assert!(facts.prereqs.iter().any(|p| p.module == "First"));
+        assert!(
+            facts.prereqs.iter().any(|p| p.module == "Second"),
+            "a subscript must not open a block: {:?}",
+            facts.prereqs
+        );
+    }
+
+    #[test]
+    fn cpanfile_real_postfix_conditions_are_still_suppressed() {
+        // The subscript and quote-like relaxations must not reopen the
+        // fail-open path #13627 exists to close.
+        let content = concat!(
+            "requires 'Win32' if $^O eq 'MSWin32';\n",
+            "test_requires 'Author::Only' unless $ENV{CI};\n",
+            "requires('Looped') for 1 .. 3;\n",
+            "requires 'Keyed', $versions{base} if $want{extra};\n",
+            "requires 'Unconditional';\n",
+        );
+        let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+
+        for suppressed in ["Win32", "Author::Only", "Looped", "Keyed"] {
+            assert!(
+                !facts.prereqs.iter().any(|p| p.module == suppressed),
+                "{suppressed} is conditional and must not become an unconditional fact: {:?}",
+                facts.prereqs
+            );
+        }
+        assert!(facts.prereqs.iter().any(|p| p.module == "Unconditional"));
+    }
+
+    #[test]
+    fn cpanfile_sub_braces_still_open_blocks() {
+        // `sub{` ends in identifier characters. Without the sigil requirement
+        // in `opens_hash_subscript` it would read as a subscript and promote
+        // the feature block's dependency to an unconditional fact.
+        let content = "feature 'SQLite' => sub{ requires 'DBD::SQLite'; };\nrequires 'Moo';\n";
+        let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+
+        assert!(
+            !facts.prereqs.iter().any(|p| p.module == "DBD::SQLite"),
+            "a feature block stays unsupported: {:?}",
+            facts.prereqs
+        );
+        assert!(facts.prereqs.iter().any(|p| p.module == "Moo"));
+    }
+
+    #[test]
+    fn cpanfile_comments_are_not_statement_text() {
+        // Comments are stripped by the same lexer, so a `#` inside a literal
+        // stays text and a brace inside a comment cannot open a block.
+        let content = concat!(
+            "# requires 'Commented::Out';\n",
+            "requires 'Has#Hash';\n",
+            "# a stray { in a comment\n",
+            "requires 'After::Comment';\n",
+        );
+        let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+
+        assert!(!facts.prereqs.iter().any(|p| p.module == "Commented::Out"));
+        assert!(facts.prereqs.iter().any(|p| p.module == "Has#Hash"));
+        assert!(
+            facts.prereqs.iter().any(|p| p.module == "After::Comment"),
+            "a brace in a comment must not open a block: {:?}",
+            facts.prereqs
+        );
+    }
+
+    #[test]
     fn cpanfile_block_form_phase_deps() {
         // Module::CPANfile block syntax: `on 'phase' => sub { requires ... }`.
         let content = "requires 'Moo';\non 'test' => sub {\n    requires 'Test::More', '0.88';\n};\non 'develop' => sub {\n    requires 'Perl::Critic';\n};\n";
@@ -721,9 +1055,8 @@ mod tests {
                     format!("{keyword} 'Conditional::Dep', '0'"),
                     format!("{keyword}('Conditional::Dep', '0')"),
                 ] {
-                    let content = format!(
-                        "{declaration} {modifier} $enabled; {keyword} 'Kept::Dep', '1';"
-                    );
+                    let content =
+                        format!("{declaration} {modifier} $enabled; {keyword} 'Kept::Dep', '1';");
                     let facts = parse_cpanfile(fid(), &content);
                     assert_eq!(
                         facts.prereqs,
