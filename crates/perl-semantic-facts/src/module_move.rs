@@ -254,6 +254,13 @@ pub enum ModuleMoveInvalidPlan {
     MissingPackageDeclaration,
     /// The source identity would not have been eligible to authorize any edit.
     SourceNotEligible,
+    /// A complete plan does not record the target resource as proven absent.
+    TargetWasNotProvenAbsent,
+    /// The retained generation snapshot is missing, non-canonical, self-
+    /// contradictory, or disagrees with the source generation.
+    GenerationEvidenceUnusable,
+    /// An edit is not at the admitted current generation of its own file.
+    EditIsNotAtItsFilesCurrentGeneration,
     /// An edit is not the boundary-clean substitution of the source identity by
     /// the target module that it claims to be.
     EditIsNotTheIdentitySubstitution,
@@ -268,6 +275,17 @@ pub struct ModuleMovePlan {
     pub schema_version: u16,
     /// Source identity used to build the plan.
     pub source: ModuleMoveSource,
+    /// The admitted current generation of every file the plan depends on.
+    ///
+    /// Retained so a plan can re-derive its own generation binding: without it
+    /// a reconstructed plan has no evidence that a dependent edit was current.
+    /// Contradicted files are absent, never guessed.
+    pub current_generations: Vec<ModuleMoveFileGeneration>,
+    /// Whether the producer proved the target resource did not already exist.
+    ///
+    /// Retained for the same reason: collision-freedom is part of a complete
+    /// plan's contract, so the evidence must survive construction.
+    pub target_was_absent: bool,
     /// Derived resource transition.
     pub resource: ModuleMoveResourceTransition,
     /// Ordered semantic edit set.
@@ -301,11 +319,16 @@ impl ModuleMovePlan {
         let root = source.root.trim_end_matches('/').to_string();
 
         let generations = CurrentGenerations::admit(current_generations);
-        if generations.contradictory {
+        if !generations.contradicted.is_empty() {
             blockers.push(ModuleMoveBlocker::MissingFileGeneration);
         }
+        // The source file is classified exactly as any occurrence file is, so
+        // one input never yields two different reasons.
         match generations.current(source.file_id) {
             None => blockers.push(ModuleMoveBlocker::MissingFileGeneration),
+            Some(current) if !current.is_known() => {
+                blockers.push(ModuleMoveBlocker::MissingFileGeneration);
+            }
             Some(current) if *current != source.generation => {
                 blockers.push(ModuleMoveBlocker::StaleOrUnknownGeneration);
             }
@@ -462,9 +485,12 @@ impl ModuleMovePlan {
         } else {
             ModuleMoveDisposition::Blocked
         };
+        let current_generations = generations.canonical();
         let fingerprint = fingerprint_of(
             MODULE_MOVE_SCHEMA_VERSION,
             &source,
+            &current_generations,
+            !target_exists,
             &resource,
             &edits,
             &blockers,
@@ -473,6 +499,8 @@ impl ModuleMovePlan {
         Self {
             schema_version: MODULE_MOVE_SCHEMA_VERSION,
             source,
+            current_generations,
+            target_was_absent: !target_exists,
             resource,
             edits,
             blockers,
@@ -524,6 +552,8 @@ impl ModuleMovePlan {
             != fingerprint_of(
                 self.schema_version,
                 &self.source,
+                &self.current_generations,
+                self.target_was_absent,
                 &self.resource,
                 &self.edits,
                 &self.blockers,
@@ -553,6 +583,24 @@ impl ModuleMovePlan {
         }
         if !source_is_eligible(&self.source) {
             return Err(ModuleMoveInvalidPlan::SourceNotEligible);
+        }
+        if !self.target_was_absent {
+            return Err(ModuleMoveInvalidPlan::TargetWasNotProvenAbsent);
+        }
+        // Re-derive the generation binding the plan claims. Every edit must sit
+        // at the admitted current generation of its own file, and the moved
+        // file's admitted generation must be the source fact itself.
+        let snapshot = CurrentGenerations::admit(self.current_generations.clone());
+        if !snapshot.contradicted.is_empty()
+            || snapshot.canonical() != self.current_generations
+            || snapshot.current(self.source.file_id) != Some(&self.source.generation)
+        {
+            return Err(ModuleMoveInvalidPlan::GenerationEvidenceUnusable);
+        }
+        for edit in &self.edits {
+            if snapshot.current(edit.file_id) != Some(&edit.generation) {
+                return Err(ModuleMoveInvalidPlan::EditIsNotAtItsFilesCurrentGeneration);
+            }
         }
         // The fingerprint proves the payload is self-consistent, not that it is
         // legitimate: it is computed through a public API, so anyone who edits a
@@ -600,25 +648,45 @@ impl ModuleMovePlan {
 /// The admitted per-file generation snapshot, canonicalized once.
 struct CurrentGenerations {
     entries: Vec<ModuleMoveFileGeneration>,
-    contradictory: bool,
+    contradicted: Vec<FileId>,
 }
 
 impl CurrentGenerations {
     fn admit(mut entries: Vec<ModuleMoveFileGeneration>) -> Self {
-        entries.sort_by_key(|entry| entry.file_id);
-        // Two entries for one file that disagree leave no current generation
-        // to compare against; that is missing evidence, not a tie-break.
-        let contradictory = entries.windows(2).any(|pair| {
-            pair[0].file_id == pair[1].file_id && pair[0].generation != pair[1].generation
+        entries.sort_by(|a, b| {
+            (a.file_id, generation_tag(&a.generation))
+                .cmp(&(b.file_id, generation_tag(&b.generation)))
         });
-        Self { entries, contradictory }
+        // Two entries for one file that disagree leave *that file* with no
+        // current generation to compare against; that is missing evidence, not
+        // a tie-break. Scoping is per file, so one contradicted document does
+        // not erase the currentness evidence for every other document.
+        let contradicted = entries
+            .windows(2)
+            .filter(|pair| {
+                pair[0].file_id == pair[1].file_id && pair[0].generation != pair[1].generation
+            })
+            .map(|pair| pair[0].file_id)
+            .collect();
+        entries.dedup_by(|a, b| a.file_id == b.file_id && a.generation == b.generation);
+        Self { entries, contradicted }
     }
 
     fn current(&self, file_id: FileId) -> Option<&SourceGeneration> {
-        if self.contradictory {
+        if self.contradicted.contains(&file_id) {
             return None;
         }
         self.entries.iter().find(|entry| entry.file_id == file_id).map(|entry| &entry.generation)
+    }
+
+    /// The canonical snapshot retained on the plan, contradictions dropped so
+    /// no contradicted file appears to have a current generation.
+    fn canonical(&self) -> Vec<ModuleMoveFileGeneration> {
+        self.entries
+            .iter()
+            .filter(|entry| !self.contradicted.contains(&entry.file_id))
+            .cloned()
+            .collect()
     }
 }
 
@@ -660,6 +728,8 @@ fn edit_set_conflicts(edits: &[ModuleMoveEdit]) -> Vec<ModuleMoveBlocker> {
 fn fingerprint_of(
     schema_version: u16,
     source: &ModuleMoveSource,
+    current_generations: &[ModuleMoveFileGeneration],
+    target_was_absent: bool,
     resource: &ModuleMoveResourceTransition,
     edits: &[ModuleMoveEdit],
     blockers: &[ModuleMoveBlocker],
@@ -679,6 +749,8 @@ fn fingerprint_of(
         .field("source-restricted", bool_tag(source.restricted))
         .field("primary-package-count", &source.primary_package_count.to_string())
         .field("occurrences-complete", bool_tag(source.occurrences_complete))
+        .field("target-was-absent", bool_tag(target_was_absent))
+        .field("generation-count", &current_generations.len().to_string())
         .field("resource-source-path", &resource.source_path)
         .field("resource-target-path", &resource.target_path)
         .field("resource-source-module", &resource.source_module)
@@ -697,6 +769,11 @@ fn fingerprint_of(
             .field("edit-new-text", &edit.new_text)
             .field("edit-start-byte", &edit.start_byte.to_string())
             .field("edit-end-byte", &edit.end_byte.to_string());
+    }
+    for entry in current_generations {
+        acc = acc
+            .field("generation-file-id", &entry.file_id.0.to_string())
+            .field("generation-value", &generation_tag(&entry.generation));
     }
     acc = acc.field("blocker-count", &blockers.len().to_string());
     for blocker in blockers {
@@ -1002,10 +1079,13 @@ mod tests {
         );
         assert!(!plan.is_complete());
         assert!(
-            plan.edits.is_empty(),
-            "a contradicted snapshot authorized edits: {:?}",
+            plan.edits.iter().all(|edit| edit.file_id != DEPENDENT_FILE),
+            "the contradicted file authorized an edit: {:?}",
             plan.edits
         );
+        // Per-file scoping: one contradicted document does not erase the
+        // currentness evidence for the source file.
+        assert!(plan.edits.iter().any(|edit| edit.file_id == SOURCE_FILE));
     }
 
     #[test]
@@ -1534,6 +1614,121 @@ mod tests {
         assert!(!plan.is_complete(), "a non-empty edit set authorized a blocked plan");
     }
 
+    // --- the plan re-derives its own generation binding (Devin review) --------
+
+    /// The forgery the earlier `is_known()` check could not stop: move an edit
+    /// to a fabricated generation and recompute the fingerprint.
+    #[test]
+    fn a_source_edit_off_the_source_generation_is_refused() {
+        let mut forged = plan(vec![declaration()], source_only_snapshot());
+        forged.edits[0].generation = SourceGeneration::known("fabricated");
+        forged.fingerprint = rebuild_fingerprint(&forged);
+        assert_eq!(
+            forged.validate(),
+            Err(ModuleMoveInvalidPlan::EditIsNotAtItsFilesCurrentGeneration)
+        );
+        assert!(!forged.is_complete());
+    }
+
+    #[test]
+    fn a_dependent_edit_off_its_files_admitted_generation_is_refused() {
+        let mut forged = plan(
+            vec![declaration(), dependent("use Old::Name", OccurrenceKind::Import, 4)],
+            cross_file_snapshot(),
+        );
+        assert!(forged.is_complete(), "{:?}", forged.blockers);
+        let index =
+            forged.edits.iter().position(|edit| edit.file_id == DEPENDENT_FILE).unwrap_or_default();
+        forged.edits[index].generation = SourceGeneration::known("g9");
+        forged.fingerprint = rebuild_fingerprint(&forged);
+        assert_eq!(
+            forged.validate(),
+            Err(ModuleMoveInvalidPlan::EditIsNotAtItsFilesCurrentGeneration)
+        );
+    }
+
+    /// Rewriting the retained snapshot to match a forged edit does not help:
+    /// the snapshot must still agree with the source generation.
+    #[test]
+    fn a_snapshot_rewritten_to_excuse_a_forged_edit_is_refused() {
+        let mut forged = plan(vec![declaration()], source_only_snapshot());
+        forged.edits[0].generation = SourceGeneration::known("fabricated");
+        forged.current_generations = vec![generation(SOURCE_FILE, "fabricated")];
+        forged.fingerprint = rebuild_fingerprint(&forged);
+        assert_eq!(forged.validate(), Err(ModuleMoveInvalidPlan::GenerationEvidenceUnusable));
+    }
+
+    #[test]
+    fn a_stripped_or_contradictory_snapshot_is_unusable() {
+        for mutate in [
+            (|plan: &mut ModuleMovePlan| plan.current_generations.clear()) as fn(&mut _),
+            |plan: &mut ModuleMovePlan| {
+                plan.current_generations.push(generation(SOURCE_FILE, "g9"));
+            },
+        ] {
+            let mut forged = plan(vec![declaration()], source_only_snapshot());
+            mutate(&mut forged);
+            forged.fingerprint = rebuild_fingerprint(&forged);
+            assert_eq!(forged.validate(), Err(ModuleMoveInvalidPlan::GenerationEvidenceUnusable));
+        }
+    }
+
+    #[test]
+    fn a_complete_plan_must_record_its_target_as_proven_absent() {
+        let mut forged = plan(vec![declaration()], source_only_snapshot());
+        forged.target_was_absent = false;
+        forged.fingerprint = rebuild_fingerprint(&forged);
+        assert_eq!(forged.validate(), Err(ModuleMoveInvalidPlan::TargetWasNotProvenAbsent));
+        assert!(!forged.is_complete());
+    }
+
+    /// An unknown admitted generation for the moved file is missing evidence,
+    /// and must be reported the same way it is for any occurrence file.
+    #[test]
+    fn an_unknown_source_generation_is_missing_evidence_not_staleness() {
+        let mut input = source();
+        input.generation = SourceGeneration::Unknown;
+        // Deliberately no occurrences: with an empty denominator only the
+        // source-file classification can raise MissingFileGeneration, so the
+        // occurrence loop cannot supply it and mask a regression here.
+        let plan = ModuleMovePlan::build(
+            input,
+            ModuleMoveTarget::Package("New::Name".into()),
+            Vec::new(),
+            vec![ModuleMoveFileGeneration {
+                file_id: SOURCE_FILE,
+                generation: SourceGeneration::Unknown,
+            }],
+            false,
+        );
+        assert!(
+            plan.blockers.contains(&ModuleMoveBlocker::MissingFileGeneration),
+            "an unknown source generation was not reported as missing evidence: {:?}",
+            plan.blockers
+        );
+    }
+
+    /// One contradicted document must not erase currentness evidence for the
+    /// documents that are not contradicted.
+    #[test]
+    fn a_contradiction_is_scoped_to_the_file_it_contradicts() {
+        let snapshot = vec![
+            generation(SOURCE_FILE, "g1"),
+            generation(DEPENDENT_FILE, "g2"),
+            generation(DEPENDENT_FILE, "g9"),
+        ];
+        let plan = plan(vec![declaration()], snapshot);
+        assert!(plan.blockers.contains(&ModuleMoveBlocker::MissingFileGeneration));
+        assert!(
+            plan.edits.iter().any(|edit| edit.file_id == SOURCE_FILE),
+            "the source file lost its evidence to an unrelated contradiction"
+        );
+        assert!(
+            plan.current_generations.iter().all(|entry| entry.file_id != DEPENDENT_FILE),
+            "a contradicted file was retained as if it had a current generation"
+        );
+    }
+
     // --- Perl identifier validity (Devin review) ------------------------------
 
     #[test]
@@ -1633,6 +1828,25 @@ mod tests {
             }),
             ("edit-new-text", |plan| plan.edits[0].new_text = "package Other".into()),
             ("edit-start-byte", |plan| plan.edits[0].start_byte = 4),
+            ("target-was-absent", |plan| plan.target_was_absent = false),
+            ("generation-value", |plan| {
+                plan.current_generations = vec![ModuleMoveFileGeneration {
+                    file_id: SOURCE_FILE,
+                    generation: SourceGeneration::known("g9"),
+                }];
+            }),
+            ("generation-file-id", |plan| {
+                plan.current_generations = vec![ModuleMoveFileGeneration {
+                    file_id: FileId(99),
+                    generation: SourceGeneration::known("g1"),
+                }];
+            }),
+            ("generation-count", |plan| {
+                plan.current_generations.push(ModuleMoveFileGeneration {
+                    file_id: FileId(99),
+                    generation: SourceGeneration::known("g1"),
+                });
+            }),
         ];
         for (label, mutate) in mutations {
             let mut mutated = baseline.clone();
@@ -1692,6 +1906,8 @@ mod tests {
         fingerprint_of(
             plan.schema_version,
             &plan.source,
+            &plan.current_generations,
+            plan.target_was_absent,
             &plan.resource,
             &plan.edits,
             &plan.blockers,
