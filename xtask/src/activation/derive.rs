@@ -710,25 +710,33 @@ fn collect_declared_modules(
         let Some(parent) = current.parent() else {
             continue;
         };
+        // A `#[path = "…"]` attribute retargets the next declaration; it is
+        // relative to the directory of the declaring file, for every file
+        // kind. Any other item line between the attribute and its `mod`
+        // drops it, so an attribute on an unrelated item cannot leak onto a
+        // later module.
+        let mut pending_path: Option<String> = None;
         for line in text.lines() {
             let trimmed = line.trim_start();
-            let declaration = trimmed
-                .strip_prefix("pub mod ")
-                .or_else(|| trimmed.strip_prefix("mod "))
-                .or_else(|| trimmed.strip_prefix("pub(crate) mod "));
-            let Some(rest) = declaration else {
-                continue;
-            };
-            let Some(name) = rest.strip_suffix(';').map(str::trim) else {
-                continue;
-            };
-            if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            if let Some(path) = path_attribute(trimmed) {
+                pending_path = Some(path);
                 continue;
             }
+            let Some(name) = declared_module_name(trimmed) else {
+                if !trimmed.is_empty() && !trimmed.starts_with("#[") {
+                    pending_path = None;
+                }
+                continue;
+            };
+            let explicit_path = pending_path.take();
             let stem = current.file_stem().and_then(|stem| stem.to_str()).unwrap_or("");
             let base =
                 if is_root || stem == "mod" { parent.to_path_buf() } else { parent.join(stem) };
-            for candidate in [base.join(format!("{name}.rs")), base.join(name).join("mod.rs")] {
+            let candidates = match explicit_path {
+                Some(path) => vec![parent.join(path)],
+                None => vec![base.join(format!("{name}.rs")), base.join(name).join("mod.rs")],
+            };
+            for candidate in candidates {
                 if candidate.is_file() {
                     let nested_root = candidate
                         .file_name()
@@ -742,6 +750,157 @@ fn collect_declared_modules(
         }
     }
     Ok(())
+}
+
+/// The module name declared by an out-of-line `mod` item, for any visibility
+/// (`mod`, `pub mod`, `pub(crate) mod`, `pub(super) mod`, `pub(in a::b) mod`).
+///
+/// Inline modules (`mod x { … }`) return `None`: their body is already in
+/// this file. Rustc accepts every visibility here equally, so recognising
+/// only some of them silently dropped compiled modules and the gates inside
+/// them from the population.
+fn declared_module_name(trimmed: &str) -> Option<&str> {
+    let rest = if let Some(after_pub) = trimmed.strip_prefix("pub") {
+        let after_vis = if let Some(group) = after_pub.strip_prefix('(') {
+            group.split_once(')').map(|(_, tail)| tail)?
+        } else {
+            after_pub
+        };
+        if !after_vis.starts_with(char::is_whitespace) {
+            return None;
+        }
+        after_vis.trim_start()
+    } else {
+        trimmed
+    };
+    let rest = rest.strip_prefix("mod")?;
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let name = rest.trim_start().strip_suffix(';')?.trim();
+    if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some(name)
+}
+
+/// The target of a `#[path = "…"]` attribute line, if this line is one.
+fn path_attribute(trimmed: &str) -> Option<String> {
+    let inner = trimmed.strip_prefix("#[")?.strip_suffix(']')?.trim();
+    let value = inner.strip_prefix("path")?.trim_start().strip_prefix('=')?.trim();
+    let literal = value.strip_prefix('"')?.strip_suffix('"')?;
+    if literal.is_empty() || literal.contains('"') {
+        return None;
+    }
+    Some(literal.to_string())
+}
+
+/// Byte mask that is `true` exactly where `text` is code: outside line and
+/// (nested) block comments, string literals (plain, byte, raw), and char
+/// literals. Lifetimes (`'a`) are code. Newlines inside comments and strings
+/// stay visible to callers so line-based scans keep their line structure.
+fn code_mask(text: &str) -> Vec<bool> {
+    let bytes = text.as_bytes();
+    let mut mask = vec![true; bytes.len()];
+    let blank = |mask: &mut Vec<bool>, from: usize, to: usize| {
+        for slot in mask.iter_mut().take(to).skip(from) {
+            *slot = false;
+        }
+    };
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            let end = bytes[i..].iter().position(|c| *c == b'\n').map_or(bytes.len(), |n| i + n);
+            blank(&mut mask, i, end);
+            i = end;
+        } else if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            let mut depth = 1usize;
+            let mut j = i + 2;
+            while j < bytes.len() && depth > 0 {
+                if bytes[j] == b'/' && bytes.get(j + 1) == Some(&b'*') {
+                    depth += 1;
+                    j += 2;
+                } else if bytes[j] == b'*' && bytes.get(j + 1) == Some(&b'/') {
+                    depth -= 1;
+                    j += 2;
+                } else {
+                    j += 1;
+                }
+            }
+            blank(&mut mask, i, j);
+            i = j;
+        } else if let Some((hashes, open)) = raw_string_open(bytes, i) {
+            let closer: Vec<u8> =
+                std::iter::once(b'"').chain(std::iter::repeat_n(b'#', hashes)).collect();
+            let end = bytes[open + 1..]
+                .windows(closer.len())
+                .position(|w| w == closer.as_slice())
+                .map_or(bytes.len(), |n| open + 1 + n + closer.len());
+            blank(&mut mask, i, end);
+            i = end;
+        } else if b == b'"' || (b == b'b' && bytes.get(i + 1) == Some(&b'"')) {
+            let open = if b == b'"' { i } else { i + 1 };
+            let mut j = open + 1;
+            while j < bytes.len() && bytes[j] != b'"' {
+                j += if bytes[j] == b'\\' { 2 } else { 1 };
+            }
+            let end = (j + 1).min(bytes.len());
+            blank(&mut mask, i, end);
+            i = end;
+        } else if b == b'\'' {
+            // `'\n'` and `'x'` are char literals; `'a` with no closing quote
+            // right after one character is a lifetime and stays code.
+            let end = if bytes.get(i + 1) == Some(&b'\\') {
+                bytes[i + 2..].iter().position(|c| *c == b'\'').map(|n| i + 3 + n)
+            } else {
+                let width = text[i + 1..].chars().next().map_or(1, char::len_utf8);
+                (bytes.get(i + 1 + width) == Some(&b'\'')).then_some(i + 2 + width)
+            };
+            match end {
+                Some(end) => {
+                    blank(&mut mask, i, end);
+                    i = end;
+                }
+                None => i += 1,
+            }
+        } else {
+            i += 1;
+        }
+    }
+    mask
+}
+
+/// If `bytes[i..]` opens a raw string (`r"`, `r#"`, `br##"` …) and `i` is
+/// not the tail of an identifier, the number of hashes and the index of the
+/// opening quote.
+fn raw_string_open(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
+    if i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_') {
+        return None;
+    }
+    let mut j = i;
+    if bytes.get(j) == Some(&b'b') {
+        j += 1;
+    }
+    if bytes.get(j) != Some(&b'r') {
+        return None;
+    }
+    j += 1;
+    let mut hashes = 0;
+    while bytes.get(j) == Some(&b'#') {
+        hashes += 1;
+        j += 1;
+    }
+    (bytes.get(j) == Some(&b'"')).then_some((hashes, j))
+}
+
+/// `text` with every non-code byte (comments, string and char literal bodies)
+/// replaced by a space, newlines preserved. Feature names inside `cfg`
+/// arguments are string literals too, so callers scan the ORIGINAL text at
+/// positions this copy proves are code rather than scanning this copy.
+fn code_only(text: &str) -> String {
+    let mask = code_mask(text);
+    text.char_indices().map(|(i, c)| if mask[i] || c == '\n' { c } else { ' ' }).collect()
 }
 
 /// Every feature name this file gates on.
@@ -762,17 +921,25 @@ fn collect_declared_modules(
 fn gated_features(text: &str) -> BTreeSet<String> {
     let mut found = BTreeSet::new();
 
-    for rest in text.split("cfg!(").skip(1) {
-        if let Some(args) = rest.split(')').next() {
+    // `code` has comment and literal bodies blanked (same length, same line
+    // breaks), so a `cfg!(` or `#[cfg(` that appears only inside a comment
+    // or a string is invisible here; the arguments are then read from the
+    // original text at the same offset, where the feature-name literals are.
+    let code = code_only(text);
+    let mut search = 0;
+    while let Some(offset) = code[search..].find("cfg!(") {
+        let start = search + offset + "cfg!(".len();
+        if let Some(args) = text[start..].split(')').next() {
             extract_feature_names(&squeeze(args), &mut found);
         }
+        search = start;
     }
 
     let opens = ["#[cfg(", "#![cfg(", "#[cfg_attr(", "#![cfg_attr("];
-    let mut lines = text.lines();
-    while let Some(line) = lines.next() {
+    let mut lines = text.lines().zip(code.lines());
+    while let Some((line, code_line)) = lines.next() {
         let trimmed = line.trim_start();
-        if !opens.iter().any(|open| trimmed.starts_with(open)) {
+        if !opens.iter().any(|open| code_line.trim_start().starts_with(open)) {
             continue;
         }
         let mut attribute = trimmed.to_string();
@@ -783,7 +950,7 @@ fn gated_features(text: &str) -> BTreeSet<String> {
                 break;
             }
             match lines.next() {
-                Some(next) => {
+                Some((next, _)) => {
                     attribute.push(' ');
                     attribute.push_str(next.trim());
                 }
@@ -1789,6 +1956,130 @@ mod tests {
             .map(|output| output.rows.iter().map(|row| row.surface_id.clone()).collect::<Vec<_>>());
         let _ = fs::remove_dir_all(&root);
         assert_eq!(ids, Ok(vec!["cargo-feature:demo/quiet-feature".to_string()]));
+    }
+
+    #[test]
+    fn a_cfg_macro_quoted_in_a_comment_or_string_is_not_a_usage_site() {
+        // The negative control for the code mask: the same text inside a
+        // line comment, a block comment, a string, and a raw string must not
+        // count, or a documentation mention would fabricate a test API.
+        let root = scratch_root("feature-cfg-macro-quoted");
+        assert!(write(
+            &root,
+            "crates/demo/Cargo.toml",
+            "[package]\nname = \"demo\"\n[features]\nquiet-feature = []\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/demo/tests/thing.rs",
+            concat!(
+                "// cfg!(feature = \"quiet-feature\")\n",
+                "/* #[cfg(feature = \"quiet-feature\")] */\n",
+                "fn t() {\n",
+                "    let _ = \"cfg!(feature = \\\"quiet-feature\\\")\";\n",
+                "    let _ = r#\"#[cfg(feature = \"quiet-feature\")]\"#;\n",
+                "}\n",
+            )
+        ));
+        let ids = derive_test_features(&root)
+            .map(|output| output.rows.iter().map(|row| row.surface_id.clone()).collect::<Vec<_>>());
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(ids, Ok(Vec::new()));
+    }
+
+    #[test]
+    fn a_cfg_macro_after_a_quoted_mention_is_still_a_usage_site() {
+        // The mask must blank exactly the literal, not the rest of the line.
+        let root = scratch_root("feature-cfg-macro-after-string");
+        assert!(write(
+            &root,
+            "crates/demo/Cargo.toml",
+            "[package]\nname = \"demo\"\n[features]\nquiet-feature = []\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/demo/tests/thing.rs",
+            "fn t() { let _ = \"x\"; if cfg!(feature = \"quiet-feature\") { } } // note\n"
+        ));
+        let ids = derive_test_features(&root)
+            .map(|output| output.rows.iter().map(|row| row.surface_id.clone()).collect::<Vec<_>>());
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(ids, Ok(vec!["cargo-feature:demo/quiet-feature".to_string()]));
+    }
+
+    #[test]
+    fn gates_in_path_super_and_in_visibility_modules_are_usage_sites() {
+        // rustc compiles all three declaration forms; each reaches a gate that
+        // must join the population. Without the fix every one is invisible.
+        let root = scratch_root("nested-module-forms");
+        assert!(write(
+            &root,
+            "crates/demo/Cargo.toml",
+            "[package]\nname = \"demo\"\n[features]\nquiet-feature = []\nb = []\nc = []\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/demo/tests/root.rs",
+            concat!(
+                "#[path = \"elsewhere/pathed.rs\"]\n",
+                "mod pathed;\n",
+                "pub(super) mod sup;\n",
+                "pub(in crate::root) mod inner;\n",
+                "fn t() {}\n",
+            )
+        ));
+        assert!(write(
+            &root,
+            "crates/demo/tests/elsewhere/pathed.rs",
+            "#[cfg(feature = \"quiet-feature\")]\npub fn a() {}\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/demo/tests/sup.rs",
+            "#[cfg(feature = \"b\")]\npub fn b() {}\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/demo/tests/inner/mod.rs",
+            "#[cfg(feature = \"c\")]\npub fn c() {}\n"
+        ));
+        let ids = derive_test_features(&root)
+            .map(|output| output.rows.iter().map(|row| row.surface_id.clone()).collect::<Vec<_>>());
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(
+            ids,
+            Ok(vec![
+                "cargo-feature:demo/b".to_string(),
+                "cargo-feature:demo/c".to_string(),
+                "cargo-feature:demo/quiet-feature".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_path_attribute_on_another_item_does_not_retarget_a_later_module() {
+        // Negative control: `#[path]` binds to the next item only.
+        let root = scratch_root("nested-module-path-leak");
+        assert!(write(
+            &root,
+            "crates/demo/Cargo.toml",
+            "[package]\nname = \"demo\"\n[features]\nquiet-feature = []\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/demo/tests/root.rs",
+            "#[path = \"elsewhere/pathed.rs\"]\nfn unrelated() {}\nmod support;\n"
+        ));
+        assert!(write(
+            &root,
+            "crates/demo/tests/elsewhere/pathed.rs",
+            "#[cfg(feature = \"quiet-feature\")]\npub fn a() {}\n"
+        ));
+        assert!(write(&root, "crates/demo/tests/support/mod.rs", "pub fn plain() {}\n"));
+        let ids = derive_test_features(&root)
+            .map(|output| output.rows.iter().map(|row| row.surface_id.clone()).collect::<Vec<_>>());
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(ids, Ok(Vec::new()));
     }
 
     #[test]
