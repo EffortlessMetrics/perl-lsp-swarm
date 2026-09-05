@@ -63,6 +63,7 @@ pub mod file;
 pub mod id;
 pub mod import;
 mod import_walk;
+pub mod meta_yml;
 pub mod model;
 pub mod package;
 pub mod pod;
