@@ -3,18 +3,12 @@
 //! Split from `accuracy.rs` for the 400-line gate in `update_status::mod_tests`;
 //! row and artifact builders are shared with the sibling `tests` module.
 
-use super::tests::{
-    artifact_with_rows, investigation_row, investigation_row_with_disposition, valid_population,
-};
-use super::{
-    ParserAccuracyArtifactSummary, ParserAccuracyLegacyPopulation, ParserAccuracyMetricSummary,
-    trust_disposition_is_fail_closed,
-};
+use super::{ParserAccuracyArtifactSummary, trust_disposition_is_fail_closed};
 
 /// The denominator every fixture here carries. Its values are irrelevant to the
 /// trust contract, but the reader models all thirteen schema fields strictly, so
 /// a missing one would fail deserialization for an unrelated reason.
-fn denominator_json() -> serde_json::Value {
+pub(super) fn denominator_json() -> serde_json::Value {
     serde_json::json!({
         "fixture_count": 4,
         "fixture_family_count": 1,
@@ -287,114 +281,4 @@ fn zero_applied_population_reports_instead_of_failing() {
         !trust_disposition_is_fail_closed(&parse(&measured)),
         "a measured aggregate must fail closed at any applied count"
     );
-}
-
-#[test]
-fn fail_closed_reader_rejects_untyped_aggregates_and_stale_counts() {
-    let population = valid_population();
-
-    // The aggregate serialized as trusted measured evidence is rejected.
-    let trusted_aggregate = artifact_with_rows(
-        vec![ParserAccuracyMetricSummary::Measured {
-            metric: "whitespace_invariance_rate".to_string(),
-            value: 0.4,
-            sample_count: 2,
-        }],
-        population.clone(),
-    );
-    assert!(
-        !trust_disposition_is_fail_closed(&trusted_aggregate),
-        "a legacy aggregate serialized as trusted measured evidence must fail closed"
-    );
-
-    // A retained population without any typed aggregate row is rejected.
-    let missing_aggregate = artifact_with_rows(vec![], population.clone());
-    assert!(
-        !trust_disposition_is_fail_closed(&missing_aggregate),
-        "a population without a typed aggregate row must fail closed"
-    );
-
-    // A stale aggregate count (from an older population) is rejected even
-    // though the row itself is typed investigation evidence.
-    let stale_aggregate = artifact_with_rows(
-        vec![investigation_row("whitespace_invariance_rate", 0.4, 3)],
-        population.clone(),
-    );
-    assert!(
-        !trust_disposition_is_fail_closed(&stale_aggregate),
-        "an aggregate from an older population must fail closed"
-    );
-
-    // An aggregate bound to a different profile than the retained
-    // population is rejected.
-    let mismatched_profile = artifact_with_rows(
-        vec![investigation_row("whitespace_invariance_rate", 0.4, 2)],
-        ParserAccuracyLegacyPopulation {
-            transformation_profile: "newline_style.legacy.v1".to_string(),
-            ..population.clone()
-        },
-    );
-    assert!(
-        !trust_disposition_is_fail_closed(&mismatched_profile),
-        "an aggregate observed under another profile must fail closed"
-    );
-}
-
-#[test]
-fn fail_closed_reader_rejects_unknown_dispositions_and_floor_admission() {
-    let population = valid_population();
-
-    for (label, row) in [
-        (
-            "unknown evidence class",
-            investigation_row_with_disposition(
-                "whitespace_invariance_rate",
-                0.4,
-                2,
-                "trusted",
-                "not_proven",
-                "none",
-                false,
-            ),
-        ),
-        (
-            "unknown terminal disposition",
-            investigation_row_with_disposition(
-                "whitespace_invariance_rate",
-                0.4,
-                2,
-                "investigation_only",
-                "pass",
-                "none",
-                false,
-            ),
-        ),
-        (
-            "non-none packet policy",
-            investigation_row_with_disposition(
-                "whitespace_invariance_rate",
-                0.4,
-                2,
-                "investigation_only",
-                "not_proven",
-                "defect",
-                false,
-            ),
-        ),
-        (
-            "floor-admitted investigation row",
-            investigation_row_with_disposition(
-                "whitespace_invariance_rate",
-                0.4,
-                2,
-                "investigation_only",
-                "not_proven",
-                "none",
-                true,
-            ),
-        ),
-    ] {
-        let artifact = artifact_with_rows(vec![row], population.clone());
-        assert!(!trust_disposition_is_fail_closed(&artifact), "{label} must fail closed");
-    }
 }

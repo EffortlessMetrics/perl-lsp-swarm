@@ -132,6 +132,7 @@ fn typed_investigation_rows_render_from_artifact_fields() {
             metric: "line_construct_f1".to_string(),
             value: 1.0,
             sample_count: 125,
+            unmodeled_fields: serde_json::Map::new(),
         },
         investigation_row("whitespace_invariance_rate", 0.4, 47),
         investigation_row("comment_invariance_rate", 1.0, 47),
@@ -154,6 +155,7 @@ fn measured_rows_render_as_trusted_even_with_legacy_shaped_names() {
         metric: "whitespace_invariance_rate".to_string(),
         value: 0.4,
         sample_count: 47,
+        unmodeled_fields: serde_json::Map::new(),
     }]);
 
     assert!(

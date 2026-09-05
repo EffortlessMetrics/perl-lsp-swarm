@@ -320,11 +320,13 @@ fn test_parser_accuracy_artifact_renders_denominator_and_metric_rows() -> Result
                     metric: "denominator_fixture_count".to_string(),
                     value: 2.0,
                     sample_count: 2,
+                    unmodeled_fields: serde_json::Map::new(),
                 },
                 ParserAccuracyMetricSummary::Measured {
                     metric: "line_construct_f1".to_string(),
                     value: 1.0,
                     sample_count: 6,
+                    unmodeled_fields: serde_json::Map::new(),
                 },
                 ParserAccuracyMetricSummary::InvestigationOnly {
                     metric: "whitespace_invariance_rate".to_string(),
