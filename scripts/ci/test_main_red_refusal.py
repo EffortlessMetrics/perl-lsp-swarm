@@ -243,26 +243,8 @@ class MainRedRefusalBehaviorTests(unittest.TestCase):
             main_workflow_sha="main-workflow-sha",
             candidate_workflow_sha="changed-workflow-sha",
         )
-        self.assertFalse(decision.waits_for_candidate)
-        self.assertFalse(decision.blocks)
-        self.assertIn("all exact-SHA candidate shards passed", " ".join(decision.warnings))
-
-    def test_changed_candidate_workflow_waits_without_complete_green_shards(self) -> None:
-        candidate = all_shards("candidate-sha", conclusion="success")
-        candidate[0] = run(refusal.SHARD_NAMES[0], "candidate-sha", "in_progress", None)
-        decision = refusal.evaluate(
-            main_runs=all_shards("main-sha", conclusion="failure"),
-            candidate_runs=candidate,
-            main_sha_before="main-sha",
-            main_sha_after="main-sha",
-            candidate_sha="candidate-sha",
-            main_workflow_run_ids=set(range(1, 9)),
-            candidate_workflow_run_ids=set(range(1, 9)),
-            main_workflow_sha="main-workflow-sha",
-            candidate_workflow_sha="changed-workflow-sha",
-        )
         self.assertTrue(decision.waits_for_candidate)
-        self.assertFalse(decision.blocks)
+        self.assertTrue(refusal.finalize(decision).blocks)
 
     def test_payload_loader_accepts_slurped_pages(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

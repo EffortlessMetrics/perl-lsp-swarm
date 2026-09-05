@@ -210,29 +210,7 @@ def evaluate(
         decision.warnings.append(
             "candidate ci.yml differs from canonical main ci.yml; candidate shard evidence is not comparable"
         )
-        # A workflow change cannot be compared shard-for-shard with main, but
-        # it must not deadlock its own required result while an advisory lane
-        # is still running. Require the candidate's canonical shards to be
-        # complete and green before treating the mismatch as non-blocking.
-        candidate_by_name = _latest_shards(
-            candidate_runs,
-            candidate_sha,
-            candidate_workflow_run_ids,
-        )
-        if all(
-            (candidate := candidate_by_name.get(name)) is not None
-            and str(candidate.get("status") or "").lower() == "completed"
-            and _conclusion(candidate) == "success"
-            for name in SHARD_NAMES
-        ):
-            decision.warnings.append(
-                "candidate workflow mismatch is non-blocking because all exact-SHA candidate shards passed"
-            )
-            return decision
-        decision.waiters.append(
-            "candidate workflow differs from main and does not yet have complete green exact-SHA shard evidence"
-        )
-        return decision
+        candidate_workflow_run_ids = set()
     candidate_by_name = _latest_shards(
         candidate_runs,
         candidate_sha,

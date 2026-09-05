@@ -43,99 +43,6 @@ fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(1).unwrap_or(Path::new(".")).to_path_buf()
 }
 
-fn vimscript_has_forbidden_system_call(source: &str) -> bool {
-    for line in source.lines() {
-        let mut code = String::new();
-        let mut string = String::new();
-        let mut in_string = false;
-        let mut escaped = false;
-        let mut executable_string = false;
-
-        for character in line.chars() {
-            if in_string {
-                if escaped {
-                    escaped = false;
-                    string.push(character);
-                } else if character == '\\' {
-                    escaped = true;
-                    string.push(character);
-                } else if character == '"' {
-                    if executable_string && executable_string_has_system_call(&string) {
-                        return true;
-                    }
-                    in_string = false;
-                    string.clear();
-                } else {
-                    string.push(character);
-                }
-                continue;
-            }
-
-            if character == '"' {
-                let trimmed = code.trim_end();
-                if trimmed.is_empty() {
-                    break;
-                }
-                executable_string = trimmed.ends_with("execute") || trimmed.contains(" execute ");
-                let expression_string = executable_string
-                    || trimmed.ends_with('=')
-                    || trimmed.ends_with('(')
-                    || trimmed.ends_with('[')
-                    || trimmed.ends_with(',')
-                    || trimmed.ends_with("echo");
-                if !expression_string {
-                    break;
-                }
-                in_string = true;
-                continue;
-            }
-
-            if character == 's' {
-                code.push(character);
-                continue;
-            }
-            code.push(character);
-            if code.ends_with("system(") {
-                let before = code[..code.len() - "system(".len()].chars().last();
-                if before
-                    .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_')
-                {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
-fn executable_string_has_system_call(source: &str) -> bool {
-    let mut in_single_quote = false;
-    let mut escaped = false;
-    let mut code = String::new();
-
-    for character in source.chars() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if character == '\\' {
-            escaped = true;
-            continue;
-        }
-        if character == '\'' {
-            in_single_quote = !in_single_quote;
-            continue;
-        }
-        if !in_single_quote {
-            code.push(character);
-            if code.ends_with("system(") {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 // ---------------------------------------------------------------------------
 // Schema identity
 // ---------------------------------------------------------------------------
@@ -299,9 +206,10 @@ fn thin_adapter_and_driver_never_force_a_filetype_or_second_orchestration() -> R
                  native adapter (no filetype forcing, a thin native adapter may not force a filetype (#7762 native-detection law)"
             );
         }
-        let has_system_call = vimscript_has_forbidden_system_call(source);
         ensure!(
-            !has_system_call && !source.contains("job_start") && !source.contains("term_start"),
+            !source.contains("system(")
+                && !source.contains("job_start")
+                && !source.contains("term_start"),
             "{label} must not spawn processes; the Rust supervisor owns process supervision"
         );
     }
@@ -332,17 +240,6 @@ fn thin_adapter_and_driver_never_force_a_filetype_or_second_orchestration() -> R
         "adapter must resolve the candidate through the wrapper environment boundary"
     );
     Ok(())
-}
-
-#[test]
-fn vimscript_system_scanner_handles_strings_and_executable_commands() {
-    assert!(vimscript_has_forbidden_system_call(
-        r#"let s:msg = "text" | call system("forbidden")"#
-    ));
-    assert!(vimscript_has_forbidden_system_call(r#"execute "call system('forbidden')""#));
-    assert!(!vimscript_has_forbidden_system_call(r#"execute "echo 'system('""#));
-    assert!(!vimscript_has_forbidden_system_call(r#"let s:msg = "system(forbidden)""#));
-    assert!(!vimscript_has_forbidden_system_call(r#"" comment system(forbidden)"#));
 }
 
 // ---------------------------------------------------------------------------

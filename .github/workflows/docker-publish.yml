@@ -300,7 +300,7 @@ jobs:
   publish-ghcr:
     name: Publish GHCR images by digest
     runs-on: ubuntu-24.04
-    needs: [init, resolve-trusted-anchor, build, build-perl-runtime]
+    needs: [init, build, build-perl-runtime]
     if: github.event.inputs.push != 'false'
     timeout-minutes: 60
     permissions:
@@ -473,7 +473,7 @@ jobs:
   publish-dockerhub:
     name: Publish Docker Hub images by digest
     runs-on: ubuntu-24.04
-    needs: [init, resolve-trusted-anchor, build, build-perl-runtime]
+    needs: [init, build, build-perl-runtime]
     if: github.event.inputs.push != 'false'
     timeout-minutes: 60
     permissions:
