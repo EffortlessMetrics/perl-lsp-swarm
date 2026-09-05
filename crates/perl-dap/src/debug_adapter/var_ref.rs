@@ -53,7 +53,7 @@
 //! saturate rather than panic or overflow.
 
 #[cfg(test)]
-use perl_tdd_support::must_some;
+use perl_tdd_support::{must_some, must_some_with};
 use std::fmt;
 
 /// Error type for `TryFrom<i32>` on `ScopeKind`.
@@ -278,10 +278,6 @@ impl VariableReference {
 
 #[cfg(test)]
 mod codec_unit_tests {
-    #![expect(
-        clippy::unwrap_used,
-        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-    )]
     use super::*;
 
     #[test]
@@ -311,19 +307,19 @@ mod codec_unit_tests {
     fn evalresult_encode_decode_roundtrip() {
         // counter=0: wire 1_000_000 (EvalResult band)
         let e0 = VariableReference::EvalResult { counter: 0 };
-        let w0 = e0.encode().unwrap();
+        let w0 = must_some_with(e0.encode(), "counter=0 EvalResult must encode");
         assert_eq!(w0, 1_000_000);
         assert_eq!(VariableReference::decode(w0), Some(e0));
 
         // counter=1: wire 1_000_001 — previously misclassified as Scope
         let e1 = VariableReference::EvalResult { counter: 1 };
-        let w1 = e1.encode().unwrap();
+        let w1 = must_some_with(e1.encode(), "counter=1 EvalResult must encode");
         assert_eq!(w1, 1_000_001);
         assert_eq!(VariableReference::decode(w1), Some(e1), "counter=1 must decode as EvalResult");
 
         // counter=3: wire 1_000_003 — kind_disc=3 is Globals under old logic
         let e3 = VariableReference::EvalResult { counter: 3 };
-        let w3 = e3.encode().unwrap();
+        let w3 = must_some_with(e3.encode(), "counter=3 EvalResult must encode");
         assert_eq!(w3, 1_000_003);
         assert_eq!(VariableReference::decode(w3), Some(e3), "counter=3 must decode as EvalResult");
     }
@@ -351,7 +347,7 @@ mod codec_unit_tests {
     #[test]
     fn child_encode_decode_base() {
         let c = VariableReference::Child { parent: 0, index: 0 };
-        let wire = c.encode().unwrap();
+        let wire = must_some_with(c.encode(), "base Child reference must encode");
         assert_eq!(wire, 2_000_000_000);
         assert_eq!(VariableReference::decode(2_000_000_000), Some(c));
     }
