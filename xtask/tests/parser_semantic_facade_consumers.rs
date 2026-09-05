@@ -18,7 +18,10 @@
 //! };
 //! ```
 //!
-//! are rejected exactly like their single-line equivalents. The facade's root
+//! are rejected exactly like their single-line equivalents. Every segment of a
+//! `::` chain is walked, not just the leading one, so a wrapper module
+//! re-exporting semantic authority (`perl_parser::wrapper::semantic::Bar`,
+//! or the brace member `wrapper::symbol::Table`) is reported too. The facade's root
 //! re-export surface (`use perl_parser::SemanticAnalyzer`, brace members such
 //! as `SymbolTable`) is detected as well: until #11379 removes those exports,
 //! they remain semantic authority and consumers must import from
@@ -196,48 +199,97 @@ fn skip_whitespace(chars: &[char], mut index: usize) -> usize {
     index
 }
 
-fn read_identifier(chars: &[char], start: usize, end: usize) -> String {
-    let mut ident = String::new();
+/// Read the identifier starting at `start`, returning its text and the index
+/// just past it. One helper for both callers: the flat path bounds `end` at
+/// `chars.len()`, the brace path at the member span.
+fn read_identifier(chars: &[char], start: usize, end: usize) -> (String, usize) {
     let mut index = start;
     while index < end && (chars[index].is_ascii_alphanumeric() || chars[index] == '_') {
-        ident.push(chars[index]);
         index += 1;
     }
-    ident
+    (chars[start..index].iter().collect(), index)
 }
 
-fn is_forbidden_ident(ident: &str) -> bool {
-    FORBIDDEN_FACADE_SEGMENTS.contains(&ident) || FORBIDDEN_ROOT_REEXPORT_ITEMS.contains(&ident)
-}
-
-fn record_forbidden_ident(ident: &str, hits: &mut Vec<String>) {
-    if is_forbidden_ident(ident) {
-        hits.push(format!("{FACADE_HEAD}::{ident}"));
+/// If a `::` separator starts at or after `cursor`, return the index just past
+/// it. Whitespace-insensitive, so `a :: b` reads like `a::b`.
+fn skip_path_separator(chars: &[char], cursor: usize) -> Option<usize> {
+    let first = skip_whitespace(chars, cursor);
+    if chars.get(first) != Some(&':') {
+        return None;
     }
+    let second = skip_whitespace(chars, first + 1);
+    if chars.get(second) != Some(&':') {
+        return None;
+    }
+    Some(second + 1)
 }
 
-/// Record the leading identifier of one brace-group member span, descending
-/// into nested groups (for example `semantic::{HoverInfo}`).
-fn record_member(chars: &[char], start: usize, end: usize, hits: &mut Vec<String>) {
-    let member_start = skip_whitespace(chars, start);
-    if member_start >= end {
-        return;
-    }
-    let ident = read_identifier(chars, member_start, end);
-    record_forbidden_ident(&ident, hits);
-    let mut cursor = member_start + ident.len();
-    while cursor < end {
+/// Walk one `::`-separated path chain inside `[start, end)`, recording the
+/// forbidden module it reaches and descending into brace groups at any depth.
+///
+/// Checking only the leading identifier was the shared root cause of two
+/// review findings: `perl_parser::wrapper::semantic::Bar` and the brace member
+/// `wrapper::symbol::Table` both hide a facade segment behind a non-forbidden
+/// one. A future wrapper module re-exporting semantic authority is exactly the
+/// recurrence this guard exists to reject, so the whole chain is walked.
+///
+/// Two rules keep the widened walk from over-reporting:
+///
+/// - One hit per chain. `perl_parser::semantic::SemanticAnalyzer` is a single
+///   violation of `semantic`; the item behind it is incidental, and the module
+///   is the thing a consumer must migrate.
+/// - `root_items_apply` gates [`FORBIDDEN_ROOT_REEXPORT_ITEMS`]. Those names
+///   are semantic authority only at the crate root or beneath a forbidden
+///   module — never under parser authority. Without this,
+///   `perl_parser::workspace_index::{SymbolKind, VarKind}` would report the
+///   workspace-index `SymbolKind`, which is not the semantic one.
+fn record_path_chain(
+    chars: &[char],
+    start: usize,
+    end: usize,
+    hits: &mut Vec<String>,
+    mut root_items_apply: bool,
+) -> usize {
+    let mut cursor = start;
+    let mut recorded = false;
+    loop {
+        cursor = skip_whitespace(chars, cursor);
+        if cursor >= end {
+            return cursor;
+        }
         if chars[cursor] == '{' {
-            cursor = scan_brace_group(chars, cursor + 1, hits);
+            cursor = scan_brace_group(chars, cursor + 1, hits, root_items_apply);
         } else {
-            cursor += 1;
+            let (ident, ident_end) = read_identifier(chars, cursor, end);
+            if ident.is_empty() {
+                return cursor;
+            }
+            let is_segment = FORBIDDEN_FACADE_SEGMENTS.contains(&ident.as_str());
+            let is_root_item =
+                root_items_apply && FORBIDDEN_ROOT_REEXPORT_ITEMS.contains(&ident.as_str());
+            if !recorded && (is_segment || is_root_item) {
+                hits.push(format!("{FACADE_HEAD}::{ident}"));
+                recorded = true;
+            }
+            root_items_apply = is_segment;
+            cursor = ident_end;
+        }
+        match skip_path_separator(chars, cursor) {
+            Some(next) if next <= end => cursor = next,
+            _ => return cursor,
         }
     }
 }
 
 /// Walk one brace group starting just past `{`. Split top-level members on
-/// commas and return the index just past the matching `}`.
-fn scan_brace_group(chars: &[char], start: usize, hits: &mut Vec<String>) -> usize {
+/// commas and return the index just past the matching `}`. Each member is a
+/// path chain in its own right.
+fn scan_brace_group(
+    chars: &[char],
+    start: usize,
+    hits: &mut Vec<String>,
+    root_items_apply: bool,
+) -> usize {
     let mut depth = 1usize;
     let mut member_start = start;
     let mut index = start;
@@ -250,13 +302,13 @@ fn scan_brace_group(chars: &[char], start: usize, hits: &mut Vec<String>) -> usi
             '}' => {
                 depth -= 1;
                 if depth == 0 {
-                    record_member(chars, member_start, index, hits);
+                    record_path_chain(chars, member_start, index, hits, root_items_apply);
                     return index + 1;
                 }
                 index += 1;
             }
             ',' if depth == 1 => {
-                record_member(chars, member_start, index, hits);
+                record_path_chain(chars, member_start, index, hits, root_items_apply);
                 member_start = index + 1;
                 index += 1;
             }
@@ -279,41 +331,18 @@ fn forbidden_facade_references(code: &str) -> Vec<String> {
             continue;
         }
         let after_head = index + head.len();
-        let mut cursor = skip_whitespace(&chars, after_head);
-        if chars.get(cursor) != Some(&':') {
+        // A bare `perl_parser` with no `::` is the crate name, not a path into
+        // it, and is never a violation.
+        let Some(chain_start) = skip_path_separator(&chars, after_head) else {
             index = after_head;
             continue;
-        }
-        cursor = skip_whitespace(&chars, cursor + 1);
-        if chars.get(cursor) != Some(&':') {
-            index = after_head;
-            continue;
-        }
-        cursor = skip_whitespace(&chars, cursor + 1);
-        match chars.get(cursor) {
-            Some('{') => {
-                index = scan_brace_group(&chars, cursor + 1, &mut hits);
-            }
-            Some(_) => {
-                let ident_end = skip_to_identifier_end(&chars, cursor);
-                let ident = read_identifier(&chars, cursor, ident_end);
-                record_forbidden_ident(&ident, &mut hits);
-                index = ident_end.max(after_head);
-            }
-            None => break,
-        }
+        };
+        index =
+            record_path_chain(&chars, chain_start, chars.len(), &mut hits, true).max(after_head);
     }
     hits.sort();
     hits.dedup();
     hits
-}
-
-fn skip_to_identifier_end(chars: &[char], start: usize) -> usize {
-    let mut index = start;
-    while index < chars.len() && (chars[index].is_ascii_alphanumeric() || chars[index] == '_') {
-        index += 1;
-    }
-    index
 }
 
 fn collect_rs_files(
@@ -619,4 +648,56 @@ use perl_parser::semantic::SemanticAnalyzer;
 ";
     let hits = forbidden_facade_references(&code_without_comments(source));
     assert_eq!(hits, vec!["perl_parser::semantic".to_string()]);
+}
+
+/// Review finding r3887038668: the flat path arm read only the first segment,
+/// so a wrapper module re-exporting semantic authority was never checked.
+#[test]
+fn a_forbidden_segment_behind_a_wrapper_module_is_reported() {
+    let source = "use perl_parser::wrapper::semantic::Bar;\n";
+    let hits = forbidden_facade_references(&code_without_comments(source));
+    assert_eq!(hits, vec!["perl_parser::semantic".to_string()]);
+}
+
+/// Review finding r3887042840: the brace path descended only on `{`, so a
+/// member's own `::` chain was walked past unchecked.
+#[test]
+fn a_forbidden_segment_behind_a_wrapper_inside_a_brace_member_is_reported() {
+    let source = "use perl_parser::{Parser, wrapper::symbol::Table};\n";
+    let hits = forbidden_facade_references(&code_without_comments(source));
+    assert_eq!(hits, vec!["perl_parser::symbol".to_string()]);
+}
+
+/// The widened chain walk must not turn parser authority into a violation.
+/// `workspace_index` stays on `perl-parser` (#11377 leaves it there), and its
+/// `SymbolKind` is not the semantic `SymbolKind` — reporting it would be a
+/// false accept of the migration's own boundary.
+#[test]
+fn root_reexport_items_under_parser_authority_are_not_violations() {
+    let source = "\
+use perl_parser::workspace_index::{LspWorkspaceSymbol, SymbolKind, VarKind};
+use perl_parser::ast::{Node, NodeKind};
+";
+    assert!(
+        forbidden_facade_references(&code_without_comments(source)).is_empty(),
+        "root re-export items apply at the crate root or beneath a forbidden module, not under \
+         parser authority"
+    );
+}
+
+/// One violation per chain: the module is what a consumer must migrate, and
+/// the item behind it is incidental. Reporting both would double-count a
+/// single import.
+#[test]
+fn a_chain_reports_its_module_once_not_every_semantic_name_in_it() {
+    let source = "use perl_parser::semantic::SemanticAnalyzer;\n";
+    let hits = forbidden_facade_references(&code_without_comments(source));
+    assert_eq!(hits, vec!["perl_parser::semantic".to_string()]);
+}
+
+/// A bare crate reference is not a path into the facade.
+#[test]
+fn a_bare_crate_reference_without_a_path_is_not_a_violation() {
+    let source = "let name = perl_parser;\nextern crate perl_parser;\n";
+    assert!(forbidden_facade_references(&code_without_comments(source)).is_empty());
 }
