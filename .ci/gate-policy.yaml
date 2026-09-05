@@ -996,6 +996,11 @@ gates:
     planning:
       role: rust_scoped
 
+  # ===========================================================================
+  # Tier: merge_gate
+  # ===========================================================================
+  # Full verification required before merging. Can be slower but must be thorough.
+
   # Gate #11933: wire expose_lsp_test_api feature combinations so the
   # pending-parse freshness test suite and related gap-simulation test suites
   # cannot rot silently. These files are gated behind cfg(feature = …) and
@@ -1069,11 +1074,6 @@ gates:
       packages:
         - perl-lsp-rs
         - perl-lsp-rs-core
-
-  # ===========================================================================
-  # Tier: merge_gate
-  # ===========================================================================
-  # Full verification required before merging. Can be slower but must be thorough.
 
   - name: unit_foundation_full
     tier: merge_gate

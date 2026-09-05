@@ -394,6 +394,8 @@ fn gate_registry_alignment_prevents_stale_parser_wiring() -> Result<(), Box<dyn 
         ("parser_corpus_ratchet", "parser-corpus-ratchet"),
         ("cpan_corpus_ratchet", "cpan-corpus-ratchet"),
         ("parser_audit_closeout", "parser-audit-closeout"),
+        ("pending_parse_freshness", "pending-parse-freshness"),
+        ("pull_diagnostics_freshness", "pull-diagnostics-freshness"),
     ];
 
     for (policy_name, registry_id) in pairs {
@@ -833,6 +835,108 @@ fn lsp_smoke_is_atomic_bounded_and_independently_terminal() -> Result<(), Box<dy
         .and_then(|budgets| budgets.max_duration_ms)
         .ok_or("lsp_smoke must declare a duration budget")?;
     assert_eq!(budget, 576_000, "budget must stay at the 0.80 ratio (576000/720s)");
+
+    Ok(())
+}
+
+/// Parse the `--features a,b` list out of a gate command.
+fn declared_features(command: &str) -> Vec<String> {
+    let mut tokens = command.split_whitespace();
+    let mut features = Vec::new();
+    while let Some(token) = tokens.next() {
+        if token == "--features"
+            && let Some(list) = tokens.next()
+        {
+            features.extend(list.split(',').map(str::to_string));
+        }
+    }
+    features.sort();
+    features.dedup();
+    features
+}
+
+/// Parse the `--test <name>` targets out of a gate command.
+fn declared_test_targets(command: &str) -> Vec<String> {
+    let mut tokens = command.split_whitespace();
+    let mut targets = Vec::new();
+    while let Some(token) = tokens.next() {
+        if token == "--test"
+            && let Some(name) = tokens.next()
+        {
+            targets.push(name.to_string());
+        }
+    }
+    targets
+}
+
+/// Extract the features named by a test file's crate-level `#![cfg(...)]`.
+fn cfg_required_features(source: &str) -> Vec<String> {
+    let Some(line) = source.lines().find(|line| line.trim_start().starts_with("#![cfg(")) else {
+        return Vec::new();
+    };
+    let mut features = Vec::new();
+    let mut rest = line;
+    while let Some(at) = rest.find("feature = \"") {
+        rest = &rest[at + "feature = \"".len()..];
+        if let Some(end) = rest.find('"') {
+            features.push(rest[..end].to_string());
+            rest = &rest[end..];
+        } else {
+            break;
+        }
+    }
+    features.sort();
+    features.dedup();
+    features
+}
+
+/// `cargo test --test <suite>` exits 0 and reports green when the suite's
+/// `#![cfg(...)]` is unsatisfied — it simply runs zero tests.  So the
+/// #11933 freshness gates only detect cfg-gated rot while their commands
+/// still carry every feature the suites require.  Bind the two together
+/// here, where it costs nothing, rather than trusting the hosted run.
+#[test]
+fn freshness_gate_commands_satisfy_every_named_suite_cfg() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = project_root();
+    let content = fs::read_to_string(root.join(".ci/gate-policy.yaml"))?;
+    let parsed: GatePolicyDoc = serde_yaml_ng::from_str(&content)?;
+    let gates: HashMap<_, _> =
+        parsed.gates.into_iter().map(|gate| (gate.name.clone(), gate)).collect();
+
+    for gate_name in ["pending_parse_freshness", "pull_diagnostics_freshness"] {
+        let gate = gates.get(gate_name).ok_or(format!("missing {gate_name} gate"))?;
+        assert_eq!(gate.tier, "merge_gate", "{gate_name} must stay a merge gate");
+        assert!(gate.required, "{gate_name} must stay PR-blocking to prevent silent rot");
+        assert!(!gate.quarantine, "{gate_name} must not be quarantined");
+
+        let features = declared_features(&gate.command);
+        let targets = declared_test_targets(&gate.command);
+        assert!(!targets.is_empty(), "{gate_name} must name at least one --test target");
+
+        for target in &targets {
+            let source_path = root.join(format!("crates/perl-lsp-rs/tests/{target}.rs"));
+            let source = fs::read_to_string(&source_path).map_err(|error| {
+                format!("{gate_name} names {target}, but {}: {error}", source_path.display())
+            })?;
+            let required = cfg_required_features(&source);
+            assert!(
+                !required.is_empty(),
+                "{target} has no crate-level #![cfg(feature = ...)]; either it is no longer \
+                 cfg-gated and {gate_name} should stop claiming to protect it from cfg rot, \
+                 or the gate is guarding the wrong file"
+            );
+            for feature in &required {
+                assert!(
+                    features.contains(feature),
+                    "{gate_name} runs {target}, which is gated behind feature {feature:?}, \
+                     but the gate command declares --features {features:?}. The suite would \
+                     compile to zero tests and the gate would still report green — the exact \
+                     #11933 failure mode this gate exists to catch."
+                );
+            }
+        }
+    }
 
     Ok(())
 }
