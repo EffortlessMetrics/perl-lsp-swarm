@@ -55,7 +55,8 @@ use crate::envelope::{
 };
 use crate::framework::AdapterDetectionResult;
 use crate::framework_adapters::mojo_base::{
-    MOJO_BASE_FRAMEWORK_NAME, MojoBaseActivationFacts, MojoBaseActivationOutcome,
+    MOJO_BASE_ADAPTER_ID, MOJO_BASE_FRAMEWORK_NAME, MojoBaseActivationFacts,
+    MojoBaseActivationOutcome,
 };
 use crate::{
     AnchorId, BoundaryDisposition, BoundaryKind, BoundaryLink, Confidence, EntityId, FactId,
@@ -484,6 +485,17 @@ pub fn mojo_base_object_facts(
     if !detection.is_detected() || !activation.is_exact() {
         return facts;
     }
+    // `is_detected()` only says *some* framework was detected. The two inputs
+    // arrive separately, so nothing else stops a caller pairing another
+    // adapter's detection — or a newer project generation — with a cached
+    // exact `Mojo::Base` activation. Bind them explicitly instead of trusting
+    // the pairing: the detection must be this adapter's, and it must describe
+    // the same generation the activation was observed in.
+    if detection.descriptor.adapter_id != MOJO_BASE_ADAPTER_ID
+        || detection.project_generation != activation.source_generation
+    {
+        return facts;
+    }
     // The activation already knows which package imported `Mojo::Base`. Asking
     // it for a different package's members must fail closed rather than trust
     // the caller: an activation `App` made establishes neither `Other`'s
@@ -498,8 +510,22 @@ pub fn mojo_base_object_facts(
         if declaration.package.as_deref() != package {
             continue;
         }
-        // A same-named package in another file is a different class: its `has`
-        // calls are not this activation's accessors.
+        // A same-named package in another file is treated as a different
+        // class: its `has` calls are not this activation's accessors.
+        //
+        // **Documented limitation.** A Perl package can legitimately span
+        // files, and `Mojo::Base` installs `has` into the package symbol
+        // table, so a second file reopening the package *after* the first has
+        // loaded really can declare accessors. Admitting those needs proof of
+        // load order between the two files, which is a workspace-level fact
+        // this per-file producer does not have — and without it, admitting
+        // them would also re-admit the genuinely unrelated same-named package
+        // this guard exists to reject.
+        //
+        // So the guard stays closed while the ordering is unknown: it omits
+        // accessors of a split package rather than inventing accessors for an
+        // unrelated one. #9682's own fixture list asks for multi-root
+        // same-name isolation, which is the same posture.
         if declaration.file_id != file_id {
             continue;
         }
@@ -1132,6 +1158,36 @@ mod tests {
         let mut stale = declaration(1, "outdated", MojoBaseAttributeDefault::Absent);
         stale.source_generation = SourceGeneration::known("gen-0");
         assert!(mint_with_detection(&activation, &[stale]).members.is_empty());
+
+        // A detection from another adapter cannot authorize Mojo facts, and
+        // neither can one describing a different project generation.
+        let ok = declaration(1, "kept", MojoBaseAttributeDefault::Absent);
+        let mut foreign = detected_result("9.34", "gen-1");
+        foreign.descriptor = crate::framework_adapters::dancer2::dancer2_descriptor();
+        assert!(
+            mojo_base_object_facts(
+                &foreign,
+                &activation,
+                FileId(1),
+                Some("App"),
+                std::slice::from_ref(&ok)
+            )
+            .members
+            .is_empty()
+        );
+        let mut newer = detected_result("9.34", "gen-1");
+        newer.project_generation = SourceGeneration::known("gen-2");
+        assert!(
+            mojo_base_object_facts(
+                &newer,
+                &activation,
+                FileId(1),
+                Some("App"),
+                std::slice::from_ref(&ok)
+            )
+            .members
+            .is_empty()
+        );
 
         // Control: a declaration matching on all counts still mints, so the
         // refusals above isolate each guard rather than a broken fixture.

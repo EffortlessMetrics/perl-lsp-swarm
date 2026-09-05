@@ -97,6 +97,7 @@ use perl_semantic_facts::framework_adapters::mojo_base_facts::{
 };
 use perl_semantic_facts::{AnchorId, FileId, SourceAnchor, SourceGeneration};
 use regex::Regex;
+use std::collections::HashSet;
 use std::sync::OnceLock;
 
 /// The `Mojo::Base` attribute-declaration keyword.
@@ -133,10 +134,13 @@ pub fn extract_mojo_base_attribute_declarations(
     generation: SourceGeneration,
 ) -> Vec<MojoBaseAttributeDeclaration> {
     let subroutines = SubroutineTargetIndex::build(ast, file_id);
+    let mut nested_subroutines = HashSet::new();
+    collect_nested_package_subroutines(ast, &mut None, &mut nested_subroutines);
     let mut state = WalkState {
         file_id,
         generation,
         subroutines: &subroutines,
+        nested_subroutines: &nested_subroutines,
         next_declaration_index: 0,
         declarations: Vec::new(),
         deferred: false,
@@ -153,6 +157,9 @@ struct WalkState<'a> {
     file_id: FileId,
     generation: SourceGeneration,
     subroutines: &'a SubroutineTargetIndex,
+    /// Package subroutines declared inside another subroutine's body, which
+    /// [`SubroutineTargetIndex`] deliberately does not index.
+    nested_subroutines: &'a HashSet<(String, String)>,
     next_declaration_index: u32,
     declarations: Vec<MojoBaseAttributeDeclaration>,
     /// Whether the current position runs later than, or less often than, the
@@ -368,6 +375,28 @@ impl WalkState<'_> {
         }
     }
 
+    /// Whether an explicit source method of this name exists in `package`.
+    ///
+    /// [`SubroutineTargetIndex`] answers this for ordinary declarations, and
+    /// owns the declarator and typeglob rules. It deliberately does not index
+    /// subroutines declared inside another subroutine's body, because its own
+    /// contract is about statically resolvable handler targets — but Perl
+    /// installs `sub outer { sub inner { ... } }` into the package at compile
+    /// time all the same, so `inner` really can shadow an accessor. Missing it
+    /// would mint the member with no collision boundary, asserting there is no
+    /// conflict when there is one.
+    ///
+    /// The supplementary set covers exactly that gap rather than replacing the
+    /// index, so the declarator and slot-mutation rules stay in one place.
+    fn collides_with_explicit_method(&self, name: &str, package: Option<&str>) -> bool {
+        if self.subroutines.resolve(name, package).is_some() {
+            return true;
+        }
+        package.is_some_and(|package| {
+            self.nested_subroutines.contains(&(package.to_string(), name.to_string()))
+        })
+    }
+
     /// Walk `node`'s children with the deferred-execution flag set to
     /// `deferred`, restoring the caller's value afterwards.
     fn walk_deferring(
@@ -399,7 +428,7 @@ impl WalkState<'_> {
         for (name_index, (name, name_node)) in parsed.names.into_iter().enumerate() {
             let name_anchor = anchor(name_node.0, name_node.1, self.file_id);
             let explicit_method = match name.literal() {
-                Some(literal) if self.subroutines.resolve(literal, package).is_some() => {
+                Some(literal) if self.collides_with_explicit_method(literal, package) => {
                     MojoBaseExplicitMethodState::Collides
                 }
                 _ => MojoBaseExplicitMethodState::None,
@@ -660,6 +689,50 @@ fn unquote(raw: &str) -> Option<String> {
 /// identifier or index, so a trailing sigil stays static.
 fn interpolated_value_is_dynamic(value: &str) -> bool {
     crate::analysis::dancer2_routes::interpolated_value_is_dynamic(value)
+}
+
+/// Collect every named package subroutine, including those nested inside
+/// another subroutine's body.
+///
+/// Perl installs a named `sub` into the package symbol table at compile time
+/// wherever it is written, so `sub outer { sub inner { ... } }` defines
+/// `inner` at package level — verified under `perl`. Only `my`/`state` subs
+/// are lexical and excluded, matching the declarator rule
+/// [`SubroutineTargetIndex`] already applies.
+fn collect_nested_package_subroutines(
+    node: &Node,
+    current_package: &mut Option<String>,
+    found: &mut HashSet<(String, String)>,
+) {
+    match &node.kind {
+        NodeKind::Package { name, block: Some(block), .. } => {
+            let mut scope = Some(name.clone());
+            collect_nested_package_subroutines(block, &mut scope, found);
+            return;
+        }
+        NodeKind::Package { name, block: None, .. } => {
+            *current_package = Some(name.clone());
+        }
+        NodeKind::Block { statements } => {
+            let mut block_package = current_package.clone();
+            for statement in statements {
+                collect_nested_package_subroutines(statement, &mut block_package, found);
+            }
+            return;
+        }
+        NodeKind::Subroutine { name: Some(name), declarator, .. } => {
+            let package_scoped = matches!(declarator.as_deref(), None | Some("our"));
+            if package_scoped {
+                if let Some(package) = current_package.as_deref() {
+                    found.insert((package.to_string(), name.clone()));
+                }
+            }
+        }
+        _ => {}
+    }
+    for child in node.children() {
+        collect_nested_package_subroutines(child, current_package, found);
+    }
 }
 
 #[cfg(test)]

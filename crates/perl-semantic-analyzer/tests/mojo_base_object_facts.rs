@@ -879,3 +879,37 @@ fn a_brace_argument_is_deferred_even_when_it_may_be_an_immediate_hash() {
         "an ambiguous brace argument is deferred rather than guessed either way"
     );
 }
+
+#[test]
+fn a_subroutine_nested_in_another_subroutine_still_collides() {
+    // Perl installs a named `sub` into the package symbol table at compile
+    // time wherever it is written, verified directly:
+    //
+    //   perl -e 'sub outer { sub inner { ... } } inner();'   -> inner runs
+    //
+    // So `sub outer { sub name { ... } }` really can shadow the accessor.
+    // `SubroutineTargetIndex` does not index nested bodies, and missing the
+    // collision would mint the member with no boundary at all — asserting
+    // there is no conflict when there is one.
+    let nested = concat!(
+        "package App;\n",
+        "use Mojo::Base -base;\n",
+        "has 'name';\n",
+        "sub outer { sub name { 'explicit' } }\n",
+    );
+    let facts = only_facts(nested);
+    assert_eq!(member_names(&facts), ["name"]);
+    assert_eq!(
+        facts.members[0].explicit_method,
+        MojoBaseExplicitMethodState::Collides,
+        "a nested named package sub is still an explicit method"
+    );
+    assert!(facts.members[0].envelope.boundary.is_some());
+
+    // Control: without the nested sub the same source reports no collision, so
+    // the assertion above isolates the nesting rather than always holding.
+    let clean = "package App;\nuse Mojo::Base -base;\nhas 'name';\n";
+    let clean_facts = only_facts(clean);
+    assert_eq!(clean_facts.members[0].explicit_method, MojoBaseExplicitMethodState::None);
+    assert!(clean_facts.members[0].envelope.boundary.is_none());
+}
