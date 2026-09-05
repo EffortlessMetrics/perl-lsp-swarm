@@ -275,10 +275,10 @@ mod tests {
 
     fn public_fields(source: &str, struct_name: &str) -> BTreeSet<String> {
         let marker = format!("pub struct {struct_name} {{");
-        assert!(source.split_once(&marker).is_some(), "missing {struct_name}");
-        let body = must_some(source.split_once(&marker)).1;
-        assert!(body.split_once("\n}").is_some(), "unterminated {struct_name}");
-        let body = must_some(body.split_once("\n}")).0;
+        let body =
+            must_some_with(source.split_once(&marker), format_args!("missing {struct_name}")).1;
+        let body =
+            must_some_with(body.split_once("\n}"), format_args!("unterminated {struct_name}")).0;
 
         body.lines()
             .filter_map(|line| {
@@ -462,8 +462,7 @@ mod tests {
         ];
 
         for id in restricted {
-            assert!(authority_by_id(id).is_some(), "missing {id}");
-            let field = must_some(authority_by_id(id));
+            let field = must_some_with(authority_by_id(id), format_args!("missing {id}"));
             assert!(
                 !field.sources.iter().any(|source| matches!(
                     source,
@@ -494,8 +493,7 @@ mod tests {
         ];
 
         for id in ARM_SELECT_ROWS {
-            assert!(authority_by_id(id).is_some(), "missing {id}");
-            let field = must_some(authority_by_id(id));
+            let field = must_some_with(authority_by_id(id), format_args!("missing {id}"));
             for source in field.sources {
                 assert!(
                     matches!(
@@ -509,8 +507,8 @@ mod tests {
 
         // The derived effective flag may additionally be reduced by the
         // project file, but still cannot be armed by any client channel.
-        assert!(authority_by_id("ai.effective_enabled").is_some(), "missing ai.effective_enabled");
-        let effective = must_some(authority_by_id("ai.effective_enabled"));
+        let effective =
+            must_some_with(authority_by_id("ai.effective_enabled"), "missing ai.effective_enabled");
         for source in effective.sources {
             assert!(
                 matches!(

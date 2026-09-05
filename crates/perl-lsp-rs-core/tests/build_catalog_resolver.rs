@@ -1,12 +1,31 @@
 mod build_catalog {
-    // Mirrors the scoped allowance in build.rs: build_catalog.rs is one shared
-    // source included into several compilation units, and this target exercises
-    // only the resolver and generation subset (grid/deprecated helpers belong to
-    // the build.rs and perl-dap consumers).
-    #![allow(dead_code)]
     use perl_test_must::{must_err_with, must_with};
 
     include!("../build_catalog.rs");
+
+    // build_catalog.rs is one shared source included into several compilation
+    // units; this target exercises only the resolver and generation subset.
+    // Rather than a module-wide `dead_code` allowance, name the exact items
+    // owned by the other consumers (build.rs and perl-dap) so that any NEW
+    // unused item in the shared source still fails this target's lint.
+    #[allow(clippy::items_after_test_module)]
+    const _OWNED_BY_OTHER_CONSUMERS: () = {
+        // Env-dependent resolver entrypoints, driven by build.rs.
+        const _: fn(&Path) -> Result<CatalogSource, String> = resolve_catalog_source;
+        const _: fn(&Path) -> Result<(Catalog, CatalogSource), String> = load_catalog_for_build;
+        // Grid/compliance counters, consumed by the BDD coverage grids.
+        const _: fn(&Catalog) -> usize = Catalog::trackable_feature_count_for_grid;
+        const _: fn(&Catalog) -> usize = Catalog::advertised_trackable_count_for_grid;
+        // The three below are deprecated compatibility shims kept for the
+        // perl-dap consumer; naming them keeps dead_code honest for the rest,
+        // and the allowance is scoped to this reference block alone.
+        #[allow(deprecated)]
+        const _DEPRECATED_COMPAT_SHIMS: () = {
+            const _: fn(&Catalog) -> usize = Catalog::trackable_feature_count;
+            const _: fn(&Catalog) -> usize = Catalog::advertised_trackable_count;
+            const _: fn(&Catalog) -> f32 = Catalog::compliance_percent;
+        };
+    };
 
     #[test]
     fn missing_explicit_override_is_terminal_even_with_workspace_catalog() {

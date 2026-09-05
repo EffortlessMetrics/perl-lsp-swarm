@@ -96,7 +96,6 @@ mod tests {
 
     #[test]
     fn formatter_engine_uses_project_and_generic_client_channels_only() {
-        assert!(authority_by_id("formatting.engine").is_some(), "missing formatter authority");
         let field =
             must_some_with(authority_by_id("formatting.engine"), "missing formatter authority");
 

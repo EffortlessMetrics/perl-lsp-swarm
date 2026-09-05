@@ -1698,7 +1698,7 @@ fn mark_readonly_declaration_operand(
 mod tests {
     use super::*;
     use perl_parser_core::Parser;
-    use perl_tdd_support::{must, must_with};
+    use perl_tdd_support::must;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Helper to create token tuple
@@ -2987,7 +2987,7 @@ print "ok" foreach @ys;
 
     fn first_var_mods_inner(source: &str, name: &str) -> Result<u32, Box<dyn std::error::Error>> {
         let mut parser = Parser::new(source);
-        let ast = must_with(parser.parse(), "parse");
+        let ast = parser.parse().map_err(|error| format!("parse failed: {error:?}"))?;
         let tokens = collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset));
         let lines: Vec<&str> = source.split('\n').collect();
         let mut line = 0u32;
