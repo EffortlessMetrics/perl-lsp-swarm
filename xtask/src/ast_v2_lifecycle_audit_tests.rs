@@ -1335,6 +1335,64 @@ fn field_order_is_contract_only_where_the_representation_makes_it_so() -> Result
 }
 
 #[test]
+fn a_private_fields_type_is_contract_even_though_its_name_is_not() -> Result<()> {
+    // Private fields were counted, not typed: the shape said `+1 non-public`
+    // whatever that field held. But the auto traits a struct offers — `Send`,
+    // `Sync`, `Unpin`, `RefUnwindSafe` — are decided by every field regardless
+    // of visibility, and a consumer observes them. So `next_id: usize` becoming
+    // `Rc<Cell<usize>>` removes `Send` from the public type while the row
+    // reconciled green. The name stays elided: renaming a private field breaks
+    // nobody, and firing on it is the churn that gets a check switched off.
+    let shape_of = |src: &str| -> Result<String> {
+        derive_public_items(src)?
+            .iter()
+            .find(|item| item.kind == "struct")
+            .map(|item| item.shape.clone())
+            .ok_or_else(|| color_eyre::eyre::eyre!("no struct derived from {src}"))
+    };
+
+    // The distinction this control exists to hold: type moves, name does not.
+    assert_ne!(
+        shape_of("pub struct S { next_id: usize }")?,
+        shape_of("pub struct S { next_id: std::rc::Rc<std::cell::Cell<usize>> }")?,
+        "retyping a private field changes the struct's auto traits and must move the shape"
+    );
+    assert_eq!(
+        shape_of("pub struct S { next_id: usize }")?,
+        shape_of("pub struct S { counter: usize }")?,
+        "a private field's name is not public contract and must not move the shape"
+    );
+
+    // The count property the previous rendering did hold is not lost.
+    assert_ne!(
+        shape_of("pub struct S { a: usize }")?,
+        shape_of("pub struct S { a: usize, b: usize }")?,
+        "adding a private field still moves the shape"
+    );
+
+    // Public fields are unaffected: they keep their names.
+    assert_ne!(
+        shape_of("pub struct S { pub a: usize }")?,
+        shape_of("pub struct S { pub renamed: usize }")?,
+        "a public field's name remains contract"
+    );
+
+    // Under a layout-fixing `repr` a private field's position is ABI, so it
+    // stays in sequence rather than being lifted out of it.
+    assert_ne!(
+        shape_of("#[repr(C)]\npub struct S { private: u8, pub b: u16 }")?,
+        shape_of("#[repr(C)]\npub struct S { pub b: u16, private: u8 }")?,
+        "under `repr(C)` a private field's position is part of the layout"
+    );
+    assert_eq!(
+        shape_of("pub struct S { private: u8, pub b: u16 }")?,
+        shape_of("pub struct S { pub b: u16, private: u8 }")?,
+        "without a layout-fixing repr, moving a private field is still cosmetic"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_trait_impls_associated_assignments_are_part_of_its_contract() -> Result<()> {
     // The trait impl row recorded only the header, so `type Item = u8` becoming
     // `= u16` — which changes what every consumer of the trait gets back —
@@ -2374,17 +2432,29 @@ fn the_production_parity_denominator_is_much_larger_than_the_audited_one() -> Re
 }
 
 #[test]
-fn a_private_field_is_counted_but_never_named() -> Result<()> {
-    // NodeIdGenerator's counter is private. The shape must record that a field
-    // exists — so adding one moves the row — without publishing its name as API.
+fn a_private_field_is_typed_but_never_named() -> Result<()> {
+    // NodeIdGenerator's counter is private. The shape must record its type — so
+    // a retype that drops `Send` moves the row — without publishing its name as
+    // API. This is the one struct in the crate with a private field, so it is
+    // the real-source anchor for the rendering that
+    // `a_private_fields_type_is_contract_even_though_its_name_is_not` proves in
+    // the abstract.
     let source = std::fs::read_to_string(repo_root_for_tests()?.join(V2_SOURCE_RELATIVE_PATH))?;
     let derived = derive_public_items(&source)?;
     let generator = derived
         .iter()
         .find(|item| item.path == "perl_ast_v2::NodeIdGenerator")
         .ok_or_else(|| color_eyre::eyre::eyre!("NodeIdGenerator missing from the derivation"))?;
-    assert!(generator.shape.contains("+1 non-public"));
-    assert!(!generator.shape.contains("next_id"));
+    assert!(
+        generator.shape.contains("+non-public(NodeId)"),
+        "the private field's type must be recorded: {}",
+        generator.shape
+    );
+    assert!(
+        !generator.shape.contains("next_id"),
+        "the private field's name must not be published as API: {}",
+        generator.shape
+    );
     Ok(())
 }
 

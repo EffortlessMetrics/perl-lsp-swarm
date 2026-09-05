@@ -88,7 +88,7 @@ const V2_CRATE_PATH: &str = "perl_ast_v2";
 /// together with the manifest bytes; patching around it silently is exactly what
 /// the pin exists to prevent.
 pub const PINNED_CANONICAL_DIGEST: &str =
-    "20292E87EB7BB31B1A8DC9129D24AB182ADA829AACCD2C9A16149720FEF84B33";
+    "3EA626CA2093F4E4967CF56B57E321510248520041B2CF16D51F31AE685F726B";
 
 // ---------------------------------------------------------------------------
 // Code-owned v1 vocabularies. A cardinality check lets a repinned manifest
@@ -1308,33 +1308,43 @@ fn render_fields(
         syn::Fields::Unit => Ok("unit".to_string()),
         syn::Fields::Named(named) => {
             let mut reachable = Vec::new();
-            let mut non_public = 0usize;
+            let mut non_public = Vec::new();
             for field in &named.named {
                 let Some(ident) = field.ident.as_ref() else {
                     bail!("a named field without an identifier is not renderable");
                 };
+                let ty = render_type(&field.ty)?;
+                let attrs = render_contract_attrs(&field.attrs)?;
                 if context == FieldContext::Struct && !is_public(&field.vis) {
-                    // Counted, never named: a private field is not public
-                    // contract, but adding or removing one still moves the
-                    // shape so the row cannot silently stay current.
-                    non_public += 1;
+                    // Typed, never named. A private field's *name* is not
+                    // public contract, so a rename must not move the shape.
+                    // Its *type* is: the auto traits a struct offers —
+                    // `Send`, `Sync`, `Unpin`, `RefUnwindSafe` — are decided
+                    // by its fields whatever their visibility, and every
+                    // consumer can observe them. Recording only a count let a
+                    // `usize` become an `Rc` with the row still reconciling.
+                    // Under a layout-fixing `repr` the position is contract
+                    // too, so the field stays in place rather than being
+                    // lifted out of the sequence.
+                    if order_is_contract {
+                        reachable.push(format!("_: {ty}{attrs}"));
+                    } else {
+                        non_public.push(format!("{ty}{attrs}"));
+                    }
                     continue;
                 }
-                reachable.push(format!(
-                    "{ident}: {}{}",
-                    render_type(&field.ty)?,
-                    render_contract_attrs(&field.attrs)?
-                ));
+                reachable.push(format!("{ident}: {ty}{attrs}"));
             }
             // Sorted unless the representation makes order observable, so a
             // cosmetic reordering does not move the shape while an ABI-visible
             // one does.
             if !order_is_contract {
                 reachable.sort();
+                non_public.sort();
             }
             let mut rendered = format!("{{ {} }}", reachable.join(", "));
-            if non_public > 0 {
-                rendered.push_str(&format!(" +{non_public} non-public"));
+            if !non_public.is_empty() {
+                rendered.push_str(&format!(" +non-public({})", non_public.join(", ")));
             }
             Ok(rendered)
         }

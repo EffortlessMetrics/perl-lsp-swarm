@@ -805,7 +805,7 @@
       "item_id": "item:node-id-generator",
       "path": "perl_ast_v2::NodeIdGenerator",
       "kind": "struct",
-      "derived_shape": "struct NodeIdGenerator derives[] {  } +1 non-public",
+      "derived_shape": "struct NodeIdGenerator derives[] {  } +non-public(NodeId)",
       "v1_relation": "unique",
       "v1_counterpart": null,
       "range_disposition": "not_applicable",
