@@ -41,6 +41,14 @@
 //! parity-complete belongs here — adding one violates the issue's non-goals and
 //! the guard test named `no_migration_or_mutation_surface_is_added`.
 //!
+//! Macro-expanded consumers. On this module's own two files the parser branch is
+//! the only classifier, and inside a macro body a bare crate identifier is not
+//! decidable: `stringify!(perl_ast_v2)` binds nothing and a `macro_rules!` taking
+//! an `ident` fragment could expand the same token into an import. `syn` does not
+//! expand macros, so the audit resolves the tie toward not inventing a consumer
+//! and records the gap here. Determinate forms — a multi-segment path, `use`, or
+//! `extern crate` — are still detected. See `single_ident_is_a_path`.
+//!
 //! Recorded shape vs. breaking change. The shape is the declaration as written,
 //! which is deliberately broader than the semver-breaking surface: renaming a
 //! public function's parameter moves a row although Rust has no named arguments
@@ -2028,6 +2036,21 @@ fn scan_macro_path_tokens(tokens: &proc_macro2::TokenStream, prefix: &[String]) 
 /// `perl_ast_v2::…` traverses it, and `use perl_ast_v2` / `extern crate
 /// perl_ast_v2` bind it. Anything with more than one segment already contains a
 /// `::` and needs no extra evidence.
+///
+/// **Recorded limitation, and the reason this is where the scan stops.** A
+/// `macro_rules!` taking the crate name as an `ident` or `path` fragment can
+/// expand a bare argument into a real import, so a bare identifier is not
+/// provably data either. The two readings are in genuine opposition:
+/// `stringify!(perl_ast_v2)` binds nothing, and `import_from!(perl_ast_v2)`
+/// might bind everything, and the tokens are identical. Deciding it needs macro
+/// expansion, which `syn` does not do and which this issue's ceiling does not
+/// authorize.
+///
+/// The tie is broken toward *not* inventing a consumer, because a false
+/// positive here fails other people's PRs while the false negative is confined
+/// to a package path that only ever appears inside a macro, in this module's own
+/// two files. That residue is recorded rather than papered over: it is the one
+/// place the consumer denominator is knowingly incomplete.
 fn single_ident_is_a_path(
     segments: &[String],
     prefix: &[String],
