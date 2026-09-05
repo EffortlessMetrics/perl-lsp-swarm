@@ -880,11 +880,14 @@ pub struct EnvironmentSnapshotSlot {
 ///
 /// Installation can decline, so the outcome is returned rather than assumed.
 /// Callers that genuinely do not care must say so explicitly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]
 pub enum SnapshotInstallOutcome {
     /// The snapshot became the slot's current environment.
     Installed,
+    /// The snapshot did not satisfy [`ProjectEnvironmentSnapshot::validate`]
+    /// and was refused. The slot is unchanged.
+    Invalid(EnvironmentBuildError),
     /// The snapshot was compiled from an older configuration generation than
     /// the one already installed and was declined. The slot still holds the
     /// newer snapshot.
@@ -938,6 +941,18 @@ impl EnvironmentSnapshotSlot {
     /// snapshot's identity, or a producer-side sequence — and should choose it
     /// against a real consumer rather than have S1 guess it.
     pub fn install(&mut self, snapshot: Arc<ProjectEnvironmentSnapshot>) -> SnapshotInstallOutcome {
+        // Validate before anything else. `ProjectEnvironmentSnapshot` has public
+        // fields and no `#[non_exhaustive]`, so a caller can mutate a built
+        // snapshot — or assemble one literally — into a state `build()` would
+        // never produce: a stale fingerprint, forged `Accepted` authority, an
+        // unsupported schema version, a dangling reference. The type's own
+        // contract says a failed validation is non-authoritative and its
+        // `active_*` APIs must not be consulted, and handing snapshots to
+        // exactly those consumers is this slot's entire purpose. Deserialization
+        // already re-validates; this closes the in-process construction path.
+        if let Err(error) = snapshot.validate() {
+            return SnapshotInstallOutcome::Invalid(error);
+        }
         let declined = snapshot.configuration_generation;
         if self.snapshot.is_some() && declined < self.generation {
             return SnapshotInstallOutcome::Obsolete { installed: self.generation, declined };
@@ -1633,6 +1648,57 @@ mod tests {
                 "PERL5LIB values are ambient in every arm; the client setting only gates them"
             );
         }
+        Ok(())
+    }
+
+    /// A snapshot that no longer satisfies its own invariants must not become
+    /// current. `ProjectEnvironmentSnapshot` exposes public fields and is not
+    /// `#[non_exhaustive]`, so a built value can be mutated into a state
+    /// `build()` would never emit — here a fingerprint that no longer matches
+    /// the content. The type's contract calls such a value non-authoritative,
+    /// and the slot is precisely what hands values to `active_*` consumers, so
+    /// installation fails closed and reports why.
+    #[test]
+    fn a_snapshot_that_fails_validation_cannot_become_current()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let good = WorkspaceEnvironmentDeclaration::new("workspace:s1", 3, WorkspaceTrust::Trusted)
+            .with_user_include_roots([root("lib", "path:lib")])
+            .compile()?;
+        good.validate()?;
+
+        // Mutate content and leave the fingerprint as built: the stored digest
+        // no longer describes the value, which is exactly the shape a caller
+        // reaches by editing a public field without recompiling.
+        let mut tampered = good.clone();
+        tampered.workspace_id = "workspace:tampered".to_string();
+        assert!(tampered.validate().is_err(), "the tampered snapshot must be invalid");
+
+        // Refused into an empty slot: nothing becomes current.
+        let mut slot = EnvironmentSnapshotSlot::new();
+        assert!(
+            matches!(
+                slot.install(std::sync::Arc::new(tampered.clone())),
+                SnapshotInstallOutcome::Invalid(_)
+            ),
+            "an invalid snapshot must be refused"
+        );
+        assert!(slot.current().is_none(), "a refused snapshot must not become current");
+        assert!(slot.generation().is_none());
+
+        // Refused over a good one: the previously installed snapshot survives
+        // intact, so a bad install cannot corrupt or clear live state.
+        assert_eq!(
+            slot.install(std::sync::Arc::new(good.clone())),
+            SnapshotInstallOutcome::Installed
+        );
+        assert!(matches!(
+            slot.install(std::sync::Arc::new(tampered)),
+            SnapshotInstallOutcome::Invalid(_)
+        ));
+        let (tag, held) = slot.current().ok_or("the valid snapshot must be retained")?;
+        assert_eq!(tag, 3);
+        assert_eq!(held.fingerprint, good.fingerprint);
+        held.validate()?;
         Ok(())
     }
 
