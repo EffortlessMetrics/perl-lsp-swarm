@@ -874,8 +874,14 @@ fn lower_place(
 ) -> HirExprId {
     match &node.kind {
         NodeKind::Variable { sigil, name } => {
-            let var =
-                HirVariable { sigil: Sigil::from_str(sigil), name: name.clone(), kind, access };
+            // The mirror has no scope-graph binding authority to project (#14166).
+            let var = HirVariable {
+                sigil: Sigil::from_str(sigil),
+                name: name.clone(),
+                kind,
+                access,
+                binding: None,
+            };
             builder.alloc_expr(HirExpr::Variable(var), node.location)
         }
         _ => lower_expr(builder, node),

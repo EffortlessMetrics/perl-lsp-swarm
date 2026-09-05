@@ -513,28 +513,32 @@ fn localized_qualified_global_carries_canonical_identity() {
         "a localized qualified global must carry its recorded binding"
     );
 
+    // `local $x = EXPR` lowers its embedded assignment (#13488), so the
+    // localized write place is an occurrence too: the write, then the read.
     let qualified: Vec<Occurrence> =
         occurrences(&file).into_iter().filter(|o| o.name == "Carp::CarpLevel").collect();
     assert_eq!(
-        qualified.len(),
-        1,
-        "expected the trailing read of `$Carp::CarpLevel`, got {qualified:?}"
+        qualified.iter().map(|o| o.access).collect::<Vec<_>>(),
+        vec![AccessMode::Write, AccessMode::Read],
+        "expected the localized write then the trailing read of `$Carp::CarpLevel`, got {qualified:?}"
     );
-    assert_eq!(
-        qualified[0].binding,
-        Some(declared.id),
-        "the localized read must join the declared binding"
-    );
-    assert_eq!(
-        qualified[0].kind,
-        VariableKind::Package,
-        "a localized qualified global stays Package"
-    );
-    assert_eq!(
-        storage_of(&file, must_some(qualified[0].binding)),
-        StorageClass::LocalizedPackage,
-        "the identity behind the read must lead back to the localized storage class"
-    );
+    for occurrence in &qualified {
+        assert_eq!(
+            occurrence.binding,
+            Some(declared.id),
+            "every localized occurrence must join the declared binding: {occurrence:?}"
+        );
+        assert_eq!(
+            occurrence.kind,
+            VariableKind::Package,
+            "a localized qualified global stays Package: {occurrence:?}"
+        );
+        assert_eq!(
+            storage_of(&file, must_some(occurrence.binding)),
+            StorageClass::LocalizedPackage,
+            "the identity behind the occurrence must lead back to the localized storage class"
+        );
+    }
 }
 
 /// Attributed declarations (`my $x :shared`) anchor on the inner variable
