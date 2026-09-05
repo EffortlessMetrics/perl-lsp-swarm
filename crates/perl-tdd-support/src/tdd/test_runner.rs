@@ -666,6 +666,10 @@ impl TestResult {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::print_stdout,
+    reason = "the hermetic-command tests re-exec themselves as child processes and print a marker the parent asserts on"
+)]
 mod tests {
     use super::*;
     use crate::SourceLocation;

@@ -33,6 +33,7 @@ import {
   previewPackageRenameCommand,
   previewSafeDeleteCommand,
   runPerlCriticOnActiveFile,
+  settleFormattingProviderCall,
   setPerlCriticSeverity,
   syncPerlCriticConfiguration,
   workspaceTrustClientRuntimeState,
@@ -70,6 +71,20 @@ describe('formatting provider experience projection', () => {
       action: 'Check the formatter configuration or run the Health Check.',
       reasonCode: 'range_formatting_error',
     });
+  });
+
+  test('formatting middleware preserves fallback for an unstringifiable rejection', async () => {
+    const error = {
+      toString() {
+        throw new Error('cannot stringify provider failure');
+      },
+    };
+
+    await expect(
+      settleFormattingProviderCall(async () => {
+        throw error;
+      }, null),
+    ).resolves.toBeNull();
   });
 });
 
