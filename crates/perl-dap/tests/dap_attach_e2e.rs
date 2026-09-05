@@ -117,7 +117,13 @@ fn dap_attach_e2e_tcp_loopback() -> TestResult {
 
     let init_body = response_success(adapter.handle_request(1, "initialize", None), "initialize")?;
     let capabilities = init_body.ok_or("initialize response missing capability body")?;
-    assert!(capabilities.get("supportsRestartRequest").and_then(|v| v.as_bool()).unwrap_or(false));
+    // #9581: restart is a floored secondary capability in attach mode too —
+    // the TCP attach surface shares the native initialize rows and each is an
+    // explicit `false` until its own gate passes.
+    assert!(
+        !capabilities.get("supportsRestartRequest").and_then(|v| v.as_bool()).unwrap_or(true),
+        "supportsRestartRequest must be false under the #9581 floor (attach mode)"
+    );
     let _initialized = wait_for_event(&rx, "initialized", timeout)?;
 
     response_success(
