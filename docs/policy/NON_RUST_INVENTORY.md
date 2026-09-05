@@ -6,17 +6,17 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12716 |
-| Rust-family files | 3968 |
-| Non-Rust files | 8748 |
-| Allowlisted | 6509 |
+| Total tracked files | 12729 |
+| Rust-family files | 3978 |
+| Non-Rust files | 8751 |
+| Allowlisted | 6512 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 502 |
+| config | 505 |
 | documentation | 2852 |
 | generated | 2 |
 | production | 357 |
@@ -6423,6 +6423,8 @@
 | `plans/real-perl-editor-trust/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `plans/real-perl-editor-trust/implementation-plan.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `plans/spec-governance/implementation-plan.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `policy/activation-inventory.v1.json` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/activation-overrides.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/allow.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/cadence-records.json` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/changelog.toml` | config | `non-rust-policy-ledgers` | release/ci |
@@ -6476,6 +6478,7 @@
 | `ripr.toml` | config | `non-rust-ripr-toml` | quality/ripr |
 | `ripr/pr/repo-exposure.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `rust-analyzer.toml` | tooling | `non-rust-rust-analyzer-toml` | developer-experience |
+| `schemas/activation_inventory.v1.schema.json` | config | `non-rust-activation-inventory-schema` | architecture/activation |
 | `schemas/agent_implementation_packet.v1.schema.json` | config | `non-rust-agent-implementation-packet-schema` | tooling/agent-packet |
 | `schemas/agent_review_finding.v1.schema.json` | config | `non-rust-agent-review-finding-schema` | tooling/agent-review |
 | `schemas/agent_review_packet.v1.schema.json` | config | `non-rust-agent-review-packet-schema` | tooling/agent-review |

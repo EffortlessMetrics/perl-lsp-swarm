@@ -65,7 +65,7 @@ const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
     ("product", 16),
     ("preview", 2),
     ("compatibility_shim", 1),
-    ("test_api", 26),
+    ("test_api", 27),
     ("lab", 21),
     ("oracle", 1),
     ("benchmark", 14),
@@ -686,7 +686,7 @@ fn every_test_api_row_records_which_signal_classified_it() -> TestResult {
             }
         }
     }
-    assert_eq!((by_name, by_usage), (13, 13), "test_api signal split drifted");
+    assert_eq!((by_name, by_usage), (13, 14), "test_api signal split drifted");
     Ok(())
 }
 
