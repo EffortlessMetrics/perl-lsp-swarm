@@ -1580,7 +1580,10 @@ gates:
     # the gate-policy shell vocabulary deliberately admits no variable assignment,
     # command substitution, grouping, brace or bracket expansion, so the count
     # cannot be asserted in this string. `check-...` runs second and fails if the
-    # suite is gone, so the pair is what proves the controls both exist and ran.
+    # suite is gone or gutted. What the pair proves is narrower than "the controls
+    # ran": the source declares a floor of them and whatever the filter matched
+    # passed. Neither half counts executed tests, so a control excluded by `cfg`
+    # on some platform still counts toward the floor.
     command: cargo test -p xtask --bin xtask compiler_performance_receipt --locked && cargo xtask check-compiler-performance-receipt
     # 600s/540000ms matches unit_scoped and parser_behavior_proof, the sibling
     # required gates that compile a test harness. Measured at 350s from a clean

@@ -883,6 +883,15 @@ fn collect_fixtures(dir: &Path, found: &mut Vec<std::path::PathBuf>) -> Result<(
 /// it advertises forbidding. Only the controls discriminate, and the gate's
 /// `cargo test` filter cannot report its own absence — it exits 0 on no match.
 /// So the validator, which does fail loudly, carries the floor.
+///
+/// The floor is over controls **declared in source**, not controls executed.
+/// Nothing reachable from here can count executions: the gate-policy shell
+/// vocabulary admits no way to read a test count out of `cargo test`, and this
+/// binary cannot see its own `#[cfg(test)]` module at runtime. So a control
+/// excluded by `cfg` on some platform still counts toward the floor — two are
+/// `#[cfg(unix)]` today, against a floor well below the declared total. That is
+/// a real limit and it is the reason the floor sits low: it exists to catch a
+/// suite that vanished or was gutted, not to certify a run.
 fn validate_control_suite(root: &Path) -> Result<()> {
     let path = root.join(CONTROL_SUITE_PATH);
     let source = fs::read_to_string(&path).with_context(|| {
