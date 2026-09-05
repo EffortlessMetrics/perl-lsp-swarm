@@ -2551,21 +2551,36 @@ mod tests {
             .handle_rename_workspace(Some(rename_params(request_uri, line, character, "renamed")))?
             .ok_or("missing lexical sub rename result")?;
 
-        // Two claims survive the #9827 shape change. First, the request is
-        // answered rather than failing closed on a partial index — proven by the
-        // `?` above, which would have propagated a readiness error. Second, no
-        // edit may come from partial workspace facts: a refusal (`null`) offers
-        // none at all, and any edit map that does appear must be same-file only.
-        if !rename_result.is_null() {
-            let changes = rename_result
-                .get("changes")
-                .and_then(Value::as_object)
-                .ok_or("lexical sub rename returned neither a refusal nor a changes map")?;
-            assert!(
-                changes.is_empty() || (changes.len() == 1 && changes.contains_key(request_uri)),
-                "lexical sub rename must not use partial workspace facts: {rename_result}"
-            );
-        }
+        // Three claims, none of them conditional.
+        //
+        // The request is answered rather than failing closed on a not-ready
+        // index — carried by the `?` above, which would propagate the readiness
+        // error the package-scoped sibling test asserts.
+        //
+        // No edit may be sourced from the not-ready index, whatever shape the
+        // answer takes. Counted over any edit map present, so a refusal scores
+        // zero rather than skipping the check.
+        let foreign_file_edits = rename_result
+            .get("changes")
+            .and_then(Value::as_object)
+            .map_or(0, |changes| changes.keys().filter(|uri| uri.as_str() != request_uri).count());
+        assert_eq!(
+            foreign_file_edits, 0,
+            "lexical sub rename must not use workspace facts from a not-ready index: {rename_result}"
+        );
+
+        // And the answer today is a refusal, pinned exactly. This position
+        // produced `{"changes": {}}` before #9827 and produces `null` now;
+        // neither is an edit. If it ever does start producing the same-file
+        // edit, that is a deliberate improvement and this assertion is the
+        // place it has to be acknowledged — not a shape change that slips
+        // through a tolerant branch.
+        assert_eq!(
+            rename_result,
+            Value::Null,
+            "lexical sub rename under a not-ready index must report the position \
+             as unavailable: {rename_result}"
+        );
 
         Ok(())
     }
