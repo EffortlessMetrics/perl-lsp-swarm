@@ -161,6 +161,20 @@ fn validate_probe_lock(lock: &str) -> Result<(), String> {
             if package.contains_key("source") || package.contains_key("checksum") {
                 return Err("probe root package unexpectedly has source/checksum authority".into());
             }
+            let mut direct: Vec<&str> = package
+                .get("dependencies")
+                .and_then(toml::Value::as_array)
+                .map(|deps| deps.iter().filter_map(toml::Value::as_str).collect())
+                .unwrap_or_default();
+            direct.sort_unstable();
+            let mut reviewed: Vec<&str> =
+                REVIEWED_DIRECT_PACKAGES.iter().map(|package| package.name).collect();
+            reviewed.sort_unstable();
+            if direct != reviewed {
+                return Err(format!(
+                    "probe root direct dependencies {direct:?} must be exactly the reviewed set {reviewed:?}"
+                ));
+            }
             continue;
         }
 
@@ -233,6 +247,10 @@ fn probe_lock_rejects_path_git_and_unreviewed_registry_sources() {
 [[package]]
 name = "{PROBE_PACKAGE}"
 version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "serde"
@@ -280,6 +298,13 @@ checksum = "{}"
     assert!(
         validate_probe_lock(&wrong_checksum).is_err(),
         "a changed direct dependency checksum must fail"
+    );
+
+    let widened_root = valid.replacen(" \"serde_json\",\n", " \"serde_json\",\n \"perl-parser-core\",\n", 1);
+    assert_ne!(widened_root, valid);
+    assert!(
+        validate_probe_lock(&widened_root).is_err(),
+        "a root dependency outside the reviewed set must fail even with reviewed packages intact"
     );
 }
 

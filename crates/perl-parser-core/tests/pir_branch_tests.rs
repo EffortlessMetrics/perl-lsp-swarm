@@ -6,7 +6,7 @@
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{HirFile, lower_ast};
-use perl_parser_core::pir::{PirContext, PirGraph, PirOperation, lower_hir};
+use perl_parser_core::pir::{PirContext, PirEvaluationDemand, PirGraph, PirOperation, lower_hir};
 use perl_tdd_support::must_some;
 
 fn lower(source: &str) -> PirGraph {
@@ -20,7 +20,6 @@ fn lower(source: &str) -> PirGraph {
 fn first_branch_node(graph: &PirGraph) -> &perl_parser_core::pir::PirNode {
     must_some(graph.nodes.iter().find(|n| matches!(n.operation, PirOperation::Branch { .. })))
 }
-
 #[test]
 fn if_block_lowers_to_one_branch_node_with_void_context() {
     // `if ($x) { 1 }` must produce exactly one Branch node.
@@ -36,6 +35,7 @@ fn if_block_lowers_to_one_branch_node_with_void_context() {
 
     // Context must be Void — the branch statement yields no value at this level.
     assert_eq!(branch.context, PirContext::Void, "Branch node must have Void context");
+    assert_eq!(branch.demand, PirEvaluationDemand::TruthTest);
 
     // Source anchor must be set — we lower from an explicit HIR source range.
     assert!(branch.source_anchor.is_anchored(), "Branch node must preserve a source anchor");
@@ -47,7 +47,6 @@ fn if_block_lowers_to_one_branch_node_with_void_context() {
         "receipt must count one Branch operation"
     );
 }
-
 #[test]
 fn unless_block_lowers_to_one_branch_node() {
     // `unless ($x) { 1 }` lowers to BranchShell (same HIR variant as `if`).
@@ -61,7 +60,6 @@ fn unless_block_lowers_to_one_branch_node() {
     assert_eq!(branch_nodes[0].context, PirContext::Void);
     assert!(branch_nodes[0].source_anchor.is_anchored());
 }
-
 #[test]
 fn if_elsif_else_lowers_to_one_branch_node() {
     // `if ($a) {} elsif ($b) {} else {}` lowers to a single BranchShell HIR
@@ -75,7 +73,6 @@ fn if_elsif_else_lowers_to_one_branch_node() {
         "if/elsif/else chain is one BranchShell and must produce exactly one Branch node"
     );
 }
-
 #[test]
 fn branch_node_condition_is_none_in_v0() -> Result<(), String> {
     // PIR v0 defers condition-expression lowering. The condition field must be
@@ -93,7 +90,6 @@ fn branch_node_condition_is_none_in_v0() -> Result<(), String> {
     }
     Ok(())
 }
-
 #[test]
 fn branch_with_inner_body_lowers_children_too() {
     // `if ($x) { my $y = bar(); }` should produce:
@@ -113,7 +109,6 @@ fn branch_with_inner_body_lowers_children_too() {
     assert!(has_write, "should have a LexicalWrite node for my $y");
     assert!(has_call, "should have a Call node for bar()");
 }
-
 #[test]
 fn branch_shell_not_in_unsupported_construct_counts() {
     // After this slice, BranchShell lowers to a Branch operation. It must no
@@ -125,7 +120,6 @@ fn branch_shell_not_in_unsupported_construct_counts() {
         "BranchShell must not appear in unsupported counts — it now lowers to Branch"
     );
 }
-
 #[test]
 fn branch_receipt_counts_are_consistent() {
     // Verify that operation_counts, context_counts, and node_count all sum
@@ -137,11 +131,21 @@ fn branch_receipt_counts_are_consistent() {
 
     let ctx_total: usize = graph.receipt.context_counts.values().sum();
     assert_eq!(ctx_total, graph.nodes.len(), "context_counts must sum to node count");
+    let demand_total: usize = graph.receipt.demand_counts.values().sum();
+    assert_eq!(demand_total, graph.nodes.len(), "demand_counts must sum to node count");
+    // Access counts cover place-accessing nodes only: the Branch node itself
+    // touches no place and must be absent from the count rather than
+    // reported as a read.
+    let branch = first_branch_node(&graph);
+    assert_eq!(branch.access, None, "a Branch node accesses no place");
+    let place_nodes = graph.nodes.iter().filter(|node| node.access.is_some()).count();
+    let access_total: usize = graph.receipt.access_counts.values().sum();
+    assert_eq!(access_total, place_nodes, "access_counts must sum to place-accessing nodes");
+    assert!(place_nodes < graph.nodes.len(), "at least the Branch node carries no access fact");
 
     assert_eq!(graph.receipt.node_count, graph.nodes.len(), "receipt.node_count must match nodes");
     assert_eq!(graph.receipt.edge_count, graph.edges.len(), "receipt.edge_count must match edges");
 }
-
 #[test]
 fn branch_node_has_explicit_source_anchor_kind() {
     use perl_parser_core::pir::PirAnchorKind;
@@ -153,7 +157,6 @@ fn branch_node_has_explicit_source_anchor_kind() {
         "Branch node must anchor as ExplicitSource"
     );
 }
-
 #[test]
 fn multiple_branches_each_produce_one_branch_node() {
     // Two independent if-statements must each produce one Branch node.

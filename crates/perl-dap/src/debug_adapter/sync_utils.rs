@@ -3,6 +3,7 @@ use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Mutex, MutexGuard};
+use std::time::Duration;
 
 /// Counts dropped `output` events due to a full outbound queue.
 static DROPPED_OUTPUT_EVENTS: AtomicU64 = AtomicU64::new(0);
@@ -26,6 +27,24 @@ pub(crate) enum EventDispatchResult {
     /// The channel is disconnected; the transport has gone away.
     Disconnected,
 }
+
+/// Result of a generation-guarded dispatch ([`dispatch_event_generation_guarded`]).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum GuardedDispatchResult {
+    /// Event was accepted into the queue.
+    Sent,
+    /// `output` event was dropped because the queue was full (lossy policy).
+    Dropped,
+    /// The channel is disconnected; the transport has gone away.
+    Disconnected,
+    /// The session generation was replaced while waiting for queue room: the
+    /// stale event was discarded before publication (#9521).
+    Stale,
+}
+
+/// Park interval between full-queue retries in the generation-guarded
+/// dispatch: bounded-latency staleness detection without a busy spin (#9521).
+pub(crate) const GENERATION_GUARD_PARK: Duration = Duration::from_millis(1);
 
 /// Poison-safe mutex lock that recovers from poisoned state.
 pub(crate) fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, ctx: &'static str) -> MutexGuard<'a, T> {
@@ -103,6 +122,70 @@ pub(crate) fn dispatch_event(
         match sender.send(msg) {
             Ok(()) => EventDispatchResult::Sent,
             Err(_) => EventDispatchResult::Disconnected,
+        }
+    }
+}
+
+/// [`dispatch_event`] with a staleness hook for the generation-aware TCP-attach
+/// forwarder (#9521).
+///
+/// Identical admission policy, except a non-output event that cannot be
+/// enqueued immediately waits as a bounded-rate retry (`try_send` +
+/// [`GENERATION_GUARD_PARK`]) that re-checks `stale` before every commit
+/// attempt. A replacement session therefore retires a blocked stale event
+/// instead of an unbounded blocking send committing it into the replacement's
+/// outbound stream after the pre-dispatch generation check already passed;
+/// each commit is one non-blocking `try_send` immediately after its final
+/// staleness check.
+///
+/// The seq guard is held across the whole dispatch (including retry parks),
+/// preserving the seq-assignment/enqueue atomicity of [`dispatch_event`];
+/// unlike an unbounded blocking send, a stale hook releases it promptly.
+///
+/// **`output` events** keep the lossy non-blocking policy — a full queue sheds
+/// them, so they cannot park long enough for staleness to matter.
+pub(crate) fn dispatch_event_generation_guarded(
+    sender: &SyncSender<DapMessage>,
+    seq: &Mutex<i64>,
+    event: &str,
+    body: Option<Value>,
+    stale: &dyn Fn() -> bool,
+) -> GuardedDispatchResult {
+    let (mut msg, mut seq_lock) = {
+        let mut seq_lock = lock_or_recover(seq, "dispatch_event.seq");
+        *seq_lock += 1;
+        (DapMessage::Event { seq: *seq_lock, event: event.to_string(), body }, seq_lock)
+    };
+
+    if is_output_event(event) {
+        match sender.try_send(msg) {
+            Ok(()) => GuardedDispatchResult::Sent,
+            Err(TrySendError::Full(_)) => {
+                let dropped_total = DROPPED_OUTPUT_EVENTS.fetch_add(1, Ordering::Relaxed) + 1;
+                if should_warn_on_drop(dropped_total) {
+                    tracing::warn!(
+                        dropped = dropped_total,
+                        "DAP outbound queue full; dropping output events"
+                    );
+                }
+                try_emit_drop_notice(sender, &mut seq_lock, dropped_total);
+                GuardedDispatchResult::Dropped
+            }
+            Err(TrySendError::Disconnected(_)) => GuardedDispatchResult::Disconnected,
+        }
+    } else {
+        loop {
+            if stale() {
+                return GuardedDispatchResult::Stale;
+            }
+            match sender.try_send(msg) {
+                Ok(()) => return GuardedDispatchResult::Sent,
+                Err(TrySendError::Full(returned)) => {
+                    msg = returned;
+                    std::thread::sleep(GENERATION_GUARD_PARK);
+                }
+                Err(TrySendError::Disconnected(_)) => return GuardedDispatchResult::Disconnected,
+            }
         }
     }
 }
