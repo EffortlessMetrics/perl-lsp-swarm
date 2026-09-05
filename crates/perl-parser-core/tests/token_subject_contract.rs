@@ -947,7 +947,34 @@ fn the_unperturbed_baseline_each_negative_case_starts_from_is_accepted() -> R {
 /// "this subject is wrong".
 #[test]
 fn reason_tokens_are_distinct_across_failure_planes() -> R {
-    let reasons = [
+    // Derived from real error values, never from a list of literals. Asserting
+    // that a hardcoded array of strings has distinct elements proves only that
+    // the literals differ: it would keep passing if `reason()` collapsed every
+    // variant onto one token, and it silently rots when a variant is renamed.
+    let all = [
+        TokenSubjectError::WrongSource { detail: String::new() },
+        TokenSubjectError::WrongGeneration { detail: String::new() },
+        TokenSubjectError::WrongConfiguration { detail: String::new() },
+        TokenSubjectError::InvalidTokenRange { index: 0, detail: String::new() },
+        TokenSubjectError::PayloadSourceMismatch { index: 0, start: 0, end: 0 },
+        TokenSubjectError::InvalidTerminalState { detail: String::new() },
+        TokenSubjectError::IncompleteStream { detail: String::new() },
+        TokenSubjectError::MissingClassificationAuthority { detail: String::new() },
+        TokenSubjectError::InstrumentFailure { detail: String::new() },
+        TokenSubjectError::UnsupportedProvenance { provenance: "any" },
+    ];
+
+    let observed: std::collections::BTreeSet<&str> = all.iter().map(|e| e.reason()).collect();
+    assert_eq!(
+        observed.len(),
+        all.len(),
+        "every variant needs its own reason token; a consumer that cannot tell two failures \
+         apart cannot tell 'fall back and re-lex' from 'this subject is wrong': {observed:?}"
+    );
+
+    // Pin the tokens themselves: they are a machine-readable surface, so a
+    // rename is a contract change and must not pass silently.
+    let expected: std::collections::BTreeSet<&str> = [
         "wrong_source",
         "wrong_generation",
         "wrong_configuration",
@@ -955,11 +982,12 @@ fn reason_tokens_are_distinct_across_failure_planes() -> R {
         "payload_source_mismatch",
         "invalid_terminal_state",
         "incomplete_stream",
-        "missing_contextual_authority",
+        "missing_classification_authority",
+        "instrument_failure",
         "unsupported_provenance",
-    ];
-
-    let unique: std::collections::BTreeSet<_> = reasons.iter().collect();
-    assert_eq!(unique.len(), reasons.len());
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(observed, expected);
     Ok(())
 }
