@@ -6,18 +6,18 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12748 |
-| Rust-family files | 3991 |
-| Non-Rust files | 8757 |
-| Allowlisted | 6518 |
+| Total tracked files | 12739 |
+| Rust-family files | 3984 |
+| Non-Rust files | 8755 |
+| Allowlisted | 6516 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 505 |
-| documentation | 2856 |
+| config | 502 |
+| documentation | 2857 |
 | generated | 2 |
 | production | 357 |
 | test | 2111 |
@@ -2308,6 +2308,7 @@
 | `.cargo/config.toml` | config | `non-rust-cargo-config` | release/ci |
 | `.cargo/mutants.toml` | config | `non-rust-cargo-config` | release/ci |
 | `.changes/header.tpl.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.changes/unreleased/product-0000-Added-environment-snapshot-builder-s1.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-0000-Changed-module-facade-seal.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-10004-Changed-201500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-10100-Added-025500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2355,6 +2356,7 @@
 | `.changes/unreleased/product-13191-Fixed-062500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13237-Fixed-111500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13283-Fixed-122901.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-13496-Fixed-042442.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13500-Fixed-043011.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13796-Fixed-174500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-13890-Fixed-225841.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -6428,8 +6430,6 @@
 | `plans/real-perl-editor-trust/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `plans/real-perl-editor-trust/implementation-plan.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `plans/spec-governance/implementation-plan.md` | documentation | `non-rust-root-governance-docs` | docs |
-| `policy/activation-inventory.v1.json` | config | `non-rust-policy-ledgers` | release/ci |
-| `policy/activation-overrides.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/allow.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/cadence-records.json` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/changelog.toml` | config | `non-rust-policy-ledgers` | release/ci |
@@ -6483,7 +6483,6 @@
 | `ripr.toml` | config | `non-rust-ripr-toml` | quality/ripr |
 | `ripr/pr/repo-exposure.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `rust-analyzer.toml` | tooling | `non-rust-rust-analyzer-toml` | developer-experience |
-| `schemas/activation_inventory.v1.schema.json` | config | `non-rust-activation-inventory-schema` | architecture/activation |
 | `schemas/agent_implementation_packet.v1.schema.json` | config | `non-rust-agent-implementation-packet-schema` | tooling/agent-packet |
 | `schemas/agent_review_finding.v1.schema.json` | config | `non-rust-agent-review-finding-schema` | tooling/agent-review |
 | `schemas/agent_review_packet.v1.schema.json` | config | `non-rust-agent-review-packet-schema` | tooling/agent-review |

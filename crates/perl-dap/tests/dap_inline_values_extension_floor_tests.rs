@@ -236,9 +236,8 @@ fn sibling_capability_cells_are_independent() -> Result<(), Box<dyn std::error::
         perl_dap::feature_catalog::has_feature("dap.completions"),
         "supportsCompletionsRequest keeps its catalog-driven cell; this PR must not move it"
     );
-    assert_eq!(
-        capability(&caps, "supportsSetVariable")?,
-        false,
+    assert!(
+        !capability(&caps, "supportsSetVariable")?,
         "supportsSetVariable carried a catalog-driven cell when #9089 landed; #8354 later \
          floored it on the exact-mutation authority, so it must now read false"
     );
