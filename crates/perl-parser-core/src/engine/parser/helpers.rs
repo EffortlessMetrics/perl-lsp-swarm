@@ -418,7 +418,12 @@ impl<'a> Parser<'a> {
             .is_some_and(|token| Self::is_sigil_argument_start(token.kind(), token.text.as_ref()))
     }
 
-    fn assignment_operator_text(kind: TokenKind) -> Option<&'static str> {
+    /// The single symbolic assignment-operator table.
+    ///
+    /// Contextual `x=` is not listed here: it arrives as two tokens and is
+    /// recognized only by `consume_assignment_operator`, which layers that
+    /// case on top of this table.
+    pub(super) fn assignment_operator_text(kind: TokenKind) -> Option<&'static str> {
         match kind {
             TokenKind::Assign => Some("="),
             TokenKind::PlusAssign => Some("+="),
