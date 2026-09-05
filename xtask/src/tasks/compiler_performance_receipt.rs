@@ -810,17 +810,25 @@ fn discover_fixtures(root: &Path) -> Result<Vec<std::path::PathBuf>> {
 fn collect_fixtures(dir: &Path, found: &mut Vec<std::path::PathBuf>) -> Result<()> {
     for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
         let path = entry.with_context(|| format!("failed to read {}", dir.display()))?.path();
-        // `symlink_metadata` deliberately does not follow links: a directory
-        // symlink under `fixtures` would otherwise pull in files from outside
-        // the committed tree, making a required gate depend on whatever the
-        // checkout happens to contain.
+        // `symlink_metadata` deliberately does not follow links, and a link is
+        // refused rather than skipped. Following one would let a required gate
+        // depend on whatever the checkout happens to contain outside the
+        // committed tree; skipping one silently would let the gate pass while
+        // omitting a receipt whose name matches. Both are the same failure —
+        // the gate not checking what it claims to — so a link is an error that
+        // names itself.
         let metadata = fs::symlink_metadata(&path)
             .with_context(|| format!("failed to inspect {}", path.display()))?;
+        if metadata.is_symlink() {
+            bail!(
+                "{}: fixture discovery refuses symlinks. A link may resolve outside the committed \
+                 tree, and skipping it would let the gate pass without validating a receipt. \
+                 Commit the fixture as a real file.",
+                path.display()
+            );
+        }
         if metadata.is_dir() {
             collect_fixtures(&path, found)?;
-            continue;
-        }
-        if metadata.is_symlink() {
             continue;
         }
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
@@ -1108,28 +1116,42 @@ mod tests {
         assert_eq!(found, vec![top, deep], "nested fixtures are discovered; others are not");
     }
 
-    /// A directory symlink must not pull files in from outside the tree.
+    /// A symlink in the fixture tree is refused, not silently skipped.
     ///
-    /// Discovery feeds a required merge gate, so following a link would make
-    /// that gate depend on whatever the checkout happens to contain rather than
-    /// on committed fixtures.
+    /// Discovery feeds a required merge gate. Following a link would make that
+    /// gate depend on whatever the checkout contains outside the committed
+    /// tree; skipping a matching link would let the gate pass while omitting a
+    /// receipt. Both are the gate not checking what it claims to, so discovery
+    /// fails closed and names the path.
     #[cfg(unix)]
     #[test]
-    fn discovery_does_not_follow_directory_symlinks_out_of_the_tree() {
-        let root = tempfile::tempdir().expect("temp dir");
-        let outside = tempfile::tempdir().expect("temp dir");
-        fs::write(outside.path().join(format!("{FIXTURE_PREFIX}.stray.json")), MEASURED)
-            .expect("write stray receipt outside the tree");
+    fn discovery_refuses_symlinks_rather_than_following_or_skipping_them() {
+        for link_target_is_dir in [true, false] {
+            let root = tempfile::tempdir().expect("temp dir");
+            let outside = tempfile::tempdir().expect("temp dir");
+            let stray = outside.path().join(format!("{FIXTURE_PREFIX}.stray.json"));
+            fs::write(&stray, MEASURED).expect("write receipt outside the tree");
 
-        let fixtures = root.path().join(FIXTURE_DIR);
-        fs::create_dir_all(&fixtures).expect("create fixture dir");
-        let top = fixtures.join(format!("{FIXTURE_PREFIX}.json"));
-        fs::write(&top, MEASURED).expect("write committed fixture");
-        std::os::unix::fs::symlink(outside.path(), fixtures.join("linked"))
-            .expect("create directory symlink");
+            let fixtures = root.path().join(FIXTURE_DIR);
+            fs::create_dir_all(&fixtures).expect("create fixture dir");
+            fs::write(fixtures.join(format!("{FIXTURE_PREFIX}.json")), MEASURED)
+                .expect("write committed fixture");
 
-        let found = discover_fixtures(root.path()).expect("discovery must succeed");
-        assert_eq!(found, vec![top], "a linked directory contributes no fixtures");
+            let (target, link_name) = if link_target_is_dir {
+                (outside.path().to_path_buf(), "linked".to_owned())
+            } else {
+                (stray.clone(), format!("{FIXTURE_PREFIX}.linked.json"))
+            };
+            std::os::unix::fs::symlink(&target, fixtures.join(&link_name)).expect("create symlink");
+
+            let rejected = discover_fixtures(root.path());
+            let rendered =
+                format!("{:#}", rejected.err().expect("discovery must refuse a symlink"));
+            assert!(
+                rendered.contains("refuses symlinks") && rendered.contains(&link_name),
+                "the refusal must name the offending link, got {rendered}"
+            );
+        }
     }
 
     // -- the committed artifacts ------------------------------------------------
