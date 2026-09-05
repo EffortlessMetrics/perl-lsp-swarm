@@ -2079,10 +2079,19 @@ impl LspServer {
         if let Some(params) = params
             && let Some(files) = params["files"].as_array()
         {
+            // Client file-operation authority is a second delivery path for
+            // metadata changes (#13640). A client may send these without a
+            // matching watched-file event, so route them too; a client that
+            // sends both simply refreshes twice, which is idempotent.
+            let mut metadata_roots: std::collections::BTreeSet<std::path::PathBuf> =
+                std::collections::BTreeSet::new();
+
             for file in files {
                 let Some(uri) = file["uri"].as_str() else {
                     continue;
                 };
+
+                metadata_roots.extend(self.project_metadata_roots_for_uri(uri));
 
                 tracing::debug!(uri, "File deleted");
 
@@ -2096,6 +2105,8 @@ impl LspServer {
                     coordinator.notify_parse_complete(uri);
                 }
             }
+
+            self.refresh_project_metadata_facts(&metadata_roots);
 
             // Trigger client refresh after file deletions
             if let Err(e) = self.refresh_controller.refresh_all(self) {
@@ -2226,10 +2237,17 @@ impl LspServer {
         if let Some(params) = params
             && let Some(files) = params["files"].as_array()
         {
+            // Second delivery path for metadata changes (#13640); see
+            // `handle_did_delete_files`.
+            let mut metadata_roots: std::collections::BTreeSet<std::path::PathBuf> =
+                std::collections::BTreeSet::new();
+
             for file in files {
                 let Some(uri) = file["uri"].as_str() else {
                     continue;
                 };
+
+                metadata_roots.extend(self.project_metadata_roots_for_uri(uri));
 
                 tracing::debug!("File created: {}", uri);
 
@@ -2258,6 +2276,8 @@ impl LspServer {
                 self.process_file_watcher_uri_immediate(uri);
             }
 
+            self.refresh_project_metadata_facts(&metadata_roots);
+
             // Trigger client refresh after file creations
             if let Err(e) = self.refresh_controller.refresh_all(self) {
                 tracing::warn!("Failed to refresh client after file creations: {}", e);
@@ -2276,6 +2296,11 @@ impl LspServer {
         if let Some(params) = params
             && let Some(files) = params["files"].as_array()
         {
+            // Second delivery path for metadata changes (#13640); see
+            // `handle_did_delete_files`.
+            let mut metadata_roots: std::collections::BTreeSet<std::path::PathBuf> =
+                std::collections::BTreeSet::new();
+
             for file in files {
                 let Some(old_uri) = file["oldUri"].as_str() else {
                     continue;
@@ -2290,6 +2315,12 @@ impl LspServer {
                 // the client-supplied URIs (#3665).
                 let old_uri = self.normalize_uri_key(old_uri);
                 let new_uri = self.normalize_uri_key(new_uri);
+
+                // Both ends matter (#13640): renaming `cpanfile` away retires
+                // its declarations, and renaming a file onto `cpanfile`
+                // establishes them.
+                metadata_roots.extend(self.project_metadata_roots_for_uri(&old_uri));
+                metadata_roots.extend(self.project_metadata_roots_for_uri(&new_uri));
 
                 tracing::debug!("File renamed: {} -> {}", old_uri, new_uri);
 
@@ -2388,6 +2419,8 @@ impl LspServer {
                 // keeps its URI and instance until the client's own document
                 // lifecycle (didOpen/didClose) resolves the rename handoff.
             }
+
+            self.refresh_project_metadata_facts(&metadata_roots);
 
             // Trigger client refresh after file renames
             if let Err(e) = self.refresh_controller.refresh_all(self) {

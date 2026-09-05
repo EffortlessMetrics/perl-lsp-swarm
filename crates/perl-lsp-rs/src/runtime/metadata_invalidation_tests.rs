@@ -487,3 +487,73 @@ fn an_open_metadata_buffer_keeps_becoming_current_as_it_is_edited() {
         "facts must keep tracking the open buffer, not freeze at the first read"
     );
 }
+
+/// Client file-operation notifications are a second delivery path for metadata
+/// changes (#13640). A client may send `didDeleteFiles` without a matching
+/// watched-file event, so the route must not depend on the watcher alone.
+#[test]
+fn explicit_file_delete_downgrades_declared_dependencies() {
+    let dir = TempDir::new().expect("tempdir");
+    write_file(&dir, "cpanfile", "requires 'JSON::PP';\n");
+    let server = workspace_server(&dir);
+    assert_eq!(declared_modules(&server), vec!["JSON::PP".to_string()]);
+
+    std::fs::remove_file(dir.path().join("cpanfile")).expect("remove cpanfile");
+    server
+        .handle_did_delete_files(Some(json!({
+            "files": [{ "uri": file_uri(&dir, "cpanfile") }]
+        })))
+        .expect("didDeleteFiles params are valid");
+
+    assert!(
+        declared_modules(&server).is_empty(),
+        "an explicit file-operation delete must downgrade declared dependencies"
+    );
+}
+
+/// The create half of the same path.
+#[test]
+fn explicit_file_create_establishes_declared_dependencies() {
+    let dir = TempDir::new().expect("tempdir");
+    let server = workspace_server(&dir);
+    assert!(declared_modules(&server).is_empty(), "no metadata at baseline");
+
+    write_file(&dir, "cpanfile", "requires 'YAML::XS';\n");
+    server
+        .handle_did_create_files(Some(json!({
+            "files": [{ "uri": file_uri(&dir, "cpanfile") }]
+        })))
+        .expect("didCreateFiles params are valid");
+
+    assert_eq!(
+        declared_modules(&server),
+        vec!["YAML::XS".to_string()],
+        "an explicit file-operation create must establish declared dependencies"
+    );
+}
+
+/// Renaming a metadata file away retires its declarations; both ends of the
+/// rename are classified.
+#[test]
+fn explicit_file_rename_retires_the_old_metadata_declarations() {
+    let dir = TempDir::new().expect("tempdir");
+    write_file(&dir, "cpanfile", "requires 'JSON::PP';\n");
+    let server = workspace_server(&dir);
+    assert_eq!(declared_modules(&server), vec!["JSON::PP".to_string()]);
+
+    std::fs::rename(dir.path().join("cpanfile"), dir.path().join("cpanfile.bak"))
+        .expect("rename cpanfile");
+    server
+        .handle_did_rename_files(Some(json!({
+            "files": [{
+                "oldUri": file_uri(&dir, "cpanfile"),
+                "newUri": file_uri(&dir, "cpanfile.bak")
+            }]
+        })))
+        .expect("didRenameFiles params are valid");
+
+    assert!(
+        declared_modules(&server).is_empty(),
+        "renaming cpanfile away must retire its declarations"
+    );
+}
