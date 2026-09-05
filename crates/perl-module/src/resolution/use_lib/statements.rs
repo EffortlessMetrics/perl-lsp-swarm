@@ -386,6 +386,27 @@ fn read_quoted_delimiter(source: &str, start: usize, quote: char) -> Option<(Str
 
     None
 }
+/// End offset of a bareword heredoc delimiter starting at `from`.
+///
+/// Identifier *characters*, not ASCII bytes. With `use utf8` Perl accepts
+/// `my $s = <<É;` closed by an `É` line, and a multi-codepoint `<<日本`
+/// likewise; rejecting those left the heredoc body scanned as code, inventing
+/// an `@INC` root out of it. Advancing by `len_utf8` keeps the returned offset
+/// on a character boundary, so no caller slices mid-codepoint.
+///
+/// Without `use utf8` the question does not arise: Perl rejects the program
+/// outright with `Use of bare << to mean <<"" is forbidden`, so a non-ASCII
+/// tag only appears in a file that compiles because utf8 is on.
+fn bareword_delimiter_end(source: &str, from: usize) -> usize {
+    let mut end = from;
+    for ch in source[from..].chars() {
+        if !(ch.is_alphanumeric() || ch == '_') {
+            break;
+        }
+        end += ch.len_utf8();
+    }
+    end
+}
 
 /// Recognize a heredoc opener at `start`, returning
 /// `(end, tag, strip_indent, requires_terminator)`.
@@ -437,13 +458,7 @@ fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bo
     // `<<EOF`, so it is confirmed on the same rule as a quoted delimiter.
     if first == b'\\' {
         let tag_start_after_escape = spaced_tag_start + 1;
-        let mut tag_end = tag_start_after_escape;
-        while let Some(byte) = source.as_bytes().get(tag_end) {
-            if !(byte.is_ascii_alphanumeric() || *byte == b'_') {
-                break;
-            }
-            tag_end += 1;
-        }
+        let tag_end = bareword_delimiter_end(source, tag_start_after_escape);
         if tag_end == tag_start_after_escape {
             return None;
         }
@@ -466,17 +481,12 @@ fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bo
     // terminator "123"`. Rejecting it left the body to be scanned as code.
     // Position has already ruled out the shift readings — `$x<<2` and `1<<2`
     // end a term and never reach here.
-    if spaced_tag_start != tag_start || !(first.is_ascii_alphanumeric() || first == b'_') {
+    let first_char = source.get(spaced_tag_start..)?.chars().next()?;
+    if spaced_tag_start != tag_start || !(first_char.is_alphanumeric() || first_char == '_') {
         return None;
     }
 
-    let mut tag_end = tag_start + 1;
-    while let Some(byte) = source.as_bytes().get(tag_end) {
-        if !(byte.is_ascii_alphanumeric() || *byte == b'_') {
-            break;
-        }
-        tag_end += 1;
-    }
+    let tag_end = bareword_delimiter_end(source, tag_start);
 
     Some((tag_end, source[tag_start..tag_end].to_string(), strip_indent, true))
 }

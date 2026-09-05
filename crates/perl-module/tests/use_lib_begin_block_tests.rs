@@ -925,3 +925,70 @@ fn an_unfinished_expression_after_a_block_still_suppresses() {
         );
     }
 }
+
+/// A Unicode bareword heredoc delimiter is a heredoc, and its body is not code.
+///
+/// Measured against the interpreter with `use utf8` active: `my $s = <<É;`
+/// closed by an `É` line runs and prints, `<<日本` likewise, and leaving the
+/// terminator off produces `Can't find string terminator`. Without `use utf8`
+/// Perl rejects the program outright (`Use of bare << to mean <<"" is
+/// forbidden`), so a non-ASCII tag only reaches the scanner in a file that
+/// compiles because utf8 is on.
+///
+/// Matching on ASCII bytes rejected the opener and scanned the body as code,
+/// which is the invention direction — the phantom below became an `@INC` root
+/// and the real pragma after the terminator was lost.
+#[test]
+fn a_unicode_bareword_delimiter_opens_a_heredoc() {
+    let real =
+        vec![UseLibAction::Add(vec![UseLibPath { path: "real".to_string(), from_findbin: false }])];
+
+    for tag in ["É", "日本", "Ω", "über"] {
+        let source =
+            format!("use utf8;\nmy $s = <<{tag};\nuse lib 'phantom';\n{tag}\nuse lib 'real';\n");
+
+        assert_eq!(
+            extract_use_lib_operations(&source),
+            real,
+            "<<{tag} body was scanned as code, inventing a path from a heredoc"
+        );
+    }
+
+    // The backslash-escaped form shares the delimiter scan and must widen too.
+    let escaped = "use utf8;\nmy $s = <<\\É;\nuse lib 'phantom';\nÉ\nuse lib 'real';\n";
+    assert_eq!(extract_use_lib_operations(escaped), real, "<<\\É body reached the rail");
+
+    // A non-identifier character still ends the delimiter, so this is a shift
+    // reading rather than a heredoc and nothing below it is swallowed.
+    let not_a_tag = "use utf8;\nmy $x = 1<<2;\nuse lib 'real';\n";
+    assert_eq!(
+        extract_use_lib_operations(not_a_tag),
+        real,
+        "a numeric shift was read as a heredoc"
+    );
+}
+
+/// Widening the delimiter scan to Unicode must not slice inside a code point.
+///
+/// `bareword_delimiter_end` advances by `len_utf8`, so every offset it returns
+/// lands on a character boundary. These shapes exercise the ways a multi-byte
+/// character can sit next to `<<`: a non-identifier symbol that ends the tag
+/// immediately, a delimiter truncated at end of input, the backslash-escaped
+/// form, an astral-plane character, and a Unicode identifier *before* the `<<`
+/// so the position classifier sees one too. A byte-indexed implementation
+/// panics on these; this asserts only that none of them do.
+#[test]
+fn a_multibyte_character_beside_a_delimiter_never_slices_mid_codepoint() {
+    for source in [
+        "my $s = <<\u{2014};\nuse lib 'a';\n",
+        "my $s = <<\u{c9}",
+        "my $s = <<\\\u{c9}",
+        "my $s = <<\u{c9}\n",
+        "my $s = <<\u{1f980};\nuse lib 'a';\n\u{1f980}\nuse lib 'b';\n",
+        "\u{c9}<<\u{c9};\nuse lib 'a';\n",
+        "my $s = <<~\u{c9};\nbody\n  \u{c9}\nuse lib 'a';\n",
+    ] {
+        // Panicking here is the failure; the extracted value is not the subject.
+        let _ = extract_use_lib_operations(source);
+    }
+}
