@@ -1601,3 +1601,64 @@ fn test_qualified_package_prefix_does_not_rename_the_final_sub() -> TestResult {
 
     Ok(())
 }
+
+/// A method-call receiver must not rename the method.
+///
+/// Raised in review of #9827, and a different route to the same wrong-symbol
+/// edit as the prefix case: the qualified-name match stops at the `->`, so in
+/// `Some::Module->new()` the component `Module` is that match's *final*
+/// component — a `Prefix` test does not catch it — while the resolver answers
+/// with the method `new`. Before the guard, a rename from `Module` edited
+/// `new`, producing the byte-identical edit to renaming from `new` itself.
+#[test]
+fn test_arrow_receiver_does_not_rename_the_method() -> TestResult {
+    let mut harness = LspHarness::new();
+    let _init = harness.initialize(None)?;
+
+    let lib_uri = "file:///Some/Module.pm";
+    let app_uri = "file:///App.pm";
+    harness.open(lib_uri, "package Some::Module;\nsub new { return bless {}; }\n1;\n")?;
+    harness.open(
+        app_uri,
+        "package App;\nuse Some::Module;\nsub run { return Some::Module->new(); }\n1;\n",
+    )?;
+
+    // Line 2 is `sub run { return Some::Module->new(); }`.
+    // `Some` spans 17..21, `Module` 23..29, `new` 31..34.
+    for (column, what) in [(18_u64, "the `Some` prefix"), (25, "the `Module` receiver")] {
+        let prepared = answered_result(
+            &raw_prepare_rename(&mut harness, app_uri, 2, column),
+            &format!("prepareRename on {what}"),
+        )?;
+        assert_eq!(
+            prepared,
+            Value::Null,
+            "prepareRename must not offer a rename box on {what} of an arrow call; got: {prepared}"
+        );
+
+        let renamed = answered_result(
+            &raw_rename(&mut harness, app_uri, 2, column),
+            &format!("rename on {what}"),
+        )?;
+        assert_eq!(
+            renamed,
+            Value::Null,
+            "rename on {what} must refuse rather than edit the method; got: {renamed}"
+        );
+    }
+
+    // Negative control: the method itself is still renameable. Without this the
+    // guard could pass by refusing every position in an arrow call.
+    let renamed_method =
+        answered_result(&raw_rename(&mut harness, app_uri, 2, 32), "rename of the method")?;
+    let changes = renamed_method
+        .get("changes")
+        .and_then(Value::as_object)
+        .ok_or("renaming the method must still return a workspace edit")?;
+    assert!(
+        changes.contains_key(lib_uri),
+        "renaming the method must still edit its declaration; got: {renamed_method}"
+    );
+
+    Ok(())
+}

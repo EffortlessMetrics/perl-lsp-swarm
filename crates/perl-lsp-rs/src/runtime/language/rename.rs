@@ -669,17 +669,27 @@ impl LspServer {
             || Self::offset_is_inside_quoted_string(&doc.text, offset)
     }
 
-    /// True when the cursor resolves to a package or module name.
+    /// True when the cursor is not on a symbol this provider will rename.
     ///
-    /// Package rename is not implemented: [`build_rename_edit`] declines every
-    /// non-[`SymKind::Sub`] key, and no same-file path produces an edit for a
-    /// `package` declaration. `prepareRename` therefore must not offer a rename
-    /// box here — it is the one point in the protocol able to say "this element
-    /// cannot be renamed" before the user types a new name.
+    /// Two distinct reasons land here, and both must refuse:
+    ///
+    /// * **It names a package.** Package rename is not implemented —
+    ///   [`build_rename_edit`] declines every non-[`SymKind::Sub`] key, and no
+    ///   same-file path produces an edit for a `package` declaration.
+    /// * **It names a token other than the symbol that would be edited.** For a
+    ///   qualified name the resolver answers with the *callable*, whatever the
+    ///   cursor is on, so renaming from any other component silently edits a
+    ///   symbol the user never pointed at.
+    ///
+    /// The second is the more dangerous: it is a wrong-symbol edit reported as
+    /// success, which is worse than the empty edit #9827 is about — the empty
+    /// one at least leaves the source intact. `prepareRename` refuses these
+    /// positions up front, and the rename handler asks the same question so a
+    /// client that skips `prepareRename` cannot get the wrong edit either.
     ///
     /// [`build_rename_edit`]: crate::features::workspace_rename
     /// [`SymKind::Sub`]: perl_parser::index::SymKind::Sub
-    fn rename_target_is_package(doc: &crate::state::DocumentState, offset: usize) -> bool {
+    fn rename_must_refuse_at(doc: &crate::state::DocumentState, offset: usize) -> bool {
         let parsed = doc.current_parsed();
         let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) else {
             return false;
@@ -693,34 +703,44 @@ impl LspServer {
             return true;
         }
 
-        // A package component of a qualified name — the `Alpha` in
-        // `Alpha::target()`. The cursor classifier below cannot see this: it
-        // resolves the *final* component for every position inside a qualified
-        // call, so it answers `target` even when the cursor is on `Alpha`.
-        // Without this arm the editor opens a box placeheld `Alpha` and the
-        // rename edits `target` in every file — a wrong-symbol edit reported as
-        // success, which is worse than the empty edit #9827 is about.
-        //
-        // This is the same question `references.rs` asks with the same shared
-        // classifier: "is the cursor on the token that names the symbol we are
-        // about to act on?" A prefix component never is.
+        let current_pkg = crate::declaration::current_package_at(ast, offset);
+        let resolved =
+            crate::declaration::symbol_at_cursor_with_source(ast, offset, current_pkg, &doc.text);
+
+        // A module name that does resolve to a package key — `use Foo::Bar;`.
+        if resolved
+            .as_ref()
+            .is_some_and(|key| matches!(key.kind, perl_parser::index::SymKind::Pack))
+        {
+            return true;
+        }
+
+        // Otherwise ask the question `references.rs` asks, with the classifier
+        // it shares with `navigation.rs`: is the cursor on the token that names
+        // the symbol we are about to act on?
         #[cfg(feature = "workspace")]
         if let Ok(fqn_regex) = super::navigation::get_fqn_regex() {
             let (line_start, line_text) = crate::util::line_window_around_offset(&doc.text, offset);
             let cursor_in_line = offset.saturating_sub(line_start);
-            if matches!(
-                super::navigation::fqn_component_at_cursor(fqn_regex, line_text, cursor_in_line),
-                Some(super::navigation::FqnCursorComponent::Prefix)
-            ) {
-                return true;
+            match super::navigation::fqn_component_at_cursor(fqn_regex, line_text, cursor_in_line) {
+                // A package component never names the callable: the `Alpha` in
+                // `Alpha::target()` resolves to the sub `target`.
+                Some(super::navigation::FqnCursorComponent::Prefix) => return true,
+                // Nor does a *final* component whose text disagrees with the
+                // resolved key. In `Some::Module->new()` the qualified-name
+                // match stops at the `->`, so `Module` is that match's final
+                // component while the key names the method `new` — renaming
+                // from the receiver would edit `new`.
+                Some(super::navigation::FqnCursorComponent::Final { name, .. }) => {
+                    if resolved.as_ref().is_some_and(|key| name.as_str() != &*key.name) {
+                        return true;
+                    }
+                }
+                None => {}
             }
         }
 
-        // A module name elsewhere — `use Foo::Bar;`, a qualified `Foo::Bar`
-        // reference — which resolves to a package key.
-        let current_pkg = crate::declaration::current_package_at(ast, offset);
-        crate::declaration::symbol_at_cursor_with_source(ast, offset, current_pkg, &doc.text)
-            .is_some_and(|key| matches!(key.kind, perl_parser::index::SymKind::Pack))
+        false
     }
 
     /// True when `offset` falls inside the name of a `package` declaration.
@@ -1125,7 +1145,7 @@ impl LspServer {
                 }
                 // `rename` cannot edit a package/module name, so do not present a
                 // rename box the user's Enter will not act on (#9827).
-                if Self::rename_target_is_package(doc, offset) {
+                if Self::rename_must_refuse_at(doc, offset) {
                     return Ok(Some(json!(null)));
                 }
 
@@ -1422,14 +1442,14 @@ impl LspServer {
                 p.get("newName").and_then(|s| s.as_str()),
             )
         {
-            let (rename_starts_in_blocked_context, rename_targets_package) = {
+            let (rename_starts_in_blocked_context, rename_target_refused) = {
                 let documents = self.documents_guard();
                 self.get_document(&documents, uri)
                     .map(|doc| {
                         let offset = self.pos16_to_offset(doc, line as u32, ch as u32);
                         (
                             Self::rename_blocked_at(doc, offset),
-                            Self::rename_target_is_package(doc, offset),
+                            Self::rename_must_refuse_at(doc, offset),
                         )
                     })
                     .unwrap_or((false, false))
@@ -1445,18 +1465,17 @@ impl LspServer {
                 return Self::rename_unavailable();
             }
 
-            // The cursor names a package, not something this provider renames.
-            // Refusing here is not only about honesty: for a package component
-            // of a qualified name the paths below resolve the *final* component
-            // and would rename that sub instead, editing a symbol the user never
-            // pointed at (#9827 review). `prepareRename` already refuses these
-            // positions, so a conforming client will not reach this; a client
-            // that skips `prepareRename` still must not get the wrong edit.
-            if rename_targets_package {
+            // The cursor is not on a symbol this provider renames — a package
+            // name, or a qualified-name component that is not the callable the
+            // resolver would actually edit. `prepareRename` already refuses
+            // these positions, so a conforming client will not reach this; a
+            // client that skips `prepareRename` still must not get an edit to a
+            // symbol it never pointed at.
+            if rename_target_refused {
                 self.record_rename_provider_decision_trace(
                     Some(uri),
                     None,
-                    "package_rename_unsupported",
+                    "unsupported_rename_target",
                     0,
                     "no_edit",
                 );
