@@ -51,7 +51,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Versioned identity of the instrumentation work receipt.
 pub const INSTRUMENTATION_WORK_SCHEMA_VERSION: &str = "perl_core_harness.instrumentation_work.v1";
@@ -251,7 +251,9 @@ pub struct InstrumentationWork {
     pub manifest_files_after: u64,
     /// Manifest files whose digest changed (only the runner artifact may).
     pub manifest_files_changed: u64,
-    /// Retained trace bytes (after the retention bound).
+    /// Trace stream bytes handed to the decoder: header frame plus the
+    /// retained channel bytes (after the retention bound). Falls back to the
+    /// raw channel length when no stream is built.
     pub trace_bytes: u64,
     /// Frames consumed by the strict trace decoder.
     pub trace_frames: u64,
@@ -761,6 +763,7 @@ pub fn observe_invocations(config: &ObserveInvocationsConfig) -> Result<Instrume
     let (trace_bytes, mut trace_truncated) =
         read_bounded_trace(&trace_path).unwrap_or_else(|_| (Vec::new(), false));
 
+    let mut retained_trace_bytes = trace_bytes.len() as u64;
     let mut parent_opt = None;
     let mut trace_opt = None;
     let mut parent_construction_error: Option<String> = None;
@@ -801,6 +804,7 @@ pub fn observe_invocations(config: &ObserveInvocationsConfig) -> Result<Instrume
             trace_truncated = true;
         }
         stream.extend_from_slice(&trace_bytes[..trace_bytes.len().min(available)]);
+        retained_trace_bytes = stream.len() as u64;
         let subject = TraceSubjectIdentity {
             repository_commit: config.repository_commit.clone(),
             perl_ref: config.perl_ref.clone(),
@@ -869,7 +873,7 @@ pub fn observe_invocations(config: &ObserveInvocationsConfig) -> Result<Instrume
         manifest_files_before: manifest_before.len() as u64,
         manifest_files_after: manifest_after.len() as u64,
         manifest_files_changed: changed.len() as u64,
-        trace_bytes: trace_bytes.len() as u64,
+        trace_bytes: retained_trace_bytes,
         terminal_disagreements,
         cleanup_failures: cleanup.failures.len() as u64,
         ..InstrumentationWork::default()
@@ -989,7 +993,10 @@ fn derive_instrumentation_state(
     parent_state: Option<DiscoveryObservationState>,
     work: &InstrumentationWork,
 ) -> InstrumentationState {
-    if !cleanup.failures.is_empty() {
+    // Cleanup must be proven, not merely free of typed failures: a run
+    // directory that survives a swallowed `TempDir` drop error leaves
+    // disposable state behind without recording a failure string.
+    if !cleanup.is_proven() {
         return InstrumentationState::CleanupFailed;
     }
     if contamination {
@@ -1063,14 +1070,19 @@ pub fn instrumentation_payload_digest(
 }
 
 /// Re-check an instrumentation work receipt against the ordinary artifact
-/// bytes and the exact patch specification: the patch must re-apply to the
-/// same instrumented digest, and the manifest delta must be the runner
-/// artifact alone.
+/// bytes and the exact patch specification bytes: the patch must re-apply to
+/// the same instrumented digest, the manifest delta must be the runner
+/// artifact alone with before/after entries bound to the ordinary and
+/// re-applied digests, and the specification digest must bind the supplied
+/// bytes exactly as the capture hashed them.
 pub fn validate_instrumentation_work(
     receipt: &InstrumentationWorkReceiptV1,
     ordinary_bytes: &[u8],
-    spec: &ExactPatchSpec,
+    spec_bytes: &[u8],
 ) -> Result<(), String> {
+    let spec: ExactPatchSpec = serde_json::from_slice(spec_bytes)
+        .map_err(|error| format!("decoding the supplied patch specification: {error}"))?;
+    let spec = &spec;
     if receipt.schema_version != INSTRUMENTATION_WORK_SCHEMA_VERSION {
         return Err(format!("unsupported instrumentation work schema {}", receipt.schema_version));
     }
@@ -1092,7 +1104,8 @@ pub fn validate_instrumentation_work(
     }
     let reapplied = apply_exact_patch(ordinary_bytes, spec)
         .map_err(|error| format!("re-applying the reviewed patch failed: {}", error.message()))?;
-    if payload.instrumented_artifact.content_sha256 != sha256_bytes(&reapplied) {
+    let reapplied_digest = sha256_bytes(&reapplied);
+    if payload.instrumented_artifact.content_sha256 != reapplied_digest {
         return Err("instrumented artifact digest does not match the re-applied patch".to_string());
     }
     if payload.patch.spec_sha256.len() != 64
@@ -1115,11 +1128,23 @@ pub fn validate_instrumentation_work(
             "instrumentation may only change the runner artifact; manifest delta: {changes:?}"
         ));
     }
-    // The recorded specification must be the exact supplied specification:
-    // another spec with equal patched bytes never validates this receipt.
-    let serialized = serde_json::to_vec(spec)
-        .map_err(|error| format!("serializing the supplied patch specification: {error}"))?;
-    let supplied_digest = sha256_bytes(&serialized);
+    // The manifest entries for the runner artifact must be the measured
+    // digests, not merely a changed pair: a tampered or stale manifest that
+    // still differs only at t/TEST never validates.
+    if payload.manifest_before.get("t/TEST") != Some(&payload.ordinary_artifact.content_sha256) {
+        return Err(
+            "manifest_before does not record the ordinary runner artifact digest".to_string()
+        );
+    }
+    if payload.manifest_after.get("t/TEST") != Some(&reapplied_digest) {
+        return Err(
+            "manifest_after does not record the re-applied runner artifact digest".to_string()
+        );
+    }
+    // The recorded specification must be the exact supplied bytes: the
+    // capture hashes the specification file as read, so the validator hashes
+    // the same bytes rather than a re-serialization of the decoded value.
+    let supplied_digest = sha256_bytes(spec_bytes);
     if payload.patch.spec_sha256 != supplied_digest {
         return Err(
             "patch specification digest does not bind the supplied specification".to_string()
@@ -1235,7 +1260,7 @@ pub fn observe_invocations_command(config: &ObserveInvocationsConfig) -> Result<
 
 /// Parse `perl-core-harness-artifacts observe-invocations` options.
 pub(crate) fn observe_invocations_from_options(mut options: Options) -> Result<()> {
-    let config = ObserveInvocationsConfig {
+    let mut config = ObserveInvocationsConfig {
         matrix: PathBuf::from(options.required("--matrix")?),
         target_id: options.required("--target")?,
         runner: parse_runner(&options.required("--runner")?)?,
@@ -1251,14 +1276,22 @@ pub(crate) fn observe_invocations_from_options(mut options: Options) -> Result<(
         trace_output: PathBuf::from(options.required("--trace-output")?),
         work_output: PathBuf::from(options.required("--work-output")?),
         limits: CaptureLimits {
-            deadline: parse_deadline_with_default(
-                options.optional("--deadline-seconds")?.as_deref(),
-                OBSERVE_INVOCATIONS_DEFAULT_DEADLINE_SECONDS,
-                OBSERVE_INVOCATIONS_MAX_DEADLINE_SECONDS,
-            )?,
-            cancel_file: options.optional("--cancel-file")?.map(PathBuf::from),
+            deadline: Duration::from_secs(OBSERVE_INVOCATIONS_DEFAULT_DEADLINE_SECONDS),
+            cancel_file: None,
         },
     };
+    // Every receipt destination is known here. Invalidate prior receipts
+    // before the remaining fallible option validation so a rerun that fails
+    // on a bad deadline or a leftover option cannot leave the previous run's
+    // proof consumable. The command repeats both steps idempotently.
+    validate_receipt_destinations(&config)?;
+    invalidate_stale_outputs(&config)?;
+    config.limits.deadline = parse_deadline_with_default(
+        options.optional("--deadline-seconds")?.as_deref(),
+        OBSERVE_INVOCATIONS_DEFAULT_DEADLINE_SECONDS,
+        OBSERVE_INVOCATIONS_MAX_DEADLINE_SECONDS,
+    )?;
+    config.limits.cancel_file = options.optional("--cancel-file")?.map(PathBuf::from);
     options.finish()?;
     observe_invocations_command(&config)
 }
@@ -1413,38 +1446,42 @@ mod contract_tests {
     }
 
     #[test]
-    fn exact_anchors_apply_once_and_reproduce_deterministically() {
+    fn exact_anchors_apply_once_and_reproduce_deterministically() -> super::Result<()> {
         let ordinary = b"#!./perl\n# ordinary\n";
         let spec = spec("# ordinary", "# instrumented\n# capture-point: decision");
-        let first = apply_exact_patch(ordinary, &spec).expect("exact anchor applies");
-        let second = apply_exact_patch(ordinary, &spec).expect("re-application is deterministic");
+        let first = apply_exact_patch(ordinary, &spec)
+            .map_err(|error| color_eyre::eyre::eyre!(error.message()))?;
+        let second = apply_exact_patch(ordinary, &spec)
+            .map_err(|error| color_eyre::eyre::eyre!(error.message()))?;
         assert_eq!(first, second);
         assert!(first.starts_with(b"#!./perl\n# instrumented"));
+        Ok(())
     }
 
     #[test]
-    fn subject_drift_is_rejected_never_guessed() {
+    fn subject_drift_is_rejected_never_guessed() -> super::Result<()> {
         let ordinary = b"#!./perl\n# drifted bytes\n";
         let spec = spec("# ordinary", "# instrumented");
         let Err(PatchApplicationError::SubjectDrift { expected, measured }) =
             apply_exact_patch(ordinary, &spec)
         else {
-            panic!("drifted ordinary artifact must refuse the patch");
+            super::bail!("drifted ordinary artifact must refuse the patch");
         };
         assert_ne!(expected, measured);
         assert!(
             spec.expected_ordinary_sha256 == expected,
             "the refusal carries the pinned subject"
         );
+        Ok(())
     }
 
     #[test]
-    fn missing_and_ambiguous_anchors_refuse_exact_application() {
+    fn missing_and_ambiguous_anchors_refuse_exact_application() -> super::Result<()> {
         let ordinary = b"#!./perl\n# ordinary\n";
         let Err(PatchApplicationError::AnchorMissing { label }) =
             apply_exact_patch(ordinary, &spec("# absent", "# x"))
         else {
-            panic!("absent anchor must refuse");
+            super::bail!("absent anchor must refuse");
         };
         assert_eq!(label, "seam");
 
@@ -1454,13 +1491,14 @@ mod contract_tests {
         let Err(PatchApplicationError::AnchorAmbiguous { occurrences, .. }) =
             apply_exact_patch(ambiguous_source, &ambiguous_spec)
         else {
-            panic!("ambiguous anchor must refuse");
+            super::bail!("ambiguous anchor must refuse");
         };
         assert_eq!(occurrences, 2);
+        Ok(())
     }
 
     #[test]
-    fn sequential_operations_apply_in_declaration_order() {
+    fn sequential_operations_apply_in_declaration_order() -> super::Result<()> {
         let ordinary = b"#!./perl\n# upstream\n";
         let spec = ExactPatchSpec {
             schema_version: super::EXACT_PATCH_SCHEMA_VERSION.to_string(),
@@ -1480,8 +1518,10 @@ mod contract_tests {
                 },
             ],
         };
-        let patched = apply_exact_patch(ordinary, &spec).expect("sequential anchors apply");
+        let patched = apply_exact_patch(ordinary, &spec)
+            .map_err(|error| color_eyre::eyre::eyre!(error.message()))?;
         assert!(patched.ends_with(b"# upstream-instrumented-twice\n"));
+        Ok(())
     }
 
     #[test]
@@ -1579,6 +1619,76 @@ mod contract_tests {
     }
 
     #[test]
+    fn option_failures_after_destinations_still_invalidate_stale_receipts() -> super::Result<()> {
+        // A rerun whose remaining CLI validation fails (bad deadline, leftover
+        // option) must not leave the previous run's receipts consumable.
+        let temp = tempfile::tempdir()?;
+        let tree = temp.path().join("prepared-perl");
+        std::fs::create_dir_all(tree.join("t"))?;
+        std::fs::write(tree.join("t").join("TEST"), b"#!./perl\n")?;
+        let matrix = temp.path().join("matrix.json");
+        std::fs::write(&matrix, b"{}")?;
+        let patch = temp.path().join("patch-spec.json");
+        std::fs::write(&patch, b"{}")?;
+        let host_perl = temp.path().join("host-perl");
+        std::fs::write(&host_perl, b"")?;
+        let outputs = ["parent-receipt.json", "trace-receipt.json", "work-receipt.json"]
+            .map(|name| temp.path().join(name));
+        for output in &outputs {
+            std::fs::write(output, b"{\"stale\":true}")?;
+        }
+        let path_arg = |path: &std::path::Path| path.to_string_lossy().into_owned();
+        for (extra, expected) in [
+            (vec!["--deadline-seconds".to_string(), "nope".to_string()], "--deadline-seconds"),
+            (vec!["--unknown-option".to_string(), "x".to_string()], "--unknown-option"),
+        ] {
+            for output in &outputs {
+                std::fs::write(output, b"{\"stale\":true}")?;
+            }
+            let mut args = vec![
+                "--matrix".to_string(),
+                path_arg(&matrix),
+                "--target".to_string(),
+                "component_base".to_string(),
+                "--runner".to_string(),
+                "test".to_string(),
+                "--perl-tree".to_string(),
+                path_arg(&tree),
+                "--host-perl".to_string(),
+                path_arg(&host_perl),
+                "--commit".to_string(),
+                "a".repeat(40),
+                "--perl-ref".to_string(),
+                "perl-5.42.2".to_string(),
+                "--prepared-tree-identity".to_string(),
+                "prepared-tree-generation-1".to_string(),
+                "--host-perl-identity".to_string(),
+                "host-perl-5.42.2".to_string(),
+                "--instrumentation-id".to_string(),
+                "instrument-1".to_string(),
+                "--patch".to_string(),
+                path_arg(&patch),
+                "--output".to_string(),
+                path_arg(&outputs[0]),
+                "--trace-output".to_string(),
+                path_arg(&outputs[1]),
+                "--work-output".to_string(),
+                path_arg(&outputs[2]),
+            ];
+            args.extend(extra);
+            let options = super::Options::parse(args.into_iter())?;
+            let Err(error) = super::observe_invocations_from_options(options) else {
+                super::bail!("option validation must refuse {expected}");
+            };
+            assert!(error.to_string().contains(expected), "unexpected refusal: {error}");
+            for output in &outputs {
+                assert!(!output.exists(), "stale receipt {} must be removed", output.display());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn state_derivation_never_completes_a_failed_capture() {
         let proven_cleanup = CleanupRecord {
             instrumented_tree_removed: true,
@@ -1619,6 +1729,26 @@ mod contract_tests {
         assert_eq!(
             derive_instrumentation_state(
                 &dirty_cleanup,
+                false,
+                false,
+                false,
+                false,
+                0,
+                &Some(complete.clone()),
+                ProcessCompletion::ExitStatus { code: 0 },
+                parent_complete,
+                &work,
+            ),
+            InstrumentationState::CleanupFailed
+        );
+
+        // A run directory that survived a swallowed drop error records no
+        // failure string but is still unproven cleanup.
+        let unremoved_run_directory =
+            CleanupRecord { run_directory_removed: false, ..proven_cleanup.clone() };
+        assert_eq!(
+            derive_instrumentation_state(
+                &unremoved_run_directory,
                 false,
                 false,
                 false,

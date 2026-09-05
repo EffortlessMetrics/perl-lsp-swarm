@@ -25,8 +25,8 @@ use perl_core_harness::invocation_trace::model::{
 use perl_core_harness::invocation_trace::{
     EXACT_PATCH_SCHEMA_VERSION, ExactPatchOp, ExactPatchSpec, InstrumentationState,
     InstrumentationWorkReceiptV1, ObserveInvocationsConfig, apply_exact_patch,
-    check_invocation_trace_against, observe_invocations, observe_invocations_command,
-    validate_instrumentation_work,
+    check_invocation_trace_against, instrumentation_payload_digest, observe_invocations,
+    observe_invocations_command, validate_instrumentation_work,
 };
 use perl_core_harness::observed_discovery::model::{
     DiscoveryObservationState, UpstreamDiscoveryReceiptV1,
@@ -248,7 +248,7 @@ fn clean_capture_emits_binding_trace_receipts() -> Result<()> {
         let path = write_patch_spec(temp.path(), ORDINARY_ARTIFACT)?;
         fs::read_to_string(path)?
     };
-    validate_instrumentation_work(work, ORDINARY_ARTIFACT.as_bytes(), &spec_from(&spec_raw))
+    validate_instrumentation_work(work, ORDINARY_ARTIFACT.as_bytes(), spec_raw.as_bytes())
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
     Ok(())
 }
@@ -278,12 +278,8 @@ fn command_writes_reconstructing_receipts() -> Result<()> {
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
     check_invocation_trace_against(&parent, &trace)
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
-    validate_instrumentation_work(
-        &work,
-        ORDINARY_ARTIFACT.as_bytes(),
-        &spec_from(&fs::read_to_string(&patch)?),
-    )
-    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    validate_instrumentation_work(&work, ORDINARY_ARTIFACT.as_bytes(), &fs::read(&patch)?)
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
     Ok(())
 }
 
@@ -1117,14 +1113,16 @@ fn validation_binds_the_exact_supplied_specification() -> Result<()> {
         fs::read_to_string(path)?
     };
     let spec = spec_from(&spec_raw);
-    validate_instrumentation_work(work, ORDINARY_ARTIFACT.as_bytes(), &spec)
+    validate_instrumentation_work(work, ORDINARY_ARTIFACT.as_bytes(), spec_raw.as_bytes())
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
 
     // A different specification with the same patched bytes never validates
     // this receipt.
     let mut other = spec.clone();
     other.operations[0].label = "relabelled-operation".to_string();
-    let Err(error) = validate_instrumentation_work(work, ORDINARY_ARTIFACT.as_bytes(), &other)
+    let other_bytes = serde_json::to_vec(&other)?;
+    let Err(error) =
+        validate_instrumentation_work(work, ORDINARY_ARTIFACT.as_bytes(), &other_bytes)
     else {
         bail!("a foreign specification must refuse validation");
     };
@@ -1132,5 +1130,71 @@ fn validation_binds_the_exact_supplied_specification() -> Result<()> {
         error.contains("does not bind the supplied specification"),
         "unexpected refusal: {error}"
     );
+    Ok(())
+}
+
+#[test]
+fn validation_hashes_the_specification_bytes_the_capture_read() -> Result<()> {
+    // The capture hashes the specification file as read. A pretty-printed
+    // file with the same decoded value must therefore validate against the
+    // receipt produced from it, and compact re-serialized bytes must not.
+    let temp = tempfile::tempdir()?;
+    let tree = fixture_tree(temp.path(), "clean", &["if.t"])?;
+    let compact_path = write_patch_spec(temp.path(), ORDINARY_ARTIFACT)?;
+    let spec = spec_from(&fs::read_to_string(&compact_path)?);
+    let pretty_bytes = serde_json::to_vec_pretty(&spec)?;
+    assert_ne!(pretty_bytes, serde_json::to_vec(&spec)?);
+    let pretty_path = temp.path().join("patch-spec-pretty.json");
+    fs::write(&pretty_path, &pretty_bytes)?;
+    let config = config_for(&tree, &pretty_path, temp.path(), "component_base", default_limits());
+    let observation = observe_invocations(&config)?;
+    let work = &observation.work;
+    assert_eq!(work.payload.patch.spec_sha256, sha_hex(&pretty_bytes));
+    validate_instrumentation_work(work, ORDINARY_ARTIFACT.as_bytes(), &pretty_bytes)
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let Err(error) = validate_instrumentation_work(
+        work,
+        ORDINARY_ARTIFACT.as_bytes(),
+        &serde_json::to_vec(&spec)?,
+    ) else {
+        bail!("re-serialized specification bytes must refuse validation");
+    };
+    assert!(
+        error.contains("does not bind the supplied specification"),
+        "unexpected refusal: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn validation_refuses_a_stale_or_tampered_manifest() -> Result<()> {
+    let observation = observe_with_mode("component_base", "clean", &["if.t"])?;
+    let spec_raw = {
+        let temp = tempfile::tempdir()?;
+        let path = write_patch_spec(temp.path(), ORDINARY_ARTIFACT)?;
+        fs::read(path)?
+    };
+    let stale_digest = sha_hex(b"stale runner artifact bytes");
+
+    // Re-sign a manifest whose t/TEST entry still differs before/after but
+    // no longer records the measured digests.
+    let resign = |mutate: &dyn Fn(&mut InstrumentationWorkReceiptV1)| -> Result<String> {
+        let mut receipt = observation.work.clone();
+        mutate(&mut receipt);
+        receipt.payload_digest = instrumentation_payload_digest(&receipt.payload)
+            .map_err(|error| color_eyre::eyre::eyre!(error))?;
+        match validate_instrumentation_work(&receipt, ORDINARY_ARTIFACT.as_bytes(), &spec_raw) {
+            Ok(()) => bail!("a manifest not bound to the measured digests must refuse"),
+            Err(error) => Ok(error),
+        }
+    };
+    let after = resign(&|receipt| {
+        receipt.payload.manifest_after.insert("t/TEST".to_string(), stale_digest.clone());
+    })?;
+    assert!(after.contains("manifest_after"), "unexpected refusal: {after}");
+    let before = resign(&|receipt| {
+        receipt.payload.manifest_before.insert("t/TEST".to_string(), stale_digest.clone());
+    })?;
+    assert!(before.contains("manifest_before"), "unexpected refusal: {before}");
     Ok(())
 }

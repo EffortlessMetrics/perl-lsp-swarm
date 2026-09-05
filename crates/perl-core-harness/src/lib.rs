@@ -173,8 +173,8 @@ pub mod invocation_trace {
         EXACT_PATCH_SCHEMA_VERSION, ExactPatchOp, ExactPatchSpec,
         INSTRUMENTATION_WORK_SCHEMA_VERSION, InstrumentationState, InstrumentationWorkReceiptV1,
         InstrumentedObservation, ObserveInvocationsConfig, PATCH_TOOL_IDENTITY,
-        PatchApplicationError, apply_exact_patch, observe_invocations, observe_invocations_command,
-        validate_instrumentation_work,
+        PatchApplicationError, apply_exact_patch, instrumentation_payload_digest,
+        observe_invocations, observe_invocations_command, validate_instrumentation_work,
     };
     pub use model::{
         CanonicalInvocationProjection, CapturePoint, EffectiveInvocationField,
