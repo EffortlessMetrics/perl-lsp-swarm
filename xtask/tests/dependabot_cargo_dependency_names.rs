@@ -26,7 +26,7 @@
 //! a section the parser could not find, so a rewrite cannot turn these green by
 //! making them blind.
 
-use std::{collections::BTreeSet, fs, path::PathBuf};
+use std::{collections::BTreeSet, ffi::OsStr, fs, path::PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use walkdir::WalkDir;
@@ -53,6 +53,12 @@ fn project_root() -> PathBuf {
 /// tree counts. A stale config entry has to be absent *everywhere* before these
 /// tests call it a false claim, so the failure mode is a missed stale name, not
 /// a spurious red.
+///
+/// Symlinks need no special handling here. `WalkDir` leaves `follow_links`
+/// disabled by default, so it never descends through a link and a link cycle
+/// cannot be walked into; with following disabled, `DirEntry::file_type` also
+/// reports the link itself rather than its target, so the `is_file` guard below
+/// already skips a symlinked `Cargo.toml` instead of reading through it.
 fn declared_dependency_names() -> Result<BTreeSet<String>> {
     let root = project_root();
     let mut names = BTreeSet::new();
@@ -61,14 +67,14 @@ fn declared_dependency_names() -> Result<BTreeSet<String>> {
     for entry in WalkDir::new(&root)
         .into_iter()
         .filter_entry(|entry| {
-            let name = entry.file_name().to_string_lossy();
+            let name = entry.file_name();
             !(entry.depth() > 0
                 && entry.file_type().is_dir()
-                && (name == "target" || name == ".git"))
+                && (name == OsStr::new("target") || name == OsStr::new(".git")))
         })
         .filter_map(std::result::Result::ok)
     {
-        if !entry.file_type().is_file() || entry.file_name() != "Cargo.toml" {
+        if !entry.file_type().is_file() || entry.file_name() != OsStr::new("Cargo.toml") {
             continue;
         }
         let text = fs::read_to_string(entry.path())

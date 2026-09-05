@@ -35,6 +35,7 @@ updates:
       lsp:
         patterns:
           - "lsp-types"
+          - "lsp-server"
         update-types:
           - "minor"
           - "patch"
