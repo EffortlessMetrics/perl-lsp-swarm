@@ -7,8 +7,9 @@ reviewed test helpers instead of collapsing `Result` or `Option` values.
 ## Current rollout status
 
 The Rust 1.95 rollout established active panic-family lint bans and a governed
-path toward exact counted no-new-debt enforcement. The rollout map remains in
-[`docs/ci/perl-lsp-rust-1.95-rollout.md`](ci/perl-lsp-rust-1.95-rollout.md), but
+path toward exact counted no-new-debt enforcement. Its rollout map at
+[`docs/ci/perl-lsp-rust-1.95-rollout.md`](ci/perl-lsp-rust-1.95-rollout.md) is superseded
+by [`docs/CLIPPY_POLICY.md`](CLIPPY_POLICY.md) and retained only as record;
 current source and policy files are authoritative for current-state claims.
 
 Current guardrails are split across:
