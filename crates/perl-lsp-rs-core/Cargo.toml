@@ -96,6 +96,7 @@ perl-subprocess-runtime.workspace = true
 tempfile.workspace = true
 insta = { workspace = true, features = ["yaml"] }
 proptest.workspace = true
+serial_test = "4.0.1"
 
 [package.metadata.docs.rs]
 all-features = true
