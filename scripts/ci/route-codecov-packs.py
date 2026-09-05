@@ -29,14 +29,10 @@ TEST_SUPPORT_CRATE_PREFIXES = (
 )
 FEATURE_CFG_RE = re.compile(r'feature\s*=\s*"([^"]+)"')
 
-# Cargo disables `src/bin` autodiscovery in the 2015 edition once any target is
-# defined by hand.  Later editions always autodiscover unless `autobins` says
-# otherwise.
-MANUAL_TARGET_KEYS = ("lib", "bin", "example", "test", "bench")
+# Cargo's manifest default when [package] declares no edition.
+DEFAULT_EDITION = "2015"
 
-# The router is invoked from workflow steps whose working directory is not
-# guaranteed to be the repository root, so derive it from this file instead of
-# relying on the process cwd.
+# Manifest and source lookups must not depend on the caller's working directory.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -79,9 +75,7 @@ def changed_crates(paths: list[str]) -> list[str]:
     return result
 
 
-def changed_integration_test_targets(
-    paths: list[str], repo_root: Path = REPO_ROOT
-) -> dict[str, list[tuple[str, tuple[str, ...]]]]:
+def changed_integration_test_targets(paths: list[str]) -> dict[str, list[tuple[str, tuple[str, ...]]]]:
     """Return changed top-level integration test targets by crate directory."""
     result: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
     seen: set[tuple[str, str]] = set()
@@ -98,15 +92,13 @@ def changed_integration_test_targets(
         if key in seen:
             continue
         seen.add(key)
-        result.setdefault(crate_name, []).append(
-            (target, tuple(required_features_for_test(path, repo_root)))
-        )
+        result.setdefault(crate_name, []).append((target, tuple(required_features_for_test(path))))
     return result
 
 
-def required_features_for_test(path: str, repo_root: Path = REPO_ROOT) -> list[str]:
+def required_features_for_test(path: str) -> list[str]:
     """Return crate features gated by a changed integration test target."""
-    test_path = repo_root / path
+    test_path = Path(path)
     if not test_path.exists():
         return []
     try:
@@ -132,44 +124,81 @@ def _target_features(target: dict[str, object]) -> tuple[str, ...]:
 
 
 def _target_name_from_path(path_value: str, package_name: str) -> str:
-    path = PurePosixPath(path_value.replace("\\", "/"))
+    path = _normalized_target_path(path_value)
     if path.name == "main.rs":
         return package_name if path.parent.name == "src" else path.parent.name
     return path.stem or package_name
 
 
-def _explicit_bin_source(
-    target: dict[str, object],
-    name: str,
-    package_name: str,
-    crate_root: Path,
-) -> str | None:
-    """Return the source path an explicit `[[bin]]` occupies, as Cargo infers it.
+def _normalized_target_path(path_value: str) -> PurePosixPath:
+    """Normalize a manifest-relative target path for stable occupancy identity."""
+    parts: list[str] = []
+    for part in PurePosixPath(path_value.replace("\\", "/")).parts:
+        if part in ("", "."):
+            continue
+        if part == ".." and parts and parts[-1] != "..":
+            parts.pop()
+            continue
+        parts.append(part)
+    return PurePosixPath(*parts)
 
-    A pathless `[[bin]]` still claims a source file: `src/main.rs` when the
-    target is named after the package, otherwise `src/bin/<name>.rs` or
-    `src/bin/<name>/main.rs`.  Autodiscovery must not re-register a claimed file
-    under its inferred name, or the route emits a `--bin` target Cargo rejects.
+
+def _inferred_bin_paths(name: str, package_name: str) -> tuple[PurePosixPath, ...]:
+    """Return the paths Cargo infers for a pathless explicit ``[[bin]]`` target.
+
+    Cargo resolves a named binary without an explicit ``path`` against
+    ``src/bin/<name>.rs``, ``src/bin/<name>/main.rs``, and -- only when the
+    target name equals the package name -- ``src/main.rs``.  All candidates are
+    reserved so autobin discovery cannot re-register the same source under its
+    file-derived name.
     """
-    raw_path = target.get("path")
-    if isinstance(raw_path, str) and raw_path:
-        return str(PurePosixPath(raw_path.replace("\\", "/")))
-    if name == package_name and (crate_root / "src" / "main.rs").is_file():
-        return "src/main.rs"
-    for candidate in (f"src/bin/{name}.rs", f"src/bin/{name}/main.rs"):
-        if (crate_root / candidate).is_file():
-            return candidate
-    return None
+    candidates = [
+        _normalized_target_path(f"src/bin/{name}.rs"),
+        _normalized_target_path(f"src/bin/{name}/main.rs"),
+    ]
+    if name == package_name:
+        candidates.append(_normalized_target_path("src/main.rs"))
+    return tuple(candidates)
 
 
-def _autobins_enabled(package: dict[str, object], manifest: dict[str, object]) -> bool:
-    """Return whether Cargo autodiscovers `src` binary targets for this package."""
-    declared = package.get("autobins")
-    if declared is not None:
-        return declared is not False
-    if str(package.get("edition", "")) != "2015":
-        return True
-    return not any(manifest.get(key) for key in MANUAL_TARGET_KEYS)
+def _package_edition(crate_name: str, package: dict[str, object], repo_root: Path) -> str:
+    """Resolve the package edition, following ``edition.workspace = true``.
+
+    The edition is load-bearing here: Cargo's ``autobins`` default is ``false``
+    in edition 2015 whenever the manifest declares a ``[[bin]]`` manually.
+    """
+    edition = package.get("edition")
+    if isinstance(edition, str) and edition:
+        return edition
+    if isinstance(edition, dict) and edition.get("workspace") is True:
+        workspace_manifest_path = repo_root / "Cargo.toml"
+        try:
+            workspace_manifest = tomllib.loads(
+                workspace_manifest_path.read_text(encoding="utf-8")
+            )
+        except OSError as error:
+            raise ValueError(
+                f"cannot read workspace manifest for inherited edition of {crate_name}: {error}"
+            ) from error
+        except tomllib.TOMLDecodeError as error:
+            raise ValueError(
+                f"invalid workspace manifest for inherited edition of {crate_name}: {error}"
+            ) from error
+        workspace_table = workspace_manifest.get("workspace")
+        workspace_package = (
+            workspace_table.get("package") if isinstance(workspace_table, dict) else None
+        )
+        inherited = (
+            workspace_package.get("edition") if isinstance(workspace_package, dict) else None
+        )
+        if isinstance(inherited, str) and inherited:
+            return inherited
+        raise ValueError(
+            f"changed crate {crate_name} inherits its edition but the workspace declares none"
+        )
+    if edition is None:
+        return DEFAULT_EDITION
+    raise ValueError(f"Cargo manifest for changed crate {crate_name} has an invalid edition")
 
 
 def package_test_targets(crate_name: str, repo_root: Path = REPO_ROOT) -> PackageTestTargets:
@@ -177,7 +206,8 @@ def package_test_targets(crate_name: str, repo_root: Path = REPO_ROOT) -> Packag
 
     Cargo's fallback route used to assume every changed package had a library
     and no ordinary binary unit tests.  Read the local manifest and source
-    layout instead, including explicit targets and Cargo's autobin conventions.
+    layout instead, including explicit targets, source-path occupancy, and
+    Cargo's edition-aware autobin conventions.
     """
     crate_root = repo_root / "crates" / crate_name
     manifest_path = crate_root / "Cargo.toml"
@@ -205,49 +235,58 @@ def package_test_targets(crate_name: str, repo_root: Path = REPO_ROOT) -> Packag
         has_lib = autolib and (crate_root / "src" / "lib.rs").is_file()
 
     binaries: dict[str, BinaryTestTarget] = {}
-    claimed_sources: set[str] = set()
+    declared_names: set[str] = set()
+    occupied_paths: set[PurePosixPath] = set()
     explicit_bins = manifest.get("bin") or []
     if not isinstance(explicit_bins, list):
         raise ValueError(f"Cargo manifest for changed crate {crate_name} has invalid [[bin]] entries")
     for target in explicit_bins:
         if not isinstance(target, dict):
             raise ValueError(f"Cargo manifest for changed crate {crate_name} has an invalid [[bin]] row")
+        raw_path = target.get("path")
+        if raw_path is not None and (not isinstance(raw_path, str) or not raw_path):
+            raise ValueError(f"Cargo bin path for changed crate {crate_name} must be a non-empty string")
         raw_name = target.get("name")
         if raw_name is None:
-            raw_path = target.get("path")
-            if raw_path is not None and not isinstance(raw_path, str):
-                raise ValueError(f"Cargo bin path for changed crate {crate_name} must be a string")
             name = _target_name_from_path(raw_path or "src/main.rs", package_name)
         elif isinstance(raw_name, str) and raw_name:
             name = raw_name
         else:
             raise ValueError(f"Cargo bin name for changed crate {crate_name} must be non-empty")
-        if name in binaries:
+        # A declared target reserves its source path and name even when it is
+        # not testable, so autobin discovery cannot re-register the same file.
+        if raw_path is not None:
+            occupied_paths.add(_normalized_target_path(raw_path))
+        else:
+            occupied_paths.update(_inferred_bin_paths(name, package_name))
+        if name in declared_names:
             raise ValueError(f"Cargo manifest for changed crate {crate_name} repeats bin target {name}")
-        source = _explicit_bin_source(target, name, package_name, crate_root)
-        if source is not None:
-            claimed_sources.add(source)
-        if target.get("test") is False:
-            continue
-        binaries[name] = BinaryTestTarget(name, _target_features(target))
+        declared_names.add(name)
+        if target.get("test") is not False:
+            binaries[name] = BinaryTestTarget(name, _target_features(target))
 
-    if _autobins_enabled(package, manifest):
+    edition = _package_edition(crate_name, package, repo_root)
+    default_autobins = not (edition == "2015" and explicit_bins)
+    if package.get("autobins", default_autobins) is not False:
         src_root = crate_root / "src"
-        if (src_root / "main.rs").is_file() and "src/main.rs" not in claimed_sources:
-            binaries.setdefault(package_name, BinaryTestTarget(package_name))
+
+        def register_implicit(name: str, relative_path: str) -> None:
+            if _normalized_target_path(relative_path) in occupied_paths:
+                return
+            if name in declared_names:
+                return
+            declared_names.add(name)
+            binaries[name] = BinaryTestTarget(name)
+
+        if (src_root / "main.rs").is_file():
+            register_implicit(package_name, "src/main.rs")
         bin_root = src_root / "bin"
         if bin_root.is_dir():
             for entry in sorted(bin_root.iterdir(), key=lambda path: path.name):
                 if entry.is_file() and entry.suffix == ".rs":
-                    source = f"src/bin/{entry.name}"
-                    name = entry.stem
+                    register_implicit(entry.stem, f"src/bin/{entry.name}")
                 elif entry.is_dir() and (entry / "main.rs").is_file():
-                    source = f"src/bin/{entry.name}/main.rs"
-                    name = entry.name
-                else:
-                    continue
-                if source not in claimed_sources:
-                    binaries.setdefault(name, BinaryTestTarget(name))
+                    register_implicit(entry.name, f"src/bin/{entry.name}/main.rs")
 
     return PackageTestTargets(
         package_name=package_name,
@@ -299,7 +338,7 @@ def augment_rust_focused_commands(
             continue
         if cmd not in commands:
             commands.append(cmd)
-    test_targets_by_crate = changed_integration_test_targets(paths, repo_root)
+    test_targets_by_crate = changed_integration_test_targets(paths)
     for crate_name in changed_crates(paths):
         targets = package_test_targets(crate_name, repo_root)
         if targets.has_lib:
@@ -517,7 +556,9 @@ def main() -> int:
     manifest = tomllib.loads(Path(args.manifest).read_text(encoding="utf-8"))
     packs = [pack for pack in manifest.get("pack", []) if isinstance(pack, dict)]
     paths = changed_files(args.base, args.head)
-    coverage_packs = [normalize_pack(pack, paths) for pack in selected_packs(packs, paths)]
+    coverage_packs = [
+        normalize_pack(pack, paths, REPO_ROOT) for pack in selected_packs(packs, paths)
+    ]
     coverage_pack_ids = [pack["id"] for pack in coverage_packs]
     skipped_by_policy = {
         str(pack.get("id", "")): NON_LCOV_SKIP_REASON for pack in non_lcov_matches(packs, paths)

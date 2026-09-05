@@ -212,8 +212,8 @@ id = "patch-coverage-ci-route"
 lcov = false
 files = [
   "scripts/ci/route-codecov-packs.py",
-  "scripts/ci/test_route_codecov_packs.py",
   "scripts/ci/test_route_codecov_binary_targets.py",
+  "scripts/ci/test_route_codecov_packs.py",
   "xtask/src/tasks/ci_route.rs",
   "xtask/tests/ci_route_cli.rs",
 ]
