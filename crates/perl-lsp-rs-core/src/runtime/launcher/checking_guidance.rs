@@ -337,6 +337,8 @@ mod guard {
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::{must_some_with, must_with};
+
     use super::guard::*;
     use super::*;
     use std::path::PathBuf;
@@ -626,8 +628,10 @@ mod tests {
 
     #[test]
     fn checking_reference_carries_the_decision_table_and_limits() {
-        let text = std::fs::read_to_string(workspace_root().join("docs/reference/CHECKING.md"))
-            .expect("docs/reference/CHECKING.md");
+        let text = must_with(
+            std::fs::read_to_string(workspace_root().join("docs/reference/CHECKING.md")),
+            "docs/reference/CHECKING.md",
+        );
         for needle in [
             "Need fast native feedback on listed files?",
             "Need a project parser coverage metric?",
@@ -655,9 +659,10 @@ mod tests {
 
     #[test]
     fn configuration_toml_validation_points_at_doctor_not_check_project() {
-        let text =
-            std::fs::read_to_string(workspace_root().join("docs/reference/CONFIGURATION.md"))
-                .expect("docs/reference/CONFIGURATION.md");
+        let text = must_with(
+            std::fs::read_to_string(workspace_root().join("docs/reference/CONFIGURATION.md")),
+            "docs/reference/CONFIGURATION.md",
+        );
         assert!(
             text.contains("perllsp --doctor ."),
             "toml-load troubleshooting must name --doctor"
@@ -670,8 +675,10 @@ mod tests {
 
     #[test]
     fn vscode_check_syntax_names_path_perl() {
-        let text = std::fs::read_to_string(workspace_root().join("vscode-extension/README.md"))
-            .expect("vscode-extension/README.md");
+        let text = must_with(
+            std::fs::read_to_string(workspace_root().join("vscode-extension/README.md")),
+            "vscode-extension/README.md",
+        );
         assert!(
             text.contains("PATH `perl -c`"),
             "Perl: Check Syntax must name PATH perl, not a configured DAP interpreter"
@@ -687,10 +694,10 @@ mod tests {
     }
 
     fn workspace_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(|crates| crates.parent())
-            .expect("crates/perl-lsp-rs-core -> workspace")
-            .to_path_buf()
+        must_some_with(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().and_then(|crates| crates.parent()),
+            "crates/perl-lsp-rs-core -> workspace",
+        )
+        .to_path_buf()
     }
 }

@@ -162,6 +162,8 @@ pub fn default_capabilities() -> ServerCapabilities {
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::must_some_with;
+
     use super::*;
     use crate::features::contracts::feature_ids_from_caps;
     use lsp_types::{
@@ -525,13 +527,13 @@ mod tests {
         let caps = capabilities_for(flags);
 
         let kinds: Vec<String> = match caps.code_action_provider.as_ref() {
-            Some(CodeActionProviderCapability::Options(opts)) => opts
-                .code_action_kinds
-                .as_ref()
-                .expect("code_action_kinds must be Some when code_actions is enabled")
-                .iter()
-                .map(|k| k.as_str().to_string())
-                .collect(),
+            Some(CodeActionProviderCapability::Options(opts)) => must_some_with(
+                opts.code_action_kinds.as_ref(),
+                "code_action_kinds must be Some when code_actions is enabled",
+            )
+            .iter()
+            .map(|k| k.as_str().to_string())
+            .collect(),
             other => panic!("expected CodeActionProviderCapability::Options, got {other:?}"),
         };
 
@@ -590,13 +592,15 @@ mod tests {
         let flags = BuildFlags { signature_help: true, ..BuildFlags::default() };
         let caps = capabilities_for(flags);
 
-        let triggers = caps
-            .signature_help_provider
-            .as_ref()
-            .expect("signatureHelpProvider must be present when signature_help is enabled")
+        let triggers = must_some_with(
+            must_some_with(
+                caps.signature_help_provider.as_ref(),
+                "signatureHelpProvider must be present when signature_help is enabled",
+            )
             .trigger_characters
-            .as_ref()
-            .expect("signatureHelpProvider.triggerCharacters must be Some");
+            .as_ref(),
+            "signatureHelpProvider.triggerCharacters must be Some",
+        );
 
         // Duplicate the expected list from sections.rs — divergence is the defect.
         let expected: &[&str] = &["(", ","];
@@ -617,13 +621,15 @@ mod tests {
         let flags = BuildFlags { signature_help: true, ..BuildFlags::default() };
         let caps = capabilities_for(flags);
 
-        let retriggers = caps
-            .signature_help_provider
-            .as_ref()
-            .expect("signatureHelpProvider must be present when signature_help is enabled")
+        let retriggers = must_some_with(
+            must_some_with(
+                caps.signature_help_provider.as_ref(),
+                "signatureHelpProvider must be present when signature_help is enabled",
+            )
             .retrigger_characters
-            .as_ref()
-            .expect("signatureHelpProvider.retriggerCharacters must be Some");
+            .as_ref(),
+            "signatureHelpProvider.retriggerCharacters must be Some",
+        );
 
         // Duplicate the expected list from sections.rs.
         let expected: &[&str] = &[",", "@", "%", "{", "["];
@@ -835,13 +841,12 @@ mod tests {
         let caps = capabilities_for(flags);
 
         let kinds: Vec<String> = match caps.code_action_provider.as_ref() {
-            Some(CodeActionProviderCapability::Options(opts)) => opts
-                .code_action_kinds
-                .as_ref()
-                .expect("code_action_kinds must be Some")
-                .iter()
-                .map(|k| k.as_str().to_string())
-                .collect(),
+            Some(CodeActionProviderCapability::Options(opts)) => {
+                must_some_with(opts.code_action_kinds.as_ref(), "code_action_kinds must be Some")
+                    .iter()
+                    .map(|k| k.as_str().to_string())
+                    .collect()
+            }
             other => panic!("expected CodeActionProviderCapability::Options, got {other:?}"),
         };
 

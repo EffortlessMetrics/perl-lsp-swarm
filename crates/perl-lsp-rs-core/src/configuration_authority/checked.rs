@@ -74,6 +74,8 @@ fn check_field(mut field: FieldAuthority) -> FieldAuthority {
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::must_some_with;
+
     use super::*;
 
     #[test]
@@ -95,7 +97,8 @@ mod tests {
 
     #[test]
     fn formatter_engine_uses_project_and_generic_client_channels_only() {
-        let field = authority_by_id("formatting.engine").expect("missing formatter authority");
+        let field =
+            must_some_with(authority_by_id("formatting.engine"), "missing formatter authority");
 
         assert_eq!(field.owner, ConfigOwner::Server);
         assert!(field.sources.contains(&ConfigSource::ProjectFile));

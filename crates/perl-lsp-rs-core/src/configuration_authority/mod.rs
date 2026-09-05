@@ -207,6 +207,8 @@ pub(crate) fn authority_by_id(id: &str) -> Option<&'static FieldAuthority> {
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::{must_some_with, must_with};
+
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -348,10 +350,10 @@ mod tests {
     #[test]
     fn dropping_a_limit_row_fails_the_machine_check() {
         let mut rows = CONFIGURATION_AUTHORITY.to_vec();
-        let position = rows
-            .iter()
-            .position(|field| field.id == "limits.workspace_symbol_cap")
-            .expect("limits row present");
+        let position = must_some_with(
+            rows.iter().position(|field| field.id == "limits.workspace_symbol_cap"),
+            "limits row present",
+        );
         let removed = rows.remove(position);
 
         let drift = leaf_drift(&rows);
@@ -546,15 +548,17 @@ mod tests {
 
     #[test]
     fn limits_authority_matches_the_generic_settings_schema_exactly() {
-        let schema: serde_json::Value =
-            serde_json::from_str(include_str!("../../../../schemas/perllsp-settings.schema.json"))
-                .expect("valid perllsp settings schema");
-        let schema_keys = schema["properties"]["perl"]["properties"]["limits"]["properties"]
-            .as_object()
-            .expect("schema declares a perl.limits section")
-            .keys()
-            .cloned()
-            .collect::<BTreeSet<_>>();
+        let schema: serde_json::Value = must_with(
+            serde_json::from_str(include_str!("../../../../schemas/perllsp-settings.schema.json")),
+            "valid perllsp settings schema",
+        );
+        let schema_keys = must_some_with(
+            schema["properties"]["perl"]["properties"]["limits"]["properties"].as_object(),
+            "schema declares a perl.limits section",
+        )
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
 
         let catalog_keys = CONFIGURATION_AUTHORITY
             .iter()

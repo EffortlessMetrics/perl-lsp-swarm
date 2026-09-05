@@ -1136,9 +1136,10 @@ fn make_diagnostic_with_details(
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::{must, must_some_with};
+
     use super::*;
     use perl_parser::Parser;
-    use perl_tdd_support::must;
 
     fn version_compat_diags(source: &str) -> Vec<Diagnostic> {
         let ast = must(Parser::new(source).parse());
@@ -1194,17 +1195,17 @@ mod tests {
     fn project_fallback_suggestion_explains_missing_source_version() {
         let project_diags =
             version_compat_diags_with_project_version("sub f ($x) { return $x; }\n", Some("v5.20"));
-        let project_diagnostic = project_diags
-            .iter()
-            .find(|diagnostic| {
+        let project_diagnostic = must_some_with(
+            project_diags.iter().find(|diagnostic| {
                 diagnostic.code.as_deref() == Some("PL900")
                     && diagnostic.message.contains("subroutine signatures")
-            })
-            .expect("project fallback must emit a signatures diagnostic");
-        let project_suggestion = project_diagnostic
-            .suggestion
-            .as_deref()
-            .expect("project fallback diagnostic must have a suggestion");
+            }),
+            "project fallback must emit a signatures diagnostic",
+        );
+        let project_suggestion = must_some_with(
+            project_diagnostic.suggestion.as_deref(),
+            "project fallback diagnostic must have a suggestion",
+        );
         assert!(project_suggestion.contains("This file declares no `use VERSION`"));
         assert!(project_suggestion.contains("PL900 target v5.20"));
         assert!(project_suggestion.contains("add an explicit `use VERSION`"));
@@ -1214,17 +1215,17 @@ mod tests {
             "use v5.20;\nsub f ($x) { return $x; }\n",
             Some("v5.40"),
         );
-        let source_diagnostic = source_diags
-            .iter()
-            .find(|diagnostic| {
+        let source_diagnostic = must_some_with(
+            source_diags.iter().find(|diagnostic| {
                 diagnostic.code.as_deref() == Some("PL900")
                     && diagnostic.message.contains("subroutine signatures")
-            })
-            .expect("source version must emit a signatures diagnostic");
-        let source_suggestion = source_diagnostic
-            .suggestion
-            .as_deref()
-            .expect("source diagnostic must have a suggestion");
+            }),
+            "source version must emit a signatures diagnostic",
+        );
+        let source_suggestion = must_some_with(
+            source_diagnostic.suggestion.as_deref(),
+            "source diagnostic must have a suggestion",
+        );
         assert!(!source_suggestion.contains("This file declares no `use VERSION`"));
     }
 
@@ -2339,7 +2340,7 @@ mod tests {
                 "`{spelling}` on v5.20 should emit exactly one PL900: {diags:#?}"
             );
             let d = &diags[0];
-            let expr_start = source.find(spelling).expect("spelling present in source");
+            let expr_start = must_some_with(source.find(spelling), "spelling present in source");
             let expr_end = expr_start + spelling.len();
             assert_eq!(
                 d.severity,
@@ -2451,7 +2452,7 @@ mod tests {
             1,
             "only the occurrence inside the `no feature` scope warns: {diags:#?}"
         );
-        let disabled_start = source.find("$r->@*").expect("in-scope spelling present");
+        let disabled_start = must_some_with(source.find("$r->@*"), "in-scope spelling present");
         assert_eq!(
             diags[0].range,
             (disabled_start, disabled_start + "$r->@*".len()),
@@ -2483,7 +2484,7 @@ mod tests {
                 1,
                 "trivia variant `{spelling}` should emit exactly one PL900: {diags:#?}"
             );
-            let expr_start = source.find(spelling).expect("spelling present in source");
+            let expr_start = must_some_with(source.find(spelling), "spelling present in source");
             assert_eq!(
                 diags[0].range,
                 (expr_start, expr_start + spelling.len()),
@@ -2538,7 +2539,7 @@ mod tests {
                       $r->@*;\n}\nmy @b = $r->@[0, 1];\n";
         let diags = postfix_pl900s(source);
         assert_eq!(diags.len(), 1, "only the out-of-scope occurrence warns: {diags:#?}");
-        let expr_start = source.find("$r->@[0, 1]").expect("outer spelling present");
+        let expr_start = must_some_with(source.find("$r->@[0, 1]"), "outer spelling present");
         assert_eq!(
             diags[0].range,
             (expr_start, expr_start + "$r->@[0, 1]".len()),

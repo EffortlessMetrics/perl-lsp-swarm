@@ -559,35 +559,29 @@ mod indirect_helper_tests {
 
     #[test]
     fn is_indirect_method_word_call_presence_observer() {
-        assert_eq!(is_indirect_method_word("new"), true, "input that reaches call word.chars()");
-        assert_eq!(
-            is_indirect_method_word(""),
-            false,
+        assert!(is_indirect_method_word("new"), "input that reaches call word.chars()");
+        assert!(
+            !is_indirect_method_word(""),
             "input that reaches call chars.next() and takes the empty-word branch"
         );
-        assert_eq!(
-            is_indirect_method_word("Foo"),
-            false,
+        assert!(
+            !is_indirect_method_word("Foo"),
             "input that reaches call first.is_ascii_lowercase() and rejects uppercase receivers"
         );
-        assert_eq!(
+        assert!(
             is_indirect_method_word("_private"),
-            true,
             "input that reaches call first.is_ascii_lowercase() and accepts underscore methods"
         );
-        assert_eq!(
-            is_indirect_method_word("new::Child"),
-            false,
+        assert!(
+            !is_indirect_method_word("new::Child"),
             "input that reaches call word.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')"
         );
-        assert_eq!(
-            is_indirect_method_word("print"),
-            false,
+        assert!(
+            !is_indirect_method_word("print"),
             "input that reaches call INDIRECT_METHOD_EXCLUDED.contains(&word)"
         );
-        assert_eq!(
-            is_indirect_method_word("length"),
-            false,
+        assert!(
+            !is_indirect_method_word("length"),
             "input that reaches call perl_lexer::builtins::builtin_signatures_phf::is_builtin(word)"
         );
     }

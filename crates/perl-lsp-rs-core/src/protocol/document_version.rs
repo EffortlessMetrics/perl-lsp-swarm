@@ -285,6 +285,8 @@ pub fn decode_document_version(
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::{must, must_some_with};
+
     use super::*;
     use serde_json::json;
 
@@ -404,7 +406,7 @@ mod tests {
     #[test]
     fn version_is_integral_looking_float() {
         // 1.0 serialized as a float — serde_json stores this as N::Float.
-        let value = serde_json::Number::from_f64(1.0).expect("1.0 is finite");
+        let value = must_some_with(serde_json::Number::from_f64(1.0), "1.0 is finite");
         let params = json!({"textDocument": {"version": value}});
         assert_eq!(
             decode_document_version(&params),
@@ -486,7 +488,7 @@ mod tests {
     fn u64_above_i64_max() {
         // Construct a u64 value above i64::MAX directly in the JSON value.
         // serde_json stores this as N::PosInt(u64) with value > i64::MAX.
-        let big: u64 = u64::from(i64::MAX as u64) + 1; // i64::MAX + 1
+        let big: u64 = (i64::MAX as u64) + 1; // i64::MAX + 1
         let value = serde_json::Value::Number(serde_json::Number::from(big));
         let params = json!({"textDocument": {"version": value}});
         assert_eq!(
@@ -598,7 +600,7 @@ mod tests {
     #[test]
     fn client_document_version_as_i32_round_trips() {
         let params = json!({"textDocument": {"version": 999}});
-        let DocumentVersionField::Explicit(v) = decode_document_version(&params).unwrap() else {
+        let DocumentVersionField::Explicit(v) = must(decode_document_version(&params)) else {
             panic!("expected Explicit");
         };
         assert_eq!(v.as_i32(), 999_i32);
@@ -607,7 +609,7 @@ mod tests {
     #[test]
     fn client_document_version_as_i32_min() {
         let params = json!({"textDocument": {"version": i32::MIN}});
-        let DocumentVersionField::Explicit(v) = decode_document_version(&params).unwrap() else {
+        let DocumentVersionField::Explicit(v) = must(decode_document_version(&params)) else {
             panic!("expected Explicit");
         };
         assert_eq!(v.as_i32(), i32::MIN);
@@ -695,7 +697,7 @@ mod tests {
         // so callers cannot silently bypass the monotonicity gate.
         let current_version = 3_i32;
         let params = json!({"textDocument": {"version": current_version}});
-        let result = decode_document_version(&params).unwrap();
+        let result = must(decode_document_version(&params));
         assert_eq!(result, DocumentVersionField::Explicit(ClientDocumentVersion(3)));
         assert_ne!(result, DocumentVersionField::Absent);
     }

@@ -350,6 +350,7 @@ impl OpenAiProvider {
 mod tests {
     use super::{OpenAiConfig, OpenAiProvider};
     use crate::providers::ai::rate_limiter::RateLimiter;
+    use perl_test_must::{must_some_with, must_with};
     use std::sync::Arc;
 
     fn provider_with_endpoint(endpoint: &str) -> OpenAiProvider {
@@ -416,15 +417,17 @@ mod tests {
         let body = sse_framed_deltas(deltas);
         let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
         let mut chunks: Vec<(String, bool)> = Vec::new();
-        OpenAiProvider::drive_sse_stream(&mut parser, "test-key", &mut |chunk| {
-            chunks.push((chunk.text, chunk.is_final));
-            if chunk.is_final {
-                crate::providers::inline_completion::StreamControl::Stop
-            } else {
-                crate::providers::inline_completion::StreamControl::Continue
-            }
-        })
-        .expect("synthetic SSE frames must drive the stream loop");
+        must_with(
+            OpenAiProvider::drive_sse_stream(&mut parser, "test-key", &mut |chunk| {
+                chunks.push((chunk.text, chunk.is_final));
+                if chunk.is_final {
+                    crate::providers::inline_completion::StreamControl::Stop
+                } else {
+                    crate::providers::inline_completion::StreamControl::Continue
+                }
+            }),
+            "synthetic SSE frames must drive the stream loop",
+        );
         chunks
     }
 
@@ -563,8 +566,8 @@ mod tests {
             chunks.push((chunk.text, chunk.is_final));
             crate::providers::inline_completion::StreamControl::Continue
         });
-        result.expect("token-limited incomplete must not be a provider error");
-        let (text, is_final) = chunks.last().expect("boundary chunk");
+        must_with(result, "token-limited incomplete must not be a provider error");
+        let (text, is_final) = must_some_with(chunks.last(), "boundary chunk");
         assert!(is_final, "token-limited output must finalize");
         assert_eq!(text, "my $x = ");
     }

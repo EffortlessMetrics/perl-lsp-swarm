@@ -1240,23 +1240,30 @@ impl ConfigurationObservationDraft {
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::{must_some_with, must_with};
+
     use super::*;
 
     fn subject(scope: ObservationScope) -> ConfigurationObservationSubject {
-        ConfigurationObservationSubject::new("obs-fixture", scope, 1, 1, 1).expect("valid subject")
+        must_with(
+            ConfigurationObservationSubject::new("obs-fixture", scope, 1, 1, 1),
+            "valid subject",
+        )
     }
 
     fn source(
         provenance: ConfigurationProvenanceClass,
         transport: ObservationTransport,
     ) -> ConfigurationSourceIdentity {
-        ConfigurationSourceIdentity::new(
-            "perl-lsp-rs-core/test",
-            OBSERVATION_SCHEMA_GENERATION,
-            provenance,
-            transport,
+        must_with(
+            ConfigurationSourceIdentity::new(
+                "perl-lsp-rs-core/test",
+                OBSERVATION_SCHEMA_GENERATION,
+                provenance,
+                transport,
+            ),
+            "valid source identity",
         )
-        .expect("valid source identity")
     }
 
     fn try_draft(
@@ -1286,7 +1293,7 @@ mod tests {
         let mut draft =
             ConfigurationObservationDraft::new(subject(scope), source(provenance, transport));
         build(&mut draft);
-        draft.finish().expect("fixture observation finishes")
+        must_with(draft.finish(), "fixture observation finishes")
     }
 
     /// Falsifier #1: the same visible AI value from a trusted user adapter
@@ -1299,14 +1306,15 @@ mod tests {
             ObservationTransport::OperatorInvocation,
             ObservationScope::Global,
             |draft| {
-                draft.expect_canonical_fields(&["ai.model"]).expect("known row");
-                draft
-                    .record_present(
+                must_with(draft.expect_canonical_fields(&["ai.model"]), "known row");
+                must_with(
+                    draft.record_present(
                         ObservedFieldIdentity::canonical("ai.model"),
                         NormalizedValue::Text("gpt-perl".to_string()),
                         None,
-                    )
-                    .expect("trusted channel admits ai.model");
+                    ),
+                    "trusted channel admits ai.model",
+                );
             },
         );
         let project = finish(
@@ -1316,19 +1324,20 @@ mod tests {
             },
             ObservationScope::Root { root_identity: "root-a".to_string() },
             |draft| {
-                draft.expect_canonical_fields(&["ai.model"]).expect("known row");
-                draft
-                    .record_present(
+                must_with(draft.expect_canonical_fields(&["ai.model"]), "known row");
+                must_with(
+                    draft.record_present(
                         ObservedFieldIdentity::canonical("ai.model"),
                         NormalizedValue::Text("gpt-perl".to_string()),
                         None,
-                    )
-                    .expect("recording is allowed; admission is computed");
+                    ),
+                    "recording is allowed; admission is computed",
+                );
             },
         );
 
-        let trusted_field = trusted.observed_field("ai.model").expect("field recorded");
-        let project_field = project.observed_field("ai.model").expect("field recorded");
+        let trusted_field = must_some_with(trusted.observed_field("ai.model"), "field recorded");
+        let project_field = must_some_with(project.observed_field("ai.model"), "field recorded");
         assert_eq!(trusted_field.admission(), SourceAuthorityAdmission::CandidateAdmitted);
         assert_eq!(project_field.admission(), SourceAuthorityAdmission::RejectedForField);
         assert_ne!(trusted.fingerprint(), project.fingerprint());
@@ -1343,42 +1352,48 @@ mod tests {
     /// observation identity.
     #[test]
     fn unscoped_client_cannot_self_declare_trust() {
-        let labeled = ConfigurationSourceIdentity::new(
-            "perl-lsp-rs-core/test",
-            OBSERVATION_SCHEMA_GENERATION,
-            ConfigurationProvenanceClass::GenericUnscopedClient,
-            ObservationTransport::InitializeSession { session_id: "s-1".to_string() },
-        )
-        .expect("valid identity")
-        .with_client_label("scope", "global")
-        .expect("bounded label")
-        .with_client_label("trusted", "true")
-        .expect("bounded label");
+        let labeled = must_with(
+            must_with(
+                ConfigurationSourceIdentity::new(
+                    "perl-lsp-rs-core/test",
+                    OBSERVATION_SCHEMA_GENERATION,
+                    ConfigurationProvenanceClass::GenericUnscopedClient,
+                    ObservationTransport::InitializeSession { session_id: "s-1".to_string() },
+                )
+                .expect("valid identity")
+                .with_client_label("scope", "global"),
+                "bounded label",
+            )
+            .with_client_label("trusted", "true"),
+            "bounded label",
+        );
         let mut draft =
             ConfigurationObservationDraft::new(subject(ObservationScope::Global), labeled);
-        draft.expect_canonical_fields(&["ai.endpoint"]).expect("known row");
-        draft
-            .record_present(
+        must_with(draft.expect_canonical_fields(&["ai.endpoint"]), "known row");
+        must_with(
+            draft.record_present(
                 ObservedFieldIdentity::canonical("ai.endpoint"),
                 NormalizedValue::Text("https://client.example".to_string()),
                 None,
-            )
-            .expect("recording is allowed");
-        let labeled_observation = draft.finish().expect("finishes");
+            ),
+            "recording is allowed",
+        );
+        let labeled_observation = must_with(draft.finish(), "finishes");
 
         let unlabeled_observation = finish(
             ConfigurationProvenanceClass::GenericUnscopedClient,
             ObservationTransport::InitializeSession { session_id: "s-1".to_string() },
             ObservationScope::Global,
             |draft| {
-                draft.expect_canonical_fields(&["ai.endpoint"]).expect("known row");
-                draft
-                    .record_present(
+                must_with(draft.expect_canonical_fields(&["ai.endpoint"]), "known row");
+                must_with(
+                    draft.record_present(
                         ObservedFieldIdentity::canonical("ai.endpoint"),
                         NormalizedValue::Text("https://client.example".to_string()),
                         None,
-                    )
-                    .expect("recording is allowed");
+                    ),
+                    "recording is allowed",
+                );
             },
         );
 
@@ -1408,14 +1423,18 @@ mod tests {
                 ObservationTransport::ConfigurationPullResult { request_id: "req-7".to_string() },
                 ObservationScope::Root { root_identity: root.to_string() },
                 |draft| {
-                    draft.expect_canonical_fields(&["workspace.include_paths"]).expect("known row");
-                    draft
-                        .record_present(
+                    must_with(
+                        draft.expect_canonical_fields(&["workspace.include_paths"]),
+                        "known row",
+                    );
+                    must_with(
+                        draft.record_present(
                             ObservedFieldIdentity::canonical("workspace.include_paths"),
                             NormalizedValue::TextList(vec!["lib".to_string()]),
                             None,
-                        )
-                        .expect("folder pull admits include paths");
+                        ),
+                        "folder pull admits include paths",
+                    );
                 },
             )
         };
@@ -1435,19 +1454,20 @@ mod tests {
             ObservationTransport::EnvironmentVariable { name: "PERL5LIB".to_string() },
             ObservationScope::Global,
             |draft| {
-                draft
-                    .record_present(
+                must_with(
+                    draft.record_present(
                         ObservedFieldIdentity::unmodeled("PERL5LIB"),
                         NormalizedValue::TextList(vec![
                             "/opt/site/lib".to_string(),
                             "/home/user/perl5".to_string(),
                         ]),
                         Some(EvidencePolicy::PathIdentityOnly),
-                    )
-                    .expect("unmodeled fact declares its evidence policy");
+                    ),
+                    "unmodeled fact declares its evidence policy",
+                );
             },
         );
-        let perl5lib = environment.observed_field("PERL5LIB").expect("fact recorded");
+        let perl5lib = must_some_with(environment.observed_field("PERL5LIB"), "fact recorded");
         assert_eq!(perl5lib.admission(), SourceAuthorityAdmission::AuthorityNotProven);
         assert!(matches!(perl5lib.normalized_value(), Some(NormalizedValue::DigestOnly(_))));
         assert!(environment.limitations().any(|limitation| matches!(
@@ -1460,13 +1480,14 @@ mod tests {
             ObservationTransport::EnvironmentVariable { name: "PERL5LIB".to_string() },
             ObservationScope::Global,
             |draft| {
-                draft
-                    .record_present(
+                must_with(
+                    draft.record_present(
                         ObservedFieldIdentity::canonical("workspace.use_perl5lib"),
                         NormalizedValue::Flag(true),
                         None,
-                    )
-                    .expect("recording is allowed");
+                    ),
+                    "recording is allowed",
+                );
             },
         );
         assert_eq!(
@@ -1479,13 +1500,14 @@ mod tests {
             ObservationTransport::InterpreterProbe { command_digest: "digest:perl -V".to_string() },
             ObservationScope::Global,
             |draft| {
-                draft
-                    .record_present(
+                must_with(
+                    draft.record_present(
                         ObservedFieldIdentity::canonical("workspace.use_system_inc"),
                         NormalizedValue::Flag(true),
                         None,
-                    )
-                    .expect("recording is allowed");
+                    ),
+                    "recording is allowed",
+                );
             },
         );
         assert_eq!(
@@ -1503,13 +1525,17 @@ mod tests {
             ObservationTransport::InterpreterProbe { command_digest: "digest:perl -V".to_string() },
             ObservationScope::Global,
             |draft| {
-                draft.expect_canonical_fields(&["workspace.use_system_inc"]).expect("known row");
-                draft
-                    .record_disposition(
+                must_with(
+                    draft.expect_canonical_fields(&["workspace.use_system_inc"]),
+                    "known row",
+                );
+                must_with(
+                    draft.record_disposition(
                         ObservedFieldIdentity::canonical("workspace.use_system_inc"),
                         ConfigurationObservationDisposition::Unavailable,
-                    )
-                    .expect("disposition records");
+                    ),
+                    "disposition records",
+                );
             },
         );
 
@@ -1527,13 +1553,14 @@ mod tests {
                 ObservationTransport::ConfigurationPullResult { request_id: "req-9".to_string() },
                 ObservationScope::Global,
                 move |draft| {
-                    draft.expect_canonical_fields(&["formatting.enabled"]).expect("known row");
-                    draft
-                        .record_disposition(
+                    must_with(draft.expect_canonical_fields(&["formatting.enabled"]), "known row");
+                    must_with(
+                        draft.record_disposition(
                             ObservedFieldIdentity::canonical("formatting.enabled"),
                             disposition,
-                        )
-                        .expect("disposition records");
+                        ),
+                        "disposition records",
+                    );
                 },
             )
         };
@@ -1566,56 +1593,72 @@ mod tests {
     #[test]
     fn insertion_order_does_not_change_normalized_identity() {
         let populate_first = |draft: &mut ConfigurationObservationDraft| {
-            draft
-                .expect_canonical_fields(&["critic.engine", "formatting.tabs", "telemetry.enabled"])
-                .expect("known rows");
-            draft
-                .record_present(
+            must_with(
+                draft.expect_canonical_fields(&[
+                    "critic.engine",
+                    "formatting.tabs",
+                    "telemetry.enabled",
+                ]),
+                "known rows",
+            );
+            must_with(
+                draft.record_present(
                     ObservedFieldIdentity::canonical("telemetry.enabled"),
                     NormalizedValue::Flag(true),
                     None,
-                )
-                .expect("records");
-            draft
-                .record_present(
+                ),
+                "records",
+            );
+            must_with(
+                draft.record_present(
                     ObservedFieldIdentity::canonical("formatting.tabs"),
                     NormalizedValue::Flag(false),
                     None,
-                )
-                .expect("records");
-            draft
-                .record_present(
+                ),
+                "records",
+            );
+            must_with(
+                draft.record_present(
                     ObservedFieldIdentity::canonical("critic.engine"),
                     NormalizedValue::Text("native".to_string()),
                     None,
-                )
-                .expect("records");
+                ),
+                "records",
+            );
         };
         let populate_reversed = |draft: &mut ConfigurationObservationDraft| {
-            draft
-                .expect_canonical_fields(&["telemetry.enabled", "formatting.tabs", "critic.engine"])
-                .expect("known rows");
-            draft
-                .record_present(
+            must_with(
+                draft.expect_canonical_fields(&[
+                    "telemetry.enabled",
+                    "formatting.tabs",
+                    "critic.engine",
+                ]),
+                "known rows",
+            );
+            must_with(
+                draft.record_present(
                     ObservedFieldIdentity::canonical("critic.engine"),
                     NormalizedValue::Text("native".to_string()),
                     None,
-                )
-                .expect("records");
-            draft
-                .record_present(
+                ),
+                "records",
+            );
+            must_with(
+                draft.record_present(
                     ObservedFieldIdentity::canonical("formatting.tabs"),
                     NormalizedValue::Flag(false),
                     None,
-                )
-                .expect("records");
-            draft
-                .record_present(
+                ),
+                "records",
+            );
+            must_with(
+                draft.record_present(
                     ObservedFieldIdentity::canonical("telemetry.enabled"),
                     NormalizedValue::Flag(true),
                     None,
-                )
-                .expect("records");
+                ),
+                "records",
+            );
         };
         let forward = {
             let mut draft = ConfigurationObservationDraft::new(
@@ -1626,7 +1669,7 @@ mod tests {
                 ),
             );
             populate_first(&mut draft);
-            draft.finish().expect("finishes")
+            must_with(draft.finish(), "finishes")
         };
         let backward = {
             let mut draft = ConfigurationObservationDraft::new(
@@ -1637,13 +1680,13 @@ mod tests {
                 ),
             );
             populate_reversed(&mut draft);
-            draft.finish().expect("finishes")
+            must_with(draft.finish(), "finishes")
         };
 
         assert_eq!(forward.fingerprint(), backward.fingerprint());
         assert_eq!(
-            serde_json::to_vec(&forward).expect("serializes"),
-            serde_json::to_vec(&backward).expect("serializes")
+            must_with(serde_json::to_vec(&forward), "serializes"),
+            must_with(serde_json::to_vec(&backward), "serializes")
         );
     }
 
@@ -1658,28 +1701,31 @@ mod tests {
                 ObservationTransport::OperatorInvocation,
                 ObservationScope::Global,
                 move |draft| {
-                    draft
-                        .expect_canonical_fields(&[
+                    must_with(
+                        draft.expect_canonical_fields(&[
                             "ai.api_key_env",
                             "workspace.external_include_paths",
-                        ])
-                        .expect("known rows");
-                    draft
-                        .record_present(
+                        ]),
+                        "known rows",
+                    );
+                    must_with(
+                        draft.record_present(
                             ObservedFieldIdentity::canonical("ai.api_key_env"),
                             NormalizedValue::Text(secret.to_string()),
                             None,
-                        )
-                        .expect("records");
-                    draft
-                        .record_present(
+                        ),
+                        "records",
+                    );
+                    must_with(
+                        draft.record_present(
                             ObservedFieldIdentity::canonical("workspace.external_include_paths"),
                             NormalizedValue::TextList(vec![
                                 "/Users/steven/private/toolchain".to_string(),
                             ]),
                             None,
-                        )
-                        .expect("records");
+                        ),
+                        "records",
+                    );
                 },
             )
         };
@@ -1687,14 +1733,16 @@ mod tests {
         let with_secret_a = build("PERL_LSP_SUPER_SECRET_1");
         let with_secret_b = build("PERL_LSP_SUPER_SECRET_2");
 
-        let receipt = serde_json::to_string(&with_secret_a).expect("serializes");
+        let receipt = must_with(serde_json::to_string(&with_secret_a), "serializes");
         assert!(!receipt.contains("PERL_LSP_SUPER_SECRET_1"));
         assert!(!receipt.contains("/Users/steven/private/toolchain"));
-        let api_key = with_secret_a.observed_field("ai.api_key_env").expect("field recorded");
+        let api_key =
+            must_some_with(with_secret_a.observed_field("ai.api_key_env"), "field recorded");
         assert_eq!(api_key.normalized_value(), Some(&NormalizedValue::Redacted));
-        let include_paths = with_secret_a
-            .observed_field("workspace.external_include_paths")
-            .expect("field recorded");
+        let include_paths = must_some_with(
+            with_secret_a.observed_field("workspace.external_include_paths"),
+            "field recorded",
+        );
         assert!(matches!(include_paths.normalized_value(), Some(NormalizedValue::DigestOnly(_))));
         // Different secrets collapse to the same redacted marker, so no
         // distinguishing credential content reaches the fingerprint.
@@ -1716,14 +1764,15 @@ mod tests {
             ObservationTransport::Unidentified,
             ObservationScope::Global,
             |draft| {
-                draft.expect_canonical_fields(&["ai.model"]).expect("known row");
-                draft
-                    .record_present(
+                must_with(draft.expect_canonical_fields(&["ai.model"]), "known row");
+                must_with(
+                    draft.record_present(
                         ObservedFieldIdentity::canonical("ai.model"),
                         NormalizedValue::Text("gpt-perl".to_string()),
                         None,
-                    )
-                    .expect("recording is allowed");
+                    ),
+                    "recording is allowed",
+                );
             },
         );
 
@@ -1759,16 +1808,18 @@ mod tests {
             ObservationTransport::CompiledDefaultsEmitted,
             ObservationScope::Global,
             |draft| {
-                draft
-                    .expect_canonical_fields(&["telemetry.enabled", "formatting.tabs"])
-                    .expect("known rows");
-                draft
-                    .record_present(
+                must_with(
+                    draft.expect_canonical_fields(&["telemetry.enabled", "formatting.tabs"]),
+                    "known rows",
+                );
+                must_with(
+                    draft.record_present(
                         ObservedFieldIdentity::canonical("telemetry.enabled"),
                         NormalizedValue::Flag(true),
                         None,
-                    )
-                    .expect("records");
+                    ),
+                    "records",
+                );
             },
         );
         assert!(matches!(
@@ -1781,15 +1832,16 @@ mod tests {
             ObservationTransport::ConfigurationPullResult { request_id: "req-late".to_string() },
             ObservationScope::Root { root_identity: "root-a".to_string() },
             |draft| {
-                draft.expect_canonical_fields(&["formatting.enabled"]).expect("known row");
+                must_with(draft.expect_canonical_fields(&["formatting.enabled"]), "known row");
                 draft.mark_envelope_malformed();
-                draft
-                    .record_present(
+                must_with(
+                    draft.record_present(
                         ObservedFieldIdentity::canonical("formatting.enabled"),
                         NormalizedValue::Flag(true),
                         None,
-                    )
-                    .expect("records");
+                    ),
+                    "records",
+                );
             },
         );
         assert_eq!(envelope.completeness(), ConfigurationCompleteness::EnvelopeMalformed);
@@ -1803,13 +1855,14 @@ mod tests {
             ObservationTransport::CompiledDefaultsEmitted,
             ObservationScope::Global,
             |draft| {
-                draft.expect_canonical_fields(&["formatting.enabled"]).expect("known row");
-                draft
-                    .record_disposition(
+                must_with(draft.expect_canonical_fields(&["formatting.enabled"]), "known row");
+                must_with(
+                    draft.record_disposition(
                         ObservedFieldIdentity::canonical("formatting.enabled"),
                         ConfigurationObservationDisposition::Unsupported,
-                    )
-                    .expect("records");
+                    ),
+                    "records",
+                );
             },
         );
         assert!(matches!(unsupported.completeness(), ConfigurationCompleteness::Partial { .. }));
@@ -1884,14 +1937,15 @@ mod tests {
                 ObservationTransport::CompiledDefaultsEmitted,
                 ObservationScope::Global,
                 |draft| {
-                    draft.expect_canonical_fields(&["telemetry.enabled"]).expect("known row");
-                    draft
-                        .record_present(
+                    must_with(draft.expect_canonical_fields(&["telemetry.enabled"]), "known row");
+                    must_with(
+                        draft.record_present(
                             ObservedFieldIdentity::canonical("telemetry.enabled"),
                             NormalizedValue::Flag(true),
                             None,
-                        )
-                        .expect("records");
+                        ),
+                        "records",
+                    );
                 },
             )
         };
@@ -1899,14 +1953,14 @@ mod tests {
         let first = generate();
         let second = generate();
 
-        let first_bytes = serde_json::to_vec_pretty(&first).expect("serializes");
-        let second_bytes = serde_json::to_vec_pretty(&second).expect("serializes");
+        let first_bytes = must_with(serde_json::to_vec_pretty(&first), "serializes");
+        let second_bytes = must_with(serde_json::to_vec_pretty(&second), "serializes");
         assert_eq!(first_bytes, second_bytes, "second generation must be byte-identical");
 
         // Byte-stability is one-directional: these bytes are an emitted
         // receipt, not a construction input. `ConfigurationObservation`
         // derives no Deserialize (see type doc).
-        let golden = std::str::from_utf8(&first_bytes).expect("utf8 fixture");
+        let golden = must_with(std::str::from_utf8(&first_bytes), "utf8 fixture");
         pin_golden_fixture(golden);
     }
 
@@ -1914,13 +1968,15 @@ mod tests {
     /// excessive label material is rejected, never serialized verbatim.
     #[test]
     fn client_labels_are_bounded_diagnostics() {
-        let base = ConfigurationSourceIdentity::new(
-            "perl-lsp-rs-core/test",
-            OBSERVATION_SCHEMA_GENERATION,
-            ConfigurationProvenanceClass::GenericUnscopedClient,
-            ObservationTransport::InitializeSession { session_id: "s-9".to_string() },
-        )
-        .expect("valid identity");
+        let base = must_with(
+            ConfigurationSourceIdentity::new(
+                "perl-lsp-rs-core/test",
+                OBSERVATION_SCHEMA_GENERATION,
+                ConfigurationProvenanceClass::GenericUnscopedClient,
+                ObservationTransport::InitializeSession { session_id: "s-9".to_string() },
+            ),
+            "valid identity",
+        );
 
         let oversized_key = base.clone().with_client_label("k".repeat(MAX_LABEL_CHARS + 1), "v");
         let oversized_value = base.clone().with_client_label("k", "v".repeat(MAX_LABEL_CHARS + 1));
@@ -1930,7 +1986,7 @@ mod tests {
         assert!(matches!(empty_key, Err(ObservationError::LabelOutOfBounds)));
 
         let saturated = (0..MAX_CLIENT_LABELS).fold(base.clone(), |identity, index| {
-            identity.with_client_label(format!("key-{index}"), "v").expect("bounded")
+            must_with(identity.with_client_label(format!("key-{index}"), "v"), "bounded")
         });
         assert!(matches!(
             saturated.with_client_label("one-too-many", "v"),
@@ -1950,14 +2006,15 @@ mod tests {
                 ObservationTransport::ConfigurationPullResult { request_id: "req-l".to_string() },
                 ObservationScope::Root { root_identity: format!("{}-{suffix}", "r".repeat(36)) },
                 |draft| {
-                    draft.expect_canonical_fields(&["workspace.include_paths"]).expect("row");
-                    draft
-                        .record_present(
+                    must_with(draft.expect_canonical_fields(&["workspace.include_paths"]), "row");
+                    must_with(
+                        draft.record_present(
                             ObservedFieldIdentity::canonical("workspace.include_paths"),
                             NormalizedValue::TextList(vec!["lib".to_string()]),
                             None,
-                        )
-                        .expect("records");
+                        ),
+                        "records",
+                    );
                 },
             )
         };
@@ -2011,13 +2068,14 @@ mod tests {
             ObservationTransport::EnvironmentVariable { name: "PERL5LIB".to_string() },
             ObservationScope::Global,
             |draft| {
-                draft
-                    .record_present(
+                must_with(
+                    draft.record_present(
                         ObservedFieldIdentity::unmodeled("PERL5LIB"),
                         NormalizedValue::Text("/opt/site/lib".to_string()),
                         Some(EvidencePolicy::DerivedDigestOnly),
-                    )
-                    .expect("digest-only allowed");
+                    ),
+                    "digest-only allowed",
+                );
             },
         );
         let left_digest =
@@ -2032,13 +2090,14 @@ mod tests {
             ObservationTransport::EnvironmentVariable { name: "PERL5LIB".to_string() },
             ObservationScope::Global,
             |draft| {
-                draft
-                    .record_present(
+                must_with(
+                    draft.record_present(
                         ObservedFieldIdentity::unmodeled("PERL5LIB"),
                         NormalizedValue::Text("/different/private/lib".to_string()),
                         Some(EvidencePolicy::DerivedDigestOnly),
-                    )
-                    .expect("digest-only allowed");
+                    ),
+                    "digest-only allowed",
+                );
             },
         );
         let right_digest =
@@ -2069,7 +2128,7 @@ mod tests {
         ));
 
         let oversized: Vec<&str> =
-            std::iter::repeat("x").take(MAX_FIELDS_PER_OBSERVATION + 1).collect();
+            std::iter::repeat_n("x", MAX_FIELDS_PER_OBSERVATION + 1).collect();
         assert!(matches!(
             draft.expect_canonical_fields(&oversized),
             Err(ObservationError::TooManyFields { .. })
@@ -2087,19 +2146,20 @@ mod tests {
                 ObservationTransport::OperatorInvocation,
             ),
         );
-        first
-            .record_present(
+        must_with(
+            first.record_present(
                 ObservedFieldIdentity::canonical("ai.model"),
                 NormalizedValue::Text("native".to_string()),
                 None,
-            )
-            .expect("first recording lands");
+            ),
+            "first recording lands",
+        );
         let overwritten = first.record_disposition(
             ObservedFieldIdentity::canonical("ai.model"),
             ConfigurationObservationDisposition::InstrumentFailure,
         );
         assert!(matches!(overwritten, Err(ObservationError::DuplicateObservation { .. })));
-        let preserved = first.finish().expect("finishes");
+        let preserved = must_with(first.finish(), "finishes");
         assert_eq!(
             preserved.observed_field("ai.model").map(|field| field.disposition()),
             Some(ConfigurationObservationDisposition::Present)
@@ -2112,12 +2172,13 @@ mod tests {
                 ObservationTransport::OperatorInvocation,
             ),
         );
-        second
-            .record_disposition(
+        must_with(
+            second.record_disposition(
                 ObservedFieldIdentity::canonical("ai.model"),
                 ConfigurationObservationDisposition::Unavailable,
-            )
-            .expect("disposition lands");
+            ),
+            "disposition lands",
+        );
         let overwrite_value = second.record_present(
             ObservedFieldIdentity::canonical("ai.model"),
             NormalizedValue::Text("late".to_string()),
@@ -2158,22 +2219,24 @@ mod tests {
             ObservationTransport::ConfigurationPullResult { request_id: "req-e".to_string() },
             ObservationScope::Root { root_identity: "root-a".to_string() },
             |draft| {
-                draft.expect_canonical_fields(&["workspace.include_paths"]).expect("row");
-                draft
-                    .record_present(
+                must_with(draft.expect_canonical_fields(&["workspace.include_paths"]), "row");
+                must_with(
+                    draft.record_present(
                         ObservedFieldIdentity::canonical("workspace.include_paths"),
                         NormalizedValue::TextList(vec!["lib".to_string()]),
                         None,
-                    )
-                    .expect("records");
+                    ),
+                    "records",
+                );
                 for marker in ["PERL5LIB", "PERLLIB", "PERL5OPT"] {
-                    draft
-                        .record_present(
+                    must_with(
+                        draft.record_present(
                             ObservedFieldIdentity::unmodeled(marker),
                             NormalizedValue::Text("present".to_string()),
                             Some(EvidencePolicy::DerivedDigestOnly),
-                        )
-                        .expect("floor-compliant evidence");
+                        ),
+                        "floor-compliant evidence",
+                    );
                 }
             },
         );
@@ -2191,16 +2254,18 @@ mod tests {
             ObservationTransport::CompiledDefaultsEmitted,
             ObservationScope::Global,
             |draft| {
-                draft
-                    .expect_canonical_fields(&["telemetry.enabled", "formatting.tabs"])
-                    .expect("rows");
-                draft
-                    .record_present(
+                must_with(
+                    draft.expect_canonical_fields(&["telemetry.enabled", "formatting.tabs"]),
+                    "rows",
+                );
+                must_with(
+                    draft.record_present(
                         ObservedFieldIdentity::canonical("formatting.tabs"),
                         NormalizedValue::Flag(false),
                         None,
-                    )
-                    .expect("records");
+                    ),
+                    "records",
+                );
             },
         );
         assert!(matches!(
@@ -2258,7 +2323,7 @@ mod tests {
             above,
             Err(ObservationError::MalformedValue { reason: MalformedReason::OutOfRange, .. })
         ));
-        ceiling.expect("boundary value within range records");
+        must_with(ceiling, "boundary value within range records");
     }
 
     /// Interactive validation remains outside this mechanically decidable
@@ -2295,7 +2360,7 @@ mod tests {
                 ObservationTransport::ConfigurationPullResult { request_id: "req-n".to_string() },
             ),
         );
-        draft.expect_canonical_fields(&["workspace.include_paths"]).expect("known row");
+        must_with(draft.expect_canonical_fields(&["workspace.include_paths"]), "known row");
         let impersonating_value = draft.record_present(
             ObservedFieldIdentity::unmodeled("workspace.include_paths"),
             NormalizedValue::Text("/opt/site/lib".to_string()),
@@ -2315,14 +2380,15 @@ mod tests {
         ));
 
         // The genuine canonical row still covers the slot afterwards.
-        draft
-            .record_present(
+        must_with(
+            draft.record_present(
                 ObservedFieldIdentity::canonical("workspace.include_paths"),
                 NormalizedValue::TextList(vec!["lib".to_string()]),
                 None,
-            )
-            .expect("canonical recording lands");
-        let sealed = draft.finish().expect("finishes");
+            ),
+            "canonical recording lands",
+        );
+        let sealed = must_with(draft.finish(), "finishes");
         assert!(matches!(
             sealed.completeness(),
             ConfigurationCompleteness::Complete { expected: 1, observed: 1 }
@@ -2339,13 +2405,14 @@ mod tests {
                 ObservationTransport::ConfigurationPullResult { request_id: "req-r".to_string() },
                 ObservationScope::Global,
                 move |draft| {
-                    draft.expect_canonical_fields(&["formatting.enabled"]).expect("known row");
-                    draft
-                        .record_disposition(
+                    must_with(draft.expect_canonical_fields(&["formatting.enabled"]), "known row");
+                    must_with(
+                        draft.record_disposition(
                             ObservedFieldIdentity::canonical("formatting.enabled"),
                             ConfigurationObservationDisposition::Malformed { reason },
-                        )
-                        .expect("disposition records");
+                        ),
+                        "disposition records",
+                    );
                 },
             )
         };
@@ -2426,18 +2493,23 @@ mod tests {
             ObservationTransport::FeatureInternalState,
             ObservationScope::Global,
             |draft| {
-                draft.expect_canonical_fields(&["workspace.declared_dependencies"]).expect("row");
-                draft
-                    .record_present(
+                must_with(
+                    draft.expect_canonical_fields(&["workspace.declared_dependencies"]),
+                    "row",
+                );
+                must_with(
+                    draft.record_present(
                         ObservedFieldIdentity::canonical("workspace.declared_dependencies"),
                         NormalizedValue::TextList(vec!["Plack".to_string()]),
                         None,
-                    )
-                    .expect("metadata channel admits declared dependencies");
+                    ),
+                    "metadata channel admits declared dependencies",
+                );
             },
         );
         assert_eq!(metadata.provenance(), ConfigurationProvenanceClass::ProjectMetadata);
-        let row = metadata.observed_field("workspace.declared_dependencies").expect("recorded");
+        let row =
+            must_some_with(metadata.observed_field("workspace.declared_dependencies"), "recorded");
         assert_eq!(row.admission(), SourceAuthorityAdmission::CandidateAdmitted);
         assert!(matches!(row.normalized_value(), Some(NormalizedValue::DigestOnly(_))));
     }

@@ -1100,24 +1100,26 @@ pub fn add_method_completions(
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::must_some;
+
     use super::*;
 
     #[test]
     fn pod_regions_stay_pod_until_exact_cut() {
         let begin_uncut = "=begin comment\ndocs\n=end comment\nmy $code = 1;";
         assert!(is_in_pod(begin_uncut, begin_uncut.len()));
-        assert!(!is_code_position(begin_uncut, begin_uncut.find("my $code").unwrap()));
+        assert!(!is_code_position(begin_uncut, must_some(begin_uncut.find("my $code"))));
 
         let begin_cut = "=begin comment\ndocs\n=end comment\n=cut\nmy $code = 1;";
         assert!(!is_in_pod(begin_cut, begin_cut.len()));
-        assert!(is_code_position(begin_cut, begin_cut.find("my $code").unwrap()));
+        assert!(is_code_position(begin_cut, must_some(begin_cut.find("my $code"))));
 
         let for_body = "=for comment\ndocs\n$code";
         assert!(is_in_pod(for_body, for_body.len()));
 
         let for_blank_line = "=for comment\ndocs\n\nmy $code = 1;";
         assert!(is_in_pod(for_blank_line, for_blank_line.len()));
-        assert!(!is_code_position(for_blank_line, for_blank_line.find("my $code").unwrap()));
+        assert!(!is_code_position(for_blank_line, must_some(for_blank_line.find("my $code"))));
     }
 
     #[test]
@@ -1125,21 +1127,21 @@ mod tests {
         let source =
             "my $text = <<'END';\n=begin comment\n=for comment\n=end comment\nEND\nmy $code = 1;";
         assert!(!is_in_pod(source, source.len()));
-        assert!(is_code_position(source, source.find("my $code").unwrap()));
+        assert!(is_code_position(source, must_some(source.find("my $code"))));
 
         let indented = "  =pod\nnot documentation\nmy $code = 1;";
         assert!(!is_in_pod(indented, indented.len()));
-        assert!(is_code_position(indented, indented.find("my $code").unwrap()));
+        assert!(is_code_position(indented, must_some(indented.find("my $code"))));
     }
 
     #[test]
     fn targetless_begin_starts_pod_until_cut() {
         let source = "=begin\nnot documentation\nmy $code = 1;";
         assert!(is_in_pod(source, source.len()));
-        assert!(!is_code_position(source, source.find("my $code").unwrap()));
+        assert!(!is_code_position(source, must_some(source.find("my $code"))));
 
         let cut_source = "=begin\nnot documentation\n=cut\nmy $code = 1;";
         assert!(!is_in_pod(cut_source, cut_source.len()));
-        assert!(is_code_position(cut_source, cut_source.find("my $code").unwrap()));
+        assert!(is_code_position(cut_source, must_some(cut_source.find("my $code"))));
     }
 }

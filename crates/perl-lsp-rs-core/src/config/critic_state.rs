@@ -754,7 +754,7 @@ mod tests {
             "critic": { "profile": "strict", "severity": 5 }
         }));
 
-        let state_global = global_config.effective_critic_state(Some("root-b"));
+        let _state_global = global_config.effective_critic_state(Some("root-b"));
         let state_a = root_a_config.effective_critic_state(Some("root-a"));
         let state_b = root_a_config.effective_critic_state(Some("root-b"));
 
