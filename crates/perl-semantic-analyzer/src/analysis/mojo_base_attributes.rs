@@ -38,12 +38,19 @@
 //! two attributes. Every generated accessor is read-write and a write returns
 //! the invocant; those semantics live on the facts side.
 //!
+//! An attribute name must be one `Mojo::Base` would accept. `attr` croaks
+//! `Attribute "NAME" invalid` for anything outside `/^[a-zA-Z_]\w*$/`, so a
+//! rejected spelling (`'0'`, `'9lives'`, `'has-dash'`) becomes a typed
+//! malformed selection rather than an accessor that cannot exist at runtime.
+//!
 //! Package scoping mirrors the #9681 activation walk: an unqualified file
 //! defaults to `main`, bare `package X;` switches the current package for
 //! following statements, and a lexical block restores the enclosing package
 //! state afterwards. Subroutine bodies are not descended: `Mojo::Base`
 //! attributes are declared at package level, and a `has` call inside a sub
-//! body runs at call time rather than declaring a class attribute.
+//! body runs at call time rather than declaring a class attribute. The same
+//! applies to runtime control flow in either spelling — a block form
+//! (`if (...) { has 'x'; }`) or a postfix modifier (`has 'x' if $flag;`).
 //!
 //! The parser shapes three different trees for the reviewed forms, all
 //! handled here:
@@ -131,7 +138,30 @@ fn owns_runtime_control_flow(node: &Node) -> bool {
             | NodeKind::When { .. }
             | NodeKind::Eval { .. }
             | NodeKind::Try { .. }
+            // Postfix modifiers are control flow too: `has 'name' if $flag;`
+            // and `has 'name' for @list;` run conditionally exactly like the
+            // block forms above.
+            | NodeKind::StatementModifier { .. }
     )
+}
+
+/// Whether `Mojo::Base` would install an accessor for this attribute name.
+///
+/// `Mojo::Base::attr` refuses any name outside `/^[a-zA-Z_]\w*$/` with
+/// `Attribute "NAME" invalid` (verified against the upstream `Mojo/Base.pm`
+/// source), so a name it rejects declares no accessor at all — publishing one
+/// would be a member that cannot exist at runtime. This rejects a falsy `'0'`,
+/// a digit-leading `'9lives'`, and a hyphenated `'has-dash'` alike rather than
+/// special-casing any single spelling.
+fn is_valid_attribute_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 impl WalkState<'_> {
@@ -325,18 +355,26 @@ fn classify_name(node: &Node) -> MojoBaseAttributeName {
                 };
             }
             match unquote(value) {
-                Some(name) if !name.contains('\\') => MojoBaseAttributeName::Literal(name),
                 // Escapes are not evaluated here, so the runtime name may
                 // differ from the source bytes.
-                Some(_) => MojoBaseAttributeName::Malformed {
+                Some(name) if name.contains('\\') => MojoBaseAttributeName::Malformed {
                     reason: "attribute name contains unevaluated escape sequences".to_string(),
                 },
+                Some(name) if !is_valid_attribute_name(&name) => MojoBaseAttributeName::Malformed {
+                    reason: format!("Mojo::Base rejects the attribute name `{name}`"),
+                },
+                Some(name) => MojoBaseAttributeName::Literal(name),
                 None => {
                     MojoBaseAttributeName::Malformed { reason: "empty attribute name".to_string() }
                 }
             }
         }
-        NodeKind::Identifier { name } => MojoBaseAttributeName::Literal(name.clone()),
+        NodeKind::Identifier { name } if is_valid_attribute_name(name) => {
+            MojoBaseAttributeName::Literal(name.clone())
+        }
+        NodeKind::Identifier { name } => MojoBaseAttributeName::Malformed {
+            reason: format!("Mojo::Base rejects the attribute name `{name}`"),
+        },
         NodeKind::Variable { .. } => MojoBaseAttributeName::Dynamic {
             reason: "attribute name comes from a variable".to_string(),
         },
@@ -610,6 +648,41 @@ mod tests {
         assert!(declarations("package App;\neval { has 'risky'; };\n").is_empty());
         // Control: a bare lexical block is not control flow and still counts.
         assert_eq!(names("package App;\n{ has 'bare'; }\n"), ["bare"]);
+    }
+
+    #[test]
+    fn a_postfix_modifier_is_control_flow_too() {
+        // `has 'name' if $flag;` runs conditionally exactly like its block
+        // form, so it declares no unconditional class attribute.
+        assert!(declarations("package App;\nhas 'cond' if $enabled;\n").is_empty());
+        assert!(declarations("package App;\nhas 'each' for 1..2;\n").is_empty());
+        assert!(declarations("package App;\nhas 'unless' unless $skip;\n").is_empty());
+        // Control: the same declaration without a modifier still counts.
+        assert_eq!(names("package App;\nhas 'cond';\n"), ["cond"]);
+    }
+
+    #[test]
+    fn names_mojo_base_would_reject_declare_no_attribute() {
+        // `Mojo::Base::attr` croaks `Attribute "NAME" invalid` for anything
+        // outside /^[a-zA-Z_]\w*$/, so publishing a member for one would be an
+        // accessor that cannot exist at runtime.
+        for rejected in ["'0'", "'9lives'", "'has-dash'", "'with space'", "'a.b'"] {
+            let code = format!("package App;\nhas {rejected};\n");
+            let found = declarations(&code);
+            assert_eq!(found.len(), 1, "the declaration is still observed: {rejected}");
+            assert!(
+                matches!(found[0].name, MojoBaseAttributeName::Malformed { .. }),
+                "{rejected} must not become a literal accessor name"
+            );
+        }
+        // Controls: names Mojo::Base accepts stay literal.
+        for accepted in ["'ok_name'", "'_leading'", "'a9'", "'CamelCase'"] {
+            let code = format!("package App;\nhas {accepted};\n");
+            assert!(
+                declarations(&code)[0].name.literal().is_some(),
+                "{accepted} is a valid Mojo::Base attribute name"
+            );
+        }
     }
 
     #[test]
