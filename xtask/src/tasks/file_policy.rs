@@ -3973,6 +3973,10 @@ review_after = "2026-11-13"
             "component: Developer experience\n",
             "kind: Changed\n",
             "body: A sufficiently long changelog body line for the gate.\n",
+            // An RFC 3339 `time:` is part of well-formedness, not decoration:
+            // the renderer unmarshals it as a timestamp and crashes repo-wide
+            // without one (#13484).
+            "time: 2026-08-30T12:34:56Z\n",
             "custom:\n",
             "  PR: \"14588\"\n",
             "  Breaking: \"no\"\n",

@@ -1222,7 +1222,13 @@ print "result: $final\n";
             // setVariable is gated on an exact mutation proof, so the catalog
             // row cannot decide this one.
             ("supportsSetVariable", crate::backend::capabilities::advertises_set_variable()),
-            ("supportsValueFormattingOptions", crate::feature_catalog::has_feature("dap.core")),
+            (
+                // #9581 secondary-capability floor: independent literal `false`
+                // row, not a catalog/core derivation. Re-enable gate:
+                // #9050 + #8364 + #9070 + #7342/#7345 + #9588 + #9590.
+                "supportsValueFormattingOptions",
+                false,
+            ),
             ("supportTerminateDebuggee", crate::feature_catalog::has_feature("dap.core")),
             ("supportsLogPoints", crate::backend::capabilities::advertises_log_points()),
             (
@@ -1244,8 +1250,19 @@ print "result: $final\n";
                 crate::backend::capabilities::advertises_inline_values_extension(),
             ),
             ("supportsTerminateRequest", crate::feature_catalog::has_feature("dap.core")),
-            ("supportsCompletionsRequest", crate::feature_catalog::has_feature("dap.completions")),
-            ("supportsModulesRequest", crate::feature_catalog::has_feature("dap.modules")),
+            (
+                // #9581 secondary-capability floor: independent literal `false`
+                // row. Re-enable gate: #9021 + #9046 + #9050 + #8581 + #9582 +
+                // #9584.
+                "supportsCompletionsRequest",
+                false,
+            ),
+            (
+                // #9581 secondary-capability floor: independent literal `false`
+                // row. Re-enable gate: #8581 + #7667/#8668 + #9585 + #9586.
+                "supportsModulesRequest",
+                false,
+            ),
             ("supportsDataBreakpoints", crate::feature_catalog::has_feature("dap.watchpoints")),
             (
                 "supportsTerminateThreadsRequest",
@@ -1271,10 +1288,30 @@ print "result: $final\n";
                 "supportsStepInTargetsRequest",
                 crate::feature_catalog::has_feature("dap.step_in_targets"),
             ),
-            ("supportsRestartRequest", crate::feature_catalog::has_feature("dap.restart")),
             (
+                // #9581 secondary-capability floor: independent literal `false`
+                // row. Re-enable gate: #9051 + #8691/#8703 + #8974 + #9587 +
+                // #8726 + #7568.
+                "supportsRestartRequest",
+                false,
+            ),
+            (
+                // #9581 secondary-capability floor: independent literal `false`
+                // row. Re-enable gate: #8581 + #7667/#8668 + #9585 + #9586.
                 "supportsLoadedSourcesRequest",
-                crate::feature_catalog::has_feature("dap.loaded_sources"),
+                false,
+            ),
+            (
+                // #9581 secondary-capability floor: independent literal `false`
+                // row. Re-enable gate: #10524 + #2300 + #9021 + #7566.
+                "supportsBreakpointLocationsRequest",
+                false,
+            ),
+            (
+                // #9581 secondary-capability floor: not `dap.core`.
+                // Re-enable gate: #9074 + #8712 + #7568.
+                "supportsCancelRequest",
+                false,
             ),
         ];
 
@@ -2199,6 +2236,9 @@ print "result: $final\n";
 
     #[test]
     fn test_breakpoint_locations_rejects_traversal() -> Result<(), Box<dyn std::error::Error>> {
+        // #9581: breakpointLocations is floored, so the request is rejected by
+        // the dispatch gate before any path validation or source read. The
+        // traversal input can never reach the filesystem.
         let mut adapter = DebugAdapter::new();
         adapter.handle_request(1, "initialize", None);
 
@@ -2216,12 +2256,14 @@ print "result: $final\n";
         );
         match response {
             DapMessage::Response { success, command, message, .. } => {
-                assert!(!success, "breakpointLocations with traversal path should fail");
+                assert!(!success, "breakpointLocations is floored and must fail");
                 assert_eq!(command, "breakpointLocations");
                 let msg = message.as_deref().unwrap_or("");
                 assert!(
-                    msg.contains("Path validation failed"),
-                    "should report path validation failure, got: {msg}"
+                    msg.contains("unsupported")
+                        && msg.contains("supportsBreakpointLocationsRequest")
+                        && msg.contains("#9581"),
+                    "should report the #9581 floor rejection before path work, got: {msg}"
                 );
             }
             _ => return Err("Expected response".into()),
