@@ -364,17 +364,20 @@ impl<R: SubprocessRuntime> FormattingProvider<R> {
         context: &FormatContext,
         target: FormatRequestTarget,
     ) -> Result<FormattingDecision, FormattingError> {
-        let document =
+        let mut document =
             self.inner.format_document(content, options).map_err(FormattingError::from)?;
-        let disposition = if document.edits.is_empty() {
-            FormatDisposition::NoChange
-        } else {
-            FormatDisposition::Applied
-        };
-        let reason = if document.edits.is_empty() {
-            FormatReasonCode::AlreadyFormatted
-        } else {
-            FormatReasonCode::Applied
+        let (disposition, reason) = match classify_external_envelope(content, &mut document) {
+            ExternalEnvelope::NoChange => {
+                (FormatDisposition::NoChange, FormatReasonCode::AlreadyFormatted)
+            }
+            ExternalEnvelope::Applied => (FormatDisposition::Applied, FormatReasonCode::Applied),
+            ExternalEnvelope::Unaccounted => {
+                // Rendered bytes no returned edit accounts for. Retain the
+                // source and fail closed rather than reporting a legitimate
+                // no-change over a document that differs from it (#7585).
+                document = unchanged_document(content);
+                (FormatDisposition::FailedOrNotProven, FormatReasonCode::InstrumentFailure)
+            }
         };
         let outcome = provider_outcome(ProviderOutcomeInput {
             source: content,
@@ -406,13 +409,10 @@ fn project_native_document(
     options: &FormattingOptions,
     typed: TypedFormatResult,
 ) -> Result<FormattingDecision, FormattingError> {
-    let TypedFormatResult { result, mut outcome } = typed;
+    let TypedFormatResult { result, outcome } = typed;
     match outcome.disposition {
-        FormatDisposition::Refused => {
-            return Ok(FormattingDecision { document: unchanged_document(content), outcome });
-        }
-        FormatDisposition::FailedOrNotProven => {
-            return Ok(FormattingDecision { document: unchanged_document(content), outcome });
+        FormatDisposition::Refused | FormatDisposition::FailedOrNotProven => {
+            return Ok(withheld_decision(outcome, content));
         }
         FormatDisposition::Applied | FormatDisposition::NoChange => {}
     }
@@ -428,9 +428,7 @@ fn project_native_document(
             new_text: formatted.clone(),
         }]
     };
-    finalize_outcome(&mut outcome, content, &formatted, &edits);
-
-    Ok(FormattingDecision { document: FormattedDocument { text: formatted, edits }, outcome })
+    Ok(finalized_decision(outcome, content, formatted, edits))
 }
 
 fn project_native_range(
@@ -440,13 +438,10 @@ fn project_native_range(
     options: &FormattingOptions,
     typed: TypedFormatResult,
 ) -> Result<FormattingDecision, FormattingError> {
-    let TypedFormatResult { result, mut outcome } = typed;
+    let TypedFormatResult { result, outcome } = typed;
     match outcome.disposition {
-        FormatDisposition::Refused => {
-            return Ok(FormattingDecision { document: unchanged_document(content), outcome });
-        }
-        FormatDisposition::FailedOrNotProven => {
-            return Ok(FormattingDecision { document: unchanged_document(content), outcome });
+        FormatDisposition::Refused | FormatDisposition::FailedOrNotProven => {
+            return Ok(withheld_decision(outcome, content));
         }
         FormatDisposition::Applied => {
             let span = match admitted.allowed_edit_span(content, geometry) {
@@ -466,21 +461,18 @@ fn project_native_range(
                         .get(admitted.start_byte..admitted.end_byte)
                         .is_some_and(|slice| replacement == slice)
                     {
-                        finalize_outcome(&mut outcome, content, content, &[]);
-                        return Ok(FormattingDecision {
-                            document: unchanged_document(content),
+                        return Ok(finalized_decision(
                             outcome,
-                        });
+                            content,
+                            content.to_string(),
+                            Vec::new(),
+                        ));
                     }
                     let edits = vec![FormatTextEdit {
                         range: admitted.requested.clone(),
                         new_text: replacement,
                     }];
-                    finalize_outcome(&mut outcome, content, &updated, &edits);
-                    Ok(FormattingDecision {
-                        document: FormattedDocument { text: updated, edits },
-                        outcome,
-                    })
+                    Ok(finalized_decision(outcome, content, updated, edits))
                 }
                 Ok(_) | Err(_) => Ok(unproven_range_projection(content, outcome)),
             };
@@ -495,14 +487,9 @@ fn project_native_range(
     if let Some((replacement, updated)) = whitespace_within_admitted(content, admitted, options) {
         let edits =
             vec![FormatTextEdit { range: admitted.requested.clone(), new_text: replacement }];
-        finalize_outcome(&mut outcome, content, &updated, &edits);
-        return Ok(FormattingDecision {
-            document: FormattedDocument { text: updated, edits },
-            outcome,
-        });
+        return Ok(finalized_decision(outcome, content, updated, edits));
     }
-    finalize_outcome(&mut outcome, content, content, &[]);
-    Ok(FormattingDecision { document: unchanged_document(content), outcome })
+    Ok(finalized_decision(outcome, content, content.to_string(), Vec::new()))
 }
 
 /// Why an applied native projection was downgraded to one typed not-proven
@@ -524,6 +511,54 @@ fn unproven_range_projection(content: &str, mut outcome: FormatOutcome) -> Forma
     outcome.reason = FormatReasonCode::InstrumentFailure;
     outcome.next_action =
         Some("retain the unchanged source and report the formatter evidence".to_string());
+    withheld_decision(outcome, content)
+}
+
+/// Terminal shape of an externally rendered document, judged from the whole
+/// `(source, rendered, edits)` envelope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExternalEnvelope {
+    /// The render reproduces the source; any returned edits were no-ops.
+    NoChange,
+    /// The render differs from the source and the adapter returned at least one
+    /// edit for it.
+    ///
+    /// Whether those edits actually reproduce the render is **not** verified
+    /// here. Proving that needs an independent strict applicator, which is
+    /// #7138's oracle; building a second one at this seam would duplicate that
+    /// authority. This arm therefore establishes that the change is
+    /// *attributed*, not that it is *reproduced*.
+    Applied,
+    /// The render differs from the source and no edit is attributed to it.
+    Unaccounted,
+}
+
+/// Judge an external adapter's envelope from all three of source, render, and
+/// edits rather than from the edit list alone.
+///
+/// A render that reproduces the source carries no edits, and rendered bytes
+/// with no edit attributed to them are reported as unaccounted rather than as
+/// a legitimate no-change (#7585). Edit-to-render reproduction is out of scope
+/// here — see [`ExternalEnvelope::Applied`].
+fn classify_external_envelope(content: &str, document: &mut FormattedDocument) -> ExternalEnvelope {
+    if document.text == content {
+        document.edits.clear();
+        return ExternalEnvelope::NoChange;
+    }
+    if document.edits.is_empty() {
+        return ExternalEnvelope::Unaccounted;
+    }
+    ExternalEnvelope::Applied
+}
+
+/// Retain the source and strip any intermediate change evidence.
+///
+/// A refused, failed, or not-proven decision returns no edits, so it carries no
+/// applied-change summary. The engine's intermediate summary describes a
+/// rendered result that was never admitted, and must not survive into a
+/// withheld outcome (#7585).
+fn withheld_decision(mut outcome: FormatOutcome, content: &str) -> FormattingDecision {
+    outcome.change = change_summary(content, content, &[]);
     FormattingDecision { document: unchanged_document(content), outcome }
 }
 
@@ -663,12 +698,23 @@ fn whitespace_within_admitted(
     Some((projected, updated))
 }
 
-fn finalize_outcome(
-    outcome: &mut FormatOutcome,
+/// Build one terminal decision from the final rendered bytes and edit set.
+///
+/// The final rendered bytes are the formatting authority, so every terminal
+/// field is derived here rather than from an intermediate formatter result. An
+/// edit set that reproduces the source byte-for-byte is normalized away before
+/// classification, which keeps the envelope internally consistent: `Applied`
+/// can never carry a zero change summary, and `NoChange` can never carry
+/// returned edits (#7585).
+fn finalized_decision(
+    mut outcome: FormatOutcome,
     source: &str,
-    formatted: &str,
-    edits: &[FormatTextEdit],
-) {
+    formatted: String,
+    mut edits: Vec<FormatTextEdit>,
+) -> FormattingDecision {
+    if formatted == source {
+        edits.clear();
+    }
     if edits.is_empty() {
         outcome.disposition = FormatDisposition::NoChange;
         outcome.reason = FormatReasonCode::AlreadyFormatted;
@@ -676,8 +722,10 @@ fn finalize_outcome(
         outcome.disposition = FormatDisposition::Applied;
         outcome.reason = FormatReasonCode::Applied;
     }
-    outcome.change = change_summary(source, formatted, edits);
-    outcome.safety.line_endings = line_ending_disposition(source, formatted);
+    outcome.change = change_summary(source, &formatted, &edits);
+    outcome.safety.line_endings = line_ending_disposition(source, &formatted);
+
+    FormattingDecision { document: FormattedDocument { text: formatted, edits }, outcome }
 }
 
 struct ProviderOutcomeInput<'a> {
@@ -1090,6 +1138,175 @@ const fn formatter_mode_name(mode: FormatterMode) -> &'static str {
 mod decision_projection_tests {
     #![allow(clippy::expect_used)]
     use super::*;
+
+    /// Build one terminal outcome shell whose change summary is deliberately
+    /// wrong, so a test can prove the final projection overwrites it.
+    fn stale_outcome() -> FormatOutcome {
+        FormatOutcome {
+            disposition: FormatDisposition::Applied,
+            reason: FormatReasonCode::Applied,
+            identity: FormatIdentity {
+                source_id: None,
+                content_digest: String::new(),
+                source_generation: None,
+                actual_engine: FormatEngine::Native,
+                requested_mode: FormatterMode::Native,
+                config_fingerprint: String::new(),
+            },
+            target: FormatRequestTarget::Document,
+            // An intermediate formatter result that the final projection must
+            // replace rather than inherit.
+            change: FormatChangeSummary {
+                edit_count: 99,
+                source_bytes_changed: 99,
+                rendered_bytes_changed: 99,
+                changed_lines: 99,
+            },
+            safety: FormatSafetyEvidence {
+                parse_before: FormatEvidenceState::Proven,
+                parse_after: FormatEvidenceState::Proven,
+                literal_preservation: FormatEvidenceState::Proven,
+                utf8: FormatEvidenceState::Proven,
+                line_endings: FormatLineEndingDisposition::NotChecked,
+            },
+            next_action: None,
+        }
+    }
+
+    /// The external adapter's envelope is validated, not trusted.
+    ///
+    /// The `Unaccounted` arm is the falsifier: rendered bytes with no edge to
+    /// account for them must fail closed instead of being reported as a
+    /// legitimate no-change. The bundled legacy adapter cannot currently
+    /// produce that shape, so it is exercised here directly (#7585).
+    #[test]
+    fn an_external_envelope_is_judged_from_source_rendered_and_edits() {
+        let source = "my $x = 1;\n";
+
+        // A render that reproduces the source drops its no-op edits.
+        let mut no_op = FormattedDocument {
+            text: source.to_string(),
+            edits: vec![FormatTextEdit {
+                range: FormatRange::whole_document(source),
+                new_text: source.to_string(),
+            }],
+        };
+        assert_eq!(classify_external_envelope(source, &mut no_op), ExternalEnvelope::NoChange);
+        assert!(no_op.edits.is_empty());
+
+        // A render backed by edits is applied.
+        let mut applied = FormattedDocument {
+            text: "my $x = 2;\n".to_string(),
+            edits: vec![FormatTextEdit {
+                range: FormatRange::whole_document(source),
+                new_text: "my $x = 2;\n".to_string(),
+            }],
+        };
+        assert_eq!(classify_external_envelope(source, &mut applied), ExternalEnvelope::Applied);
+
+        // Changed text with an empty edit list is unaccounted, never NoChange.
+        let mut unaccounted =
+            FormattedDocument { text: "my $x = 2;\n".to_string(), edits: Vec::new() };
+        assert_eq!(
+            classify_external_envelope(source, &mut unaccounted),
+            ExternalEnvelope::Unaccounted
+        );
+    }
+
+    /// Negative control for #7585: an edit set that reproduces the source is
+    /// normalized away instead of being reported as `Applied` beside the zero
+    /// change summary that identical bytes always produce.
+    ///
+    /// Deleting the `formatted == source` normalization in `finalized_decision`
+    /// fails this test.
+    #[test]
+    fn a_no_op_edit_set_cannot_be_applied_with_a_zero_change_summary() {
+        let source = "my $x = 1;\n";
+        let no_op = vec![FormatTextEdit {
+            range: FormatRange::whole_document(source),
+            new_text: source.to_string(),
+        }];
+
+        let decision = finalized_decision(stale_outcome(), source, source.to_string(), no_op);
+
+        assert_eq!(decision.outcome.disposition, FormatDisposition::NoChange);
+        assert_eq!(decision.outcome.reason, FormatReasonCode::AlreadyFormatted);
+        assert!(
+            decision.document.edits.is_empty(),
+            "a no-op edit must never reach the caller as an applied change"
+        );
+        assert_eq!(decision.outcome.change.edit_count, 0);
+        assert_eq!(decision.outcome.change.source_bytes_changed, 0);
+        assert_eq!(decision.outcome.change.rendered_bytes_changed, 0);
+        assert_eq!(decision.outcome.change.changed_lines, 0);
+        assert_eq!(decision.document.text, source);
+    }
+
+    /// The terminal change summary is derived from the final admitted edit set,
+    /// never inherited from an intermediate formatter result.
+    #[test]
+    fn the_change_summary_is_recomputed_from_the_final_edit_set() {
+        let source = "my $x = 1;\n";
+        let rendered = "my $x = 2;\n";
+        let edits = vec![FormatTextEdit {
+            range: FormatRange::whole_document(source),
+            new_text: rendered.to_string(),
+        }];
+
+        let decision = finalized_decision(stale_outcome(), source, rendered.to_string(), edits);
+
+        assert_eq!(decision.outcome.disposition, FormatDisposition::Applied);
+        assert_eq!(decision.outcome.reason, FormatReasonCode::Applied);
+        assert_eq!(decision.outcome.change.edit_count, 1, "stale edit_count must be replaced");
+        assert!(decision.outcome.change.source_bytes_changed > 0);
+        assert!(decision.outcome.change.rendered_bytes_changed > 0);
+        assert_eq!(decision.outcome.change.changed_lines, 1);
+    }
+
+    /// A `NoChange` decision can never carry returned edits, and its summary
+    /// stays zero.
+    #[test]
+    fn no_change_carries_no_edits_and_a_zero_summary() {
+        let source = "my $x = 1;\n";
+
+        let decision = finalized_decision(stale_outcome(), source, source.to_string(), Vec::new());
+
+        assert_eq!(decision.outcome.disposition, FormatDisposition::NoChange);
+        assert_eq!(decision.outcome.reason, FormatReasonCode::AlreadyFormatted);
+        assert!(decision.document.edits.is_empty());
+        assert_eq!(decision.outcome.change.edit_count, 0);
+        assert_eq!(decision.outcome.change.source_bytes_changed, 0);
+    }
+
+    /// Several edits keep a deterministic, order-independent summary bound to
+    /// the final rendered bytes.
+    #[test]
+    fn multiple_edits_report_a_deterministic_summary() {
+        let source = "my $a = 1;\nmy $b = 2;\n";
+        let rendered = "my $a = 9;\nmy $b = 9;\n";
+        let edits = vec![
+            FormatTextEdit {
+                range: FormatRange::new(FormatPosition::new(0, 0), FormatPosition::new(0, 10)),
+                new_text: "my $a = 9;".to_string(),
+            },
+            FormatTextEdit {
+                range: FormatRange::new(FormatPosition::new(1, 0), FormatPosition::new(1, 10)),
+                new_text: "my $b = 9;".to_string(),
+            },
+        ];
+
+        let first =
+            finalized_decision(stale_outcome(), source, rendered.to_string(), edits.clone());
+        let second = finalized_decision(stale_outcome(), source, rendered.to_string(), edits);
+
+        assert_eq!(first.outcome.disposition, FormatDisposition::Applied);
+        assert_eq!(first.outcome.change.edit_count, 2);
+        assert_eq!(first.outcome.change.changed_lines, 2);
+        assert_eq!(
+            first.outcome.change, second.outcome.change,
+            "repeated projection of identical bytes must be deterministic"
+        );
+    }
 
     #[test]
     fn failed_native_outcome_retains_complete_evidence() -> Result<(), FormattingError> {
