@@ -1856,6 +1856,14 @@ fn load_execution_rail(
     {
         bail!("execution rail identity does not match series {}", series.series_id);
     }
+    // The rail stamps `RUN_REPORT_SCHEMA_VERSION` as its own schema identity,
+    // so a report declaring a different version would be relabeled current —
+    // the same kind of unearned identity this rail exists to stop. Parse and
+    // compile propagate the report's actual version instead; the execution
+    // rail publishes a constant, so it has to earn it here.
+    if report.schema_version != RUN_REPORT_SCHEMA_VERSION {
+        bail!("execution rail report schema is not the supported run-report schema");
+    }
     ensure_valid_report_shape(&report)?;
     let mechanism = execution_receipt_mechanism(&report)?;
     Ok(available_rail(
@@ -10143,7 +10151,34 @@ mod tests {
     }
 
     #[test]
-    fn an_execution_receipt_naming_no_mechanism_cannot_claim_a_rail() {
+    fn an_execution_receipt_of_another_schema_cannot_claim_a_current_rail() -> TestResult {
+        // The rail publishes RUN_REPORT_SCHEMA_VERSION as its own identity, so
+        // accepting a report that declares a different one would relabel it
+        // current.
+        let temp = tempfile::tempdir()?;
+        let series = build_series_manifest(
+            &sample_discovery_report(),
+            &sample_series_config(),
+            "2026-07-02T00:00:00Z".into(),
+        )?;
+        let mut execute = sample_execute_report();
+        execute.commit = series.repository_commit.clone();
+        execute.perl_ref = series.perl_resolved_ref.clone();
+        execute.profile = series.profile;
+        execute.runner = series.runner;
+        execute.schema_version = "perl_core_harness.report.v0".into();
+
+        let path = temp.path().join("execute.json");
+        fs::write(&path, serde_json::to_string_pretty(&execute)?)?;
+        let Err(error) = load_execution_rail(&path, &series, "bundle-1") else {
+            bail!("a report of another schema must not produce a current rail");
+        };
+        assert!(error.to_string().contains("not the supported run-report schema"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn an_execution_receipt_naming_no_mechanism_cannot_claim_a_rail() -> TestResult {
         // `read_run_report` rejects this shape on decode, so the rail
         // derivation is not the only guard — but it must not be a hole either:
         // a receipt that names nothing summarizes to nothing.
@@ -10151,23 +10186,27 @@ mod tests {
         for result in &mut report.file_results {
             result.mechanism = None;
         }
-        let error = execution_receipt_mechanism(&report)
-            .expect_err("a receipt naming no mechanism cannot produce a rail");
+        let Err(error) = execution_receipt_mechanism(&report) else {
+            bail!("a receipt naming no mechanism must not produce a rail");
+        };
         assert!(error.to_string().contains("names no execution mechanism"), "{error}");
+        Ok(())
     }
 
     #[test]
-    fn an_execution_receipt_mixing_mechanisms_fails_closed() {
+    fn an_execution_receipt_mixing_mechanisms_fails_closed() -> TestResult {
         // A receipt spanning two rails describes neither. Summarizing it as one
         // would let a single relabeled file move the whole rail.
         let mut report = sample_execute_report();
         report.file_results[0].mechanism = Some(ExecutionMechanism::EirExecution);
-        let error = execution_receipt_mechanism(&report)
-            .expect_err("a receipt mixing mechanisms cannot produce one rail");
+        let Err(error) = execution_receipt_mechanism(&report) else {
+            bail!("a receipt mixing mechanisms must not produce one rail");
+        };
         let rendered = error.to_string();
         assert!(rendered.contains("mixes execution mechanisms"), "{rendered}");
         assert!(rendered.contains("fixture_replay"), "{rendered}");
         assert!(rendered.contains("eir_execution"), "{rendered}");
+        Ok(())
     }
 
     #[cfg(unix)]

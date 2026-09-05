@@ -51,6 +51,7 @@
     },
     "execution_like_rail": {
       "description": "A rail with execution evidence names its mechanism; a rail with no evidence names none. `stale` counts as evidence: it exists but is not currently usable, so it keeps the mechanism that produced it.",
+      "$comment": "This requirement tightens v1 in place rather than introducing v2. An execution rail produced before the mechanism contract (#8254) declared availability without naming its rail, and no longer validates — deliberately, because that shape is the ambiguous one this contract exists to reject. The tightening is safe to make in place today because no compiler_compatibility artifact is retained anywhere in this repository and load_compatibility_state has no production caller: there is no historical instance to invalidate. If artifacts are ever retained, a reader of them belongs on a v2 identifier rather than on a relaxed v1.",
       "allOf": [
         {"$ref": "#/$defs/rail"},
         {
