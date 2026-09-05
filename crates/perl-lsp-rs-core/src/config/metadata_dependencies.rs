@@ -63,6 +63,21 @@ pub enum DeclaredDependencySource {
 }
 
 impl DeclaredDependencySource {
+    /// Every declared-dependency metadata source, in detection order.
+    ///
+    /// [`detect_declared_dependencies`] iterates this list, so it is the exact
+    /// set of workspace-root files that produce declared-dependency facts.
+    /// `super::project_metadata` classifies watched paths from the same list
+    /// (#13640), which keeps detection and invalidation from drifting apart.
+    pub const ALL: [Self; 6] = [
+        Self::Cpanfile,
+        Self::MakefilePl,
+        Self::BuildPl,
+        Self::DistIni,
+        Self::MetaJson,
+        Self::MetaYml,
+    ];
+
     /// User-facing file label for this metadata source.
     #[must_use]
     pub fn display_name(self) -> &'static str {
@@ -73,6 +88,27 @@ impl DeclaredDependencySource {
             Self::DistIni => "dist.ini",
             Self::MetaJson => "META.json",
             Self::MetaYml => "META.yml",
+        }
+    }
+
+    /// Workspace-root-relative file name this source is read from.
+    ///
+    /// Identical to [`Self::display_name`]; named separately because callers
+    /// resolving a path depend on it being the on-disk spelling.
+    #[must_use]
+    pub fn file_name(self) -> &'static str {
+        self.display_name()
+    }
+
+    /// Literal extractor applied to this source's contents.
+    fn extractor(self) -> fn(&str) -> Vec<DeclaredDependency> {
+        match self {
+            Self::Cpanfile => extract_cpanfile_requirements,
+            Self::MakefilePl => extract_makefile_pl_requirements,
+            Self::BuildPl => extract_build_pl_requirements,
+            Self::DistIni => extract_dist_ini_requirements,
+            Self::MetaJson => extract_meta_json_requirements,
+            Self::MetaYml => extract_meta_yml_requirements,
         }
     }
 }
@@ -122,36 +158,13 @@ const META_RELATION_KEYS: &[&str] =
 pub fn detect_declared_dependencies(workspace_root: &Path) -> Vec<DeclaredDependency> {
     let mut dependencies = Vec::new();
 
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("cpanfile"),
-        extract_cpanfile_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("Makefile.PL"),
-        extract_makefile_pl_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("Build.PL"),
-        extract_build_pl_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("dist.ini"),
-        extract_dist_ini_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("META.json"),
-        extract_meta_json_requirements,
-    );
-    collect_from_file(
-        &mut dependencies,
-        &workspace_root.join("META.yml"),
-        extract_meta_yml_requirements,
-    );
+    for source in DeclaredDependencySource::ALL {
+        collect_from_file(
+            &mut dependencies,
+            &workspace_root.join(source.file_name()),
+            source.extractor(),
+        );
+    }
 
     dependencies
 }

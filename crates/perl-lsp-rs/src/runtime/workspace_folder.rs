@@ -182,6 +182,63 @@ mod tests {
         Ok(())
     }
 
+    /// Invalidation must be reversible (#13640): a root this detector
+    /// contributed is retired once its markers are gone, so deleting the lock
+    /// file does not leave a stale include root behind.
+    #[test]
+    fn refresh_workspace_metadata_retires_a_detected_include_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        std::fs::write(temp.path().join("cpanfile"), "requires 'JSON';\n")?;
+        std::fs::write(temp.path().join("carton.lock"), "snapshot\n")?;
+        let mut config = WorkspaceConfig::default();
+        config.include_paths = vec!["lib".to_string(), ".".to_string()];
+        let mut folder = WorkspaceFolderState::new("file:///workspace".to_string())
+            .with_path(temp.path().to_path_buf())
+            .with_effective_workspace_config(config);
+
+        folder.refresh_workspace_metadata();
+        assert_eq!(
+            folder.effective_workspace_config.include_paths,
+            vec!["lib", ".", "local/lib/perl5"],
+            "the detected root is contributed while its marker exists"
+        );
+
+        std::fs::remove_file(temp.path().join("carton.lock"))?;
+        folder.refresh_workspace_metadata();
+
+        assert_eq!(
+            folder.effective_workspace_config.include_paths,
+            vec!["lib", "."],
+            "a detected root must be retired once its marker is gone"
+        );
+        Ok(())
+    }
+
+    /// A path the user configured is never removed, even when the detector
+    /// also reports it and its marker later disappears.
+    #[test]
+    fn refresh_workspace_metadata_never_retires_a_configured_include_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        std::fs::write(temp.path().join("cpanfile"), "requires 'JSON';\n")?;
+        std::fs::write(temp.path().join("carton.lock"), "snapshot\n")?;
+        let mut folder = WorkspaceFolderState::new("file:///workspace".to_string())
+            .with_path(temp.path().to_path_buf());
+
+        // The default config already configures `local/lib/perl5`.
+        folder.refresh_workspace_metadata();
+        std::fs::remove_file(temp.path().join("carton.lock"))?;
+        folder.refresh_workspace_metadata();
+
+        assert_eq!(
+            folder.effective_workspace_config.include_paths,
+            vec!["lib", ".", "local/lib/perl5"],
+            "a user-configured include path is never claimed or retired by detection"
+        );
+        Ok(())
+    }
+
     /// Migrated Carmel detection (#13642 §2/§3): a rolled-out Carmel project
     /// (discriminated by the `local/.carmel` sentinel) contributes the shared
     /// install-base root `local/lib/perl5`. The previous `vendor/lib/perl5`

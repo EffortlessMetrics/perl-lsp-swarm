@@ -1770,6 +1770,13 @@ impl LspServer {
             return Ok(None);
         };
 
+        // Project-metadata roots affected by events this call handles
+        // synchronously (#13640). Debounced CREATED/CHANGED events are
+        // collected instead by `handle_watched_file_batch`, so each event
+        // contributes to exactly one coalesced refresh.
+        let mut metadata_roots: std::collections::BTreeSet<std::path::PathBuf> =
+            std::collections::BTreeSet::new();
+
         for change in params.changes {
             let uri = change.uri.to_string();
             let change_type = change.typ;
@@ -1778,6 +1785,10 @@ impl LspServer {
 
             match change_type {
                 FileChangeType::DELETED => {
+                    // A deleted metadata file must downgrade its facts now, on
+                    // the same immediate path as index cleanup (#13640).
+                    metadata_roots.extend(self.project_metadata_roots_for_uri(&uri));
+
                     // DELETED must be processed immediately — the file is gone and
                     // stale index data should not linger.
                     #[cfg(feature = "workspace")]
@@ -1805,11 +1816,15 @@ impl LspServer {
                     // reported Overflowed/Unavailable/ShuttingDown (#8064).
                     // Either way, fall through to immediate synchronous
                     // processing so degraded modes never lose events.
+                    metadata_roots.extend(self.project_metadata_roots_for_uri(&uri));
                     self.process_file_watcher_uri_immediate(&uri);
                 }
                 _ => {}
             }
         }
+
+        // One refresh per affected folder for the whole notification (#13640).
+        self.refresh_project_metadata_facts(&metadata_roots);
 
         // This is a notification, no response needed
         Ok(None)
@@ -1826,6 +1841,11 @@ impl LspServer {
         for uri in &uris {
             self.process_file_watcher_uri_immediate(uri);
         }
+
+        // The debouncer already coalesced this burst; refresh each affected
+        // folder once for the whole batch (#13640).
+        let metadata_roots = self.project_metadata_roots_for_batch(uris.iter().map(String::as_str));
+        self.refresh_project_metadata_facts(&metadata_roots);
     }
 
     /// Evict every indexed URI whose filesystem path is a descendant of

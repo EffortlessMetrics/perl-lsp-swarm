@@ -27,6 +27,7 @@ pub mod file_watcher_debounce;
 mod language;
 mod latency;
 mod lifecycle;
+mod metadata_invalidation;
 mod notebook;
 pub(crate) mod outbound;
 #[allow(unused_imports)]
@@ -62,6 +63,8 @@ mod active_document_readiness_tests;
 mod diagnostics_sink_tests;
 #[cfg(test)]
 mod document_symbols_sink_tests;
+#[cfg(test)]
+mod metadata_invalidation_tests;
 #[cfg(test)]
 mod open_buffer_authority_tests;
 #[cfg(test)]
@@ -216,6 +219,21 @@ pub struct LspServer {
     workspace_folders: Arc<Mutex<Vec<WorkspaceFolderState>>>,
     /// Monotonic configuration/ownership generation for diagnostic snapshots.
     pub(crate) workspace_identity_generation: Arc<AtomicU64>,
+    /// Monotonic generation for dependency and environment facts derived from
+    /// project metadata (#13640).
+    ///
+    /// Advanced once per coalesced watcher batch that actually refreshed at
+    /// least one folder, so a burst of metadata writes is one observable
+    /// refresh rather than one per event.
+    pub(crate) dependency_facts_generation: Arc<AtomicU64>,
+    /// Workspace folder URIs whose dependency/environment snapshot could not
+    /// be refreshed from disk and is therefore retained but not current
+    /// (#13640).
+    ///
+    /// A folder is marked when a metadata file is present but unreadable, or
+    /// when an open buffer holds unsaved metadata text; it is cleared by the
+    /// next refresh that observes readable disk state.
+    pub(crate) stale_dependency_facts: Arc<Mutex<std::collections::BTreeSet<String>>>,
     /// Serializes workspace identity invalidation with diagnostic publication.
     pub(crate) workspace_identity_lock: Arc<Mutex<()>>,
     /// Project configuration discovered for an unregistered single-file document.
