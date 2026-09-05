@@ -3390,10 +3390,18 @@ impl<'a> BodyBuilder2<'a> {
                     // to a complete read-modify-write over the same target.
                     // Wrapping it in a second simple assignment would publish
                     // `x = (x += 1)` — one spurious write on top of the modify
-                    // it already performs. Real declarations keep the wrapper:
-                    // `my $x = ($y += 1)` genuinely writes two variables, and
-                    // the same-target check leaves it alone.
+                    // it already performs.
+                    //
+                    // Source provenance is what separates that from a nested
+                    // assignment the author actually wrote. When the parser
+                    // folds a compound operator into the initializer, the
+                    // initializer *begins at the argument token*; in
+                    // `field $x = ($x = 1)` it begins after the `=`, and both
+                    // its write and the outer one are real. Matching on the
+                    // target name alone would collapse those two writes into
+                    // one.
                     if is_legacy_call
+                        && init_node.location.start == variable.location.start
                         && self.assign_targets_same_variable(rhs_id, sigil_str, &var_name)
                     {
                         return rhs_id;

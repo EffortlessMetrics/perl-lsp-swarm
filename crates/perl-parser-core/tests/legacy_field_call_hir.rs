@@ -195,3 +195,58 @@ fn flat_lowering_does_not_invent_a_lexical_binding_for_a_legacy_call() -> TestRe
     }
     Ok(())
 }
+
+#[test]
+fn nested_same_target_assignment_keeps_both_writes() -> TestResult {
+    // `field $x = ($x = 1)` writes `$x` twice: the inner assignment, then the
+    // outer one storing its result. Skipping the wrapper on target name alone
+    // collapsed those into one — the parser-folded `field $x += 1` is told
+    // apart by provenance, not by the name it happens to mention.
+    let source = "my $x; field $x = ($x = 1);\n";
+    let mut parser = Parser::new(source);
+    let parsed = parser.parse_with_recovery();
+    let file = lower_ast(&parsed.ast);
+    let body = file.bodies.first().ok_or("program body is required")?;
+    let nodes = lower_single_body(body, HirBodyId(0), &file);
+
+    let writes: Vec<_> = nodes
+        .iter()
+        .filter(|node| matches!(node.operation, PirOperation::LexicalWrite { .. }))
+        .filter_map(|node| node.source_anchor.range.map(|range| (range.start, range.end)))
+        .collect();
+    assert!(
+        writes.contains(&(13, 15)),
+        "the legacy call's own write must survive a nested same-target \
+         assignment: {nodes:?}"
+    );
+    assert!(
+        writes.contains(&(19, 21)),
+        "the nested assignment's write must survive too: {nodes:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nested_same_target_compound_keeps_the_outer_write() -> TestResult {
+    // `field $x = ($x += 1)` is a modify *and* an outer write, unlike the
+    // parser-folded `field $x += 1`, which is only the modify.
+    let source = "my $x; field $x = ($x += 1);\n";
+    let mut parser = Parser::new(source);
+    let parsed = parser.parse_with_recovery();
+    let file = lower_ast(&parsed.ast);
+    let body = file.bodies.first().ok_or("program body is required")?;
+    let nodes = lower_single_body(body, HirBodyId(0), &file);
+
+    assert!(
+        nodes.iter().any(|node| {
+            matches!(node.operation, PirOperation::LexicalWrite { .. })
+                && node.source_anchor.range.map(|range| (range.start, range.end)) == Some((13, 15))
+        }),
+        "the outer write at the field argument must survive: {nodes:?}"
+    );
+    assert!(
+        nodes.iter().any(|node| matches!(node.operation, PirOperation::Modify { .. })),
+        "the nested compound modify must survive: {nodes:?}"
+    );
+    Ok(())
+}
