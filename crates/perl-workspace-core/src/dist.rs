@@ -479,7 +479,7 @@ fn opens_hash_subscript(buf: &str) -> bool {
 fn handle_cpanfile_statement(buf: &str, block_phase: Option<&str>, out: &mut Vec<Prereq>) {
     let statement = buf.trim();
     // The keyword boundary check prevents prefix collisions.
-    let Some((_kw, relation, kw_phase)) =
+    let Some((keyword, relation, kw_phase)) =
         CPANFILE_KEYWORDS.iter().find(|(kw, _, _)| starts_with_cpanfile_keyword(statement, kw))
     else {
         return;
@@ -490,15 +490,15 @@ fn handle_cpanfile_statement(buf: &str, block_phase: Option<&str>, out: &mut Vec
         return;
     }
     let phase = if *kw_phase == "runtime" { block_phase.unwrap_or("runtime") } else { kw_phase };
-    let quoted = quoted_strings(statement);
-    if let Some(module) = quoted.first() {
-        out.push(Prereq {
-            module: module.clone(),
-            version: quoted.get(1).cloned(),
-            phase: phase.to_string(),
-            relation: (*relation).to_string(),
-        });
-    }
+    let Some(arguments) = statement.strip_prefix(keyword) else { return };
+    // Only a literally named module becomes a fact; see `cpanfile_call_literals`.
+    let Some((module, version)) = cpanfile_call_literals(arguments) else { return };
+    out.push(Prereq {
+        module,
+        version,
+        phase: phase.to_string(),
+        relation: (*relation).to_string(),
+    });
 }
 
 /// Whether the statement carries a postfix statement modifier, which makes the
@@ -550,10 +550,13 @@ fn parse_on_phase(buf: &str) -> Option<String> {
     }
     // Prefer a quoted phase (`on 'test'`); fall back to a bareword (`on test`).
     // A quoted candidate takes precedence, so a non-canonical first quoted string does not consult the bareword fallback.
-    let phase = quoted_strings(buf)
-        .into_iter()
-        .next()
-        .or_else(|| rest.split_whitespace().next().map(str::to_string))?;
+    // `on(develop => sub {...})` is a bareword phase behind a parenthesis; the
+    // fat comma quotes it, so it names the same phase as `on 'develop'`.
+    let bareword = rest.trim_start();
+    let bareword = bareword.strip_prefix('(').unwrap_or(bareword).trim_start();
+    let phase = quoted_strings(buf).into_iter().next().or_else(|| {
+        bareword.split(|ch: char| !is_identifier_char(ch)).next().map(str::to_string)
+    })?;
     CPANFILE_PHASES.contains(&phase.as_str()).then_some(phase)
 }
 
@@ -596,6 +599,90 @@ fn json_scalar_string(value: &serde_json::Value) -> Option<String> {
         serde_json::Value::Number(n) => Some(n.to_string()),
         _ => None,
     }
+}
+
+/// Strip one wrapping parenthesis pair from a prereq call's arguments.
+fn strip_call_parentheses(arguments: &str) -> String {
+    let trimmed = arguments.trim().trim_end_matches(';').trim();
+    let chars: Vec<char> = trimmed.chars().collect();
+    if chars.first() == Some(&'(') && skip_delimited(&chars, 0) == Some(chars.len()) {
+        return chars[1..chars.len() - 1].iter().collect();
+    }
+    trimmed.to_string()
+}
+
+/// Split a prereq call's arguments on `,` and `=>`, ignoring separators inside
+/// literals or nested brackets.
+fn split_cpanfile_arguments(arguments: &str) -> Vec<String> {
+    let chars: Vec<char> = arguments.chars().collect();
+    let lex = CpanfileLex::scan(&chars);
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0_usize;
+    let mut index = 0;
+    while index < chars.len() {
+        let ch = chars[index];
+        if !lex.is_code(index) {
+            if lex.is_statement_text(index) {
+                current.push(ch);
+            }
+            index += 1;
+            continue;
+        }
+        match ch {
+            '(' | '[' | '{' => {
+                depth += 1;
+                current.push(ch);
+            }
+            ')' | ']' | '}' => {
+                depth = depth.saturating_sub(1);
+                current.push(ch);
+            }
+            ',' if depth == 0 => parts.push(std::mem::take(&mut current)),
+            '=' if depth == 0 && chars.get(index + 1) == Some(&'>') => {
+                parts.push(std::mem::take(&mut current));
+                index += 1;
+            }
+            _ => current.push(ch),
+        }
+        index += 1;
+    }
+    parts.push(current);
+    parts
+}
+
+/// The value of `slice` when it is exactly one plain quoted literal, and
+/// nothing else.
+///
+/// `'Foo'` qualifies; `'Foo' . 'Bar'`, `$versions{base}`, and
+/// `$enabled ? 'Foo' : 'Bar'` do not.
+fn sole_plain_literal(slice: &str) -> Option<String> {
+    let chars: Vec<char> = slice.trim().chars().collect();
+    if !matches!(chars.first(), Some('\'' | '"')) {
+        return None;
+    }
+    let end = skip_delimited(&chars, 0)?;
+    if end != chars.len() {
+        return None;
+    }
+    Some(chars[1..end - 1].iter().collect())
+}
+
+/// The module and version a prereq call declares, when its argument shape is
+/// one this scanner can read without evaluating Perl.
+///
+/// The module argument must be a single plain quoted literal. A computed
+/// module, as in `requires($enabled ? 'Foo' : 'Bar')` or
+/// `requires helper('Foo')`, names its dependency only at run time; publishing
+/// the first literal found inside it would claim a dependency the cpanfile
+/// never unconditionally declares, and would invent a version out of the
+/// remaining literals. A computed *version* is weaker — the module is still
+/// named literally — so it yields `None` instead of suppressing the fact.
+fn cpanfile_call_literals(arguments: &str) -> Option<(String, Option<String>)> {
+    let parts = split_cpanfile_arguments(&strip_call_parentheses(arguments));
+    let module = sole_plain_literal(parts.first()?)?;
+    let version = parts.get(1).and_then(|part| sole_plain_literal(part));
+    Some((module, version))
 }
 
 /// Extract plain single- or double-quoted string literals from a statement.
@@ -978,6 +1065,187 @@ mod tests {
             "a canonical phase survives a next-line brace: {:?}",
             facts.prereqs
         );
+    }
+
+    #[test]
+    fn cpanfile_computed_modules_do_not_become_unconditional_facts() {
+        // The module a run-time expression chooses is not declared
+        // unconditionally. Publishing the first literal inside one would claim
+        // a dependency the cpanfile never states, and would read the remaining
+        // literals as its version.
+        for arguments in [
+            "($enabled ? 'Foo' : 'Bar')",
+            " helper('Foo')",
+            " 'Foo' . 'Bar'",
+            " $module_name",
+            "(lc 'Foo')",
+        ] {
+            let content = format!("requires{arguments};\nrequires 'Unconditional';\n");
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), &content);
+
+            assert_eq!(
+                facts.prereqs.iter().filter(|p| p.module == "Unconditional").count(),
+                1,
+                "the plain declaration survives: {:?}",
+                facts.prereqs
+            );
+            assert!(
+                facts.prereqs.iter().all(|p| p.module == "Unconditional"),
+                "requires{arguments} names its module at run time: {:?}",
+                facts.prereqs
+            );
+        }
+    }
+
+    #[test]
+    fn cpanfile_computed_versions_keep_the_named_module() {
+        // A dynamic *version* is weaker than a dynamic module: the module is
+        // still named literally, so the fact stands without a version rather
+        // than being suppressed.
+        for version in ["$versions{base}", "$versions->{base}", "compute_version()", "0.88"] {
+            let content = format!("requires 'Foo', {version};\n");
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), &content);
+
+            assert_eq!(
+                facts.prereqs,
+                vec![Prereq {
+                    module: "Foo".to_string(),
+                    version: None,
+                    phase: "runtime".to_string(),
+                    relation: "requires".to_string(),
+                }],
+                "a computed version yields no version, not a lost module: {version}"
+            );
+        }
+    }
+
+    #[test]
+    fn cpanfile_literal_versions_are_still_recorded() {
+        // The relaxation above must not stop reading a version that *is* a
+        // literal, in either call spelling.
+        for content in ["requires 'Foo', '0.88';\n", "requires('Foo' => '0.88');\n"] {
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+            assert_eq!(
+                facts.prereqs,
+                vec![Prereq {
+                    module: "Foo".to_string(),
+                    version: Some("0.88".to_string()),
+                    phase: "runtime".to_string(),
+                    relation: "requires".to_string(),
+                }],
+                "literal version survives: {content:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cpanfile_parenthesized_bare_phase_is_recognized() {
+        // `on(develop => sub {...})` is a bareword phase behind a parenthesis;
+        // the fat comma quotes it, so it names the same phase as `on 'develop'`.
+        for phase in CPANFILE_PHASES {
+            let content = format!("on({phase} => sub {{ requires 'Phase::Dep'; }});\n");
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), &content);
+
+            assert!(
+                facts.prereqs.iter().any(|p| p.module == "Phase::Dep" && p.phase == *phase),
+                "on({phase} => ...) keeps its canonical phase: {:?}",
+                facts.prereqs
+            );
+        }
+    }
+
+    #[test]
+    fn cpanfile_parenthesized_unknown_phase_is_still_rejected() {
+        // Accepting the parenthesized spelling must not accept a phase that is
+        // not canonical: that block stays unsupported.
+        let content = "on(deploy => sub { requires 'Deploy::Dep'; });\nrequires 'Moo';\n";
+        let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+
+        assert!(
+            !facts.prereqs.iter().any(|p| p.module == "Deploy::Dep"),
+            "an unknown phase stays unsupported: {:?}",
+            facts.prereqs
+        );
+        assert!(facts.prereqs.iter().any(|p| p.module == "Moo"));
+    }
+
+    #[test]
+    fn adversarial_no_panic_on_hostile_shapes() {
+        // Arithmetic and slicing in the lexer, `opens_hash_subscript`,
+        // `sole_plain_literal`, and `strip_call_parentheses` must survive
+        // truncated, unbalanced, and unicode input.
+        for content in [
+            "'",
+            "\"",
+            "q",
+            "q{",
+            "s{a}",
+            "tr{a}",
+            "requires '",
+            "requires(",
+            "requires()",
+            "on(",
+            "on",
+            "{",
+            "}",
+            "$",
+            "$h->{",
+            "->{",
+            "#",
+            "requires 'Ünïcodé', '→';",
+            "requires '\\''; requires 'After';",
+            "()",
+            "((((",
+            "))))",
+            ";;;;",
+            "=>",
+            "requires =>",
+            "on(('test') => sub {",
+            "$$$${",
+            "qq",
+            "m",
+            "y",
+            "requires 'a' . ",
+            "'''",
+        ] {
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+            // No assertion on contents: the property under test is that the
+            // scanner terminates and does not panic on hostile input.
+            let _ = facts.prereqs.len();
+        }
+    }
+
+    #[test]
+    fn adversarial_fail_open_sweep() {
+        // Every one of these encloses a declaration in a construct that is not
+        // an unconditional top-level or canonical-phase declaration. None may
+        // reach the facts.
+        let hostile = [
+            "feature 'X' => sub{ requires 'Leak'; };",
+            "feature 'X' => sub\n{\n requires 'Leak';\n}\n;",
+            "if ($^O eq 'MSWin32') { requires 'Leak'; }",
+            "unless ($ENV{CI}) { requires 'Leak'; }",
+            "for my $m (@list) { requires 'Leak'; }",
+            "on 'deploy' => sub { requires 'Leak'; };",
+            "on(deploy => sub { requires 'Leak'; });",
+            "requires 'Leak' if $^O eq 'MSWin32';",
+            "requires 'Leak' unless $ENV{CI};",
+            "requires('Leak') for 1 .. 3;",
+            "requires 'Leak', $v{base} if $want{extra};",
+            "requires($enabled ? 'Leak' : 'Other');",
+            "requires helper('Leak');",
+            "requires 'Le' . 'ak';",
+            "feature 'X' => sub { on 'test' => sub { requires 'Leak'; }; };",
+            "if (1) { on 'test' => sub { requires 'Leak'; }; }",
+        ];
+        for content in hostile {
+            let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
+            assert!(
+                !facts.prereqs.iter().any(|p| p.module.contains("Leak")),
+                "FAIL-OPEN: {content:?} published {:?}",
+                facts.prereqs
+            );
+        }
     }
 
     #[test]
