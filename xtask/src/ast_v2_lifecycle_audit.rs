@@ -1951,6 +1951,13 @@ fn scan_macro_path_tokens(tokens: &proc_macro2::TokenStream, prefix: &[String]) 
     let trees: Vec<proc_macro2::TokenTree> = tokens.clone().into_iter().collect();
     let mut segments: Vec<String> = prefix.to_vec();
     let mut after_ident = false;
+    // `as` renames what was just imported, so the identifier following it is a
+    // new local name rather than another segment. Without this the generic
+    // restart-on-adjacent-identifier rule rebuilt the path from the prefix at
+    // both `as` and the alias, synthesising `perl_ast::v2` out of
+    // `perl_ast::{Node as v2}` — inventing a consumer from an alias that never
+    // touches the package.
+    let mut alias_name_next = false;
     for (index, tree) in trees.iter().enumerate() {
         match tree {
             proc_macro2::TokenTree::Group(group) => {
@@ -1968,12 +1975,27 @@ fn scan_macro_path_tokens(tokens: &proc_macro2::TokenStream, prefix: &[String]) 
                 after_ident = false;
             }
             proc_macro2::TokenTree::Ident(ident) => {
+                let spelled = ident.to_string();
+                if alias_name_next {
+                    // The local name an import was renamed to. It is not part of
+                    // any path into the package.
+                    alias_name_next = false;
+                    restart(&mut segments);
+                    after_ident = true;
+                    continue;
+                }
+                if spelled == "as" {
+                    alias_name_next = true;
+                    restart(&mut segments);
+                    after_ident = false;
+                    continue;
+                }
                 // Two idents in a row are two paths, not one: `use perl_ast_v2`
                 // must not compose into `use::perl_ast_v2`.
                 if after_ident {
                     restart(&mut segments);
                 }
-                segments.push(ident.to_string());
+                segments.push(spelled);
                 if names_package_directly(&segments.join("::"))
                     && single_ident_is_a_path(&segments, prefix, &trees, index)
                 {

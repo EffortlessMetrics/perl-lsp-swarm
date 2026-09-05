@@ -981,6 +981,33 @@ fn the_instruments_own_files_are_classified_by_parser_not_exempted() -> Result<(
             );
         }
 
+        // `as` renames the imported item; the name after it is local and is not
+        // part of any path into the package. Rebuilding the path from the
+        // enclosing prefix at the alias synthesised `perl_ast::v2` out of an
+        // import of `perl_ast::Node` — inventing a consumer.
+        for aliased in [
+            "fn f() { some_macro!(use perl_ast::{Node as v2};); }",
+            "fn f() { some_macro!(use perl_parser_core::{Parser as DiagnosticId};); }",
+            "fn f() { some_macro!(use perl_ast::{Node as v2, Span as MissingKind};); }",
+        ] {
+            assert!(
+                !reaches_audited_package(aliased, instrument_file),
+                "an alias in {instrument_file} is a local name, not a package path: {aliased}"
+            );
+        }
+        // A genuine import of the package's own path still registers when it is
+        // the thing being renamed, so the guard did not switch aliasing off.
+        for real_alias in [
+            "fn f() { some_macro!(use perl_ast::{v2 as renamed};); }",
+            "fn f() { some_macro!(use perl_ast_v2 as renamed;); }",
+            "fn f() { some_macro!(use perl_parser_core::{DiagnosticId as D};); }",
+        ] {
+            assert!(
+                reaches_audited_package(real_alias, instrument_file),
+                "renaming a real package path in {instrument_file} is still a use: {real_alias}"
+            );
+        }
+
         // And the distinction that makes the token scan usable here at all: a
         // string literal inside a macro is what this module's own fixtures and
         // assertion messages are made of, and must not register.
