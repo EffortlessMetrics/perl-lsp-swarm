@@ -433,3 +433,86 @@ fn shift_is_not_reclassified_by_a_later_terminator_line() {
         );
     }
 }
+
+/// A bareword before a sigiled variable does not by itself put `<<` in term
+/// position — only the builtins that actually take an indirect filehandle do.
+///
+/// `perl -c` separates the groups: `say $fh <<'EOF'` demands the terminator,
+/// while `return $x <<'EOF'`, `defined $y <<'EOF'`, and `scalar $y <<'EOF'`
+/// are accepted without one, so those are shifts and must not hide what
+/// follows.
+#[test]
+fn keyword_led_shifts_do_not_hide_later_pragmas() {
+    let sources = [
+        "sub f { my $z = return $x <<'EOF'; }\nuse lib 'real';\n",
+        "my $z = defined $y <<'EOF';\nuse lib 'real';\n",
+        "my $z = scalar $y <<'EOF';\nuse lib 'real';\n",
+        // A bareword that merely ends in a builtin's name is not that builtin.
+        "my $z = sprint $y <<'EOF';\nuse lib 'real';\n",
+    ];
+
+    for source in sources {
+        assert_eq!(
+            extract_use_lib_operations(source),
+            vec![UseLibAction::Add(vec![UseLibPath {
+                path: "real".to_string(),
+                from_findbin: false,
+            }])],
+            "a keyword-led shift swallowed a later pragma: {source:?}"
+        );
+    }
+}
+
+/// The output builtins keep the indirect-filehandle heredoc working.
+#[test]
+fn filehandle_builtins_still_open_heredocs() {
+    for builtin in ["print", "printf", "say"] {
+        let source = format!("{builtin} $fh <<'EOF';\nuse lib 'phantom';\nEOF\nuse lib 'real';\n");
+
+        assert_eq!(
+            extract_use_lib_operations(&source),
+            vec![UseLibAction::Add(vec![UseLibPath {
+                path: "real".to_string(),
+                from_findbin: false,
+            }])],
+            "{builtin} lost its indirect-filehandle heredoc"
+        );
+    }
+}
+
+/// A column-0 `__END__` or `__DATA__` ends the code region. Text below it is
+/// data Perl never compiles, so a semicolon down there must not start a slice
+/// the rail treats as a pragma.
+#[test]
+fn data_section_markers_end_the_scanned_region() {
+    let end_marker = "use lib 'real';\n__END__\nprose; use lib 'phantom_end';\n";
+    let data_marker = "use lib 'real';\n__DATA__\nrow; use lib 'phantom_data';\n";
+
+    for source in [end_marker, data_marker] {
+        assert_eq!(
+            extract_use_lib_operations(source),
+            vec![UseLibAction::Add(vec![UseLibPath {
+                path: "real".to_string(),
+                from_findbin: false,
+            }])],
+            "text below a data-section marker reached the rail: {source:?}"
+        );
+    }
+}
+
+/// A marker lookalike is ordinary code and must not truncate the scan.
+#[test]
+fn data_section_marker_lookalikes_do_not_end_the_scan() {
+    let source = "use lib 'real';\n__ENDS__ = 1; use lib 'still_code';\n";
+
+    assert_eq!(
+        extract_use_lib_operations(source),
+        vec![
+            UseLibAction::Add(vec![UseLibPath { path: "real".to_string(), from_findbin: false }]),
+            UseLibAction::Add(vec![UseLibPath {
+                path: "still_code".to_string(),
+                from_findbin: false,
+            }]),
+        ]
+    );
+}

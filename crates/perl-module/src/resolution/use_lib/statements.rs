@@ -25,6 +25,7 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
     // next statement slice.
     let mut has_content = false;
     let mut pending_heredocs = VecDeque::new();
+    let mut scan_end = source.len();
 
     let chars: Vec<(usize, char)> = source.char_indices().collect();
     let mut i = 0;
@@ -120,6 +121,19 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
             continue;
         }
 
+        // A column-0 `__END__` or `__DATA__` ends the code region: everything
+        // below it is data Perl never compiles, so scanning it can only invent
+        // include paths the program does not add.
+        if ch == '_'
+            && !in_single
+            && !in_double
+            && (idx == 0 || source.as_bytes().get(idx - 1) == Some(&b'\n'))
+            && is_data_section_marker(&source[idx..])
+        {
+            scan_end = idx;
+            break;
+        }
+
         if ch == ';' && !in_single && !in_double {
             let end = idx + ch.len_utf8();
             push_statement(&mut statements, &source[start..end]);
@@ -132,11 +146,20 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
         i += 1;
     }
 
-    if start < source.len() {
-        push_statement(&mut statements, &source[start..]);
+    if start < scan_end {
+        push_statement(&mut statements, &source[start..scan_end]);
     }
 
     statements
+}
+
+/// Whether `rest` begins with a `__END__` or `__DATA__` marker occupying its
+/// own line.
+fn is_data_section_marker(rest: &str) -> bool {
+    ["__END__", "__DATA__"].iter().any(|marker| {
+        rest.strip_prefix(marker)
+            .is_some_and(|tail| tail.is_empty() || tail.starts_with(char::is_whitespace))
+    })
 }
 
 fn advance_char_index(chars: &[(usize, char)], mut index: usize, byte_end: usize) -> usize {
@@ -228,13 +251,25 @@ fn follows_complete_term(source: &str, start: usize) -> bool {
         return false;
     };
 
-    // A sigiled variable usually ends a term — but not when it is itself an
-    // argument to a preceding bareword. Perl's indirect filehandle syntax puts
-    // `<<` in term position there: `print $fh <<'EOF'` is a heredoc, which
-    // `perl -c` confirms by demanding the terminator.
+    // A sigiled variable ends a term, with one exception: Perl's indirect
+    // filehandle syntax, where the variable is the handle and `<<` stays in
+    // term position. Only the output builtins take a handle that way, and
+    // `perl -c` separates the two groups cleanly — `say $fh <<'EOF'` demands
+    // the terminator, while `return $x <<'EOF'` and `defined $y <<'EOF'` are
+    // accepted without one, so those are shifts.
     let before_sigil =
         before_run[..before_run.len() - sigil.len_utf8()].trim_end_matches([' ', '\t']);
-    !before_sigil.chars().next_back().is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    !ends_with_filehandle_builtin(before_sigil)
+}
+
+/// Whether `text` ends with one of the builtins that accept an indirect
+/// filehandle argument.
+fn ends_with_filehandle_builtin(text: &str) -> bool {
+    ["print", "printf", "say"].iter().any(|builtin| {
+        text.strip_suffix(builtin).is_some_and(|head| {
+            !head.chars().next_back().is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        })
+    })
 }
 
 /// Recognize a heredoc opener at `start`, returning
