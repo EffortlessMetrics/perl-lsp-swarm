@@ -236,7 +236,8 @@ endfunction
 
 " One complete replacement observation: readiness (already proven by the
 " caller), the governed root re-selected, one didOpen replay, and the
-" settled current state. Returns the observed root or ''.
+" settled current state. Returns 1 when the replacement observation is
+" complete, 0 when it is not.
 function! s:EmitReplay(replay_index, generation) abort
   let l:root_uri = VimLspHostRootUri()
   let l:root_rel = s:FixtureRel(substitute(lsp#utils#uri_to_path(l:root_uri), '\', '/', 'g'))

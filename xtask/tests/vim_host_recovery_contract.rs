@@ -719,16 +719,16 @@ fn the_stimulus_matcher_handles_quoted_windows_paths_and_exe_suffixes() -> Resul
 #[test]
 fn canonical_wire_mines_four_generations_and_windows() -> Result<()> {
     let wire = canonical_wire();
-    ensure!(wire.initialize_lines == vec![0, 6, 10, 14], "recovery contract equality failed");
-    ensure!(wire.initialized_lines.len() == 4, "recovery contract equality failed");
-    ensure!(wire.opens_of("main.pl") == vec![2, 8, 12, 16], "recovery contract equality failed");
-    ensure!(wire.closes_of("main.pl") == vec![5], "recovery contract equality failed");
-    ensure!(wire.did_change_configuration_lines == vec![3], "recovery contract equality failed");
+    assert_eq!(wire.initialize_lines, vec![0, 6, 10, 14]);
+    assert_eq!(wire.initialized_lines.len(), 4);
+    assert_eq!(wire.opens_of("main.pl"), vec![2, 8, 12, 16]);
+    assert_eq!(wire.closes_of("main.pl"), vec![5]);
+    assert_eq!(wire.did_change_configuration_lines, vec![3]);
     // each generation window settles exactly as authored
     let batches = wire.batches_of("main.pl");
-    ensure!(batches.len() == 4, "recovery contract equality failed");
-    ensure!(batches[0].error_severity_count == 1, "recovery contract equality failed");
-    ensure!(batches[3].error_severity_count == 0, "recovery contract equality failed");
+    assert_eq!(batches.len(), 4);
+    assert_eq!(batches[0].error_severity_count, 1);
+    assert_eq!(batches[3].error_severity_count, 0);
     // no old-signature publish after the replacement generation's initialize
     let replacement_initialize = wire
         .initialize_line_of(4)
@@ -750,8 +750,8 @@ fn initialize_generation_counting_ignores_response_echoes() -> Result<()> {
         "[\"<---\", 2, \"perllsp\", {\"request\":{\"method\":\"initialize\"},\"response\":{}}]\n"
     );
     let wire = extract_recovery_wire(log.as_bytes());
-    ensure!(wire.initialize_lines == vec![0, 3], "recovery contract equality failed");
-    ensure!(wire.initialized_lines == vec![2], "recovery contract equality failed");
+    assert_eq!(wire.initialize_lines, vec![0, 3]);
+    assert_eq!(wire.initialized_lines, vec![2]);
     Ok(())
 }
 
@@ -767,41 +767,17 @@ fn canonical_evidence_passes_affirming_cells_with_partial_adverse_exit() -> Resu
     let events = complete_recovery_events(&plan.identity.candidate_artifact_sha256);
     let wire = canonical_wire();
     let judgment = canonical_judgment(&plan, events, &wire, &landed_stimulus_records());
-    ensure!(
-        judgment.cells.get(CELL_EXPLICIT_RESTART) == Some(&ObservationResult::Pass),
-        "recovery contract equality failed"
-    );
-    ensure!(
-        judgment.cells.get(CELL_INITIALIZED_NEW_GENERATION) == Some(&ObservationResult::Pass),
-        "recovery contract equality failed"
-    );
-    ensure!(
-        judgment.cells.get(CELL_DOCUMENT_REPLAY) == Some(&ObservationResult::Pass),
-        "recovery contract equality failed"
-    );
-    ensure!(
-        judgment.cells.get(CELL_CURRENT_RESULT) == Some(&ObservationResult::Pass),
-        "recovery contract equality failed"
-    );
-    ensure!(
-        judgment.cells.get(CELL_OLD_GENERATION_REJECTED) == Some(&ObservationResult::Pass),
-        "recovery contract equality failed"
-    );
-    ensure!(
-        judgment.cells.get(CELL_RETRY_OR_MANUAL) == Some(&ObservationResult::Pass),
-        "recovery contract equality failed"
-    );
-    ensure!(
-        judgment.cells.get(CELL_SHUTDOWN_CLEANUP) == Some(&ObservationResult::Pass),
-        "recovery contract equality failed"
-    );
+    assert_eq!(judgment.cells.get(CELL_EXPLICIT_RESTART), Some(&ObservationResult::Pass));
+    assert_eq!(judgment.cells.get(CELL_INITIALIZED_NEW_GENERATION), Some(&ObservationResult::Pass));
+    assert_eq!(judgment.cells.get(CELL_DOCUMENT_REPLAY), Some(&ObservationResult::Pass));
+    assert_eq!(judgment.cells.get(CELL_CURRENT_RESULT), Some(&ObservationResult::Pass));
+    assert_eq!(judgment.cells.get(CELL_OLD_GENERATION_REJECTED), Some(&ObservationResult::Pass));
+    assert_eq!(judgment.cells.get(CELL_RETRY_OR_MANUAL), Some(&ObservationResult::Pass));
+    assert_eq!(judgment.cells.get(CELL_SHUTDOWN_CLEANUP), Some(&ObservationResult::Pass));
     // The adverse-exit cell never passes (#11386 family law).
-    ensure!(
-        judgment.cells.get(CELL_UNEXPECTED_EXIT) == Some(&ObservationResult::Partial),
-        "recovery contract equality failed"
-    );
+    assert_eq!(judgment.cells.get(CELL_UNEXPECTED_EXIT), Some(&ObservationResult::Partial));
     // The honest top-line is partial, never a forced pass.
-    ensure!(judgment.result == ObservationResult::Partial, "recovery contract equality failed");
+    assert_eq!(judgment.result, ObservationResult::Partial);
     ensure!(judgment.failure_class.is_none());
     Ok(())
 }
@@ -822,19 +798,13 @@ fn a_respawn_without_initialize_readiness_cannot_pass() -> Result<()> {
     );
     let wire = extract_recovery_wire(log.as_bytes());
     let judgment = canonical_judgment(&plan, events, &wire, &landed_stimulus_records());
-    ensure!(
-        judgment.cells.get(CELL_EXPLICIT_RESTART) == Some(&ObservationResult::Fail),
-        "recovery contract equality failed"
+    assert_eq!(judgment.cells.get(CELL_EXPLICIT_RESTART), Some(&ObservationResult::Fail));
+    assert_eq!(
+        judgment.cells.get(CELL_INITIALIZED_NEW_GENERATION),
+        Some(&ObservationResult::NotProven)
     );
-    ensure!(
-        judgment.cells.get(CELL_INITIALIZED_NEW_GENERATION) == Some(&ObservationResult::NotProven),
-        "recovery contract equality failed"
-    );
-    ensure!(
-        judgment.cells.get(CELL_UNEXPECTED_EXIT) == Some(&ObservationResult::Fail),
-        "recovery contract equality failed"
-    );
-    ensure!(judgment.result == ObservationResult::Fail, "recovery contract equality failed");
+    assert_eq!(judgment.cells.get(CELL_UNEXPECTED_EXIT), Some(&ObservationResult::Fail));
+    assert_eq!(judgment.result, ObservationResult::Fail);
     Ok(())
 }
 
@@ -886,19 +856,10 @@ fn a_clean_first_launch_relabeled_recovery_is_rejected() -> Result<()> {
     );
     let wire = extract_recovery_wire(log.as_bytes());
     let judgment = canonical_judgment(&plan, events, &wire, &[]);
-    ensure!(
-        judgment.cells.get(CELL_EXPLICIT_RESTART) == Some(&ObservationResult::NotProven),
-        "recovery contract equality failed"
-    );
-    ensure!(
-        judgment.cells.get(CELL_UNEXPECTED_EXIT) == Some(&ObservationResult::NotProven),
-        "recovery contract equality failed"
-    );
-    ensure!(
-        judgment.cells.get(CELL_RETRY_OR_MANUAL) == Some(&ObservationResult::NotProven),
-        "recovery contract equality failed"
-    );
-    ensure!(judgment.result == ObservationResult::NotProven, "recovery contract equality failed");
+    assert_eq!(judgment.cells.get(CELL_EXPLICIT_RESTART), Some(&ObservationResult::NotProven));
+    assert_eq!(judgment.cells.get(CELL_UNEXPECTED_EXIT), Some(&ObservationResult::NotProven));
+    assert_eq!(judgment.cells.get(CELL_RETRY_OR_MANUAL), Some(&ObservationResult::NotProven));
+    assert_eq!(judgment.result, ObservationResult::NotProven);
     Ok(())
 }
 
@@ -917,15 +878,9 @@ fn an_old_generation_publish_after_replacement_fails_rejection_and_current() -> 
     );
     let wire = extract_recovery_wire(lines.join("\n").as_bytes());
     let judgment = canonical_judgment(&plan, events, &wire, &landed_stimulus_records());
-    ensure!(
-        judgment.cells.get(CELL_OLD_GENERATION_REJECTED) == Some(&ObservationResult::Fail),
-        "recovery contract equality failed"
-    );
-    ensure!(
-        judgment.cells.get(CELL_CURRENT_RESULT) == Some(&ObservationResult::Fail),
-        "recovery contract equality failed"
-    );
-    ensure!(judgment.result == ObservationResult::Fail, "recovery contract equality failed");
+    assert_eq!(judgment.cells.get(CELL_OLD_GENERATION_REJECTED), Some(&ObservationResult::Fail));
+    assert_eq!(judgment.cells.get(CELL_CURRENT_RESULT), Some(&ObservationResult::Fail));
+    assert_eq!(judgment.result, ObservationResult::Fail);
     Ok(())
 }
 
@@ -940,19 +895,10 @@ fn a_stimulus_that_never_landed_fails_the_recovery_cells() -> Result<()> {
     let mut records = landed_stimulus_records();
     records.truncate(2);
     let judgment = canonical_judgment(&plan, events, &wire, &records);
-    ensure!(
-        judgment.cells.get(CELL_UNEXPECTED_EXIT) == Some(&ObservationResult::Fail),
-        "recovery contract equality failed"
-    );
-    ensure!(
-        judgment.cells.get(CELL_RETRY_OR_MANUAL) == Some(&ObservationResult::Fail),
-        "recovery contract equality failed"
-    );
-    ensure!(
-        judgment.cells.get(CELL_SHUTDOWN_CLEANUP) == Some(&ObservationResult::Fail),
-        "recovery contract equality failed"
-    );
-    ensure!(judgment.result == ObservationResult::Fail, "recovery contract equality failed");
+    assert_eq!(judgment.cells.get(CELL_UNEXPECTED_EXIT), Some(&ObservationResult::Fail));
+    assert_eq!(judgment.cells.get(CELL_RETRY_OR_MANUAL), Some(&ObservationResult::Fail));
+    assert_eq!(judgment.cells.get(CELL_SHUTDOWN_CLEANUP), Some(&ObservationResult::Fail));
+    assert_eq!(judgment.result, ObservationResult::Fail);
     Ok(())
 }
 
@@ -991,7 +937,7 @@ fn a_manual_restart_relabeled_automatic_recovery_is_an_oracle_violation() -> Res
         &landed_stimulus_records(),
         RecoveryFixtureVariant::AutoRecoveryClaimed,
     );
-    ensure!(judgment.result == ObservationResult::Fail, "recovery contract equality failed");
+    assert_eq!(judgment.result, ObservationResult::Fail);
     Ok(())
 }
 
@@ -1051,11 +997,8 @@ fn a_wrong_root_fails_the_journey_typed() -> Result<()> {
         &[],
         RecoveryFixtureVariant::WrongRootDecoy,
     );
-    ensure!(
-        judgment.driver_failure_reason.as_deref() == Some("root_mismatch"),
-        "recovery contract equality failed"
-    );
-    ensure!(judgment.result == ObservationResult::Fail, "recovery contract equality failed");
+    assert_eq!(judgment.driver_failure_reason.as_deref(), Some("root_mismatch"));
+    assert_eq!(judgment.result, ObservationResult::Fail);
     Ok(())
 }
 
@@ -1117,11 +1060,8 @@ fn a_replay_skipped_claim_fails_the_journey_typed() -> Result<()> {
         &[],
         RecoveryFixtureVariant::ReplaySkippedClaimed,
     );
-    ensure!(
-        judgment.driver_failure_reason.as_deref() == Some("document_replay_absent"),
-        "recovery contract equality failed"
-    );
-    ensure!(judgment.result == ObservationResult::Fail, "recovery contract equality failed");
+    assert_eq!(judgment.driver_failure_reason.as_deref(), Some("document_replay_absent"));
+    assert_eq!(judgment.result, ObservationResult::Fail);
     Ok(())
 }
 
@@ -1140,11 +1080,8 @@ fn a_leaked_process_cannot_keep_the_shutdown_cell() -> Result<()> {
         &landed_stimulus_records(),
         RecoveryFixtureVariant::Canonical,
     );
-    ensure!(
-        judgment.cells.get(CELL_SHUTDOWN_CLEANUP) == Some(&ObservationResult::Fail),
-        "recovery contract equality failed"
-    );
-    ensure!(judgment.result == ObservationResult::Fail, "recovery contract equality failed");
+    assert_eq!(judgment.cells.get(CELL_SHUTDOWN_CLEANUP), Some(&ObservationResult::Fail));
+    assert_eq!(judgment.result, ObservationResult::Fail);
     Ok(())
 }
 
@@ -1187,12 +1124,9 @@ fn receipt_journey_cites_the_recovery_catalog_cells_with_honest_results() -> Res
             "catalog cell {cell} must carry its route/disposition limitation"
         );
         if cell == CELL_UNEXPECTED_EXIT {
-            ensure!(
-                found.result == ObservationResult::Partial,
-                "recovery contract equality failed"
-            );
+            assert_eq!(found.result, ObservationResult::Partial);
         } else {
-            ensure!(found.result == ObservationResult::Pass, "recovery contract equality failed");
+            assert_eq!(found.result, ObservationResult::Pass);
         }
     }
     // No sibling-family cell may appear in this journey's semantic surface.

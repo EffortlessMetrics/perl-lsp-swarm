@@ -5104,7 +5104,9 @@ fn run_cli(cli: Cli) -> Result<()> {
                         )
                         .map_err(|error| eyre!("{error:#}"))?;
                         println!(
-                            "vim recovery-generations run complete (variant {}): result={:?}                              cleanup={:?} driver_complete={} driver_failure={:?} receipt={}",
+                            "vim recovery-generations run complete (variant {}): \
+                             result={:?} cleanup={:?} driver_complete={} \
+                             driver_failure={:?} receipt={}",
                             variant.id(),
                             outcome.result,
                             outcome.process_cleanup,
@@ -5121,7 +5123,9 @@ fn run_cli(cli: Cli) -> Result<()> {
                                     || outcome.driver_failure_reason.as_deref() != Some(expected)
                                 {
                                     return Err(eyre!(
-                                        "negative control {variant:?} did not fail with the                                          typed reason {expected}: result={result:?}                                          driver_failure={:?}",
+                                        "negative control {variant:?} did not fail with \
+                                         the typed reason {expected}: result={result:?} \
+                                         driver_failure={:?}",
                                         outcome.driver_failure_reason
                                     ));
                                 }
@@ -5136,7 +5140,8 @@ fn run_cli(cli: Cli) -> Result<()> {
                                     != xtask::editor_client_compat::ObservationResult::Partial
                                 {
                                     return Err(eyre!(
-                                        "vim recovery-generations run did not reach its honest                                          partial disposition: {result:?}"
+                                        "vim recovery-generations run did not reach its \
+                                         honest partial disposition: {result:?}"
                                     ));
                                 }
                             }
