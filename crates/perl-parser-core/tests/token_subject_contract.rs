@@ -991,6 +991,59 @@ fn a_budget_stopped_replay_is_rejected_for_the_same_reason() -> R {
     Ok(())
 }
 
+/// The lexer has a second budget that abandons source, on a different limit
+/// (`MAX_HEREDOC_BYTES`, 256KB) through a different code path. It reaches the
+/// same geometry-only shape, and the rule keys on the shape rather than on
+/// which budget produced it — but "the same shape, so it must be covered" is a
+/// claim about code I did not write, so it is exercised rather than assumed.
+#[test]
+fn the_heredoc_budget_stop_is_rejected_on_the_same_rule() -> R {
+    let source = format!("my $t = <<EOT;\n{}\nmy $after = 1;\n", "x".repeat(300_000));
+
+    let tokens = lex(&source)?;
+    assert!(
+        tokens.iter().any(|token| token.is_geometry_only()),
+        "the heredoc budget stop must reach the same geometry-only recovery shape"
+    );
+
+    let error = err_of(ValidatedTokenStream::from_fresh_lex(identity(&source), &source))?;
+
+    assert_rule(&error, "incomplete_stream", "the lexer abandoned")?;
+    Ok(())
+}
+
+/// The distinguishing control for the rule: not every `UnknownRest` is
+/// abandonment. The EOF-inside-budget arm emits a *payload-carrying*
+/// `UnknownRest` for a bounded unterminated heredoc — the body is retained
+/// within `MAX_HEREDOC_BYTES`, so no coverage is lost and the subject must
+/// still be accepted. A rule that keyed on the token kind instead of the
+/// payload-free geometry would reject this and break ordinary recovery.
+#[test]
+fn a_bounded_unterminated_heredoc_still_forms_a_valid_subject() -> R {
+    let source = "my $t = <<EOT;
+body line one
+body line two
+";
+
+    let subject = fresh_subject(source)?;
+
+    // Establish that this really is the payload-carrying arm, so the control
+    // is discriminating rather than just "ordinary source validates".
+    let recovery = subject
+        .tokens()
+        .iter()
+        .find(|token| token.kind() == TokenKind::UnknownRest)
+        .ok_or("fixture must reach the unterminated-heredoc recovery arm")?;
+    assert!(!recovery.text.is_empty(), "this arm retains the body as payload");
+    assert!(!recovery.is_geometry_only(), "so it is not the abandonment shape");
+
+    assert!(
+        subject.is_production_valid(),
+        "bounded recovery retains its source, so it is not an abandoned stream"
+    );
+    Ok(())
+}
+
 /// A fixture makes no completeness claim, so it may legitimately carry the
 /// recovery shape — the payload exemption exists so such a stream is
 /// representable at all. Pinning this keeps the rule from being a blanket ban.
