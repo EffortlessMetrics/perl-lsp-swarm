@@ -44,7 +44,11 @@ fn init_harness() -> Result<LspHarness, String> {
 /// Not a generation-bound configuration wait (#10840). Unlike
 /// `LspHarness::barrier`, a timeout is a test failure.
 fn await_prior_notification(harness: &mut LspHarness) -> Result<Value, Box<dyn std::error::Error>> {
-    match harness.request("perl-lsp/__testOrderBarrier", json!({})) {
+    match harness.request_with_timeout(
+        "perl-lsp/__testOrderBarrier",
+        json!({}),
+        Duration::from_secs(2),
+    ) {
         Ok(result) => Ok(result),
         Err(err) if request_failed_without_response(&err) => Err(err.into()),
         Err(err) if err.contains("-32601") => Ok(json!({ "code": -32601 })),
@@ -192,7 +196,7 @@ fn sequential_did_change_configuration_notifications_each_await_a_response() -> 
 
     let uri = "file:///sequential_config.pl";
     harness.open(uri, "my $obj = Package->")?;
-    await_prior_notification(&mut harness)?;
+    harness.wait_for_idle(Duration::from_millis(200));
 
     let result = harness.request(
         "textDocument/perlInlineCompletionStream",
@@ -480,7 +484,7 @@ fn streaming_completion_on_closed_doc_returns_null() -> TestResult {
 
     let uri = "file:///closed_doc.pl";
     harness.open(uri, "use strict;\nmy $x = 1;\n")?;
-    await_prior_notification(&mut harness)?;
+    harness.wait_for_idle(Duration::from_millis(200));
     let _ = harness.drain_notifications(None, 100);
 
     let open_result = harness.request(
@@ -514,7 +518,7 @@ fn streaming_completion_on_closed_doc_returns_null() -> TestResult {
     assert!(closed_result.is_null(), "streaming on closed doc should return null");
 
     harness.open(uri, "use strict;\nmy $x = 1;\n")?;
-    await_prior_notification(&mut harness)?;
+    harness.wait_for_idle(Duration::from_millis(200));
     let reopened = harness.request(
         "textDocument/perlInlineCompletionStream",
         json!({
