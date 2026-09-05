@@ -1868,11 +1868,12 @@ fn load_execution_rail(
 
 /// The one mechanism every file result of an execution receipt agrees on.
 ///
-/// `ensure_valid_report_shape` already rejects an execute report whose file
-/// results carry no mechanism or an inadmissible one, but it does not require
-/// them to agree. A receipt mixing rails describes no single rail, so it
-/// cannot be summarized as one and fails closed here rather than having one
-/// mechanism picked for it (#8254).
+/// `read_run_report` already rejects an execute report whose file results
+/// carry no mechanism or an inadmissible one, through
+/// `reject_inadmissible_report_mechanisms`, but it does not require them to
+/// agree. A receipt mixing rails describes no single rail, so it cannot be
+/// summarized as one and fails closed here rather than having one mechanism
+/// picked for it (#8254).
 fn execution_receipt_mechanism(report: &RunReport) -> Result<ExecutionMechanism> {
     let mut mechanisms: Vec<ExecutionMechanism> =
         report.file_results.iter().filter_map(|result| result.mechanism).collect();
@@ -10056,7 +10057,7 @@ mod tests {
 
     #[test]
     fn an_execution_receipt_naming_no_mechanism_cannot_claim_a_rail() {
-        // `ensure_valid_report_shape` rejects this shape too, so the rail
+        // `read_run_report` rejects this shape on decode, so the rail
         // derivation is not the only guard — but it must not be a hole either:
         // a receipt that names nothing summarizes to nothing.
         let mut report = sample_execute_report();

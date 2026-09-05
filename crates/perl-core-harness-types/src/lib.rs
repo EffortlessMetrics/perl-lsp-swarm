@@ -1321,6 +1321,21 @@ pub fn validate_observation_rail_mechanisms(
         &observation.differential_oracle,
     )?;
     validate_rail_mechanism(CompatibilityRailRole::Eir, &observation.eir)?;
+    validate_debt_rail_mechanisms(&observation.debt)
+}
+
+/// Reject a boundary-debt rail that names an execution mechanism.
+///
+/// The registry and cluster-history rails describe compiler debt, not
+/// execution, so they may never name a rail. They are reached through
+/// `debt` rather than sitting beside the other rails, which is exactly how
+/// they were missed when the published schema already forbade a mechanism
+/// on them.
+pub fn validate_debt_rail_mechanisms(
+    debt: &CompatibilityDebtState,
+) -> Result<(), RailMechanismViolation> {
+    validate_rail_mechanism(CompatibilityRailRole::NonExecution, &debt.registry)?;
+    validate_rail_mechanism(CompatibilityRailRole::NonExecution, &debt.history)?;
     Ok(())
 }
 
@@ -1337,7 +1352,7 @@ pub fn validate_series_rail_mechanisms(
         &series.differential_oracle,
     )?;
     validate_rail_mechanism(CompatibilityRailRole::Eir, &series.eir)?;
-    Ok(())
+    validate_debt_rail_mechanisms(&series.debt)
 }
 
 /// Parse or compile acceptance counts for one immutable series.
@@ -1922,6 +1937,44 @@ mod tests {
         let decoded: CompatibilityRailState = serde_json::from_str(&encoded)?;
         assert_eq!(decoded.mechanism, Some(ExecutionMechanism::FixtureReplay));
         Ok(())
+    }
+
+    #[test]
+    fn boundary_debt_rails_may_not_name_an_execution_mechanism() {
+        // The registry and history rails hang off `debt` rather than sitting
+        // beside the other rails, so they are easy to omit from the walk while
+        // the schema already forbids a mechanism on them — leaving a series
+        // that passes in Rust and fails against the published contract.
+        let clean = CompatibilityDebtState {
+            boundary_count: 0,
+            source_locked_count: 0,
+            downstream_blocking_count: 0,
+            by_disposition: BTreeMap::new(),
+            by_lock_scope: BTreeMap::new(),
+            registry: rail(CompatibilityRailAvailability::Available, None),
+            history: rail(CompatibilityRailAvailability::NotAvailable, None),
+        };
+        assert!(validate_debt_rail_mechanisms(&clean).is_ok());
+
+        let mut claimed_registry = clean.clone();
+        claimed_registry.registry.mechanism = Some(ExecutionMechanism::FixtureReplay);
+        assert_eq!(
+            validate_debt_rail_mechanisms(&claimed_registry),
+            Err(RailMechanismViolation::NotExecutionLike {
+                mechanism: ExecutionMechanism::FixtureReplay
+            }),
+            "the boundary registry represents no execution"
+        );
+
+        let mut claimed_history = clean;
+        claimed_history.history.mechanism = Some(ExecutionMechanism::FixtureReplay);
+        assert_eq!(
+            validate_debt_rail_mechanisms(&claimed_history),
+            Err(RailMechanismViolation::NotExecutionLike {
+                mechanism: ExecutionMechanism::FixtureReplay
+            }),
+            "cluster history represents no execution"
+        );
     }
 
     #[test]
