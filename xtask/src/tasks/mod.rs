@@ -182,6 +182,7 @@ pub mod swarm_summary;
 pub mod sync_divergence;
 pub mod sync_release_docs;
 pub mod targeted_checks;
+pub mod tdd_support_surface;
 pub mod test;
 pub mod test_lsp;
 pub mod train_edge_contract;

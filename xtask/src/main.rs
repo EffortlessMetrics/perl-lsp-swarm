@@ -104,6 +104,37 @@ enum Commands {
     /// Verify the governed Clippy lint policy ledger and workspace inheritance.
     CheckLintPolicy,
 
+    /// Reconcile the `perl-tdd-support` public surface and workspace consumer
+    /// edges against `policy/tdd-support-surface.toml`.
+    ///
+    /// Fails when a public item has no ledger row, when a governed row no
+    /// longer names a real symbol, when a row's `cfg` gate drifts from source,
+    /// or when the generated projection is stale.
+    ///
+    /// Examples:
+    ///   `cargo xtask tdd-support-surface`
+    ///   `cargo xtask tdd-support-surface --write`
+    ///   `cargo xtask tdd-support-surface --propose`
+    TddSupportSurface {
+        /// Regenerate `docs/policy/TDD_SUPPORT_SURFACE.md` instead of checking
+        /// that it is current.
+        #[arg(long, conflicts_with_all = ["propose", "emit_consumers"])]
+        write: bool,
+
+        /// Print ledger row skeletons for public items that have no row yet.
+        #[arg(long, conflicts_with = "emit_consumers")]
+        propose: bool,
+
+        /// Print `<row id>\t<crate,...>` — the edge-derived consumers each row
+        /// must list. Authoring aid for the ledger's `consumers` field.
+        #[arg(long)]
+        emit_consumers: bool,
+
+        /// Also write a machine-readable receipt to this path.
+        #[arg(long)]
+        json: Option<PathBuf>,
+    },
+
     /// Verify local Rust toolchain meets the pinned MSRV in rust-toolchain.toml.
     CheckToolchain {
         /// Show a warning when rustc satisfies the minimum MSRV but differs
@@ -4867,6 +4898,10 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckOnly => ci::check_only(),
         Commands::CheckAgentContext => check_agent_context::run(),
         Commands::CheckLintPolicy => check_lint_policy::run(),
+        Commands::TddSupportSurface { write, propose, emit_consumers, json } => {
+            let root = utils::project_root()?;
+            tasks::tdd_support_surface::run(&root, write, propose, emit_consumers, json.as_deref())
+        }
         Commands::CheckToolchain { doctor } => check_toolchain::run(doctor),
         Commands::CheckDevexDocs => devex_docs::run(),
         Commands::CheckNativeProductSurface { strict } => native_product_surface::run_with(strict),

@@ -54,6 +54,18 @@ created = "2026-08-24"
 review_after = "2026-11-22"
 
 [[allow]]
+id = "generated-tdd-support-surface"
+path = "docs/policy/TDD_SUPPORT_SURFACE.md"
+kind = "inventory"
+generated_by = "cargo xtask tdd-support-surface --write"
+regenerate = "cargo xtask tdd-support-surface --write"
+owner = "tests/tdd-support"
+reason = "Review projection of the perl-tdd-support public-surface and consumer disposition ledger; rendered from policy/tdd-support-surface.toml, which is the authority."
+covered_by = ["cargo xtask check-generated", "cargo xtask tdd-support-surface"]
+created = "2026-09-03"
+review_after = "2026-12-03"
+
+[[allow]]
 id = "generated-repository-topology"
 path = "docs/architecture/repository-topology.md"
 kind = "status_page"
