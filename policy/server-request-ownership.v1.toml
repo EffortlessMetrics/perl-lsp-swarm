@@ -19,7 +19,15 @@ schema = "server_request_ownership.v1"
 owner_issue = 13223
 direction_registry = "crates/perl-lsp-rs/src/protocol/method_direction.rs"
 feature_catalog = "features.toml"
-emission_scan_root = "crates/perl-lsp-rs/src/runtime"
+# The whole crate that owns the sender, not just its runtime subtree.
+# `OutboundSink` -- which declares `send_request` -- is `pub(crate)` in
+# crates/perl-lsp-rs/src/runtime/outbound.rs, so every call site that can reach
+# a sender lives inside this crate's source and nowhere else. Scanning only
+# src/runtime left the rest of the crate unread, where a send would have been
+# missed in silence rather than reported. Widening past this crate would be
+# wrong in the other direction: other crates carry unrelated test helpers also
+# named `send_request`, whose callers would read as emitters.
+emission_scan_root = "crates/perl-lsp-rs/src"
 
 # A row may only use these values. An unlisted value is a hard failure, so a
 # typo or an invented state cannot silently read as green.

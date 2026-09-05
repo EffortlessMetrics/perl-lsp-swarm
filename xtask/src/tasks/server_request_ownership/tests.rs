@@ -744,6 +744,47 @@ fn scan_synthetic(
     scan_synthetic_files(&[("synthetic.rs", source)])
 }
 
+/// A send outside `src/runtime` but inside the sender's own crate must still be
+/// discovered. `OutboundSink` is `pub(crate)`, so the reachable surface is the
+/// whole crate; scanning only the runtime subtree let a production emitter
+/// elsewhere in it pass unseen, and an unread file reads as absence.
+#[test]
+fn an_emitter_outside_the_runtime_subtree_is_discovered() -> Result<(), Box<dyn std::error::Error>>
+{
+    let dir = tempfile::tempdir()?;
+    let protocol = dir.path().join("src").join("protocol");
+    std::fs::create_dir_all(&protocol)?;
+    std::fs::write(
+        protocol.join("elsewhere.rs"),
+        r#"
+impl Server {
+    pub fn emit_from_protocol(&self) -> io::Result<()> {
+        self.send_request(id, "window/showDocument", params)
+    }
+}
+"#,
+    )?;
+
+    let constants = BTreeMap::new();
+
+    // The crate-wide root sees it.
+    let (emitted, _ambiguous, findings) = scan_emission(dir.path(), "src", &constants)?;
+    assert_eq!(
+        emitted.get("window/showDocument").map(Vec::len),
+        Some(1),
+        "a send anywhere in the sender's crate is an emission: {emitted:?}"
+    );
+    assert!(findings.is_empty(), "{findings:?}");
+
+    // The old runtime-only root did not, which is the regression this pins.
+    let (narrow, _ambiguous, _findings) = scan_emission(dir.path(), "src/runtime", &constants)?;
+    assert!(
+        !narrow.contains_key("window/showDocument"),
+        "pins why the root was widened: the narrow root misses it in silence: {narrow:?}"
+    );
+    Ok(())
+}
+
 /// The scanner parses to the matching `)`, not to a line budget. A normally
 /// formatted call whose method argument sits on the fourth line must still be
 /// discovered — the bounded-window version silently dropped it, because the
