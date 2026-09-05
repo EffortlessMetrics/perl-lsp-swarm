@@ -19,17 +19,33 @@
 //!
 //! # Range spaces
 //!
-//! The retained record carries findings in three different coordinate spaces, and
+//! The retained record carries findings in more than one coordinate space, and
 //! mixing them up silently misplaces diagnostics. They are:
 //!
-//! | Source                                | Space                  | Conversion |
-//! |---------------------------------------|------------------------|------------|
-//! | `pattern.structural.diagnostics`      | pattern-body relative  | [`RegexAnalysisRecord::map_pattern_range`] |
-//! | `pattern.controls.captures.diagnostics` | original source      | used as-is |
-//! | `modifiers.diagnostics`               | original source        | used as-is |
+//! | Source                                  | Space                 | Conversion |
+//! |-----------------------------------------|-----------------------|------------|
+//! | `pattern.structural.diagnostics`        | pattern-body relative | [`RegexAnalysisRecord::map_pattern_range`] |
+//! | `pattern.controls.captures.diagnostics` | pattern-body relative | [`RegexAnalysisRecord::map_pattern_range`] |
+//! | `modifiers.diagnostics`                 | original source       | used as-is |
 //!
-//! `regex_canonical_range_spaces_are_pinned_to_source_text` pins all three against
-//! the actual bytes they name, so a future change to any of them fails loudly.
+//! Only the modifier findings are already in source coordinates.
+//! `analyze_pattern_controls` takes a `source_start` and applies it to its control
+//! facts and its own diagnostics, but it calls `analyze_captures(pattern, ..)`
+//! without one and stores that result unmapped — so capture ranges stay
+//! body-relative despite reaching this module through `controls`.
+//!
+//! `regex_canonical_range_spaces_are_pinned_to_source_text` pins each of them
+//! against the actual bytes it names, using a fixture with source *before* the
+//! pattern so a missing or doubled mapping cannot pass unnoticed.
+//!
+//! # Not projected yet
+//!
+//! `pattern.controls.diagnostics` (unresolved and invalid backreferences,
+//! profile-incompatible references, unsupported controls) carries findings this
+//! module does not publish. They have no catalog identity yet, and inventing one
+//! per code without proof of reachability is how a wrong severity ships. Nothing
+//! regresses by their absence — no route published them before either — but this
+//! module is not a complete drain of the retained analysis, and #14753 tracks it.
 //!
 //! # Publication policy
 //!
@@ -77,7 +93,7 @@ pub fn project_canonical_regex_diagnostics(table: &RegexAnalysisTable) -> Vec<Di
 fn project_record(record: &RegexAnalysisRecord, diagnostics: &mut Vec<Diagnostic>) {
     if let Some(pattern) = &record.pattern {
         project_structural(record, pattern, diagnostics);
-        project_captures(pattern, diagnostics);
+        project_captures(record, pattern, diagnostics);
         project_incompleteness(record, pattern, diagnostics);
     }
 
@@ -120,11 +136,17 @@ fn project_structural(
     }
 }
 
-/// Project capture findings, which already carry original-source spans.
+/// Project capture findings, whose spans are pattern-body relative.
 ///
-/// `analyze_pattern_controls` is given the body's start offset and resolves its
-/// ranges against it, so these must not be mapped a second time.
-fn project_captures(pattern: &RetainedRegexPatternAnalysis, diagnostics: &mut Vec<Diagnostic>) {
+/// `analyze_pattern_controls` takes a `source_start` and applies it to its control
+/// facts and its own diagnostics, but it calls `analyze_captures(pattern, ..)`
+/// without one and stores the result unmapped. So these ranges are relative to the
+/// body, exactly like the structural ones, and are mapped the same way.
+fn project_captures(
+    record: &RegexAnalysisRecord,
+    pattern: &RetainedRegexPatternAnalysis,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
     for diagnostic in &pattern.controls.captures.diagnostics {
         let (code, message) = match diagnostic.code {
             CaptureDiagnosticCode::InvalidName => (
@@ -149,9 +171,14 @@ fn project_captures(pattern: &RetainedRegexPatternAnalysis, diagnostics: &mut Ve
             // guessing a class for an unknown finding is how a wrong severity ships.
             _ => continue,
         };
-        // Already in original-source coordinates: `analyze_pattern_controls` is
-        // given the body's start offset and resolves its ranges against it.
-        diagnostics.push(build(code, (diagnostic.range.start, diagnostic.range.end), message));
+        // Body-relative, so mapped exactly like a structural finding. Publishing it
+        // raw anchors the span near the start of the document: for
+        // `my $padding = 1; my $re = qr/(?<9bad>x)/;` the unmapped range names
+        // bytes in the padding statement rather than the capture name.
+        let Some(span) = record.map_pattern_range(diagnostic.range) else {
+            continue;
+        };
+        diagnostics.push(build(code, (span.start, span.end), message));
     }
 }
 

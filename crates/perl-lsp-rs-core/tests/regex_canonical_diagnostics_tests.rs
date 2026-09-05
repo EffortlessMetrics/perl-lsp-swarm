@@ -94,10 +94,14 @@ fn is_canonical_regex_code(code: &str) -> bool {
     CANONICAL_REGEX_CODES.contains(&code)
 }
 
-/// The correctness core. The retained record carries findings in three different
-/// coordinate spaces; only the structural ones are pattern-body relative. Anchoring
-/// each published range against the exact bytes it names is what catches a
-/// projection that forgets to map — or that maps twice.
+/// The correctness core. The retained record carries findings in more than one
+/// coordinate space — structural and capture findings are pattern-body relative,
+/// modifier findings are not. Anchoring each published range against the exact bytes
+/// it names is what catches a projection that forgets to map, or that maps twice.
+///
+/// This fixture covers the structural and modifier spaces. Captures need source
+/// *before* the pattern to be discriminating, so they are pinned separately by
+/// [`a_capture_finding_names_the_capture_and_not_earlier_source`].
 #[test]
 fn regex_canonical_range_spaces_are_pinned_to_source_text() {
     let diagnostics = canonical_diagnostics(MIXED);
@@ -136,20 +140,64 @@ fn regex_canonical_range_spaces_are_pinned_to_source_text() {
     );
 }
 
+/// Capture findings are body-relative too, and this is the fixture that proves it.
+///
+/// `MIXED` cannot: its first pattern starts at byte 11, so a body-relative range
+/// published raw still lands inside the same statement and looks plausible. Here the
+/// capture name sits at body offset 3 while the pattern begins far into the file, so
+/// an unmapped range names bytes in the padding instead — which is exactly what this
+/// projection shipped until the range space was measured rather than assumed.
+#[test]
+fn a_capture_finding_names_the_capture_and_not_earlier_source() {
+    const PADDED: &str =
+        "my $padding_variable = 1;\nmy $another_padding = 2;\nmy $re = qr/(?<9bad>x)/;\n";
+
+    let diagnostics = canonical_diagnostics(PADDED);
+    let invalid = with_code(&diagnostics, "PL1005");
+    assert_eq!(invalid.len(), 1, "the malformed capture name is reported once: {diagnostics:#?}");
+
+    let (start, end) = invalid[0].range;
+    assert_eq!(
+        &PADDED[start..end],
+        "9bad",
+        "PL1005 must name the capture itself; an unmapped body-relative range would \
+         instead name {:?} near the start of the file",
+        &PADDED[start..end]
+    );
+    // Anchor the discrimination: the finding must sit inside the pattern, not before it.
+    let pattern_start = PADDED.find("(?<9bad>").unwrap_or(0);
+    assert!(
+        start >= pattern_start,
+        "the published span must fall inside the pattern body, not in the padding"
+    );
+}
+
 /// The whole point of the change: before it, the embedded-code finding covered the
 /// entire pattern node. Pinning the improvement stops a silent regression back to
 /// the coarse range.
 #[test]
 fn canonical_embedded_code_range_is_narrower_than_the_compatibility_range() {
     let source = r#"my $x = /(?{ print 1 })/;"#;
-    let canonical = with_code(&canonical_diagnostics(source), "PL609")
-        .first()
-        .map(|diagnostic| diagnostic.range)
-        .expect("canonical path publishes PL609");
-    let compatibility = with_code(&compatibility_diagnostics(source), "PL609")
-        .first()
-        .map(|diagnostic| diagnostic.range)
-        .expect("compatibility path publishes PL609");
+    let canonical_all = canonical_diagnostics(source);
+    let canonical_published = with_code(&canonical_all, "PL609");
+    assert!(
+        !canonical_published.is_empty(),
+        "the canonical path must publish PL609: {canonical_all:#?}"
+    );
+    let Some(canonical) = canonical_published.first().map(|diagnostic| diagnostic.range) else {
+        return;
+    };
+
+    let compatibility_all = compatibility_diagnostics(source);
+    let compatibility_published = with_code(&compatibility_all, "PL609");
+    assert!(
+        !compatibility_published.is_empty(),
+        "the compatibility path must publish PL609: {compatibility_all:#?}"
+    );
+    let Some(compatibility) = compatibility_published.first().map(|diagnostic| diagnostic.range)
+    else {
+        return;
+    };
 
     assert!(
         compatibility.0 <= canonical.0 && canonical.1 <= compatibility.1,
