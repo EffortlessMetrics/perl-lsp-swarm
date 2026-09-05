@@ -225,6 +225,18 @@ fn a_parse_of_another_buffer_cannot_contribute_geometry() {
     // `Analyzed` record whose body was `(x+)-b`, so the table reports a *clean*
     // pattern for a document whose actual body is `(a+)+b`. Refusing is the honest
     // outcome — an explicit `GeometryUnavailable` record with no analysis.
+    // The loop below is satisfied by an empty table, so require the witness first:
+    // a candidate whose geometry was rejected must still be *retained* as explicit
+    // unavailable evidence. Dropping the record entirely would also pass the loop
+    // while silently losing the record of a refusal.
+    assert!(
+        table.records.iter().any(|record| {
+            record.availability == RegexAnalysisAvailability::GeometryUnavailable
+                && record.pattern.is_none()
+        }),
+        "a foreign parse must retain explicit unavailable evidence: {table:#?}"
+    );
+
     for record in &table.records {
         assert_ne!(
             record.availability,

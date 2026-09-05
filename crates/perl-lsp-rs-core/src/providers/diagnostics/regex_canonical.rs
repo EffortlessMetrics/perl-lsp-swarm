@@ -98,8 +98,16 @@ pub fn project_canonical_regex_diagnostics(table: &RegexAnalysisTable) -> Vec<Di
 
 /// Project one record's findings, in source order within the record.
 ///
-/// Modifier findings are emitted even when the body was not analyzed as a regex:
-/// `tr/a-z/A-Z/r` has no regex body, but `r` is still wrong on it.
+/// The modifier block sits outside the pattern branch on purpose: a record's
+/// modifiers are analyzed whether or not its body was analyzed as a regex, so
+/// coupling the two would make publication depend on something it does not
+/// depend on.
+///
+/// No *current* fixture reaches that combination. Measured, every retained
+/// transliteration carries an empty modifier diagnostic list: valid forms
+/// (`tr/a-z/A-Z/r`, `/cdsr`, `/rr`) analyze clean, and an invalid one (`/g`,
+/// `/z`, `/e`, `/i`) retains no record at all rather than a record with a
+/// finding. So this is defensive structure, not an exercised path.
 fn project_record(record: &RegexAnalysisRecord, diagnostics: &mut Vec<Diagnostic>) {
     if let Some(pattern) = &record.pattern {
         project_structural(record, pattern, diagnostics);
@@ -107,8 +115,8 @@ fn project_record(record: &RegexAnalysisRecord, diagnostics: &mut Vec<Diagnostic
         project_incompleteness(record, pattern, diagnostics);
     }
 
-    // Modifier findings survive even when the body itself was not analyzed as a
-    // regex: `tr/a-z/A-Z/r` has no regex body, but `r` is still wrong there.
+    // Outside the pattern branch: see this function's doc for why, and for what
+    // the transliteration case actually measures.
     if let Some(modifiers) = &record.modifiers {
         for diagnostic in &modifiers.diagnostics {
             let Some(code) = modifier_code(diagnostic.code) else {

@@ -415,13 +415,23 @@ fn a_clean_pattern_publishes_no_regex_diagnostic() {
 /// acquire pattern findings by being retained alongside real patterns.
 #[test]
 fn transliteration_publishes_no_pattern_finding() {
-    let diagnostics = canonical_diagnostics("my $n = ($s =~ tr/a-z/A-Z/);\n");
-    let regex_codes: Vec<_> = diagnostics
-        .iter()
-        .filter_map(|diagnostic| diagnostic.code.as_deref())
-        .filter(|&code| is_canonical_regex_code(code))
-        .collect();
-    assert!(regex_codes.is_empty(), "transliteration must publish nothing, got {regex_codes:?}");
+    // `r` is valid on transliteration (it returns the result instead of modifying
+    // in place), so the form with it must stay as silent as the bare one. An
+    // earlier revision of the projection's doc used `tr/.../r` as an example of a
+    // *wrong* modifier; it is not, and the analyzer agrees — measured, it produces
+    // an empty modifier diagnostic list.
+    for source in ["my $n = ($s =~ tr/a-z/A-Z/);\n", "my $n = ($s =~ tr/a-z/A-Z/r);\n"] {
+        let diagnostics = canonical_diagnostics(source);
+        let regex_codes: Vec<_> = diagnostics
+            .iter()
+            .filter_map(|diagnostic| diagnostic.code.as_deref())
+            .filter(|&code| is_canonical_regex_code(code))
+            .collect();
+        assert!(
+            regex_codes.is_empty(),
+            "transliteration must publish nothing for {source:?}, got {regex_codes:?}"
+        );
+    }
 }
 
 /// Findings arrive in deterministic source order so a client rendering them in
