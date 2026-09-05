@@ -10,12 +10,15 @@ on:
       - "scripts/test/vim-host-save-format-driver.vim"
       - "scripts/test/vim-clients/**"
       - ".ci/editor-clients/vim-vim-lsp-*.json"
-      - "crates/perl-lsp-rs-core/**"
-      - "crates/perl-lsp-perltidy/**"
-      - "crates/perl-lsp-rs/**"
-      - "crates/perl-diagnostics/**"
-      - "crates/perl-module/**"
-      - "crates/perllsp/**"
+      # Every workspace crate, not the six that were once named. `perllsp`'s
+      # transitive graph is 31 workspace crates; enumerating a subset let a
+      # change to `perl-parser-core`, `perl-lexer`, or `perl-workspace` reach
+      # main without ever re-running the promoted actual-client proof. An
+      # enumeration also goes stale silently the next time a crate is added,
+      # which is the same defect one list longer. This over-triggers on the
+      # crates outside the graph; that is the safe direction of error for a
+      # lane that guards a promoted support claim.
+      - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/vim-hermetic-host.yml"
