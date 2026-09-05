@@ -55,9 +55,11 @@ powershell fences) into a file outside the repository and run
 `pwsh -NoProfile -File <extracted>.ps1`. Culture-sensitive operations must not
 affect results; all comparisons are ordinal. The checker asserts:
 
-1. union of committed patch paths, staged, unstaged, and untracked NUL-porcelain
-   paths equals exactly the four bundle files plus (optionally)
-   `docs/policy/NON_RUST_INVENTORY.md`;
+1. union of committed patch paths (additions, modifications, renames **and
+   deletions**), staged, unstaged, and untracked NUL-porcelain paths equals
+   exactly the four bundle files plus (optionally)
+   `docs/policy/NON_RUST_INVENTORY.md`; a committed removal of any
+   out-of-bundle file is a scope violation, not an exemption;
 2. hygiene: no BOM, CR, or tabs, exactly one trailing LF in all four files;
 3. manifest live-state law: no long hex runs, ISO dates, ref/pull/actions path
    fragments in raw bytes or parsed string values; strictly ascending storage
@@ -69,12 +71,15 @@ affect results; all comparisons are ordinal. The checker asserts:
    hard dependencies are distinct integers not self-referencing; disposition
    basis non-empty; semantic authority non-empty unless NOT_PROVEN;
    controller/fan_in nodes keep non-empty authority summaries;
+   `scope_corrections` holds exactly its declared three records, each with a
+   non-empty finding and at least one cited number; `consumers` is closed to
+   the consumer vocabulary on `family_views` as well as on `contract_nodes`;
 5. markdown contracts: required headings/terms present; acceptance Test-Grid
-   rows T01..T14 present in fixed order;
-6. T01–T14 fail-closed mutation controls all reject (T12 is two-sided:
+   rows T01..T15 present in fixed order;
+6. T01–T15 fail-closed mutation controls all reject (T12 is two-sided:
    rotation preserves the canonical digest while unsorted storage still
    rejects; T13 is population drift; T14 is enforced bidirectionally inside
-   the changed-scope check above);
+   the changed-scope check above; T15 is hard-dependency referential closure);
 7. prints SHA-256 per file plus the canonical semantic digest; two runs must be
    byte-identical.
 
@@ -107,7 +112,9 @@ foreach ($line in $nameStatus) {
   if ($line -match '^([RCA])([0-9]*)\t(.+)\t(.+)$') {
     $paths.Add($Matches[4])
   } elseif ($line -match '^([ADM])\t(.+)$') {
-    if ($Matches[1] -ne 'D') { $paths.Add($Matches[2]) }
+    # deletions are in scope too: a committed removal outside the bundle must
+    # reach $unexpected rather than pass silently (T14 fail-closed direction)
+    $paths.Add($Matches[2])
   } elseif ($line.Trim().Length -gt 0) { throw "malformed name-status line: '$line'" }
 }
 # (b) staged, unstaged, and untracked NUL-porcelain paths
@@ -246,11 +253,16 @@ function Invoke-Structural-Laws($M) {
   }
   foreach ($k in $invsIdx.Keys) { if (-not $covered.ContainsKey($k)) { throw "orphan authority invariant $k" } }
 
+  # the declared API shape is scope_corrections[3]; a generator that drops
+  # records must fail rather than vacuously validate the survivors
+  if (@($M['scope_corrections']).Count -ne 3) { throw "scope_corrections population drift: have $(@($M['scope_corrections']).Count) want 3" }
   $sci = 0
   foreach ($scItem in $M['scope_corrections']) {
     Assert-ExactKeys $scItem @('referenced_numbers','finding','action_required_on') "scope_correction $sci"
     if ($scItem['action_required_on'] -ne 10976) { throw 'scope correction owner drifted' }
+    if (@($scItem['referenced_numbers']).Count -lt 1) { throw "scope_correction $sci cites no numbers" }
     foreach ($rn in $scItem['referenced_numbers']) { if (-not ($rn -is [int64] -or $rn -is [int32])) { throw 'non-integer cited number' } }
+    if ($scItem['finding'] -isnot [string] -or -not $scItem['finding']) { throw "scope_correction $sci has empty finding" }
     $sci++
   }
   $li = 0
@@ -275,6 +287,12 @@ function Invoke-Invariant-Uniqueness($M) {
 }
 function Invoke-Consumer-Law($M) {
   foreach ($nd in $M['contract_nodes']) { foreach ($c in $nd['consumers']) { if ([string]$c -notin $consumers) { throw 'out-of-vocabulary consumer' } } }
+  # family views make the same downstream consumption claim and are closed to
+  # the same five issue IDs; structural key presence alone does not close it
+  foreach ($v in $M['family_views']) {
+    if (@($v['consumers']).Count -lt 1) { throw "family view $($v['view_id']) claims no consumer" }
+    foreach ($c in $v['consumers']) { if ([string]$c -notin $consumers) { throw "out-of-vocabulary consumer $c in family view $($v['view_id'])" } }
+  }
 }
 function Invoke-Command-Spelling-Law($M) {
   Walk-Strings $M { param($s) if ($s -match 'cargo xtask|(^|\s)(just)\s|\.github/workflows') { throw 'command spelling used as durable proof obligation' } }
@@ -313,7 +331,7 @@ foreach ($m in [regex]::Matches($acc, '\| T(\d\d) \|')) {
   if ([int]$m.Groups[1].Value -ne $rowIdx) { throw "test-grid rows out of fixed order near T$rowIdx" }
   $rowIdx++
 }
-if ($rowIdx -ne 15) { throw "expected 15 test-grid rows, saw $($rowIdx - 1)" }
+if ($rowIdx -ne 16) { throw "expected 15 test-grid rows, saw $($rowIdx - 1)" }
 
 # --- 5. canonical digest + determinism ---
 function Canonicalize($node) {

@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12505 |
+| Total tracked files | 12510 |
 | Rust-family files | 3870 |
-| Non-Rust files | 8635 |
-| Allowlisted | 6398 |
+| Non-Rust files | 8640 |
+| Allowlisted | 6403 |
 | Unclassified | 2237 |
 
 ## Non-Rust files by category
@@ -17,9 +17,9 @@
 | Category | Count |
 |---|---|
 | config | 497 |
-| documentation | 2817 |
+| documentation | 2820 |
 | generated | 2 |
-| production | 348 |
+| production | 349 |
 | test | 2067 |
 | tooling | 668 |
 | unclassified | 2237 |
@@ -3147,11 +3147,11 @@
 | `.spec/10918-emacs-train-graph/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10918-emacs-train-graph/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10918-emacs-train-graph/train.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
-| `.spec/11036-lsp-runtime-train-schema/lsp_runtime_train.v1.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/10976-dap-reliability-contracts/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10976-dap-reliability-contracts/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10976-dap-reliability-contracts/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10976-dap-reliability-contracts/reliability.manifest.json` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11036-lsp-runtime-train-schema/lsp_runtime_train.v1.json` | tooling | `non-rust-spec-tree` | developer-experience |
 | `.spec/11079-pl700-removal-containment/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11079-pl700-removal-containment/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/11079-pl700-removal-containment/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -8463,6 +8463,7 @@
 | `vscode-extension/src/serverDemand.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/startupDiagnosis.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/streamingCompletion.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/strictSemver.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/supportCommandGroup.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/supportCommands.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/supportPacket.ts` | production | `non-rust-vscode-extension` | editor/vscode |
