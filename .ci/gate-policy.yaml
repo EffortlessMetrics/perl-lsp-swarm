@@ -1013,9 +1013,13 @@ gates:
   - name: pending_parse_freshness
     tier: merge_gate
     description: >-
-      Provider freshness during forced pending-parse gaps: semantic tokens, hover,
-      definition, references, and index staleness — gated behind
-      workspace+expose_lsp_test_api (#11933)
+      Compiles and runs the pending-parse gap suites that would otherwise rot
+      behind workspace+expose_lsp_test_api (#11933). pending_parse_provider
+      covers hover, definition, references, semantic tokens, signature help,
+      rename, safe-delete, symbols and completion during a forced gap;
+      navigation TOCTOU covers type-definition and implementation;
+      post_edit_index_staleness covers definition only. Coverage is per-suite,
+      not five provider families across all three.
     required: true
     # RUST_TEST_THREADS=2 is the project-documented constraint for perl-lsp-rs
     # (see crates/perl-lsp-rs/CLAUDE.md). --features must include both workspace
@@ -1049,9 +1053,12 @@ gates:
   - name: pull_diagnostics_freshness
     tier: merge_gate
     description: >-
-      Generation-aware pull-diagnostic staleness guard: proves the pull-diagnostic
-      handler rejects stale snapshots under concurrent edits — gated behind
-      expose_lsp_test_api (#11933)
+      Panic and compile regression coverage for the pull-diagnostic path behind
+      expose_lsp_test_api (#11933). NOT a freshness proof: the three concurrent
+      cells synchronise with a 2ms sleep and assert only that a well-formed
+      result comes back, so deleting the generation guard would leave them
+      green. Making this discriminating needs the toctou_hook_lock barrier
+      pattern at the snapshot->publish seam; tracked under #13346.
     required: true
     command: >-
       cargo test -p perl-lsp-rs --locked
@@ -1059,7 +1066,11 @@ gates:
       --test pull_diagnostics_freshness_tests
       -- --test-threads=2
     timeout_seconds: 240
-    retry_count: 1
+    # retry_count: 0 deliberately. The three concurrent cells synchronise with a
+    # 2ms sleep, well inside CI scheduler jitter, so a retry would record a
+    # timing-dependent miss as a flake instead of a result. The gate-1 suites
+    # keep retry_count: 1 because they synchronise with hooks, not sleeps.
+    retry_count: 0
     budgets:
       max_duration_ms: 210000
     quarantine: false
@@ -2356,6 +2367,8 @@ version_history:
     date: "2026-08-24"
     changes:
       - "Add pending_parse_freshness and pull_diagnostics_freshness merge_gate entries (#11933): wire workspace+expose_lsp_test_api and expose_lsp_test_api feature combinations into mandatory CI so gap-simulation suites cannot rot silently"
+      - "Both gate descriptions were narrowed to compile/panic regression coverage after review: the pull-diagnostic concurrent cells assert only a well-formed result and cannot prove stale-snapshot rejection. .ci/GATE_REGISTRY.toml and gate-policy.yaml now carry the same narrowed wording; neither is an optimistic claim over the other. Restoring a stale-rejection claim requires the barrier work under #13346."
+      - "pull_diagnostics_freshness set to retry_count: 0 — its cells are sleep-synchronised, so a retry would mask a timing-dependent regression as a flake."
   - version: "1.1.0"
     date: "2026-08-10"
     changes:

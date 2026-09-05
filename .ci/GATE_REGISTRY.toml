@@ -334,14 +334,14 @@ evidence_pattern = "test result: ok"
 threshold = { type = "exit_code", pass = 0 }
 
 [gate.metadata]
-description = "Provider freshness during forced pending-parse gaps; gated behind workspace+expose_lsp_test_api to prevent silent rot (#11933)"
+description = "Compiles and runs the pending-parse gap suites behind workspace+expose_lsp_test_api so they cannot rot silently; per-suite provider coverage, not five provider families across all three (#11933)"
 docs_url = "crates/perl-lsp-rs/tests/pending_parse_provider_freshness_tests.rs"
 cost_tier = "medium"
 failure_impact = "high"
 
 [[gate]]
 id = "pull-diagnostics-freshness"
-name = "Pull Diagnostics Freshness"
+name = "Pull Diagnostics Compile/Panic Coverage"
 type = "correctness"
 blocking = true
 timeout_seconds = 240
@@ -350,7 +350,7 @@ evidence_pattern = "test result: ok"
 threshold = { type = "exit_code", pass = 0 }
 
 [gate.metadata]
-description = "Generation-aware pull-diagnostic staleness guard; gated behind expose_lsp_test_api to prevent silent rot (#11933)"
+description = "Panic/compile regression coverage for the pull-diagnostic path behind expose_lsp_test_api; NOT a stale-snapshot rejection proof — the concurrent cells are sleep-synchronised and assert only a well-formed result (#11933, discriminating proof tracked under #13346)"
 docs_url = "crates/perl-lsp-rs/tests/pull_diagnostics_freshness_tests.rs"
 cost_tier = "medium"
 failure_impact = "high"

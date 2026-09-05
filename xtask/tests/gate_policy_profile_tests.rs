@@ -580,7 +580,7 @@ fn dap_support_gate_binds_all_helper_targets_and_propagates_failures()
 #[test]
 fn dap_support_retry_envelope_leaves_terminal_receipt_headroom()
 -> Result<(), Box<dyn std::error::Error>> {
-    const SHARD_WATCHDOG_SECONDS: u64 = 1_200;
+    const SHARD_WATCHDOG_SECONDS: u64 = 1_800;
     const LINUX_CLEANUP_GRACE_SECONDS: u64 = 75;
     const TERMINAL_RECEIPT_RESERVE_SECONDS: u64 = 120;
     const EXPECTED_TIMEOUT_SECONDS: u64 = 450;
@@ -600,7 +600,7 @@ fn dap_support_retry_envelope_leaves_terminal_receipt_headroom()
 
     let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml"))?;
     assert!(
-        workflow.contains("timeout --signal=TERM --kill-after=30s 1200s"),
+        workflow.contains("timeout --signal=TERM --kill-after=30s 1800s"),
         "the policy test must bind its envelope to the shard watchdog"
     );
     Ok(())
