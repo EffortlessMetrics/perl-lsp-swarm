@@ -1930,22 +1930,47 @@ impl ApiUseVisitor {
 /// what counts as "into the package" has one owner rather than a second opinion
 /// living here.
 fn macro_tokens_name_package(tokens: &proc_macro2::TokenStream) -> bool {
-    let mut segments: Vec<String> = Vec::new();
+    scan_macro_path_tokens(tokens, &[])
+}
+
+/// The recursive half, carrying the path a group hangs off.
+///
+/// `prefix` is what preceded the enclosing group, so `perl_ast::{v2, Node}`
+/// tests `perl_ast::v2` and `perl_ast::Node` rather than a bare `v2` and `Node`.
+/// Descending into a group without it dropped the crate name at the brace and
+/// made every grouped import invisible — the same prefix-lost-at-a-boundary
+/// mistake this candidate made in re-export matching, in a different shape.
+fn scan_macro_path_tokens(tokens: &proc_macro2::TokenStream, prefix: &[String]) -> bool {
+    // A comma, or anything else that is not a path, restarts the path — back to
+    // the enclosing prefix rather than to nothing, since inside `{a, b}` each
+    // element hangs off the same one.
+    let restart = |segments: &mut Vec<String>| {
+        segments.clear();
+        segments.extend_from_slice(prefix);
+    };
+    let mut segments: Vec<String> = prefix.to_vec();
     let mut after_ident = false;
     for tree in tokens.clone() {
         match tree {
             proc_macro2::TokenTree::Group(group) => {
-                if macro_tokens_name_package(&group.stream()) {
+                // A group straight after `::` continues the path; one anywhere
+                // else is an unrelated block and starts clean.
+                let matched = if !after_ident && !segments.is_empty() {
+                    scan_macro_path_tokens(&group.stream(), &segments)
+                } else {
+                    scan_macro_path_tokens(&group.stream(), &[])
+                };
+                if matched {
                     return true;
                 }
-                segments.clear();
+                restart(&mut segments);
                 after_ident = false;
             }
             proc_macro2::TokenTree::Ident(ident) => {
                 // Two idents in a row are two paths, not one: `use perl_ast_v2`
                 // must not compose into `use::perl_ast_v2`.
                 if after_ident {
-                    segments.clear();
+                    restart(&mut segments);
                 }
                 segments.push(ident.to_string());
                 if names_package_directly(&segments.join("::")) {
@@ -1957,7 +1982,7 @@ fn macro_tokens_name_package(tokens: &proc_macro2::TokenStream) -> bool {
                 after_ident = false;
             }
             _ => {
-                segments.clear();
+                restart(&mut segments);
                 after_ident = false;
             }
         }

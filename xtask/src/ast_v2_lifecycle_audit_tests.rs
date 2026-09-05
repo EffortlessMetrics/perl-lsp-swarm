@@ -918,6 +918,39 @@ fn the_instruments_own_files_are_classified_by_parser_not_exempted() -> Result<(
             reaches_audited_package("fn f() { some_macro!(perl_ast_v2::Node); }", instrument_file),
             "a package path inside a macro in {instrument_file} must reach the denominator"
         );
+        // A grouped import inside a macro. The crate name sits *before* the
+        // brace, so a scan that restarts at the group loses it and every
+        // grouped form goes invisible — the same prefix-lost-at-a-boundary
+        // mistake made earlier in re-export matching.
+        assert!(
+            reaches_audited_package(
+                "fn f() { some_macro!(use perl_ast::{v2, Node};); }",
+                instrument_file
+            ),
+            "a grouped canonical import inside a macro in {instrument_file} must be seen"
+        );
+        assert!(
+            reaches_audited_package(
+                "fn f() { some_macro!(use perl_parser_core::{DiagnosticId, MissingKind};); }",
+                instrument_file
+            ),
+            "a grouped unqualified re-export inside a macro in {instrument_file} must be seen"
+        );
+        // Nesting one deeper still carries the prefix.
+        assert!(
+            reaches_audited_package(
+                "fn f() { outer!(inner!(use perl_ast::{v2};)); }",
+                instrument_file
+            ),
+            "a grouped import nested two macros deep in {instrument_file} must be seen"
+        );
+        // A group that does *not* follow `::` must not inherit a path, or every
+        // brace after an identifier would extend one.
+        assert!(
+            !reaches_audited_package("fn f() { some_macro!(perl_ast { v2 }); }", instrument_file),
+            "a block after an identifier is not a path continuation in {instrument_file}"
+        );
+
         // And the distinction that makes the token scan usable here at all: a
         // string literal inside a macro is what this module's own fixtures and
         // assertion messages are made of, and must not register.
