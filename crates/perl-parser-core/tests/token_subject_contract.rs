@@ -131,7 +131,7 @@ fn fresh_full_lex_over_exact_source_is_production_valid() -> R {
     assert_eq!(subject.provenance().label(), "fresh_full_lex");
     assert_eq!(subject.source(), source);
     assert_eq!(subject.terminal(), TerminalState::CompleteEof { at: source.len() });
-    assert_eq!(subject.classification_authority(), ClassificationAuthority::ResolvedByLivePass);
+    assert_eq!(subject.classification_authority(), ClassificationAuthority::LiveUndirectedLex);
     assert!(!subject.tokens().is_empty());
     Ok(())
 }
@@ -209,8 +209,13 @@ fn terminal_eof_is_valid_empty_payload_geometry() -> R {
     Ok(())
 }
 
+/// A replay is validated in full, but its provenance is the producer's word:
+/// it supplies its own tokens, and nothing here can check they came from a
+/// checkpoint. So it is constructible and coherent, and deliberately **not**
+/// production-valid until #9625 supplies the checkpoint witness. Admitting it
+/// would reopen exactly the forgery this type exists to prevent.
 #[test]
-fn checkpoint_replay_to_eof_with_live_checkpoints_is_production_valid() -> R {
+fn a_checkpoint_replay_is_validated_but_not_yet_production_valid() -> R {
     let source = "my $x = 1;";
     let subject = ValidatedTokenStream::from_checkpoint_replay(
         identity_for(source, "lib/Demo.pm", "7"),
@@ -218,11 +223,53 @@ fn checkpoint_replay_to_eof_with_live_checkpoints_is_production_valid() -> R {
         lex(source)?,
         complete(source),
         SourceGeneration::known("6"),
-        ClassificationAuthority::ResolvedByLivePass,
+        ClassificationAuthority::LiveUndirectedLex,
     )?;
 
-    assert!(subject.is_production_valid());
     assert_eq!(subject.provenance().label(), "checkpoint_replay_to_eof");
+    assert!(
+        !subject.is_production_valid(),
+        "replay provenance is a producer attestation and must not be production-valid until \
+         #9625 supplies the checkpoint witness"
+    );
+    Ok(())
+}
+
+/// The replay counterpart of the fresh-seam forgery control: a caller-supplied
+/// stream with an altered token kind passes every structural rule and is
+/// accepted as a replay, and must still never be production-valid.
+#[test]
+fn a_forged_replay_can_never_be_production_valid() -> R {
+    let source = "my $x = 1;";
+    let mut forged = lex(source)?;
+    replace_token(&mut forged, 0, TokenKind::Identifier, "my", 0, 2)?;
+
+    let subject = ValidatedTokenStream::from_checkpoint_replay(
+        identity_for(source, "lib/Demo.pm", "7"),
+        source,
+        forged,
+        complete(source),
+        SourceGeneration::known("6"),
+        ClassificationAuthority::LiveUndirectedLex,
+    )?;
+
+    assert!(!subject.is_production_valid());
+    Ok(())
+}
+
+/// Only the seam this module performs itself is production-valid.
+#[test]
+fn only_a_module_performed_fresh_lex_is_production_admissible() -> R {
+    assert!(TokenStreamProvenance::FreshFullLex.is_production_admissible());
+    assert!(
+        !TokenStreamProvenance::CheckpointReplayToEof {
+            predecessor_generation: SourceGeneration::known("6")
+        }
+        .is_production_admissible()
+    );
+    assert!(!TokenStreamProvenance::TestFixtureUnchecked.is_production_admissible());
+    assert!(!TokenStreamProvenance::ExactSuffixSync.is_production_admissible());
+    assert!(!TokenStreamProvenance::UnsupportedOrIncomplete.is_production_admissible());
     Ok(())
 }
 
@@ -563,8 +610,9 @@ fn an_incomplete_stream_whose_tokens_outrun_its_stop_offset_is_rejected() -> R {
 }
 
 /// The same partial stream the fixture above accepts must be refused under a
-/// production provenance. `from_fresh_lex` cannot express it (it lexes to EOF
-/// itself), so the production side of the pair is posed as a replay.
+/// provenance that claims completeness. `from_fresh_lex` cannot express it (it
+/// lexes to EOF itself), so the completeness-claiming side is posed as a replay
+/// — which still owes the terminal rules even though it is not production-valid.
 #[test]
 fn incomplete_production_stream_is_rejected() -> R {
     let source = "my $x = 1;";
@@ -578,7 +626,7 @@ fn incomplete_production_stream_is_rejected() -> R {
         tokens,
         TerminalState::Incomplete { stopped_at: 5 },
         SourceGeneration::known("6"),
-        ClassificationAuthority::ResolvedByLivePass,
+        ClassificationAuthority::LiveUndirectedLex,
     ))?;
 
     assert_rule(&error, "incomplete_stream", "must reach a complete terminal EOF")?;
@@ -618,7 +666,7 @@ fn a_replay_naming_its_own_generation_as_predecessor_is_rejected() -> R {
         lex(source)?,
         complete(source),
         SourceGeneration::known("7"),
-        ClassificationAuthority::ResolvedByLivePass,
+        ClassificationAuthority::LiveUndirectedLex,
     ))?;
 
     assert_rule(&error, "wrong_generation", "cannot be relabelled")?;
@@ -634,7 +682,7 @@ fn a_replay_without_a_known_predecessor_generation_is_rejected() -> R {
         lex(source)?,
         complete(source),
         SourceGeneration::Unknown,
-        ClassificationAuthority::ResolvedByLivePass,
+        ClassificationAuthority::LiveUndirectedLex,
     ))?;
 
     assert_rule(&error, "wrong_generation", "known predecessor generation")?;

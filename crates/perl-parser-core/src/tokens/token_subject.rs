@@ -79,10 +79,13 @@
 //! source itself, which makes `fresh_full_lex` a fact this module establishes.
 //! [`ValidatedTokenStream::from_checkpoint_replay`] must accept the producer's
 //! tokens — reusing them is the point of a replay — so there its provenance and
-//! classification authority are producer attestations, and are documented as
-//! such rather than presented as checked. Closing that remaining gap needs the
-//! checkpoint-bearing value from #8128 / #7294, which A05b (#9625) is the first
-//! consumer positioned to supply.
+//! classification authority are producer attestations this module cannot check.
+//! Rather than let an unchecked attestation carry a production claim, a replay
+//! subject is validated in full but reports `is_production_valid() == false`.
+//! #9623's own rule is that a class may be named by the schema yet not be
+//! emittable as a production subject until its owner proves it; the proof here
+//! is the checkpoint-bearing value from #8128 / #7294, which A05b (#9625) is
+//! the first consumer positioned to supply.
 //!
 //! Every variant of [`TokenSubjectError`] is covered by a test except
 //! [`TokenSubjectError::InstrumentFailure`], which is documented at its
@@ -146,11 +149,35 @@ pub enum TokenStreamProvenance {
 impl TokenStreamProvenance {
     /// Whether this provenance may back a production token-fed parse.
     ///
-    /// Only a complete fresh lex and a complete admitted replay qualify. Test
-    /// fixtures, the reserved suffix-sync class, and explicitly unsupported
-    /// streams do not.
+    /// **Only [`TokenStreamProvenance::FreshFullLex`] qualifies today.** It is
+    /// the one class this module establishes itself, by performing the lex.
+    ///
+    /// [`TokenStreamProvenance::CheckpointReplayToEof`] is fully validated —
+    /// structure, identity, generations, terminal state — but its provenance is
+    /// a producer's word, because a replay must supply its own tokens. #9623's
+    /// own rule is that a class may be named by the schema yet "cannot be
+    /// emitted as a complete production subject until its owner proves it", and
+    /// the checkpoint-bearing value that would prove it comes from #8128 /
+    /// #7294 with A05b (#9625) as its first consumer. Admitting replay as
+    /// production-valid before then would leave exactly the forgery this type
+    /// exists to prevent: caller-supplied tokens carrying a production claim.
+    ///
+    /// So a replay subject is constructible and validated, and reports
+    /// `is_production_valid() == false` until #9625 lands the witness.
     #[must_use]
     pub fn is_production_admissible(&self) -> bool {
+        matches!(self, Self::FreshFullLex)
+    }
+
+    /// Whether this class asserts a stream complete to EOF.
+    ///
+    /// Distinct from [`TokenStreamProvenance::is_production_admissible`]: a
+    /// replay claims completeness and must satisfy the generation and terminal
+    /// rules in full, even though it is not admitted for production. Dropping
+    /// its validation along with its admissibility would weaken the type twice
+    /// over.
+    #[must_use]
+    fn claims_complete_stream(&self) -> bool {
         matches!(self, Self::FreshFullLex | Self::CheckpointReplayToEof { .. })
     }
 
@@ -190,18 +217,31 @@ impl fmt::Display for TokenStreamProvenance {
 /// that the subject can serve a contextual operation now: a subject carries
 /// tokens and source, so anything a consumer reconstructs from it has a
 /// buffered backing, and buffered backings return
-/// `ContextualOpResult::FallbackRequired`. Reading
-/// [`ClassificationAuthority::ResolvedByLivePass`] as "contextual replay is
-/// available here" would be wrong.
+/// `ContextualOpResult::FallbackRequired`.
 ///
-/// [`ValidatedTokenStream::from_fresh_lex`] earns
-/// [`ClassificationAuthority::ResolvedByLivePass`], because that seam performs
-/// the lex itself. On [`ValidatedTokenStream::from_checkpoint_replay`] it is a
-/// producer attestation this module cannot check; see that constructor.
+/// # `LiveUndirectedLex` is undirected, and the name says so
+///
+/// A contextual operation is *parser-directed*: the parser calls
+/// `TokenStream::apply_contextual` when it reaches an ambiguous position.
+/// [`ValidatedTokenStream::from_fresh_lex`] drains the stream without a parser,
+/// so no such operation is ever requested. The pass is live — it could have
+/// served one — but nothing directed it.
+///
+/// The practical consequence: a construct whose classification depends on
+/// parser direction, such as a format body or a statement-start `/` that the
+/// undirected lexer reads as division, may carry the undirected classification
+/// rather than the one a real parse would consume. A consumer that needs
+/// parser-directed kinds must obtain them through the parser; this type does
+/// not claim equivalence with a directed pass, and the variant is named for
+/// what actually happened rather than for what would be more reassuring.
+///
+/// On [`ValidatedTokenStream::from_checkpoint_replay`] the value is a producer
+/// attestation this module cannot check; see that constructor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClassificationAuthority {
-    /// Kinds were resolved by a live lexer pass over this subject's own source.
-    ResolvedByLivePass,
+    /// Kinds came from a live lexer pass over this subject's own source, with
+    /// no parser-directed contextual operation applied. See the type docs.
+    LiveUndirectedLex,
     /// Kinds were carried over from a predecessor and not re-resolved.
     ///
     /// Valid for a consumer that never depends on a context-sensitive
@@ -214,7 +254,7 @@ impl ClassificationAuthority {
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
-            Self::ResolvedByLivePass => "resolved_by_live_pass",
+            Self::LiveUndirectedLex => "live_undirected_lex",
             Self::CarriedFromPredecessor => "carried_from_predecessor",
         }
     }
@@ -614,7 +654,7 @@ impl TokenSubjectError {
 ///
 /// ```rust
 /// use perl_parser_core::tokens::token_subject::{
-///     LexerConfigIdentity, TerminalState, TokenSubjectIdentity, ValidatedTokenStream,
+///     LexerConfigIdentity, TokenSubjectIdentity, ValidatedTokenStream,
 /// };
 /// use perl_parser_core::ParserConfigIdentity;
 /// use perl_source_identity::{
@@ -636,13 +676,7 @@ impl TokenSubjectError {
 ///     ParserConfigIdentity::production_default(),
 /// );
 ///
-/// let tokens = ValidatedTokenStream::lex_for_subject(source)?;
-/// let subject = ValidatedTokenStream::from_fresh_lex(
-///     identity,
-///     source,
-///     tokens,
-///     TerminalState::CompleteEof { at: source.len() },
-/// )?;
+/// let subject = ValidatedTokenStream::from_fresh_lex(identity, source)?;
 ///
 /// assert!(subject.is_production_valid());
 /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -706,7 +740,7 @@ impl<'a> ValidatedTokenStream<'a> {
             tokens,
             TerminalState::CompleteEof { at: source.len() },
             TokenStreamProvenance::FreshFullLex,
-            ClassificationAuthority::ResolvedByLivePass,
+            ClassificationAuthority::LiveUndirectedLex,
         )
     }
 
@@ -715,9 +749,8 @@ impl<'a> ValidatedTokenStream<'a> {
     /// `predecessor_generation` names the generation the replayed tokens were
     /// originally produced from and must differ from the subject's own
     /// generation. `classification_authority` must be
-    /// [`ClassificationAuthority::ResolvedByLivePass`]: a replay whose token
-    /// kinds were carried over without being re-resolved cannot back a
-    /// production token-fed parse.
+    /// [`ClassificationAuthority::LiveUndirectedLex`]: a replay whose token
+    /// kinds were carried over without being re-resolved is refused outright.
     ///
     /// Unlike [`ValidatedTokenStream::from_fresh_lex`], this seam must accept
     /// the producer's tokens — a replay's whole purpose is to reuse them — so
@@ -1043,7 +1076,7 @@ fn validate_generation(
     identity: &TokenSubjectIdentity,
     provenance: &TokenStreamProvenance,
 ) -> Result<(), TokenSubjectError> {
-    if !provenance.is_production_admissible() {
+    if !provenance.claims_complete_stream() {
         return Ok(());
     }
     if !identity.generation.is_known() {
@@ -1219,7 +1252,7 @@ fn validate_terminal(
                     ),
                 });
             }
-            if provenance.is_production_admissible() {
+            if provenance.claims_complete_stream() {
                 return Err(TokenSubjectError::IncompleteStream {
                     detail: format!(
                         "a {} subject must reach a complete terminal EOF; this stream stopped at \
