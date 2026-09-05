@@ -673,6 +673,80 @@ fn instrument_self_exclusion_is_exactly_two_named_files() -> Result<()> {
 }
 
 #[test]
+fn excluded_directories_hide_no_reference_to_the_audited_package() -> Result<()> {
+    // The exclusion list matches a bare directory name at any depth, which is
+    // right for build output but could in principle skip a real subtree. That is
+    // not hypothetical here: `crates/perl-lexer/tests/fixtures/simd_feature_selection/
+    // nested/target/hidden.rs` is a checked-in fixture living under an excluded
+    // name. So the assumption is checked rather than asserted — walk the scan
+    // roots with NO exclusions and prove nothing excluded references the package.
+    let root = repo_root_for_tests()?;
+    let scanned = derive_reference_files(&root)?;
+    let mut hidden = Vec::new();
+
+    for scan_root in ["crates", "xtask", "policy"] {
+        for entry in walkdir::WalkDir::new(root.join(scan_root)).into_iter().filter_map(|e| e.ok())
+        {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.path();
+            let is_rust_or_toml =
+                matches!(path.extension().and_then(|ext| ext.to_str()), Some("rs") | Some("toml"));
+            if !is_rust_or_toml {
+                continue;
+            }
+            let Ok(relative) = path.strip_prefix(&root) else {
+                continue;
+            };
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            // Build output is genuinely not source; only look at tracked-looking
+            // paths the repository would actually carry.
+            if relative.contains("/target/debug/") || relative.contains("/target/release/") {
+                continue;
+            }
+            if scanned.contains(&relative) || INSTRUMENT_SELF_FILES.contains(&relative.as_str()) {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            if mentions_audited_package(&text) {
+                hidden.push(relative);
+            }
+        }
+    }
+
+    assert!(
+        hidden.is_empty(),
+        "these files reference the audited package but the scan never sees them, so they could \
+         never be reconciled: {hidden:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_path_qualified_derive_is_recorded_rather_than_silently_dropped() -> Result<()> {
+    // Adding `serde::Serialize` is a real public-contract change, and the audit
+    // rows assert `serialization_disposition: not_represented`. Rendering only
+    // the last path segment would drop it and leave the shape byte-identical,
+    // so the inventory would keep claiming serialization is not represented
+    // while the crate had gained it.
+    let source = "#[derive(Debug, serde::Serialize, Clone)]\npub struct Probe { pub a: u8 }";
+    let derived = derive_public_items(source)?;
+    let probe = derived
+        .iter()
+        .find(|item| item.path == "perl_ast_v2::Probe")
+        .ok_or_else(|| color_eyre::eyre::eyre!("probe struct missing from the derivation"))?;
+    assert!(
+        probe.shape.contains("serde::Serialize"),
+        "a path-qualified derive must appear in the shape: {}",
+        probe.shape
+    );
+    Ok(())
+}
+
+#[test]
 fn the_derived_denominator_matches_the_crate_the_audit_describes() -> Result<()> {
     let source = std::fs::read_to_string(repo_root_for_tests()?.join(V2_SOURCE_RELATIVE_PATH))?;
     let derived = derive_public_items(&source)?;

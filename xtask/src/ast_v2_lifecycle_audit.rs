@@ -319,7 +319,7 @@ pub fn derive_public_items(source: &str) -> Result<Vec<DerivedItem>> {
                     kind: "struct".to_string(),
                     shape: format!(
                         "struct {name} {} {}",
-                        render_derives(&item_struct.attrs),
+                        render_derives(&item_struct.attrs)?,
                         render_fields(&item_struct.fields, FieldContext::Struct)?
                     ),
                 });
@@ -331,7 +331,7 @@ pub fn derive_public_items(source: &str) -> Result<Vec<DerivedItem>> {
                     kind: "enum".to_string(),
                     shape: format!(
                         "enum {name} {} ({} variants)",
-                        render_derives(&item_enum.attrs),
+                        render_derives(&item_enum.attrs)?,
                         item_enum.variants.len()
                     ),
                 });
@@ -417,21 +417,38 @@ fn is_public(vis: &syn::Visibility) -> bool {
 
 /// Render the derive list, which is public contract: losing `Copy` or `Eq` is a
 /// breaking change that no field or signature would record.
-fn render_derives(attrs: &[syn::Attribute]) -> String {
+///
+/// The full path is rendered, not just the last identifier. A path-qualified
+/// derive such as `serde::Serialize` is exactly the kind of change these rows
+/// must catch — the audit's own `serialization_disposition` columns say
+/// serialization is not represented, and a silently dropped `Serialize` would
+/// make that claim false while the shape stayed byte-identical.
+///
+/// A `#[derive(...)]` this cannot parse fails the audit rather than yielding a
+/// shorter list that would read as a deliberate removal.
+fn render_derives(attrs: &[syn::Attribute]) -> Result<String> {
     let mut names: Vec<String> = Vec::new();
     for attr in attrs {
         if !attr.path().is_ident("derive") {
             continue;
         }
-        let _ = attr.parse_nested_meta(|meta| {
-            if let Some(ident) = meta.path.get_ident() {
-                names.push(ident.to_string());
+        let mut rendered: Vec<String> = Vec::new();
+        let mut render_error: Option<color_eyre::Report> = None;
+        attr.parse_nested_meta(|meta| {
+            match render_path(&meta.path) {
+                Ok(path) => rendered.push(path),
+                Err(err) => render_error = Some(err),
             }
             Ok(())
-        });
+        })
+        .map_err(|err| color_eyre::eyre::eyre!("could not parse a derive attribute: {err}"))?;
+        if let Some(err) = render_error {
+            return Err(err);
+        }
+        names.extend(rendered);
     }
     names.sort();
-    format!("derives[{}]", names.join(", "))
+    Ok(format!("derives[{}]", names.join(", ")))
 }
 
 /// Which declaration the fields belong to.
@@ -687,15 +704,33 @@ pub fn derive_reference_files(repo_root: &Path) -> Result<BTreeSet<String>> {
         }
         for entry in
             walkdir::WalkDir::new(&absolute).sort_by_file_name().into_iter().filter_entry(|entry| {
-                let name = entry.file_name().to_string_lossy();
-                !GATING_SCAN_EXCLUDES.contains(&name.as_ref())
+                // Compared as an OsStr, not through `to_string_lossy`: a lossy
+                // conversion can map a non-UTF-8 directory name onto an
+                // exclusion and skip a subtree that was never excluded.
+                !GATING_SCAN_EXCLUDES.iter().any(|excluded| entry.file_name() == *excluded)
             })
         {
             let entry = entry.with_context(|| format!("failed to walk gating scan root {root}"))?;
+            let path = entry.path();
+
+            // `WalkDir` does not follow symlinks by default, so this is not a
+            // recursion guard — it is a completeness guard. A symlinked source
+            // file is yielded with a symlink file type, so the `is_file` check
+            // below would skip it silently, and a real consumer could sit behind
+            // a link and never enter the denominator. For an audit whose claim
+            // is that nothing references the package unaccounted for, silently
+            // skipping is the wrong failure: fail closed and make someone decide.
+            if entry.path_is_symlink() && is_scannable(path) {
+                bail!(
+                    "`{}` is a symbolic link to scannable source. The consumer denominator cannot \
+                     silently skip it: resolve the link, or exclude it deliberately.",
+                    relative_slash_path(repo_root, path)?
+                );
+            }
+
             if !entry.file_type().is_file() {
                 continue;
             }
-            let path = entry.path();
             if !is_scannable(path) {
                 continue;
             }
