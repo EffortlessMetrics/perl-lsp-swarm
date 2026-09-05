@@ -74,11 +74,12 @@ In-workspace Kubernetes DAP subject admission: one environment subject composed 
 - No cluster, pod, or debug session is executed by this contract; kind execution, live probes, and manifests that run the adapter remain future work.
 - Sidecar topologies are rejected here even when they share a pod; proving identical source and project-Perl parity is a separate claim.
 - DAP cell rows are evidence references into current perl-dap proof surfaces; this contract promotes no capability and creates no support row in #7122.
+- cited file evidence is checked to still exist in the tree; issue references are shape-checked only, because this gate resolves no remote state
 - loader os is machine-compared against the single supported `linux` subject; no other operating system is admitted and no cross-OS compatibility is claimed
 
 ## Fixture matrix
 
-2 positive and 61 negative deterministic fixtures.
+2 positive and 62 negative deterministic fixtures.
 
 | Fixture | Expectation | Typed outcome |
 | --- | --- | --- |
@@ -118,6 +119,7 @@ In-workspace Kubernetes DAP subject admission: one environment subject composed 
 | `negative-missing-adapter-identity` | `reject` | reject `adapter_identity_not_exact` |
 | `negative-missing-cleanup-owner` | `reject` | reject `cleanup_ownership_missing` |
 | `negative-missing-resource-profile` | `reject` | reject `resource_profile_missing` |
+| `negative-missing-tool-volume-owner` | `reject` | reject `tool_volume_ownership_missing` |
 | `negative-musl-glibc-loader-mismatch` | `reject` | reject `loader_contract_mismatch` |
 | `negative-node-port-service` | `reject` | reject `service_exposure_forbidden` |
 | `negative-operator-crds` | `reject` | reject `operator_controller_forbidden` |
@@ -146,4 +148,4 @@ In-workspace Kubernetes DAP subject admission: one environment subject composed 
 | `positive-injected-tool` | `admit` | admit |
 | `positive-project-image` | `admit` | admit |
 
-All 30 typed rejection reasons are exercised by at least one negative fixture.
+All 31 typed rejection reasons are exercised by at least one negative fixture.

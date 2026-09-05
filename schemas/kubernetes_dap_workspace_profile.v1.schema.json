@@ -190,7 +190,8 @@
         "service_account_token_forbidden",
         "dap_cell_evidence_missing",
         "install_mode_identity_conflict",
-        "adapter_identity_not_exact"
+        "adapter_identity_not_exact",
+        "tool_volume_ownership_missing"
       ]
     },
     "cell_family": {

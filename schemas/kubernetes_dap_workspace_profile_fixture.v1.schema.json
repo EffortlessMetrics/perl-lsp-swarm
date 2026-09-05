@@ -321,6 +321,9 @@
         "tool_mount": {
           "$ref": "#/$defs/tool_mount"
         },
+        "tool_volume_owner": {
+          "$ref": "#/$defs/candidate_string"
+        },
         "target_arch": {
           "$ref": "#/$defs/candidate_string"
         },
@@ -339,11 +342,13 @@
         },
         "uid": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 4294967295
         },
         "gid": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 4294967295
         },
         "service_account_token": {
           "$ref": "#/$defs/service_account_token"

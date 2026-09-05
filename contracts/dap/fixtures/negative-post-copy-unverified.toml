@@ -49,6 +49,7 @@ copied_digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 post_copy_verified = false
 exec_mode = "0555"
 tool_mount = "read_only"
+tool_volume_owner = "init-container:perl-dap-copy/volume:tool-scratch"
 target_arch = "amd64"
 libc = "glibc"
 

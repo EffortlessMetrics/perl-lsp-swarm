@@ -130,8 +130,8 @@ const ENFORCED_REQUIRED_FACTS: &[(&str, &str, RejectionReason, &str)] = &[
     (
         "injected_tool",
         "tool_volume_ownership_and_read_only_mount",
-        RejectionReason::ToolMountNotReadOnly,
-        "negative-writable-tool-mount",
+        RejectionReason::ToolVolumeOwnershipMissing,
+        "negative-missing-tool-volume-owner",
     ),
     (
         "injected_tool",
@@ -192,6 +192,10 @@ struct Cli {
     #[arg(long, default_value = DEFAULT_FIXTURE_SCHEMA)]
     fixture_schema: PathBuf,
 
+    /// Repository root used to resolve the contract's cited evidence paths.
+    #[arg(long, default_value = ".")]
+    repo_root: PathBuf,
+
     /// Validate everything and fail when the committed status is stale.
     #[arg(long)]
     check: bool,
@@ -238,6 +242,7 @@ enum RejectionReason {
     DapCellEvidenceMissing,
     InstallModeIdentityConflict,
     AdapterIdentityNotExact,
+    ToolVolumeOwnershipMissing,
 }
 
 impl RejectionReason {
@@ -272,6 +277,7 @@ impl RejectionReason {
         Self::DapCellEvidenceMissing,
         Self::InstallModeIdentityConflict,
         Self::AdapterIdentityNotExact,
+        Self::ToolVolumeOwnershipMissing,
     ];
 
     fn as_str(self) -> &'static str {
@@ -308,6 +314,7 @@ impl RejectionReason {
             Self::DapCellEvidenceMissing => "dap_cell_evidence_missing",
             Self::InstallModeIdentityConflict => "install_mode_identity_conflict",
             Self::AdapterIdentityNotExact => "adapter_identity_not_exact",
+            Self::ToolVolumeOwnershipMissing => "tool_volume_ownership_missing",
         }
     }
 }
@@ -894,6 +901,7 @@ struct InjectedArtifact {
     post_copy_verified: bool,
     exec_mode: String,
     tool_mount: ToolMount,
+    tool_volume_owner: Option<String>,
     target_arch: String,
     libc: String,
 }
@@ -1357,6 +1365,23 @@ impl ProfileDocument {
                         )),
                     );
                 }
+                // The required fact is ownership *and* read-only mount; checking
+                // only the mount reported proof the profile never supplied.
+                match artifact.tool_volume_owner.as_deref() {
+                    None => {
+                        return rejection(
+                            RejectionReason::ToolVolumeOwnershipMissing,
+                            why("no owner is declared for the ephemeral shared tool volume".into()),
+                        );
+                    }
+                    Some(owner) if owner.trim().is_empty() => {
+                        return rejection(
+                            RejectionReason::ToolVolumeOwnershipMissing,
+                            why("tool volume owner is empty".into()),
+                        );
+                    }
+                    Some(_) => {}
+                }
                 if artifact.tool_mount != ToolMount::ReadOnly {
                     return rejection(
                         RejectionReason::ToolMountNotReadOnly,
@@ -1784,6 +1809,39 @@ fn outcome_label(
             Ok(format!("reject `{}`", rejection.reason.as_str()))
         }
     }
+}
+
+/// A DAP cell cites two kinds of evidence: repository-relative proof surfaces
+/// and issue references. Checking only that the string is non-empty let a
+/// renamed or deleted test leave a stale proof claim standing, so every cited
+/// path must still resolve. Issue references are shape-checked only — this gate
+/// resolves no remote state, which the contract records as a limitation.
+fn verify_evidence_paths(contract: &ProfileContract, root: &Path) -> Result<()> {
+    for cell in &contract.dap_cells {
+        for evidence in &cell.evidence {
+            if let Some(number) = evidence.strip_prefix('#') {
+                if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+                    bail!(
+                        "dap cell {:?} cites issue evidence {:?}, which is not `#<number>`",
+                        cell.cell_id,
+                        evidence
+                    );
+                }
+                continue;
+            }
+            let path = root.join(evidence);
+            if !path.is_file() {
+                bail!(
+                    "dap cell {:?} cites evidence {:?}, which is no longer a file at {}; the \
+                     proof claim is stale",
+                    cell.cell_id,
+                    evidence,
+                    path.display()
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Bind every declared required fact to a negative fixture that the evaluator
@@ -2226,6 +2284,7 @@ fn run(cli: &Cli) -> Result<()> {
     }
     verify_admission_coverage(&contract, &fixtures)?;
     verify_required_fact_enforcement(&contract, &fixtures)?;
+    verify_evidence_paths(&contract, &cli.repo_root)?;
 
     let rendered = render_status(&contract, &fixtures)?;
 
@@ -2950,6 +3009,70 @@ mod tests {
             error.to_string().contains("process_tree_and_pod_cleanup_owner"),
             "unexpected error: {error}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_stale_evidence_path_fails_the_gate() -> Result<()> {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = manifest_dir
+            .parent()
+            .ok_or_else(|| anyhow!("cannot derive repository root from {:?}", manifest_dir))?;
+        let contract = committed_contract()?;
+        // Every committed citation resolves today.
+        verify_evidence_paths(&contract, root)?;
+
+        // Renaming or deleting a cited test must not leave the claim standing.
+        let mut stale = ProfileContract::from_str(COMMITTED_CONTRACT)?;
+        let cell = stale
+            .dap_cells
+            .iter_mut()
+            .find(|cell| cell.cell_id == "initialize")
+            .ok_or_else(|| anyhow!("missing cell"))?;
+        cell.evidence = vec!["crates/perl-dap/tests/renamed_away_tests.rs".into()];
+        let error =
+            verify_evidence_paths(&stale, root).expect_err("a stale citation must fail the gate");
+        assert!(error.to_string().contains("stale"), "unexpected error: {error}");
+
+        // Issue references are shape-checked, not resolved.
+        let mut bad_issue = ProfileContract::from_str(COMMITTED_CONTRACT)?;
+        let cell = bad_issue
+            .dap_cells
+            .iter_mut()
+            .find(|cell| cell.cell_id == "initialize")
+            .ok_or_else(|| anyhow!("missing cell"))?;
+        cell.evidence = vec!["#not-a-number".into()];
+        assert!(verify_evidence_paths(&bad_issue, root).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn tool_volume_ownership_is_required_alongside_the_read_only_mount() -> Result<()> {
+        let fixtures = committed_fixtures()?;
+        let admitted = find_fixture(&fixtures, "positive-injected-tool")?.profile.clone();
+        evaluate(&admitted)?;
+
+        for owner in [None, Some(String::new()), Some("   ".to_string())] {
+            let mut profile = admitted.clone();
+            if let Some(artifact) = profile.artifact.as_mut() {
+                artifact.tool_volume_owner = owner.clone();
+            }
+            assert_rejected_with(&profile, RejectionReason::ToolVolumeOwnershipMissing)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn published_uid_and_gid_bounds_match_the_validator() -> Result<()> {
+        // A schema-valid document that cannot deserialize is two contracts, not one.
+        let fixture_schema: serde_json::Value = serde_json::from_str(COMMITTED_FIXTURE_SCHEMA)?;
+        for field in ["uid", "gid"] {
+            let bound =
+                fixture_schema["$defs"]["security_disposition"]["properties"][field]["maximum"]
+                    .as_u64()
+                    .ok_or_else(|| anyhow!("{field} publishes no maximum"))?;
+            assert_eq!(bound, u64::from(u32::MAX), "{field} bound must match the u32 it parses");
+        }
         Ok(())
     }
 }

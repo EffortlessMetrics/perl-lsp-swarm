@@ -6,17 +6,17 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12803 |
+| Total tracked files | 12804 |
 | Rust-family files | 3983 |
-| Non-Rust files | 8820 |
-| Allowlisted | 6581 |
+| Non-Rust files | 8821 |
+| Allowlisted | 6582 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 567 |
+| config | 568 |
 | documentation | 2858 |
 | generated | 2 |
 | production | 357 |
@@ -3792,6 +3792,7 @@
 | `contracts/dap/fixtures/negative-empty-workspace-paths.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-fabricated-dap-evidence.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-init-image-perl.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
+| `contracts/dap/fixtures/negative-injected-artifact-libc-mismatch.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-injected-tool-with-adapter-row.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-injected-tool-with-image.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
 | `contracts/dap/fixtures/negative-injection-source-empty-revision.toml` | config | `non-rust-kubernetes-dap-profile-fixtures` | dap |
