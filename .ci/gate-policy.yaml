@@ -888,6 +888,24 @@ gates:
     #     verification on 6ec7242bd: lexer_robustness_tests green twice,
     #     check-panic-test exit 0. Exact extended-cohort rerun PASS on this
     #     branch.
+    #   2026-09-05 batch (#11688): perl-lsp-rs-core admitted. Measured 434
+    #     findings on af4dccc6c (the ~154 recorded on #12000 in August is a
+    #     stale census; main moved). Repaired to zero: 243 unwrap/expect sites
+    #     routed to perl_test_must helpers off clippy's own JSON primary spans,
+    #     so the receiver boundary is exact; 206 `.expect*("...")` context
+    #     strings land in `_with` variants and the 37 bare helpers are exactly
+    #     the 37 `.unwrap()`/`.unwrap_err()` sites that carried no message
+    #     (#14291's context-loss defect cannot recur under that identity). 86
+    #     bool_assert_comparison plus mechanical classes took clippy's
+    #     machine-applicable replacements; 49 panic-family sites were removed by
+    #     real assertions and projections, never suppressed, per the
+    #     panic-stays-denied-everywhere contract. Two narrow reasoned
+    #     #[expect(dead_code)] remain: the #9662/#8032 inventory ledger rows and
+    #     an inherent-vs-blanket specialization fallback arm; deleting either
+    #     would destroy evidence rather than remove dead code. Exact
+    #     extended-cohort rerun PASS on this branch (exit 0, 2m19s, within the
+    #     480s/400000ms envelope); cargo test -p perl-lsp-rs-core --all-targets
+    #     --locked = 5244 passed / 0 failed across 100 targets.
     command: >-
       cargo clippy
       -p perl-token
@@ -926,6 +944,7 @@ gates:
       -p perllsp
       -p perl-lexer
       -p perl-ci-hygiene
+      -p perl-lsp-rs-core
       --all-targets --locked
       -- -D warnings -A missing_docs
     # Budget: measured ~80s locally with warm dependencies and cold check

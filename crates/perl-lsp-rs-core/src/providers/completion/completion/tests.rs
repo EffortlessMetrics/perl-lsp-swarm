@@ -9318,7 +9318,7 @@ fn test_foreach_iterator_scoped_to_loop() {
     // The analyzer genuinely lacks the binding: confirm the producer gap
     // rather than an admission rejection, so #7423/#7424 own the fix.
     assert!(
-        provider.symbol_table.symbols.get("loop_item").is_none(),
+        !provider.symbol_table.symbols.contains_key("loop_item"),
         "analyzer now records foreach iterators — revisit this seam for real admission coverage"
     );
 

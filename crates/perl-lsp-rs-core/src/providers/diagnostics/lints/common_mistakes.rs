@@ -220,9 +220,9 @@ fn might_be_undef(node: &Node, symbol_table: &SymbolTable) -> bool {
 mod tests {
     use super::*;
     use perl_parser_core::parser::Parser;
-    use perl_test_must::must_some_with;
     use perl_semantic_analyzer::analysis::symbol::SymbolExtractor;
     use perl_tdd_support::{must, must_some};
+    use perl_test_must::must_some_with;
 
     fn common_mistakes_diags(source: &str) -> Vec<Diagnostic> {
         let ast = must(Parser::new(source).parse());

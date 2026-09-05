@@ -2420,6 +2420,7 @@ mod tests {
     use perl_source_identity::{
         ContentDigest, LogicalSourceId, ProjectId, SourceGeneration, WorkspaceRootId,
     };
+    use perl_test_must::must_with;
     use serde_json::json;
 
     const SOURCE: &[u8] = b"package Widget;\n1;\n";
@@ -2674,11 +2675,15 @@ mod tests {
         ];
         assert_eq!(states.len(), 12, "the twelve terminal states stay closed");
         for state in states {
-            let snapshot = FileSemanticSnapshotV1::from_parts(parts_for_terminal(state))
-                .unwrap_or_else(|e| panic!("{state:?} must be constructible: {e}"));
+            let snapshot = must_with(
+                FileSemanticSnapshotV1::from_parts(parts_for_terminal(state)),
+                format!("{state:?} must be constructible"),
+            );
             let json = serde_json::to_string(&snapshot).unwrap();
-            let back: FileSemanticSnapshotV1 = serde_json::from_str(&json)
-                .unwrap_or_else(|e| panic!("{state:?} must round-trip: {e}\n{json}"));
+            let back: FileSemanticSnapshotV1 = must_with(
+                serde_json::from_str(&json),
+                format!("{state:?} must round-trip\n{json}"),
+            );
             assert_eq!(snapshot, back, "{state:?} round-trip must be lossless");
         }
     }

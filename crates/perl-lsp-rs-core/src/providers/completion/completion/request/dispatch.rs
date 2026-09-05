@@ -261,6 +261,33 @@ fn parse_indirect_receiver(source: &str, from: usize) -> Option<String> {
     None
 }
 
+/// Heuristic: detect if the cursor is in an expression position where statement
+/// keywords (package, sub, use, etc.) would be invalid. Returns true if the
+/// text immediately before the prefix suggests an expression context.
+/// (UX_GAP_02)
+fn is_in_expression_position(source: &str, prefix_start: usize) -> bool {
+    if prefix_start == 0 {
+        return false; // start of file — statement position
+    }
+    // Walk backward past whitespace to find the last non-whitespace char
+    let before = &source[..prefix_start];
+    let trimmed = before.trim_end();
+    let Some(last_char) = trimmed.chars().next_back() else {
+        return false; // blank line — statement position
+    };
+    // Expression indicators: assignment, list, operator contexts
+    matches!(
+        last_char,
+        '=' | ',' | ';' | '(' | '[' | '{' | '+' | '-' | '*' | '/' | '%' | '.' | '&' | '|' | '!' | '<' | '>' | '?' | ':' | '~' | '\\'
+    ) && !before.ends_with("=>") // fat comma is a key context, not expression
+    && !before.ends_with("==")
+    && !before.ends_with("!=")
+    && !before.ends_with("<=")
+    && !before.ends_with(">=")
+    && !before.ends_with("=~")
+    && !before.ends_with("//")
+}
+
 /// Route Perl indirect-object method calls (`method $obj @args`, `new Class`)
 /// through the same method-completion providers as the arrow form (#1758).
 ///
@@ -707,31 +734,4 @@ mod indirect_helper_tests {
         assert!(!is_in_expression_position("value ", 6));
         assert!(!is_in_expression_position("   ", 3));
     }
-}
-
-/// Heuristic: detect if the cursor is in an expression position where statement
-/// keywords (package, sub, use, etc.) would be invalid. Returns true if the
-/// text immediately before the prefix suggests an expression context.
-/// (UX_GAP_02)
-fn is_in_expression_position(source: &str, prefix_start: usize) -> bool {
-    if prefix_start == 0 {
-        return false; // start of file — statement position
-    }
-    // Walk backward past whitespace to find the last non-whitespace char
-    let before = &source[..prefix_start];
-    let trimmed = before.trim_end();
-    let Some(last_char) = trimmed.chars().next_back() else {
-        return false; // blank line — statement position
-    };
-    // Expression indicators: assignment, list, operator contexts
-    matches!(
-        last_char,
-        '=' | ',' | ';' | '(' | '[' | '{' | '+' | '-' | '*' | '/' | '%' | '.' | '&' | '|' | '!' | '<' | '>' | '?' | ':' | '~' | '\\'
-    ) && !before.ends_with("=>") // fat comma is a key context, not expression
-    && !before.ends_with("==")
-    && !before.ends_with("!=")
-    && !before.ends_with("<=")
-    && !before.ends_with(">=")
-    && !before.ends_with("=~")
-    && !before.ends_with("//")
 }

@@ -584,8 +584,10 @@ mod tests {
     #[test]
     fn completions_share_canonical_checking_descriptions() {
         for shell in ["bash", "zsh", "fish", "powershell"] {
-            let script = crate::runtime::launcher::shell_completion(shell)
-                .unwrap_or_else(|| panic!("{shell} completions"));
+            let script = must_some_with(
+                crate::runtime::launcher::shell_completion(shell),
+                format!("{shell} completions"),
+            );
             assert!(completion_names_flag(script, CHECK_FLAG), "{shell} missing --check");
             assert!(
                 completion_names_flag(script, CHECK_PROJECT_FLAG),
@@ -596,8 +598,10 @@ mod tests {
             }
         }
         for shell in ["zsh", "fish", "powershell"] {
-            let script = crate::runtime::launcher::shell_completion(shell)
-                .unwrap_or_else(|| panic!("{shell} completions"));
+            let script = must_some_with(
+                crate::runtime::launcher::shell_completion(shell),
+                format!("{shell} completions"),
+            );
             assert!(script.contains(CHECK_DESCRIPTION), "{shell} must reuse CHECK_DESCRIPTION");
             assert!(
                 script.contains(CHECK_PROJECT_DESCRIPTION),
