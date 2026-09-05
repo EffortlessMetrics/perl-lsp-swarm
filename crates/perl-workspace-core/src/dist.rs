@@ -259,6 +259,11 @@ fn handle_cpanfile_statement(buf: &str, block_phase: Option<&str>, out: &mut Vec
     else {
         return;
     };
+    // A postfix modifier is a predicate too, even without a surrounding block.
+    // Do not expose its quoted condition as a version or its module as a fact.
+    if has_cpanfile_statement_modifier(statement) {
+        return;
+    }
     let phase = if *kw_phase == "runtime" { block_phase.unwrap_or("runtime") } else { kw_phase };
     let quoted = quoted_strings(statement);
     if let Some(module) = quoted.first() {
@@ -269,6 +274,40 @@ fn handle_cpanfile_statement(buf: &str, block_phase: Option<&str>, out: &mut Vec
             relation: (*relation).to_string(),
         });
     }
+}
+
+/// Recognize statement modifiers outside the plain quoted literals supported by
+/// this scanner. This is not a general Perl lexer: quote-like operators remain a
+/// separate lexical boundary. Whole words avoid rejecting `if_required`, while
+/// quote/escape state keeps literal module and version text out of this check.
+fn has_cpanfile_statement_modifier(statement: &str) -> bool {
+    let mut quote = None;
+    let mut escaped = false;
+    let mut word = String::new();
+    for ch in statement.chars().chain(std::iter::once(' ')) {
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        if ch.is_alphanumeric() || ch == '_' {
+            word.push(ch);
+            continue;
+        }
+        if matches!(word.as_str(), "if" | "unless" | "while" | "until" | "for" | "foreach" | "when") {
+            return true;
+        }
+        word.clear();
+        if matches!(ch, '\'' | '"') {
+            quote = Some(ch);
+        }
+    }
+    false
 }
 
 fn starts_with_cpanfile_keyword(statement: &str, keyword: &str) -> bool {
@@ -590,7 +629,7 @@ mod tests {
 
     #[test]
     fn cpanfile_parenthesized_on_phase_is_recognized() {
-        let content = "on('test') => sub { requires 'Test::More'; };";
+        let content = "on('test' => sub { requires 'Test::More'; });";
         let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), content);
 
         assert!(
@@ -672,6 +711,73 @@ mod tests {
                 relation: "requires".to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn cpanfile_postfix_modifiers_do_not_publish_conditional_facts() {
+        for &(keyword, relation, phase) in CPANFILE_KEYWORDS {
+            for modifier in ["if", "unless", "while", "until", "for", "foreach", "when"] {
+                for declaration in [
+                    format!("{keyword} 'Conditional::Dep', '0'"),
+                    format!("{keyword}('Conditional::Dep', '0')"),
+                ] {
+                    let content = format!(
+                        "{declaration} {modifier} $enabled; {keyword} 'Kept::Dep', '1';"
+                    );
+                    let facts = parse_cpanfile(fid(), &content);
+                    assert_eq!(
+                        facts.prereqs,
+                        vec![Prereq {
+                            module: "Kept::Dep".to_string(),
+                            version: Some("1".to_string()),
+                            phase: phase.to_string(),
+                            relation: relation.to_string(),
+                        }],
+                        "{content}"
+                    );
+
+                    // The final statement before a block's closing brace need
+                    // not have a semicolon. Exercise that extraction path too.
+                    let content =
+                        format!("on 'test' => sub {{ {declaration} {modifier} $enabled }};");
+                    assert!(parse_cpanfile(fid(), &content).prereqs.is_empty(), "{content}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cpanfile_modifier_words_in_literals_are_not_conditions() {
+        let content = r#"
+            requires 'if', '0';
+            recommends "unless", "1";
+            on 'test' => sub { requires 'while', '2'; };
+        "#;
+        let facts = parse_cpanfile(fid(), content);
+        let rows = facts
+            .prereqs
+            .iter()
+            .map(|p| (p.module.as_str(), p.version.as_deref(), p.phase.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows,
+            vec![
+                ("unless", Some("1"), "runtime"),
+                ("if", Some("0"), "runtime"),
+                ("while", Some("2"), "test"),
+            ]
+        );
+        for statement in [
+            r#"requires 'if_required'"#,
+            r#"requires 'X', "escaped\" if literal""#,
+            r#"requires 'X', 'escaped\' unless literal'"#,
+            r#"requires 'X', if_required()"#,
+        ] {
+            assert!(!has_cpanfile_statement_modifier(statement), "{statement}");
+        }
+        assert!(has_cpanfile_statement_modifier("requires('X')unless$enabled"));
+        assert!(has_cpanfile_statement_modifier("requires 'X' if\n$enabled"));
+        assert!(has_cpanfile_statement_modifier("requires 'X' if"));
     }
 
     #[test]
