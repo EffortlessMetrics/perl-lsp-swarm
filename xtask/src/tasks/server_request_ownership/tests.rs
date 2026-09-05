@@ -815,6 +815,62 @@ impl Unrelated {
     Ok(())
 }
 
+/// `#[cfg(test)] mod tests;` leaves its code in another file, and that file,
+/// parsed alone, shows no sign of having been gated. Skipping by filename could
+/// not recover it: `tests.rs` does not end in `_tests.rs`, so a send there was
+/// read as production. The declaration is resolved instead.
+#[test]
+fn a_send_in_an_externally_declared_test_module_is_not_production()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let runtime = dir.path().join("src").join("runtime");
+    std::fs::create_dir_all(runtime.join("owner"))?;
+    std::fs::write(
+        runtime.join("owner.rs"),
+        r"
+#[cfg(test)]
+mod tests;
+mod helpers;
+",
+    )?;
+    std::fs::write(
+        runtime.join("owner").join("tests.rs"),
+        r#"
+impl Server {
+    fn exercise(&self) -> io::Result<()> {
+        self.send_request(id, "test-only/never-sent", params)
+    }
+}
+"#,
+    )?;
+    // The ungated sibling is the control: resolution must not swallow it.
+    std::fs::write(
+        runtime.join("owner").join("helpers.rs"),
+        r#"
+impl Server {
+    fn emit(&self) -> io::Result<()> {
+        self.send_request(id, "window/showDocument", params)
+    }
+}
+"#,
+    )?;
+
+    let constants = BTreeMap::new();
+    let (emitted, _ambiguous, findings) = scan_emission(dir.path(), "src", &constants)?;
+
+    assert!(
+        !emitted.contains_key("test-only/never-sent"),
+        "a send inside an externally declared test module is not production: {emitted:?}"
+    );
+    assert_eq!(
+        emitted.get("window/showDocument").map(Vec::len),
+        Some(1),
+        "an ungated sibling module is still production: {emitted:?}"
+    );
+    assert!(findings.is_empty(), "{findings:?}");
+    Ok(())
+}
+
 /// A forwarder that implements a trait method is the ordinary shape here --
 /// `OutboundSink` is exactly it. The declaration carries no body, so counting it
 /// as a second, non-forwarding definition made the ambiguity check fire on a

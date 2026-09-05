@@ -23,7 +23,7 @@ use super::model::{CatalogRow, Discovered, RegistryKind, Violation};
 use color_eyre::eyre::{Result, WrapErr};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use syn::visit::Visit;
 
 /// Method names whose call emits a server-initiated request.
@@ -69,6 +69,25 @@ fn is_test_gated(attrs: &[syn::Attribute]) -> bool {
         attr.path().is_ident("cfg")
             && attr.parse_args::<syn::Meta>().is_ok_and(|meta| meta_is_test_only(&meta))
     })
+}
+
+/// The files a `mod name;` declaration inside `parent` can resolve to.
+///
+/// `dir/mod.rs` declares siblings in `dir`; `dir/foo.rs` declares children in
+/// `dir/foo`. Both spellings of a module -- `name.rs` and `name/mod.rs` -- are
+/// returned, and the caller keeps whichever exists.
+fn module_paths(parent: &Path, name: &str) -> Vec<PathBuf> {
+    let dir = match parent.file_name().and_then(|name| name.to_str()) {
+        Some("mod.rs" | "lib.rs" | "main.rs") => match parent.parent() {
+            Some(parent) => parent.to_path_buf(),
+            None => return Vec::new(),
+        },
+        _ => match (parent.parent(), parent.file_stem()) {
+            (Some(dir), Some(stem)) => dir.join(stem),
+            _ => return Vec::new(),
+        },
+    };
+    vec![dir.join(format!("{name}.rs")), dir.join(name).join("mod.rs")]
 }
 
 // ── Expression shapes ────────────────────────────────────────────────────
@@ -443,12 +462,46 @@ pub(super) fn scan_emission(
     }
     paths.sort();
 
+    // ── Test-gated external modules ──────────────────────────────────────
+    // `#[cfg(test)] mod tests;` leaves the test code in its own file, and a
+    // file parsed on its own carries no trace of the attribute that gated it.
+    // A filename cannot recover that -- `tests.rs` and `helpers.rs` look
+    // alike -- so the declarations are resolved to the paths they name. What a
+    // gated file itself declares is gated too, hence the fixpoint.
+    let mut test_gated: BTreeSet<PathBuf> = BTreeSet::new();
+    loop {
+        let mut grew = false;
+        for path in &paths {
+            let Ok(source) = std::fs::read_to_string(path) else { continue };
+            let Ok(parsed) = syn::parse_file(&source) else { continue };
+            let inherited = test_gated.contains(path);
+            for item in &parsed.items {
+                let syn::Item::Mod(item) = item else { continue };
+                // An inline module's body is already skipped by the visitor.
+                if item.content.is_some() || !(inherited || is_test_gated(&item.attrs)) {
+                    continue;
+                }
+                for candidate in module_paths(path, &item.ident.to_string()) {
+                    if candidate.is_file() && test_gated.insert(candidate) {
+                        grew = true;
+                    }
+                }
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+
     // ── Pass one: parse and collect ──────────────────────────────────────
     let mut files: Vec<(String, Vec<FnFacts>)> = Vec::new();
     for path in paths {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-        // Whole-file test modules carry no production emission.
-        if name.ends_with("_tests.rs") {
+        // Whole-file test modules carry no production emission. Membership is
+        // resolved from the `#[cfg(test)] mod name;` that declares the file,
+        // not guessed from the filename: a `_tests.rs` suffix skipped files
+        // nothing had gated, and missed gated ones spelled any other way.
+        if test_gated.contains(&path) {
             continue;
         }
         let relative = path
