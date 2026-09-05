@@ -3,154 +3,50 @@ name: PR Candidate-Set Reconciliation
 on:
   pull_request:
     branches: [main, master]
-    types: [synchronize]
+    types: [opened, closed, reopened, synchronize, edited, ready_for_review, converted_to_draft]
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch: {}
 
 concurrency:
-  group: repair-14688-${{ github.event.pull_request.number }}
+  group: pr-candidate-set-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
+  issues: read
   pull-requests: read
 
 jobs:
-  repair:
-    name: Complete #14688 current-tree cutover
-    if: >-
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.pull_request.head.ref == 'fix/14688-retire-non-rust-snapshot'
+  reconcile:
+    name: Validate current PR candidate sets
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 10
     steps:
-      - name: Checkout repair branch
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: fix/14688-retire-non-rust-snapshot
-          fetch-depth: 0
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: Install Rust 1.95
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
         with:
           toolchain: 1.95.0
-          components: rustfmt, clippy
 
-      - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          cache-on-failure: true
-          cache-targets: false
-          shared-key: repair-14688-${{ hashFiles('Cargo.lock') }}
+      - name: Test candidate-set policy validator
+        run: cargo test -p xtask --bin pr-candidate-set --locked
 
-      - name: Merge current main
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "EffortlessSteven"
-          git config user.email "git@effortlesssteven.com"
-          git fetch origin main
-          git merge --no-edit origin/main
-
-      - name: Apply the reviewed authority cutover
-        shell: bash
+      - name: Validate policy against live GitHub cross-references
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import base64
-          import gzip
-          import json
-          import os
-          import urllib.request
+          cargo run -p xtask --bin pr-candidate-set --locked -- \
+            --live \
+            --receipt target/receipts/pr-candidate-set.json
 
-          url = (
-              "https://api.github.com/repos/EffortlessMetrics/perl-lsp-swarm/"
-              "git/blobs/67f703a3a2663a45644465615a7fd1078830425c"
-          )
-          request = urllib.request.Request(
-              url,
-              headers={
-                  "Accept": "application/vnd.github+json",
-                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
-                  "X-GitHub-Api-Version": "2022-11-28",
-                  "User-Agent": "perl-lsp-swarm-repair-14688",
-              },
-          )
-          with urllib.request.urlopen(request, timeout=30) as response:
-              staged = base64.b64decode(json.load(response)["content"]).decode("utf-8")
-
-          marker = 'payload = """'
-          start = staged.find(marker)
-          if start < 0:
-              raise SystemExit("immutable repair payload opening marker not found")
-          start += len(marker)
-          end = staged.find('"""', start)
-          if end < 0:
-              raise SystemExit("immutable repair payload closing marker not found")
-          payload = "".join(staged[start:end].split())
-          script = gzip.decompress(base64.b64decode(payload)).decode("utf-8")
-          exec(compile(script, "repair-14688.py", "exec"), {"__name__": "__main__"})
-          PY
-
-      - name: Format the changed Rust surfaces
-        run: cargo fmt --all
-
-      - name: Verify the focused behavior
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo test --locked -p perl-ci-hygiene git_hooks
-          cargo test --locked -p xtask file_policy
-          cargo test --locked -p xtask --test file_policy
-          cargo test --locked -p xtask --test non_rust_inventory_conflict_topology
-          cargo clippy --locked -p xtask --all-targets -- -D warnings
-          cargo clippy --locked -p perl-ci-hygiene --all-targets -- -D warnings
-          cargo fmt --all -- --check
-
-      - name: Restore the recognized workflow and verify the bounded diff
-        shell: bash
-        run: |
-          set -euo pipefail
-          git checkout origin/main -- .github/workflows/pr-candidate-set.yml
-
-          for protected in docs/policy/NON_RUST_INVENTORY.md policy/non-rust-allowlist.toml .gitattributes
-          do
-            git diff --quiet origin/main...HEAD -- "$protected" || {
-              echo "::error::$protected changed in the committed branch diff"
-              exit 1
-            }
-            git diff --quiet -- "$protected" || {
-              echo "::error::$protected changed in the working tree"
-              exit 1
-            }
-          done
-
-          {
-            git diff --name-only origin/main...HEAD
-            git diff --name-only
-          } | sort -u > /tmp/repair-14688-paths
-
-          while IFS= read -r path
-          do
-            case "$path" in
-              .ci/gate-policy.yaml|.github/workflows/ci.yml|.github/workflows/post-merge-status.yml|.github/workflows/pr-candidate-set.yml|crates/perl-ci-hygiene/src/git_hooks.rs|docs/FILE_POLICY.md|docs/development/FILE_POLICY_RAIL.md|docs/policy/NON_RUST_POLICY.md|xtask/src/main.rs|xtask/src/tasks/file_policy.rs|xtask/tests/file_policy.rs|xtask/tests/non_rust_inventory_conflict_topology.rs)
-                ;;
-              "")
-                ;;
-              *)
-                echo "::error::unexpected repair path: $path"
-                exit 1
-                ;;
-            esac
-          done < /tmp/repair-14688-paths
-
-          git diff --check
-
-      - name: Commit and push the verified repair
-        shell: bash
-        run: |
-          set -euo pipefail
-          git add -A
-          git diff --cached --check
-          git commit -m "fix(ci): make non-Rust inventory check current-tree authoritative"
-          git push origin HEAD:fix/14688-retire-non-rust-snapshot
+      - name: Upload candidate-set receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: pr-candidate-set-receipt
+          path: target/receipts/pr-candidate-set.json
+          if-no-files-found: error
+          retention-days: 14

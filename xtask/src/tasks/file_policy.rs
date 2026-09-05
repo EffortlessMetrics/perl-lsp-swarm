@@ -1319,7 +1319,7 @@ pub(crate) fn verify_inventory_projection(markdown: &str) -> Result<()> {
         if !seen_paths.insert(path.clone()) {
             bail!(
                 "non-Rust inventory projection emits duplicate file rows for `{path}`; \
-                 regenerate from a single pass with `cargo xtask non-rust inventory --write`"
+                 regenerate from a single pass with `cargo xtask non-rust inventory`"
             );
         }
         *section_rows.entry(section).or_insert(0) += 1;
@@ -1350,18 +1350,11 @@ pub(crate) fn verify_inventory_projection(markdown: &str) -> Result<()> {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/// Entry point for `cargo xtask non-rust inventory`.
+/// Write one current-tree inventory projection to ignored workflow evidence.
 ///
-/// Writes only to `target/policy/` — this is a read-only observation that does
-/// not modify any tracked file.  To also refresh the committed snapshot at
-/// `docs/policy/NON_RUST_INVENTORY.md`, use
-/// [`non_rust_inventory_write_docs`] (exposed via `--write`).
-pub fn non_rust_inventory(root: &Path) -> Result<()> {
-    println!("Building non-Rust file inventory...");
-
-    let records = build_inventory(root)?;
-
-    // Write outputs under target/policy/ only — never touch tracked docs here.
+/// Both the observation command and the merge check use this path so success
+/// and failure inspect the same Markdown/JSON representation.
+fn write_inventory_outputs(root: &Path, records: &[FileRecord]) -> Result<()> {
     let target_dir = root.join("target/policy");
     fs::create_dir_all(&target_dir)
         .with_context(|| format!("creating {}", target_dir.display()))?;
@@ -1369,22 +1362,35 @@ pub fn non_rust_inventory(root: &Path) -> Result<()> {
     let md_path = target_dir.join("non-rust-inventory.md");
     let json_path = target_dir.join("non-rust-inventory.json");
 
-    let markdown = render_markdown(&records);
+    let markdown = render_markdown(records);
     verify_inventory_projection(&markdown)
         .with_context(|| "generated non-Rust inventory projection is self-inconsistent")?;
     fs::write(&md_path, &markdown).with_context(|| format!("writing {}", md_path.display()))?;
     println!("  wrote {}", md_path.display());
 
     let json =
-        serde_json::to_string_pretty(&records).with_context(|| "serialising inventory to JSON")?;
+        serde_json::to_string_pretty(records).with_context(|| "serialising inventory to JSON")?;
     fs::write(&json_path, &json).with_context(|| format!("writing {}", json_path.display()))?;
     println!("  wrote {}", json_path.display());
 
-    // Print a brief summary.
+    Ok(())
+}
+
+/// Entry point for `cargo xtask non-rust inventory`.
+///
+/// Writes only current-tree evidence under `target/policy/`; no tracked file is
+/// read as authority or modified. Use [`non_rust_inventory_write_docs`] only
+/// when deliberately publishing the default-branch reader reference.
+pub fn non_rust_inventory(root: &Path) -> Result<()> {
+    println!("Building non-Rust file inventory...");
+
+    let records = build_inventory(root)?;
+    write_inventory_outputs(root, &records)?;
+
     let total = records.len();
-    let rust_count = records.iter().filter(|r| r.category == "rust").count();
+    let rust_count = records.iter().filter(|record| record.category == "rust").count();
     let non_rust_count = total - rust_count;
-    let allowlisted = records.iter().filter(|r| r.allowlisted).count();
+    let allowlisted = records.iter().filter(|record| record.allowlisted).count();
     let unclassified = non_rust_count - allowlisted;
 
     println!(
@@ -1398,13 +1404,11 @@ pub fn non_rust_inventory(root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Regenerate `docs/policy/NON_RUST_INVENTORY.md` from the current tree.
+/// Publish `docs/policy/NON_RUST_INVENTORY.md` from the current tree.
 ///
-/// This is the deliberate write path, exposed via `cargo xtask non-rust
-/// inventory --write`.  It first runs the normal inventory scan (writing
-/// `target/policy/`), then also copies the result to the committed snapshot.
-/// No test target should call this function — tests that need a rendered
-/// artifact should read from `target/policy/non-rust-inventory.md` instead.
+/// This deliberate `--write` path first writes the ignored evidence under
+/// `target/policy/`, then copies the Markdown to the tracked default-branch
+/// reader reference. The published copy is not an input to branch validity.
 pub fn non_rust_inventory_write_docs(root: &Path) -> Result<()> {
     non_rust_inventory(root)?;
 
@@ -1422,12 +1426,12 @@ pub fn non_rust_inventory_write_docs(root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Check the tracked-file classification against the allowlist.
+/// Evaluate the current tracked tree against the non-Rust allowlist.
 ///
-/// The committed Markdown inventory is generated documentation and must match
-/// the current tree. The existing unclassified backlog is reported as a warning,
-/// while newly added unclassified files and stale generated documentation are
-/// blocking errors.
+/// The allowlist and current tree own the verdict. The check always emits
+/// Markdown/JSON evidence before applying the merge-base ratchet, warns on
+/// existing unclassified debt, and rejects only newly added unclassified
+/// paths. It never reads or rewrites the tracked publication reference.
 pub fn non_rust_inventory_check(root: &Path) -> Result<()> {
     let baseline = resolve_inventory_baseline(root);
     non_rust_inventory_check_with_baseline(root, baseline.as_deref())
@@ -1446,13 +1450,19 @@ fn non_rust_inventory_check_with_baseline(root: &Path, baseline: Option<&str>) -
     }
 
     let records = build_inventory(root)?;
+    write_inventory_outputs(root, &records)?;
+
     let unclassified: Vec<&FileRecord> =
         records.iter().filter(|record| record.category == "unclassified").collect();
     if !unclassified.is_empty() {
         eprintln!(
-            "warning: non-Rust inventory has {} unclassified tracked file(s); inspect policy/non-rust-allowlist.toml",
+            "warning: current non-Rust inventory has {} unclassified tracked file(s); \
+             inherited entries are tolerated, but newly added entries are rejected",
             unclassified.len()
         );
+        for record in unclassified.iter().take(5) {
+            eprintln!("warning: unclassified path: {}", record.path);
+        }
     }
 
     if let Some(baseline) = baseline {
@@ -1469,36 +1479,18 @@ fn non_rust_inventory_check_with_baseline(root: &Path, baseline: Option<&str>) -
                 .collect::<Vec<_>>()
                 .join(", ");
             bail!(
-                "newly added tracked non-Rust file(s) are unclassified: {paths}; add allowlist entries before merging"
+                "newly added tracked non-Rust file(s) are unclassified: {paths}; \
+                 add entries to policy/non-rust-allowlist.toml before merging"
             );
         }
     } else {
         eprintln!(
-            "warning: cannot resolve a merge baseline; newly added unclassified files were not checked"
+            "warning: cannot resolve a merge baseline; current-tree evidence was emitted, \
+             but inherited and newly added unclassified debt could not be distinguished"
         );
     }
 
-    let expected = render_markdown(&records);
-    verify_inventory_projection(&expected)
-        .with_context(|| "generated non-Rust inventory projection is self-inconsistent")?;
-    let docs_path = root.join("docs/policy/NON_RUST_INVENTORY.md");
-    let actual = fs::read_to_string(&docs_path)
-        .with_context(|| format!("reading committed inventory {}", docs_path.display()))?;
-    if let Err(error) = verify_inventory_projection(&actual) {
-        bail!(
-            "committed non-Rust inventory {} has an inconsistent projection: {error}; \
-             regenerate it with `cargo xtask non-rust inventory --write`",
-            docs_path.display()
-        );
-    }
-    if normalize_line_endings(&actual) != normalize_line_endings(&expected) {
-        let path_delta = inventory_path_delta(&actual, &expected);
-        bail!(
-            "non-Rust inventory documentation is stale at {}; {path_delta}; run `cargo xtask non-rust inventory --write` to regenerate it",
-            docs_path.display(),
-        );
-    }
-    println!("Non-Rust inventory scan completed: {}", docs_path.display());
+    println!("Non-Rust inventory policy check passed for the current tracked tree");
     Ok(())
 }
 
@@ -1548,10 +1540,6 @@ fn added_paths_since(root: &Path, baseline: &str) -> Result<Vec<String>> {
         .collect()
 }
 
-fn normalize_line_endings(value: &str) -> String {
-    value.replace("\r\n", "\n")
-}
-
 /// Escape a literal value for embedding in one Markdown table cell so the
 /// rendered row keeps exactly one cell per column: a literal `|` inside a
 /// value would otherwise split the row. Backslashes are intentionally left
@@ -1590,47 +1578,6 @@ fn parse_markdown_cells(line: &str) -> Option<Vec<String>> {
     }
     cells.push(current.trim().to_string());
     Some(cells)
-}
-
-/// Collect the backtick-wrapped first-column cells of a generated inventory
-/// table.
-///
-/// Header, separator, and summary rows have no backtick-wrapped first cell
-/// and are ignored, so the result is exactly the tracked-file rows.
-fn inventory_row_paths(markdown: &str) -> std::collections::BTreeSet<String> {
-    markdown
-        .lines()
-        .filter_map(|line| {
-            let cells = parse_markdown_cells(line)?;
-            let cell = cells.first()?;
-            Some(cell.strip_prefix('`')?.strip_suffix('`')?.to_string())
-        })
-        .collect()
-}
-
-/// Describe how a regenerated inventory (`expected`) differs from the
-/// committed one (`actual`).
-///
-/// Returns the exact missing and no-longer-generated rows when the row paths
-/// diverge, or a metadata-only note when both documents cover the same rows
-/// but summary counts or other non-row content changed.
-fn inventory_path_delta(actual: &str, expected: &str) -> String {
-    let actual = inventory_row_paths(actual);
-    let expected = inventory_row_paths(expected);
-    let missing = expected.difference(&actual).cloned().collect::<Vec<_>>();
-    let unexpected = actual.difference(&expected).cloned().collect::<Vec<_>>();
-    let mut details = Vec::new();
-    if !missing.is_empty() {
-        details.push(format!("missing generated paths: {}", missing.join(", ")));
-    }
-    if !unexpected.is_empty() {
-        details.push(format!("paths no longer generated: {}", unexpected.join(", ")));
-    }
-    if details.is_empty() {
-        "the row paths match but summary or metadata changed".to_string()
-    } else {
-        details.join("; ")
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4234,7 +4181,7 @@ review_after = "2026-11-13"
     }
 
     #[test]
-    fn non_rust_inventory_writes_target_outputs_and_write_docs_updates_snapshot() -> Result<()> {
+    fn non_rust_inventory_writes_target_outputs_and_write_docs_publishes_reference() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let tracked = init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
         assert_eq!(tracked, vec!["README.md".to_string()]);
@@ -4254,7 +4201,7 @@ review_after = "2026-11-13"
         assert!(markdown.contains("# Non-Rust File Inventory"));
         assert!(json.contains("\"path\": \"README.md\""));
         // The plain scan is read-only w.r.t. tracked files: the committed
-        // snapshot is written only by the explicit write-docs path.
+        // reference is published only by the explicit write-docs path.
         assert!(
             !docs_markdown.exists(),
             "default inventory must not create {}",
@@ -4269,107 +4216,57 @@ review_after = "2026-11-13"
     }
 
     #[test]
-    fn non_rust_inventory_check_accepts_current_and_normalized_docs() -> Result<()> {
+    fn non_rust_inventory_check_ignores_stale_publication_and_emits_evidence() -> Result<()> {
         let temp = tempfile::tempdir()?;
         init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
         write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
-
-        non_rust_inventory_write_docs(temp.path())?;
-        non_rust_inventory_check(temp.path())?;
+        write_fixture(
+            temp.path(),
+            "docs/policy/NON_RUST_INVENTORY.md",
+            "deliberately stale and structurally invalid\n",
+        )?;
+        run_git(temp.path(), &["add", "."])?;
+        run_git(
+            temp.path(),
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=test",
+                "commit",
+                "-qm",
+                "published reference baseline",
+            ],
+        )?;
 
         let docs_path = temp.path().join("docs/policy/NON_RUST_INVENTORY.md");
-        let current = fs::read_to_string(&docs_path)?;
-        fs::write(&docs_path, current.replace('\n', "\r\n"))?;
-        non_rust_inventory_check(temp.path())?;
+        let before = fs::read(&docs_path)?;
+        non_rust_inventory_check_with_baseline(temp.path(), Some("HEAD"))?;
 
-        Ok(())
-    }
-
-    #[test]
-    fn non_rust_inventory_check_rejects_valid_but_stale_docs() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
-        write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
-        non_rust_inventory_write_docs(temp.path())?;
-
-        write_fixture(temp.path(), "src/lib.rs", "pub fn fixture() {}\n")?;
-        run_git(temp.path(), &["add", "src/lib.rs"])?;
-
-        let error = non_rust_inventory_check(temp.path())
-            .err()
-            .ok_or_else(|| eyre!("valid but stale inventory documentation must fail"))?;
-        ensure!(
-            error.to_string().contains("inventory documentation is stale"),
-            "unexpected stale-inventory error: {error}"
+        assert_eq!(
+            fs::read(&docs_path)?,
+            before,
+            "the branch check must not rewrite the published reference"
         );
+        let markdown = fs::read_to_string(temp.path().join("target/policy/non-rust-inventory.md"))?;
+        let json = fs::read_to_string(temp.path().join("target/policy/non-rust-inventory.json"))?;
+        assert!(markdown.contains("docs/policy/NON_RUST_INVENTORY.md"));
+        assert!(json.contains("docs/policy/NON_RUST_INVENTORY.md"));
         Ok(())
-    }
-
-    #[test]
-    fn inventory_path_delta_reports_exact_added_and_removed_rows() {
-        let actual = "| `docs/old.md` | documentation | `old` | owner |\n";
-        let expected = "| `docs/new.md` | documentation | `new` | owner |\n";
-        let delta = inventory_path_delta(actual, expected);
-        assert!(delta.contains("missing generated paths: docs/new.md"));
-        assert!(delta.contains("paths no longer generated: docs/old.md"));
-    }
-
-    #[test]
-    fn inventory_path_delta_reports_metadata_only_change_when_row_paths_match() {
-        // Same backtick-wrapped row paths in both documents; only the summary
-        // metadata line differs, so the delta must take the metadata-only
-        // branch instead of naming missing or removed rows.
-        let actual = "# Non-Rust File Inventory\n\n\
-            | Metric | Count |\n|---|---|\n\
-            | Total tracked files | 1 |\n\n\
-            | `docs/keep.md` | documentation | `keep` | owner |\n";
-        let expected = "# Non-Rust File Inventory\n\n\
-            | Metric | Count |\n|---|---|\n\
-            | Total tracked files | 2 |\n\n\
-            | `docs/keep.md` | documentation | `keep` | owner |\n";
-        let delta = inventory_path_delta(actual, expected);
-        assert_eq!(delta, "the row paths match but summary or metadata changed");
     }
 
     /// A tracked path containing `|` is rendered escaped in table cells; the
-    /// delta parser must reverse the escape and name the raw path, not hide
-    /// the stale row as metadata-only drift.
+    /// cell parser must reverse the escape so evidence rows name the raw path.
     #[test]
-    fn inventory_path_delta_names_pipe_paths_through_markdown_escapes() {
-        let actual = "| `docs/old.md` | documentation | `old` | owner |\n\
-            | `docs/a|b.md` | documentation | `ab` | owner |\n";
-        let actual_rendered = actual.replace("docs/a|b.md", "docs/a\\|b.md");
-        let expected = "| `docs/new.md` | documentation | `new` | owner |\n\
-             | `docs/a\\|b.md` | documentation | `ab` | owner |\n";
-        let delta = inventory_path_delta(&actual_rendered, expected);
-        assert!(delta.contains("missing generated paths: docs/new.md"), "{delta}");
-        assert!(delta.contains("paths no longer generated: docs/old.md"), "{delta}");
-        assert!(
-            !delta.contains("docs/a"),
-            "the pipe path must be recovered on both sides, not reported stale: {delta}"
-        );
-
-        // Round trip: the escaped cell parses back to the raw path.
-        let escaped = escape_markdown_cell("docs/a|b.md");
-        let row = format!("| `{escaped}` | documentation | `ab` | owner |\n");
-        let parsed = inventory_row_paths(&row);
-        assert_eq!(
-            parsed.into_iter().collect::<Vec<_>>(),
-            vec!["docs/a|b.md"],
-            "escape and parse must be exact inverses"
-        );
-
-        // A backslash that is not part of a `\|` escape stays verbatim, and
-        // the pipe after it still decodes (#14330 review).
-        let raw = "docs\\a|b.md";
-        assert_eq!(escape_markdown_cell(raw), "docs\\a\\|b.md");
-        let row = format!("| `{}` | documentation | `ab` | owner |\n", escape_markdown_cell(raw));
-        let parsed = inventory_row_paths(&row);
-        assert_eq!(
-            parsed.into_iter().collect::<Vec<_>>(),
-            vec![raw],
-            "non-escape backslashes must round-trip verbatim"
-        );
+    fn markdown_path_cells_round_trip_pipe_escapes() -> Result<()> {
+        for raw in ["docs/a|b.md", "docs\\a|b.md"] {
+            let escaped = escape_markdown_cell(raw);
+            let row = format!("| `{escaped}` | documentation | `ab` | owner |\n");
+            let cells = parse_markdown_cells(&row)
+                .ok_or_else(|| eyre!("rendered row must parse: {row}"))?;
+            assert_eq!(cells[0], format!("`{raw}`"));
+        }
+        Ok(())
     }
 
     #[test]
@@ -4417,21 +4314,19 @@ review_after = "2026-11-13"
             &[("README.md", "# Fixture\n"), ("scripts/tool.py", "print('fixture')\n")],
         )?;
         write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
-        non_rust_inventory_write_docs(temp.path())?;
-
         non_rust_inventory_check(temp.path())?;
         Ok(())
     }
 
     #[test]
-    fn non_rust_inventory_check_rejects_new_unclassified_files() -> Result<()> {
+    fn non_rust_inventory_check_rejects_new_unclassified_files_and_retains_evidence() -> Result<()>
+    {
         let temp = tempfile::tempdir()?;
         init_tracked_fixture(
             temp.path(),
             &[("README.md", "# Fixture\n"), ("scripts/existing.py", "print('fixture')\n")],
         )?;
         write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
-        non_rust_inventory_write_docs(temp.path())?;
         run_git(temp.path(), &["add", "."])?;
         run_git(
             temp.path(),
@@ -4461,7 +4356,18 @@ review_after = "2026-11-13"
             ],
         )?;
 
-        assert!(non_rust_inventory_check_with_baseline(temp.path(), Some("HEAD^")).is_err());
+        let error = non_rust_inventory_check_with_baseline(temp.path(), Some("HEAD^"))
+            .err()
+            .ok_or_else(|| eyre!("new unclassified file must fail"))?;
+        ensure!(
+            error.to_string().contains("scripts/new.py"),
+            "failure must name the newly unclassified path: {error}"
+        );
+
+        let markdown = fs::read_to_string(temp.path().join("target/policy/non-rust-inventory.md"))?;
+        let json = fs::read_to_string(temp.path().join("target/policy/non-rust-inventory.json"))?;
+        assert!(markdown.contains("scripts/new.py"));
+        assert!(json.contains("scripts/new.py"));
         Ok(())
     }
 

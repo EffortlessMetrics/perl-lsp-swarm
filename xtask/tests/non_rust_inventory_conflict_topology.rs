@@ -80,10 +80,7 @@ fn run_hook(repo: &Path, hook: &Path, fake_bin: &Path) -> Result<()> {
 #[cfg(unix)]
 fn candidate_changed_paths(repo: &Path, branch: &str) -> Result<Vec<String>> {
     let output = git(repo, &["diff", "--name-only", "main", branch])?;
-    Ok(String::from_utf8(output.stdout)?
-        .lines()
-        .map(str::to_owned)
-        .collect())
+    Ok(String::from_utf8(output.stdout)?.lines().map(str::to_owned).collect())
 }
 
 #[cfg(unix)]
@@ -103,10 +100,7 @@ fn independent_candidates_do_not_share_the_inventory_snapshot_write() -> Result<
     fs::create_dir_all(repo.join("docs/policy"))?;
     fs::create_dir_all(repo.join("policy"))?;
     fs::write(repo.join("README.md"), "baseline\n")?;
-    fs::write(
-        repo.join("docs/policy/NON_RUST_INVENTORY.md"),
-        "# baseline publication snapshot\n",
-    )?;
+    fs::write(repo.join("docs/policy/NON_RUST_INVENTORY.md"), "# baseline publication snapshot\n")?;
     fs::write(repo.join("policy/non-rust-allowlist.toml"), "# fixture allowlist\n")?;
     git(repo, &["add", "."])?;
     git(repo, &["commit", "--quiet", "-m", "baseline"])?;
