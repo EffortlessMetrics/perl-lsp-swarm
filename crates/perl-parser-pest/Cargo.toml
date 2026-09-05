@@ -12,7 +12,16 @@ description = "Legacy Pest-based Perl parser (v2) — maintained as a learning t
 readme = "README.md"
 keywords = ["perl", "parser", "pest", "peg", "ast"]
 categories = ["parsing", "development-tools"]
-include = ["src/**", "src/grammar.pest", "Cargo.toml", "README.md", "LICENSE*"]
+include = [
+  "src/**",
+  "src/grammar.pest",
+  "Cargo.toml",
+  "README.md",
+  "LICENSE*",
+  "tests/fixtures/**",
+  "tests/support/**",
+  "tests/fixture_manifest.rs",
+]
 
 [dependencies]
 pest = "2.8.6"
@@ -29,6 +38,11 @@ serde = []
 
 [dev-dependencies]
 perl-tdd-support = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+toml = "1.1.2"
 
 [lib]
 doctest = false

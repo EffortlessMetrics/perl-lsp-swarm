@@ -3,6 +3,7 @@
 //! Verifies that all public APIs are panic-free on arbitrary input and that
 //! key invariants hold: determinism, source-ordered capture declarations, and
 //! conservative code-execution detection.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_regex::analyzer::{CaptureLanguageProfile, EffectiveModifiers};
 use perl_regex::{RegexAnalyzer, RegexValidator};

@@ -512,6 +512,122 @@ fn test_post_merge_generator_job_is_read_only() -> Result<(), Box<dyn std::error
     Ok(())
 }
 
+/// #12606: queued runs may finish generating after newer commits landed on the
+/// default branch. The writer must refuse payloads that are no longer fresh
+/// against the live default-branch tip before any branch mutation, a
+/// changed=false run must supersede stranded proposal PRs generated from older
+/// sources, and the PR body must carry a machine-readable source SHA so the
+/// sweep can identify them.
+#[test]
+fn test_post_merge_workflow_guards_stale_queued_run_publication()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+    let workflow_path = root.join(".github/workflows/post-merge-status.yml");
+    let content = fs::read_to_string(&workflow_path)?;
+    let workflow: Value = serde_yaml_ng::from_str(&content)?;
+    let jobs = workflow
+        .get("jobs")
+        .and_then(Value::as_mapping)
+        .ok_or("post-merge-status.yml must declare jobs")?;
+
+    let steps = |job: &str| -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+        jobs.get(job)
+            .and_then(|job| job.get("steps"))
+            .and_then(Value::as_sequence)
+            .map(|steps| steps.to_vec())
+            .ok_or_else(|| format!("post-merge-status.yml job `{job}` must declare steps").into())
+    };
+
+    let open_pr_steps = steps("open-pr")?;
+    fn step_name(step: &Value) -> &str {
+        step.get("name").and_then(Value::as_str).unwrap_or("")
+    }
+    let freshness_index = open_pr_steps
+        .iter()
+        .position(|step| {
+            step_name(step) == "Reject payload whose source fell behind the default branch"
+        })
+        .ok_or("open-pr must gate publication on live default-branch freshness (#12606)")?;
+    let freshness_step = &open_pr_steps[freshness_index];
+    assert_eq!(
+        freshness_step.get("id").and_then(Value::as_str),
+        Some("freshness"),
+        "the freshness step must expose its decision as step outputs"
+    );
+
+    let create_pr_index = open_pr_steps
+        .iter()
+        .position(|step| step_name(step) == "Create generated status PR")
+        .ok_or("open-pr must still propose generated files through a PR")?;
+    assert!(
+        freshness_index < create_pr_index,
+        "the freshness gate must refuse BEFORE any automation branch mutation"
+    );
+    assert_eq!(
+        open_pr_steps[create_pr_index].get("if").and_then(Value::as_str),
+        Some("steps.freshness.outputs.publish == 'true'"),
+        "publication steps must be skipped when the payload is not fresh"
+    );
+    let raise_ci = open_pr_steps
+        .iter()
+        .find(|step| step_name(step) == "Raise CI on the generated PR")
+        .ok_or("open-pr must keep dispatching CI on the generated PR")?;
+    let raise_ci_if = raise_ci.get("if").and_then(Value::as_str).unwrap_or("");
+    assert!(
+        raise_ci_if.contains("steps.freshness.outputs.publish == 'true'"),
+        "CI dispatch must not fire after a refused publication; a skipped \
+         create-pr step exposes empty outputs, which are not '0'\n\
+         Found condition: {raise_ci_if}"
+    );
+
+    // The sweep identifies proposals by a machine-readable marker in the PR
+    // body written from the same trusted github.sha the manifest binds.
+    assert!(
+        content.contains("post-merge-status: source_sha="),
+        "the proposal PR body must embed a machine-readable source SHA marker \
+         so changed=false runs can identify stale proposals (#12606)"
+    );
+
+    let supersede = jobs
+        .get("supersede-stale")
+        .ok_or("a changed=false run must be able to supersede stranded proposal PRs (#12606)")?;
+    assert_eq!(
+        supersede.get("if").and_then(Value::as_str),
+        Some("needs.generate.outputs.changed == 'false'"),
+        "the supersede sweep must fire exactly when regeneration found no drift"
+    );
+    let perms = supersede
+        .get("permissions")
+        .and_then(Value::as_mapping)
+        .ok_or("supersede-stale must declare explicit least-authority permissions")?;
+    let find_perm = |key: &str| {
+        perms.iter().find_map(|(name, value)| {
+            (name.as_str() == Some(key)).then_some(value).and_then(Value::as_str)
+        })
+    };
+    assert_eq!(find_perm("pull-requests"), Some("write"));
+    assert_eq!(find_perm("contents"), Some("read"));
+
+    let sweep_run = supersede
+        .get("steps")
+        .and_then(Value::as_sequence)
+        .and_then(|steps| steps.iter().find_map(|step| step.get("run")))
+        .and_then(Value::as_str)
+        .ok_or("supersede-stale must define its sweep shell body")?;
+    assert!(
+        sweep_run.contains("/compare/"),
+        "the sweep must prove staleness by ancestry against the live tip via \
+         the GitHub compare API, not by string comparison alone"
+    );
+    assert!(
+        sweep_run.contains("leaving it untouched"),
+        "the sweep must stay conservative: proposals without an embedded SHA, \
+         or whose source is not provably behind main, must be left untouched"
+    );
+
+    Ok(())
+}
+
 /// The post-merge workflow must commit files in docs/project/status/ — NOT CURRENT_STATUS.md alone.
 #[test]
 fn test_post_merge_workflow_commits_status_directory() -> Result<(), Box<dyn std::error::Error>> {

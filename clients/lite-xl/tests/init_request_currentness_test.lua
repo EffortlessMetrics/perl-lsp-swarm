@@ -223,6 +223,11 @@ package.preload["plugins.lsp.listbox"] = function()
   }
 end
 
+-- Local patch (#11172): the staged modules fold their capability
+-- advertisement and command projection through the exact manifest source.
+package.preload["plugins.lsp.capability_manifest"] = function()
+  return dofile(here .. "/../upstream/capability_manifest.lua")
+end
 package.preload["plugins.lsp.diagnostics"] = function()
   -- Lifecycle seams consumed by init.lua (#11124); inert in this suite,
   -- whose subject is document-session/version behavior, not publications.
@@ -793,8 +798,10 @@ do
 end
 
 -- ===========================================================================
--- Case 10: rename subjects refuse stale results; current ones keep the
--- existing logging behavior.
+-- Case 10: rename is projection-gated (#11172). The server advertising
+-- renameProvider is not enough: with no client application consumer (#8986)
+-- the request is never sent, so stale-versus-current response semantics
+-- cannot even arise at this sender.
 -- ===========================================================================
 do
   local lsp = fresh_module_load()
@@ -807,37 +814,27 @@ do
   local doc = make_doc("C:/proj/ren.pl", { "rn\n" }, 1, 3)
 
   open_admitted(lsp, doc, server)
-  lsp.request_symbol_rename(doc, 1, 3, "new_name")
-  local held = server.outbound[1]
-  table.remove(server.outbound, 1)
-
   accept_edit(lsp, doc, server, 1, 3, "!")
-  local function effect_logs()
-    local count = 0
-    for _, record in ipairs(log_records) do
-      if record:find("file:///C:/proj/ren%.pl", 1, false) then
-        count = count + 1
-      end
-    end
-    return count
-  end
-  local effects_before = effect_logs()
-  held.callback(server, { result = { changes = { ["file:///C:/proj/ren.pl"] = {} } } })
-  ok(effect_logs() == effects_before,
-    "case10: stale rename result produces no application effects")
 
   lsp.request_symbol_rename(doc, 1, 3, "new_name")
-  effects_before = effect_logs()
-  ok(play_response(server, "textDocument/rename",
-    { result = { changes = { ["file:///C:/proj/ren.pl"] = {} } } }),
-    "case10: current rename response played")
-  ok(effect_logs() > effects_before,
-    "case10: current rename result keeps its existing behavior surface")
+  ok(#server.outbound == 0,
+    "case10: gated rename sends nothing under an unsupported client row")
+
+  local saw_owner_message = false
+  for _, record in ipairs(log_records) do
+    if tostring(record):find("#8986", 1, true) then
+      saw_owner_message = true
+    end
+  end
+  ok(saw_owner_message,
+    "case10: one explicit refusal message names the rename owner")
 end
 
 -- ===========================================================================
--- Case 11: prepareCallHierarchy subjects are bound like every other
--- document-bound request (held stale response is inert).
+-- Case 11: prepareCallHierarchy is projection-gated (#11172). The server
+-- advertising callHierarchyProvider is not enough: with no client result
+-- consumer (#10719) the request is never sent and one explicit message
+-- explains why.
 -- ===========================================================================
 do
   local lsp = fresh_module_load()
@@ -851,19 +848,120 @@ do
 
   open_admitted(lsp, doc, server)
   lsp.request_call_hierarchy(doc, 1, 2)
-  local held = server.outbound[1]
-  table.remove(server.outbound, 1)
+  ok(#server.outbound == 0,
+    "case11: gated call hierarchy sends nothing under an unsupported row")
 
-  accept_edit(lsp, doc, server, 1, 2, "!")
-  -- The stale callback must run without error and without effects; the
-  -- upstream body only reacts to well-formed current results.
-  held.callback(server, { result = { { name = "stale_item" } } })
-  ok(true, "case11: stale call-hierarchy response inert without error")
+  local saw_owner_message = false
+  for _, record in ipairs(log_records) do
+    if tostring(record):find("#10719", 1, true) then
+      saw_owner_message = true
+    end
+  end
+  ok(saw_owner_message,
+    "case11: one explicit refusal message names the call-hierarchy owner")
+end
 
-  lsp.request_call_hierarchy(doc, 1, 2)
-  ok(play_response(server, "textDocument/prepareCallHierarchy",
-    { result = {} }) == true,
-    "case11: fresh call-hierarchy response playable")
+-- ===========================================================================
+-- Case 12 (#9019): textDocument/references is gated by referencesProvider,
+-- not hoverProvider, across all four mixed-capability combinations, and a
+-- first active server without referencesProvider cannot make a later valid
+-- references provider unreachable by iteration order.
+-- ===========================================================================
+do
+  local SYNC = {
+    textDocumentSync = { openClose = true, change = 2, save = { includeText = false } },
+    positionEncoding = "utf-16",
+  }
+  local function merge_caps(base, extra)
+    local caps = {}
+    for k, v in pairs(base) do caps[k] = v end
+    for k, v in pairs(extra) do caps[k] = v end
+    return caps
+  end
+
+  -- hover=true, references=true -> request sent.
+  local lsp = fresh_module_load()
+  local both = make_server("perllsp", merge_caps(SYNC, { hoverProvider = {}, referencesProvider = {} }))
+  register(lsp, "perllsp", both)
+  local doc = make_doc("C:/proj/r1.pl", { "r\n" }, 1, 2)
+  open_admitted(lsp, doc, both)
+  lsp.request_references(doc, 1, 2)
+  ok(#both.outbound == 1 and both.outbound[1].method == "textDocument/references",
+    "case12: hover+references server receives the references request")
+  ok(both.outbound[1].params.context.includeDeclaration == true,
+    "case12: references request preserves context.includeDeclaration = true")
+
+  -- hover=false, references=true -> request sent.
+  lsp = fresh_module_load()
+  local refs_only = make_server("perllsp", merge_caps(SYNC, { referencesProvider = {} }))
+  register(lsp, "perllsp", refs_only)
+  doc = make_doc("C:/proj/r2.pl", { "r\n" }, 1, 2)
+  open_admitted(lsp, doc, refs_only)
+  lsp.request_references(doc, 1, 2)
+  ok(#refs_only.outbound == 1 and refs_only.outbound[1].method == "textDocument/references",
+    "case12: references-only server (no hover) still receives the request")
+
+  -- hover=true, references=false -> request not sent.
+  lsp = fresh_module_load()
+  local hover_only = make_server("perllsp", merge_caps(SYNC, { hoverProvider = {} }))
+  register(lsp, "perllsp", hover_only)
+  doc = make_doc("C:/proj/r3.pl", { "r\n" }, 1, 2)
+  open_admitted(lsp, doc, hover_only)
+  lsp.request_references(doc, 1, 2)
+  ok(#hover_only.outbound == 0,
+    "case12: hover-only server receives no references request (masked false positive)")
+
+  -- hover=false, references=false -> request not sent.
+  lsp = fresh_module_load()
+  local none = make_server("perllsp", merge_caps(SYNC, {}))
+  register(lsp, "perllsp", none)
+  doc = make_doc("C:/proj/r4.pl", { "r\n" }, 1, 2)
+  open_admitted(lsp, doc, none)
+  lsp.request_references(doc, 1, 2)
+  ok(#none.outbound == 0,
+    "case12: server with neither capability receives no references request")
+
+  -- Complementary ungrouped servers: the hover-only server is registered
+  -- first, the references-only server second; iteration order must not let
+  -- the first server block the second. One open_document broadcast admits
+  -- both servers.
+  local trial_count = 8
+  local successful_trials = 0
+  for _ = 1, trial_count do
+    lsp = fresh_module_load()
+    local first = make_server("hoverfirst", merge_caps(SYNC, { hoverProvider = {} }))
+    local second = make_server("refssecond", merge_caps(SYNC, { referencesProvider = {} }))
+    local first_capability_checks = 0
+    setmetatable(first.capabilities, {
+      __index = function(_, key)
+        if key == "referencesProvider" then
+          first_capability_checks = first_capability_checks + 1
+        end
+      end,
+    })
+    register(lsp, "hoverfirst", first)
+    register(lsp, "refssecond", second)
+    -- Pin the active-server order so the regression is discriminating: the
+    -- pre-fix unconditional break must encounter the hover-only server first.
+    lsp.get_active_servers = function()
+      return { "hoverfirst", "refssecond" }
+    end
+    doc = make_doc("C:/proj/r5.pl", { "r\n" }, 1, 2)
+    lsp.open_document(doc)
+    drain(first, "textDocument/didOpen")
+    drain(second, "textDocument/didOpen")
+    doc.lsp_open = true
+    lsp.request_references(doc, 1, 2)
+    if #first.outbound == 0
+      and #second.outbound == 1
+      and second.outbound[1].method == "textDocument/references" then
+      successful_trials = successful_trials + 1
+    end
+    ok(first_capability_checks > 0,
+      "case12: ordered trial inspects the non-provider server before the provider")
+  end
+  ok(successful_trials == trial_count,
+    "case12: references-capable second server remains reachable in every complementary-server trial")
 end
 
 print(string.format("%d passed, %d failed", passed, failed))

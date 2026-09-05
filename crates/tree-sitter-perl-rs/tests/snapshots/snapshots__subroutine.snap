@@ -2,4 +2,4 @@
 source: crates/tree-sitter-perl-rs/tests/snapshots.rs
 expression: sexp
 ---
-(source_file (sub foo ()(block (return (binary_+ (binary_[] (variable $ _) (number 0)) (number 1))))))
+(source_file (statements (sub (name foo) (body (block (statements (return (value (binary_+ (op +) (left (binary_[] (op []) (left (variable (sigil $) (name _))) (right (number (value 0))))) (right (number (value 1))))))))))))

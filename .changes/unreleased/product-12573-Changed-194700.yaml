@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Changed
+body: Freeze stdio as the sole product editor transport for perl-dap, with a checked consumer inventory that classifies native and external-peer editor sockets as retire while keeping authenticated debugger-peer TCP separate.
+time: 2026-08-25T19:47:00Z
+custom:
+  PR: "12573"
+  Slug: dap-stdio-only-editor-transport
+  Breaking: "no"

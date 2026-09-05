@@ -15,6 +15,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
+# The prebuilt xtask paths below are intentionally cargo-free. Once the
+# fallback ladder reaches Cargo, however, guard the exact binary before any
+# metadata or build work so an apt Cargo cannot hide the real toolchain error.
+# This keeps prebuilt-only checkouts usable while closing the stale-Cargo gap.
+. "$SCRIPT_DIR/lib/cargo-toolchain-guard.sh"
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 # Print error message and set error flag
@@ -203,11 +209,8 @@ run_install_surface_check() {
         fi
     done
 
-    if cargo metadata --no-deps --format-version 1 >/dev/null 2>&1; then
-        cargo xtask install-surface-check
-        return
-    fi
-
+    # A stale-but-usable prebuilt binary is still preferable to requiring
+    # Cargo. This path is important for cargo-less release checkouts.
     if [[ -x target/debug/xtask.exe ]]; then
         target/debug/xtask.exe install-surface-check
         return
@@ -218,7 +221,18 @@ run_install_surface_check() {
         return
     fi
 
+    if cargo_guard_before_fallback &&
+       cargo metadata --no-deps --format-version 1 >/dev/null 2>&1; then
+        cargo xtask install-surface-check
+        return
+    fi
+
+    cargo_guard_before_fallback
     cargo xtask install-surface-check
+}
+
+cargo_guard_before_fallback() {
+    cargo_toolchain_guard
 }
 
 if ! run_install_surface_check; then

@@ -366,4 +366,6 @@ mod handlers;
 mod receipt;
 
 #[cfg(test)]
+mod lib_vs_test;
+#[cfg(test)]
 mod tests;

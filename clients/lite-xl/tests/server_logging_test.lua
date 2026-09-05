@@ -59,6 +59,11 @@ package.preload["plugins.lsp.json"] = function()
   return dofile(here .. "/../upstream/json.lua")
 end
 
+-- Local patch (#11172): the staged modules fold their capability
+-- advertisement and command projection through the exact manifest source.
+package.preload["plugins.lsp.capability_manifest"] = function()
+  return dofile(here .. "/../upstream/capability_manifest.lua")
+end
 package.preload["plugins.lsp.diagnostics"] = function()
   return {}
 end

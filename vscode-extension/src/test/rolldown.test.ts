@@ -73,20 +73,21 @@ describe('Rolldown bundle configuration', () => {
     // separate tsc step) — without cleaning stray top-level files first, a
     // leftover from an earlier build (verified: tsc -p tsconfig.integration.json
     // emitting out/commandResults.js as a type-only-import byproduct) can
-    // survive a subsequent `npm run compile` and leak into a packaged VSIX.
-    expect(pkg.scripts.compile).toBe('npm run clean:out && rolldown -c rolldown.config.mjs');
+    // survive a subsequent `npm run bundle` and leak into a packaged VSIX.
+    expect(pkg.scripts.bundle).toBe('npm run clean:out && rolldown -c rolldown.config.mjs');
     expect(pkg.scripts['clean:out']).toContain("f!=='test'");
-    expect(pkg.scripts.typecheck).toContain('tsc');
-    expect(pkg.scripts.typecheck).toContain('--noEmit');
-    // The real release/packaging path must typecheck before bundling — a
-    // bundler alone cannot catch a type error.
-    expect(pkg.scripts['vscode:prepublish']).toBe(
-      'npm run doctor && npm run typecheck:all && npm run compile',
-    );
-    // ...and typechecking must first establish *which* compiler is doing the
-    // checking. TS6 and TS7 compile and emit identically for this tree, so a
-    // slide back to the old compiler passes every `tsc` invocation green.
-    expect(pkg.scripts['typecheck:all']).toMatch(/^npm run typecheck:authority &&/);
+    // Every public TypeScript execution routes through the governed seam, so
+    // the compiler-authority gate runs before any `tsc` the scripts invoke.
+    expect(pkg.scripts.typecheck).toBe('node scripts/governed-tsc.js --noEmit -p ./tsconfig.json');
+    // The real release/packaging path must run the checked build — authority,
+    // config inventory, all-config type-check, then bundle. A bundler alone
+    // cannot catch a type error.
+    expect(pkg.scripts['vscode:prepublish']).toBe('npm run doctor && npm run build');
+    // ...and the checked build must first establish *which* compiler is doing
+    // the checking. TS6 and TS7 compile and emit identically for this tree,
+    // so a slide back to the old compiler passes every `tsc` invocation green.
+    expect(pkg.scripts.build).toMatch(/^npm run typecheck:authority &&/);
+    expect(pkg.scripts.build.endsWith('npm run bundle')).toBe(true);
     expect(pkg.scripts['typecheck:authority']).toBe('node scripts/check-typescript-authority.js');
   });
 
@@ -139,7 +140,7 @@ describe('VSIX packaging ships a single bundled artifact and no raw node_modules
   // of what ran before it (a bare `npm test`, a CI job ordering change,
   // etc.) and reflects the current source, not a stale leftover build.
   beforeAll(() => {
-    // Replicate the "compile" npm script (clean:out + rolldown) via direct
+    // Replicate the "bundle" npm script (clean:out + rolldown) via direct
     // `node` invocations rather than `npm.cmd`/`npx` — npm's own Windows
     // .cmd shim EINVALs under spawnSync without shell:true, and shell:true
     // string-concatenates args instead of escaping them (the same class of

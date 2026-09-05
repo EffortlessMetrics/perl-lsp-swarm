@@ -15,7 +15,8 @@ cargo run -p perl-core-harness --bin perl-core-harness-runner-plan -- \
   component_base \
   test \
   target/perl-core/raw/base-test.txt \
-  target/perl-core/runner-plans/base-test.json
+  target/perl-core/runner-plans/base-test.json \
+  --frame canonical_repository_path
 ```
 
 A harness plan can retain declared scheduling inputs without changing denominator identity:
@@ -28,8 +29,15 @@ cargo run -p perl-core-harness --bin perl-core-harness-runner-plan -- \
   harness \
   target/perl-core/raw/base-harness.txt \
   target/perl-core/runner-plans/base-harness.json \
-  --jobs 4 --state-ordering
+  --frame canonical_repository_path --jobs 4 --state-ordering
 ```
+
+Current plans are `runner_plan.v2` receipts. The raw discovery frame must be declared at build
+time; use `--frame runner_t_directory_relative` for paths emitted relative to the upstream
+`t/` directory, `--frame repository_root_relative` for repository-root-relative paths, or
+`--frame canonical_repository_path` for already canonical repository-relative paths. The frame
+is retained on every source row and participates in the plan digest. The v1 schema remains
+available for archival validation, but v1 plans are not accepted as current authority.
 
 The plan binds:
 

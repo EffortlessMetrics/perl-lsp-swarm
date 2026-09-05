@@ -9,9 +9,13 @@
 //! cargo test -p perl-dap --test dap_scorecard_harness -- --nocapture
 //! ```
 
+#![expect(
+    clippy::print_stderr,
+    reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
+)]
 mod common;
 
-use common::{DapWorkflowSession, perl_available, workflow_timeout};
+use common::{DapWorkflowSession, debuggee_perl_or_typed_skip, perl_available, workflow_timeout};
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::transport::framing::frame;
 use serde::Serialize;
@@ -114,7 +118,7 @@ fn launch_timeout() -> Duration {
     }
 }
 
-fn probe_launch(script_path: &Path, timeout: Duration) -> Result<u128, String> {
+fn probe_launch(script_path: &Path, perl_binary: &Path, timeout: Duration) -> Result<u128, String> {
     let script_str =
         script_path.to_str().ok_or("fixture path contains non-UTF-8 characters")?.to_string();
 
@@ -134,6 +138,7 @@ fn probe_launch(script_path: &Path, timeout: Duration) -> Result<u128, String> {
             "program": script_str,
             "args": [],
             "stopOnEntry": true,
+            "perlPath": perl_binary.to_string_lossy(),
             "env": {
                 "PERL_PERTURB_KEYS": "0",
                 "PERL_HASH_SEED": "0",
@@ -217,13 +222,32 @@ fn metric_from_result(result: Result<String, String>) -> BinaryMetric {
     }
 }
 
-fn probe_session_metrics() -> Result<(BinaryMetric, BinaryMetric, BinaryMetric), String> {
+/// Assert the attach success-rate threshold on a receipt. Shared by the live
+/// and skipped paths because attach probes run in both.
+fn assert_attach_rate(receipt: &ScorecardReceipt) {
+    let attach_threshold =
+        (receipt.attach.total * usize::from(receipt.attach.threshold_pct)).div_ceil(100);
+    assert!(
+        receipt.attach.passed >= attach_threshold,
+        "DAP attach success rate below threshold: {}/{} passed (need ≥{})",
+        receipt.attach.passed,
+        receipt.attach.total,
+        attach_threshold
+    );
+}
+
+fn probe_session_metrics(
+    perl_binary: &Path,
+) -> Result<(BinaryMetric, BinaryMetric, BinaryMetric), String> {
     let workspace = tempdir().map_err(|e| e.to_string())?;
     let script_path = workspace.path().join("scorecard_session.pl");
+    // `@big` is lexical so it is enumerated through the advertised Locals
+    // scope (#10563: Package/Globals are not advertised at a live frame);
+    // `our $x` stays for the evaluate-in-frame proof.
     let script_text = r#"use strict;
 use warnings;
 our $x = 41;
-our @big = (1..500);
+my @big = (1..500);
 our %meta = (name => "dap-scorecard");
 my $marker = $x + 1;
 print "marker=$marker\n";
@@ -234,28 +258,28 @@ print "marker=$marker\n";
         script_path.to_str().ok_or_else(|| "script path is not valid UTF-8".to_string())?;
 
     let mut session = DapWorkflowSession::new(workflow_timeout())?;
-    session.launch(script_str)?;
+    session.launch_pinned(perl_binary, script_str)?;
     session.set_breakpoints(script_str, &[6])?;
     session.configuration_done()?;
 
     let stop = session.wait_stopped()?;
     let (frame_id, _, _) = session.stack_trace(stop.thread_id)?;
-    let globals_ref = session.scopes_globals_ref(frame_id)?;
-    let globals = session.variables(globals_ref)?;
+    // #10563: a live frame advertises Locals (plus Arguments); Globals is not
+    // advertised, so the session metrics measure the Locals enumeration.
+    let locals_ref = session.scopes_locals_ref(frame_id)?;
+    let locals = session.variables(locals_ref)?;
 
     let vars_metric = metric_from_result((|| {
-        if globals.is_empty() {
-            return Err("globals scope returned no variables".to_string());
+        if locals.is_empty() {
+            return Err("locals scope returned no variables".to_string());
         }
-        if globals
-            .iter()
-            .any(|var| var.get("name").and_then(Value::as_str).unwrap_or("").is_empty())
+        if locals.iter().any(|var| var.get("name").and_then(Value::as_str).unwrap_or("").is_empty())
         {
-            return Err("globals scope contains variables with empty names".to_string());
+            return Err("locals scope contains variables with empty names".to_string());
         }
-        let n = globals.len();
+        let n = locals.len();
         Ok(format!(
-            "globals scope returned {} named {}",
+            "locals scope returned {} named {}",
             n,
             if n == 1 { "variable" } else { "variables" }
         ))
@@ -280,7 +304,7 @@ print "marker=$marker\n";
         Ok("evaluate($x + 1) returns 42".to_string())
     })());
 
-    let deep_metric = if let Some(expandable) = globals.iter().find(|var| {
+    let deep_metric = if let Some(expandable) = locals.iter().find(|var| {
         var.get("variablesReference").and_then(Value::as_i64).unwrap_or(0) > 0
             && var.get("indexedVariables").and_then(Value::as_i64).unwrap_or(0) >= 200
     }) {
@@ -320,9 +344,18 @@ print "marker=$marker\n";
             Ok(format!("pagination verified on variable with indexedVariables={indexed_count}"))
         })())
     } else {
+        // Not a skip: under the current locals contract this proof cannot run.
+        // `build_locals_b_eval_cmd` deliberately renders lexical aggregates as
+        // opaque `ARRAY(0x0)`/`HASH(0x0)` markers without variablesReference or
+        // indexedVariables until bounded lexical-aggregate enumeration lands
+        // (#7358), so no real-session local can satisfy the pagination
+        // predicate today. Record the gap as not proven rather than letting a
+        // permanently unreachable metric read as an incidental skip.
         BinaryMetric {
-            status: "SKIP",
-            detail: "no indexedVariables >= 200 found in this real-session scope".to_string(),
+            status: "NOT_PROVEN",
+            detail: "no expandable lexical aggregate at this stop: locals aggregates render as \
+                     opaque markers until #7358 lands, so live deep pagination is not proven"
+                .to_string(),
         }
     };
 
@@ -383,11 +416,7 @@ fn print_marker_friendly_summary(receipt: &ScorecardReceipt) {
     eprintln!("<!-- BEGIN: DAP_LAUNCH_SCORECARD -->");
     eprintln!("| Metric | Value | Target | Status |");
     eprintln!("|---|---|---|---|");
-    let launch_pct = if receipt.launch.total == 0 {
-        0
-    } else {
-        (receipt.launch.passed * 100) / receipt.launch.total
-    };
+    let launch_pct = (receipt.launch.passed * 100).checked_div(receipt.launch.total).unwrap_or(0);
     let launch_status =
         if launch_pct >= usize::from(receipt.launch.threshold_pct) { "PASS" } else { "FAIL" };
     eprintln!(
@@ -414,11 +443,7 @@ fn print_marker_friendly_summary(receipt: &ScorecardReceipt) {
     eprintln!("| Metric | Value | Target | Status |");
     eprintln!("|---|---|---|---|");
 
-    let attach_pct = if receipt.attach.total == 0 {
-        0
-    } else {
-        (receipt.attach.passed * 100) / receipt.attach.total
-    };
+    let attach_pct = (receipt.attach.passed * 100).checked_div(receipt.attach.total).unwrap_or(0);
     let attach_status =
         if attach_pct >= usize::from(receipt.attach.threshold_pct) { "PASS" } else { "FAIL" };
     eprintln!(
@@ -484,6 +509,71 @@ fn scorecard_launch_success_rate() -> TestResult {
         return Ok(());
     }
 
+    // Attach probes involve zero perl — a fake TCP server stands in for the
+    // debuggee — so they run regardless of whether a pipe-capable debuggee
+    // interpreter resolves; gating them on identity resolution would silently
+    // discard perl-independent attach proof (#12594 item 6 review). Run 5
+    // attach probes so the 80 % threshold (div_ceil(5 * 80 / 100) = 4) is
+    // meaningful: exactly 1 failure is tolerated.  With n < 5 the ceil
+    // rounding makes the effective threshold 100 %, defeating the intent.
+    let mut attach_results: Vec<FixtureResult> = Vec::new();
+    for _attempt in 0..5 {
+        let (elapsed_ms, error) = match probe_attach(launch_timeout()) {
+            Ok(()) => (None, None),
+            Err(err) => (None, Some(err)),
+        };
+        attach_results.push(FixtureResult { name: "tcp_loopback", elapsed_ms, error });
+    }
+    let attach_passed = attach_results.iter().filter(|r| r.passed()).count();
+
+    // Live launch/session probes need an interpreter whose perl5db actually
+    // operates over piped stdio; native MSWin32 builds hang at bootstrap
+    // (#12594 item 6b). Record the gap as a typed skip rather than letting
+    // every session metric fail on timeouts. Only the live-session probes are
+    // gated on this resolution.
+    let Some(debuggee_perl) = debuggee_perl_or_typed_skip("scorecard_launch_success_rate") else {
+        let skipped = ScorecardReceipt {
+            perl_available: true,
+            launch: RateMetric {
+                passed: 0,
+                total: 0,
+                threshold_pct: 80,
+                p50_ms: None,
+                p95_ms: None,
+                details: Vec::new(),
+            },
+            attach: RateMetric {
+                passed: attach_passed,
+                total: attach_results.len(),
+                threshold_pct: 80,
+                p50_ms: None,
+                p95_ms: None,
+                details: attach_results,
+            },
+            variables: BinaryMetric {
+                status: "SKIP",
+                detail: "no pipe-capable perl debugger for live sessions".to_string(),
+            },
+            evaluate: BinaryMetric {
+                status: "SKIP",
+                detail: "no pipe-capable perl debugger for live sessions".to_string(),
+            },
+            deep_pagination: BinaryMetric {
+                status: "SKIP",
+                detail: "no pipe-capable perl debugger for live sessions".to_string(),
+            },
+            memory: memory_metric(),
+        };
+        print_marker_friendly_summary(&skipped);
+        write_receipt(&skipped)?;
+        assert_attach_rate(&skipped);
+        eprintln!(
+            "scorecard_launch_success_rate: skipping live-session probes — no pipe-capable perl \
+             debugger"
+        );
+        return Ok(());
+    };
+
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
     let fixture_dir = Path::new(&manifest_dir).join("tests").join("fixtures");
     let fixtures: &[(&str, &str)] = &[
@@ -497,32 +587,21 @@ fn scorecard_launch_success_rate() -> TestResult {
     let mut launch_results: Vec<FixtureResult> = Vec::with_capacity(fixtures.len());
     for (name, filename) in fixtures {
         let path = fixture_dir.join(filename);
-        let (elapsed_ms, error) = match probe_launch(&path, launch_timeout()) {
+        let (elapsed_ms, error) = match probe_launch(&path, &debuggee_perl.binary, launch_timeout())
+        {
             Ok(ms) => (Some(ms), None),
             Err(err) => (None, Some(err)),
         };
         launch_results.push(FixtureResult { name, elapsed_ms, error });
     }
 
-    // Run 5 attach probes so the 80 % threshold (div_ceil(5 * 80 / 100) = 4) is
-    // meaningful: exactly 1 failure is tolerated.  With n < 5 the ceil rounding
-    // makes the effective threshold 100 %, defeating the intent.
-    let mut attach_results: Vec<FixtureResult> = Vec::new();
-    for _attempt in 0..5 {
-        let (elapsed_ms, error) = match probe_attach(launch_timeout()) {
-            Ok(()) => (None, None),
-            Err(err) => (None, Some(err)),
-        };
-        attach_results.push(FixtureResult { name: "tcp_loopback", elapsed_ms, error });
-    }
-
     let mut latencies: Vec<u128> = launch_results.iter().filter_map(|r| r.elapsed_ms).collect();
     latencies.sort_unstable();
 
     let launch_passed = launch_results.iter().filter(|r| r.passed()).count();
-    let attach_passed = attach_results.iter().filter(|r| r.passed()).count();
 
-    let (variables, evaluate, deep_pagination) = match probe_session_metrics() {
+    let (variables, evaluate, deep_pagination) = match probe_session_metrics(&debuggee_perl.binary)
+    {
         Ok(metrics) => metrics,
         Err(err) => (
             BinaryMetric { status: "FAIL", detail: format!("session setup failed: {err}") },
@@ -560,9 +639,6 @@ fn scorecard_launch_success_rate() -> TestResult {
 
     let launch_threshold =
         (receipt.launch.total * usize::from(receipt.launch.threshold_pct)).div_ceil(100);
-    let attach_threshold =
-        (receipt.attach.total * usize::from(receipt.attach.threshold_pct)).div_ceil(100);
-
     assert!(
         receipt.launch.passed >= launch_threshold,
         "DAP launch success rate below threshold: {}/{} passed (need ≥{})",
@@ -570,13 +646,7 @@ fn scorecard_launch_success_rate() -> TestResult {
         receipt.launch.total,
         launch_threshold
     );
-    assert!(
-        receipt.attach.passed >= attach_threshold,
-        "DAP attach success rate below threshold: {}/{} passed (need ≥{})",
-        receipt.attach.passed,
-        receipt.attach.total,
-        attach_threshold
-    );
+    assert_attach_rate(&receipt);
     assert_eq!(
         receipt.variables.status, "PASS",
         "variables scorecard failed: {}",
@@ -588,7 +658,7 @@ fn scorecard_launch_success_rate() -> TestResult {
         receipt.evaluate.detail
     );
     assert!(
-        receipt.deep_pagination.status == "PASS" || receipt.deep_pagination.status == "SKIP",
+        receipt.deep_pagination.status == "PASS" || receipt.deep_pagination.status == "NOT_PROVEN",
         "deep pagination scorecard failed: {}",
         receipt.deep_pagination.detail
     );

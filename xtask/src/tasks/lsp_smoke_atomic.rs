@@ -1001,11 +1001,11 @@ fn build_doc(
             children.push(entry.clone());
             continue;
         }
-        if let PersistState::Running(Some(running)) = state {
-            if running.id == spec.id {
-                children.push((*running).clone());
-                continue;
-            }
+        if let PersistState::Running(Some(running)) = state
+            && running.id == spec.id
+        {
+            children.push((*running).clone());
+            continue;
         }
         children.push(placeholder(spec, "pending", sha));
     }

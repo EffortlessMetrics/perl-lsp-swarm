@@ -1,4 +1,4 @@
-use perl_module::token::{contains_module_token, module_variant_pairs, replace_module_token};
+use perl_module::{contains_module_token, module_variant_pairs, replace_module_token};
 
 #[test]
 fn given_canonical_module_names_when_building_variant_pairs_then_canonical_and_legacy_pairs_exist()

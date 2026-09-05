@@ -22,6 +22,9 @@
 
 set -euo pipefail
 
+# Toolchain guard (#12593): refuse a stale non-rustup cargo before any build work.
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 LEDGER="${REPO_ROOT}/docs/project/PUBLICATION_FACTS_LEDGER.md"
 BASELINE_JSON="${REPO_ROOT}/.ci/cpan-corpus-baseline.json"

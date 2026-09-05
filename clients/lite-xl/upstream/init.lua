@@ -44,6 +44,10 @@ local util = require "plugins.lsp.util"
 local listbox = require "plugins.lsp.listbox"
 local diagnostics = require "plugins.lsp.diagnostics"
 local Server = require "plugins.lsp.server"
+-- Local patch (#11172): command availability is projected through the
+-- capability manifest - a server capability alone never enables a command
+-- whose client consumer is absent.
+local capability_manifest = require "plugins.lsp.capability_manifest"
 local Timer = require "plugins.lsp.timer"
 local SymbolResults = require "plugins.lsp.symbolresults"
 local MessageBox = require "libraries.widget.messagebox"
@@ -527,45 +531,103 @@ end
 ---@param list table<integer, table>
 ---@param parent? string
 local function get_symbol_lists(list, parent)
+  -- Local patch (#11198): rendered display strings are presentation, not
+  -- identity. Rows are stored under one collision-free internal key per
+  -- returned item - the first occurrence of a rendered path keeps it as the
+  -- internal key, later occurrences gain a deterministic source-order
+  -- suffix - array results are traversed in numeric order, and every row
+  -- retains its own protocol facts so duplicate names/kinds stay
+  -- independently selectable. The user-visible text is derived from the key
+  -- without the disambiguation segment, so visible symbol names never
+  -- change and protocol objects are never mutated by identity.
+  --
+  -- Review adoption (PR #12670): two follow-up seams. First, the opaque
+  -- disambiguation ordinal lives only inside the internal key; fuzzy search
+  -- runs over the suffix-free rendered subject, so hidden ordinals can
+  -- never leak into scoring, ordering, or query hits. Second, every row
+  -- carries immutable identity metadata (unique row id, originating parent
+  -- row id, complete source index path) beside - never inside - its display
+  -- and result fields: children of duplicate parents keep distinguishable
+  -- identity even though their rendered container string is identical.
   local symbols = {}
   local symbol_names = {}
+  local search_subjects = {}
   parent = parent or ""
   parent = #parent > 0 and (parent .. "/") or parent
 
-  for _, symbol in pairs(list) do
-    -- Include symbol kind to be able to filter by it
-    local symbol_name = parent
-      .. symbol.name
-      .. "||" .. Server.get_symbol_kind(symbol.kind)
+  ---Deep-first traversal that flattens one branch of returned symbols into
+  ---the shared namespace of rows, keeping every row's facts attached to its
+  ---own collision-free key. One flattening pass mints keys exactly once, so
+  ---the suffix counter stays deterministic across duplicate branches.
+  local function visit(items, display_parent, parent_row_id, index_prefix)
+    local display_scope = #display_parent > 0 and (display_parent .. "/") or ""
+    for index, symbol in ipairs(items) do
+      -- Include symbol kind to be able to filter by it
+      local display_name = display_scope
+        .. symbol.name
+        .. "||" .. Server.get_symbol_kind(symbol.kind)
 
-    table.insert(symbol_names, symbol_name)
+      local row = {
+        kind = symbol.kind,
+        name = symbol.name,
+        result_index = index,
+        container = #display_scope > 0
+          and string.sub(display_scope, 1, -2) or nil,
+      }
+      if symbol.detail then row.detail = symbol.detail end
+      if symbol.deprecated ~= nil then row.deprecated = symbol.deprecated end
+      if symbol.tags then row.tags = symbol.tags end
 
-    symbols[symbol_name] = { kind = symbol.kind }
-
-    if symbol.location then
-      symbols[symbol_name].location = symbol.location
-    else
-      if symbol.range then
-        symbols[symbol_name].range = symbol.range
+      if symbol.location then
+        row.location = symbol.location
+      else
+        if symbol.range then
+          row.range = symbol.range
+        end
+        if symbol.selectionRange then
+          row.selectionRange = symbol.selectionRange
+        end
+        if symbol.uri then
+          row.uri = symbol.uri
+        end
       end
-      if symbol.uri then
-        symbols[symbol_name].uri = symbol.uri
+
+      local key = display_name
+      if symbols[key] then
+        local occurrence = 2
+        while symbols[display_name .. "#" .. occurrence] do
+          occurrence = occurrence + 1
+        end
+        key = display_name .. "#" .. occurrence
       end
-    end
 
-    if symbol.children and #symbol.children > 0 then
-      local child_symbols, child_names = get_symbol_lists(
-        symbol.children, parent .. symbol.name
-      )
+      -- Immutable identity metadata, kept apart from presentation fields.
+      local index_path = {}
+      for path_depth = 1, #index_prefix do
+        index_path[path_depth] = index_prefix[path_depth]
+      end
+      index_path[#index_path + 1] = index
 
-      for _, name in pairs(child_names) do
-        table.insert(symbol_names, name)
-        symbols[name] = child_symbols[name]
+      symbols[key] = row
+      table.insert(symbol_names, key)
+      table.insert(search_subjects, display_name)
+
+      row.key = key
+      row.row_id = #symbol_names
+      row.parent_row_id = parent_row_id
+      row.source_index_path = index_path
+
+      if symbol.children and #symbol.children > 0 then
+        visit(
+          symbol.children, display_scope .. symbol.name, row.row_id, index_path
+        )
       end
     end
   end
 
-  return symbols, symbol_names
+  visit(list, "", nil, {})
+
+  return symbols, symbol_names, search_subjects
 end
 
 local function log(server, message, ...)
@@ -719,118 +781,188 @@ local function apply_edit(server, doc, text_edit, is_snippet, update_cursor_posi
   return true
 end
 
----Callback given to autocomplete plugin which is executed once for each
----element of the autocomplete box which is hovered with the idea of providing
----better description of the selected element by requesting the LSP server for
----detailed information/documentation.
----@param index integer
----@param item table
-local function autocomplete_onhover(index, item)
-  local completion_item = item.data.completion_item
+-- Local patch (#11188): completionItem/resolve is an explicit, generation-
+-- bound pre-application operation owned by per-item state, not a hover side
+-- effect. Hover may prefetch one resolve; selection joins the same operation
+-- and never mutates the document while resolution is pending. The full item
+-- travels as received (`completion_item.data` is not a protocol
+-- requirement), responses admit against their captured subject (#11108),
+-- timeouts arrive through the per-request timeout seam (#10657), and queue
+-- rejection surfaces as a typed failed terminal (#10833). Resolved fields
+-- feed one validated application; late/stale results can never touch a newer
+-- document, provider, or server generation.
+--
+-- Item resolve states: not_needed | unresolved | in_flight | resolved |
+-- failed | timed_out | stale, with an exactly-once applied flag.
 
-  if item.data.server.verbose then
-    item.data.server:log(
-      "Resolve item: %s", util.jsonprettify(json.encode(completion_item))
-    )
-  end
-
-  -- Only send resolve request if data field (which should contain
-  -- the item id) is available.
-  if completion_item.data then
-    -- Local patch (#11108): resolve requests carry their own subject bound
-    -- to the same document as the admitted completion round; the response
-    -- admits against it before enriching the visible description.
-    local resolved_doc = item.data.subject and item.data.subject.doc or nil
-    local subject = lsp.make_request_subject(
-      'completionItem/resolve', resolved_doc, item.data.server, nil, nil)
-    if not subject then
-      return
-    end
-    item.data.server:push_request('completionItem/resolve', {
-      params = completion_item,
-      callback = function(server, response)
-        -- Local patch (#11108): admission before any effect.
-        local admitted, disposition = lsp.admit_response(subject)
-        if not admitted then
-          core.log_quiet(
-            "[LSP] %s response dropped (%s)",
-            "completionItem/resolve", disposition or "stale"
-          )
-          return
-        end
-        if response.result then
-          local symbol = response.result
-          if symbol.detail and #item.desc <= 0 then
-            item.desc = symbol.detail
-          end
-          if symbol.documentation then
-            if #item.desc > 0 then
-              item.desc = item.desc .. "\n\n"
-            end
-            if
-              type(symbol.documentation) == "table"
-              and
-              symbol.documentation.value
-            then
-              item.desc = item.desc .. symbol.documentation.value
-              if
-                symbol.documentation.kind
-                and
-                symbol.documentation.kind == "markdown"
-              then
-                item.desc = util.strip_markdown(item.desc)
-              end
-            else
-              item.desc = item.desc .. symbol.documentation
-            end
-          end
-          item.desc = item.desc:gsub("[%s\n]+$", "")
-            :gsub("^[%s\n]+", "")
-            :gsub("\n\n\n+", "\n\n")
-          if symbol.additionalTextEdits then
-            completion_item.additionalTextEdits = symbol.additionalTextEdits
-          end
-
-          if server.verbose then
-            server:log(
-              "Resolve response: %s", util.jsonprettify(json.encode(symbol))
-            )
-          end
-        elseif server.verbose then
-          server:log("Resolve returned empty response")
-        end
+---Deterministic structural digest of one CompletionItem (#11188). Item
+---identity is content identity: display labels or menu positions never stand
+---in for the same item subject.
+local function completion_item_digest(item)
+  local function encode(value, depth)
+    if depth > 6 then return "#" end
+    local vtype = type(value)
+    if vtype == "table" then
+      local keys = {}
+      for key in pairs(value) do keys[#keys + 1] = tostring(key) end
+      table.sort(keys)
+      local inner = {}
+      for _, key in ipairs(keys) do
+        inner[#inner + 1]
+          = "[" .. tostring(key) .. "]=" .. encode(value[key], depth + 1)
       end
-    })
+      return "{" .. table.concat(inner, ",") .. "}"
+    end
+    return vtype .. ":" .. tostring(value)
   end
+  if type(item) ~= "table" then return tostring(item) end
+  return encode(item, 0)
 end
 
----Callback that handles insertion of an autocompletion item that has
----the information of insertion
----@param index integer
----@param item table
-local function autocomplete_onselect(index, item)
-  -- Local patch (#11108): a completion edit computed for one accepted
-  -- document state is revalidated against its stored subject at the
-  -- moment of user selection; stale edits are never applied optimistically
-  -- against newer bytes.
-  if item.data.subject then
-    local admitted, disposition = lsp.admit_response(item.data.subject)
+---Resolve-support disposition for one server (#11188).
+local function completion_resolve_supported(server)
+  local capabilities = server.capabilities or {}
+  local provider = capabilities.completionProvider or {}
+  return provider.resolveProvider == true
+end
+
+---One structured pre-apply resolve state per completion item (#11188).
+---@param server lsp.server
+---@param completion_item table Original CompletionItem as received
+---@param round_subject lsp.request.subject|nil Subject of the completion round
+---@return table resolve_state
+local function new_completion_resolve_state(server, completion_item, round_subject)
+  local supported = completion_resolve_supported(server)
+  return {
+    supported = supported,
+    original_digest = completion_item_digest(completion_item),
+    round_subject = round_subject,
+    state = supported and "unresolved" or "not_needed",
+    resolved_item = nil,
+    resolve_subject = nil,
+    pending_apply = false,
+    applied = false,
+    disposition = nil,
+  }
+end
+
+---True when the original item alone carries every field the application
+---paths consume (#11188 declared completeness policy): its own textEdit or
+---an LSP-snippet insertText. Plain-text insertText/label items are not
+---applied by any path without resolution supplying a textEdit.
+local function completion_self_complete(item)
+  if item.textEdit then return true end
+  if
+    snippets_found
+    and item.insertText
+    and item.insertTextFormat == Server.insert_text_format.Snippet
+  then
+    return true
+  end
+  return false
+end
+
+---Resolved view over the original item (#11188): resolved fields win; fields
+---the server left unset inherit the original content.
+local function overlay_resolved_item(original, resolved)
+  local merged = {}
+  for key, value in pairs(original) do merged[key] = value end
+  for key, value in pairs(resolved) do merged[key] = value end
+  return merged
+end
+
+---Merge one admitted resolve result into the hovered item description.
+local function merge_resolve_description(item, symbol)
+  if symbol.detail and #item.desc <= 0 then
+    item.desc = symbol.detail
+  end
+  if symbol.documentation then
+    if #item.desc > 0 then
+      item.desc = item.desc .. "\n\n"
+    end
+    if
+      type(symbol.documentation) == "table"
+      and
+      symbol.documentation.value
+    then
+      item.desc = item.desc .. symbol.documentation.value
+      if
+        symbol.documentation.kind
+        and
+        symbol.documentation.kind == "markdown"
+      then
+        item.desc = util.strip_markdown(item.desc)
+      end
+    else
+      item.desc = item.desc .. symbol.documentation
+    end
+  end
+  item.desc = item.desc:gsub("[%s\n]+$", "")
+    :gsub("^[%s\n]+", "")
+    :gsub("\n\n\n+", "\n\n")
+end
+
+---Apply the selected item exactly once from its final effective fields
+---(#11188). Resolution outcomes decide the effective item: a resolved item
+---overlays the original; a not_needed item applies as received; failed,
+---timed_out, and stale terminals fall back only when the original alone
+---proves its own application surface (its own textEdit or LSP-snippet
+---insertText - fields resolution would only enrich) and otherwise refuse
+---without partial mutation. Every application revalidates the captured
+---round subject before any effect, so a terminal that arrives after edits,
+---session transitions, or server replacement can never touch newer bytes,
+---and the edit lands only in the exact document the round was computed for.
+local function apply_selected_completion(item, rstate)
+  if rstate.applied then return true end
+  local original = item.data.completion_item
+  local round_subject = rstate.round_subject or item.data.subject
+  if round_subject then
+    local admitted, disposition = lsp.admit_response(round_subject)
     if not admitted then
       core.log_quiet(
-        "[LSP] completion edit refused (%s)", disposition or "stale"
+        "[LSP] completion apply refused (%s)", disposition or "stale"
+      )
+      return false
+    end
+  end
+  local effective = nil
+  if rstate.state == "resolved" then
+    effective = rstate.resolved_item
+      and overlay_resolved_item(original, rstate.resolved_item)
+      or original
+  elseif rstate.state == "not_needed" then
+    effective = original
+  else
+    if completion_self_complete(original) then
+      effective = original
+    else
+      core.log_quiet(
+        "[LSP] completion apply refused (%s)",
+        rstate.disposition or rstate.state
       )
       return false
     end
   end
 
-  local completion = item.data.completion_item
   local dv = get_active_docview()
+  -- Deferred terminals re-fetch the active view: applying a completion to a
+  -- different document than the one its ranges were computed for is refusal,
+  -- not adaptation (#11188).
+  if
+    dv
+    and round_subject
+    and round_subject.doc
+    and dv.doc ~= round_subject.doc
+  then
+    core.log_quiet("[LSP] completion apply refused (%s)", "document_mismatch")
+    return false
+  end
   local edit_applied = false
-  if completion.textEdit then
+  if effective.textEdit then
     if dv then
-      local is_snippet = completion.insertTextFormat
-        and completion.insertTextFormat == Server.insert_text_format.Snippet
-      edit_applied = apply_edit(item.data.server, dv.doc, completion.textEdit, is_snippet, true)
+      local is_snippet = effective.insertTextFormat
+        and effective.insertTextFormat == Server.insert_text_format.Snippet
+      edit_applied = apply_edit(item.data.server, dv.doc, effective.textEdit, is_snippet, true)
       if edit_applied then
         -- Retrigger code completion if last char is a trigger
         -- this is useful for example with clangd when autocompleting
@@ -857,9 +989,9 @@ local function autocomplete_onselect(index, item)
   elseif
     dv and snippets_found and config.plugins.lsp.snippets
     and
-    completion.insertText and completion.insertTextFormat
+    effective.insertText and effective.insertTextFormat
     and
-    completion.insertTextFormat == Server.insert_text_format.Snippet
+    effective.insertTextFormat == Server.insert_text_format.Snippet
   then
     ---@type core.doc
     local doc = dv.doc
@@ -867,22 +999,199 @@ local function autocomplete_onselect(index, item)
       local line2, col2 = doc:get_selection()
       local line1, col1 = doc:position_offset(line2, col2, translate.start_of_word)
       doc:set_selection(line1, col1, line2, col2)
-      snippets.execute {format = 'lsp', template = completion.insertText}
+      snippets.execute {format = 'lsp', template = effective.insertText}
       edit_applied = true
     end
   end
-  if edit_applied and completion.additionalTextEdits and #completion.additionalTextEdits > 0 then
-    -- TODO: do we need to sort this? Or is it expected to be already sorted?
-    -- TODO: are the edit ranges considered as if the "main" textEdit was applied already?
-
+  if edit_applied and effective.additionalTextEdits and #effective.additionalTextEdits > 0 then
     -- Apply the edits in reverse order, so that their ranges are not shifted
     -- around by previous edits
-    for i=#completion.additionalTextEdits,1,-1 do
-      local edit = completion.additionalTextEdits[i]
+    for i=#effective.additionalTextEdits,1,-1 do
+      local edit = effective.additionalTextEdits[i]
       apply_edit(item.data.server, dv.doc, edit, false, false)
     end
   end
+  if edit_applied then
+    rstate.applied = true
+  end
   return edit_applied
+end
+
+---Terminal handling of one completionItem/resolve response for its item
+---subject (#11188). Admission comes before any effect; only an exact-current
+---result may resolve the state, update the visible description, or run a
+---deferred selection application.
+local function on_completion_resolve_response(item, rstate, response)
+  local admitted, disposition = lsp.admit_response(rstate.resolve_subject)
+  if not admitted then
+    rstate.state = "stale"
+    rstate.disposition = disposition or "stale"
+    rstate.pending_apply = false
+    core.log_quiet(
+      "[LSP] %s response dropped (%s)",
+      "completionItem/resolve", rstate.disposition
+    )
+    return
+  end
+  local result = response.result
+  if response.error then
+    -- A JSON-RPC error is a failed terminal, not an empty resolution: the
+    -- pending selection must hit the completeness-guarded fallback instead
+    -- of treating the original as confirmed (#11188).
+    rstate.state = "failed"
+    rstate.disposition = "server_error"
+  elseif result then
+    rstate.state = "resolved"
+    rstate.resolved_item = result
+    merge_resolve_description(item, result)
+  else
+    -- Null result: the server supplied nothing new; the application falls
+    -- back through the same guarded original-item terminal.
+    rstate.state = "failed"
+    rstate.disposition = "empty_result"
+  end
+  if rstate.pending_apply then
+    rstate.pending_apply = false
+    apply_selected_completion(item, rstate)
+  end
+end
+
+---Start at most one completionItem/resolve for an unresolved item subject
+---(#11188). Hover prefetch and selection land here, so one item owns one
+---request; the full item travels as received.
+local function begin_completion_resolve(item, rstate)
+  if rstate.state ~= "unresolved" then return rstate end
+  local data = item.data
+  local doc = rstate.round_subject and rstate.round_subject.doc or nil
+  local subject = lsp.make_request_subject(
+    'completionItem/resolve', doc, data.server, nil, nil)
+  if not subject then
+    rstate.state = "stale"
+    rstate.disposition = "no_session"
+    if rstate.pending_apply then
+      rstate.pending_apply = false
+      apply_selected_completion(item, rstate)
+    else
+      core.log_quiet("[LSP] completion apply refused (%s)", "no_session")
+    end
+    return rstate
+  end
+  rstate.state = "in_flight"
+  rstate.resolve_subject = subject
+  local queued = data.server:push_request('completionItem/resolve', {
+    params = data.completion_item,
+    -- Local patch (#10657): explicit short window. The single-send default
+    -- policy is deliberately patient, but a pending resolve defers applying
+    -- the selected completion, so it keeps the legacy ~2s responsiveness:
+    -- expiry reaches the typed fallback quickly instead of stalling the
+    -- selection for the whole default window.
+    timeout = 2,
+    callback = function(server, response)
+      on_completion_resolve_response(item, rstate, response)
+    end,
+    timeout_callback = function()
+      if rstate.state ~= "in_flight" then return end
+      rstate.state = "timed_out"
+      rstate.disposition = "timeout"
+      if rstate.pending_apply then
+        rstate.pending_apply = false
+        apply_selected_completion(item, rstate)
+      end
+    end,
+  })
+  if queued == "not_queued" then
+    rstate.state = "failed"
+    rstate.disposition = "not_queued"
+    if rstate.pending_apply then
+      rstate.pending_apply = false
+      apply_selected_completion(item, rstate)
+    else
+      core.log_quiet("[LSP] completion apply refused (%s)", "not_queued")
+    end
+  end
+  return rstate
+end
+
+---Callback given to autocomplete plugin which is executed once for each
+---element of the autocomplete box which is hovered with the idea of providing
+---better description of the selected element by requesting the LSP server for
+---detailed information/documentation.
+---@param index integer
+---@param item table
+local function autocomplete_onhover(index, item)
+  local completion_item = item.data.completion_item
+
+  if item.data.server.verbose then
+    item.data.server:log(
+      "Resolve item: %s", util.jsonprettify(json.encode(completion_item))
+    )
+  end
+
+  -- Local patch (#11188): hover starts at most one resolve prefetch for the
+  -- item subject; selection joins the same operation instead of sending a
+  -- duplicate. Description updates come only from an admitted exact-current
+  -- result in the resolve callback.
+  local rstate = item.data.resolve
+  if rstate and rstate.supported then
+    begin_completion_resolve(item, rstate)
+  end
+end
+
+---Callback that handles insertion of an autocompletion item that has
+---the information of insertion
+---@param index integer
+---@param item table
+local function autocomplete_onselect(index, item)
+  -- Local patch (#11108): a completion edit computed for one accepted
+  -- document state is revalidated against its stored subject at the
+  -- moment of user selection; stale edits are never applied optimistically
+  -- against newer bytes.
+  if item.data.subject then
+    local admitted, disposition = lsp.admit_response(item.data.subject)
+    if not admitted then
+      core.log_quiet(
+        "[LSP] completion edit refused (%s)", disposition or "stale"
+      )
+      return false
+    end
+  end
+
+  -- Local patch (#11188): selection obtains an exact resolved/current item or
+  -- a typed disposition before any document mutation. An unresolved or
+  -- in-flight item defers application to its resolve terminal instead of
+  -- applying whatever fields happen to be present; each item applies at most
+  -- once regardless of repeated callbacks.
+  local rstate = item.data.resolve
+  if not rstate then
+    return apply_selected_completion(item, { state = "not_needed", applied = false })
+  end
+  if rstate.applied then
+    return true
+  end
+  if
+    not rstate.supported
+    or rstate.state == "not_needed"
+    or rstate.state == "resolved"
+    or rstate.state == "failed"
+    or rstate.state == "timed_out"
+    or rstate.state == "stale"
+  then
+    return apply_selected_completion(item, rstate)
+  end
+  if rstate.state == "in_flight" then
+    rstate.pending_apply = true
+    return false
+  end
+  -- unresolved: selection triggers the exact pre-apply resolution itself.
+  rstate.pending_apply = true
+  begin_completion_resolve(item, rstate)
+  if not rstate.pending_apply then
+    -- The operation terminated synchronously (typed queue rejection or a
+    -- missing session): its guarded terminal already fell back or refused,
+    -- so selection surfaces that real outcome instead of a deferral.
+    return rstate.applied
+  end
+  return false
 end
 
 --
@@ -997,13 +1306,44 @@ end
 
 -- Used on lsp.get_workspace_settings()
 local cached_workspace_settings = {}
+local cached_workspace_settings_stamp = {}
+local cached_workspace_stamp_paths = {}
 local cached_workspace_settings_timestamp = 0
+
+---Local patch (#10653): one bounded stat identity for a candidate
+---configuration file. Used both to fingerprint a freshly loaded settings
+---result and to detect that an accepted configuration changed while a
+---cached entry is still inside its freshness window.
+---@param file_path string
+---@return string
+local function config_file_stamp(file_path)
+  local info = system
+    and system.get_file_info
+    and system.get_file_info(file_path)
+  if info then
+    -- Lite XL reports modification time as `modified`; `mtime` keeps the
+    -- stamp honest under alternative runtimes of the same family.
+    return tostring(info.modified or info.mtime or info.size or "present")
+  end
+  return "absent"
+end
+
+---Recompute the stamp of a recorded candidate list and compare identities.
+---@param stamp_paths string[]
+---@return string
+local function recorded_stamp(stamp_paths)
+  local parts = {}
+  for index, file_path in ipairs(stamp_paths) do
+    parts[index] = file_path .. "=" .. config_file_stamp(file_path)
+  end
+  return table.concat(parts, ";")
+end
 
 ---Get table of configuration settings in the following way:
 ---1. Scan the USERDIR for .lite_lsp.lua or .lite_lsp.json (in that order)
 ---2. Merge server.settings
----4. Scan workspace if set also for .lite_lsp.lua/json and merge them or
----3. Scan server.path also for .lite_lsp.lua/json and merge them
+---3. Scan server.path also for configuration and merge it
+---4. Scan workspace if set also for configuration and merge it
 ---Note: settings are cached for 5 seconds for faster retrieval
 ---      on repetitive calls to this function.
 ---
@@ -1020,6 +1360,19 @@ local cached_workspace_settings_timestamp = 0
 ---a list), scalars and explicit null replace exactly. The 5-second cache
 ---stores exactly this merged result, so cached and uncached consumers see
 ---identical effective settings.
+---
+---Local patch (#10653): workspace/project configuration is data, not
+---executable code. Only the USERDIR keeps its historical executable
+---.lite_lsp.lua authority as a user-owned configuration root. Every
+---project-derived position (server.path or a server-supplied workspace
+---scope) accepts data-only .lite_lsp.json configuration; a repository-local
+---.lite_lsp.lua is never probed for execution there - it is ignored with a
+---quiet log line, and a malformed project JSON payload is reported as a
+---bounded configuration error answering an empty value instead of executing
+---fallback code. Cache entries carry a filesystem stamp of their accepted
+---candidates (each position directory plus its discovered file), so a
+---changed or replaced accepted configuration invalidates the cached result
+---even inside the freshness window.
 ---@param server lsp.server
 ---@param workspace? string
 ---@return table
@@ -1038,29 +1391,92 @@ function lsp.get_workspace_settings(server, workspace)
     cached_index = cached_index .. tostring(workspace)
   end
 
+  local stamp_paths = cached_workspace_stamp_paths[cached_index]
   if
     cached_workspace_settings_timestamp > os.time()
     and
     cached_workspace_settings[cached_index]
+    and
+    stamp_paths
+    and
+    recorded_stamp(stamp_paths) == cached_workspace_settings_stamp[cached_index]
   then
     return cached_workspace_settings[cached_index]
   else
     local position = 1
-    for _, path in pairs(paths) do
+    stamp_paths = {}
+    -- Sequential iteration (#10653): the trusted user-owned root must be
+    -- the visited first position structurally, never by hash-order luck.
+    for _, path in ipairs(paths) do
       if path then
         local settings_new = nil
         path = path:gsub("\\+$", ""):gsub("/+$", "")
-        if util.file_exists(path .. "/.lite_lsp.lua") then
-          local settings_lua = dofile(path .. "/.lite_lsp.lua")
-          if type(settings_lua) == "table" then
-            settings_new = settings_lua
+        stamp_paths[#stamp_paths + 1] = path
+
+        if position == 1 then
+          -- User-owned executable configuration root (#10653): the USERDIR
+          -- keeps its historical .lite_lsp.lua authority over .lite_lsp.json.
+          local user_lua = path .. "/.lite_lsp.lua"
+          if util.file_exists(user_lua) then
+            stamp_paths[#stamp_paths + 1] = user_lua
+            local settings_lua = dofile(user_lua)
+            if type(settings_lua) == "table" then
+              settings_new = settings_lua
+            end
+          else
+            local user_json = path .. "/.lite_lsp.json"
+            if util.file_exists(user_json) then
+              stamp_paths[#stamp_paths + 1] = user_json
+              local file = io.open(user_json, "r")
+              if file then
+                local settings_json = file:read("*a")
+                settings_new = json.decode(settings_json)
+                file:close()
+              end
+            end
           end
-        elseif util.file_exists(path .. "/.lite_lsp.json") then
-          local file = io.open(path .. "/.lite_lsp.json", "r")
-          if file then
-            local settings_json = file:read("*a")
-            settings_new = json.decode(settings_json)
-            file:close()
+        else
+          -- Project-derived positions are data-only (#10653): a
+          -- repository-controlled .lite_lsp.lua is never executed here,
+          -- regardless of startup, configuration requests, root changes,
+          -- restarts, or cache refreshes.
+          local project_lua = path .. "/.lite_lsp.lua"
+          if util.file_exists(project_lua) then
+            core.log_quiet(
+              "[LSP]: ignoring untrusted project configuration '%s'",
+              project_lua
+            )
+          end
+
+          local project_json = path .. "/.lite_lsp.json"
+          if util.file_exists(project_json) then
+            stamp_paths[#stamp_paths + 1] = project_json
+            local file = io.open(project_json, "r")
+            if file then
+              local settings_json = file:read("*a")
+              file:close()
+              local ok_decode, decoded = pcall(json.decode, settings_json)
+              if
+                ok_decode
+                and type(decoded) == "table"
+                and not json.is_array(decoded)
+                and not json.is_null(decoded)
+              then
+                settings_new = decoded
+              else
+                -- Fail safely (#10653): malformed project data becomes one
+                -- bounded configuration error and an empty value, never an
+                -- executable fallback. Array/null JSON roots are rejected
+                -- here too (#10653 review): a non-object root must not be
+                -- able to replace accumulated user/server settings.
+                core.error(
+                  "[LSP]: ignoring malformed project configuration '%s' (%s)",
+                  project_json,
+                  ok_decode and "configuration is not a JSON object"
+                    or tostring(decoded)
+                )
+              end
+            end
           end
         end
 
@@ -1082,8 +1498,12 @@ function lsp.get_workspace_settings(server, workspace)
       position = position + 1
     end
 
-    -- store settings on cache for 5 seconds for fast repeated calls
+    -- store settings on cache for 5 seconds for fast repeated calls;
+    -- the accepted candidates' stamp lets a changed configuration
+    -- invalidate the entry inside that window (#10653)
     cached_workspace_settings[cached_index] = settings
+    cached_workspace_stamp_paths[cached_index] = stamp_paths
+    cached_workspace_settings_stamp[cached_index] = recorded_stamp(stamp_paths)
     cached_workspace_settings_timestamp = os.time() + 5
   end
 
@@ -1193,11 +1613,19 @@ function lsp.start_server(filename, project_directory)
             local settings_list = {}
             for i = 1, #items do
               local item = items[i]
+              -- Local patch (#10845): presence and value are tracked
+              -- independently. A found value is appended verbatim — explicit
+              -- false stays JSON false, as do 0/""/[] and nested false — and
+              -- only a genuinely missing section becomes the null sentinel.
+              -- The legacy `value or json.null` collapsed an explicitly
+              -- configured false into absent/default semantics.
               local value = nil
+              local found = false
               if item.section then
                 -- No workspace was specified so we return from default settings
                 if not item.scopeUri then
-                  value = util.table_get_field(settings_default, item.section)
+                  value, found = util.table_get_field(
+                    settings_default, item.section)
                 -- A workspace was specified so we return from that workspace
                 else
                   -- Local patch (#11165): scope URIs convert through the one
@@ -1215,17 +1643,22 @@ function lsp.start_server(filename, project_directory)
                   local settings_workspace = lsp.get_workspace_settings(
                     server, scope_path
                   )
-                  value = util.table_get_field(settings_workspace, item.section)
+                  value, found = util.table_get_field(
+                    settings_workspace, item.section)
                 end
 
-                if not value then
+                if not found then
                   server:log("Asking for '%s' config but not set", item.section)
                 else
                   server:log("Asking for '%s' config", item.section)
                 end
               end
 
-              table.insert(settings_list, value or json.null)
+              if found then
+                table.insert(settings_list, value)
+              else
+                table.insert(settings_list, json.null)
+              end
             end
 
             server:push_response(
@@ -1237,51 +1670,100 @@ function lsp.start_server(filename, project_directory)
         )
 
         -- Respond to window/showDocument request
+        -- Local patch (#10873): the ShowDocumentResult reflects the completed
+        -- client action instead of preemptive success. The external prompt is
+        -- generation-owned (an old prompt cannot answer after server
+        -- replacement through the servers_running identity), nothing responds
+        -- before the user/open terminal outcome, and internal open or
+        -- selection-conversion failures carry explicit typed dispositions.
+        -- #10785 owns response correlation; this listener answers exactly
+        -- once with the truthful payload.
         client:add_request_listener(
           "window/showDocument",
           function(server, request)
-            if request.params.external then
-              MessageBox.info(
-                server.name .. " LSP Server",
-                "Wants to externally open:\n'" .. request.params.uri .. "'",
-                function(_, button_id)
-                  if button_id == 1 then
-                    util.open_external(request.params.uri)
+            local responded = false
+            util.show_document(server, request.params, {
+              confirm = function(_, _, answered)
+                MessageBox.info(
+                  server.name .. " LSP Server",
+                  "Wants to externally open:\n'"
+                    .. tostring(request.params.uri) .. "'",
+                  function(_, button_id)
+                    answered(button_id == 1)
+                  end,
+                  MessageBox.BUTTONS_YES_NO
+                )
+                -- The decision arrives asynchronously; no response exists
+                -- until the user outcome settles.
+                return nil
+              end,
+              reveal = function(uri)
+                -- Local patch (#11165): internal reveal converts through the
+                -- one authority; non-file or malformed URIs fail closed.
+                local document, document_reason = util.uri_to_path(uri)
+                if not document then
+                  core.log_quiet(
+                    "[LSP] showDocument refused (%s)",
+                    document_reason or "unconvertible uri"
+                  )
+                  return nil, document_reason or "unconvertible_uri"
+                end
+                local ok_open, doc_view_or_error = pcall(function()
+                  ---@type core.docview
+                  return core.root_view:open_doc(
+                    core.open_doc(common.home_expand(document))
+                  )
+                end)
+                if not ok_open or not doc_view_or_error then
+                  core.log_quiet(
+                    "[LSP] showDocument open failed (%s)",
+                    tostring(doc_view_or_error or "no docview")
+                  )
+                  return nil, "open_failed"
+                end
+                if request.params.selection then
+                  local ok_selection, selection_error = pcall(function()
+                    local line1, col1, line2, col2 = util.toselection(
+                      request.params.selection, doc_view_or_error.doc
+                    )
+                    doc_view_or_error.doc:set_selection(
+                      line1, col1, line2, col2
+                    )
+                  end)
+                  if not ok_selection then
+                    core.log_quiet(
+                      "[LSP] showDocument selection conversion failed (%s)",
+                      tostring(selection_error)
+                    )
+                    return nil, "selection_failed"
                   end
-                end,
-                MessageBox.BUTTONS_YES_NO
-              )
-            else
-              -- Local patch (#11165): internal reveal converts through the
-              -- one authority; non-file or malformed URIs fail closed with a
-              -- truthful response instead of opening fabricated paths.
-              local document, document_reason = util.uri_to_path(
-                request.params.uri
-              )
-              if not document then
-                core.log_quiet(
-                  "[LSP] showDocument refused (%s)",
-                  document_reason or "unconvertible uri"
-                )
-                server:push_response(request.method, request.id, {success=false})
-                return
-              end
-              ---@type core.docview
-              local doc_view = core.root_view:open_doc(
-                core.open_doc(common.home_expand(document))
-              )
-              if request.params.selection then
-                local line1, col1, line2, col2 = util.toselection(
-                  request.params.selection, doc_view.doc
-                )
-                doc_view.doc:set_selection(line1, col1, line2, col2)
-              end
-              if request.params.takeFocus then
+                end
+                return doc_view_or_error
+              end,
+              raise = function()
                 system.raise_window()
-              end
-            end
-
-            server:push_response(request.method, request.id, {success=true})
+              end,
+              alive = function()
+                -- Generation ownership: only the currently registered server
+                -- instance may answer; replacement/shutdown retires old
+                -- prompts without responding (#10873).
+                return lsp.servers_running[server.name] == server
+              end,
+              outcome = function(success, reason)
+                if responded then
+                  return
+                end
+                responded = true
+                if not success then
+                  core.log_quiet(
+                    "[LSP] showDocument refused (%s)", reason or "failed"
+                  )
+                end
+                server:push_response(
+                  request.method, request.id, {success = success}
+                )
+              end,
+            })
           end
         )
 
@@ -1722,11 +2204,12 @@ function lsp.update_document(doc, request_completion)
       goto continue
     end
     local sync_kind = server.capabilities.textDocumentSync.change
-    if
-      sync_kind ~= Server.text_document_sync_kind.None
-      and
-      server:can_push() -- ensure we don't loose incremental changes
-    then
+    -- Local patch (#10833): no enqueue admission gate. The former
+    -- server:can_push() hit-rate probe delayed batch emission under unrelated
+    -- provider traffic and could starve document truth; batches now always
+    -- queue (overwriting the unsent predecessor) and the send loop paces
+    -- delivery.
+    if sync_kind ~= Server.text_document_sync_kind.None then
       local completion_callback = nil
       if request_completion then
         completion_callback = function() request_signature_completion(doc) end
@@ -1977,7 +2460,10 @@ function lsp.request_completion(doc, line, col, forced)
               data = {
                 -- Local patch (#11108): carry the admitted request subject
                 -- so deferred edit application revalidates at select time.
-                server = server, completion_item = symbol, subject = subject
+                server = server, completion_item = symbol, subject = subject,
+                -- Local patch (#11188): one structured pre-apply resolve
+                -- state per item; selection and hover share it.
+                resolve = new_completion_resolve_state(server, symbol, subject)
               },
               onselect = autocomplete_onselect
             }
@@ -2235,9 +2721,20 @@ end
 function lsp.request_references(doc, line, col)
   if not doc.lsp_open then return end
 
-  for _, name in pairs(lsp.get_active_servers(doc.filename, true)) do
+  -- get_active_servers returns an ordered array. Preserve that order here so
+  -- a non-provider is observably considered before a later provider; using
+  -- pairs would make the regression depend on hash traversal order.
+  for _, name in ipairs(lsp.get_active_servers(doc.filename, true)) do
     local server = lsp.servers_running[name]
-    if server.capabilities.hoverProvider then
+    -- Local patch (#9019): gate references on the standard
+    -- referencesProvider capability, not hoverProvider; hover support says
+    -- nothing about textDocument/references. A server without
+    -- referencesProvider must not terminate the scan either: the first
+    -- active server that lacks it must not make a later valid references
+    -- provider unreachable solely because of iteration order
+    -- (complementary ungrouped servers; exclusive-group selection stays
+    -- with #10660).
+    if server.capabilities.referencesProvider then
       local request_params = get_buffer_position_params(doc, line, col)
       -- Local patch (#11165): no wire identity means no request.
       if not request_params then
@@ -2289,9 +2786,10 @@ function lsp.request_references(doc, line, col)
           end
         end
       })
+      -- Local patch (#9019): first references-capable server serves; the
+      -- scan continues past servers without referencesProvider.
       break
     end
-    break
   end
 end
 
@@ -2303,6 +2801,16 @@ function lsp.request_call_hierarchy(doc, line, col)
   for _, name in pairs(lsp.get_active_servers(doc.filename, true)) do
     local server = lsp.servers_running[name]
     if server.capabilities.callHierarchyProvider then
+      -- Local patch (#11172): client-affordance projection gate. The server
+      -- advertising callHierarchyProvider is not enough: until #10719 lands
+      -- a consumer, the result would be discarded, so the request is never
+      -- sent and one explicit message explains why.
+      local available, _ = capability_manifest.command_availability(
+        "lsp:view-call-hierarchy", server.capabilities)
+      if not available then
+        core.log(capability_manifest.commands["lsp:view-call-hierarchy"].unsupported_message)
+        return
+      end
       -- Local patch (#11108): bind this request to its exact subject.
       local subject = lsp.make_request_subject(
         'textDocument/prepareCallHierarchy', doc, server, line, col)
@@ -2352,6 +2860,16 @@ function lsp.request_symbol_rename(doc, line, col, new_name)
     servers_found = true
     local server = lsp.servers_running[name]
     if server.capabilities.renameProvider then
+      -- Local patch (#11172): client-affordance projection gate. Until #8986
+      -- lands real WorkspaceEdit application, a rename response could only
+      -- be logged as a false success, so the request is never sent and one
+      -- explicit message explains why.
+      local available, _ = capability_manifest.command_availability(
+        "lsp:rename-symbol", server.capabilities)
+      if not available then
+        core.log(capability_manifest.commands["lsp:rename-symbol"].unsupported_message)
+        return
+      end
       local request_params = get_buffer_position_params(doc, line, col)
       -- Local patch (#11165): no wire identity means no request.
       if not request_params then
@@ -2498,7 +3016,8 @@ function lsp.request_document_symbols(doc)
             return
           end
           if response.result and response.result and #response.result > 0 then
-            local symbols, symbol_names = get_symbol_lists(response.result)
+            local symbols, symbol_names, search_subjects =
+              get_symbol_lists(response.result)
             core.command_view:enter("Find Symbol", {
               submit = function(text, item)
                 if item then
@@ -2512,27 +3031,52 @@ function lsp.request_document_symbols(doc)
                     )
                     return
                   end
-                  local symbol = symbols[item.name]
-                  -- The lsp may return a location object with range
-                  -- and uri inside of it or just range as part of
-                  -- the symbol it self.
-                  symbol = symbol.location and symbol.location or symbol
-                  if not symbol.uri then
-                    local line1, col1 = util.toselection(symbol.range, doc)
+                  -- Local patch (#11198): navigate the exact retained row,
+                  -- so duplicate display rows can never alias one target.
+                  local row = symbols[item.name]
+                  local target = row.location and row.location or row
+                  if not target.uri then
+                    -- DocumentSymbol navigation prefers selectionRange -
+                    -- the precise symbol anchor - when present; range
+                    -- remains the broader extent for servers without it.
+                    local line1, col1 = util.toselection(
+                      target.selectionRange or target.range, doc)
                     doc:set_selection(line1, col1, line1, col1)
                   else
-                    lsp.goto_location(symbol)
+                    lsp.goto_location(target)
                   end
                 end
               end,
               suggest = function(text)
-                local res = common.fuzzy_match(symbol_names, text)
-                for i, name in ipairs(res) do
-                  res[i] = {
-                    text = util.split(name, "||")[1],
-                    info = Server.get_symbol_kind(symbols[name].kind),
-                    name = name
-                  }
+                -- Review adoption (PR #12670): fuzzy matching runs over the
+                -- disambiguation-free rendered subjects only, so hidden
+                -- row ordinals can never score, rank, or match a query.
+                -- Matched subjects re-attach their opaque keys through
+                -- deterministic first-in-source-order pairing; duplicate
+                -- subjects each resolve to their own retained row.
+                local matched_subjects =
+                  common.fuzzy_match(search_subjects, text)
+                local pending_keys_by_subject = {}
+                for subject_index, key in ipairs(symbol_names) do
+                  local subject = search_subjects[subject_index]
+                  local pending = pending_keys_by_subject[subject]
+                  if not pending then
+                    pending = {}
+                    pending_keys_by_subject[subject] = pending
+                  end
+                  table.insert(pending, key)
+                end
+                local res = {}
+                for _, subject in ipairs(matched_subjects) do
+                  local pending = pending_keys_by_subject[subject]
+                  if pending and #pending > 0 then
+                    local key = table.remove(pending, 1)
+                    res[#res + 1] = {
+                      text = util.split(key, "||")[1],
+                      info = Server.get_symbol_kind(symbols[key].kind),
+                      name = key
+                    }
+                  end
                 end
                 return res
               end
@@ -3370,4 +3914,3 @@ end
 
 
 return lsp
-

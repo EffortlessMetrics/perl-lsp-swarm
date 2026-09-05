@@ -24,6 +24,7 @@
 //! pinned by exactly one test,
 //! `when_heredoc_has_body_then_content_is_empty_documents_limitation`. If body
 //! capture lands, that one test is the only marker test that needs updating.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_parser_pest::{AstNode, PureRustPerlParser};
 use perl_tdd_support::must;

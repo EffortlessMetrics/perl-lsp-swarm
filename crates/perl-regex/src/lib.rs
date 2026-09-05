@@ -2,6 +2,7 @@
 #![cfg_attr(clippy, allow(missing_docs))]
 
 //! Perl regex validation and analysis.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 pub mod analyzer;
 pub mod error;

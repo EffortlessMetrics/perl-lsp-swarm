@@ -21,37 +21,67 @@ on:
         description: 'Run mutation testing'
         required: false
         type: boolean
-        default: true
+        default: false
       run_benchmarks:
         description: 'Run performance benchmarks'
         required: false
         type: boolean
-        default: true
+        default: false
       run_real_repo_latency:
         description: 'Run real-repo latency suite'
         required: false
         type: boolean
-        default: true
+        default: false
       run_corpus_differential:
         description: 'Run full parser corpus differential suite'
         required: false
         type: boolean
-        default: true
+        default: false
       run_coverage:
         description: 'Run test coverage'
         required: false
         type: boolean
-        default: true
+        default: false
       run_fuzz:
         description: 'Run fuzz testing'
         required: false
         type: boolean
-        default: true
+        default: false
       run_memory:
         description: 'Run LSP memory plateau workloads'
         required: false
         type: boolean
-        default: true
+        default: false
+      run_tautology:
+        description: 'Run tautology detection'
+        required: false
+        type: boolean
+        default: false
+      run_semver:
+        description: 'Run API compatibility checks'
+        required: false
+        type: boolean
+        default: false
+      run_public_api:
+        description: 'Run public API surface checks'
+        required: false
+        type: boolean
+        default: false
+      run_scorecard:
+        description: 'Run scorecard floor-metric ratchet checks'
+        required: false
+        type: boolean
+        default: false
+      run_clippy_strict:
+        description: 'Run strict Clippy checks'
+        required: false
+        type: boolean
+        default: false
+      run_perl_kwalitee:
+        description: 'Run Perl Kwalitee checks'
+        required: false
+        type: boolean
+        default: false
 
 # Cancel in-flight runs on new pushes (saves minutes)
 concurrency:
@@ -74,7 +104,7 @@ jobs:
     name: Mutation Testing
     if: |
       github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_mutation != 'false') ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_mutation) ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:mutation'))
     runs-on: ubuntu-24.04
@@ -103,7 +133,7 @@ jobs:
     name: Performance Benchmarks
     timeout-minutes: 45
     if: |
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_benchmarks) ||
       github.event_name == 'schedule' ||
       contains(github.event.pull_request.labels.*.name, 'ci:bench')
     runs-on: ubuntu-24.04
@@ -126,7 +156,7 @@ jobs:
         cache-on-failure: true
 
     - name: Install just
-      uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+      uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
       with:
         tool: just
 
@@ -138,6 +168,7 @@ jobs:
       run: |
         python3 benchmarks/scripts/test_extract_criterion.py -v
         python3 benchmarks/scripts/test_benchmark_guards.py -v
+        python3 benchmarks/scripts/test_benchmark_targets.py -v
 
     - name: Build perllsp binary for real-repo UX perf lane
       run: cargo build -p perllsp --bin perllsp --locked
@@ -181,8 +212,16 @@ jobs:
         # | select(.kind == ["bench"])`) -- since this REPLACES the blanket
         # `cargo bench --workspace`, an omitted target here is silent
         # coverage loss the old command wouldn't have had. Verified against
-        # the current metadata (14 bench targets, all 14 listed below); if a
+        # the current metadata (15 bench targets, all 15 listed below); if a
         # new bench target is added to the workspace, add it here too.
+        export NATIVE_PIPELINE_RUN_ID="${GITHUB_RUN_ID}-${GITHUB_SHA}"
+        RUSTC_VV="$(rustc -vV)"
+        RUSTC_RELEASE="$(printf '%s\n' "$RUSTC_VV" | sed -n 's/^release: //p')"
+        RUSTC_COMMIT_HASH="$(printf '%s\n' "$RUSTC_VV" | sed -n 's/^commit-hash: //p' | cut -c1-12)"
+        RUSTC_HOST="$(printf '%s\n' "$RUSTC_VV" | sed -n 's/^host: //p')"
+        RUSTC_ARCH="${RUSTC_HOST%%-*}"
+        RUSTC_OS="$(printf '%s\n' "$RUSTC_VV" | sed -n 's/^host: //p' | cut -d- -f3)"
+        export NATIVE_PIPELINE_TOOLCHAIN_TAG="rustc-${RUSTC_RELEASE}-${RUSTC_COMMIT_HASH}-${RUSTC_ARCH}-${RUSTC_OS}"
         declare -a BENCH_TARGETS=(
           "perl-workspace:workspace_index_benchmark:workspace"
           "perl-token:token_scorecard:"
@@ -195,6 +234,7 @@ jobs:
           "perl-parser:positions_bench:"
           "perl-parser:substitution_performance:"
           "perl-lsp-rs:rope_performance_benchmark:"
+          "perl-lsp-perltidy:native_pipeline_benchmark:"
           "perl-lexer:lexer_benchmarks:"
           "perl-dap:dap_benchmarks:"
           "perl-incremental-parsing:incremental_parsing_benchmarks:"
@@ -237,11 +277,33 @@ jobs:
           --expect-id "scope_analysis_many_vars" \
           --expect-id "cpan_moose_oo_class" \
           --expect-id "document_insertions/rope_insertion" \
+          --expect-id "native_pipeline_document/delimited_n32_lf_tabs" \
           --expect-id "simple_tokens" \
           --expect-id "configuration_validation/launch_config_validation" \
           --expect-id "offset_to_pos16_cached" \
           --expect-id "parse_basic_substitution" \
           --expect-id "undo_redo/edit_undo_redo"
+
+        expected_ids=()
+        for family in delimited statement opaque refusal no-change; do
+          for units in 8 32 128; do
+            expected_ids+=("native_pipeline_document/${family}_n${units}_lf_tabs")
+          done
+          for line_ending in crlf bare-cr; do
+            expected_ids+=("native_pipeline_document/${family}_n32_${line_ending}_tabs")
+          done
+          for indent in spaces width-boundary; do
+            expected_ids+=("native_pipeline_document/${family}_n32_lf_${indent}")
+          done
+        done
+        sidecar_args=()
+        for expected_id in "${expected_ids[@]}"; do
+          sidecar_args+=(--expect-id "$expected_id")
+        done
+        python3 ./benchmarks/scripts/validate-native-pipeline-sidecar.py \
+          --sidecar target/criterion/native-pipeline-measurements.v1.json \
+          --expected-run-id "$NATIVE_PIPELINE_RUN_ID" \
+          "${sidecar_args[@]}"
 
     - name: Real-repo first-diagnostics perf gate (Catalyst 5000+ lines)
       run: |
@@ -347,12 +409,21 @@ jobs:
         if-no-files-found: warn
         retention-days: 30
 
+    - name: Upload native pipeline measurement sidecar
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      with:
+        name: native-pipeline-measurements-${{ github.sha }}-${{ github.run_id }}
+        path: target/criterion/native-pipeline-measurements.v1.json
+        if-no-files-found: error
+        retention-days: 30
+
   real-repo-latency:
     name: Real-Repo Latency (Catalyst 5K Diagnostics)
     timeout-minutes: 30
     if: |
       github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_real_repo_latency != 'false') ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_real_repo_latency) ||
       (github.event_name == 'pull_request' &&
        (contains(github.event.pull_request.labels.*.name, 'ci:bench') ||
         contains(github.event.pull_request.labels.*.name, 'ci:real-repo-latency')))
@@ -396,7 +467,7 @@ jobs:
     timeout-minutes: 20
     if: |
       github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_corpus_differential != 'false') ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_corpus_differential) ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:corpus-differential'))
     runs-on: ubuntu-24.04
@@ -440,7 +511,7 @@ jobs:
     timeout-minutes: 35
     if: |
       github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_memory != 'false') ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_memory) ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:memory'))
     steps:
@@ -599,7 +670,7 @@ jobs:
     timeout-minutes: 45
     if: |
       github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_coverage != 'false')
+      (github.event_name == 'workflow_dispatch' && inputs.run_coverage)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -645,7 +716,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install just
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -734,9 +805,9 @@ jobs:
   tautology-check:
     name: Tautology Detection
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 25
     if: |
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_tautology) ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:strict'))
     steps:
@@ -744,33 +815,28 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: stable
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          key: tautology-${{ hashFiles('Cargo.lock') }}
+          cache-on-failure: true
+
       - name: Check for tautological assertions
         run: |
-          echo "Checking for tautological test patterns..."
-
-          if grep -r "assert!(.*\.is_some() || .*\.is_none())" tests/; then
-            echo "❌ Found tautological assertions (is_some || is_none)"
-            exit 1
-          fi
-
-          if grep -r "assert!(true)" tests/; then
-            echo "❌ Found assert!(true)"
-            exit 1
-          fi
-
-          if grep -r "assert!(.*\.len() >= 0)" tests/; then
-            echo "❌ Found tautological length check (>= 0)"
-            exit 1
-          fi
-
-          echo "✅ No tautological patterns found"
+          echo "Checking for tautological assertions..."
+          cargo run -p xtask --locked -- check-tautology --check
 
   semver-check:
     name: API Compatibility
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     if: |
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_semver) ||
       github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:semver'))
@@ -853,19 +919,41 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     if: |
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_public_api) ||
       github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' &&
-       contains(github.event.pull_request.labels.*.name, 'ci:public-api'))
+       contains(github.event.pull_request.labels.*.name, 'ci:public-api') &&
+       (github.event.action != 'labeled' ||
+        github.event.label.name == 'ci:public-api'))
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+
+      - name: Verify tested candidate identity
+        env:
+          TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse 'HEAD^{commit}')" = "$TESTED_SHA"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
         with:
           toolchain: 1.95.0
+
+      # cargo-public-api builds rustdoc JSON and requires a nightly toolchain;
+      # without one the generation fails and (pre-#12861) the recipe silently
+      # diffed the empty surface as phantom API removals. The channel floats
+      # deliberately: the printing semantics live in the pinned cargo-public-api
+      # 0.50.1 (identical output verified across nightly 2026-07-20 and
+      # 2026-08-26), the recipe fails closed on instrument errors, and it now
+      # records rustc +nightly --version as run provenance. A hard pin would
+      # need rustup sysroot symlinks (official names are not linkable), which
+      # is more fragile than the slow drift risk it addresses (#12870 review).
+      - name: Install nightly toolchain (cargo-public-api rustdoc JSON)
+        run: rustup toolchain install nightly --profile minimal
 
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
@@ -877,7 +965,7 @@ jobs:
         run: cargo install cargo-public-api --locked --version 0.50.1
 
       - name: Install just
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
@@ -885,12 +973,15 @@ jobs:
         # Uses cargo public-api --simplified to omit blanket-impl noise; baselines in .ci/public-api-baselines/
         run: just public-api-check
 
+      - name: Execute public API ratchet regression fixture
+        run: bash scripts/tests/test-public-api-ratchet.sh
+
   scorecard-ratchet-check:
     name: Scorecard Floor-Metric Ratchet Check
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     if: |
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_scorecard) ||
       github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:metrics-ratchet'))
@@ -911,12 +1002,13 @@ jobs:
           cache-on-failure: true
 
       - name: Install just
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf  # v2.87.2
         with:
           tool: just
 
-      - name: Check floor-metric ratchet (bootstrap-safe)
-        # Passes if no receipt exists; compares against committed baselines when receipt is present.
+      - name: Check floor-metric ratchet (including fail-closed editor UX)
+        # The editor_ux route always evaluates the committed baseline; missing or
+        # invalid current metrics fail before any scorecard publication.
         # See docs/project/metrics/RATCHET.md for the four-layer model and promotion workflow.
         run: just ci-metrics-ratchet
 
@@ -924,7 +1016,7 @@ jobs:
     name: Clippy (Strict)
     timeout-minutes: 20
     if: |
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_clippy_strict) ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:strict'))
     runs-on: ubuntu-24.04
@@ -958,7 +1050,7 @@ jobs:
     # indicators are consistently green. See docs/reference/PERL_KWALITEE.md.
     continue-on-error: true
     if: |
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_perl_kwalitee) ||
       github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:kwalitee'))
@@ -1060,7 +1152,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     if: |
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_fuzz) ||
       github.event_name == 'schedule'
     strategy:
       fail-fast: false
@@ -1112,7 +1204,7 @@ jobs:
 
     - name: Run fuzzer
       run: |
-        DURATION=${{ github.event.inputs.duration || '600' }}
+        DURATION=600
         ./scripts/fuzz-bounded --duration "$DURATION" -- ${{ matrix.target }}
 
     - name: Upload crash artifacts

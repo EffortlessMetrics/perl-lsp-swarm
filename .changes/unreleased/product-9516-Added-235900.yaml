@@ -1,0 +1,9 @@
+project: product
+component: Editor integrations
+kind: Added
+body: "Added the executable public perl-dap asset receipt matrix for the Zed debug-adapter route: a product-specific managed-download projection over the shared perllsp release family, dual independent digest authorities (checked contract plus release SHA256SUMS and in-archive checksums), exact-member extraction with ambiguity rejection, a bounded DAP initialize/disconnect stdio lifecycle proof with protocol-only stdout and orphan checks, an offline managed-cache known-good preservation suite, and a committed matching-host receipt for windows-x86_64 against release v0.17.0."
+time: 2026-08-24T23:59:00Z
+custom:
+  PR: "TBD"
+  Slug: zed-perl-dap-asset-receipts
+  Breaking: "no"

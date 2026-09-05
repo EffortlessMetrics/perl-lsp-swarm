@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 //! Tests for scope analysis and symbol resolution in perl-semantic-analyzer.
 //!
 //! Covers:
@@ -682,6 +684,20 @@ sub modify_it {
 "#;
     let table = parse_and_extract(code);
     assert!(has_symbol(&table, "global_val", SymbolKind::scalar()));
+    Ok(())
+}
+
+#[test]
+fn scope_local_typeglob_alias_keeps_rhs_target_visible() -> Result<(), Box<dyn std::error::Error>> {
+    let issues =
+        scope_issues_strict("use strict;\nmy $target = 'TARGET';\nlocal *ALIAS = *{$target};\n");
+
+    assert!(
+        issues.iter().all(|issue| {
+            !(issue.kind == IssueKind::UnusedVariable && issue.variable_name == "$target")
+        }),
+        "dynamic typeglob target should retain its lexical dependency: {issues:?}"
+    );
     Ok(())
 }
 

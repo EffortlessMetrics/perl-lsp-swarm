@@ -2808,4 +2808,100 @@ mod tests {
         );
         Ok(())
     }
+
+    // Simplify-review DRIFT_RISK repair: `integration emacs train specs check`
+    // had no automated run against the real tree — every other specs test
+    // compiles synthetic ledgers first. The shipped ledger must pass the full
+    // L01-L14 law table (mirrors `train_edge_contract`'s real-tree run).
+    #[test]
+    fn check_passes_on_current_tree() -> Result<()> {
+        check(None, None, SpecsOutputFormat::Json)
+    }
+
+    // Simplify-review DRIFT_RISK repair: the ledger plane (this module,
+    // `emacs_train_specs.v1`) and the mappings plane
+    // (`emacs_train_context::resolve`, `emacs_train_context_mappings.v1`)
+    // never read each other; their consistency was asserted in PR prose
+    // only. Both shipped documents are loaded through their existing typed
+    // models and joined per node. Agreement predicate:
+    //
+    // 1. join: every mappings entry names exactly one ledger record (the
+    //    mappings plane may cover a subset of the ledger denominator —
+    //    absent nodes carry the resolver's implicit engine blocker — but it
+    //    may never name an unadjudicated node);
+    // 2. mapped ⇒ artifact-backed: a node whose exact-tree population is
+    //    mapped must carry a ledger disposition that claims existing
+    //    artifacts (`SPEC_COMPILED` / `EXISTING_CONTRACT_SUFFICIENT`). A
+    //    deferred (`ISSUE_PLAN_SUFFICIENT`), aggregated
+    //    (`FAN_IN_OR_CERTIFICATION_SPEC`), no-coding
+    //    (`CONTROLLER_NO_CODING_SPEC`/`EXTERNAL_OR_MANUAL_NO_CODING_SPEC`),
+    //    historical or reviewed-exit record would deny the surfaces the
+    //    mapping anchors — that is the drift this check exists to catch.
+    //    The converse is intentionally NOT asserted: a `SPEC_COMPILED` node
+    //    with a still-unmapped population is an agreed state (a spec bundle
+    //    can exist before the implementation lands);
+    // 3. unmapped ⇒ same governing issue: an unmapped entry's blocker owner
+    //    must equal the issue the ledger record carries — with the closed
+    //    `return_to_issue` action, the missing population returns to the
+    //    node's own governing issue, so a blocker naming any other issue is
+    //    a stale-owner disagreement between the planes.
+    #[test]
+    fn mappings_and_ledger_planes_agree_on_shipped_documents() -> Result<()> {
+        use crate::tasks::emacs_train_context::model::MappingDocument;
+        use crate::tasks::emacs_train_context::resolve::MAPPING_RELATIVE_PATH;
+        use std::collections::BTreeMap;
+
+        let root = project_root()?;
+        let ledger = SpecsLedger::parse(&fs::read_to_string(root.join(DEFAULT_LEDGER_PATH))?)?;
+        let mapping_bytes = fs::read_to_string(root.join(MAPPING_RELATIVE_PATH))?;
+        let mappings: MappingDocument = serde_json::from_str(&mapping_bytes)?;
+        assert!(!mappings.nodes.is_empty(), "shipped mappings document has no nodes");
+
+        let by_node: BTreeMap<&str, &DispositionRecord> =
+            ledger.records.iter().map(|record| (record.node_id.as_str(), record)).collect();
+        for entry in &mappings.nodes {
+            let record = by_node.get(entry.node_id.as_str()).ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "mappings node {} has no ledger record: the planes disagree on the denominator",
+                    entry.node_id
+                )
+            })?;
+            match entry.status.as_str() {
+                "mapped" => {
+                    assert!(
+                        matches!(
+                            record.disposition,
+                            LeafSpecDisposition::SpecCompiled
+                                | LeafSpecDisposition::ExistingContractSufficient
+                        ),
+                        "node {} is mapped in the context plane but its ledger disposition {} \
+                         does not claim existing artifacts",
+                        entry.node_id,
+                        record.disposition
+                    );
+                    assert!(
+                        entry.blocker.is_none(),
+                        "node {} is mapped but still carries a blocker",
+                        entry.node_id
+                    );
+                }
+                "unmapped" => {
+                    let blocker = entry.blocker.as_ref().ok_or_else(|| {
+                        color_eyre::eyre::eyre!(
+                            "unmapped node {} carries no blocker (mappings L08)",
+                            entry.node_id
+                        )
+                    })?;
+                    assert_eq!(
+                        blocker.owner_issue, record.issue,
+                        "unmapped node {} names blocker owner issue {} while both planes govern \
+                         issue {}: stale owner disagreement",
+                        entry.node_id, blocker.owner_issue, record.issue
+                    );
+                }
+                other => bail!("unknown mapping status {other:?} for node {}", entry.node_id),
+            }
+        }
+        Ok(())
+    }
 }

@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "perl-dap debug adapter configuration",
+  "description": "Debug configuration for the EffortlessMetrics perl-dap adapter. The launch request requires an explicit program; attach is not supported by this extension yet. Unknown forward-compatible keys are preserved by pass-through.",
+  "type": "object",
+  "required": ["request", "program"],
+  "properties": {
+    "request": {
+      "type": "string",
+      "enum": ["launch"],
+      "description": "Only `launch` is supported; `attach` is rejected with a typed error."
+    },
+    "program": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Path to the Perl program to debug."
+    },
+    "args": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Arguments passed to the Perl program."
+    },
+    "cwd": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Working directory for the debug session."
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Environment variables for the debug session."
+    }
+  },
+  "additionalProperties": true
+}

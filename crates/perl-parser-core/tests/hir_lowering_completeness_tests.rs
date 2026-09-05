@@ -111,7 +111,7 @@ fn hir_completeness_classification_covers_all_variants() {
 /// produce a `CallExpr` HIR item, because `Binary` falls to `visit_children`
 /// which recurses into the call.
 #[test]
-fn hir_not_yet_modeled_kinds_traverse_children() {
+fn hir_not_yet_modeled_kinds_traverse_children() -> Result<(), Box<dyn std::error::Error>> {
     use perl_parser_core::Parser;
     use perl_parser_core::hir::HirKind;
     use perl_parser_core::hir::lower_ast;
@@ -125,7 +125,7 @@ fn hir_not_yet_modeled_kinds_traverse_children() {
 
     // Verify Binary is classified as NotYetModeled in the registry.
     let binary_disp =
-        disposition::disposition_for("Binary").expect("Binary must have a disposition entry");
+        disposition::disposition_for("Binary").ok_or("Binary must have a disposition entry")?;
     assert_eq!(
         binary_disp.legacy_category(),
         disposition::LegacyCategory::NotYetModeled,
@@ -144,20 +144,21 @@ fn hir_not_yet_modeled_kinds_traverse_children() {
          HIR item count: {}",
         file.items.len()
     );
+    Ok(())
 }
 
 /// Verify `DynamicBoundary` kinds emit the boundary marker rather than silently traversing.
 ///
 /// Expression-form `eval` (non-block) must emit `DynamicBoundary::EvalExpression`.
 #[test]
-fn hir_dynamic_boundary_kinds_emit_boundary_marker() {
+fn hir_dynamic_boundary_kinds_emit_boundary_marker() -> Result<(), Box<dyn std::error::Error>> {
     use perl_parser_core::Parser;
     use perl_parser_core::hir::lower_ast;
     use perl_parser_core::hir::{DynamicBoundaryKind, HirKind};
 
     // Verify Eval is classified as DynamicBoundary in the registry.
     let eval_disp =
-        disposition::disposition_for("Eval").expect("Eval must have a disposition entry");
+        disposition::disposition_for("Eval").ok_or("Eval must have a disposition entry")?;
     assert_eq!(
         eval_disp.legacy_category(),
         disposition::LegacyCategory::DynamicBoundary,
@@ -180,6 +181,7 @@ fn hir_dynamic_boundary_kinds_emit_boundary_marker() {
          HIR item count: {}",
         file.items.len()
     );
+    Ok(())
 }
 
 /// Verify `intentionally_skipped` kinds still allow child HIR emission.
@@ -188,14 +190,15 @@ fn hir_dynamic_boundary_kinds_emit_boundary_marker() {
 /// from its contained expression. A `FunctionCall` inside an `ExpressionStatement`
 /// must still produce a `CallExpr`.
 #[test]
-fn hir_intentionally_skipped_kinds_allow_child_hir_emission() {
+fn hir_intentionally_skipped_kinds_allow_child_hir_emission()
+-> Result<(), Box<dyn std::error::Error>> {
     use perl_parser_core::Parser;
     use perl_parser_core::hir::HirKind;
     use perl_parser_core::hir::lower_ast;
 
     // Verify ExpressionStatement is classified as IntentionallySkipped.
     let es_disp = disposition::disposition_for("ExpressionStatement")
-        .expect("ExpressionStatement must have a disposition entry");
+        .ok_or("ExpressionStatement must have a disposition entry")?;
     assert_eq!(
         es_disp.legacy_category(),
         disposition::LegacyCategory::IntentionallySkipped,
@@ -220,6 +223,7 @@ fn hir_intentionally_skipped_kinds_allow_child_hir_emission() {
          HIR item count: {}",
         file.items.len()
     );
+    Ok(())
 }
 
 /// Verify `Unary` dereferences emit their typed HIR item and, when applicable,
@@ -230,7 +234,7 @@ fn hir_intentionally_skipped_kinds_allow_child_hir_emission() {
 /// `DerefExpr`, plus `DynamicBoundary` for symbolic dereference under
 /// no-strict-refs).
 #[test]
-fn hir_unary_emits_typed_deref_and_runtime_boundary() {
+fn hir_unary_emits_typed_deref_and_runtime_boundary() -> Result<(), Box<dyn std::error::Error>> {
     use perl_parser_core::Parser;
     use perl_parser_core::hir::lower_ast;
     use perl_parser_core::hir::{DynamicBoundaryKind, HirKind};
@@ -238,7 +242,7 @@ fn hir_unary_emits_typed_deref_and_runtime_boundary() {
     // Verify Unary is classified as lowered in the registry because it emits
     // DerefExpr, while retaining the independent boundary flag.
     let unary_disp =
-        disposition::disposition_for("Unary").expect("Unary must have a disposition entry");
+        disposition::disposition_for("Unary").ok_or("Unary must have a disposition entry")?;
     assert_eq!(
         unary_disp.legacy_category(),
         disposition::LegacyCategory::Lowered,
@@ -276,4 +280,5 @@ fn hir_unary_emits_typed_deref_and_runtime_boundary() {
         file.items.len(),
         file.items.iter().map(|item| item.anchor.node_kind).collect::<Vec<_>>()
     );
+    Ok(())
 }

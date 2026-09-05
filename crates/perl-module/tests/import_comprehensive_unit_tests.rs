@@ -3,9 +3,7 @@
 //! Covers the full public API surface: `parse_module_import_head`,
 //! `ModuleImportKind`, and `ModuleImportHead`.
 
-use perl_module::import::{
-    ModuleImportHead, ModuleImportKind, RequireForm, parse_module_import_head,
-};
+use perl_module::{ModuleImportHead, ModuleImportKind, RequireForm, parse_module_import_head};
 
 // ---------------------------------------------------------------------------
 // Helper: assert a successful parse and validate all fields

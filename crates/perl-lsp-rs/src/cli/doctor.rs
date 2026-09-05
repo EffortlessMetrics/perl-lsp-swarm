@@ -10,6 +10,11 @@ use crate::util::run_command_with_timeout;
 use perl_lsp_rs_core::config::{
     Perl5LibPrecedence, PerlOracleEnv, RejectedIncludePath, WorkspaceConfig, load_project_config,
 };
+use perl_lsp_rs_core::external_tool_doctor::{
+    critic_compatibility_entry, external_tool_doctor_entries, render_critic_compatibility_text,
+    render_external_tool_doctor_text,
+};
+use perl_lsp_rs_core::external_tools::EXTERNAL_TOOL_REGISTRY;
 use perl_lsp_rs_core::platform::{detect_perlbrew_perl, detect_plenv_perl, resolve_perl_path};
 use perl_parser_core::path_security::{WorkspacePathError, validate_workspace_path};
 use serde::Serialize;
@@ -20,6 +25,54 @@ const PERL5LIB_SOURCE: &str = "PERL5LIB";
 
 /// Wall-clock timeout for external tool (`perltidy`/`perlcritic`) version probes.
 const DOCTOR_TOOL_TIMEOUT_SECS: u64 = 5;
+
+/// `perllsp --doctor --external-tools`: registry-driven, native-first
+/// external-tooling report (#7212). Source-only projection of the canonical
+/// registry (#7209): no probe, install, selection, or execution occurs, and
+/// every verdict comes from the registry rows.
+pub(super) fn run_doctor_external_tools(json: bool) -> i32 {
+    let entries = external_tool_doctor_entries(EXTERNAL_TOOL_REGISTRY);
+    if json {
+        match serde_json::to_string_pretty(&entries) {
+            Ok(json_str) => {
+                println!("{json_str}");
+                0
+            }
+            Err(err) => {
+                eprintln!("Failed to serialize external-tool doctor report: {err}");
+                1
+            }
+        }
+    } else {
+        print!("{}", render_external_tool_doctor_text(&entries));
+        0
+    }
+}
+
+/// `perllsp --doctor --critic-compatibility`: registry-driven Perl::Critic
+/// configuration compatibility (#7212). Explains `.perlcriticrc` mapping
+/// process-free; never offers a runtime engine switch.
+pub(super) fn run_doctor_critic_compatibility(json: bool) -> i32 {
+    let Some(entry) = critic_compatibility_entry(EXTERNAL_TOOL_REGISTRY) else {
+        eprintln!("registry does not own a .perlcriticrc compatibility row");
+        return 1;
+    };
+    if json {
+        match serde_json::to_string_pretty(&entry) {
+            Ok(json_str) => {
+                println!("{json_str}");
+                0
+            }
+            Err(err) => {
+                eprintln!("Failed to serialize critic compatibility report: {err}");
+                1
+            }
+        }
+    } else {
+        print!("{}", render_critic_compatibility_text(&entry));
+        0
+    }
+}
 
 pub(super) fn run_doctor(dir: &str, json: bool) -> i32 {
     match build_doctor_report_struct(dir) {
@@ -1612,5 +1665,35 @@ mod tests {
         let empty_report =
             PerlReport { binary: None, source: "PATH", version: Some(String::new()), error: None };
         assert_eq!(render_perl_version(&empty_report), "not available");
+    }
+
+    #[test]
+    fn run_doctor_external_tools_text_exit_zero() {
+        assert_eq!(run_doctor_external_tools(false), 0);
+    }
+
+    #[test]
+    fn run_doctor_external_tools_json_exit_zero() {
+        assert_eq!(run_doctor_external_tools(true), 0);
+    }
+
+    #[test]
+    fn run_doctor_critic_compatibility_exit_zero() {
+        assert_eq!(run_doctor_critic_compatibility(false), 0);
+        assert_eq!(run_doctor_critic_compatibility(true), 0);
+    }
+
+    #[test]
+    fn run_cli_dispatches_doctor_external_tools() {
+        let code = crate::run_cli(["perl-lsp", "--doctor", "--external-tools"]);
+        assert_eq!(code, 0);
+        let code = crate::run_cli(["perl-lsp", "--doctor", "--critic-compatibility"]);
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn run_cli_rejects_mode_flags_without_doctor() {
+        assert_eq!(crate::run_cli(["perl-lsp", "--external-tools"]), 1);
+        assert_eq!(crate::run_cli(["perl-lsp", "--critic-compatibility"]), 1);
     }
 }

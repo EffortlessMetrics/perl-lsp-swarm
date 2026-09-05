@@ -37,6 +37,7 @@ def build_receipt(
             "manifest_sha256": hashlib.sha256(_canonical_json_bytes(manifest)).hexdigest(),
             "project_extensions": _normalized_rows(manifest, "project_extensions"),
             "project_configuration": _normalized_rows(manifest, "project_configuration"),
+            "project_families": _normalized_rows(manifest, "project_families"),
         },
         "upstream": {
             "repository": upstream.get("repository"),

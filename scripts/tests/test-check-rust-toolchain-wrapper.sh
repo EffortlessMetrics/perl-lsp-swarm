@@ -156,6 +156,41 @@ else
   fail "prints usage for unknown mode"
 fi
 
+# Toolchain guard (#12593): when rustup is absent the wrapper falls back to
+# the plain PATH cargo, and that fallback must refuse a stale cargo. Simulate
+# a rustup-less machine by fronting a stale cargo stub on PATH and hiding the
+# real rustup (empty HOME/CARGO_HOME without .cargo/bin/rustup).
+GUARD_BIN="${TMPDIR_BASE}/guard-bin"
+mkdir -p "$GUARD_BIN" "${TMPDIR_BASE}/guard-home"
+cat > "${GUARD_BIN}/cargo" <<STUB
+#!/usr/bin/env bash
+if [ "\${1:-}" = "--version" ]; then
+  printf 'cargo 1.75.0 (apt stub 2023-11-01)\n'
+  exit 0
+fi
+exit 0
+STUB
+chmod +x "${GUARD_BIN}/cargo"
+
+GUARD_DIR="${TMPDIR_BASE}/guard"
+mkdir -p "$GUARD_DIR"
+SYS_BIN="$(dirname "$(command -v bash)")"
+code=0
+(
+  cd "$REPO_ROOT"
+  PATH="${GUARD_BIN}:${SYS_BIN}:/usr/bin:/bin" HOME="${TMPDIR_BASE}/guard-home" CARGO_HOME="" bash "$WRAPPER" check
+) > "${GUARD_DIR}/out.txt" 2> "${GUARD_DIR}/err.txt" || code=$?
+if [[ "$code" -eq 78 ]]; then
+  pass "refuses stale PATH cargo when rustup is absent (exit ${code})"
+else
+  fail "rustup-less fallback must refuse stale cargo with exit 78, got ${code}"
+fi
+if grep -Fq "cargo-toolchain-guard: REFUSED" "${GUARD_DIR}/err.txt"; then
+  pass "stale fallback refusal prints the guard message"
+else
+  fail "stale fallback refusal prints the guard message"
+fi
+
 TOTAL=$((PASS + FAIL))
 echo ""
 echo "=== Results: ${PASS}/${TOTAL} passed ==="

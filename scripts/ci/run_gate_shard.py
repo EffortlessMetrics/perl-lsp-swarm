@@ -4,8 +4,9 @@
 Each gate remains owned by ``cargo xtask gates --gate``. This adapter only
 coordinates independent invocations, validates their receipts against the
 canonical receipt contract, applies explicit policy-owned dependency edges,
-preserves every completed result, and returns a non-zero shard verdict after
-the full selected set has been classified.
+sweeps cache-restored foreign receipts from its receipt directory before it
+executes, preserves every completed result, and returns a non-zero shard
+verdict after the full selected set has been classified.
 """
 
 from __future__ import annotations
@@ -1480,6 +1481,23 @@ class ShardRunner:
     def _receipt_path(self, gate: str) -> Path:
         return self.receipt_dir / f"{gate}.json"
 
+    def _sweep_restored_receipts(self) -> None:
+        """Remove cache-restored entries from the shard-owned receipt dir.
+
+        The CI cache restores the whole ``target/`` tree, so a fresh workspace
+        can contain receipts written by earlier runs of unrelated subject
+        SHAs. This directory belongs to the current invocation: every
+        legitimate entry is regenerated before the summary references it, so
+        all top-level files and symlinks are removed up front and no restored
+        receipt can be uploaded as this run's evidence (#12085). Nested
+        directories are not shard output and are left untouched.
+        """
+        if not self.receipt_dir.is_dir():
+            return
+        for entry in self.receipt_dir.iterdir():
+            if entry.is_symlink() or entry.is_file():
+                entry.unlink()
+
     def _unstarted_observation(self, gate: str, *, message: str) -> GateObservation:
         return GateObservation(
             gate_name=gate,
@@ -1666,6 +1684,7 @@ class ShardRunner:
         if self.clean_restored_receipts:
             _clean_restored_receipt_state(self.receipt_dir, self.summary_path)
         self.receipt_dir.mkdir(parents=True, exist_ok=True)
+        self._sweep_restored_receipts()
         pending = set(self.gates)
         while pending:
             progressed = False

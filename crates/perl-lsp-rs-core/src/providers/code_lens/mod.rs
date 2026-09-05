@@ -324,7 +324,6 @@ impl CodeLensProvider {
     }
 
     /// Visit all children of a node generically
-    #[allow(clippy::ptr_arg)]
     fn visit_children(&self, _node: &Node, _lenses: &mut Vec<CodeLens>) {
         // Most nodes don't have generic children to visit
     }

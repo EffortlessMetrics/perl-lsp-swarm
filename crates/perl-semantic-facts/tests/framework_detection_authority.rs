@@ -1,10 +1,11 @@
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 use perl_semantic_facts::framework::{
     AdapterCancellation, AdapterDescriptor, AdapterDetectionInput, AdapterDetectionResult,
     AdapterDisposition, AdapterId, DetectionAbsenceReason, DetectionAuthorityError,
     DetectionConfigurationEvidence, DetectionConfigurationObservation, DetectionConfigurationValue,
-    DetectionEvidenceClass, DetectionOutcome, FRAMEWORK_ADAPTER_SDK_LEGACY_VERSION,
-    FRAMEWORK_ADAPTER_SDK_VERSION, ModuleActivationIdentity, ModuleObservationReceipt,
-    ModuleSelectorEvaluation, ModuleVersionEvidence,
+    DetectionEvidenceClass, DetectionOutcome, FRAMEWORK_ADAPTER_SCHEMA_VERSION,
+    FRAMEWORK_ADAPTER_SDK_LEGACY_VERSION, FRAMEWORK_ADAPTER_SDK_VERSION, ModuleActivationIdentity,
+    ModuleObservationReceipt, ModuleSelectorEvaluation, ModuleVersionEvidence,
 };
 use perl_semantic_facts::{Confidence, FileId, SourceGeneration};
 
@@ -14,7 +15,7 @@ fn descriptor(constraint: Option<&str>) -> AdapterDescriptor {
         "moo",
         "Moo",
         constraint.map(ToOwned::to_owned),
-        1,
+        FRAMEWORK_ADAPTER_SCHEMA_VERSION,
         AdapterDisposition::Production,
     )
 }
@@ -95,7 +96,7 @@ const CURRENT_ADAPTER_DETECTION_INPUT_JSON: &str = r#"
     "configuration_exclusion_key": null,
     "configuration_exclusion_value": null,
     "configuration_exclusion_rule": null,
-    "schema_version": 1,
+    "schema_version": 2,
     "disposition": "Production"
   },
   "module_observation": {

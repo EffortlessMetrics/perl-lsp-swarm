@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use perl_parser_core::token_stream::{Token, TokenKind, TokenStream};
 use perl_tdd_support::must;
 
@@ -60,15 +61,15 @@ fn stream_processes_multiple_tokens() -> Result<(), Box<dyn std::error::Error>> 
 #[test]
 fn buffered_stream_synthesizes_eof_at_last_token_end() -> Result<(), Box<dyn std::error::Error>> {
     let mut stream = TokenStream::from_vec(vec![
-        Token::new(TokenKind::My, "my", 0, 2),
-        Token::new(TokenKind::Identifier, "x", 3, 4),
+        Token::new_checked(TokenKind::My, "my", 0, 2).expect("valid token"),
+        Token::new_checked(TokenKind::Identifier, "x", 3, 4).expect("valid token"),
     ]);
 
     let _ = must(stream.next());
     let _ = must(stream.next());
     let eof = must(stream.next());
-    assert_eq!(eof.kind, TokenKind::Eof);
-    assert_eq!(eof.start, 4);
-    assert_eq!(eof.end, 4);
+    assert_eq!(eof.kind(), TokenKind::Eof);
+    assert_eq!(eof.start(), 4);
+    assert_eq!(eof.end(), 4);
     Ok(())
 }

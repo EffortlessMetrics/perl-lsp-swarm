@@ -1,3 +1,4 @@
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 use perl_pod::{extract_pod, extract_pod_from_file};
 use perl_test_must::must_some;
 use std::io::Write as _;
@@ -126,29 +127,96 @@ fn strips_code_formatting() {
 
 #[test]
 fn strips_link_simple() {
-    // L<Module::Name> now renders as a markdown link (Option B)
+    // #12824: NAME renders links as plain display text — its consumer is
+    // plain perldoc text, and markdown + percent-encoding expanded the field
+    // past its source length, violating the pod_extraction fuzz invariant.
     let doc = extract_pod("=head1 NAME\n\nL<Module::Name>\n\n=cut\n");
     let name = doc.name.as_deref().unwrap_or("");
-    assert!(name.contains("[Module::Name]"), "got: {name}");
-    assert!(name.contains("perldoc://Module::Name"), "got: {name}");
+    assert_eq!(name, "Module::Name", "got: {name}");
 }
 
 #[test]
 fn strips_link_with_display_text() {
-    // L<click here|Module::Name> displays the explicit text as a markdown link
+    // L<click here|Module::Name> keeps only the explicit display text in NAME
     let doc = extract_pod("=head1 NAME\n\nL<click here|Module::Name>\n\n=cut\n");
     let name = doc.name.as_deref().unwrap_or("");
-    assert!(name.contains("[click here]"), "got: {name}");
-    assert!(name.contains("perldoc://Module::Name"), "got: {name}");
+    assert_eq!(name, "click here", "got: {name}");
 }
 
 #[test]
 fn strips_link_with_section() {
-    // L<Module::Name/method> displays module as link, target includes section
+    // L<Module::Name/method> keeps only the module part in NAME
     let doc = extract_pod("=head1 NAME\n\nL<Module::Name/method>\n\n=cut\n");
     let name = doc.name.as_deref().unwrap_or("");
-    assert!(name.contains("[Module::Name]"), "got: {name}");
-    assert!(name.contains("perldoc://Module::Name/method"), "got: {name}");
+    assert_eq!(name, "Module::Name", "got: {name}");
+}
+
+#[test]
+fn name_link_local_section_keeps_the_section_label() {
+    // L</section> is a local-section link: display is the section label, not
+    // an empty module part (#12824 review).
+    let doc = extract_pod("=head1 NAME\n\nL</METHODS>\n\n=cut\n");
+    let name = doc.name.as_deref().unwrap_or("");
+    assert_eq!(name, "METHODS", "got: {name}");
+}
+
+#[test]
+fn name_link_url_renders_verbatim() {
+    // L<https://...> is a URL link: render the URL itself, as
+    // Pod::Simple::Text does — never split it at the scheme (#12824 review).
+    let doc = extract_pod("=head1 NAME\n\nL<https://metacpan.org/pod/File::Path>\n\n=cut\n");
+    let name = doc.name.as_deref().unwrap_or("");
+    assert_eq!(name, "https://metacpan.org/pod/File::Path", "got: {name}");
+}
+
+#[test]
+fn name_field_never_exceeds_source_after_link_display_text() {
+    // Regression for the pod_extraction fuzz panic (#12824): an unterminated
+    // L<...> swallowing adversarial bytes previously percent-encoded its
+    // "target", producing a NAME several times longer than the source.
+    let source =
+        "=head1 NAME\n\nL<b0stsor(\"\u{0}\u{FFFD} dynp and more trailing bytes here\n\n=cut\n";
+    let doc = extract_pod(source);
+    let name = doc.name.as_deref().unwrap_or("");
+    assert!(
+        name.chars().count() <= source.chars().count(),
+        "NAME ({} chars) must not exceed source ({} chars): {name:?}",
+        name.chars().count(),
+        source.chars().count()
+    );
+    assert!(!name.contains("perldoc://"), "NAME must carry no link target: {name:?}");
+    assert!(!name.contains('%'), "NAME must carry no percent-encoding: {name:?}");
+}
+
+#[test]
+fn synopsis_field_never_exceeds_source_after_link_display_text() {
+    // Regression for the pod_extraction fuzz panic (nightly run 33230657955):
+    // the SYNOPSIS arm still used markdown link rendering, so an unterminated
+    // L<...> percent-encoded its "target" and produced a synopsis several
+    // times longer than the source (#12824 family — display-text rendering).
+    let source =
+        "=head1 SYNOPSIS\n\nL<b0stsor(\"\u{0}\u{FFFD} dynp and more trailing bytes here\n\n=cut\n";
+    let doc = extract_pod(source);
+    let synopsis = doc.synopsis.as_deref().unwrap_or_default();
+    assert!(!synopsis.is_empty(), "SYNOPSIS should be present and non-empty: {:?}", doc.synopsis);
+    assert!(
+        synopsis.contains("b0stsor"),
+        "SYNOPSIS should preserve the display text: {synopsis:?}"
+    );
+    assert!(
+        synopsis.len() <= source.len(),
+        "SYNOPSIS ({} bytes) must not exceed source ({} bytes) — the fuzz target invariant: {synopsis:?}",
+        synopsis.len(),
+        source.len()
+    );
+    assert!(
+        synopsis.chars().count() <= source.chars().count(),
+        "SYNOPSIS ({} chars) must not exceed source ({} chars): {synopsis:?}",
+        synopsis.chars().count(),
+        source.chars().count()
+    );
+    assert!(!synopsis.contains("perldoc://"), "SYNOPSIS must carry no link target: {synopsis:?}");
+    assert!(!synopsis.contains('%'), "SYNOPSIS must carry no percent-encoding: {synopsis:?}");
 }
 
 #[test]
@@ -375,58 +443,61 @@ fn e_format_code_decodes_common_entities() {
 /// `L<Module::Name>` should produce a markdown link with target `perldoc://Module::Name`.
 #[test]
 fn link_simple_module_renders_markdown() {
-    let doc = extract_pod("=head1 NAME\n\nL<File::Path>\n\n=cut\n");
-    let name = doc.name.as_deref().unwrap_or("");
+    let doc = extract_pod("=head1 DESCRIPTION\n\nL<File::Path>\n\n=cut\n");
+    let description = doc.description.as_deref().unwrap_or("");
     assert!(
-        name.contains("[File::Path]"),
-        "expected markdown display '[File::Path]' but got: {name}"
+        description.contains("[File::Path]"),
+        "expected markdown display '[File::Path]' but got: {description}"
     );
     assert!(
-        name.contains("perldoc://File::Path"),
-        "expected markdown target 'perldoc://File::Path' but got: {name}"
+        description.contains("perldoc://File::Path"),
+        "expected markdown target 'perldoc://File::Path' but got: {description}"
     );
 }
 
 /// `L<text|Module::Name>` should use the display text and link to the module.
 #[test]
 fn link_with_display_text_renders_markdown() {
-    let doc = extract_pod("=head1 NAME\n\nL<detailed guide|File::Path>\n\n=cut\n");
-    let name = doc.name.as_deref().unwrap_or("");
+    let doc = extract_pod("=head1 DESCRIPTION\n\nL<detailed guide|File::Path>\n\n=cut\n");
+    let description = doc.description.as_deref().unwrap_or("");
     assert!(
-        name.contains("[detailed guide]"),
-        "expected markdown display '[detailed guide]' but got: {name}"
+        description.contains("[detailed guide]"),
+        "expected markdown display '[detailed guide]' but got: {description}"
     );
     assert!(
-        name.contains("perldoc://File::Path"),
-        "expected markdown target 'perldoc://File::Path' but got: {name}"
+        description.contains("perldoc://File::Path"),
+        "expected markdown target 'perldoc://File::Path' but got: {description}"
     );
 }
 
 /// `L<Module::Name/section>` should link to module and include section in URI.
 #[test]
 fn link_with_section_renders_markdown() {
-    let doc = extract_pod("=head1 NAME\n\nL<File::Path/DESCRIPTION>\n\n=cut\n");
-    let name = doc.name.as_deref().unwrap_or("");
+    let doc = extract_pod("=head1 DESCRIPTION\n\nL<File::Path/DESCRIPTION>\n\n=cut\n");
+    let description = doc.description.as_deref().unwrap_or("");
     assert!(
-        name.contains("[File::Path]"),
-        "expected markdown display '[File::Path]' but got: {name}"
+        description.contains("[File::Path]"),
+        "expected markdown display '[File::Path]' but got: {description}"
     );
     assert!(
-        name.contains("perldoc://File::Path/DESCRIPTION"),
-        "expected markdown target 'perldoc://File::Path/DESCRIPTION' but got: {name}"
+        description.contains("perldoc://File::Path/DESCRIPTION"),
+        "expected markdown target 'perldoc://File::Path/DESCRIPTION' but got: {description}"
     );
 }
 
 /// `B<L<Module::Name>>` — nested: bold outer, link inner. Both should be preserved.
 #[test]
 fn nested_bold_around_link_preserves_markdown() {
-    let doc = extract_pod("=head1 NAME\n\nB<L<File::Path>>\n\n=cut\n");
-    let name = doc.name.as_deref().unwrap_or("");
+    let doc = extract_pod("=head1 DESCRIPTION\n\nB<L<File::Path>>\n\n=cut\n");
+    let description = doc.description.as_deref().unwrap_or("");
     assert!(
-        name.contains("[File::Path]"),
-        "expected markdown display '[File::Path]' in nested B<L<>> but got: {name}"
+        description.contains("[File::Path]"),
+        "expected markdown display '[File::Path]' in nested B<L<>> but got: {description}"
     );
-    assert!(name.contains("perldoc://"), "expected 'perldoc://' in nested B<L<>> but got: {name}");
+    assert!(
+        description.contains("perldoc://"),
+        "expected 'perldoc://' in nested B<L<>> but got: {description}"
+    );
 }
 
 /// Inline link inside a sentence: "See L<File::Path> for details."
@@ -453,12 +524,12 @@ fn inline_link_in_description_renders_markdown() {
 /// `L<text|Module::Name/section>` — display text with section target.
 #[test]
 fn link_display_text_with_section_target_renders_markdown() {
-    let doc = extract_pod("=head1 NAME\n\nL<the docs|File::Path/DESCRIPTION>\n\n=cut\n");
-    let name = doc.name.as_deref().unwrap_or("");
-    assert!(name.contains("[the docs]"), "expected '[the docs]' but got: {name}");
+    let doc = extract_pod("=head1 DESCRIPTION\n\nL<the docs|File::Path/DESCRIPTION>\n\n=cut\n");
+    let description = doc.description.as_deref().unwrap_or("");
+    assert!(description.contains("[the docs]"), "expected '[the docs]' but got: {description}");
     assert!(
-        name.contains("perldoc://File::Path/DESCRIPTION"),
-        "expected 'perldoc://File::Path/DESCRIPTION' but got: {name}"
+        description.contains("perldoc://File::Path/DESCRIPTION"),
+        "expected 'perldoc://File::Path/DESCRIPTION' but got: {description}"
     );
 }
 
@@ -467,64 +538,69 @@ fn link_display_text_with_section_target_renders_markdown() {
 /// This is common in CPAN POD: `L<perlfunc/"use Module LIST">`.
 #[test]
 fn link_section_with_spaces_encodes_url() {
-    let doc = extract_pod("=head1 NAME\n\nL<File::Find/The wanted function>\n\n=cut\n");
-    let name = doc.name.as_deref().unwrap_or("");
-    assert!(name.contains("[File::Find]"), "expected '[File::Find]' but got: {name}");
+    let doc = extract_pod("=head1 DESCRIPTION\n\nL<File::Find/The wanted function>\n\n=cut\n");
+    let description = doc.description.as_deref().unwrap_or("");
+    assert!(description.contains("[File::Find]"), "expected '[File::Find]' but got: {description}");
     // Spaces must be encoded — a raw space makes the markdown URL malformed
     assert!(
-        name.contains("perldoc://File::Find/The%20wanted%20function"),
-        "expected percent-encoded URL but got: {name}"
+        description.contains("perldoc://File::Find/The%20wanted%20function"),
+        "expected percent-encoded URL but got: {description}"
     );
-    assert!(!name.contains("The wanted function"), "raw space in URL — should be encoded: {name}");
+    assert!(
+        !description.contains("The wanted function"),
+        "raw space in URL — should be encoded: {description}"
+    );
 }
 
 /// `L<click here|Module/Section With Spaces>` — pipe form with spaces in section.
 #[test]
 fn link_pipe_with_spaced_section_encodes_url() {
-    let doc = extract_pod("=head1 NAME\n\nL<click here|File::Find/The wanted function>\n\n=cut\n");
-    let name = doc.name.as_deref().unwrap_or("");
-    assert!(name.contains("[click here]"), "expected '[click here]' but got: {name}");
+    let doc =
+        extract_pod("=head1 DESCRIPTION\n\nL<click here|File::Find/The wanted function>\n\n=cut\n");
+    let description = doc.description.as_deref().unwrap_or("");
+    assert!(description.contains("[click here]"), "expected '[click here]' but got: {description}");
     assert!(
-        name.contains("perldoc://File::Find/The%20wanted%20function"),
-        "expected percent-encoded URL but got: {name}"
+        description.contains("perldoc://File::Find/The%20wanted%20function"),
+        "expected percent-encoded URL but got: {description}"
     );
 }
 
 #[test]
 fn link_target_reserved_chars_are_percent_encoded() {
-    let doc =
-        extract_pod("=head1 NAME\n\nL<click here|File::Path) [evil](http://x.test)>\n\n=cut\n");
-    let name = doc.name.as_deref().unwrap_or("");
-    assert!(name.contains("[click here]"), "expected '[click here]' but got: {name}");
+    let doc = extract_pod(
+        "=head1 DESCRIPTION\n\nL<click here|File::Path) [evil](http://x.test)>\n\n=cut\n",
+    );
+    let description = doc.description.as_deref().unwrap_or("");
+    assert!(description.contains("[click here]"), "expected '[click here]' but got: {description}");
     assert!(
-        name.contains("perldoc://File::Path%29%20%5Bevil%5D%28http://x.test%29"),
-        "expected markdown-breaking characters in target to be percent-encoded; got: {name}"
+        description.contains("perldoc://File::Path%29%20%5Bevil%5D%28http://x.test%29"),
+        "expected markdown-breaking characters in target to be percent-encoded; got: {description}"
     );
     assert!(
-        !name.contains("[evil](http://x.test)"),
-        "injected markdown link should not appear as standalone markdown: {name}"
+        !description.contains("[evil](http://x.test)"),
+        "injected markdown link should not appear as standalone markdown: {description}"
     );
 }
 
 #[test]
 fn link_display_text_markdown_delimiters_are_escaped() {
-    let doc = extract_pod("=head1 NAME\n\nL<click ] here|File::Path>\n\n=cut\n");
-    let name = doc.name.as_deref().unwrap_or("");
+    let doc = extract_pod("=head1 DESCRIPTION\n\nL<click ] here|File::Path>\n\n=cut\n");
+    let description = doc.description.as_deref().unwrap_or("");
     assert!(
-        name.contains("[click \\] here](perldoc://File::Path)"),
-        "expected closing bracket in display text to be escaped; got: {name}"
+        description.contains("[click \\] here](perldoc://File::Path)"),
+        "expected closing bracket in display text to be escaped; got: {description}"
     );
 }
 
 #[test]
 fn link_display_text_open_bracket_is_escaped() {
-    let doc = extract_pod("=head1 NAME\n\nL<[optional]|Module::Name>\n\n=cut\n");
-    let name = doc.name.as_deref().unwrap_or("");
+    let doc = extract_pod("=head1 DESCRIPTION\n\nL<[optional]|Module::Name>\n\n=cut\n");
+    let description = doc.description.as_deref().unwrap_or("");
     // Both '[' and ']' in display text must be escaped so the markdown renderer
     // does not mistake them for a nested link boundary.
     assert!(
-        name.contains("[\\[optional\\]](perldoc://Module::Name)"),
-        "expected open and close brackets in display to be escaped; got: {name}"
+        description.contains("[\\[optional\\]](perldoc://Module::Name)"),
+        "expected open and close brackets in display to be escaped; got: {description}"
     );
 }
 
@@ -533,12 +609,12 @@ fn link_target_with_unicode_module_name_is_percent_encoded() {
     // Non-ASCII bytes in a link target must be percent-encoded byte-by-byte (UTF-8).
     // This ensures the resulting URL is well-formed even for exotic CPAN module names.
     // 'Ü' is U+00DC, encoded in UTF-8 as the two bytes 0xC3 0x9C.
-    let doc = extract_pod("=head1 NAME\n\nL<click here|\u{dc}ber::Module>\n\n=cut\n");
-    let name = doc.name.as_deref().unwrap_or("");
+    let doc = extract_pod("=head1 DESCRIPTION\n\nL<click here|\u{dc}ber::Module>\n\n=cut\n");
+    let description = doc.description.as_deref().unwrap_or("");
     // Both UTF-8 bytes must appear as %C3%9C in the URL.
     assert!(
-        name.contains("perldoc://%C3%9Cber::Module"),
-        "expected non-ASCII bytes in target to be percent-encoded; got: {name}"
+        description.contains("perldoc://%C3%9Cber::Module"),
+        "expected non-ASCII bytes in target to be percent-encoded; got: {description}"
     );
 }
 
@@ -891,7 +967,7 @@ Directive::Clean - real docs
 }
 
 #[test]
-fn list_items_without_active_section_do_not_create_documentation() {
+fn list_items_without_active_section_do_not_create_method_documentation() {
     let source = r#"
 =over 4
 
@@ -906,7 +982,12 @@ This item is not under a named POD section.
 
     let doc = extract_pod(source);
 
-    assert!(doc.is_empty());
+    // Since #2488 the leading list is retained under the synthetic synopsis
+    // instead of being discarded when no =head section exists.
+    assert!(doc.synopsis.is_some(), "leading list must be retained (#2488)");
+    assert!(doc.synopsis.as_ref().is_some_and(|s| s.contains("ghost")));
+    // Stray items still never become method documentation.
+    assert!(doc.methods.is_empty());
 }
 
 #[test]
@@ -932,23 +1013,23 @@ This method has text.
 
 #[test]
 fn link_display_text_backslash_is_escaped() {
-    let doc = extract_pod("=head1 NAME\n\nL<C:\\Temp|File::Spec>\n\n=cut\n");
-    let name = doc.name.as_deref().unwrap_or("");
+    let doc = extract_pod("=head1 DESCRIPTION\n\nL<C:\\Temp|File::Spec>\n\n=cut\n");
+    let description = doc.description.as_deref().unwrap_or("");
 
     assert!(
-        name.contains("[C:\\\\Temp](perldoc://File::Spec)"),
-        "expected backslash in display text to be escaped; got: {name}"
+        description.contains("[C:\\\\Temp](perldoc://File::Spec)"),
+        "expected backslash in display text to be escaped; got: {description}"
     );
 }
 
 #[test]
 fn link_display_text_strips_nested_formatting_before_escaping() {
-    let doc = extract_pod("=head1 NAME\n\nL<B<[docs]>|File::Path>\n\n=cut\n");
-    let name = doc.name.as_deref().unwrap_or("");
+    let doc = extract_pod("=head1 DESCRIPTION\n\nL<B<[docs]>|File::Path>\n\n=cut\n");
+    let description = doc.description.as_deref().unwrap_or("");
 
     assert!(
-        name.contains("[\\[docs\\]](perldoc://File::Path)"),
-        "expected nested formatting to be stripped and markdown brackets escaped; got: {name}"
+        description.contains("[\\[docs\\]](perldoc://File::Path)"),
+        "expected nested formatting to be stripped and markdown brackets escaped; got: {description}"
     );
 }
 
@@ -1081,4 +1162,43 @@ Related modules go here.
     assert!(doc.return_values.is_some());
     assert!(doc.examples.is_some());
     assert!(doc.see_also.is_some());
+}
+
+#[test]
+fn list_under_unsupported_heading_never_clobbers_real_synopsis() {
+    // A real SYNOPSIS section followed by a list under an unsupported heading
+    // (=head1 AUTHOR maps to no Section, so current_section is None there)
+    // must not synthesize a new Synopsis or overwrite the real one.
+    let source = r#"
+=pod
+
+=head1 SYNOPSIS
+
+    use Foo;
+
+=head1 AUTHOR
+
+=over 4
+
+=item *
+
+An author note in a list.
+
+=back
+
+=cut
+"#;
+
+    let doc = extract_pod(source);
+
+    assert!(
+        doc.synopsis.as_ref().is_some_and(|s| s.contains("use Foo;")),
+        "real synopsis must survive: {:?}",
+        doc.synopsis
+    );
+    assert!(
+        !doc.synopsis.as_ref().is_some_and(|s| s.contains("An author note")),
+        "unsupported-heading list must not leak into synopsis: {:?}",
+        doc.synopsis
+    );
 }

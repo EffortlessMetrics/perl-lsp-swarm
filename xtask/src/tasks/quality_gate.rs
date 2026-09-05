@@ -231,6 +231,7 @@ fn evaluate_final(head: &str, args: &QualityGateArgs) -> Result<GateEvaluation> 
             "base": ripr_pr.base,
             "base_sha": ripr_pr.base_sha,
             "new_unresolved": ripr_pr.new_unresolved,
+            "non_production_excluded": ripr_pr.non_production_excluded,
         },
         "review_guidance": {
             "status": review.status,
@@ -426,6 +427,7 @@ fn evaluate_new_ripr(head: &str, args: &QualityGateArgs) -> Result<GateEvaluatio
             "base": ripr_pr.base,
             "base_sha": ripr_pr.base_sha,
             "new_unresolved": ripr_pr.new_unresolved,
+            "non_production_excluded": ripr_pr.non_production_excluded,
         },
         "review_guidance": {
             "status": review.status,
@@ -484,6 +486,10 @@ struct RiprPrReceipt {
     base: Option<String>,
     base_sha: Option<String>,
     new_unresolved: Option<u64>,
+    /// Seams the producer dropped from the basis as non-production (#11690):
+    /// `archive/**` sources and Cargo integration-test files. Surfaced so a
+    /// deflated `new_unresolved` is explainable from the gate receipt alone.
+    non_production_excluded: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -923,6 +929,15 @@ fn read_ripr_plus_receipt(path: &Path, expected_head: &str) -> RiprPlusReceipt {
 /// cross-version fix requires the producer to keep weak seams in their own
 /// dedicated bucket; until then this recalibration excludes the 0.5.x-style
 /// `weakly_exposed` count only.
+///
+/// The basis itself is production-scoped upstream of this function (#11690):
+/// the producer (`ripr_evidence::ripr_pr_summary_counts`) drops seams on
+/// non-production paths — archived sources under `archive/**` and files in
+/// Cargo integration-test directories (`tests/` components) — from the same
+/// buckets before this count reads them, and reports the total as
+/// `summary.non_production_excluded`. A suppressed finding does not count, and
+/// a non-production file does not inflate the basis; suppression policy keeps
+/// precedence when both apply.
 fn genuine_new_ripr_gap_count(payload: &Value) -> Option<u64> {
     let severe_gaps = payload.pointer("/summary/severe_gaps").and_then(Value::as_u64);
     let reachable = payload.pointer("/summary/reachable_unrevealed").and_then(Value::as_u64);
@@ -951,6 +966,7 @@ fn read_ripr_pr_receipt(path: &Path, expected_head: &str) -> RiprPrReceipt {
             base: None,
             base_sha: None,
             new_unresolved: None,
+            non_production_excluded: None,
         },
         JsonReceipt::Invalid => RiprPrReceipt {
             status: "invalid".to_string(),
@@ -958,6 +974,7 @@ fn read_ripr_pr_receipt(path: &Path, expected_head: &str) -> RiprPrReceipt {
             base: None,
             base_sha: None,
             new_unresolved: None,
+            non_production_excluded: None,
         },
         JsonReceipt::Present(payload) => {
             let receipt_head_sha =
@@ -973,6 +990,9 @@ fn read_ripr_pr_receipt(path: &Path, expected_head: &str) -> RiprPrReceipt {
                 base: payload.get("base").and_then(Value::as_str).map(ToOwned::to_owned),
                 base_sha: payload.get("base_sha").and_then(Value::as_str).map(ToOwned::to_owned),
                 new_unresolved: genuine_new_ripr_gap_count(&payload),
+                non_production_excluded: payload
+                    .pointer("/summary/non_production_excluded")
+                    .and_then(Value::as_u64),
             }
         }
     }
@@ -1727,6 +1747,13 @@ fn render_markdown(receipt: &Value, args: &QualityGateArgs) -> Result<String> {
             .unwrap_or_else(|| "unknown".to_string());
         markdown.push_str(&format!("- diff RIPR receipt: `{status}`\n"));
         markdown.push_str(&format!("- new RIPR gaps: `{new_unresolved}`\n"));
+        if let Some(excluded) = ripr_pr.get("non_production_excluded").and_then(Value::as_u64)
+            && excluded > 0
+        {
+            markdown.push_str(&format!(
+                "- non-production seams excluded from the basis (#11690): `{excluded}`\n"
+            ));
+        }
     }
     if let Some(ripr) = receipt.get("ripr_plus") {
         let status = ripr.get("status").and_then(Value::as_str).unwrap_or("unknown");
@@ -2553,6 +2580,62 @@ mod tests {
             actions.iter().all(|action| action.get("kind").and_then(Value::as_str)
                 != Some("ripr_review_receipt_not_current")),
             "named fallback guidance must not also block on the receipt: {actions:?}"
+        );
+        Ok(())
+    }
+
+    /// #11690: the blocking-count basis is production-scoped by the producer.
+    /// A receipt whose only findings were non-production seams — the #6842
+    /// shape, 162 proptest `no_static_path` entries inside the PR's own
+    /// `tests/` file — deflates to zero, the gate passes, and the receipt
+    /// surfaces how many seams were excluded so the zero is explainable.
+    #[test]
+    fn non_production_only_new_gaps_do_not_block_and_are_reported() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "review-head";
+        fs::write(
+            dir.path().join("ripr-plus.json"),
+            json!({ "head": head, "unresolved": 0 }).to_string(),
+        )?;
+        fs::write(
+            dir.path().join("repo-exposure.json"),
+            json!({
+                "head_sha": head,
+                "base": "origin/main",
+                "base_sha": "base-sha",
+                "summary": {
+                    "severe_gaps": 0,
+                    "reachable_unrevealed": 0,
+                    "no_static_path": 0,
+                    "non_production_excluded": 162
+                }
+            })
+            .to_string(),
+        )?;
+        fs::write(
+            dir.path().join("comments.json"),
+            json!({
+                "head_sha": head,
+                "status": "present",
+                "comments": [],
+                "summary_only": [],
+                "suppressed": [],
+                "analysis_scope": {
+                    "production_files_considered": 6,
+                    "changed_production_files": ["crates/perl-semantic-facts/src/lib.rs"]
+                }
+            })
+            .to_string(),
+        )?;
+        let args = new_ripr_args(dir.path())?;
+
+        let evaluation = evaluate_new_ripr(head, &args)?;
+
+        assert!(!evaluation.failed, "{:?}", evaluation.receipt["next_actions"]);
+        assert_eq!(evaluation.receipt.pointer("/ripr_pr/new_unresolved"), Some(&json!(0)));
+        assert_eq!(
+            evaluation.receipt.pointer("/ripr_pr/non_production_excluded"),
+            Some(&json!(162))
         );
         Ok(())
     }

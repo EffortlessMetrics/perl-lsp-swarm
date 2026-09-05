@@ -1,5 +1,5 @@
-use perl_module::import::parse_module_import_head;
-use perl_module::import_match::line_references_module_import;
+use perl_module::line_references_module_import;
+use perl_module::parse_module_import_head;
 
 fn next_u64(state: &mut u64) -> u64 {
     *state ^= *state >> 12;

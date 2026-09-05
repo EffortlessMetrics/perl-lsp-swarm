@@ -50,6 +50,31 @@ fn test_corpus_section_count() -> Result<()> {
 }
 
 #[test]
+fn test_corpus_section_count_includes_extensionless_documents() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let corpus = root.path().join("tree-sitter-perl/test/corpus");
+    std::fs::create_dir_all(&corpus)?;
+    // Tree-sitter corpus convention: every document in the directory is a
+    // corpus file regardless of filename; sections are delimited by `=` marker
+    // lines. The governed corpus mixes `.txt` and extensionless documents.
+    let sectioned_document = "================================================================================\n\
+         DOCUMENTED CASE\n\
+         ================================================================================\n\
+         code\n\
+         --------------------------------------------------------------------------------\n\
+         (source_file)\n";
+    std::fs::write(corpus.join("documented.txt"), sectioned_document)?;
+    std::fs::write(corpus.join("extensionless"), sectioned_document)?;
+
+    let sections = count_corpus_sections(root.path());
+    assert_eq!(
+        sections, 4,
+        "extensionless corpus documents must count toward the section denominator"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_parser_status_marker_contract() -> Result<()> {
     let root = crate::utils::project_root()?;
     let target_file = "docs/project/status/parser.md";
@@ -329,8 +354,14 @@ fn test_parser_accuracy_artifact_renders_denominator_and_metric_rows() -> Result
         "measured accuracy scorer rows should render their values"
     );
     assert!(
-        result.contains("whitespace_invariance_rate=0.3 (trailing whitespace; n=44)"),
-        "whitespace invariance summary must disclose its sampled trailing-whitespace basis"
+        result.contains(
+            "whitespace_invariance_rate: investigation_only (legacy_oracle_untrusted; trailing whitespace; observed=0.3; n=44)"
+        ),
+        "legacy whitespace observations must render as untrusted investigation evidence"
+    );
+    assert!(
+        !result.contains("whitespace_invariance_rate=0.3"),
+        "legacy whitespace observations must not render as ordinary measured accuracy"
     );
     Ok(())
 }

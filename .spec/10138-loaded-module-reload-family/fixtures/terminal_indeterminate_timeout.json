@@ -1,0 +1,20 @@
+{
+  "schema": "perl_dap.loaded_module_reload_family.vector.v1",
+  "name": "terminal_indeterminate_timeout",
+  "description": "A post-boundary acknowledgement timeout is indeterminate and possibly applied: never success, never clean, generation advanced, old exact state invalid.",
+  "outcome": { "kind": "indeterminate_possibly_applied", "phase": "runtime_acknowledgement_read_back", "cause": "timeout_after_mutation_began" },
+  "generation_before": 6,
+  "expect": {
+    "kind": "indeterminate_possibly_applied",
+    "phase": "runtime_acknowledgement_read_back",
+    "cause": "timeout_after_mutation_began",
+    "success": false,
+    "possibly_applied": true,
+    "generation": { "previous": 6, "current": 7, "advanced": true },
+    "reconciliation": {
+      "loaded_source_refresh": "deferred",
+      "inspection_invalidation": "deferred",
+      "breakpoint_reconciliation": "deferred"
+    }
+  }
+}

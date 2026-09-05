@@ -14,7 +14,7 @@ fn fresh_output(source: &str) -> ParseOutput {
 fn assert_output_equivalent(actual: &ParseOutput, expected: &ParseOutput) {
     assert_eq!(actual.ast, expected.ast);
     assert_eq!(actual.diagnostics, expected.diagnostics);
-    assert_eq!(actual.terminated_early, expected.terminated_early);
+    assert_eq!(actual.terminated_early(), expected.terminated_early());
     assert_eq!(actual.recovered_count, expected.recovered_count);
     assert_eq!(actual.budget_usage.errors_emitted, expected.budget_usage.errors_emitted);
     assert_eq!(actual.budget_usage.current_depth, expected.budget_usage.current_depth);

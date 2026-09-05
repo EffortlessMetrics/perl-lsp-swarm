@@ -146,9 +146,11 @@ do
 
   -- typed_object_identity_preserved: tagged object + tagged object stays a
   -- tagged JSON object (later side's identity wins), matching how copied
-  -- values preserve their container tags.
+  -- values preserve their container tags. Content is compared structurally:
+  -- the codec encodes objects in unsorted pairs() order (hash-seed dependent
+  -- across processes) and JSON key order carries no contract meaning.
   r = safe_merge(json.object({a = 1}), json.object({b = 2}))
-  ok(r ~= nil and json.is_object(r) and json.encode(r) == '{"a":1,"b":2}',
+  ok(r ~= nil and json.is_object(r) and deeply_equal(r, {a = 1, b = 2}),
     "merged tagged objects keep their explicit JSON object identity")
   r = safe_merge({a = 1}, json.object({b = 2}))
   ok(r ~= nil and json.is_object(r),

@@ -283,6 +283,7 @@ fn recovery_unclosed_hash_subscript_then_followup_statement() {
 #[test]
 fn recovery_broken_regex_then_followup_statement() {
     // Broken regex delimiters should not prevent parsing later statements.
+    // Lexer recovery is line-bounded (#12504 / #5090), matching unterminated strings.
     assert_snapshot!(parse_sexp("if ($text =~ /abc) { print 1; }\nmy $ok = 1;"));
 }
 

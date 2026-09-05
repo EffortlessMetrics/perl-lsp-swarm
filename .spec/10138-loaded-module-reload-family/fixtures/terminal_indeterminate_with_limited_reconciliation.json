@@ -1,0 +1,20 @@
+{
+  "schema": "perl_dap.loaded_module_reload_family.vector.v1",
+  "name": "terminal_indeterminate_with_limited_reconciliation",
+  "description": "Possibly-applied terminal state with reconciliation dispositions carried separately; the wire never flattens the outcome to an ordinary failure nor drops the reconciliation surface.",
+  "outcome": { "kind": "indeterminate_possibly_applied", "phase": "post_reload_reconciliation", "cause": "read_back_inconclusive" },
+  "generation_before": 9,
+  "expect": {
+    "kind": "indeterminate_possibly_applied",
+    "phase": "post_reload_reconciliation",
+    "cause": "read_back_inconclusive",
+    "success": false,
+    "possibly_applied": true,
+    "generation": { "previous": 9, "current": 10, "advanced": true },
+    "reconciliation": {
+      "loaded_source_refresh": "deferred",
+      "inspection_invalidation": "deferred",
+      "breakpoint_reconciliation": "deferred"
+    }
+  }
+}

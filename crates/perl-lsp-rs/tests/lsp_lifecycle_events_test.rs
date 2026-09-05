@@ -288,10 +288,14 @@ fn test_save_events_sequence() {
         })),
     };
     let edits_response = server.handle_request(will_save_wait_until);
-    let edits_response = edits_response.expect("willSaveWaitUntil must return a response envelope");
-    let error = edits_response.error.expect("withdrawn willSaveWaitUntil must return an error");
-    assert_eq!(error.code, -32601);
-    assert!(edits_response.result.is_none(), "withdrawn willSaveWaitUntil must not return edits");
+    let error = edits_response.as_ref().and_then(|response| response.error.as_ref());
+    assert!(edits_response.is_some(), "willSaveWaitUntil must return a response envelope");
+    assert!(error.is_some(), "withdrawn willSaveWaitUntil must return an error");
+    assert_eq!(error.map(|err| err.code), Some(-32601));
+    assert!(
+        edits_response.as_ref().is_some_and(|response| response.result.is_none()),
+        "withdrawn willSaveWaitUntil must not return edits"
+    );
 
     // 3. didSave notification
     let did_save = JsonRpcRequest {

@@ -240,7 +240,7 @@ fn test_grep_expr_with_trailing_comma() {
 }
 
 #[test]
-fn test_core_prefix_preserved_in_function_call_name() {
+fn test_core_prefix_preserved_in_function_call_name() -> Result<(), Box<dyn std::error::Error>> {
     // Verify that the CORE:: qualifier is preserved in the FunctionCall node
     // name, not silently dropped (#2024). Downstream semantic analysis (hover,
     // goto-definition, override detection) needs to distinguish CORE::open from
@@ -263,11 +263,12 @@ fn test_core_prefix_preserved_in_function_call_name() {
         }
     }
 
-    let name = find_function_call_name(&ast).expect("should find a FunctionCall node in the AST");
+    let name = find_function_call_name(&ast).ok_or("should find a FunctionCall node in the AST")?;
     assert_eq!(
         name, "CORE::open",
         "FunctionCall name should preserve the CORE:: prefix, got: '{name}'"
     );
+    Ok(())
 }
 
 #[test]

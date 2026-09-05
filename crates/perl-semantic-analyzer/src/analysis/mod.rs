@@ -4,8 +4,19 @@
 pub mod call_result_materializer;
 /// Bounded syntax-level callable exit summaries.
 pub mod callable_exit;
+/// Callable-local semantic summary assembly (#12674, I02): joins existing
+/// canonical HIR/PIR facts by identity into validated per-callable packets.
+pub mod callable_semantic_summary;
 /// Class model for Moose/Moo/Mouse intelligence.
 pub mod class_model;
+/// Registry-backed Dancer2 activation-site extraction (#8914).
+pub mod dancer2_activation;
+pub mod dancer2_handler_targets;
+pub mod dancer2_hooks;
+/// Dancer2 route-declaration extraction (#8918).
+pub mod dancer2_routes;
+/// Static DBIx::Class result-source extraction (#9736).
+pub mod dbix_class_result;
 /// Go-to-declaration support and parent map construction.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod declaration;
@@ -21,6 +32,10 @@ pub mod import_extractor;
 /// Lightweight workspace symbol index.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod index;
+/// Registry-backed Mojo::Base activation-site extraction (#9681).
+pub mod mojo_base_activation;
+/// Registry-backed Mojolicious::Lite activation-site extraction (#9688).
+pub mod mojolicious_activation;
 /// Package graph edge extraction from inheritance and role-composition patterns.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod package_graph_extractor;

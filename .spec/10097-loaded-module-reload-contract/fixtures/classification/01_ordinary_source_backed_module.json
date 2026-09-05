@@ -1,0 +1,17 @@
+{
+  "name": "01_ordinary_source_backed_module.json",
+  "fixture_class": "ordinary source-backed .pm module (#10097 class 1); no active frame",
+  "observation": {
+  "stopped_and_command_ready": true,
+  "runtime_supported": true,
+  "loaded_in_runtime": true,
+  "within_launch_authority": true,
+  "runtime_mapping_unambiguous": true,
+  "identity_binding_complete": true,
+  "identity_current": true,
+  "client_source_matches_saved": true,
+  "module_classification": "source_backed_perl_module",
+  "active_frame_in_target": false
+},
+  "expected_disposition": "eligible_source_backed_perl_module"
+}

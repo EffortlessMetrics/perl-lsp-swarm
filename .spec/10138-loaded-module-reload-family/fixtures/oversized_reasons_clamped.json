@@ -1,0 +1,52 @@
+{
+  "schema": "perl_dap.loaded_module_reload_family.vector.v1",
+  "name": "oversized_reasons_clamped",
+  "description": "Reason lists beyond the registry bound are clamped before publication and the reasons_truncated marker is carried; the terminal outcome itself is never dropped or softened.",
+  "outcome": {
+    "kind": "indeterminate_possibly_applied",
+    "phase": "commit_generation",
+    "cause": "transport_loss_after_mutation_began"
+  },
+  "generation_before": 4,
+  "oversized_reasons_input": [
+    "reason_00",
+    "reason_01",
+    "reason_02",
+    "reason_03",
+    "reason_04",
+    "reason_05",
+    "reason_06",
+    "reason_07",
+    "reason_08",
+    "reason_09",
+    "reason_10",
+    "reason_11",
+    "reason_12",
+    "reason_13",
+    "reason_14",
+    "reason_15",
+    "reason_16",
+    "reason_17",
+    "reason_18",
+    "reason_19"
+  ],
+  "expect": {
+    "kind": "indeterminate_possibly_applied",
+    "phase": "commit_generation",
+    "cause": "transport_loss_after_mutation_began",
+    "success": false,
+    "possibly_applied": true,
+    "generation": {
+      "previous": 4,
+      "current": 5,
+      "advanced": true
+    },
+    "reasons_count": 16,
+    "reasons_truncated_marker": "reasons_truncated",
+    "reconciliation": {
+      "loaded_source_refresh": "deferred",
+      "inspection_invalidation": "deferred",
+      "breakpoint_reconciliation": "deferred"
+    }
+  }
+}

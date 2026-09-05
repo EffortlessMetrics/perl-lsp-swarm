@@ -9,7 +9,29 @@
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use crate::parser::Parser;
+    use perl_ast::ast::{Node, NodeKind};
     use perl_tdd_support::must;
+
+    fn function_call_shape(node: &mut Node, target: &str) -> Option<(usize, bool)> {
+        let shape = match &node.kind {
+            NodeKind::FunctionCall { name, args } if name == target => Some((
+                args.len(),
+                matches!(args.first().map(|arg| &arg.kind), Some(NodeKind::Block { .. })),
+            )),
+            _ => None,
+        };
+        if shape.is_some() {
+            return shape;
+        }
+
+        let mut nested = None;
+        node.for_each_child_mut(|child| {
+            if nested.is_none() {
+                nested = function_call_shape(child, target);
+            }
+        });
+        nested
+    }
 
     #[test]
     fn filter_simple_uppercase_block_call() {
@@ -41,15 +63,14 @@ mod tests {
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
-        assert!(sexp.contains("(call grep"), "should be a grep call: {}", sexp);
+        assert!(sexp.contains("(call (name grep)"), "should be a grep call: {}", sexp);
         assert!(sexp.contains("(block"), "should contain a block: {}", sexp);
         assert!(
-            sexp.contains("(variable @ array)"),
+            sexp.contains("(variable (sigil @) (name array))"),
             "trailing list should be inside call: {}",
             sexp
         );
     }
-
     #[test]
     fn grep_block_method_call_in_block() {
         let code = "grep { $_->is_valid } @items;";
@@ -57,7 +78,7 @@ mod tests {
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
         assert!(
-            sexp.contains("(variable @ items)"),
+            sexp.contains("(variable (sigil @) (name items))"),
             "trailing list should be inside call: {}",
             sexp
         );
@@ -70,7 +91,7 @@ mod tests {
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
         assert!(
-            sexp.contains("(variable @ strings)"),
+            sexp.contains("(variable (sigil @) (name strings))"),
             "trailing list should be inside call: {}",
             sexp
         );
@@ -85,10 +106,42 @@ mod tests {
         assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
         // The trailing list must be inside the grep call, not a separate statement
         assert!(
-            sexp.contains("(call grep") && sexp.contains("(variable @ items)"),
+            sexp.contains("(call (name grep)")
+                && sexp.contains("(variable (sigil @) (name items))"),
             "trailing list should be inside the grep call: {}",
             sexp
         );
+    }
+
+    #[test]
+    fn user_defined_ampersand_prototype_uses_block_call_shape() {
+        let code = r#"
+            sub my_map (&@) { }
+            my @result = my_map { $_ * 2 } 1, 2, 3;
+        "#;
+        let mut parser = Parser::new(code);
+        let mut ast = must(parser.parse());
+        assert!(
+            parser.errors().is_empty(),
+            "user-defined block-taking call should parse without errors: {:?}",
+            parser.errors()
+        );
+
+        let (argument_count, starts_with_block) =
+            function_call_shape(&mut ast, "my_map").expect("my_map call should be present");
+        assert!(starts_with_block, "block should be the first call argument");
+        assert_eq!(argument_count, 4, "block and three list arguments should be retained");
+    }
+
+    #[test]
+    fn qualified_user_defined_block_call_uses_call_shape() {
+        let code = "sub My::List::map (&@) { } My::List::map { $_ * 2 } @items;";
+        let mut parser = Parser::new(code);
+        let mut ast = must(parser.parse());
+        let (argument_count, starts_with_block) = function_call_shape(&mut ast, "My::List::map")
+            .expect("qualified map call should be present");
+        assert!(starts_with_block, "qualified call should start with a block argument");
+        assert_eq!(argument_count, 2, "qualified call should retain its block and list arguments");
     }
 
     // ---- map ----
@@ -99,7 +152,7 @@ mod tests {
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
-        assert!(sexp.contains("(call map"), "should be a map call: {}", sexp);
+        assert!(sexp.contains("(call (name map)"), "should be a map call: {}", sexp);
         assert!(sexp.contains(".."), "trailing range should be inside call: {}", sexp);
     }
 
@@ -110,7 +163,7 @@ mod tests {
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
         assert!(
-            sexp.contains("(variable @ pairs)"),
+            sexp.contains("(variable (sigil @) (name pairs))"),
             "trailing list should be inside call: {}",
             sexp
         );
@@ -124,7 +177,7 @@ mod tests {
         let sexp = ast.to_sexp();
         assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
         assert!(
-            sexp.contains("(call map") && sexp.contains("(variable @ pairs)"),
+            sexp.contains("(call (name map)") && sexp.contains("(variable (sigil @) (name pairs))"),
             "trailing list should be inside the map call: {}",
             sexp
         );
@@ -138,9 +191,9 @@ mod tests {
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
-        assert!(sexp.contains("(call sort"), "should be a sort call: {}", sexp);
+        assert!(sexp.contains("(call (name sort)"), "should be a sort call: {}", sexp);
         assert!(
-            sexp.contains("(variable @ numbers)"),
+            sexp.contains("(variable (sigil @) (name numbers))"),
             "trailing list should be inside call: {}",
             sexp
         );
@@ -153,7 +206,7 @@ mod tests {
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
         assert!(
-            sexp.contains("(variable @ records)"),
+            sexp.contains("(variable (sigil @) (name records))"),
             "trailing list should be inside call: {}",
             sexp
         );
@@ -165,9 +218,9 @@ mod tests {
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
-        assert!(sexp.contains("(call sort"), "should be a sort call: {}", sexp);
+        assert!(sexp.contains("(call (name sort)"), "should be a sort call: {}", sexp);
         // keys %hash should be inside the sort call
-        assert!(sexp.contains("(call keys"), "keys should be inside sort call: {}", sexp);
+        assert!(sexp.contains("(call (name keys)"), "keys should be inside sort call: {}", sexp);
     }
 
     #[test]
@@ -178,7 +231,8 @@ mod tests {
         let sexp = ast.to_sexp();
         assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
         assert!(
-            sexp.contains("(call sort") && sexp.contains("(variable @ records)"),
+            sexp.contains("(call (name sort)")
+                && sexp.contains("(variable (sigil @) (name records))"),
             "trailing list should be inside the sort call: {}",
             sexp
         );
@@ -192,7 +246,7 @@ mod tests {
         let sexp = ast.to_sexp();
         assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
         assert!(
-            sexp.contains("(call sort") && sexp.contains("(call keys"),
+            sexp.contains("(call (name sort)") && sexp.contains("(call (name keys)"),
             "keys call should be inside the sort call: {}",
             sexp
         );
@@ -207,8 +261,8 @@ mod tests {
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
         assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
-        assert!(sexp.contains("(call grep"), "outer should be grep: {}", sexp);
-        assert!(sexp.contains("(call map"), "inner should be map: {}", sexp);
+        assert!(sexp.contains("(call (name grep)"), "outer should be grep: {}", sexp);
+        assert!(sexp.contains("(call (name map)"), "inner should be map: {}", sexp);
     }
 
     #[test]
@@ -218,8 +272,8 @@ mod tests {
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
         assert!(!sexp.contains("ERROR"), "should not contain ERROR: {}", sexp);
-        assert!(sexp.contains("(call sort"), "outer should be sort: {}", sexp);
-        assert!(sexp.contains("(call map"), "inner should be map: {}", sexp);
+        assert!(sexp.contains("(call (name sort)"), "outer should be sort: {}", sexp);
+        assert!(sexp.contains("(call (name map)"), "inner should be map: {}", sexp);
     }
 
     // ---- edge cases ----
@@ -231,9 +285,9 @@ mod tests {
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
         let sexp = ast.to_sexp();
-        assert!(sexp.contains("(call grep"), "should be a grep call: {}", sexp);
+        assert!(sexp.contains("(call (name grep)"), "should be a grep call: {}", sexp);
         assert!(
-            sexp.contains("(variable @ array)"),
+            sexp.contains("(variable (sigil @) (name array))"),
             "trailing list with comma should work: {}",
             sexp
         );

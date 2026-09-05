@@ -1,5 +1,6 @@
 use perl_parser_core::{
     NodeKind as V1NodeKind,
+    ParseError,
     ParseOutput,
     // Parser
     Parser,
@@ -121,16 +122,39 @@ fn parse_namespaced_class_declaration() -> Result<(), Box<dyn std::error::Error>
 fn reject_class_declaration_with_trailing_separator() -> Result<(), Box<dyn std::error::Error>> {
     let mut parser = Parser::new("class My::App:: { method run { 1; } }");
     let ast = parser.parse()?;
-    let rendered = format!("{ast:?}");
+
+    let mut accepted_trailing_class = false;
+    let mut error_node_mentions_identifier = false;
+    inspect_rejected_class(&ast, &mut accepted_trailing_class, &mut error_node_mentions_identifier);
+
+    let saw_identifier_error = error_node_mentions_identifier
+        || parser.errors().iter().any(|error| match error {
+            ParseError::UnexpectedToken { expected, .. } => {
+                expected.contains("identifier after ::")
+            }
+            _ => error.to_string().contains("identifier after ::"),
+        });
+    assert!(saw_identifier_error, "expected a missing identifier error, got {:?}", parser.errors());
     assert!(
-        rendered.contains("identifier after ::"),
-        "expected a missing identifier error, got: {rendered}"
-    );
-    assert!(
-        !rendered.contains("Class { name: \"My::App::\""),
-        "class declaration should not be accepted with a trailing ::: {rendered}"
+        !accepted_trailing_class,
+        "class declaration should not be accepted with a trailing ::"
     );
     Ok(())
+}
+
+fn inspect_rejected_class(
+    node: &perl_parser_core::Node,
+    accepted: &mut bool,
+    identifier_error: &mut bool,
+) {
+    match &node.kind {
+        V1NodeKind::Class { name, .. } if name == "My::App::" => *accepted = true,
+        V1NodeKind::Error { message, .. } if message.contains("identifier after ::") => {
+            *identifier_error = true;
+        }
+        _ => {}
+    }
+    node.for_each_child(|child| inspect_rejected_class(child, accepted, identifier_error));
 }
 
 #[test]
@@ -237,7 +261,9 @@ fn parse_output_budget_usage_tracked() -> Result<(), Box<dyn std::error::Error>>
     let mut parser = Parser::new("my $x = ;");
     let output = parser.parse_with_recovery();
 
-    // Budget tracker should reflect diagnostics
-    assert_eq!(output.budget_usage.errors_emitted, output.diagnostics.len());
+    // Live tracker: depth was recorded and unwound. Diagnostic charging is B02.
+    assert_eq!(output.budget_usage.current_depth, 0);
+    assert!(output.budget_usage.max_depth_reached > 0);
+    assert_eq!(output.budget_usage.errors_emitted, 0);
     Ok(())
 }

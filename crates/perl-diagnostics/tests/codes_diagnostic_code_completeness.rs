@@ -3,6 +3,7 @@
 //! These tests check that every diagnostic path in `perl-lsp-diagnostics`
 //! has a corresponding stable code in `perl-diagnostics-codes`, and that
 //! all code strings follow the expected PL/PC naming convention.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_diagnostics::codes::DiagnosticCode;
 

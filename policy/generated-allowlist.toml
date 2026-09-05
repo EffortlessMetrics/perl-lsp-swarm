@@ -1,0 +1,82 @@
+schema_version = 1
+policy = "generated-allowlist"
+owner = "EffortlessMetrics"
+status = "advisory"
+updated = "2026-08-25"
+
+[[allow]]
+id = "generated-cargo-lock"
+path = "Cargo.lock"
+kind = "lockfile"
+generated_by = "cargo"
+regenerate = "cargo update --workspace"
+owner = "rust/dependencies"
+reason = "Workspace lockfile pins dependency graph for reproducible CI and release builds."
+covered_by = ["cargo check --locked --workspace", "cargo xtask check-generated"]
+created = "2026-08-24"
+review_after = "2026-11-22"
+
+[[allow]]
+id = "generated-flake-lock"
+path = "flake.lock"
+kind = "lockfile"
+generated_by = "nix"
+regenerate = "nix flake update"
+owner = "devex/dependencies"
+reason = "Nix lockfile pins development tooling inputs."
+covered_by = ["cargo xtask check-generated"]
+created = "2026-08-24"
+review_after = "2026-11-22"
+
+[[allow]]
+id = "generated-status-pages"
+glob = "docs/project/status/**/*.md"
+kind = "status_page"
+generated_by = "cargo xtask update-status --write"
+regenerate = "cargo xtask update-status --write"
+owner = "docs/status"
+reason = "Status pages are generated from repository evidence and maintained through the status updater."
+broad_glob_reason = "The directory is a mixed tool-maintained surface: update-status patches its subsystem pages (lsp/tests/parser/quality/workspace/provider_fact_reads/dap and kin — the module doc list is intentionally non-exhaustive; each update_status/*.rs subsystem owns its file), sync-release-docs maintains index.md and release.md, and a few hand-authored pages (e.g. development-moved-to-perl-lsp-swarm.md) deliberately live in the same directory and are covered by this glob as review-tracked exceptions. No single narrower glob expresses that set."
+covered_by = ["cargo xtask check-generated"]
+created = "2026-08-24"
+review_after = "2026-11-22"
+
+[[allow]]
+id = "generated-non-rust-inventory"
+path = "docs/policy/NON_RUST_INVENTORY.md"
+kind = "inventory"
+generated_by = "cargo xtask non-rust inventory --write"
+regenerate = "cargo xtask non-rust inventory --write"
+owner = "release/ci"
+reason = "The committed non-Rust inventory is generated from tracked files and the canonical policy ledger."
+covered_by = ["cargo xtask check-generated", "cargo xtask non-rust inventory"]
+created = "2026-08-24"
+review_after = "2026-11-22"
+
+[[allow]]
+id = "generated-repository-topology"
+path = "docs/architecture/repository-topology.md"
+kind = "status_page"
+generated_by = "cargo xtask repo-topology"
+regenerate = "cargo xtask repo-topology"
+owner = "release/ci"
+reason = "Repository/package ownership and migration state projected from policy/repository-topology.toml (#7675). Freshness is established by the binding unit test, which runs in the ordinary xtask unit cohort; `check-generated` only proves the file is a declared generated artifact, and CI routing for the standalone --check is #7695."
+covered_by = [
+  "cargo test -p xtask --bin xtask repository_topology",
+  "cargo xtask repo-topology --check",
+  "cargo xtask check-generated",
+]
+created = "2026-08-29"
+review_after = "2026-11-27"
+
+[[allow]]
+id = "generated-oneliner-capability-matrix"
+path = "docs/project/status/oneliner_capability_matrix.md"
+kind = "status_page"
+generated_by = "cargo xtask oneliner-capability-matrix"
+regenerate = "cargo xtask oneliner-capability-matrix"
+owner = "docs/status"
+reason = "Command-line analysis capability matrix generated from the conformance corpus (#13735). Named separately from the broad status-page glob so policy reports can identify its real generator and its --check command."
+covered_by = ["cargo xtask check-generated", "cargo xtask oneliner-capability-matrix --check"]
+created = "2026-08-31"
+review_after = "2026-11-29"

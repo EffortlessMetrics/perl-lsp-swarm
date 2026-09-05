@@ -128,6 +128,20 @@ coverage_filters = [
 ]
 
 [[pack]]
+id = "patch-coverage-tautology-check"
+files = [
+  "xtask/src/tasks/check_tautology.rs",
+  "xtask/src/tasks/check_tautology/",
+  "policy/tautology-dispositions.toml",
+]
+commands = [
+  "cargo llvm-cov test --no-report -p xtask --bin xtask --profile agent --locked check_tautology -- --nocapture",
+]
+coverage_filters = [
+  "check_tautology",
+]
+
+[[pack]]
 id = "patch-coverage-completion-core"
 files = [
   "crates/perl-lsp-rs-core/src/providers/completion/",
@@ -178,6 +192,19 @@ coverage_filters = [
   "quality_ci_wiring_policy",
   "quality_gate_patch_coverage_cli_policy",
   "workflow_trigger_lint",
+]
+
+[[pack]]
+id = "patch-coverage-xtask-parser-tdd-facade-guard"
+lcov = false
+files = [
+  "xtask/tests/parser_tdd_facade_consumers.rs",
+]
+commands = [
+  "cargo test -p xtask --test parser_tdd_facade_consumers --profile agent --locked -- --nocapture",
+]
+coverage_filters = [
+  "parser_tdd_facade_consumers",
 ]
 
 [[pack]]
@@ -813,6 +840,20 @@ commands = [
 ]
 coverage_filters = [
   "generate-badges",
+]
+
+[[pack]]
+id = "patch-coverage-ripr-badge-endpoints"
+lcov = false
+files = [
+  "scripts/generate-badges.py",
+  "scripts/tests/test-generate-badges.py",
+]
+commands = [
+  "python scripts/tests/test-generate-badges.py",
+]
+coverage_filters = [
+  "ripr-badge-endpoints",
 ]
 
 [[pack]]

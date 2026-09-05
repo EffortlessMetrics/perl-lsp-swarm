@@ -1,0 +1,176 @@
+{
+  "schema_version": 1,
+  "subject": "perl_kwalitee.v1",
+  "generated_at": "2026-08-14T00:00:00Z",
+  "repo_token": "<fixture-root>",
+  "input_files": {
+    "Cargo.toml": "[workspace]\nmembers = [\"crates/perl-kwalitee\"]\n\n[workspace.metadata.publish]\nallow = []\n",
+    "crates/perl-kwalitee/Cargo.toml": "[package]\nname = \"perl-kwalitee\"\nlicense.workspace = true\npublish = false\n",
+    "vscode-extension/package.json": "{\n  \"description\": \"native Perl debugger\"\n}\n",
+    "crates/perl-dap/src/main.rs": "fn main() {}\n",
+    "target/receipts/native-tooling/readiness.json": "{\n  \"kind\": \"native_tooling_readiness\",\n  \"commit\": \"fixture-source\",\n  \"criteria\": [\n    {\n      \"area\": \"formatter\",\n      \"name\": \"native-default engine\",\n      \"status\": \"ready\"\n    },\n    {\n      \"area\": \"critic\",\n      \"name\": \"native default\",\n      \"status\": \"warning\"\n    }\n  ]\n}\n",
+    "target/receipts/quality/quality-gate.json": "{\n  \"kind\": \"quality_gate\",\n  \"decision\": \"pass\",\n  \"head\": \"fixture-source\"\n}\n",
+    "target/receipts/format/native-format-corpus.json": "{\n  \"passed\": true,\n  \"files_checked\": 42,\n  \"commit\": \"fixture-source\"\n}\n",
+    "target/receipts/native-tooling/native-critic-false-positive.json": "{\n  \"findings_count\": 1,\n  \"suppressed_findings_count\": 0,\n  \"files_with_parse_errors\": 0,\n  \"commit\": \"fixture-source\"\n}\n",
+    "target/receipts/format/native-format-perltidy-compat.json": "{\n  \"external_only_count\": 0,\n  \"commit\": \"fixture-source\"\n}\n"
+  },
+  "catalog_ids": [
+    "manifest.workspace_member_declared",
+    "manifest.publish_policy_clean",
+    "license.declared",
+    "product_surface.native_only",
+    "dap.cli_native_only",
+    "release.native_binaries_present",
+    "release.no_external_tooling",
+    "release.checksums_valid",
+    "formatter.native_default",
+    "critic.native_default",
+    "critic.run_critic_registry_parity",
+    "quality.no_new_severe_gaps",
+    "docs.status_current",
+    "formatter.corpus_idempotent",
+    "critic.no_false_positives",
+    "formatter.perltidy_compat_no_external_only",
+    "critic.perlcritic_compat_no_external_only"
+  ],
+  "cases": [
+    {
+      "id": "pr_non_strict",
+      "profile": "pr",
+      "strict": false,
+      "json": {
+        "path": "expected/pr_non_strict.json",
+        "sha256": "86fda09d3f3485433b2144a8982844a37da0bd3af49b312e5083bbe1c2192bcf"
+      },
+      "markdown": {
+        "path": "expected/pr_non_strict.md",
+        "sha256": "6db06edf4d51491dc8969ce6994a8fa8d7901a07311a15a2a03cc8f9aeb69ed6"
+      },
+      "report": {
+        "exit_code": 0,
+        "stdout_sha256": "af8045785f1ef217ec9c43494cdfc7735016d176d361dcbb43ba163bdf531829"
+      },
+      "check": {
+        "exit_code": 0,
+        "stdout_sha256": "25a3008a887a8e5fe642cdeeb3223dc1f7f9b1c207ed8de20c19e580c9ea6030",
+        "stderr_contains": null
+      }
+    },
+    {
+      "id": "pr_strict",
+      "profile": "pr",
+      "strict": true,
+      "json": {
+        "path": "expected/pr_strict.json",
+        "sha256": "8e35a925b16f07aa49181385c974012d057ec42919b9aee69c9f47d0e1d24d6b"
+      },
+      "markdown": {
+        "path": "expected/pr_strict.md",
+        "sha256": "fbe93d6a18c9a218096f8ddaef13ee258d3424e9c2dec224dea9a15ac5300ac5"
+      },
+      "report": null,
+      "check": {
+        "exit_code": 1,
+        "stdout_sha256": "9d8b8c6c77f5b116ab2f3831e5d151e88ded17a202fd14dc6fc7d91a5f706555",
+        "stderr_contains": "Perl Kwalitee check failed (verdict FAIL, score 79/100): 0 mandatory failed, 2 unverified"
+      }
+    },
+    {
+      "id": "release_non_strict",
+      "profile": "release",
+      "strict": false,
+      "json": {
+        "path": "expected/release_non_strict.json",
+        "sha256": "5fc87c9a137554c83a3276b2a1933603ade021a4a9e2b46845af8de0a2b02420"
+      },
+      "markdown": {
+        "path": "expected/release_non_strict.md",
+        "sha256": "fb2a1d0387526c64755e3155ae9c80f8d8394dd1ced2f56d690b3a4e95c4b951"
+      },
+      "report": {
+        "exit_code": 0,
+        "stdout_sha256": "59334f6831e60bc6cb286ea005ce8bf193d4e2171708ad52bcacad4b924d9f05"
+      },
+      "check": {
+        "exit_code": 1,
+        "stdout_sha256": "deac5c088cd019e68fc9515800c9348eb377449ddf73465e352e9803c7bb659f",
+        "stderr_contains": "Perl Kwalitee check failed (verdict FAIL, score 63/100): 3 mandatory failed, 2 unverified"
+      }
+    },
+    {
+      "id": "release_strict",
+      "profile": "release",
+      "strict": true,
+      "json": {
+        "path": "expected/release_strict.json",
+        "sha256": "5fc87c9a137554c83a3276b2a1933603ade021a4a9e2b46845af8de0a2b02420"
+      },
+      "markdown": {
+        "path": "expected/release_strict.md",
+        "sha256": "fb2a1d0387526c64755e3155ae9c80f8d8394dd1ced2f56d690b3a4e95c4b951"
+      },
+      "report": null,
+      "check": {
+        "exit_code": 1,
+        "stdout_sha256": "deac5c088cd019e68fc9515800c9348eb377449ddf73465e352e9803c7bb659f",
+        "stderr_contains": "Perl Kwalitee check failed (verdict FAIL, score 63/100): 3 mandatory failed, 2 unverified"
+      }
+    },
+    {
+      "id": "nightly_non_strict",
+      "profile": "nightly",
+      "strict": false,
+      "json": {
+        "path": "expected/nightly_non_strict.json",
+        "sha256": "ee0821f920d37e409e8a9dd9cdf7e41c63856ce5a4fe3443bf0a7265da7cabd7"
+      },
+      "markdown": {
+        "path": "expected/nightly_non_strict.md",
+        "sha256": "ac615c1d1b4381fe08e7fb6285a51860b36f7388a40c1d558de60005b47e5bc0"
+      },
+      "report": {
+        "exit_code": 0,
+        "stdout_sha256": "af8045785f1ef217ec9c43494cdfc7735016d176d361dcbb43ba163bdf531829"
+      },
+      "check": {
+        "exit_code": 0,
+        "stdout_sha256": "48dd278d869a553429e8c555cee78fc0871e3b6d893124d4d1e50bce60aed901",
+        "stderr_contains": null
+      }
+    },
+    {
+      "id": "nightly_strict",
+      "profile": "nightly",
+      "strict": true,
+      "json": {
+        "path": "expected/nightly_strict.json",
+        "sha256": "8b3e42ca56958be9c8dde4286a662df85dbddc099ab90577b31092cfe702d5fc"
+      },
+      "markdown": {
+        "path": "expected/nightly_strict.md",
+        "sha256": "eedd80a470dbc7f0d1a09d271cf478eb6b6f76053412c7ecda0397a730378680"
+      },
+      "report": null,
+      "check": {
+        "exit_code": 1,
+        "stdout_sha256": "6e9db5781ef83d1f79bba823190b5e1d93d4ddaa5642afc7720c10f11d3a2327",
+        "stderr_contains": "Perl Kwalitee check failed (verdict FAIL, score 78/100): 0 mandatory failed, 3 unverified"
+      }
+    }
+  ],
+  "explain": {
+    "path": "expected/explain_all.txt",
+    "sha256": "7ce52c5d55b60e309cd4462b8f0843828bde5fbce3459958bd136ecc11b18742"
+  },
+  "legacy_reader": {
+    "input": "input/legacy_receipt_v1.json",
+    "expected": {
+      "path": "expected/legacy_reader.json",
+      "sha256": "4b31af2a0b768db9afaf478a2ccac54e339769c0e99b3f0c2a11d789d89e8aae"
+    }
+  },
+  "migration_reference": {
+    "path": "expected/migration_reference.md",
+    "sha256": "a06ed3af60be4ef66c8df9edb21082031b89f31113cfa50e87deb18d72eae765"
+  }
+}

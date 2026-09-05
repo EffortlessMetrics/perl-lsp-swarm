@@ -49,15 +49,16 @@ Create `.vscode/launch.json` in your workspace:
 Set breakpoints in a `.pl`, `.pm`, or `.t` file, choose the configuration, and
 start debugging from VS Code.
 
-## Attach Over TCP
+## Attach To A Running Process
 
-Use socket mode when an editor or tool needs a TCP DAP endpoint:
+DAP `attach` is a protocol request to an adapter the editor already launched.
+VS Code and other first-party clients spawn `perl-dap` as a child and speak DAP
+over inherited stdin/stdout. Attach host/port fields in a launch configuration
+select the debuggee/peer, not an editor-facing TCP listener.
 
-```bash
-perl-dap --socket --port 13603
-```
-
-Then configure the client to attach to `127.0.0.1:13603`.
+Stdio is the sole product editor transport. Native and external-peer `--socket`
+are retired and are not a supported run mode. Authenticated debugger-peer TCP
+remains a backend transport.
 
 ## Include Paths
 
@@ -119,16 +120,10 @@ other non-executable region.
 
 ## Command Reference
 
-Run native DAP over stdio:
+Run native DAP over stdio (the product editor transport):
 
 ```bash
 perl-dap --stdio
-```
-
-Run native DAP over a TCP socket:
-
-```bash
-perl-dap --socket --port 13603
 ```
 
 Print CLI help:

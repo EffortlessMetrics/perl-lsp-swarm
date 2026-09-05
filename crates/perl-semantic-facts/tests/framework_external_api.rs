@@ -1,3 +1,4 @@
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 use perl_semantic_facts::framework::{
     AdapterAuthorityError, AdapterBudget, AdapterCancellation, AdapterCancellationControl,
     AdapterDescriptor, AdapterDisposition, AdapterId, AdapterInput, AdapterOutcome, AdapterResult,
@@ -51,7 +52,7 @@ fn external_adapter_can_construct_and_validate_public_sdk_values() {
             "minimal",
             "Example",
             None,
-            1,
+            perl_semantic_facts::framework::FRAMEWORK_ADAPTER_SCHEMA_VERSION,
             AdapterDisposition::Production,
         ),
         AdapterSourceScope::new(FileId(1), SourceGeneration::known("source-1"), None, None, None),
@@ -84,7 +85,7 @@ fn live_control_cancels_an_input_whose_admission_snapshot_stayed_active() {
             "minimal",
             "Example",
             None,
-            1,
+            perl_semantic_facts::framework::FRAMEWORK_ADAPTER_SCHEMA_VERSION,
             AdapterDisposition::Production,
         ),
         AdapterSourceScope::new(FileId(1), SourceGeneration::known("source-1"), None, None, None),

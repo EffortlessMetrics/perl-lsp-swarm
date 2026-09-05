@@ -19,18 +19,17 @@ activate_when_msrv = "1.96"
 class = "reviewability"
 reason = "Activate after #9864 moves the product workspace to Rust 1.97.1 and #1803 proves predicate, mutation, ownership, and drop-order equivalence."
 
+[[planned]]
+name = "clippy::manual_clear"
+level = "deny"
+activate_when_msrv = "1.97"
+class = "reviewability"
+reason = "Activate after the selected product toolchain provides the lint; #9913 records the current buffer-reuse dispositions without changing the pinned Rust 1.95 product gate."
+
 # These lints are already available at or below the current product MSRV. They
 # retain named, review-dated owners instead of remaining silently planned.
-[[deferred_due]]
-name = "clippy::collapsible_if"
-level = "deny"
-activate_when_msrv = "1.95"
-class = "style"
-owner = "#6305"
-reason = "The historical 293-site burn-down is complete; #6305 owns current all-target remeasurement and the explicit Cargo/ledger deny ratchet."
-review_after = "2026-10-15"
-next_status = "active"
-
+# clippy::collapsible_if completed this deferral in #6305: it is now an active
+# deny in Cargo.toml and policy/clippy-lints.d/00-active.toml.
 [[deferred_due]]
 name = "rust::const_item_interior_mutations"
 level = "deny"

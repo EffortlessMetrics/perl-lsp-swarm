@@ -1,8 +1,8 @@
-//! Snapshot tests for tree-sitter-compatible S-expression output.
+//! Snapshot tests for native debug S-expression output (`perl_ast::Node::to_sexp`).
 //!
-//! Each test parses a representative Perl snippet and asserts the `to_sexp()` output
-//! matches the stored snapshot. Run `cargo insta review` to update snapshots when the
-//! output changes intentionally.
+//! These snapshots pin the debug projection, not Tree-sitter CST compatibility
+//! (issue 8047). Run `cargo insta review` to update snapshots when the projection
+//! changes intentionally.
 
 use perl_tdd_support::must_some;
 use tree_sitter_perl_rs::Parser;

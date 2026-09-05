@@ -234,7 +234,7 @@ fn sexp_class_with_single_parent() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 30),
     );
     let sexp = node.to_sexp();
-    assert!(sexp.contains(":isa("), "expected :isa( in sexp, got: {sexp}");
+    assert!(sexp.contains("(parents "), "expected :isa( in sexp, got: {sexp}");
     assert!(sexp.contains("Mammal"), "expected parent name, got: {sexp}");
     Ok(())
 }
@@ -252,7 +252,7 @@ fn sexp_class_with_multiple_parents() -> Result<(), Box<dyn std::error::Error>> 
     );
     let sexp = node.to_sexp();
     // Parents are joined with commas inside :isa(...)
-    assert!(sexp.contains(":isa(Horse,Donkey)"), "expected comma-joined parents, got: {sexp}");
+    assert!(sexp.contains("(parents Horse Donkey)"), "expected comma-joined parents, got: {sexp}");
     Ok(())
 }
 
@@ -268,8 +268,8 @@ fn sexp_class_without_parents_has_no_isa() -> Result<(), Box<dyn std::error::Err
         loc(0, 20),
     );
     let sexp = node.to_sexp();
-    assert!(!sexp.contains(":isa("), "no-parent class must not contain :isa, got: {sexp}");
-    assert!(sexp.starts_with("(class Standalone "), "got: {sexp}");
+    assert!(!sexp.contains("(parents "), "no-parent class must not contain :isa, got: {sexp}");
+    assert!(sexp.starts_with("(class (name Standalone)"), "got: {sexp}");
     Ok(())
 }
 

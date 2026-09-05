@@ -1,4 +1,4 @@
-use perl_module::reference::{extract_module_reference, find_module_reference};
+use perl_module::{extract_module_reference, find_module_reference};
 
 fn next_u64(state: &mut u64) -> u64 {
     *state ^= *state >> 12;

@@ -180,6 +180,20 @@ jq -r '.packages[] | [.name, .versionInfo, .licenseDeclared] | @csv' sbom-spdx.j
 
 ## Security Guarantees
 
+### Imported Perl module boundary
+
+This ADR covers the released Rust artifacts and their build provenance. It
+does not attest to Perl modules discovered through workspace paths, `use lib`,
+`PERL5LIB`, or interpreter `@INC`. Module resolution does not currently verify
+CPAN signatures, validate `SIGNATURE` contents, or gate resolution on a trust
+classification.
+
+The `perl-module` crate exposes an explicit, opt-in filesystem-only marker
+report for consumers that need packaging context. A `SIGNATURE` marker means
+only that a file with that name exists; it is not a verified signature and is
+never a resolution or indexing decision. Consumers must keep this signal
+separate from artifact attestation and user trust policy.
+
 ### What Provenance Guarantees
 
 - **Build Integrity**: Artifact was built from specified source code

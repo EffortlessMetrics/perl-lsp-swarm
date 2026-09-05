@@ -3,7 +3,8 @@ use perl_core_harness_types::BaselineViolation;
 use perl_core_harness_types::{
     HarnessMode, HarnessProfile, HarnessRunner, ObservedSemanticBoundary,
     RUN_REPORT_SCHEMA_VERSION, RUNNER_RECORD_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport,
-    RunnerRecord, RunnerStatus, SemanticBoundaryRecord,
+    RunnerRecord, RunnerStatus, SemanticBoundaryRecord, validate_execution_mechanism,
+    validate_file_result_mechanisms,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -47,17 +48,20 @@ pub fn run(command: &str, args: impl Iterator<Item = String>) -> Result<()> {
         "check-runner-records" => {
             check_runner_records(CheckRunnerRecordsConfig::from_options(options)?)
         }
+        "observe-discovery" => {
+            crate::observed_discovery::capture::observe_discovery_from_options(options)
+        }
         _ => bail!("unknown perl-core-harness-artifacts command: {command}"),
     }
 }
 
 #[derive(Debug, Default)]
-struct Options {
+pub(crate) struct Options {
     values: BTreeMap<String, VecDeque<String>>,
 }
 
 impl Options {
-    fn parse(args: impl Iterator<Item = String>) -> Result<Self> {
+    pub(crate) fn parse(args: impl Iterator<Item = String>) -> Result<Self> {
         let mut args = args.peekable();
         let mut values = BTreeMap::<String, VecDeque<String>>::new();
         while let Some(flag) = args.next() {
@@ -74,7 +78,7 @@ impl Options {
         Ok(Self { values })
     }
 
-    fn required(&mut self, flag: &str) -> Result<String> {
+    pub(crate) fn required(&mut self, flag: &str) -> Result<String> {
         let value =
             self.values.get_mut(flag).and_then(VecDeque::pop_front).ok_or_else(|| {
                 color_eyre::eyre::eyre!("required option {flag} was not supplied")
@@ -86,7 +90,7 @@ impl Options {
         Ok(value)
     }
 
-    fn optional(&mut self, flag: &str) -> Result<Option<String>> {
+    pub(crate) fn optional(&mut self, flag: &str) -> Result<Option<String>> {
         let Some(values) = self.values.get_mut(flag) else {
             return Ok(None);
         };
@@ -104,7 +108,7 @@ impl Options {
         self.values.remove(flag).map(|values| values.into_iter().collect()).unwrap_or_default()
     }
 
-    fn finish(self) -> Result<()> {
+    pub(crate) fn finish(self) -> Result<()> {
         if self.values.is_empty() {
             return Ok(());
         }
@@ -155,9 +159,11 @@ impl CaptureDiscoveryConfig {
 /// the stdout/stderr pipes. The cancel file lets a supervising workflow request
 /// an early, explicitly non-authoritative stop.
 #[derive(Debug, Clone)]
-struct CaptureLimits {
-    deadline: Duration,
-    cancel_file: Option<PathBuf>,
+pub struct CaptureLimits {
+    /// Maximum wall-clock duration of one supervised capture.
+    pub deadline: Duration,
+    /// Optional cancellation marker; its presence requests an early stop.
+    pub cancel_file: Option<PathBuf>,
 }
 
 impl CaptureLimits {
@@ -168,8 +174,22 @@ impl CaptureLimits {
 }
 
 fn parse_deadline(value: Option<&str>) -> Result<Duration> {
+    parse_deadline_with_default(
+        value,
+        DEFAULT_CAPTURE_DEADLINE_SECONDS,
+        MAX_CAPTURE_DEADLINE_SECONDS,
+    )
+}
+
+/// Parse one `--deadline-seconds` value against an explicit default and
+/// ceiling, for capture routes with their own finite bounds.
+pub(crate) fn parse_deadline_with_default(
+    value: Option<&str>,
+    default_seconds: u64,
+    max_seconds: u64,
+) -> Result<Duration> {
     let seconds = match value {
-        None => DEFAULT_CAPTURE_DEADLINE_SECONDS,
+        None => default_seconds,
         Some(raw) => {
             raw.parse::<u64>().with_context(|| format!("parsing --deadline-seconds value {raw}"))?
         }
@@ -177,9 +197,9 @@ fn parse_deadline(value: Option<&str>) -> Result<Duration> {
     if seconds == 0 {
         bail!("--deadline-seconds must be a positive number of seconds");
     }
-    if seconds > MAX_CAPTURE_DEADLINE_SECONDS {
+    if seconds > max_seconds {
         bail!(
-            "--deadline-seconds must not exceed {MAX_CAPTURE_DEADLINE_SECONDS}; discovery capture must stay finite"
+            "--deadline-seconds must not exceed {max_seconds}; discovery capture must stay finite"
         );
     }
     Ok(Duration::from_secs(seconds))
@@ -277,7 +297,7 @@ impl CapturedStream {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct RawByteStream {
+pub(crate) struct RawByteStream {
     encoding: String,
     limit_bytes: usize,
     observed_byte_length: u64,
@@ -290,6 +310,22 @@ struct RawByteStream {
 }
 
 impl RawByteStream {
+    /// Byte-exact retained capture of one supervised stream.
+    pub(crate) fn retained_bytes(&self) -> Result<Vec<u8>> {
+        self.bytes()
+    }
+
+    /// Whether the capture was cut at the retention bound before the writer
+    /// finished this stream.
+    pub(crate) fn was_truncated(&self) -> bool {
+        self.truncated
+    }
+
+    /// Recorded capture-instrument failure for this stream, if any.
+    pub(crate) fn capture_failure(&self) -> Option<&str> {
+        self.capture_error.as_deref()
+    }
+
     fn from_capture(capture: CapturedStream, limit_bytes: usize) -> Self {
         let retained_sha256 = sha256_digest(&capture.retained);
         Self {
@@ -363,7 +399,7 @@ impl RawByteStream {
 /// Which part of the bounded capture was still outstanding when the deadline fired.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
-enum CaptureDeadlinePhase {
+pub(crate) enum CaptureDeadlinePhase {
     /// The discovery process itself had not yet been reaped.
     Process,
     /// The process was reaped but stdout or stderr was still held open.
@@ -381,7 +417,7 @@ impl CaptureDeadlinePhase {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum DiscoveryProcessOutcome {
+pub(crate) enum DiscoveryProcessOutcome {
     /// The process reached its own exit status.
     Exited {
         code: i32,
@@ -445,7 +481,7 @@ impl DiscoveryProcessOutcome {
     }
 
     /// Reject outcomes whose recorded identity is structurally empty.
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         let detail = match self {
             Self::SpawnFailed { error } | Self::WaitFailed { error } => Some(error.as_str()),
             Self::CaptureSetupFailed { stream } => Some(stream.as_str()),
@@ -873,11 +909,22 @@ fn poll_capture(
 /// Run one discovery command under a finite deadline with bounded, concurrent
 /// stdout and stderr capture and isolated process-tree cleanup.
 fn run_bounded_command(
-    mut command: Command,
+    command: Command,
     limits: &CaptureLimits,
 ) -> (DiscoveryProcessOutcome, RawByteStream, RawByteStream) {
-    let empty =
-        || (RawByteStream::empty(RAW_STREAM_MAX_BYTES), RawByteStream::empty(RAW_STREAM_MAX_BYTES));
+    run_bounded_command_with_limit(command, limits, RAW_STREAM_MAX_BYTES)
+}
+
+/// Run one supervised process like [`run_bounded_command`], retaining at most
+/// `stream_limit` bytes of each stream. A stream written past the bound is
+/// flagged truncated rather than silently cut, so downstream receipts can
+/// record `output_truncated` honestly at their own retention bound.
+pub(crate) fn run_bounded_command_with_limit(
+    mut command: Command,
+    limits: &CaptureLimits,
+    stream_limit: usize,
+) -> (DiscoveryProcessOutcome, RawByteStream, RawByteStream) {
+    let empty = || (RawByteStream::empty(stream_limit), RawByteStream::empty(stream_limit));
     command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     isolate_process_tree(&mut command);
     let mut child = match command.spawn() {
@@ -913,8 +960,8 @@ fn run_bounded_command(
         );
     };
 
-    let stdout_receiver = spawn_capture(stdout, RAW_STREAM_MAX_BYTES);
-    let stderr_receiver = spawn_capture(stderr, RAW_STREAM_MAX_BYTES);
+    let stdout_receiver = spawn_capture(stdout, stream_limit);
+    let stderr_receiver = spawn_capture(stderr, stream_limit);
 
     let started = Instant::now();
     let mut status: Option<std::io::Result<ExitStatus>> = None;
@@ -997,8 +1044,8 @@ fn run_bounded_command(
     });
     (
         process,
-        RawByteStream::from_capture(stdout_capture, RAW_STREAM_MAX_BYTES),
-        RawByteStream::from_capture(stderr_capture, RAW_STREAM_MAX_BYTES),
+        RawByteStream::from_capture(stdout_capture, stream_limit),
+        RawByteStream::from_capture(stderr_capture, stream_limit),
     )
 }
 
@@ -1262,6 +1309,7 @@ fn validate_report(report: &RunReport) -> Result<()> {
     if report.schema_version != RUN_REPORT_SCHEMA_VERSION {
         bail!("unsupported run report schema: {}", report.schema_version);
     }
+    reject_inadmissible_report_mechanisms(report)?;
     for (label, value) in [
         ("commit", report.commit.as_str()),
         ("Perl ref", report.perl_ref.as_str()),
@@ -1372,10 +1420,25 @@ fn reject_violations(subject: &str, violations: &[BaselineViolation]) -> Result<
     bail!("{subject} is structurally invalid: {detail}")
 }
 
+/// Refuse a run report whose per-file execution-mechanism claims are not
+/// admissible for its mode.
+///
+/// Owned here as well as in `crate::read_run_report` because a report can reach
+/// derivation without passing through that reader (#14363).
+fn reject_inadmissible_report_mechanisms(report: &RunReport) -> Result<()> {
+    if let Err(violation) = validate_file_result_mechanisms(report.mode, &report.file_results) {
+        bail!("run report {violation}");
+    }
+    Ok(())
+}
+
 fn records_from_reports(reports: &[RunReport]) -> Result<Vec<RunnerRecord>> {
     let mut records = Vec::new();
     let mut keys = BTreeSet::new();
     for report in reports {
+        // Validate before any record is built, so a tampered report cannot be
+        // materialized on disk and only rejected by the later self-check.
+        reject_inadmissible_report_mechanisms(report)?;
         let failures = report
             .failures
             .iter()
@@ -1404,6 +1467,10 @@ fn records_from_reports(reports: &[RunReport]) -> Result<Vec<RunnerRecord>> {
                 assertions_total: result.assertions_total,
                 bucket: failure.map(|value| value.bucket.clone()),
                 first_diagnostic: failure.map(|value| value.first_diagnostic.clone()),
+                // Carried from the report rather than re-derived, so the
+                // mechanism survives the report -> record round trip instead
+                // of silently defaulting to absent (#8254).
+                mechanism: result.mechanism,
                 semantic_boundaries,
             });
         }
@@ -1481,6 +1548,9 @@ fn read_json_lines(path: &Path) -> Result<Vec<RunnerRecord>> {
         if record.schema_version != RUNNER_RECORD_SCHEMA_VERSION {
             bail!("runner record has unsupported schema {}", record.schema_version);
         }
+        if let Err(violation) = validate_execution_mechanism(&record.mode, record.mechanism) {
+            bail!("runner record line {} in {}: {violation}", index + 1, path.display());
+        }
         validate_test_path(&record.path)?;
         records.push(record);
     }
@@ -1525,7 +1595,8 @@ fn file_identity(_path: &Path) -> Option<(u64, u64)> {
     None
 }
 
-fn reject_output_aliases(inputs: &[PathBuf], outputs: &[PathBuf]) -> Result<()> {
+/// Reject outputs that would overwrite captured input evidence.
+pub(crate) fn reject_output_aliases(inputs: &[PathBuf], outputs: &[PathBuf]) -> Result<()> {
     let input_paths = inputs
         .iter()
         .map(|path| {
@@ -1565,7 +1636,7 @@ fn reject_output_aliases(inputs: &[PathBuf], outputs: &[PathBuf]) -> Result<()> 
 /// The runner script is not the only input `capture-discovery` depends on: it
 /// executes `host_perl` and reads the prepared tree. Writing evidence over
 /// either mutates the subject after measurement while still reporting success.
-fn reject_subject_destinations(
+pub(crate) fn reject_subject_destinations(
     host_perl: &Path,
     perl_tree: &Path,
     outputs: &[PathBuf],
@@ -1603,7 +1674,7 @@ fn reject_subject_destinations(
 /// textually, and `reject_output_aliases` compares it against canonicalized
 /// inputs. An unfolded `<elsewhere>/../<perl-tree>/t/x.json` would slip past
 /// both and then be written inside the measured subject.
-fn resolve_destination(path: &Path) -> Result<PathBuf> {
+pub(crate) fn resolve_destination(path: &Path) -> Result<PathBuf> {
     use std::path::Component;
 
     let absolute = if path.is_absolute() {
@@ -1666,7 +1737,7 @@ fn parse_profile(value: &str) -> Result<HarnessProfile> {
     }
 }
 
-fn sanitize_perl_env(command: &mut Command) {
+pub(crate) fn sanitize_perl_env(command: &mut Command) {
     for key in
         ["PERL5LIB", "PERLLIB", "PERL5OPT", "PERL_UNICODE", "PERL_LOCAL_LIB_ROOT", "PERL_MB_OPT"]
     {
@@ -1717,7 +1788,7 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     serde_json::from_str(&raw).with_context(|| format!("decoding JSON {}", path.display()))
 }
 
-fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     create_parent(path)?;
     let json = serde_json::to_string_pretty(value).context("serializing JSON evidence")?;
     fs::write(path, format!("{json}\n"))
@@ -1751,7 +1822,7 @@ mod tests {
     use super::*;
     use perl_core_harness_types::SemanticBoundarySourceSpan;
     use perl_core_harness_types::{
-        RunSummary, SemanticBoundaryConfidence, SemanticBoundaryDisposition,
+        ExecutionMechanism, RunSummary, SemanticBoundaryConfidence, SemanticBoundaryDisposition,
         SemanticBoundaryLockScope,
     };
     use std::io::Cursor;
@@ -1860,6 +1931,37 @@ mod tests {
     }
 
     #[test]
+    fn report_validation_rejects_an_inadmissible_execution_mechanism() -> TestResult {
+        // `validate_report` gates `read_reports`, which feeds the
+        // derive-runner-records and check-runner-records CLI surfaces. It owns
+        // its own copy of the contract, so it needs its own control (#14363).
+        let mut mislabelled = sample_report(HarnessMode::Compile);
+        for result in &mut mislabelled.file_results {
+            result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+        }
+        let Err(error) = validate_report(&mislabelled) else {
+            bail!("a compile report claiming execution evidence must be rejected");
+        };
+        if !error.to_string().contains("only execution receipts may carry") {
+            bail!("unexpected mislabelling error: {error}");
+        }
+
+        let mut forged = sample_execute_report();
+        for result in &mut forged.file_results {
+            result.mechanism = Some(ExecutionMechanism::EirExecution);
+        }
+        let Err(error) = validate_report(&forged) else {
+            bail!("a report claiming an unsupported rail must be rejected");
+        };
+        if !error.to_string().contains("no current rail can supply") {
+            bail!("unexpected forgery error: {error}");
+        }
+
+        // Opposite-direction control: honest evidence still validates.
+        validate_report(&sample_execute_report())
+    }
+
+    #[test]
     fn report_validation_rejects_contradictory_source_lock() -> TestResult {
         let mut report = sample_report(HarnessMode::Compile);
         let mut boundary = sample_boundary();
@@ -1872,6 +1974,134 @@ mod tests {
         let text = error.to_string();
         if !text.contains("exact confidence") || !text.contains("must not block compilation") {
             bail!("unexpected boundary-invariant error: {error}");
+        }
+        Ok(())
+    }
+
+    /// An execute report shaped like the checked-in selected-base receipt.
+    fn sample_execute_report() -> RunReport {
+        let mut report = sample_report(HarnessMode::Execute);
+        for result in &mut report.file_results {
+            result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+        }
+        report
+    }
+
+    #[test]
+    fn derived_records_preserve_the_execution_mechanism() -> TestResult {
+        let report = sample_execute_report();
+
+        let records = records_from_reports(std::slice::from_ref(&report))?;
+
+        if records.is_empty() {
+            bail!("expected derived execute records");
+        }
+        for record in &records {
+            if record.mechanism != Some(ExecutionMechanism::FixtureReplay) {
+                bail!(
+                    "report -> record derivation dropped the mechanism for {}: {:?}",
+                    record.path,
+                    record.mechanism
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn derived_execute_records_round_trip_through_the_artifact() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let report = sample_execute_report();
+        let records = records_from_reports(std::slice::from_ref(&report))?;
+        let records_path = temp.path().join("records.jsonl");
+        write_json_lines(&records_path, &records)?;
+
+        // The written artifact must state the mechanism, and reading it back
+        // must reproduce the derivation exactly.
+        let raw = fs::read_to_string(&records_path)?;
+        if !raw.contains(r#""mechanism":"fixture_replay""#) {
+            bail!("execute records did not publish their mechanism: {raw}");
+        }
+        validate_record_files(&[report], &records_path, None)
+    }
+
+    #[test]
+    fn ingestion_rejects_an_execute_record_without_a_mechanism() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let report = sample_execute_report();
+        let mut records = records_from_reports(std::slice::from_ref(&report))?;
+        for record in &mut records {
+            record.mechanism = None;
+        }
+        let records_path = temp.path().join("records.jsonl");
+        write_json_lines(&records_path, &records)?;
+
+        let Err(error) = read_json_lines(&records_path) else {
+            bail!("an execute record with no mechanism must not be ingested");
+        };
+        if !error.to_string().contains("does not declare an execution mechanism") {
+            bail!("unexpected ingestion error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn ingestion_rejects_a_relabelled_execute_record() -> TestResult {
+        // Hand-editing a scaffold receipt into an EIR claim is the exact
+        // promotion path #8254 exists to close.
+        for mechanism in [ExecutionMechanism::EirExecution, ExecutionMechanism::RealPerlOracle] {
+            let temp = tempfile::tempdir()?;
+            let report = sample_execute_report();
+            let mut records = records_from_reports(std::slice::from_ref(&report))?;
+            for record in &mut records {
+                record.mechanism = Some(mechanism);
+            }
+            let records_path = temp.path().join("records.jsonl");
+            write_json_lines(&records_path, &records)?;
+
+            let Err(error) = read_json_lines(&records_path) else {
+                bail!("{mechanism} must not be ingestible from a replay receipt");
+            };
+            if !error.to_string().contains("no current rail can supply") {
+                bail!("unexpected relabelling error for {mechanism}: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn ingestion_rejects_a_parse_record_claiming_execution_evidence() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let report = sample_report(HarnessMode::Parse);
+        let mut records = records_from_reports(std::slice::from_ref(&report))?;
+        for record in &mut records {
+            record.mechanism = Some(ExecutionMechanism::FixtureReplay);
+        }
+        let records_path = temp.path().join("records.jsonl");
+        write_json_lines(&records_path, &records)?;
+
+        let Err(error) = read_json_lines(&records_path) else {
+            bail!("a parse record must not carry an execution mechanism");
+        };
+        if !error.to_string().contains("only execution receipts may carry") {
+            bail!("unexpected mislabelling error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parse_and_compile_records_stay_free_of_mechanism_keys() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        for mode in [HarnessMode::Parse, HarnessMode::Compile] {
+            let report = sample_report(mode);
+            let records = records_from_reports(std::slice::from_ref(&report))?;
+            let records_path = temp.path().join(format!("{}.jsonl", mode.as_str()));
+            write_json_lines(&records_path, &records)?;
+
+            let raw = fs::read_to_string(&records_path)?;
+            if raw.contains("mechanism") {
+                bail!("{mode} records must keep their existing wire form: {raw}");
+            }
         }
         Ok(())
     }
@@ -2433,8 +2663,13 @@ mod tests {
 
     #[test]
     fn raw_envelope_rejects_absolute_working_directories() -> TestResult {
+        let mut relative = raw_envelope(b"base/ok.t\n", b"");
+        relative.working_directory = "t".into();
+        relative.validate()?;
+
         let mut leaked = raw_envelope(b"base/ok.t\n", b"");
-        leaked.working_directory = "/home/runner/work/perl/t".into();
+        leaked.working_directory =
+            std::env::current_dir()?.join("prepared-tree").join("t").display().to_string();
         let Err(error) = leaked.validate() else {
             bail!("an absolute host path must not be published as evidence");
         };
@@ -2613,12 +2848,14 @@ mod tests {
             buckets: BTreeMap::new(),
             file_results: vec![
                 RunFileResult {
+                    mechanism: None,
                     path: "base/ok.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 1,
                     assertions_total: 1,
                 },
                 RunFileResult {
+                    mechanism: None,
                     path: "base/other.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 1,

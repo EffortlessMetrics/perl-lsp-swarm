@@ -30,6 +30,9 @@ perl-source-identity.workspace = true
 lsp-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# Collision-resistant content digests for observation identity (#10813);
+# also the EffectiveLspSurface input-digest receipt binding (#9665).
+sha2.workspace = true
 
 # Provider crate dependencies (Wave G1a: 15 providers absorbed)
 perl-parser-core.workspace = true
@@ -84,14 +87,16 @@ lsp-compat = []
 ai-provider = ["dep:ureq"]
 
 [dev-dependencies]
+perl-test-must.workspace = true
 perl-tdd-support.workspace = true
 sha2.workspace = true
 serde_json.workspace = true
 perl-lsp-rs.workspace = true
 perl-subprocess-runtime.workspace = true
 tempfile.workspace = true
-insta = { version = "1.47.2", features = ["yaml"] }
+insta = { workspace = true, features = ["yaml"] }
 proptest.workspace = true
+serial_test = "4.0.1"
 
 [package.metadata.docs.rs]
 all-features = true

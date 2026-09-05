@@ -10,6 +10,7 @@
 
 use super::DapMessage;
 use super::sync_utils::{EventDispatchResult, dispatch_event, dropped_output_event_count};
+use perl_tdd_support::must;
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -67,22 +68,19 @@ fn lifecycle_blocks_until_drain() {
     thread::sleep(Duration::from_millis(50));
 
     // Drain one slot — the blocked lifecycle send must unblock
-    let _ =
-        rx.recv_timeout(Duration::from_secs(2)).expect("queued output event must be receivable");
+    let _ = must(rx.recv_timeout(Duration::from_secs(2)));
 
     // Helper must have completed and returned Sent
-    let result = helper.join().expect("helper thread must not panic");
+    let result = must(helper.join());
     assert_eq!(result, EventDispatchResult::Sent, "lifecycle event must be sent once a slot opens");
 
     // The `stopped` event must now be in the channel
-    let msg = rx
-        .recv_timeout(Duration::from_secs(2))
-        .expect("stopped event must be received after drain");
+    let msg = must(rx.recv_timeout(Duration::from_secs(2)));
     match msg {
         DapMessage::Event { event, .. } => {
             assert_eq!(event, "stopped", "received event must be 'stopped'");
         }
-        other => panic!("Expected stopped event, got {other:?}"),
+        other => must(Err::<(), _>(format!("Expected stopped event, got {other:?}"))),
     }
 }
 

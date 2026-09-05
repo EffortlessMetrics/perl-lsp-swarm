@@ -98,6 +98,25 @@ fn dancer_any_route() {
     assert_clean_parse(r#"any ['get', 'post'] => '/form' => sub { template 'form' };"#);
 }
 
+#[test]
+fn dancer_any_route_with_qw_method_list() {
+    assert_clean_parse(r#"any [qw/get post del/] => '/x' => sub { 1 };"#);
+}
+
+#[test]
+fn dancer_named_route_with_options() {
+    assert_clean_parse(
+        r#"get 'user_show', '/users/:id', { agent => 'curl' }, sub { return 'user' };"#,
+    );
+}
+
+#[test]
+fn dancer_regex_route_pattern() {
+    // Parses as a two-statement sequence (keyword statement + hash literal);
+    // the #8918 route extractor consumes exactly that shape.
+    assert_clean_parse(r#"get qr{^/re/(\d+)$} => sub { 1 };"#);
+}
+
 // === Try::Tiny ===
 
 #[test]

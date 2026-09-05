@@ -10,6 +10,7 @@
 pub mod artifacts;
 #[path = "target_contracts/contract.rs"]
 pub mod contract;
+pub mod critic_oracle;
 #[path = "target_contracts/io.rs"]
 pub mod io;
 #[path = "target_contracts/matrix.rs"]
@@ -25,10 +26,186 @@ pub mod target_contracts {
 #[path = "target_contracts/tests.rs"]
 mod target_contract_tests;
 
+// One shared minimal JSON Schema validator for every contract suite, so
+// "Rust decoding and the registered schema agree" is a claim about one
+// instrument rather than about per-suite copies that can drift apart (#7729).
+#[cfg(test)]
+pub(crate) mod schema_check;
+
+/// Closed-world proof for the target and runner evidence contracts (#7729):
+/// every exact object rejects unknown fields at every nesting level, in both
+/// serde and the registered schema, while declared extension maps stay open.
+#[cfg(test)]
+mod contract_closure_tests;
+
 mod normalization;
 pub mod public_evidence;
+mod run_authority;
 mod series;
 pub mod transition;
+
+// The runner-plan authority modules are shared verbatim with the
+// `perl-core-harness-runner-plan` binary units; the observed-discovery receipt
+// surface reuses them so there is exactly one source-frame normalizer and one
+// target-selection vocabulary. Items unused by this unit remain compiled for
+// the other inclusion sites.
+#[allow(dead_code)]
+#[path = "runner_plan/build.rs"]
+pub(crate) mod build;
+#[allow(dead_code)]
+// The shared normalizer's own test module predates this inclusion site and
+// uses workspace-denied helpers; its tests remain exercised by their original
+// bin/test units.
+#[cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+#[path = "runner_plan/normalize.rs"]
+pub(crate) mod normalize;
+#[allow(dead_code)]
+#[path = "runner_plan/model.rs"]
+pub(crate) mod runner_model;
+// Included so the closed-world contract proof can build its parity payload
+// through the production comparator instead of hand-assembling a receipt. Only
+// that proof needs it in this unit, so it stays out of the non-test build.
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "runner_plan/compare.rs"]
+pub(crate) mod compare;
+
+/// Strict immutable observed upstream-discovery receipts
+/// (`upstream_runner_discovery.v1`, #12281): byte-exact raw envelopes, typed
+/// terminal state, frame-aware decoded rows, membership dispositions, work
+/// accounting, and deterministic digests over canonical payloads.
+pub mod observed_discovery {
+    /// Strict constructors, payload digests, freshness, and matrix adapter.
+    #[path = "build.rs"]
+    pub mod build;
+    /// Exact supervised `t/TEST` capture route producing strict receipts
+    /// (#12283): selector argv from target-contract authority, one bounded
+    /// supervised process, byte-exact envelopes, and #12281 receipt assembly.
+    #[path = "capture.rs"]
+    pub mod capture;
+    /// Strict byte-level stream decoder and observation-state derivation.
+    #[path = "decode.rs"]
+    pub mod decode;
+    /// Receipt, envelope, row, disposition, subject, and work types.
+    #[path = "model.rs"]
+    pub mod model;
+    /// Fail-closed validation reconstructing rows from retained raw bytes.
+    #[path = "validate.rs"]
+    pub mod validate;
+
+    #[cfg(test)]
+    #[path = "tests.rs"]
+    mod tests;
+
+    pub use build::{
+        build_observed_discovery_receipt, check_observed_discovery_against,
+        discovery_payload_digest, receipt_freshness,
+    };
+    pub use capture::{ObserveDiscoveryConfig, observe_discovery, observe_discovery_command};
+    pub use decode::derive_observation_state;
+    // The runner-plan vocabulary is already part of this module's public
+    // payload types; re-export the two enums external consumers need to build
+    // or inspect receipts without reaching into the crate-private module.
+    pub use crate::runner_model::{DiscoveryFrame, RunnerKind};
+    pub use model::{
+        DiscoveryObservationState, DiscoveryPayload, DiscoverySubjectIdentity, EnvironmentIdentity,
+        EvidenceClass, InvocationObservation, LineFraming, MemberDisposition,
+        ObservedDiscoveryInput, ObservedDiscoveryRow, ProcessCompletion, RawStreamEnvelope,
+        ReceiptFreshness, RunnerArtifactIdentity, TerminalObservation,
+        UPSTREAM_DISCOVERY_SCHEMA_VERSION, UpstreamDiscoveryReceiptV1,
+    };
+    pub use validate::{validate_observed_discovery_receipt, validate_receipt_subject_binding};
+}
+
+/// Strict effective-invocation trace contract
+/// (`upstream_effective_invocation_trace.v1`, #12284): one bounded JSONL
+/// frame stream with typed per-field observation states, parent
+/// discovery-receipt re-binding, proven work accounting, deterministic
+/// digests, and the pure #8492 canonical-plan projection adapter.
+/// Representation only: no upstream instrumentation, process execution, or
+/// filesystem interaction.
+pub mod invocation_trace {
+    /// Pure checked adapter to canonical plan projections.
+    #[path = "adapter.rs"]
+    pub mod adapter;
+    /// Strict constructors, payload digests, freshness, and parent adapter.
+    #[path = "build.rs"]
+    pub mod build;
+    /// Strict byte-level frame decoder and row-state derivation.
+    #[path = "decode.rs"]
+    pub mod decode;
+    /// Receipt, frame, field-state, row, subject, and work types.
+    #[path = "model.rs"]
+    pub mod model;
+    /// Fail-closed validation reconstructing frames from retained raw bytes.
+    #[path = "validate.rs"]
+    pub mod validate;
+
+    #[cfg(test)]
+    #[path = "test_support.rs"]
+    pub(crate) mod test_support;
+
+    #[cfg(test)]
+    #[path = "tests.rs"]
+    mod tests;
+
+    pub use adapter::{
+        ExpectedFieldComparison, ExpectedFieldResult, ExpectedInvocationBinding,
+        ExpectedInvocationValues, ProjectionOutcome, ProjectionRejection, compare_expected,
+        project_effective_invocation,
+    };
+    pub use build::{
+        build_invocation_trace_receipt, check_invocation_trace_against, trace_payload_digest,
+        trace_receipt_freshness,
+    };
+    pub use decode::derive_row_state;
+    pub use model::{
+        CanonicalInvocationProjection, CapturePoint, EffectiveInvocationField,
+        EffectiveInvocationFields, EffectiveInvocationRow, EffectiveInvocationTraceReceiptV1,
+        FieldKey, FieldStateCounts, InvocationAuthority, InvocationObservationState,
+        ObservedInvocationTraceInput, ProjectionRecord, ProjectionRejectionKind, RowSubjectBinding,
+        ScriptRole, TaintMode, TestInitClass, TraceHeader, TracePayload, TraceRowDisposition,
+        TraceStreamEnvelope, TraceStreamOutcome, TraceSubjectIdentity, TraceTerminal, TraceWork,
+        UPSTREAM_INVOCATION_TRACE_SCHEMA_VERSION, Utf8Switch,
+    };
+    pub use validate::{validate_invocation_trace_receipt, validate_trace_receipt_subject_binding};
+}
+
+/// Strict pure fan-in join proving one complete observed runner subject
+/// (`observed_runner_subject.v1`, #12287): the observed `t/TEST` membership
+/// (#12281/#12283), its independently reconstructed plan (#7737), and the
+/// effective-invocation observation set (#12284/#12285) joined one-to-one
+/// under the exact #12286 transfer relation and #12158 producer identity.
+/// Representation only: no upstream execution, tracing, compiler invocation,
+/// production selection, or accepted-state transition.
+pub mod observed_subject {
+    /// Strict constructors, digests, freshness, and the join arithmetic.
+    #[path = "build.rs"]
+    pub mod build;
+    /// Receipt, binding, row, disposition, diagnostic, state, and work types.
+    #[path = "model.rs"]
+    pub mod model;
+    /// Fail-closed structural validation re-proving receipt-traveled laws.
+    #[path = "validate.rs"]
+    pub mod validate;
+
+    #[cfg(test)]
+    #[path = "tests.rs"]
+    mod tests;
+
+    pub use build::{
+        build_observed_runner_subject, check_observed_runner_subject, observed_subject_freshness,
+        observed_subject_payload_digest,
+    };
+    pub use model::{
+        JoinWork, OBSERVED_RUNNER_SUBJECT_SCHEMA_VERSION, OBSERVED_SUBJECT_CLAIM_BOUNDARY,
+        ObservedRunnerSubjectInput, ObservedRunnerSubjectPayload, ObservedRunnerSubjectRow,
+        ObservedRunnerSubjectV1, ObservedSubjectBindings, ObservedSubjectState,
+        OrdinaryInstrumentedEquivalenceIdentity, ProducerSubjectIdentity, SubjectDiagnostic,
+        SubjectJoinDisposition,
+    };
+    pub use validate::validate_observed_runner_subject_shape;
+}
 
 use chrono::Utc;
 use color_eyre::eyre::{Context, Result, bail};
@@ -42,7 +219,7 @@ use perl_core_harness_types::{
     CompatibilitySeriesIdentity, CompatibilityTransition, CompatibilityTransitionCandidate,
     CompileBaseline, CompileBaselineV2, CompilerCompatibilitySeries, CompilerCompatibilityState,
     CurrentAuthorityEntry, CurrentAuthorityIndex, CurrentAuthorityStatus, DISCOVERY_SCHEMA_VERSION,
-    DiscoveredTest, DiscoveryReport, FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION,
+    DiscoveredTest, DiscoveryReport, ExecutionMechanism, FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION,
     FAILURE_CLUSTER_SCHEMA_VERSION, FailureCluster, FailureClusterHistory,
     FailureClusterHistoryEntry, FailureClusterHistoryPresence, FailureClusterHistoryStatus,
     FailureClusterIdentityQuality, FailureClusterReport, FailureClusterSignature,
@@ -53,9 +230,14 @@ use perl_core_harness_types::{
     SemanticBoundaryConfidence, SemanticBoundaryDisposition, SemanticBoundaryLockScope,
     SemanticBoundaryRegistry, SemanticBoundaryRegistryEntry, SemanticBoundaryRegistryState,
     SemanticBoundaryReplacementStrategy, SeriesManifest, SmokeFailureKind, SmokeReport,
-    SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, workstream_for_bucket,
+    SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, validate_execution_mechanism,
+    validate_file_result_mechanisms, validate_series_rail_mechanisms, workstream_for_bucket,
 };
 pub use perl_core_harness_types::{HarnessMode, HarnessProfile, HarnessRunner};
+use run_authority::{
+    DirectDiagnosticReceipt, DirectDiagnosticSet, SettledDiagnosticProbe, UpstreamObservationSet,
+    direct_diagnostics_receipt, direct_diagnostics_receipt_path, settle_probe_context_rows,
+};
 pub use series::{SeriesManifestConfig, series_manifest};
 
 use normalization::{hex_lower, sha256_digest_bytes};
@@ -226,6 +408,12 @@ pub struct RunConfig {
     pub tests: Vec<String>,
     pub output: Option<PathBuf>,
     pub runner_binary: Option<PathBuf>,
+    /// Whether missing upstream rows may be investigated by bounded direct
+    /// diagnostic probes after the upstream report is frozen (#8173).
+    ///
+    /// Diagnostics are retained under a separate receipt and can never change
+    /// the upstream result, totals, or verdict.
+    pub diagnostic_probes: bool,
 }
 
 /// Configuration for `perl-core-harness baseline`.
@@ -445,10 +633,12 @@ pub fn boundaries(config: BoundaryRegistryConfig) -> Result<()> {
 pub fn triage(config: TriageConfig) -> Result<()> {
     let bundle = read_boundary_bundle(&config.bundle)?;
     let compile_path = bundle_artifact_path(&bundle, "compile_report")?;
-    let raw = fs::read_to_string(&compile_path)
-        .with_context(|| format!("reading compile report {}", compile_path.display()))?;
-    let report: RunReport = serde_json::from_str(&raw)
-        .with_context(|| format!("decoding compile report {}", compile_path.display()))?;
+    // Decode through the shared reader rather than inline: it is the only place
+    // the mechanism contract is applied to this JSON shape, and clustering a
+    // report that over-claims its execution evidence would carry that claim
+    // into the durable failure-cluster and history artifacts (#14363).
+    let report = read_run_report(&compile_path)
+        .with_context(|| format!("compile report {}", compile_path.display()))?;
     validate_bundle_report_identity(&bundle, &report)?;
     ensure_valid_report_shape(&report)?;
     let cluster_report = build_failure_cluster_report(&bundle, &report)?;
@@ -600,7 +790,7 @@ pub fn validate_current_authority(config: CurrentAuthorityConfig) -> Result<Curr
         )?;
         validate_publication_scope(&config.repository_root, &lineage)?;
         if !lineage_paths.insert(relative_path.clone()) {
-            bail!("duplicate landed lineage path {}", path.display());
+            bail!("duplicate landed lineage path");
         }
         lineages.push((relative_path, lineage));
     }
@@ -972,10 +1162,21 @@ fn validate_publication_paths(paths: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// One nibble of a canonically serialized hexadecimal identity (#7725):
+/// lower-case ASCII digits and `a`-`f` only, so every load-bearing
+/// content-addressed receipt carries exactly one spelling per digest.
+pub(crate) fn is_lower_case_hex_byte(byte: u8) -> bool {
+    byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')
+}
+
+/// A 64-character SHA-256 identity in its one canonical serialized form.
+pub(crate) fn is_canonical_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(is_lower_case_hex_byte)
+}
+
 fn validate_git_sha(value: &str, label: &str) -> Result<()> {
-    if value.len() != 40 && value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
-        bail!("{label} must be a 40- or 64-character hexadecimal SHA");
+    if !(value.len() == 40 || value.len() == 64) || !value.bytes().all(is_lower_case_hex_byte) {
+        bail!("{label} must be a 40- or 64-character hexadecimal SHA ([0-9a-f] lower-case)");
     }
     Ok(())
 }
@@ -1032,30 +1233,86 @@ fn validate_digest(value: &str, label: &str) -> Result<()> {
     let Some(hex) = value.strip_prefix("sha256:") else {
         bail!("{label} must use the sha256:<hex> format");
     };
-    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        bail!("{label} must contain 64 hexadecimal characters");
+    if !is_canonical_sha256_hex(hex) {
+        bail!("{label} must contain 64 hexadecimal characters ([0-9a-f] lower-case)");
     }
     Ok(())
 }
 
 fn repository_relative_path(root: &Path, path: &Path) -> Result<String> {
+    let raw_path = path.to_string_lossy().replace('\\', "/");
+    if raw_path.split('/').any(|component| component == "..") {
+        bail!("repository-relative path contains a traversal component");
+    }
+
     let root = normalize_windows_extended_path(
         &fs::canonicalize(root)
-            .with_context(|| format!("canonicalizing repository root {}", root.display()))?,
+            .map_err(|_| color_eyre::eyre::eyre!("repository root could not be resolved"))?,
     );
+    let candidate_input = if path.is_absolute() { path.to_path_buf() } else { root.join(path) };
+    if path_has_link_component(&candidate_input) {
+        bail!("repository path contains a link or reparse point");
+    }
     let candidate =
-        if path.is_absolute() { normalize_windows_extended_path(path) } else { root.join(path) };
-    let relative = candidate.strip_prefix(&root).map_err(|_| {
-        color_eyre::eyre::eyre!("path {} is outside repository {}", path.display(), root.display())
-    })?;
+        normalize_windows_extended_path(&canonicalize_existing_prefix(&candidate_input)?);
+    let relative = candidate
+        .strip_prefix(&root)
+        .map_err(|_| color_eyre::eyre::eyre!("repository path is outside the repository"))?;
     let relative = relative.to_string_lossy().replace('\\', "/");
     validate_public_path(&relative, "repository-relative path")?;
     Ok(relative)
 }
 
+fn path_has_link_component(path: &Path) -> bool {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        let Ok(metadata) = fs::symlink_metadata(&current) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() {
+            return true;
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+
+            const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+            if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn canonicalize_existing_prefix(path: &Path) -> Result<PathBuf> {
+    let mut existing = path.to_path_buf();
+    let mut missing = Vec::new();
+    while !existing.exists() {
+        let Some(component) = existing.file_name() else {
+            bail!("repository path could not be resolved");
+        };
+        missing.push(component.to_os_string());
+        if !existing.pop() {
+            bail!("repository path could not be resolved");
+        }
+    }
+
+    let mut canonical = fs::canonicalize(&existing)
+        .map_err(|_| color_eyre::eyre::eyre!("repository path could not be resolved"))?;
+    for component in missing.iter().rev() {
+        canonical.push(component);
+    }
+    Ok(canonical)
+}
+
 fn normalize_windows_extended_path(path: &Path) -> PathBuf {
     let value = path.to_string_lossy();
-    PathBuf::from(value.strip_prefix("\\\\?\\").unwrap_or(&value))
+    if let Some(stripped) = value.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{stripped}"));
+    }
+    PathBuf::from(value.strip_prefix(r"\\?\").unwrap_or(&value))
 }
 
 /// Load one or more independently identified compatibility series from typed
@@ -1275,7 +1532,7 @@ fn load_compatibility_series(
         landed_sha: bundle.index.lineage.landed_sha.clone(),
         evidence_bundle_id: bundle.index.bundle_id.clone(),
     };
-    Ok(CompilerCompatibilitySeries {
+    let series = CompilerCompatibilitySeries {
         identity,
         current_observation: observation,
         transition_candidate: CompatibilityTransitionCandidate {
@@ -1298,7 +1555,13 @@ fn load_compatibility_series(
         differential_oracle: unavailable_rail("differential-oracle receipt was not supplied"),
         eir: unavailable_rail("EIR evaluation receipt was not supplied"),
         claim_boundary: "compile-harness and typed receipt state only; general semantics and runtime correctness are not implied".into(),
-    })
+    };
+    // The published series is what #4748/#4749/#5172/#5174 consume, so an
+    // inadmissible rail claim must fail here rather than reach a reader.
+    if let Err(violation) = validate_series_rail_mechanisms(&series) {
+        bail!("compatibility series {}: {violation}", series.identity.series_id);
+    }
+    Ok(series)
 }
 
 fn validate_authority_artifact_bindings(
@@ -1509,6 +1772,8 @@ fn load_registry_state(
         SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION,
         format!("validated {} registry entries", registry.entries.len()),
         vec![format!("series:{}", baseline.series_id)],
+        // The boundary registry represents no execution, so it names no rail.
+        None,
     ))
 }
 
@@ -1563,6 +1828,8 @@ fn load_cluster_history_state(
             FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION,
             format!("validated {} history entries", history.entries.len()),
             history_bundle_id.clone().into_iter().collect(),
+            // Cluster history represents no execution, so it names no rail.
+            None,
         ),
         CompatibilityClusterState {
             active_count: clusters.clusters.len(),
@@ -1589,12 +1856,47 @@ fn load_execution_rail(
     {
         bail!("execution rail identity does not match series {}", series.series_id);
     }
+    // The rail stamps `RUN_REPORT_SCHEMA_VERSION` as its own schema identity,
+    // so a report declaring a different version would be relabeled current —
+    // the same kind of unearned identity this rail exists to stop. Parse and
+    // compile propagate the report's actual version instead; the execution
+    // rail publishes a constant, so it has to earn it here.
+    if report.schema_version != RUN_REPORT_SCHEMA_VERSION {
+        bail!("execution rail report schema is not the supported run-report schema");
+    }
     ensure_valid_report_shape(&report)?;
+    let mechanism = execution_receipt_mechanism(&report)?;
     Ok(available_rail(
         RUN_REPORT_SCHEMA_VERSION,
-        "selected execution receipt validated".into(),
+        format!("selected execution receipt validated; mechanism {mechanism}"),
         vec![format!("bundle:{bundle_id}")],
+        Some(mechanism),
     ))
+}
+
+/// The one mechanism every file result of an execution receipt agrees on.
+///
+/// `read_run_report` already rejects an execute report whose file results
+/// carry no mechanism or an inadmissible one, through
+/// `reject_inadmissible_report_mechanisms`, but it does not require them to
+/// agree. A receipt mixing rails describes no single rail, so it cannot be
+/// summarized as one and fails closed here rather than having one mechanism
+/// picked for it (#8254).
+fn execution_receipt_mechanism(report: &RunReport) -> Result<ExecutionMechanism> {
+    let mut mechanisms: Vec<ExecutionMechanism> =
+        report.file_results.iter().filter_map(|result| result.mechanism).collect();
+    mechanisms.sort_unstable();
+    mechanisms.dedup();
+    match mechanisms.as_slice() {
+        [mechanism] => Ok(*mechanism),
+        [] => {
+            bail!("execution rail receipt names no execution mechanism, so it cannot claim a rail")
+        }
+        many => bail!(
+            "execution rail receipt mixes execution mechanisms ({}), so it describes no single rail",
+            many.iter().map(|mechanism| mechanism.as_str()).collect::<Vec<_>>().join(", ")
+        ),
+    }
 }
 
 fn build_compatibility_debt_state(
@@ -1633,6 +1935,7 @@ fn unavailable_rail(reason: &str) -> CompatibilityRailState {
         reason: reason.into(),
         schema_version: None,
         evidence_refs: Vec::new(),
+        mechanism: None,
     }
 }
 
@@ -1640,12 +1943,14 @@ fn available_rail(
     schema_version: &str,
     reason: String,
     evidence_refs: Vec<String>,
+    mechanism: Option<ExecutionMechanism>,
 ) -> CompatibilityRailState {
     CompatibilityRailState {
         availability: CompatibilityRailAvailability::Available,
         reason,
         schema_version: Some(schema_version.into()),
         evidence_refs,
+        mechanism,
     }
 }
 
@@ -3024,28 +3329,27 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
     )
     .with_context(|| format!("running Perl core tests via {} {}", config.runner, config.profile))?;
 
-    let mut records = read_runner_records_or_empty(&context_path)?;
-    let used_direct_runner = invoke_runner_for_missing_records(
-        &t_dir,
-        &discovered,
-        &records,
-        &runner_binary,
-        &context_path,
+    // Freeze the upstream observation from exactly one context read before
+    // any direct diagnostic work is planned or executed (#8173). Missing
+    // expected rows stay missing; nothing repairs upstream membership here,
+    // and terminal admission is classified inside the frozen set (#6884).
+    let observation = UpstreamObservationSet::settle(
+        config.runner,
         config.mode,
+        config.profile,
+        &discovered,
+        &read_runner_records_or_empty(&context_path)?,
+        output.status.code(),
     )?;
-    if used_direct_runner {
-        records = read_runner_records_or_empty(&context_path)?;
-    }
     let report = build_run_report(BuildRunReportInput {
         config: &config,
         perl_tree: &perl_tree,
         run_tree: &run_tree,
-        discovered: &discovered,
-        records: &records,
-        harness_status: output.status.code(),
+        observation: &observation,
     });
     let output_path =
         config.output.unwrap_or_else(|| default_run_report_path(config.mode, config.profile));
+    remove_stale_diagnostics_sidecar(&output_path)?;
     write_run_report(&output_path, &report)?;
 
     tracing::info!(
@@ -3057,6 +3361,33 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
     );
     tracing::info!("wrote {}", output_path.display());
 
+    if config.diagnostic_probes && !observation.missing().is_empty() {
+        run_direct_diagnostic_probes(
+            &observation,
+            &t_dir,
+            &run_tree,
+            &runner_binary,
+            config.mode,
+            &output_path,
+        );
+    } else if observation.counts().extra > 0 {
+        retain_extra_row_census(&observation, &output_path);
+    }
+
+    // Terminal admission is decided from the frozen outcome, after the
+    // authoritative report and any separate diagnostics exist (#6884/#8173):
+    // a nonzero upstream process cannot become valid because diagnostics ran,
+    // and no direct row participates in this decision.
+    let terminal = observation.terminal();
+    if !terminal.is_scoreable() {
+        bail!(
+            "upstream harness terminal status {} is not admitted ({}) despite no recorded file failures\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            terminal.not_proven_reason(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     if report.summary.files_failed > 0 {
         bail!(
             "perl-core-harness {} {} failed for {} of {} files; see {}",
@@ -3067,15 +3398,108 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
             output_path.display()
         );
     }
-    if !output.status.success() && !used_direct_runner {
-        bail!(
-            "upstream harness exited with status {} despite no recorded file failures\nstdout:\n{}\nstderr:\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
     Ok(())
+}
+
+/// Run bounded direct diagnostic probes for missing upstream rows.
+///
+/// Diagnostics execute only after the upstream report has been written, read a
+/// separate probe context, and are retained under a separate receipt. Any
+/// diagnostic failure is recorded as a limitation and never changes the
+/// authoritative upstream result (#8173).
+fn run_direct_diagnostic_probes(
+    observation: &UpstreamObservationSet,
+    t_dir: &Path,
+    run_tree: &Path,
+    runner_binary: &Path,
+    mode: HarnessMode,
+    report_output_path: &Path,
+) {
+    let probe_context_path = run_tree.join("target").join("perl-lsp-direct-diagnostics.jsonl");
+    let mut context_trusted = true;
+    if probe_context_path.exists() {
+        let context = format!("removing stale probe context {}", probe_context_path.display());
+        if let Err(err) = fs::remove_file(&probe_context_path) {
+            tracing::warn!("{context}: {err}");
+            // Leftover rows from a previous run are indistinguishable from
+            // fresh bytes once removal fails; nothing probed against this
+            // context may claim a result (#8173).
+            context_trusted = false;
+        }
+    }
+
+    let mut diagnostics = DirectDiagnosticSet::plan(observation);
+    let mut executed = Vec::<(String, Option<i32>)>::new();
+    for missing in observation.missing() {
+        let subject_path = missing.as_str().to_string();
+        match invoke_direct_probe_runner(
+            t_dir,
+            runner_binary,
+            &probe_context_path,
+            mode,
+            &subject_path,
+        ) {
+            Ok(probe_output) => executed.push((subject_path, probe_output.status.code())),
+            Err(err) => {
+                tracing::warn!("direct diagnostic probe for {subject_path} failed: {err}");
+                diagnostics.add_probe(SettledDiagnosticProbe::unavailable(&subject_path, None));
+            }
+        }
+    }
+
+    let rows = match read_runner_records_or_empty(&probe_context_path) {
+        Ok(rows) => rows,
+        Err(err) => {
+            tracing::warn!("direct diagnostic probe context unreadable: {err}");
+            Vec::new()
+        }
+    };
+    settle_probe_context_rows(&mut diagnostics, &executed, rows, context_trusted);
+
+    retain_direct_diagnostics(&diagnostics, report_output_path);
+}
+
+/// Persist the upstream membership census when extras exist but no probe runs.
+///
+/// An upstream run whose observed rows fall outside expected selection
+/// membership otherwise exits green with no persisted trace at all: the
+/// counts reached only the diagnostics receipt, which was written only when
+/// probes ran (#8173). Membership-equality enforcement stays deferred to
+/// #7737/#12106.
+fn retain_extra_row_census(observation: &UpstreamObservationSet, report_output_path: &Path) {
+    let diagnostics = DirectDiagnosticSet::plan(observation);
+    retain_direct_diagnostics(&diagnostics, report_output_path);
+}
+
+/// Build and retain the direct-diagnostics receipt beside the report.
+fn retain_direct_diagnostics(diagnostics: &DirectDiagnosticSet, report_output_path: &Path) {
+    let receipt = direct_diagnostics_receipt(diagnostics);
+    let receipt_path = direct_diagnostics_receipt_path(report_output_path);
+    match write_direct_diagnostics_receipt(&receipt_path, &receipt) {
+        Ok(()) => tracing::info!(
+            "perl-core-harness: retained {} direct diagnostic probes in {}",
+            receipt.probes.len(),
+            receipt_path.display()
+        ),
+        Err(err) => tracing::warn!("writing direct diagnostics receipt failed: {err}"),
+    }
+}
+
+/// Remove a stale diagnostic receipt before publishing a fresh report.
+///
+/// A reused output path must not keep a `.direct-diagnostics.json` from an
+/// earlier invocation beside new authoritative bytes: the sidecar is derived
+/// diagnostic state whose absence is meaningful. Any removal failure other
+/// than a missing file fails closed before the report is published (#8173).
+fn remove_stale_diagnostics_sidecar(report_output_path: &Path) -> Result<()> {
+    let receipt_path = direct_diagnostics_receipt_path(report_output_path);
+    match fs::remove_file(&receipt_path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| {
+            format!("removing stale direct-diagnostics receipt {}", receipt_path.display())
+        }),
+    }
 }
 
 /// Stub for future report rendering.
@@ -3094,18 +3518,22 @@ pub fn baseline(config: BaselineConfig) -> Result<()> {
         .clone()
         .unwrap_or_else(|| default_baseline_path(config.mode, config.profile));
     let report = read_run_report(&report_path)?;
-    // An absent or nonzero legacy runner terminal status never proves process
-    // completion for parse/compile evidence, however green the file and
-    // assertion counts look (#6884 interim false-green block). Refuse to check
-    // or accept a baseline from it. Execute mode is excluded: its ratcheted
-    // selected-base receipt deliberately records the upstream scheduler's
-    // nonzero exit alongside green runner records (#3451), and replacing that
-    // modeling belongs to the typed terminal taxonomy on #6884.
-    if config.mode != HarnessMode::Execute && report.harness_status != Some(0) {
+    // Terminal admission precedes any count semantics (#6884): only a clean
+    // exit or a recognized runner/mode completion state proves process
+    // completion, however green the file and assertion counts look. The
+    // execute-mode recognition keeps the #3451 selected-base receipt flow
+    // working instead of permanently misclassifying it as instrument failure.
+    let terminal = transition::TerminalProcessOutcome::from_harness_status(
+        report.harness_status,
+        report.runner,
+        report.mode,
+    );
+    if !terminal.is_scoreable() {
         bail!(
-            "perl-core-harness baseline refuses {} with runner terminal status {:?}: process completion is not proven",
+            "perl-core-harness baseline refuses {} with runner terminal status {:?}: process completion is not proven ({})",
             report_path.display(),
-            report.harness_status
+            report.harness_status,
+            terminal.not_proven_reason()
         );
     }
     reject_v2_options_without_series(&config)?;
@@ -3252,6 +3680,7 @@ pub fn smoke(config: SmokeConfig) -> Result<()> {
             tests: Vec::new(),
             output: Some(report_path.clone()),
             runner_binary: config.runner_binary.clone(),
+            diagnostic_probes: true,
         });
         if let Err(err) = &run_result {
             if !report_path.is_file() {
@@ -3560,67 +3989,29 @@ fn invoke_harness_run(
     command.output().with_context(|| format!("spawning host Perl: {}", host_perl.display()))
 }
 
-fn invoke_runner_for_missing_records(
-    t_dir: &Path,
-    discovered: &[DiscoveredTest],
-    records: &[RunnerRecord],
-    runner_binary: &Path,
-    context_path: &Path,
-    mode: HarnessMode,
-) -> Result<bool> {
-    let recorded = records
-        .iter()
-        .filter_map(|record| normalize_test_path(&record.path))
-        .collect::<BTreeSet<_>>();
-    let missing =
-        discovered.iter().filter(|test| !recorded.contains(&test.path)).collect::<Vec<_>>();
-    if missing.is_empty() {
-        return Ok(false);
-    }
-
-    if let Some(parent) = context_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating runner context directory {}", parent.display()))?;
-    }
-
-    for test in &missing {
-        let output = invoke_direct_runner(t_dir, runner_binary, context_path, mode, &test.path)?;
-        if !context_path.is_file() {
-            bail!(
-                "direct runner did not write context for {}\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
-                test.path,
-                output.status,
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-    }
-
-    let refreshed = read_runner_records_or_empty(context_path)?;
-    let recorded_after = refreshed
-        .iter()
-        .filter_map(|record| normalize_test_path(&record.path))
-        .collect::<BTreeSet<_>>();
-    if let Some(test) = missing.iter().find(|test| !recorded_after.contains(&test.path)) {
-        bail!("direct runner did not write a record for {}", test.path);
-    }
-
-    Ok(true)
-}
-
-fn invoke_direct_runner(
+/// Invoke the compatibility runner directly for one diagnostic probe.
+///
+/// The probe writes to its own context path, never to the upstream runner
+/// context, so direct rows stay physically outside upstream membership
+/// (#8173).
+fn invoke_direct_probe_runner(
     t_dir: &Path,
     runner_binary: &Path,
-    context_path: &Path,
+    probe_context_path: &Path,
     mode: HarnessMode,
     test_path: &str,
 ) -> Result<Output> {
+    if let Some(parent) = probe_context_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating probe context directory {}", parent.display()))?;
+    }
+
     let mut command = Command::new(runner_binary);
     command.current_dir(t_dir);
     command.arg(test_path);
     command.env("LC_ALL", "C");
     command.env("PERL_LSP_HARNESS_MODE", mode.as_str());
-    command.env("PERL_LSP_HARNESS_CONTEXT", context_path);
+    command.env("PERL_LSP_HARNESS_CONTEXT", probe_context_path);
     sanitize_perl_env(&mut command);
 
     command
@@ -3744,13 +4135,52 @@ fn write_run_report(path: &Path, report: &RunReport) -> Result<()> {
 fn read_run_report(path: &Path) -> Result<RunReport> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("reading run report {}", path.display()))?;
-    serde_json::from_str(&raw).with_context(|| format!("decoding run report {}", path.display()))
+    let report: RunReport = serde_json::from_str(&raw)
+        .with_context(|| format!("decoding run report {}", path.display()))?;
+    reject_inadmissible_report_mechanisms(&report)
+        .with_context(|| format!("run report {}", path.display()))?;
+    Ok(report)
+}
+
+/// Refuse a run report whose per-file execution-mechanism claims are not
+/// admissible for its mode.
+///
+/// A report is what becomes a checked-in baseline and what the ratchet compares
+/// against, so the mechanism contract has to hold wherever a report is decoded
+/// or accepted — not only where a runner-record line is (#14363).
+fn reject_inadmissible_report_mechanisms(report: &RunReport) -> Result<()> {
+    validate_file_result_mechanisms(report.mode, &report.file_results)
+        .map_err(|violation| color_eyre::eyre::eyre!("{violation}"))
+}
+
+/// Refuse a checked-in baseline whose per-file execution-mechanism claims are
+/// not admissible for its mode.
+fn reject_inadmissible_baseline_mechanisms(
+    mode: HarnessMode,
+    file_results: &[RunFileResult],
+) -> Result<()> {
+    validate_file_result_mechanisms(mode, file_results)
+        .map_err(|violation| color_eyre::eyre::eyre!("{violation}"))
+}
+
+fn write_direct_diagnostics_receipt(path: &Path, receipt: &DirectDiagnosticReceipt) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        let context = format!("creating diagnostics directory {}", parent.display());
+        fs::create_dir_all(parent).context(context)?;
+    }
+    let json = serde_json::to_string_pretty(receipt).context("serializing direct diagnostics")?;
+    fs::write(path, format!("{json}\n"))
+        .with_context(|| format!("writing direct diagnostics {}", path.display()))
 }
 
 fn read_compile_baseline(path: &Path) -> Result<CompileBaseline> {
     let raw =
         fs::read_to_string(path).with_context(|| format!("reading baseline {}", path.display()))?;
-    serde_json::from_str(&raw).with_context(|| format!("decoding baseline {}", path.display()))
+    let baseline: CompileBaseline = serde_json::from_str(&raw)
+        .with_context(|| format!("decoding baseline {}", path.display()))?;
+    reject_inadmissible_baseline_mechanisms(baseline.mode, &baseline.file_results)
+        .with_context(|| format!("baseline {}", path.display()))?;
+    Ok(baseline)
 }
 
 fn write_compile_baseline(path: &Path, baseline: &CompileBaseline) -> Result<()> {
@@ -3794,6 +4224,9 @@ fn write_gap_map(path: &Path, gap_map: &GapMap) -> Result<()> {
 }
 
 fn baseline_from_report(report: &RunReport) -> Result<CompileBaseline> {
+    // Acceptance copies file results verbatim into the durable artifact, so an
+    // inadmissible claim must be refused here and not only at report decode.
+    reject_inadmissible_report_mechanisms(report)?;
     let mut baseline = CompileBaseline {
         schema_version: COMPILE_BASELINE_SCHEMA_VERSION.to_string(),
         report_schema_version: report.schema_version.clone(),
@@ -3833,6 +4266,7 @@ fn baseline_v2_from_report(
     previous: Option<&CompileBaselineV2>,
     retirements: &[BoundaryRetirement],
 ) -> Result<CompileBaselineV2> {
+    reject_inadmissible_report_mechanisms(report)?;
     let identities = required_v2_identities(config)?;
     validate_report_against_series(report, series, config.mode)?;
     validate_v2_identities_against_series(&identities, series)?;
@@ -4439,6 +4873,8 @@ fn parse_compile_baseline_v2(value: serde_json::Value, label: &str) -> Result<Co
     }
     let baseline: CompileBaselineV2 =
         serde_json::from_value(value).with_context(|| format!("decoding v2 baseline {label}"))?;
+    reject_inadmissible_baseline_mechanisms(baseline.mode, &baseline.file_results)
+        .with_context(|| format!("v2 baseline {label}"))?;
     let mut violations = validate_persisted_boundary_retirements(&baseline, None);
     violations.extend(validate_accepted_semantic_boundary_inventory(&baseline.semantic_boundaries));
     if !violations.is_empty() {
@@ -5252,15 +5688,41 @@ fn read_runner_records(path: &Path) -> Result<Vec<RunnerRecord>> {
         if trimmed.is_empty() {
             continue;
         }
-        let record = serde_json::from_str(trimmed).with_context(|| {
+        let record: RunnerRecord = serde_json::from_str(trimmed).with_context(|| {
             format!("decoding runner record {} in {}", index + 1, path.display())
         })?;
+        reject_inadmissible_mechanism(&record)
+            .with_context(|| format!("runner record {} in {}", index + 1, path.display()))?;
         records.push(record);
     }
     if records.is_empty() {
         bail!("runner context contained no records: {}", path.display());
     }
     Ok(records)
+}
+
+/// Refuse a runner record whose execution-mechanism claim is not admissible.
+///
+/// Ingestion is the point where an edited or hand-written receipt would
+/// otherwise enter the report as though the runner had produced it, so the
+/// mechanism contract is enforced here as well as at write time (#8254).
+fn reject_inadmissible_mechanism(record: &RunnerRecord) -> Result<()> {
+    validate_execution_mechanism(&record.mode, record.mechanism)
+        .map_err(|violation| color_eyre::eyre::eyre!("{violation}"))
+}
+
+/// The rail a run's configured mode can currently produce.
+///
+/// Used only where a discovered test yielded no runner record at all: there is
+/// no receipt to read a mechanism from, and the failure still belongs to the
+/// rail the run selected. The only executor wired to `execute` is the
+/// selected-fixture replay scaffold; a future EIR rail names its own mechanism
+/// on the receipt and does not reach this fallback.
+fn mode_mechanism(mode: HarnessMode) -> Option<ExecutionMechanism> {
+    match mode {
+        HarnessMode::Parse | HarnessMode::Compile => None,
+        HarnessMode::Execute => Some(ExecutionMechanism::FixtureReplay),
+    }
 }
 
 fn read_runner_records_or_empty(path: &Path) -> Result<Vec<RunnerRecord>> {
@@ -5279,52 +5741,72 @@ struct BuildRunReportInput<'a> {
     config: &'a RunConfig,
     perl_tree: &'a Path,
     run_tree: &'a Path,
-    discovered: &'a [DiscoveredTest],
-    records: &'a [RunnerRecord],
-    harness_status: Option<i32>,
+    observation: &'a UpstreamObservationSet,
 }
 
+/// Assemble the authoritative run report from frozen upstream evidence only.
+///
+/// The typed observation set is the sole input for membership and totals:
+/// direct diagnostic products cannot reach this function (#8173).
 fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
-    let records_by_path = input
-        .records
-        .iter()
-        .filter_map(|record| normalize_test_path(&record.path).map(|path| (path, record)))
-        .collect::<BTreeMap<_, _>>();
     let mut file_results = Vec::new();
     let mut failures = Vec::new();
     let mut buckets = BTreeMap::new();
     let mut assertions_total = 0usize;
     let mut assertions_passed = 0usize;
+    let mut semantic_boundaries = Vec::new();
 
-    for test in input.discovered {
-        match records_by_path.get(&test.path) {
+    for expected in input.observation.expected() {
+        match input.observation.observed_record(expected) {
             Some(record) => {
                 assertions_total = assertions_total.saturating_add(record.assertions_total);
                 assertions_passed = assertions_passed.saturating_add(record.assertions_passed);
                 file_results.push(RunFileResult {
-                    path: test.path.clone(),
+                    path: expected.as_str().to_string(),
                     status: record.status,
                     assertions_passed: record.assertions_passed,
                     assertions_total: record.assertions_total,
+                    // Read from the receipt, never inferred from the run's
+                    // mode: the receipt is what actually names its rail.
+                    mechanism: record.mechanism,
                 });
                 if record.status == RunnerStatus::Fail {
                     let bucket = record.bucket.clone().unwrap_or_else(|| "unknown".to_string());
                     *buckets.entry(bucket.clone()).or_insert(0) += 1;
-                    failures.push(failure_for_record(&test.path, &bucket, record));
+                    failures.push(failure_for_record(expected.as_str(), &bucket, record));
                 }
+                semantic_boundaries.extend(record.semantic_boundaries.iter().map(|boundary| {
+                    ObservedSemanticBoundary {
+                        path: expected.as_str().to_string(),
+                        id: boundary.id.clone(),
+                        disposition: boundary.disposition,
+                        reason: boundary.reason.clone(),
+                        source_span: boundary.source_span,
+                        source_kind: boundary.source_kind.clone(),
+                        confidence: boundary.confidence,
+                        blocks_compilation: boundary.blocks_compilation,
+                        blocks_downstream_static_facts: boundary.blocks_downstream_static_facts,
+                        lock_scope: boundary.lock_scope,
+                        owner_workstream: boundary.owner_workstream.clone(),
+                        supporting_test: boundary.supporting_test.clone(),
+                    }
+                }));
             }
             None => {
                 assertions_total = assertions_total.saturating_add(1);
                 file_results.push(RunFileResult {
-                    path: test.path.clone(),
+                    path: expected.as_str().to_string(),
                     status: RunnerStatus::Fail,
                     assertions_passed: 0,
                     assertions_total: 1,
+                    // No receipt exists to read, and the failure still belongs
+                    // to the rail this run selected.
+                    mechanism: mode_mechanism(input.config.mode),
                 });
                 let bucket = "harness_prepare".to_string();
                 *buckets.entry(bucket.clone()).or_insert(0) += 1;
                 failures.push(RunFailure {
-                    path: test.path.clone(),
+                    path: expected.as_str().to_string(),
                     phase: input.config.mode.as_str().to_string(),
                     bucket,
                     first_diagnostic: "test was discovered but produced no runner record"
@@ -5340,31 +5822,6 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
         file_results.iter().filter(|result| result.status == RunnerStatus::Fail).count();
     let files_total = file_results.len();
     let files_passed = files_total.saturating_sub(files_failed);
-    let semantic_boundaries = input
-        .discovered
-        .iter()
-        .filter_map(|test| {
-            let path = normalize_test_path(&test.path)?;
-            let record = records_by_path.get(&path)?;
-            Some((path, *record))
-        })
-        .flat_map(|(path, record)| {
-            record.semantic_boundaries.iter().map(move |boundary| ObservedSemanticBoundary {
-                path: path.clone(),
-                id: boundary.id.clone(),
-                disposition: boundary.disposition,
-                reason: boundary.reason.clone(),
-                source_span: boundary.source_span,
-                source_kind: boundary.source_kind.clone(),
-                confidence: boundary.confidence,
-                blocks_compilation: boundary.blocks_compilation,
-                blocks_downstream_static_facts: boundary.blocks_downstream_static_facts,
-                lock_scope: boundary.lock_scope,
-                owner_workstream: boundary.owner_workstream.clone(),
-                supporting_test: boundary.supporting_test.clone(),
-            })
-        })
-        .collect::<Vec<_>>();
 
     RunReport {
         schema_version: RUN_REPORT_SCHEMA_VERSION.to_string(),
@@ -5377,7 +5834,7 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
         runner: input.config.runner,
         mode: input.config.mode,
         profile: input.config.profile,
-        harness_status: input.harness_status,
+        harness_status: input.observation.harness_status(),
         summary: RunSummary {
             files_total,
             files_passed,
@@ -5472,6 +5929,24 @@ mod tests {
 
     type TestResult<T = ()> = Result<T>;
 
+    /// Freeze a test observation set the way `run_mode` does: one settle call
+    /// from discovered membership plus upstream rows only.
+    fn settle_test_observation(
+        mode: HarnessMode,
+        discovered: &[DiscoveredTest],
+        records: &[RunnerRecord],
+        harness_status: Option<i32>,
+    ) -> Result<UpstreamObservationSet> {
+        UpstreamObservationSet::settle(
+            HarnessRunner::Test,
+            mode,
+            HarnessProfile::Base,
+            discovered,
+            records,
+            harness_status,
+        )
+    }
+
     /// Parity: the declared-path validator must not be weaker than the
     /// structural classifier. If a form is host-path material anywhere in a
     /// public string, a declared path field carrying that same value has to be
@@ -5516,6 +5991,166 @@ mod tests {
             validate_public_path(value, "parity probe")?;
         }
         Ok(())
+    }
+
+    #[test]
+    fn repository_relative_path_canonicalizes_existing_candidates() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("repository");
+        let nested = root.join(".ci").join("perl-core-harness");
+        fs::create_dir_all(&nested)?;
+        let index = nested.join("current-authority.json");
+        fs::write(&index, "{}")?;
+
+        assert_eq!(
+            repository_relative_path(&root, &index)?,
+            ".ci/perl-core-harness/current-authority.json"
+        );
+        assert_eq!(
+            repository_relative_path(
+                &root,
+                Path::new(".ci/perl-core-harness/current-authority.json")
+            )?,
+            ".ci/perl-core-harness/current-authority.json"
+        );
+        assert_eq!(
+            repository_relative_path(&root, Path::new(".ci/perl-core-harness/future.json"))?,
+            ".ci/perl-core-harness/future.json"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn repository_relative_path_rejects_traversal_before_canonicalization() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("repository");
+        fs::create_dir_all(&root)?;
+        let inside = root.join("inside.json");
+        fs::write(&inside, "{}")?;
+
+        assert!(
+            repository_relative_path(&root, Path::new("nested/../inside.json")).is_err(),
+            "raw traversal syntax must remain rejected"
+        );
+        assert!(
+            repository_relative_path(&root, &root.join("nested").join("..").join("inside.json"))
+                .is_err(),
+            "absolute paths with raw traversal syntax must remain rejected"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn repository_relative_path_rejects_existing_outside_candidates() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("repository");
+        fs::create_dir_all(&root)?;
+        let outside = temp.path().join("outside.json");
+        fs::write(&outside, "{}")?;
+
+        assert!(
+            repository_relative_path(&root, &outside).is_err(),
+            "canonicalized candidates outside the root must remain rejected"
+        );
+        let error = repository_relative_path(&root, &outside).expect_err("outside path must fail");
+        let temp_path = temp.path().to_string_lossy().into_owned();
+        assert!(
+            !error.to_string().contains(&temp_path),
+            "outside path error disclosed a host path: {error}"
+        );
+        let missing_root = temp.path().join("missing-root");
+        let error = repository_relative_path(&missing_root, Path::new("artifact.json"))
+            .expect_err("missing root must fail");
+        assert!(
+            !error.to_string().contains(&temp_path),
+            "missing-root error disclosed a host path: {error}"
+        );
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn repository_relative_path_accepts_windows_alias_candidates() -> TestResult {
+        use std::iter::once;
+        use std::os::windows::ffi::OsStrExt;
+
+        use winapi::um::fileapi::GetShortPathNameW;
+
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("repository");
+        let nested = root.join(".ci").join("perl-core-harness");
+        fs::create_dir_all(&nested)?;
+        let index = nested.join("current-authority.json");
+        fs::write(&index, "{}")?;
+
+        let case_variant = PathBuf::from(root.to_string_lossy().to_ascii_uppercase())
+            .join(".CI")
+            .join("PERL-CORE-HARNESS")
+            .join("CURRENT-AUTHORITY.JSON");
+        assert_eq!(
+            repository_relative_path(&root, &case_variant)?,
+            ".ci/perl-core-harness/current-authority.json"
+        );
+
+        let input: Vec<u16> = root.as_os_str().encode_wide().chain(once(0)).collect();
+        let mut buffer = vec![0u16; 32_768];
+        // SAFETY: `input` and `buffer` are valid, NUL-terminated/writable
+        // UTF-16 buffers with their declared capacity.
+        let length =
+            unsafe { GetShortPathNameW(input.as_ptr(), buffer.as_mut_ptr(), buffer.len() as u32) };
+        if length > 0 && (length as usize) < buffer.len() {
+            let short_root = PathBuf::from(String::from_utf16_lossy(&buffer[..length as usize]));
+            if short_root != root {
+                let short_candidate =
+                    short_root.join(".CI").join("PERL-CORE-HARNESS").join("CURRENT-AUTHORITY.JSON");
+                assert_eq!(
+                    repository_relative_path(&root, &short_candidate)?,
+                    ".ci/perl-core-harness/current-authority.json"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repository_relative_path_rejects_symlink_escape() -> TestResult {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("repository");
+        fs::create_dir_all(&root)?;
+        let outside = temp.path().join("outside.json");
+        fs::write(&outside, "{}")?;
+        let link = root.join("linked.json");
+        symlink(&outside, &link)?;
+
+        assert!(
+            repository_relative_path(&root, &link).is_err(),
+            "canonicalized symlink targets outside the root must remain rejected"
+        );
+
+        let inside = root.join("inside.json");
+        fs::write(&inside, "{}")?;
+        let inside_link = root.join("inside-link.json");
+        symlink(&inside, &inside_link)?;
+        assert!(
+            repository_relative_path(&root, &inside_link).is_err(),
+            "in-root symlinks must be rejected to preserve Git path identity"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn normalize_windows_extended_path_handles_drive_and_unc_prefixes() {
+        assert_eq!(
+            normalize_windows_extended_path(Path::new(r"\\?\C:\repo\artifact.json")),
+            PathBuf::from(r"C:\repo\artifact.json")
+        );
+        assert_eq!(
+            normalize_windows_extended_path(Path::new(r"\\?\UNC\server\share\artifact.json")),
+            PathBuf::from(r"\\server\share\artifact.json")
+        );
     }
 
     /// #6882 acceptance: a public failure message must not republish the
@@ -5657,6 +6292,7 @@ mod tests {
             tests: Vec::new(),
             output: None,
             runner_binary: None,
+            diagnostic_probes: false,
         };
 
         let Err(err) = run_mode(config) else {
@@ -5678,6 +6314,7 @@ mod tests {
             tests: vec!["base/rs.t".into()],
             output: None,
             runner_binary: None,
+            diagnostic_probes: false,
         };
 
         let Err(err) = run_mode(config) else {
@@ -5706,6 +6343,7 @@ mod tests {
             tests: Vec::new(),
             output: None,
             runner_binary: Some(PathBuf::from("runner")),
+            diagnostic_probes: false,
         };
         let discovered = vec![
             DiscoveredTest { path: "base/ok.t".into(), root: "base".into() },
@@ -5714,6 +6352,7 @@ mod tests {
         ];
         let records = vec![
             RunnerRecord {
+                mechanism: None,
                 schema_version: "perl_core_harness.runner_record.v1".into(),
                 mode: "parse".into(),
                 path: "base/ok.t".into(),
@@ -5737,6 +6376,7 @@ mod tests {
                 }],
             },
             RunnerRecord {
+                mechanism: None,
                 schema_version: "perl_core_harness.runner_record.v1".into(),
                 mode: "parse".into(),
                 path: "base/bad.t".into(),
@@ -5749,14 +6389,14 @@ mod tests {
             },
         ];
         let run_tree = temp.path().join("run");
+        let observation =
+            settle_test_observation(HarnessMode::Parse, &discovered, &records, Some(1))?;
 
         let report = build_run_report(BuildRunReportInput {
             config: &config,
             perl_tree: temp.path(),
             run_tree: &run_tree,
-            discovered: &discovered,
-            records: &records,
-            harness_status: Some(1),
+            observation: &observation,
         });
 
         assert_eq!(report.summary.files_total, 3);
@@ -5790,6 +6430,7 @@ mod tests {
             tests: Vec::new(),
             output: None,
             runner_binary: Some(PathBuf::from("runner")),
+            diagnostic_probes: false,
         };
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let boundary = SemanticBoundaryRecord {
@@ -5806,6 +6447,7 @@ mod tests {
             supporting_test: "base/ok.t".into(),
         };
         let record = |path: &str| RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "compile".into(),
             path: path.into(),
@@ -5816,20 +6458,394 @@ mod tests {
             first_diagnostic: None,
             semantic_boundaries: vec![boundary.clone()],
         };
-        let records = vec![record("base/ok.t"), record("base/ok.t"), record("stale.t")];
+        let records = vec![record("base/ok.t"), record("stale.t")];
 
+        let observation =
+            settle_test_observation(HarnessMode::Compile, &discovered, &records, Some(0))?;
         let report = build_run_report(BuildRunReportInput {
             config: &config,
             perl_tree: temp.path(),
             run_tree: &temp.path().join("run"),
-            discovered: &discovered,
-            records: &records,
-            harness_status: Some(0),
+            observation: &observation,
         });
 
         assert_eq!(report.semantic_boundaries.len(), 1);
         assert_eq!(report.semantic_boundaries[0].path, "base/ok.t");
         Ok(())
+    }
+
+    #[test]
+    fn duplicate_upstream_records_fail_closed_instead_of_silently_collapsing() -> TestResult {
+        let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
+        let record = |path: &str| RunnerRecord {
+            mechanism: None,
+            schema_version: "perl_core_harness.runner_record.v1".into(),
+            mode: "compile".into(),
+            path: path.into(),
+            status: RunnerStatus::Pass,
+            assertions_passed: 1,
+            assertions_total: 1,
+            bucket: None,
+            first_diagnostic: None,
+            semantic_boundaries: Vec::new(),
+        };
+        // Equal payloads for one normalized path must never merge into one
+        // authority row (#8173): the second row fails the freeze closed.
+        let records = vec![record("base/ok.t"), record("base/ok.t")];
+
+        let Err(err) = UpstreamObservationSet::settle(
+            HarnessRunner::Test,
+            HarnessMode::Compile,
+            HarnessProfile::Base,
+            &discovered,
+            &records,
+            Some(0),
+        ) else {
+            bail!("duplicate upstream rows should fail closed");
+        };
+
+        assert!(err.to_string().contains("duplicate upstream runner record"));
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_discovered_paths_fail_closed_instead_of_silently_deduplicating() -> TestResult {
+        // Distinct raw spellings of one normalized path must never merge into
+        // one expected row (#8173): the second discovery fails the freeze
+        // closed, matching the recorded-side law.
+        let discovered = vec![
+            DiscoveredTest { path: "base/ok.t".into(), root: "base".into() },
+            DiscoveredTest { path: "./base/ok.t".into(), root: "base".into() },
+        ];
+
+        let Err(err) = UpstreamObservationSet::settle(
+            HarnessRunner::Test,
+            HarnessMode::Compile,
+            HarnessProfile::Base,
+            &discovered,
+            &[],
+            Some(0),
+        ) else {
+            bail!("duplicate discovered paths should fail closed");
+        };
+
+        assert!(err.to_string().contains("duplicate discovered test path"));
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_upstream_record_paths_fail_closed_before_report_assembly() -> TestResult {
+        let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
+        let record = RunnerRecord {
+            mechanism: None,
+            schema_version: "perl_core_harness.runner_record.v1".into(),
+            mode: "parse".into(),
+            path: "not-a-normalized-test.txt".into(),
+            status: RunnerStatus::Pass,
+            assertions_passed: 1,
+            assertions_total: 1,
+            bucket: None,
+            first_diagnostic: None,
+            semantic_boundaries: Vec::new(),
+        };
+
+        let settled = UpstreamObservationSet::settle(
+            HarnessRunner::Test,
+            HarnessMode::Parse,
+            HarnessProfile::Base,
+            &discovered,
+            std::slice::from_ref(&record),
+            Some(0),
+        );
+
+        let message = match settled {
+            Err(err) => err.to_string(),
+            Ok(_) => bail!("malformed upstream rows should fail closed"),
+        };
+        assert!(message.contains("did not normalize"));
+        Ok(())
+    }
+
+    #[test]
+    fn direct_probe_rows_cannot_enter_upstream_membership_or_totals() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let config = RunConfig {
+            perl_tree: temp.path().join("perl"),
+            host_perl: PathBuf::from("perl"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Parse,
+            profile: HarnessProfile::Base,
+            tests: Vec::new(),
+            output: None,
+            runner_binary: Some(PathBuf::from("runner")),
+            diagnostic_probes: false,
+        };
+        let discovered = vec![
+            DiscoveredTest { path: "base/ok.t".into(), root: "base".into() },
+            DiscoveredTest { path: "base/gap.t".into(), root: "base".into() },
+        ];
+        let upstream_only = RunnerRecord {
+            mechanism: None,
+            schema_version: "perl_core_harness.runner_record.v1".into(),
+            mode: "parse".into(),
+            path: "base/ok.t".into(),
+            status: RunnerStatus::Pass,
+            assertions_passed: 1,
+            assertions_total: 1,
+            bucket: None,
+            first_diagnostic: None,
+            semantic_boundaries: Vec::new(),
+        };
+        let observation = settle_test_observation(
+            HarnessMode::Parse,
+            &discovered,
+            &[upstream_only.clone()],
+            Some(0),
+        )?;
+
+        // The frozen observation keeps the missing row missing even though a
+        // direct probe later reproduces a passing result for it.
+        let mut diagnostics = DirectDiagnosticSet::plan(&observation);
+        diagnostics.add_probe(SettledDiagnosticProbe::settled(
+            "base/gap.t",
+            Some(0),
+            upstream_only,
+        ));
+
+        assert_eq!(observation.missing().len(), 1);
+        assert_eq!(observation.missing()[0].as_str(), "base/gap.t");
+        let report = build_run_report(BuildRunReportInput {
+            config: &config,
+            perl_tree: temp.path(),
+            run_tree: &temp.path().join("run"),
+            observation: &observation,
+        });
+        assert_eq!(report.summary.files_total, 2);
+        assert_eq!(report.summary.files_passed, 1);
+        assert_eq!(report.summary.files_failed, 1);
+
+        // The receipt records the passing probe plus explicit non-claims.
+        let receipt = run_authority::direct_diagnostics_receipt(&diagnostics);
+        assert_eq!(receipt.probes.len(), 1);
+        assert_eq!(
+            receipt.probes[0].outcome,
+            run_authority::DiagnosticProbeOutcome::ReproducedPass
+        );
+        assert_eq!(receipt.declared_non_claims.rows_considered_by_report_totals, 0);
+        assert_eq!(receipt.declared_non_claims.rows_considered_by_upstream_completeness, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn equal_payload_upstream_and_probe_rows_stay_distinct_authority_rows() -> TestResult {
+        let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
+        let payload = RunnerRecord {
+            mechanism: None,
+            schema_version: "perl_core_harness.runner_record.v1".into(),
+            mode: "parse".into(),
+            path: "base/ok.t".into(),
+            status: RunnerStatus::Pass,
+            assertions_passed: 4,
+            assertions_total: 4,
+            bucket: None,
+            first_diagnostic: None,
+            semantic_boundaries: Vec::new(),
+        };
+        let observation =
+            settle_test_observation(HarnessMode::Parse, &discovered, &[payload.clone()], Some(0))?;
+        let mut diagnostics = DirectDiagnosticSet::plan(&observation);
+        diagnostics.add_probe(SettledDiagnosticProbe::settled("base/ok.t", Some(0), payload));
+
+        let receipt = run_authority::direct_diagnostics_receipt(&diagnostics);
+
+        // Identical bytes do not deduplicate across authority classes.
+        assert_eq!(
+            observation.observed_record(&observation.expected()[0]).map(|r| r.status),
+            Some(RunnerStatus::Pass)
+        );
+        assert_eq!(receipt.probes.len(), 1);
+        assert_eq!(receipt.probes[0].authority, "direct_probe");
+        assert_eq!(receipt.probes[0].status, Some(RunnerStatus::Pass));
+        Ok(())
+    }
+
+    #[test]
+    fn diagnostic_receipt_is_not_admissible_as_a_run_report() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let discovered = vec![DiscoveredTest { path: "base/gap.t".into(), root: "base".into() }];
+        let observation = settle_test_observation(HarnessMode::Parse, &discovered, &[], Some(3))?;
+        let mut diagnostics = DirectDiagnosticSet::plan(&observation);
+        diagnostics.add_probe(SettledDiagnosticProbe::unavailable("base/gap.t", None));
+        let receipt = run_authority::direct_diagnostics_receipt(&diagnostics);
+        let json = serde_json::to_string(&receipt)?;
+
+        let decoded = serde_json::from_str::<RunReport>(&json);
+        assert!(decoded.is_err(), "diagnostic receipt must not decode as RunReport");
+        let roundtrip: run_authority::DirectDiagnosticReceipt = serde_json::from_str(&json)?;
+        assert_eq!(roundtrip, receipt);
+        let _ = temp;
+        Ok(())
+    }
+
+    #[test]
+    fn extra_upstream_rows_leave_a_durable_trace_without_probes() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
+        let record = |path: &str| RunnerRecord {
+            mechanism: None,
+            schema_version: "perl_core_harness.runner_record.v1".into(),
+            mode: "parse".into(),
+            path: path.into(),
+            status: RunnerStatus::Pass,
+            assertions_passed: 1,
+            assertions_total: 1,
+            bucket: None,
+            first_diagnostic: None,
+            semantic_boundaries: Vec::new(),
+        };
+        // One expected row plus one row outside selection membership: zero
+        // missing, exit zero, yet the wrong membership must stay visible.
+        let records = vec![record("base/ok.t"), record("outside-selection.t")];
+
+        let observation =
+            settle_test_observation(HarnessMode::Parse, &discovered, &records, Some(0))?;
+        assert_eq!(observation.counts().extra, 1);
+        assert!(observation.missing().is_empty());
+
+        // Even with no probes running, the census survives durably on the
+        // retained receipt instead of vanishing with the run (#8173).
+        let output_path = temp.path().join("run-report.json");
+        retain_extra_row_census(&observation, &output_path);
+        let receipt_path = run_authority::direct_diagnostics_receipt_path(&output_path);
+        let raw = fs::read_to_string(&receipt_path)
+            .with_context(|| format!("reading {}", receipt_path.display()))?;
+        let receipt: run_authority::DirectDiagnosticReceipt = serde_json::from_str(&raw)?;
+        assert_eq!(receipt.probes.len(), 0);
+        assert_eq!(receipt.parent_observation.as_ref().map(|parent| parent.extra_rows), Some(1));
+        assert_eq!(receipt.parent_observation.as_ref().map(|parent| parent.missing_rows), Some(0));
+        assert_eq!(
+            receipt.limitations,
+            vec![run_authority::LIMITATION_MISSING_UPSTREAM_SELECTION_CONTEXT.to_string()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stale_probe_context_leftovers_cannot_back_a_reproduced_pass() -> TestResult {
+        let discovered = vec![DiscoveredTest { path: "base/gap.t".into(), root: "base".into() }];
+        let observation = settle_test_observation(HarnessMode::Parse, &discovered, &[], Some(0))?;
+        // A leftover passing row for this subject from a previous run, still
+        // present because stale-context removal failed.
+        let stale_row = RunnerRecord {
+            mechanism: None,
+            schema_version: "perl_core_harness.runner_record.v1".into(),
+            mode: "parse".into(),
+            path: "base/gap.t".into(),
+            status: RunnerStatus::Pass,
+            assertions_passed: 1,
+            assertions_total: 1,
+            bucket: None,
+            first_diagnostic: None,
+            semantic_boundaries: Vec::new(),
+        };
+
+        let mut diagnostics = DirectDiagnosticSet::plan(&observation);
+        run_authority::settle_probe_context_rows(
+            &mut diagnostics,
+            &[("base/gap.t".to_string(), Some(0))],
+            vec![stale_row],
+            false,
+        );
+        let receipt = run_authority::direct_diagnostics_receipt(&diagnostics);
+
+        // The stale bytes must not be able to claim a reproduced pass.
+        assert_eq!(receipt.probes[0].outcome, run_authority::DiagnosticProbeOutcome::Unavailable);
+        assert!(
+            receipt.probes[0].limitations.contains(
+                &run_authority::LIMITATION_PROBE_CONTEXT_STALE_REMOVAL_FAILED.to_string()
+            )
+        );
+        assert!(
+            receipt.limitations.contains(
+                &run_authority::LIMITATION_PROBE_CONTEXT_STALE_REMOVAL_FAILED.to_string()
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_and_duplicate_probe_rows_become_visible_limitations() -> TestResult {
+        let discovered = vec![DiscoveredTest { path: "base/gap.t".into(), root: "base".into() }];
+        let observation = settle_test_observation(HarnessMode::Parse, &discovered, &[], Some(0))?;
+        let record = |path: &str| RunnerRecord {
+            mechanism: None,
+            schema_version: "perl_core_harness.runner_record.v1".into(),
+            mode: "parse".into(),
+            path: path.into(),
+            status: RunnerStatus::Pass,
+            assertions_passed: 1,
+            assertions_total: 1,
+            bucket: None,
+            first_diagnostic: None,
+            semantic_boundaries: Vec::new(),
+        };
+
+        let mut diagnostics = DirectDiagnosticSet::plan(&observation);
+        run_authority::settle_probe_context_rows(
+            &mut diagnostics,
+            &[("base/gap.t".to_string(), Some(0))],
+            vec![record("not-a-normalized-test.txt"), record("base/gap.t"), record("base/gap.t")],
+            true,
+        );
+        let receipt = run_authority::direct_diagnostics_receipt(&diagnostics);
+
+        // Neither skip-silently nor last-wins: the subject cannot settle a
+        // result from colliding rows and both anomalies stay visible.
+        assert_eq!(receipt.probes[0].outcome, run_authority::DiagnosticProbeOutcome::Unavailable);
+        assert_eq!(
+            receipt.probes[0].limitations,
+            vec![run_authority::LIMITATION_PROBE_ROW_DUPLICATE.to_string()]
+        );
+        assert!(
+            receipt
+                .limitations
+                .contains(&run_authority::LIMITATION_PROBE_ROW_MALFORMED_PATH.to_string())
+        );
+        assert!(
+            receipt
+                .limitations
+                .contains(&run_authority::LIMITATION_PROBE_ROW_DUPLICATE.to_string())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recurrence_guard_bans_direct_backfill_from_the_authoritative_run_path() {
+        let library_source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"));
+        let authority_source =
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/run_authority.rs"));
+
+        // Assemble the banned identifiers so this guard does not match its
+        // own text.
+        let banned = [
+            format!("used_direct_{runner}", runner = "runner"),
+            format!("invoke_runner_for_missing_{records}", records = "records"),
+        ];
+        for name in banned {
+            assert!(
+                !library_source.contains(&name),
+                "recurrence guard: {name} must not return to the authoritative run path"
+            );
+        }
+        assert!(
+            authority_source.contains("struct DirectDiagnosticSet"),
+            "the typed diagnostic product must stay physically separate"
+        );
+
+        // The two context files stay distinct so probes cannot append to
+        // upstream membership storage.
+        assert!(library_source.contains("perl-lsp-runner-records.jsonl"));
+        assert!(library_source.contains("perl-lsp-direct-diagnostics.jsonl"));
     }
 
     #[test]
@@ -5876,6 +6892,7 @@ mod tests {
             },
             buckets: BTreeMap::new(),
             file_results: vec![RunFileResult {
+                mechanism: None,
                 path: "base/ok.t".into(),
                 status: RunnerStatus::Pass,
                 assertions_passed: 1,
@@ -6301,6 +7318,50 @@ mod tests {
         Ok(())
     }
 
+    /// The V2 decode gate guards `baseline --series … --check` and
+    /// `validate-current-authority`. A hand-edited V2 artifact is exactly how a
+    /// forged claim would arrive, so the gate needs its own control (#14363).
+    #[test]
+    fn compile_baseline_v2_decode_rejects_an_inadmissible_mechanism() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let config = sample_baseline_v2_config();
+        let baseline =
+            baseline_v2_from_report(&sample_compile_report(), &series, &config, None, &[])?;
+
+        // Honest control first: the real artifact decodes.
+        let honest = serde_json::to_value(&baseline)?;
+        parse_compile_baseline_v2(honest, "honest")?;
+
+        // A compile baseline executes nothing, so any mechanism is a claim its
+        // rail never made.
+        let mut tampered = baseline.clone();
+        for result in &mut tampered.file_results {
+            result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+        }
+        let Err(error) = parse_compile_baseline_v2(serde_json::to_value(&tampered)?, "tampered")
+        else {
+            bail!("a compile V2 baseline claiming execution evidence must not decode");
+        };
+        if !format!("{error:?}").contains("only execution receipts may carry") {
+            bail!("unexpected mislabelling error: {error:?}");
+        }
+
+        // An execute-mode baseline claiming a rail nothing backs.
+        let mut forged = baseline;
+        forged.mode = HarnessMode::Execute;
+        for result in &mut forged.file_results {
+            result.mechanism = Some(ExecutionMechanism::EirExecution);
+        }
+        let Err(error) = parse_compile_baseline_v2(serde_json::to_value(&forged)?, "forged") else {
+            bail!("a V2 baseline claiming an unsupported rail must not decode");
+        };
+        if !format!("{error:?}").contains("no current rail can supply") {
+            bail!("unexpected forgery error: {error:?}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn compile_baseline_v2_rejects_an_extra_passing_file() -> TestResult {
         let discovery = sample_discovery_report();
@@ -6310,6 +7371,7 @@ mod tests {
             baseline_v2_from_report(&sample_compile_report(), &series, &config, None, &[])?;
         let mut report = sample_compile_report();
         report.file_results.push(RunFileResult {
+            mechanism: None,
             path: "base/new.t".into(),
             status: RunnerStatus::Pass,
             assertions_passed: 1,
@@ -7026,6 +8088,7 @@ mod tests {
         let mut report = sample_compile_report();
         let baseline = baseline_from_report(&report)?;
         report.file_results.push(RunFileResult {
+            mechanism: None,
             path: "base/new.t".into(),
             status: RunnerStatus::Fail,
             assertions_passed: 0,
@@ -7084,6 +8147,7 @@ mod tests {
         let baseline = baseline_from_report(&baseline_report)?;
         let mut current_report = baseline_report.clone();
         current_report.file_results.push(RunFileResult {
+            mechanism: None,
             path: "base/new.t".into(),
             status: RunnerStatus::Fail,
             assertions_passed: 0,
@@ -7190,14 +8254,26 @@ mod tests {
     #[test]
     fn baseline_refuses_report_without_proven_zero_terminal_status() -> TestResult {
         let temp = tempfile::tempdir()?;
-        for (name, status) in [("missing-status.json", None), ("nonzero-status.json", Some(7))] {
+        for (name, mode, status) in [
+            ("missing-status.json", HarnessMode::Compile, None),
+            ("nonzero-status.json", HarnessMode::Compile, Some(7)),
+            // #6884: execute mode with no recorded terminal identity is an
+            // instrument failure, not a proven observation.
+            ("execute-missing-status.json", HarnessMode::Execute, None),
+        ] {
             let report_path = temp.path().join(name);
             let mut report = sample_compile_report();
+            report.mode = mode;
+            // Keep the fixture consistent with the mode under test: the
+            // subject here is the terminal status, not the mechanism.
+            for result in &mut report.file_results {
+                result.mechanism = mode_mechanism(mode);
+            }
             report.harness_status = status;
             write_run_report(&report_path, &report)?;
 
             let error = match baseline(BaselineConfig {
-                mode: HarnessMode::Compile,
+                mode,
                 profile: HarnessProfile::Base,
                 report: Some(report_path),
                 baseline: Some(temp.path().join("baseline.json")),
@@ -7485,9 +8561,11 @@ mod tests {
             tests: Vec::new(),
             output: Some(run_path.clone()),
             runner_binary: Some(PathBuf::from("runner")),
+            diagnostic_probes: false,
         };
         let discovered = vec![DiscoveredTest { path: "base/if.t".into(), root: "base".into() }];
         let records = vec![RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "base/if.t".into(),
@@ -7499,13 +8577,13 @@ mod tests {
             semantic_boundaries: Vec::new(),
         }];
         let run_tree = temp.path().join("run");
+        let observation =
+            settle_test_observation(HarnessMode::Parse, &discovered, &records, Some(0))?;
         let report = build_run_report(BuildRunReportInput {
             config: &config,
             perl_tree: temp.path(),
             run_tree: &run_tree,
-            discovered: &discovered,
-            records: &records,
-            harness_status: Some(0),
+            observation: &observation,
         });
         write_run_report(&run_path, &report)?;
         assert!(run_path.is_file());
@@ -7535,12 +8613,14 @@ mod tests {
             buckets: BTreeMap::new(),
             file_results: vec![
                 RunFileResult {
+                    mechanism: None,
                     path: "base/lex.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 1,
                     assertions_total: 1,
                 },
                 RunFileResult {
+                    mechanism: None,
                     path: "base/ok.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 1,
@@ -8152,6 +9232,118 @@ mod tests {
     }
 
     #[test]
+    fn a_published_series_names_its_execution_rail_as_fixture_replay() -> TestResult {
+        // End-to-end over the real loader: before #14763 the execute receipt's
+        // mechanism was validated and then dropped, so the published series
+        // said only `available` and left "scaffold, not evaluated" to prose.
+        let temp = tempfile::tempdir()?;
+        let series = build_series_manifest(
+            &sample_discovery_report(),
+            &sample_series_config(),
+            "2026-07-02T00:00:00Z".into(),
+        )?;
+        let baseline = baseline_v2_from_report(
+            &sample_compile_report(),
+            &series,
+            &sample_baseline_v2_config(),
+            None,
+            &[],
+        )?;
+        let series_path = temp.path().join("series.json");
+        let parse_path = temp.path().join("parse.json");
+        let compile_path = temp.path().join("compile.json");
+        let baseline_path = temp.path().join("baseline.json");
+        let execute_path = temp.path().join("execute.json");
+        let accepted_path = temp.path().join("accepted-baseline.json");
+        let index_path = temp.path().join("bundle").join("index.json");
+        let normalized = index_path
+            .parent()
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing bundle parent"))?
+            .join("normalized");
+        fs::create_dir_all(&normalized)?;
+        fs::write(&series_path, serde_json::to_string_pretty(&series)?)?;
+        write_run_report(&parse_path, &sample_parse_report())?;
+        write_run_report(&compile_path, &sample_compile_report())?;
+        write_compile_baseline_v2(&baseline_path, &baseline)?;
+        write_compile_baseline_v2(&accepted_path, &baseline)?;
+
+        // The execute receipt has to answer to the same series identity the
+        // rail loader checks, otherwise it is rejected before the mechanism
+        // is ever read.
+        let mut execute = sample_execute_report();
+        execute.commit = series.repository_commit.clone();
+        execute.perl_ref = series.perl_resolved_ref.clone();
+        execute.profile = series.profile;
+        execute.runner = series.runner;
+        write_run_report(&execute_path, &execute)?;
+
+        fs::write(
+            normalized.join("semantic-boundaries.json"),
+            serde_json::to_string_pretty(&baseline.semantic_boundaries)?,
+        )?;
+        fs::write(normalized.join("compile.json"), fs::read_to_string(&compile_path)?)?;
+        let mut index = sample_boundary_bundle().index;
+        index.series_id = series.series_id.clone();
+        index.manifest_hash = series.manifest_hash.clone();
+        index.repository_commit = series.repository_commit.clone();
+        index.profile = series.profile;
+        index.perl_resolved_ref = series.perl_resolved_ref.clone();
+        index.artifacts = vec![
+            EvidenceBundleArtifact {
+                kind: "semantic_boundaries".into(),
+                logical_path: "normalized/semantic-boundaries.json".into(),
+            },
+            EvidenceBundleArtifact {
+                kind: "compile_report".into(),
+                logical_path: "normalized/compile.json".into(),
+            },
+        ];
+        fs::write(&index_path, serde_json::to_string_pretty(&index)?)?;
+
+        let state = load_compatibility_state(CompatibilityLoadConfig {
+            inputs: vec![CompatibilitySeriesInput {
+                series_manifest: series_path,
+                parse_report: parse_path,
+                compile_report: normalized.join("compile.json"),
+                compile_baseline: baseline_path,
+                accepted_baseline: Some(accepted_path),
+                evidence_bundle: index_path,
+                boundary_registry: None,
+                cluster_history: None,
+                execute_report: Some(execute_path),
+                current_authority: None,
+            }],
+            repository_commit: "abc".into(),
+        })?;
+
+        let published = &state.series[0];
+        assert_eq!(published.execution.availability, CompatibilityRailAvailability::Available);
+        assert_eq!(
+            published.execution.mechanism,
+            Some(ExecutionMechanism::FixtureReplay),
+            "an available execution rail must name the rail that produced it"
+        );
+        assert_eq!(
+            published.current_observation.execution.mechanism,
+            Some(ExecutionMechanism::FixtureReplay),
+            "the observation a consumer reads must carry it too"
+        );
+        // The rails that would imply evaluation stay absent and name nothing.
+        assert_eq!(published.eir.availability, CompatibilityRailAvailability::NotAvailable);
+        assert!(published.eir.mechanism.is_none());
+        assert!(published.differential_oracle.mechanism.is_none());
+        assert!(published.curated_gold.mechanism.is_none());
+
+        // The mechanism has to survive the wire, since that is where every
+        // downstream consumer reads it.
+        let encoded = serde_json::to_string_pretty(&state)?;
+        assert!(encoded.contains("\"mechanism\": \"fixture_replay\""), "{encoded}");
+        let decoded: CompilerCompatibilityState = serde_json::from_str(&encoded)?;
+        assert_eq!(decoded, state);
+        Ok(())
+    }
+
+    #[test]
     fn compatibility_transition_classifies_regression_without_lowering_ratchet() -> TestResult {
         let series = build_series_manifest(
             &sample_discovery_report(),
@@ -8287,36 +9479,42 @@ mod tests {
             buckets: BTreeMap::new(),
             file_results: vec![
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/cond.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 4,
                     assertions_total: 4,
                 },
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/if.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 2,
                     assertions_total: 2,
                 },
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/num.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 56,
                     assertions_total: 56,
                 },
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/pat.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 2,
                     assertions_total: 2,
                 },
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/translate.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 257,
                     assertions_total: 257,
                 },
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/while.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 4,
@@ -8477,6 +9675,7 @@ mod tests {
             tests: Vec::new(),
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            diagnostic_probes: true,
         })?;
 
         let raw = fs::read_to_string(output)?;
@@ -8507,6 +9706,7 @@ mod tests {
             tests: Vec::new(),
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            diagnostic_probes: true,
         })?;
 
         let raw = fs::read_to_string(output)?;
@@ -8540,6 +9740,7 @@ mod tests {
             tests: Vec::new(),
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            diagnostic_probes: true,
         })?;
 
         let raw = fs::read_to_string(output)?;
@@ -8567,6 +9768,7 @@ mod tests {
             tests: Vec::new(),
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            diagnostic_probes: true,
         })?;
 
         let raw = fs::read_to_string(output)?;
@@ -8601,6 +9803,7 @@ mod tests {
             tests: vec!["base/if.t".into()],
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            diagnostic_probes: true,
         })?;
 
         let raw = fs::read_to_string(output)?;
@@ -8613,7 +9816,458 @@ mod tests {
         assert_eq!(report.summary.tap_assertions_passed, 2);
         assert_eq!(report.file_results[0].path, "base/if.t");
         assert_eq!(report.file_results[0].assertions_total, 2);
+        assert_eq!(
+            report.file_results[0].mechanism,
+            Some(ExecutionMechanism::FixtureReplay),
+            "the report must say which rail produced these assertions"
+        );
+        assert!(
+            raw.contains(r#""mechanism": "fixture_replay""#),
+            "the published report must name the mechanism on the wire: {raw}"
+        );
         assert!(!perl_tree.join("t").join("perl").exists(), "source Perl tree must not be mutated");
+        Ok(())
+    }
+
+    #[test]
+    fn reading_a_report_that_relabels_its_mechanism_fails_closed() -> TestResult {
+        // The report — not the runner-record JSONL — is what becomes a
+        // checked-in baseline and what the ratchet compares against. Editing
+        // one field of it must not upgrade a scaffold claim.
+        let temp = tempfile::tempdir()?;
+        for mechanism in [ExecutionMechanism::EirExecution, ExecutionMechanism::RealPerlOracle] {
+            let mut forged = sample_execute_report();
+            for result in &mut forged.file_results {
+                result.mechanism = Some(mechanism);
+            }
+            let path = temp.path().join(format!("{mechanism}-report.json"));
+            write_run_report(&path, &forged)?;
+
+            let Err(error) = read_run_report(&path) else {
+                bail!("a report claiming {mechanism} must not be readable");
+            };
+            let text = format!("{error:?}");
+            if !text.contains("no current rail can supply") {
+                bail!("unexpected report-read error for {mechanism}: {text}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reading_a_report_that_drops_its_mechanism_fails_closed() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let mut stripped = sample_execute_report();
+        for result in &mut stripped.file_results {
+            result.mechanism = None;
+        }
+        let path = temp.path().join("stripped-report.json");
+        write_run_report(&path, &stripped)?;
+
+        let Err(error) = read_run_report(&path) else {
+            bail!("an execute report with no mechanism must not be readable");
+        };
+        let text = format!("{error:?}");
+        if !text.contains("does not declare an execution mechanism") {
+            bail!("unexpected report-read error: {text}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_execute_report_is_refused_at_decode_and_acceptance() -> TestResult {
+        // Every per-row rule passes vacuously on an empty collection, so an
+        // empty execute artifact would otherwise be admitted while naming no
+        // rail for anything (#14363, reported in review on #14364).
+        let temp = tempfile::tempdir()?;
+        let mut empty = sample_execute_report();
+        empty.file_results.clear();
+        empty.summary = RunSummary {
+            files_total: 0,
+            files_passed: 0,
+            files_failed: 0,
+            tap_assertions_total: 0,
+            tap_assertions_passed: 0,
+        };
+        let path = temp.path().join("empty-execute-report.json");
+        write_run_report(&path, &empty)?;
+
+        let Err(decode_error) = read_run_report(&path) else {
+            bail!("an empty execute report must not decode");
+        };
+        if !format!("{decode_error:?}").contains("names no execution mechanism for anything") {
+            bail!("unexpected decode error: {decode_error:?}");
+        }
+
+        let Err(accept_error) = baseline_from_report(&empty) else {
+            bail!("an empty execute report must not be acceptable as a baseline");
+        };
+        if !format!("{accept_error:?}").contains("names no execution mechanism for anything") {
+            bail!("unexpected acceptance error: {accept_error:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_compile_report_stays_admissible() -> TestResult {
+        // Scope boundary: whether an empty observation of any mode is evidence
+        // is a separate pre-existing question (#14375). This contract refuses
+        // only the execute case, where emptiness means no rail is named.
+        let temp = tempfile::tempdir()?;
+        let mut empty = sample_compile_report();
+        empty.file_results.clear();
+        empty.summary = RunSummary {
+            files_total: 0,
+            files_passed: 0,
+            files_failed: 0,
+            tap_assertions_total: 0,
+            tap_assertions_passed: 0,
+        };
+        let path = temp.path().join("empty-compile-report.json");
+        write_run_report(&path, &empty)?;
+
+        read_run_report(&path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn accepting_a_baseline_from_a_relabelled_report_fails_closed() -> TestResult {
+        // `baseline --accept` copies file_results straight into the baseline,
+        // so an unvalidated report would mint a forged checked-in artifact.
+        let mut forged = sample_execute_report();
+        for result in &mut forged.file_results {
+            result.mechanism = Some(ExecutionMechanism::EirExecution);
+        }
+
+        let Err(error) = baseline_from_report(&forged) else {
+            bail!("a forged report must not be acceptable as a baseline");
+        };
+        if !error.to_string().contains("no current rail can supply") {
+            bail!("unexpected baseline-accept error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reading_a_hand_edited_baseline_fails_closed() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let mut baseline = baseline_from_report(&sample_execute_report())?;
+        for result in &mut baseline.file_results {
+            result.mechanism = Some(ExecutionMechanism::EirExecution);
+        }
+        let path = temp.path().join("forged-baseline.json");
+        write_compile_baseline(&path, &baseline)?;
+
+        let Err(error) = read_compile_baseline(&path) else {
+            bail!("a hand-edited baseline must not be readable");
+        };
+        let text = format!("{error:?}");
+        if !text.contains("no current rail can supply") {
+            bail!("unexpected baseline-read error: {text}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_checked_in_execute_baseline_declares_fixture_replay() -> TestResult {
+        // The durable artifact this PR stamps must itself satisfy the contract.
+        let root = project_root()?;
+        let baseline = read_compile_baseline(
+            &root.join(".ci").join("perl-core-harness").join("base-execute-baseline.json"),
+        )?;
+
+        if baseline.file_results.is_empty() {
+            bail!("checked-in execute baseline has no file results");
+        }
+        for result in &baseline.file_results {
+            if result.mechanism != Some(ExecutionMechanism::FixtureReplay) {
+                bail!(
+                    "checked-in execute baseline does not classify {}: {:?}",
+                    result.path,
+                    result.mechanism
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_execution_rail_carries_the_mechanism_its_receipt_declares() -> TestResult {
+        // Before #14763 this receipt produced a bare `available` rail whose
+        // only hint was the reason sentence; the mechanism was read, validated,
+        // and then dropped.
+        use perl_core_harness_types::{CompatibilityRailRole, validate_rail_mechanism};
+
+        let mechanism = execution_receipt_mechanism(&sample_execute_report())?;
+        assert_eq!(mechanism, ExecutionMechanism::FixtureReplay);
+
+        let rail = available_rail(
+            RUN_REPORT_SCHEMA_VERSION,
+            format!("selected execution receipt validated; mechanism {mechanism}"),
+            vec!["bundle:bundle-1".into()],
+            Some(mechanism),
+        );
+        if let Err(violation) = validate_rail_mechanism(CompatibilityRailRole::Execution, &rail) {
+            bail!("derived execution rail is inadmissible: {violation}");
+        }
+        assert_eq!(rail.mechanism, Some(ExecutionMechanism::FixtureReplay));
+        Ok(())
+    }
+
+    #[test]
+    fn the_published_schema_states_the_same_rail_rule_as_the_validator() -> TestResult {
+        // The schema is the contract a consumer validates against. If it and
+        // `validate_rail_mechanism` disagree, one of them is decoration —
+        // which is how the mechanism came to live in prose in the first place.
+        use perl_core_harness_types::{CompatibilityRailRole, SUPPORTED_EXECUTION_MECHANISMS};
+
+        let root = project_root()?;
+        let schema: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+            root.join("schemas").join("compiler_compatibility.v1.schema.json"),
+        )?)?;
+        let defs = &schema["$defs"];
+
+        let published: Vec<&str> = defs["rail"]["properties"]["mechanism"]["enum"]
+            .as_array()
+            .ok_or_else(|| color_eyre::eyre::eyre!("rail.mechanism publishes no enum"))?
+            .iter()
+            .map(|tag| tag.as_str().unwrap_or_default())
+            .collect();
+        let known: Vec<&str> =
+            ExecutionMechanism::ALL.iter().map(|mechanism| mechanism.as_str()).collect();
+        if published != known {
+            bail!("schema publishes mechanisms {published:?}, but the enum is {known:?}");
+        }
+
+        for (def, role) in [
+            ("selected_execution_rail", CompatibilityRailRole::Execution),
+            ("eir_rail", CompatibilityRailRole::Eir),
+            ("differential_oracle_rail", CompatibilityRailRole::DifferentialOracle),
+        ] {
+            let expected = role
+                .admissible_mechanism()
+                .ok_or_else(|| color_eyre::eyre::eyre!("{role} rail declares no mechanism"))?;
+            let published = defs[def]["allOf"][1]["properties"]["mechanism"]["const"]
+                .as_str()
+                .ok_or_else(|| color_eyre::eyre::eyre!("{def} pins no mechanism"))?;
+            if published != expected.as_str() {
+                bail!("schema pins {def} to {published}, but the validator admits {expected}");
+            }
+        }
+
+        // Rails representing no execution must be forbidden a mechanism, not
+        // merely left unconstrained.
+        if defs["non_execution_rail"]["allOf"][1]["not"]["required"][0] != "mechanism" {
+            bail!("schema does not forbid a mechanism on rails representing no execution");
+        }
+
+        // "Has evidence" must mean the same thing in both contracts. `stale`
+        // evidence exists but is not current, so it keeps its mechanism.
+        let evidence: Vec<&str> =
+            defs["execution_like_rail"]["allOf"][1]["if"]["properties"]["availability"]["enum"]
+                .as_array()
+                .ok_or_else(|| color_eyre::eyre::eyre!("schema pins no evidence-bearing states"))?
+                .iter()
+                .map(|state| state.as_str().unwrap_or_default())
+                .collect();
+        if evidence != ["available", "partial", "stale"] {
+            bail!(
+                "schema treats {evidence:?} as evidence-bearing; the validator uses available, partial, and stale"
+            );
+        }
+
+        // A rail whose mechanism is not yet supported must be unable to carry
+        // evidence in the schema too, or a schema-only consumer would accept
+        // evaluation evidence the producer refuses to emit.
+        for (def, role) in [
+            ("selected_execution_rail", CompatibilityRailRole::Execution),
+            ("eir_rail", CompatibilityRailRole::Eir),
+            ("differential_oracle_rail", CompatibilityRailRole::DifferentialOracle),
+        ] {
+            let mechanism = role
+                .admissible_mechanism()
+                .ok_or_else(|| color_eyre::eyre::eyre!("{role} rail declares no mechanism"))?;
+            let supported = SUPPORTED_EXECUTION_MECHANISMS.contains(&mechanism);
+            let constrained = defs[def]["allOf"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|entry| entry["$ref"] == "#/$defs/unsupported_execution_rail");
+            if supported == constrained {
+                bail!(
+                    "{def} carries mechanism {mechanism} (supported={supported}) but its \
+                     not_available constraint is {constrained}; the schema and \
+                     SUPPORTED_EXECUTION_MECHANISMS disagree about which rails may hold evidence"
+                );
+            }
+        }
+        if defs["unsupported_execution_rail"]["properties"]["availability"]["const"]
+            != "not_available"
+        {
+            bail!("the unsupported-rail constraint does not pin availability to not_available");
+        }
+
+        // Every rail slot the schema declares must be one the Rust walk
+        // reaches. The debt rails were bound to `non_execution_rail` here while
+        // `validate_series_rail_mechanisms` never visited them, so the two
+        // contracts disagreed about a slot neither test noticed. Pinning the
+        // slot inventory makes a newly added rail fail here until it is wired
+        // into the walk, rather than silently escaping it.
+        let mut slots: Vec<String> = Vec::new();
+        for (def_name, def) in
+            defs.as_object().ok_or_else(|| color_eyre::eyre::eyre!("schema has no $defs"))?
+        {
+            let Some(properties) = def["properties"].as_object() else {
+                continue;
+            };
+            for (property, value) in properties {
+                if let Some(reference) = value["$ref"].as_str()
+                    && reference.ends_with("rail")
+                {
+                    slots.push(format!("{def_name}.{property}"));
+                }
+            }
+        }
+        slots.sort();
+        let walked = [
+            "debt.history",
+            "debt.registry",
+            "observation.curated_gold",
+            "observation.differential_oracle",
+            "observation.eir",
+            "observation.execution",
+            "series.curated_gold",
+            "series.differential_oracle",
+            "series.eir",
+            "series.execution",
+        ];
+        if slots != walked {
+            bail!(
+                "schema declares rail slots {slots:?}, but validate_series_rail_mechanisms walks \
+                 {walked:?}; wire the new slot into the walk before publishing it"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_execution_receipt_of_another_schema_cannot_claim_a_current_rail() -> TestResult {
+        // The rail publishes RUN_REPORT_SCHEMA_VERSION as its own identity, so
+        // accepting a report that declares a different one would relabel it
+        // current.
+        let temp = tempfile::tempdir()?;
+        let series = build_series_manifest(
+            &sample_discovery_report(),
+            &sample_series_config(),
+            "2026-07-02T00:00:00Z".into(),
+        )?;
+        let mut execute = sample_execute_report();
+        execute.commit = series.repository_commit.clone();
+        execute.perl_ref = series.perl_resolved_ref.clone();
+        execute.profile = series.profile;
+        execute.runner = series.runner;
+        execute.schema_version = "perl_core_harness.report.v0".into();
+
+        let path = temp.path().join("execute.json");
+        fs::write(&path, serde_json::to_string_pretty(&execute)?)?;
+        let Err(error) = load_execution_rail(&path, &series, "bundle-1") else {
+            bail!("a report of another schema must not produce a current rail");
+        };
+        assert!(error.to_string().contains("not the supported run-report schema"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn an_execution_receipt_naming_no_mechanism_cannot_claim_a_rail() -> TestResult {
+        // `read_run_report` rejects this shape on decode, so the rail
+        // derivation is not the only guard — but it must not be a hole either:
+        // a receipt that names nothing summarizes to nothing.
+        let mut report = sample_execute_report();
+        for result in &mut report.file_results {
+            result.mechanism = None;
+        }
+        let Err(error) = execution_receipt_mechanism(&report) else {
+            bail!("a receipt naming no mechanism must not produce a rail");
+        };
+        assert!(error.to_string().contains("names no execution mechanism"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn an_execution_receipt_mixing_mechanisms_fails_closed() -> TestResult {
+        // A receipt spanning two rails describes neither. Summarizing it as one
+        // would let a single relabeled file move the whole rail.
+        let mut report = sample_execute_report();
+        report.file_results[0].mechanism = Some(ExecutionMechanism::EirExecution);
+        let Err(error) = execution_receipt_mechanism(&report) else {
+            bail!("a receipt mixing mechanisms must not produce one rail");
+        };
+        let rendered = error.to_string();
+        assert!(rendered.contains("mixes execution mechanisms"), "{rendered}");
+        assert!(rendered.contains("fixture_replay"), "{rendered}");
+        assert!(rendered.contains("eir_execution"), "{rendered}");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_mode_execute_refuses_a_runner_that_hides_its_mechanism() -> TestResult {
+        // A runner that emits execute receipts without naming its rail fails
+        // the run rather than producing a report whose 2 assertions read as
+        // evaluated work (#8254).
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree_with_base_if_test(temp.path())?;
+        let runner = write_fake_unclassified_execute_runner(temp.path())?;
+        let output = temp.path().join("execute-report.json");
+
+        let error = match run_mode(RunConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Execute,
+            profile: HarnessProfile::Base,
+            tests: vec!["base/if.t".into()],
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+            diagnostic_probes: true,
+        }) {
+            Err(error) => error,
+            Ok(()) => bail!("an unclassified execute receipt must not produce a report"),
+        };
+
+        let text = format!("{error:?}");
+        if !text.contains("does not declare an execution mechanism") {
+            bail!("unexpected run error: {text}");
+        }
+        if output.exists() {
+            bail!("no report should be published from inadmissible receipts");
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_mode_execute_accepts_the_recognized_scheduler_status() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree_with_base_if_test_and_exit(temp.path(), 1)?;
+        let runner = write_fake_execute_runner(temp.path())?;
+        let output = temp.path().join("execute-report.json");
+
+        run_mode(RunConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Execute,
+            profile: HarnessProfile::Base,
+            tests: vec!["base/if.t".into()],
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+            diagnostic_probes: true,
+        })?;
+
+        let report: RunReport = serde_json::from_str(&fs::read_to_string(output)?)?;
+        assert_eq!(report.harness_status, Some(1));
+        assert_eq!(report.summary.files_failed, 0);
         Ok(())
     }
 
@@ -8641,6 +10295,7 @@ mod tests {
             ],
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            diagnostic_probes: true,
         })?;
 
         let raw = fs::read_to_string(output)?;
@@ -8984,11 +10639,12 @@ mod tests {
             tests: Vec::new(),
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            diagnostic_probes: true,
         }) else {
             bail!("failing runner record should fail the harness run");
         };
 
-        assert!(err.to_string().contains("failed for 1 of 1 files"));
+        assert!(err.to_string().contains("upstream harness terminal status"));
         let raw = fs::read_to_string(output)?;
         let report: RunReport = serde_json::from_str(&raw)?;
         assert_eq!(report.summary.files_total, 1);
@@ -9025,11 +10681,12 @@ exit 7
             tests: Vec::new(),
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            diagnostic_probes: true,
         }) else {
-            bail!("nonzero harness status should fail even when runner records pass");
+            bail!("unproven nonzero harness status should fail even when runner records pass");
         };
 
-        assert!(err.to_string().contains("upstream harness exited with status"));
+        assert!(err.to_string().contains("terminal status"));
         let raw = fs::read_to_string(output)?;
         let report: RunReport = serde_json::from_str(&raw)?;
         assert_eq!(report.summary.files_passed, 1);
@@ -9040,15 +10697,98 @@ exit 7
 
     #[cfg(unix)]
     #[test]
-    fn run_mode_invokes_runner_directly_when_harness_writes_no_records() -> TestResult {
+    fn run_mode_keeps_all_pass_direct_probes_diagnostic_only_when_harness_writes_no_records()
+    -> TestResult {
         let temp = tempfile::tempdir()?;
+        // Upstream harness exits nonzero and writes no records: every expected
+        // row is missing after the frozen run (#8173).
         let perl_tree = write_fake_perl_tree_with_run_body(
             temp.path(),
-            r#"# Deliberately do not invoke ./perl; real harness integration bugs should fall
-# back to direct runner invocation for harness-selected files.
+            r#"# Deliberately do not invoke ./perl; the upstream selection stays unproven.
 exit 7
 "#,
         )?;
+        let runner = write_fake_runner(temp.path(), RunnerStatus::Pass)?;
+        let output = temp.path().join("parse-report.json");
+
+        let Err(err) = run_mode(RunConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Parse,
+            profile: HarnessProfile::Base,
+            tests: Vec::new(),
+            output: Some(output.clone()),
+            runner_binary: Some(runner.clone()),
+            diagnostic_probes: true,
+        }) else {
+            bail!("all-pass direct probes must not turn a missing upstream run into success");
+        };
+        assert!(
+            err.to_string().contains("is not admitted"),
+            "unproven nonzero upstream terminal must fail closed: {err}"
+        );
+
+        // The authoritative report keeps the upstream verdict: missing row,
+        // nonzero terminal, no direct participation in totals.
+        let raw = fs::read_to_string(&output)?;
+        let report: RunReport = serde_json::from_str(&raw)?;
+        assert_eq!(report.summary.files_total, 1);
+        assert_eq!(report.summary.files_passed, 0);
+        assert_eq!(report.summary.files_failed, 1);
+        assert_eq!(report.harness_status, Some(7));
+        assert_eq!(report.failures.len(), 1);
+        assert_eq!(report.failures[0].bucket, "harness_prepare");
+
+        // The direct probes are retained separately as pure diagnosis.
+        let receipt_path = temp.path().join("parse-report.json.direct-diagnostics.json");
+        let receipt_raw = fs::read_to_string(receipt_path)?;
+        let receipt: serde_json::Value = serde_json::from_str(&receipt_raw)?;
+        assert_eq!(receipt["schema_version"], "perl_core_harness.direct_diagnostics.v1");
+        assert_eq!(receipt["probes"].as_array().map(Vec::len), Some(1));
+        assert_eq!(receipt["probes"][0]["authority"], "direct_probe");
+        assert_eq!(receipt["probes"][0]["path"], "base/ok.t");
+        assert_eq!(receipt["probes"][0]["outcome"], "reproduced_pass");
+        assert_eq!(receipt["declared_non_claims"]["rows_considered_by_report_totals"], 0);
+        assert_eq!(receipt["parent_observation"]["missing_rows"], 1);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_mode_disabling_diagnostics_skips_probe_receipt_without_changing_verdict() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree_with_run_body(temp.path(), "exit 7\n")?;
+        let runner = write_fake_runner(temp.path(), RunnerStatus::Pass)?;
+        let output = temp.path().join("parse-report.json");
+
+        let Err(_err) = run_mode(RunConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Parse,
+            profile: HarnessProfile::Base,
+            tests: Vec::new(),
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+            diagnostic_probes: false,
+        }) else {
+            bail!("upstream failure must fail closed with diagnostics disabled too");
+        };
+
+        let raw = fs::read_to_string(&output)?;
+        let report: RunReport = serde_json::from_str(&raw)?;
+        assert_eq!(report.summary.files_failed, 1);
+        assert_eq!(report.harness_status, Some(7));
+        assert!(!temp.path().join("parse-report.json.direct-diagnostics.json").exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_mode_completes_upstream_run_without_direct_processes_or_receipt() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree(temp.path())?;
         let runner = write_fake_runner(temp.path(), RunnerStatus::Pass)?;
         let output = temp.path().join("parse-report.json");
 
@@ -9061,17 +10801,140 @@ exit 7
             tests: Vec::new(),
             output: Some(output.clone()),
             runner_binary: Some(runner),
+            diagnostic_probes: true,
         })?;
 
-        let raw = fs::read_to_string(output)?;
-        let report: RunReport = serde_json::from_str(&raw)?;
-        assert_eq!(report.summary.files_total, 1);
+        let report: RunReport = serde_json::from_str(&fs::read_to_string(output)?)?;
         assert_eq!(report.summary.files_passed, 1);
         assert_eq!(report.summary.files_failed, 0);
         assert!(report.buckets.is_empty());
         assert!(report.failures.is_empty());
-        assert_eq!(report.harness_status, Some(7));
+        assert_eq!(report.harness_status, Some(0));
+        assert!(!temp.path().join("parse-report.json.direct-diagnostics.json").exists());
         Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_mode_removes_stale_sidecar_before_a_clean_no_diagnostic_run() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree(temp.path())?;
+        let runner = write_fake_runner(temp.path(), RunnerStatus::Pass)?;
+        let output = temp.path().join("parse-report.json");
+
+        // A leftover receipt from a previous invocation at the same output
+        // path must not survive a fresh authoritative publication (#8173).
+        let stale_sidecar = temp.path().join("parse-report.json.direct-diagnostics.json");
+        fs::write(
+            &stale_sidecar,
+            r#"{"schema_version":"perl_core_harness.direct_diagnostics.v1"}"#,
+        )?;
+
+        run_mode(RunConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Parse,
+            profile: HarnessProfile::Base,
+            tests: Vec::new(),
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+            diagnostic_probes: true,
+        })?;
+
+        let report: RunReport = serde_json::from_str(&fs::read_to_string(output)?)?;
+        assert_eq!(report.summary.files_passed, 1);
+        assert!(
+            !stale_sidecar.exists(),
+            "a complete upstream run must leave no stale diagnostic sidecar"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_mode_removes_stale_sidecar_when_diagnostics_are_disabled() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree(temp.path())?;
+        let runner = write_fake_runner(temp.path(), RunnerStatus::Pass)?;
+        let output = temp.path().join("parse-report.json");
+
+        let stale_sidecar = temp.path().join("parse-report.json.direct-diagnostics.json");
+        fs::write(
+            &stale_sidecar,
+            r#"{"schema_version":"perl_core_harness.direct_diagnostics.v1"}"#,
+        )?;
+
+        run_mode(RunConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Parse,
+            profile: HarnessProfile::Base,
+            tests: Vec::new(),
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+            diagnostic_probes: false,
+        })?;
+
+        let report: RunReport = serde_json::from_str(&fs::read_to_string(output)?)?;
+        assert_eq!(report.summary.files_passed, 1);
+        assert!(
+            !stale_sidecar.exists(),
+            "diagnostics-disabled runs must still clear a stale diagnostic sidecar"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_mode_records_unavailable_probe_when_direct_runner_writes_nothing() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree_with_run_body(temp.path(), "exit 7\n")?;
+        let runner = root_join_script(temp.path())?;
+        let output = temp.path().join("parse-report.json");
+
+        let Err(err) = run_mode(RunConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Parse,
+            profile: HarnessProfile::Base,
+            tests: Vec::new(),
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+            diagnostic_probes: true,
+        }) else {
+            bail!("an unavailable probe cannot repair the upstream result");
+        };
+        assert!(
+            err.to_string().contains("is not admitted"),
+            "unproven nonzero upstream terminal must fail closed: {err}"
+        );
+
+        let receipt_raw =
+            fs::read_to_string(temp.path().join("parse-report.json.direct-diagnostics.json"))?;
+        let receipt: serde_json::Value = serde_json::from_str(&receipt_raw)?;
+        assert_eq!(receipt["probes"][0]["outcome"], "unavailable");
+        assert_eq!(
+            receipt["probes"][0]["limitations"][0],
+            "direct_probe_produced_no_runner_record"
+        );
+        Ok(())
+    }
+
+    /// A diagnostic runner that executes cleanly but never records anything.
+    #[cfg(unix)]
+    fn root_join_script(root: &Path) -> TestResult<PathBuf> {
+        let runner = root.join("fake-runner-silent.sh");
+        let body = r#"#!/bin/sh
+set -eu
+printf 'no records will be written\n'
+exit 3
+"#;
+        fs::write(&runner, body)?;
+        set_executable(&runner)?;
+        Ok(runner)
     }
 
     #[cfg(unix)]
@@ -9128,18 +10991,38 @@ fi
 
     #[cfg(unix)]
     fn write_fake_perl_tree_with_base_if_test(root: &Path) -> TestResult<PathBuf> {
+        write_fake_perl_tree_with_base_if_test_and_body(root, "./perl base/if.t\n")
+    }
+
+    #[cfg(unix)]
+    fn write_fake_perl_tree_with_base_if_test_and_exit(
+        root: &Path,
+        status: i32,
+    ) -> TestResult<PathBuf> {
+        write_fake_perl_tree_with_base_if_test_and_body(
+            root,
+            &format!("./perl base/if.t\nexit {status}\n"),
+        )
+    }
+
+    #[cfg(unix)]
+    fn write_fake_perl_tree_with_base_if_test_and_body(
+        root: &Path,
+        run_body: &str,
+    ) -> TestResult<PathBuf> {
         let perl_tree = root.join("prepared-perl-base-if");
         let t_dir = perl_tree.join("t");
         fs::create_dir_all(t_dir.join("base"))?;
         fs::write(t_dir.join("base").join("if.t"), "1;\n")?;
-        let script = r#"#!/bin/sh
+        let script = format!(
+            r#"#!/bin/sh
 set -eu
-if [ "${1:-}" = "--dumptests" ]; then
+if [ "${{1:-}}" = "--dumptests" ]; then
   echo "base/if.t"
   exit 0
 fi
-./perl base/if.t
-"#;
+{run_body}"#
+        );
         fs::write(t_dir.join("TEST"), script)?;
         Ok(perl_tree)
     }
@@ -9256,6 +11139,11 @@ fi
 set -eu
 script="${1:-unknown.t}"
 mode="${PERL_LSP_HARNESS_MODE:-execute}"
+# Mirror the real runner: only execution receipts name their rail.
+mechanism=''
+if [ "$mode" = "execute" ]; then
+  mechanism=',"mechanism":"fixture_replay"'
+fi
 mkdir -p "$(dirname "$PERL_LSP_HARNESS_CONTEXT")"
 case "$script" in
   *base/cond.t)
@@ -9264,7 +11152,7 @@ case "$script" in
     printf 'ok 2 - operator ne\n'
     printf 'ok 3 - operator ==\n'
     printf 'ok 4 - operator !=\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":4,"assertions_total":4,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":4,"assertions_total":4,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
   *base/while.t)
     printf '1..4\n'
@@ -9272,7 +11160,7 @@ case "$script" in
     printf 'ok 2\n'
     printf 'ok 3\n'
     printf 'ok 4\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":4,"assertions_total":4,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":4,"assertions_total":4,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
   *base/num.t)
     printf '1..56\n'
@@ -9281,13 +11169,13 @@ case "$script" in
       printf 'ok %s\n' "$i"
       i=$((i + 1))
     done
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":56,"assertions_total":56,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":56,"assertions_total":56,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
   *base/pat.t)
     printf '1..2\n'
     printf 'ok 1 - match regex\n'
     printf 'ok 2 - match regex\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
   *base/translate.t)
     printf '1..257\n'
@@ -9299,15 +11187,92 @@ case "$script" in
       assertion=$((assertion + 1))
     done
     printf 'ok 257 - native_to_unicode of large number\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":257,"assertions_total":257,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":257,"assertions_total":257,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
   *)
     printf '1..2\n'
     printf 'ok 1 - if eq\n'
     printf 'ok 2 - if ne\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
 esac
+"#;
+        fs::write(&runner, body)?;
+        set_executable(&runner)?;
+        Ok(runner)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_mode_execute_refuses_a_runner_that_declares_the_wrong_mode() -> TestResult {
+        // A record's mechanism is checked against the mode the *record*
+        // declares, while the published report takes its mode from the run
+        // config. A stale runner declaring `compile` during an execute run
+        // would otherwise pass ingestion with no mechanism and be published as
+        // execute evidence — a report this crate's own reader would then
+        // refuse to reopen (#14363, reported in review on #14364).
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree_with_base_if_test(temp.path())?;
+        let runner = write_fake_wrong_mode_execute_runner(temp.path())?;
+        let output = temp.path().join("execute-report.json");
+
+        let error = match run_mode(RunConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Execute,
+            profile: HarnessProfile::Base,
+            tests: vec!["base/if.t".into()],
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+            diagnostic_probes: true,
+        }) {
+            Err(error) => error,
+            Ok(()) => bail!("a wrong-mode runner record must not produce a report"),
+        };
+
+        let text = format!("{error:?}");
+        if !text.contains("declares compile mode during a execute run") {
+            bail!("unexpected wrong-mode error: {text}");
+        }
+        if output.exists() {
+            bail!("no report should be published from a wrong-mode observation");
+        }
+        Ok(())
+    }
+
+    /// An execute runner whose record declares `compile` — the mode the run did
+    /// not select — and therefore carries no mechanism.
+    #[cfg(unix)]
+    fn write_fake_wrong_mode_execute_runner(root: &Path) -> TestResult<PathBuf> {
+        let runner = root.join("fake-runner-execute-wrong-mode.sh");
+        let body = r#"#!/bin/sh
+set -eu
+script="${1:-unknown.t}"
+mkdir -p "$(dirname "$PERL_LSP_HARNESS_CONTEXT")"
+printf '1..2\n'
+printf 'ok 1 - if eq\n'
+printf 'ok 2 - if ne\n'
+printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"compile","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null}\n' "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+"#;
+        fs::write(&runner, body)?;
+        set_executable(&runner)?;
+        Ok(runner)
+    }
+
+    /// An execute runner that produces TAP but hides which rail produced it.
+    #[cfg(unix)]
+    fn write_fake_unclassified_execute_runner(root: &Path) -> TestResult<PathBuf> {
+        let runner = root.join("fake-runner-execute-unclassified.sh");
+        let body = r#"#!/bin/sh
+set -eu
+script="${1:-unknown.t}"
+mode="${PERL_LSP_HARNESS_MODE:-execute}"
+mkdir -p "$(dirname "$PERL_LSP_HARNESS_CONTEXT")"
+printf '1..2\n'
+printf 'ok 1 - if eq\n'
+printf 'ok 2 - if ne\n'
+printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
 "#;
         fs::write(&runner, body)?;
         set_executable(&runner)?;
@@ -9762,6 +11727,35 @@ exit 1
 
     fn triage_config(bundle: PathBuf, output: PathBuf) -> TriageConfig {
         TriageConfig { bundle, output, history: None, write_history: false, check_history: false }
+    }
+
+    #[test]
+    fn triage_refuses_a_bundle_whose_report_over_claims_its_evidence() -> TestResult {
+        // Triage decodes the bundle's compile report and clusters it into
+        // durable failure-cluster and history artifacts. A report claiming
+        // execution evidence its rail never produced must not reach them.
+        let temp = tempfile::tempdir()?;
+        let mut report = two_file_parse_failure_report();
+        report.mode = HarnessMode::Compile;
+        for result in &mut report.file_results {
+            result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+        }
+        let bundle = write_triage_bundle(temp.path(), &report)?;
+        let output = temp.path().join("triage");
+
+        let error = match triage(triage_config(bundle, output.clone())) {
+            Err(error) => error,
+            Ok(()) => bail!("a compile report claiming execution evidence must not be clustered"),
+        };
+
+        let text = format!("{error:?}");
+        if !text.contains("only execution receipts may carry") {
+            bail!("unexpected triage error: {text}");
+        }
+        if output.join("failure-clusters.json").exists() {
+            bail!("no cluster artifact should be written from an inadmissible report");
+        }
+        Ok(())
     }
 
     #[test]
@@ -10394,15 +12388,49 @@ exit 1
             RUN_REPORT_SCHEMA_VERSION,
             "selected execution receipt validated".into(),
             vec!["bundle:bundle-1".into()],
+            Some(ExecutionMechanism::FixtureReplay),
         );
         assert_eq!(available.availability, CompatibilityRailAvailability::Available);
         assert_eq!(available.schema_version.as_deref(), Some(RUN_REPORT_SCHEMA_VERSION));
         assert_eq!(available.evidence_refs, vec!["bundle:bundle-1"]);
+        assert_eq!(available.mechanism, Some(ExecutionMechanism::FixtureReplay));
 
         let unavailable = unavailable_rail("no execution receipt was supplied");
         assert_eq!(unavailable.availability, CompatibilityRailAvailability::NotAvailable);
         // An unavailable rail must not advertise a schema or borrow evidence.
         assert!(unavailable.schema_version.is_none());
         assert!(unavailable.evidence_refs.is_empty());
+        // Nor may it name a rail: a mechanism without evidence is a claim.
+        assert!(unavailable.mechanism.is_none());
+    }
+}
+
+#[cfg(test)]
+mod digest_intake_case_tests {
+    //! #7725: Git identities and sha256 digests accepted by the publication
+    //! and evidence intake validators must keep exactly one canonical
+    //! serialized spelling: lower-case hexadecimal.
+
+    use super::{validate_digest, validate_git_sha};
+
+    #[test]
+    fn git_shas_accept_only_canonical_lower_case_hex() {
+        assert!(validate_git_sha(&"cd".repeat(20), "landed commit").is_ok());
+        assert!(validate_git_sha(&"01".repeat(32), "landed commit").is_ok());
+        assert!(validate_git_sha(&"CD".repeat(20), "landed commit").is_err());
+        assert!(validate_git_sha(&"EF".repeat(32), "landed commit").is_err());
+        assert!(validate_git_sha(&"cD".repeat(20), "landed commit").is_err());
+        assert!(validate_git_sha(&"zz".repeat(20), "landed commit").is_err());
+        assert!(validate_git_sha(&"cd".repeat(19), "landed commit").is_err());
+    }
+
+    #[test]
+    fn sha256_digests_keep_prefix_policy_and_require_lower_case() {
+        assert!(validate_digest(&format!("sha256:{}", "ab".repeat(32)), "receipt digest").is_ok());
+        assert!(validate_digest(&format!("sha256:{}", "AB".repeat(32)), "receipt digest").is_err());
+        assert!(validate_digest(&format!("sha256:{}", "aB".repeat(32)), "receipt digest").is_err());
+        assert!(validate_digest(&"ab".repeat(32), "receipt digest").is_err());
+        assert!(validate_digest(&format!("sha1:{}", "ab".repeat(32)), "receipt digest").is_err());
+        assert!(validate_digest(&format!("sha256:{}", "ab".repeat(31)), "receipt digest").is_err());
     }
 }

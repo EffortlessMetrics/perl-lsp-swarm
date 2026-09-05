@@ -16,8 +16,14 @@
 
 /// Canonical server, DAP, and VSIX identity protocol family.
 pub mod binary_identity;
+/// Perl-owned projection of the neutral cancellation error onto the Perl
+/// error taxonomy (#13997).
+pub mod cancellation_error_class;
 pub mod capabilities;
 pub mod document_version;
+/// Typed deterministic final-surface authority: `EffectiveLspSurface`,
+/// registration plan and effective identities (#9665, #8032 train S02).
+pub mod effective_surface;
 pub mod error_disposition;
 pub mod error_inventory;
 mod errors;
@@ -30,14 +36,15 @@ pub mod methods;
 pub mod resolve_envelope;
 pub mod schema;
 
+pub use cancellation_error_class::{cancellation_error_category, cancellation_error_disposition};
 pub use document_version::{
     ClientDocumentVersion, DocumentVersionDecodeError, DocumentVersionField, IntegerRangeClass,
     JsonValueKind, Signedness, decode_document_version, decode_version_value,
 };
 pub use error_disposition::{Disposition, disposition_for};
 pub use error_inventory::{
-    ErrorInventoryEntry, classified_count, error_type_inventory, unclassified_count,
-    unclassified_types,
+    ClassificationRoute, ErrorInventoryEntry, classified_count, error_type_inventory,
+    unclassified_count, unclassified_types,
 };
 pub use errors::*;
 pub use jsonrpc::*;

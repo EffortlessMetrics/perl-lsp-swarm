@@ -540,55 +540,97 @@ end
 ---Handles one window/showDocument request through one truthful sequence:
 ---classify the URI against the reviewed policy, preserve the exact user
 ---decision, launch/reveal through safe seams, and surface one outcome for
----the exact ShowDocumentResult response (#11162, consumed by #10873).
+---the exact ShowDocumentResult response (#11162).
 ---
----hooks carry the editor-side seams so this sequence stays deterministically
----testable: confirm(scheme, uri) -> boolean user decision for external
----targets (the host prompt must display scheme and target verbatim),
----reveal(uri) -> truthy when the internal document opened, raise() applied
----after a successful reveal for takeFocus. The init.lua listener wires these
----to MessageBox.info / core.root_view:open_doc / system.raise_window and
----feeds the returned outcome to server:push_response unchanged.
+---Local patch (#10873): the outcome is truthful and exactly one per request.
+---External decisions may be synchronous or asynchronous. In async mode
+---hooks.confirm(scheme, uri, answered) shows the host prompt, returns nil,
+---and later calls answered(accepted) once; the sequence resumes from the
+---terminal decision, so no response exists before the user outcome. Every
+---deferred transition passes hooks.alive() first: when the owning server was
+---replaced or stopped while the prompt was open the stale sequence is inert
+---and answers nothing (returns nil, "stale"). hooks.outcome(success, reason)
+---observes each terminal outcome for delivery; reveal(uri) returns
+---truthy-on-open plus an optional typed failure reason so a failed internal
+---open or selection conversion is distinguishable from success.
+---
+---Sync-mode contract is unchanged: confirm(scheme, uri) returning a boolean
+---settles immediately and the function returns success, reason as before.
+---
 ---@param server table LSP server (name used by the host prompt title)
 ---@param params table Request params: uri, external, selection, takeFocus
----@param hooks table|nil Editor seams: confirm, reveal, raise
----@return boolean success
+---@param hooks table|nil Editor seams: confirm, reveal, raise, alive, outcome
+---@return boolean|nil success nil only when an async prompt is pending/stale
 ---@return string|nil failure_reason Stable token when not successful
 function util.show_document(server, params, hooks)
   hooks = hooks or {}
   local uri = params and params.uri
 
+  local function finish(success, reason)
+    if hooks.outcome then
+      hooks.outcome(success, reason)
+    end
+    return success, reason
+  end
+
+  -- One terminal settle path for the external decision: decline reports
+  -- false, accept launches and reports the observable launch result. A
+  -- repeated host answer is inert (#10873 review): the sequence settles at
+  -- most once, so a double Yes/No delivery cannot launch twice or answer
+  -- twice even before the listener's own deduplication.
+  local settled = false
+  local function settle(accepted)
+    if settled then
+      return nil, "already_settled"
+    end
+    settled = true
+    if hooks.alive and not hooks.alive() then
+      return nil, "stale"
+    end
+    if not accepted then
+      return finish(false, "user_declined")
+    end
+    local launched, launch_reason = util.open_external(uri)
+    if not launched then
+      return finish(false, launch_reason or "launch_failed")
+    end
+    return finish(true, nil)
+  end
+
   if params and params.external then
     local external_ok, external_reason, scheme =
       util.classify_uri(uri, util.EXTERNAL_URI_SCHEMES)
     if not external_ok then
-      return false, external_reason
+      return finish(false, external_reason)
     end
-    if hooks.confirm and not hooks.confirm(scheme, uri) then
-      return false, "user_declined"
+    if hooks.confirm then
+      local decided = hooks.confirm(scheme, uri, settle)
+      if decided == nil then
+        -- Async prompt owns the rest of the sequence; nothing is answered
+        -- until the user/open outcome exists (#10873).
+        return nil, "pending"
+      end
+      return settle(decided)
     end
-    local launched, launch_reason = util.open_external(uri)
-    if not launched then
-      return false, launch_reason or "launch_failed"
-    end
-    return true, nil
+    return settle(true)
   end
 
   local internal_ok, internal_reason = util.classify_uri(
     uri, util.INTERNAL_URI_SCHEMES)
   if not internal_ok then
-    return false, internal_reason
+    return finish(false, internal_reason)
   end
   if not hooks.reveal then
-    return false, "reveal_unavailable"
+    return finish(false, "reveal_unavailable")
   end
-  if not hooks.reveal(uri) then
-    return false, "reveal_failed"
+  local revealed, reveal_reason = hooks.reveal(uri)
+  if not revealed then
+    return finish(false, reveal_reason or "reveal_failed")
   end
   if params and params.takeFocus and hooks.raise then
     hooks.raise()
   end
-  return true, nil
+  return finish(true, nil)
 end
 
 ---One-shot flag so trace-file failures never recurse or spam (#11155).
@@ -700,19 +742,29 @@ end
 ---@param fieldset string A field spec in the format
 ---"parent[.child][.subchild]" eg: "myProp.subProp.subSubProp"
 ---@return any|nil The value of the given field or nil if not found.
+---@return boolean found Whether the field exists, tracked separately from
+---the value so an explicitly configured false stays distinct from a missing
+---section (#10845). Traversal recurses only into tables; a missing or
+---non-table intermediate keeps the whole path not-found.
 function util.table_get_field(t, fieldset)
   local fields = util.split(fieldset, ".", "%.")
   local field = fields[1]
   local value = nil
+  local found = false
 
-  if field and #fields > 1 and t[field] then
-    local sub_fields = table.concat(fields, ".", 2)
-    value = util.table_get_field(t[field], sub_fields)
-  elseif field and #fields > 0 and t[field] then
-    value = t[field]
+  if field then
+    if #fields > 1 then
+      if type(t[field]) == "table" then
+        value, found = util.table_get_field(
+          t[field], table.concat(fields, ".", 2))
+      end
+    elseif t[field] ~= nil then
+      value = t[field]
+      found = true
+    end
   end
 
-  return value
+  return value, found
 end
 
 -- Local patch (#11143): typed settings-value helpers for deep_merge. Every

@@ -1,0 +1,17 @@
+{
+  "name": "07_source_filter_module.json",
+  "fixture_class": "source-filter or compile-hook module (#10097 class 7)",
+  "observation": {
+  "stopped_and_command_ready": true,
+  "runtime_supported": true,
+  "loaded_in_runtime": true,
+  "within_launch_authority": true,
+  "runtime_mapping_unambiguous": true,
+  "identity_binding_complete": true,
+  "identity_current": true,
+  "client_source_matches_saved": true,
+  "module_classification": "source_filter_or_compile_hook",
+  "active_frame_in_target": false
+},
+  "expected_disposition": "source_filter_or_compile_hook_boundary"
+}

@@ -105,16 +105,16 @@ fn scenario_19_diagnostics_clear_after_fix() {
 
         // Walk in reverse to find the latest diagnostic event for this URI.
         for ev in post_settle_events.iter().rev() {
-            if let LspEvent::Diagnostics { uri: event_uri, version, diagnostics } = ev {
-                if event_uri == &uri {
-                    if version.is_some_and(|value| value < FIXED_VERSION) {
-                        continue;
-                    }
-                    if diagnostics.is_empty() {
-                        cleared = true;
-                    }
-                    break; // latest diagnostic state found — stop scanning
+            if let LspEvent::Diagnostics { uri: event_uri, version, diagnostics } = ev
+                && event_uri == &uri
+            {
+                if version.is_some_and(|value| value < FIXED_VERSION) {
+                    continue;
                 }
+                if diagnostics.is_empty() {
+                    cleared = true;
+                }
+                break; // latest diagnostic state found — stop scanning
             }
         }
 

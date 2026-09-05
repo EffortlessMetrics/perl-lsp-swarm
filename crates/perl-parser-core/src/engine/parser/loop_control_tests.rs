@@ -61,11 +61,11 @@ mod tests {
         });
         if let NodeKind::Program { statements } = &ast.kind {
             let while_stmt = &statements[0];
-            if let NodeKind::While { body, .. } = &while_stmt.kind {
-                if let NodeKind::Block { statements } = &body.kind {
-                    let last_stmt = &statements[0];
-                    assert!(matches!(last_stmt.kind, NodeKind::LoopControl { .. }));
-                }
+            if let NodeKind::While { body, .. } = &while_stmt.kind
+                && let NodeKind::Block { statements } = &body.kind
+            {
+                let last_stmt = &statements[0];
+                assert!(matches!(last_stmt.kind, NodeKind::LoopControl { .. }));
             }
         }
     }

@@ -15,13 +15,12 @@
 use perl_dap::breakpoints::{BreakpointRecord, BreakpointStore};
 use perl_dap::protocol::*;
 use perl_dap::{
-    AttachConfiguration, DapConfig, DapMessage, DapMode, DapServer, DapSocketBindError,
-    DebugAdapter, LaunchConfiguration,
+    AttachConfiguration, DapConfig, DapMessage, DapMode, DapServer, DebugAdapter,
+    LaunchConfiguration,
 };
 use serde_json::json;
 use std::collections::HashMap;
-use std::io::{self, Write};
-use std::net::TcpListener;
+use std::io::Write;
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
 
@@ -823,26 +822,6 @@ fn test_dap_server_creation_native() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[test]
-fn native_socket_preserves_bind_error_identity() -> Result<(), Box<dyn std::error::Error>> {
-    let occupied = TcpListener::bind(("127.0.0.1", 0))?;
-    let port = occupied.local_addr()?.port();
-    let config =
-        DapConfig { log_level: "info".to_string(), mode: DapMode::Native, workspace_root: None };
-    let mut server = DapServer::new(config)?;
-
-    let error = server.run_socket(port).expect_err("occupied port must fail before accept");
-    let marker = error
-        .downcast_ref::<DapSocketBindError>()
-        .ok_or_else(|| io::Error::other("missing DAP bind marker"))?;
-    assert_eq!(marker.port, port);
-    let source = error
-        .downcast_ref::<io::Error>()
-        .ok_or_else(|| io::Error::other("missing underlying io error"))?;
-    assert_eq!(source.kind(), io::ErrorKind::AddrInUse);
-    Ok(())
-}
-
 // ============================================================================
 // BreakpointStore edge cases
 // ============================================================================
@@ -1155,6 +1134,15 @@ fn test_feature_catalog_has_feature_known() {
 
 #[test]
 fn test_feature_catalog_all_dap_features_registered() {
+    // `has_feature` reports the *advertised* set. #9089 floors the routed
+    // inlineValues extension: its catalog row stays registered for inventory
+    // honesty while `advertised = false`, so it is deliberately absent here
+    // (the goto rows #9064 likewise). The unadvertised value is pinned by the
+    // coverage suite's feature-gate test.
+    //
+    // #9091: `dap.watchpoints` is deliberately excluded — the row remains in
+    // features.toml with full maturity metadata, but it is no longer advertised
+    // until watchpoint identity/install/hit proof exists.
     let all_ids = [
         "dap.core",
         "dap.breakpoints.basic",
@@ -1163,9 +1151,7 @@ fn test_feature_catalog_all_dap_features_registered() {
         "dap.completions",
         "dap.exceptions.die",
         "dap.exceptions.warn",
-        "dap.inline_values",
         "dap.modules",
-        "dap.watchpoints",
     ];
     for id in all_ids {
         assert!(
@@ -1173,6 +1159,20 @@ fn test_feature_catalog_all_dap_features_registered() {
             "feature `{id}` should be registered in the DAP catalog"
         );
     }
+    assert!(
+        !perl_dap::feature_catalog::has_feature("dap.inline_values"),
+        "dap.inline_values must stay unadvertised until #9089's negotiation gate passes"
+    );
+}
+
+/// #9091: watchpoints stay unadvertised while the re-enable gate
+/// (identity/install/hit proof) is unmet.
+#[test]
+fn test_feature_catalog_watchpoints_not_advertised() {
+    assert!(
+        !perl_dap::feature_catalog::has_feature("dap.watchpoints"),
+        "dap.watchpoints must not be advertised while the #9091 re-enable gate (watchpoint identity/install/hit proof) is unmet"
+    );
 }
 
 #[test]

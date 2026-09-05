@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 7856,
-  "reason": "#7856 adds the harness-gated packaged activation-failure seam to activate() (out/extension.js 1516689->1519372 archive-measured on top of the #11983 package.json withdrawal) and the packaged cleanup/retry journey plus its changelog entry (changelog.md 22224->23221 after the vsce markdown processor). No file added, removed, or loosened; total recomputed ->1695683.",
-  "base_baseline_file_sha256": "a4f9360c51a5d263c45628c1b4ec2da9e6861a7a4d8912aa55e7e66e57dbc6b5",
-  "candidate_baseline_file_sha256": "4a662d41a6f80249245b526e89b6b706d1b847195c16231fe0d303cbd44a5011",
-  "base_inventory_sha256": "d70d8236a4363008fab2965595c2add0b79a5161c705017283141a44d9fe1521",
-  "candidate_inventory_sha256": "3087c97c983e74fbc5d814d8739e985dbacc26a54e7ad32c43f1e3f9dae7c19e"
+  "owner_issue": 14718,
+  "reason": "Corrects a stale size-only row. rolldown 1.2.6 (#14702) emits out/extension.js at 1636669 bytes where 1.2.5 emitted 1636125; the baseline landed in #14680 was measured against 1.2.5 and the two changes crossed. Measured twice from a clean npm ci at the current main. The 29-file package is unchanged: no file additions, removals, or permission loosening.",
+  "base_baseline_file_sha256": "ead549f99a68d55a78f83a3b94d6e95cfc860be529d79813b6bc6ff13e070a75",
+  "candidate_baseline_file_sha256": "a966dac61b30ed8f950dc9910b5dfaf354ff131cf797dcd7ea24f6b1fa756c2a",
+  "base_inventory_sha256": "a526f424818662c8ec573c84cd9360eccfff0e3ee7a56d7123c4df047fdc02df",
+  "candidate_inventory_sha256": "71c92a4b4282c160e4db6417312fa3622a9ba9a8266bce7fbe6172b9ad5004f1"
 }

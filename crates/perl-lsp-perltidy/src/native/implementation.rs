@@ -9,6 +9,9 @@ mod config;
 mod doc;
 mod result;
 
+#[path = "counters.rs"]
+pub(crate) mod counters;
+
 pub use config::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatterMode, KeywordSpacing,
     TrailingComma,
@@ -17,6 +20,8 @@ pub use doc::FormatDoc;
 pub use result::{
     FormatDiagnostic, FormatDiagnosticSeverity, FormatResult, TextEdit, TextPosition, TextRange,
 };
+
+use crate::native::inferred_line_ending;
 
 use result::utf16_len;
 
@@ -50,7 +55,10 @@ impl NativeFormatter {
         Self
     }
 
-    fn validate_clean_parse(source: &str) -> Result<(), FormatDiagnostic> {
+    fn validate_clean_parse(
+        source: &str,
+        gate_kind: counters::ParseGateKind,
+    ) -> Result<(), FormatDiagnostic> {
         if let Some(kind) = literal_preserve_region(source) {
             return Err(FormatDiagnostic::new(
                 LITERAL_PRESERVE_CODE,
@@ -60,20 +68,31 @@ impl NativeFormatter {
             ));
         }
 
-        Self::validate_parse_only(source)
+        Self::validate_parse_only(source, gate_kind)
     }
 
     /// Check parse correctness only — no literal-preserve check.
     ///
     /// Used by `format_range` where the literal-preserve gate is scoped to the
     /// requested line range rather than the whole document.
-    fn validate_parse_only(source: &str) -> Result<(), FormatDiagnostic> {
+    fn validate_parse_only(
+        source: &str,
+        gate_kind: counters::ParseGateKind,
+    ) -> Result<(), FormatDiagnostic> {
         let mut parser = perl_parser_core::Parser::new(source);
         let output = parser.parse_with_recovery();
 
+        counters::record_with(|counters| {
+            counters.observe_parse_gate(
+                gate_kind,
+                counters::count_parse_nodes(&output.ast),
+                u64::try_from(output.budget_usage.max_depth_reached).unwrap_or(u64::MAX),
+            );
+        });
+
         // LCOV_EXCL_START — budget exhaustion on pathologically large/deeply-nested
         // input; not reachable with the small sources used in formatter tests.
-        if output.terminated_early {
+        if output.terminated_early() {
             return Err(FormatDiagnostic::new(
                 PARSE_INCOMPLETE_CODE,
                 FormatDiagnosticSeverity::Warning,
@@ -99,14 +118,22 @@ impl NativeFormatter {
 
     fn format_safe_subset(source: &str, config: &FormatConfig) -> String {
         let mut formatted = String::with_capacity(source.len());
+        let mut processed_lines = 0_u64;
+        let fallback_line_ending = inferred_line_ending(source);
 
         for line in source.split_inclusive('\n') {
+            processed_lines = processed_lines.saturating_add(1);
             let (body, line_ending) = split_line_ending(line);
+            let generated_line_ending =
+                if line_ending.is_empty() { fallback_line_ending } else { line_ending };
+            let formatted_body =
+                format_simple_line(body, config).unwrap_or_else(|| body.to_string());
             formatted
-                .push_str(&format_simple_line(body, config).unwrap_or_else(|| body.to_string()));
+                .push_str(&preserve_generated_line_endings(formatted_body, generated_line_ending));
             formatted.push_str(line_ending);
         }
 
+        counters::record_with(|counters| counters.observe_lines(processed_lines));
         formatted
     }
 
@@ -117,10 +144,15 @@ impl NativeFormatter {
     ) -> (String, Vec<TextEdit>) {
         let mut formatted = String::with_capacity(source.len());
         let mut edits = Vec::new();
+        let mut processed_lines = 0_u64;
+        let fallback_line_ending = inferred_line_ending(source);
 
         for (line_index, line) in source.split_inclusive('\n').enumerate() {
+            processed_lines = processed_lines.saturating_add(1);
             let line_index = line_index as u32;
             let (body, line_ending) = split_line_ending(line);
+            let generated_line_ending =
+                if line_ending.is_empty() { fallback_line_ending } else { line_ending };
             let formatted_body = if range_includes_line(range, line_index) {
                 format_simple_line(body, config)
             } else {
@@ -128,6 +160,8 @@ impl NativeFormatter {
             };
 
             if let Some(formatted_line) = formatted_body {
+                let formatted_line =
+                    preserve_generated_line_endings(formatted_line, generated_line_ending);
                 if formatted_line != body {
                     edits.push(TextEdit::new(
                         TextRange::new(
@@ -146,28 +180,44 @@ impl NativeFormatter {
             formatted.push_str(line_ending);
         }
 
+        counters::record_with(|counters| counters.observe_lines(processed_lines));
         (formatted, edits)
     }
 
-    fn apply_final_newline(source: &str, config: &FormatConfig) -> String {
+    /// Apply the configured final-newline policy.
+    ///
+    /// The argument is [`Self::format_safe_subset`]'s output, not the caller's
+    /// original document, so the terminator appended here is the line-ending
+    /// convention [`inferred_line_ending`] infers from the *formatted* text's
+    /// last LF — not what that text happens to end with, which may be an
+    /// unterminated final line. That convention matches the caller's document
+    /// only because `format_safe_subset` preserves each line's existing
+    /// terminator; it is not independently guaranteed. Hence `formatted`
+    /// rather than `source`.
+    fn apply_final_newline(formatted: &str, config: &FormatConfig) -> String {
         match config.final_newline {
-            FinalNewline::Preserve => source.to_string(),
+            FinalNewline::Preserve => formatted.to_string(),
             FinalNewline::Insert => {
-                let trimmed = source.trim_end_matches(['\n', '\r']);
-                format!("{trimmed}\n")
+                let trimmed = formatted.trim_end_matches(['\n', '\r']);
+                format!("{trimmed}{}", inferred_line_ending(formatted))
             }
-            FinalNewline::Trim => source.trim_end_matches(['\n', '\r']).to_string(),
+            FinalNewline::Trim => formatted.trim_end_matches(['\n', '\r']).to_string(),
         }
     }
 }
 
 impl PerlFormatter for NativeFormatter {
     fn format_document(&self, source: &str, config: &FormatConfig) -> FormatResult {
+        // Counted inside the pipeline so an adapter double-invoke — even one
+        // that bypasses the counters-aware typed entry — records a second
+        // pipeline invocation (NPC-003 mutation control).
+        counters::record_with(|counters| counters.observe_pipeline_invocation());
         if matches!(config.mode, FormatterMode::Off) {
             return FormatResult::unchanged(source);
         }
 
-        if let Err(diagnostic) = Self::validate_clean_parse(source) {
+        if let Err(diagnostic) = Self::validate_clean_parse(source, counters::ParseGateKind::Source)
+        {
             let mut result = FormatResult::unchanged(source);
             result.diagnostics.push(diagnostic);
             return result;
@@ -175,7 +225,9 @@ impl PerlFormatter for NativeFormatter {
 
         let formatted =
             Self::apply_final_newline(&Self::format_safe_subset(source, config), config);
-        if let Err(diagnostic) = Self::validate_clean_parse(&formatted) {
+        if let Err(diagnostic) =
+            Self::validate_clean_parse(&formatted, counters::ParseGateKind::FormattedOutput)
+        {
             let mut result = FormatResult::unchanged(source);
             result.diagnostics.push(FormatDiagnostic::new(
                 PARSE_PRESERVATION_CODE,
@@ -190,6 +242,8 @@ impl PerlFormatter for NativeFormatter {
     }
 
     fn format_range(&self, source: &str, range: TextRange, config: &FormatConfig) -> FormatResult {
+        // Same adapter double-invoke detection as `format_document`.
+        counters::record_with(|counters| counters.observe_pipeline_invocation());
         if matches!(config.mode, FormatterMode::Off) {
             return FormatResult::unchanged(source);
         }
@@ -220,7 +274,8 @@ impl PerlFormatter for NativeFormatter {
 
         // Parse-error gate still covers the full document — we cannot safely
         // format any range of a document that does not parse.
-        if let Err(diagnostic) = Self::validate_parse_only(source) {
+        if let Err(diagnostic) = Self::validate_parse_only(source, counters::ParseGateKind::Source)
+        {
             let mut result = FormatResult::unchanged(source);
             result.diagnostics.push(diagnostic);
             return result;
@@ -235,7 +290,9 @@ impl PerlFormatter for NativeFormatter {
         // In practice this branch is unreachable: `format_safe_subset_range` only
         // applies simple whitespace/keyword rewrites that cannot break parse. The
         // guard exists as a defence-in-depth safety net matching `format_document`.
-        if let Err(diagnostic) = Self::validate_parse_only(&formatted) {
+        if let Err(diagnostic) =
+            Self::validate_parse_only(&formatted, counters::ParseGateKind::FormattedOutput)
+        {
             // LCOV_EXCL_START — genuinely unreachable: format_safe_subset_range
             // only applies spacing rewrites that cannot corrupt a clean parse.
             let mut result = FormatResult::unchanged(source);
@@ -263,6 +320,22 @@ fn split_line_ending(line: &str) -> (&str, &str) {
     }
 }
 
+fn preserve_generated_line_endings(formatted: String, source_line_ending: &str) -> String {
+    if source_line_ending != "\r\n" || !formatted.contains('\n') {
+        return formatted;
+    }
+
+    let mut normalized = String::with_capacity(formatted.len());
+    let mut remaining = formatted.as_str();
+    while let Some((line, tail)) = remaining.split_once('\n') {
+        normalized.push_str(line.strip_suffix('\r').unwrap_or(line));
+        normalized.push_str("\r\n");
+        remaining = tail;
+    }
+    normalized.push_str(remaining);
+    normalized
+}
+
 pub(super) fn range_includes_line(range: TextRange, line: u32) -> bool {
     line >= range.start.line
         && (line < range.end.line || line == range.end.line && range.end.character > 0)
@@ -288,7 +361,7 @@ fn format_simple_module_line(line: &str, config: &FormatConfig) -> Option<String
     let mut tokens = Vec::new();
     loop {
         let token = stream.next().ok()?;
-        if token.kind == perl_parser_core::TokenKind::Eof {
+        if token.kind() == perl_parser_core::TokenKind::Eof {
             break;
         }
         tokens.push(token);
@@ -310,7 +383,7 @@ fn format_simple_lexical_line(line: &str, config: &FormatConfig) -> Option<Strin
     let mut tokens = Vec::new();
     loop {
         let token = stream.next().ok()?;
-        if token.kind == perl_parser_core::TokenKind::Eof {
+        if token.kind() == perl_parser_core::TokenKind::Eof {
             break;
         }
         tokens.push(token);
@@ -332,7 +405,7 @@ fn format_simple_subroutine_line(line: &str, config: &FormatConfig) -> Option<St
     let mut tokens = Vec::new();
     loop {
         let token = stream.next().ok()?;
-        if token.kind == perl_parser_core::TokenKind::Eof {
+        if token.kind() == perl_parser_core::TokenKind::Eof {
             break;
         }
         tokens.push(token);
@@ -354,7 +427,7 @@ fn format_simple_control_block_line(line: &str, config: &FormatConfig) -> Option
     let mut tokens = Vec::new();
     loop {
         let token = stream.next().ok()?;
-        if token.kind == perl_parser_core::TokenKind::Eof {
+        if token.kind() == perl_parser_core::TokenKind::Eof {
             break;
         }
         tokens.push(token);
@@ -376,7 +449,7 @@ fn format_simple_statement_line(line: &str, config: &FormatConfig) -> Option<Str
     let mut tokens = Vec::new();
     loop {
         let token = stream.next().ok()?;
-        if token.kind == perl_parser_core::TokenKind::Eof {
+        if token.kind() == perl_parser_core::TokenKind::Eof {
             break;
         }
         tokens.push(token);
@@ -439,10 +512,10 @@ fn format_simple_subroutine_tokens(
     if tokens.len() < 4 {
         return None;
     }
-    if tokens[0].kind != TokenKind::Sub
-        || tokens[1].kind != TokenKind::Identifier
-        || tokens[2].kind != TokenKind::LeftBrace
-        || tokens.last()?.kind != TokenKind::RightBrace
+    if tokens[0].kind() != TokenKind::Sub
+        || tokens[1].kind() != TokenKind::Identifier
+        || tokens[2].kind() != TokenKind::LeftBrace
+        || tokens.last()?.kind() != TokenKind::RightBrace
     {
         return None;
     }
@@ -477,20 +550,20 @@ fn format_simple_control_block_tokens(
     if tokens.len() < 6 {
         return None;
     }
-    let keyword = match tokens[0].kind {
+    let keyword = match tokens[0].kind() {
         TokenKind::If => "if",
         TokenKind::Unless => "unless",
         TokenKind::While => "while",
         TokenKind::Until => "until",
         _ => return None,
     };
-    if tokens[1].kind != TokenKind::LeftParen {
+    if tokens[1].kind() != TokenKind::LeftParen {
         return None;
     }
 
     let (condition, next_index) = format_simple_condition_tokens(tokens, 2, config)?;
-    if tokens.get(next_index)?.kind != TokenKind::RightParen
-        || tokens.get(next_index + 1)?.kind != TokenKind::LeftBrace
+    if tokens.get(next_index)?.kind() != TokenKind::RightParen
+        || tokens.get(next_index + 1)?.kind() != TokenKind::LeftBrace
     {
         return None;
     }
@@ -498,7 +571,7 @@ fn format_simple_control_block_tokens(
     let body_start = next_index + 2;
     let body_end = tokens[body_start..]
         .iter()
-        .position(|token| token.kind == TokenKind::RightBrace)
+        .position(|token| token.kind() == TokenKind::RightBrace)
         .map(|offset| body_start + offset)?;
     let body_tokens = &tokens[body_start..body_end];
     let statements = format_simple_statement_block(body_tokens, config)?;
@@ -557,12 +630,12 @@ fn format_simple_c_style_for_block_tokens(
 ) -> Option<String> {
     use perl_parser_core::TokenKind;
 
-    if tokens.first()?.kind != TokenKind::For || tokens.get(1)?.kind != TokenKind::LeftParen {
+    if tokens.first()?.kind() != TokenKind::For || tokens.get(1)?.kind() != TokenKind::LeftParen {
         return None;
     }
 
     let (first_semicolon, second_semicolon, header_end) = find_for_header_boundaries(tokens, 1)?;
-    if tokens.get(header_end + 1)?.kind != TokenKind::LeftBrace {
+    if tokens.get(header_end + 1)?.kind() != TokenKind::LeftBrace {
         return None;
     }
 
@@ -574,7 +647,7 @@ fn format_simple_c_style_for_block_tokens(
     let body_start = header_end + 2;
     let body_end = tokens[body_start..]
         .iter()
-        .position(|token| token.kind == TokenKind::RightBrace)
+        .position(|token| token.kind() == TokenKind::RightBrace)
         .map(|offset| body_start + offset)?;
     let statements = format_simple_statement_block(&tokens[body_start..body_end], config)?;
 
@@ -608,7 +681,7 @@ fn find_for_header_boundaries(
     let mut second_semicolon = None;
 
     for (index, token) in tokens.iter().enumerate().skip(open_index) {
-        match token.kind {
+        match token.kind() {
             TokenKind::LeftParen => depth += 1,
             TokenKind::RightParen => {
                 depth = depth.checked_sub(1)?;
@@ -658,7 +731,7 @@ fn format_simple_for_init_clause(
         return Some(String::new());
     }
 
-    match tokens.get(start)?.kind {
+    match tokens.get(start)?.kind() {
         TokenKind::My | TokenKind::Our | TokenKind::State => {
             format_simple_lexical_clause(tokens, start, end, config)
         }
@@ -693,14 +766,14 @@ fn format_simple_for_update_clause(
     if let Some((variable, next_index)) = format_variable_tokens(tokens, start)
         && next_index + 1 == end
     {
-        return match tokens.get(next_index)?.kind {
+        return match tokens.get(next_index)?.kind() {
             TokenKind::Increment => Some(format!("{variable}++")),
             TokenKind::Decrement => Some(format!("{variable}--")),
             _ => None,
         };
     }
 
-    if matches!(tokens.get(start)?.kind, TokenKind::Increment | TokenKind::Decrement) {
+    if matches!(tokens.get(start)?.kind(), TokenKind::Increment | TokenKind::Decrement) {
         let (variable, next_index) = format_variable_tokens(tokens, start + 1)?;
         if next_index == end {
             return Some(format!("{}{variable}", tokens[start].text));
@@ -717,7 +790,7 @@ fn format_simple_foreach_block_tokens(
 ) -> Option<String> {
     use perl_parser_core::TokenKind;
 
-    let keyword = match tokens.first()?.kind {
+    let keyword = match tokens.first()?.kind() {
         TokenKind::For => "for",
         TokenKind::Foreach => "foreach",
         _ => return None,
@@ -725,7 +798,7 @@ fn format_simple_foreach_block_tokens(
 
     let mut index = 1;
     let iterator =
-        if matches!(tokens.get(index)?.kind, TokenKind::My | TokenKind::Our | TokenKind::State) {
+        if matches!(tokens.get(index)?.kind(), TokenKind::My | TokenKind::Our | TokenKind::State) {
             let lexical = tokens[index].text.as_ref();
             let (variable, next_index) = format_variable_tokens(tokens, index + 1)?;
             index = next_index;
@@ -736,18 +809,18 @@ fn format_simple_foreach_block_tokens(
             variable
         };
 
-    if tokens.get(index)?.kind != TokenKind::LeftParen {
+    if tokens.get(index)?.kind() != TokenKind::LeftParen {
         return None;
     }
     let list_start = index + 1;
     let list_end = tokens[list_start..]
         .iter()
-        .position(|token| token.kind == TokenKind::RightParen)
+        .position(|token| token.kind() == TokenKind::RightParen)
         .map(|offset| list_start + offset)?;
     let list = format_simple_expression_tokens(tokens, list_start, list_end, config, 0)?;
 
-    if tokens.get(list_end)?.kind != TokenKind::RightParen
-        || tokens.get(list_end + 1)?.kind != TokenKind::LeftBrace
+    if tokens.get(list_end)?.kind() != TokenKind::RightParen
+        || tokens.get(list_end + 1)?.kind() != TokenKind::LeftBrace
     {
         return None;
     }
@@ -755,7 +828,7 @@ fn format_simple_foreach_block_tokens(
     let body_start = list_end + 2;
     let body_end = tokens[body_start..]
         .iter()
-        .position(|token| token.kind == TokenKind::RightBrace)
+        .position(|token| token.kind() == TokenKind::RightBrace)
         .map(|offset| body_start + offset)?;
     let body_tokens = &tokens[body_start..body_end];
     let statements = format_simple_statement_block(body_tokens, config)?;
@@ -895,17 +968,17 @@ fn format_simple_control_tail(
         return Some(tail);
     }
 
-    while tokens.get(index)?.kind == TokenKind::Elsif {
+    while tokens.get(index)?.kind() == TokenKind::Elsif {
         if keyword != "if" {
             return None;
         }
-        if tokens.get(index + 1)?.kind != TokenKind::LeftParen {
+        if tokens.get(index + 1)?.kind() != TokenKind::LeftParen {
             return None;
         }
 
         let (condition, next_index) = format_simple_condition_tokens(tokens, index + 2, config)?;
-        if tokens.get(next_index)?.kind != TokenKind::RightParen
-            || tokens.get(next_index + 1)?.kind != TokenKind::LeftBrace
+        if tokens.get(next_index)?.kind() != TokenKind::RightParen
+            || tokens.get(next_index + 1)?.kind() != TokenKind::LeftBrace
         {
             return None;
         }
@@ -913,7 +986,7 @@ fn format_simple_control_tail(
         let elsif_body_start = next_index + 2;
         let elsif_body_end = tokens[elsif_body_start..]
             .iter()
-            .position(|token| token.kind == TokenKind::RightBrace)
+            .position(|token| token.kind() == TokenKind::RightBrace)
             .map(|offset| elsif_body_start + offset)?;
         let statements =
             format_simple_statement_block(&tokens[elsif_body_start..elsif_body_end], config)?;
@@ -925,12 +998,12 @@ fn format_simple_control_tail(
         }
     }
 
-    if tokens.get(index)?.kind != TokenKind::Else {
+    if tokens.get(index)?.kind() != TokenKind::Else {
         return None;
     }
     if !matches!(keyword, "if" | "unless")
-        || tokens.get(index + 1)?.kind != TokenKind::LeftBrace
-        || tokens.last()?.kind != TokenKind::RightBrace
+        || tokens.get(index + 1)?.kind() != TokenKind::LeftBrace
+        || tokens.last()?.kind() != TokenKind::RightBrace
     {
         return None;
     }
@@ -953,9 +1026,9 @@ fn format_simple_continue_tail(
     if next == tokens.len() {
         return Some(None);
     }
-    if tokens.get(next)?.kind != TokenKind::Continue
-        || tokens.get(next + 1)?.kind != TokenKind::LeftBrace
-        || tokens.last()?.kind != TokenKind::RightBrace
+    if tokens.get(next)?.kind() != TokenKind::Continue
+        || tokens.get(next + 1)?.kind() != TokenKind::LeftBrace
+        || tokens.last()?.kind() != TokenKind::RightBrace
     {
         return None;
     }
@@ -979,14 +1052,14 @@ fn format_simple_statement_block(
     let mut statements = Vec::new();
     let mut start = 0;
     for (idx, token) in tokens.iter().enumerate() {
-        if token.kind != TokenKind::Semicolon {
+        if token.kind() != TokenKind::Semicolon {
             continue;
         }
 
         // Empty statements are valid Perl, but the safe subset has no layout
         // representation for them. Fail closed before dispatching to a
         // statement formatter that expects a non-empty token span.
-        if tokens[start].kind == TokenKind::Semicolon {
+        if tokens[start].kind() == TokenKind::Semicolon {
             return None;
         }
 
@@ -1015,11 +1088,11 @@ fn format_simple_module_tokens(
 ) -> Option<String> {
     use perl_parser_core::TokenKind;
 
-    if tokens.last()?.kind != TokenKind::Semicolon {
+    if tokens.last()?.kind() != TokenKind::Semicolon {
         return None;
     }
 
-    match tokens.first()?.kind {
+    match tokens.first()?.kind() {
         TokenKind::Package => format_simple_package_tokens(tokens, config),
         TokenKind::Use => format_simple_import_tokens("use", tokens, 1, config),
         TokenKind::No => format_simple_import_tokens("no", tokens, 1, config),
@@ -1036,13 +1109,13 @@ fn format_simple_package_tokens(
 ) -> Option<String> {
     use perl_parser_core::TokenKind;
 
-    if tokens.len() < 3 || tokens.first()?.kind != TokenKind::Package {
+    if tokens.len() < 3 || tokens.first()?.kind() != TokenKind::Package {
         return None;
     }
 
     let semicolon_index = tokens.len() - 1;
     let name = tokens.get(1)?;
-    if name.kind != TokenKind::Identifier {
+    if name.kind() != TokenKind::Identifier {
         return None;
     }
 
@@ -1096,7 +1169,7 @@ fn format_simple_lexical_tokens(
     tokens: &[perl_parser_core::Token],
     config: &FormatConfig,
 ) -> Option<String> {
-    if tokens.last()?.kind != perl_parser_core::TokenKind::Semicolon {
+    if tokens.last()?.kind() != perl_parser_core::TokenKind::Semicolon {
         return None;
     }
 
@@ -1112,7 +1185,7 @@ fn format_simple_lexical_clause(
 ) -> Option<String> {
     use perl_parser_core::TokenKind;
 
-    let keyword = match tokens.get(start)?.kind {
+    let keyword = match tokens.get(start)?.kind() {
         TokenKind::My => "my",
         TokenKind::Our => "our",
         TokenKind::State => "state",
@@ -1122,7 +1195,7 @@ fn format_simple_lexical_clause(
     let (variable, next_index) = format_lexical_target_tokens(tokens, start + 1)?;
     if next_index == end {
         Some(format!("{keyword} {variable}"))
-    } else if tokens[next_index].kind == TokenKind::Assign {
+    } else if tokens[next_index].kind() == TokenKind::Assign {
         let prefix = format!("{keyword} {variable} = ");
         let value = format_simple_expression_tokens(
             tokens,
@@ -1150,13 +1223,13 @@ fn format_variable_list_tokens(
 ) -> Option<(String, usize)> {
     use perl_parser_core::TokenKind;
 
-    if tokens.get(start)?.kind != TokenKind::LeftParen {
+    if tokens.get(start)?.kind() != TokenKind::LeftParen {
         return None;
     }
 
     let mut variables = Vec::new();
     let mut index = start + 1;
-    if tokens.get(index)?.kind == TokenKind::RightParen {
+    if tokens.get(index)?.kind() == TokenKind::RightParen {
         return Some(("()".to_string(), index + 1));
     }
 
@@ -1165,7 +1238,7 @@ fn format_variable_list_tokens(
         variables.push(variable);
         index = next_index;
 
-        match tokens.get(index)?.kind {
+        match tokens.get(index)?.kind() {
             TokenKind::Comma => index += 1,
             TokenKind::RightParen => {
                 return Some((format!("({})", variables.join(", ")), index + 1));
@@ -1182,7 +1255,7 @@ fn format_variable_tokens(
     use perl_parser_core::TokenKind;
 
     let first = tokens.get(start)?;
-    if first.kind == TokenKind::Identifier
+    if first.kind() == TokenKind::Identifier
         && first.text.chars().next().is_some_and(|ch| matches!(ch, '$' | '@' | '%'))
     {
         return Some((first.text.to_string(), start + 1));
@@ -1190,11 +1263,13 @@ fn format_variable_tokens(
 
     let sigil = first;
     let name = tokens.get(start + 1)?;
-    if !matches!(sigil.kind, TokenKind::ScalarSigil | TokenKind::ArraySigil | TokenKind::HashSigil)
-    {
+    if !matches!(
+        sigil.kind(),
+        TokenKind::ScalarSigil | TokenKind::ArraySigil | TokenKind::HashSigil
+    ) {
         return None;
     }
-    if name.kind != TokenKind::Identifier {
+    if name.kind() != TokenKind::Identifier {
         return None;
     }
 
@@ -1207,7 +1282,8 @@ fn format_simple_return_tokens(
 ) -> Option<String> {
     use perl_parser_core::TokenKind;
 
-    if tokens.first()?.kind != TokenKind::Return || tokens.last()?.kind != TokenKind::Semicolon {
+    if tokens.first()?.kind() != TokenKind::Return || tokens.last()?.kind() != TokenKind::Semicolon
+    {
         return None;
     }
 
@@ -1230,19 +1306,19 @@ fn format_simple_return_tokens(
 fn format_simple_loop_control_tokens(tokens: &[perl_parser_core::Token]) -> Option<String> {
     use perl_parser_core::TokenKind;
 
-    let keyword = match tokens.first()?.kind {
+    let keyword = match tokens.first()?.kind() {
         TokenKind::Next => "next",
         TokenKind::Last => "last",
         TokenKind::Redo => "redo",
         _ => return None,
     };
-    if tokens.last()?.kind != TokenKind::Semicolon {
+    if tokens.last()?.kind() != TokenKind::Semicolon {
         return None;
     }
 
     match tokens {
         [_, _] => Some(format!("{keyword};")),
-        [_, label, _] if label.kind == TokenKind::Identifier => {
+        [_, label, _] if label.kind() == TokenKind::Identifier => {
             Some(format!("{keyword} {};", label.text))
         }
         _ => None,
@@ -1255,7 +1331,7 @@ fn format_simple_assignment_tokens(
 ) -> Option<String> {
     use perl_parser_core::TokenKind;
 
-    if tokens.last()?.kind != TokenKind::Semicolon {
+    if tokens.last()?.kind() != TokenKind::Semicolon {
         return None;
     }
 
@@ -1272,7 +1348,7 @@ fn format_simple_assignment_clause(
     use perl_parser_core::TokenKind;
 
     let (variable, next_index) = format_variable_tokens(tokens, start)?;
-    if tokens.get(next_index)?.kind != TokenKind::Assign {
+    if tokens.get(next_index)?.kind() != TokenKind::Assign {
         return None;
     }
 
@@ -1293,7 +1369,7 @@ fn format_simple_expression_statement_tokens(
 ) -> Option<String> {
     use perl_parser_core::TokenKind;
 
-    if tokens.last()?.kind != TokenKind::Semicolon {
+    if tokens.last()?.kind() != TokenKind::Semicolon {
         return None;
     }
 
@@ -1311,7 +1387,7 @@ fn format_simple_condition_tokens(
 
     let end = tokens[start..]
         .iter()
-        .position(|token| token.kind == TokenKind::RightParen)
+        .position(|token| token.kind() == TokenKind::RightParen)
         .map(|offset| start + offset)?;
     let condition_config = FormatConfig { line_width: u32::MAX, ..config.clone() };
     let condition = format_simple_expression_tokens(tokens, start, end, &condition_config, 0)?;
@@ -1385,7 +1461,7 @@ fn format_simple_method_call_tokens(
     let mut saw_method = false;
 
     loop {
-        if tokens.get(index)?.kind != TokenKind::Arrow {
+        if tokens.get(index)?.kind() != TokenKind::Arrow {
             break;
         }
         let (method_call, next_index) =
@@ -1407,20 +1483,20 @@ fn format_simple_method_call_segment(
 ) -> Option<(String, usize)> {
     use perl_parser_core::TokenKind;
 
-    if tokens.get(arrow_index)?.kind != TokenKind::Arrow {
+    if tokens.get(arrow_index)?.kind() != TokenKind::Arrow {
         return None;
     }
 
     let method = tokens.get(arrow_index + 1)?;
-    if method.kind != TokenKind::Identifier
-        || tokens.get(arrow_index + 2)?.kind != TokenKind::LeftParen
+    if method.kind() != TokenKind::Identifier
+        || tokens.get(arrow_index + 2)?.kind() != TokenKind::LeftParen
     {
         return None;
     }
 
     let mut args = Vec::new();
     let mut index = arrow_index + 3;
-    if tokens.get(index)?.kind == TokenKind::RightParen {
+    if tokens.get(index)?.kind() == TokenKind::RightParen {
         return Some((format!("{receiver}->{}()", method.text), index + 1));
     }
 
@@ -1432,7 +1508,7 @@ fn format_simple_method_call_segment(
         args.push(arg);
         index = next_index;
 
-        match tokens.get(index)?.kind {
+        match tokens.get(index)?.kind() {
             TokenKind::Comma => index += 1,
             TokenKind::RightParen => {
                 return Some((
@@ -1454,13 +1530,14 @@ fn format_simple_call_tokens(
     use perl_parser_core::TokenKind;
 
     let name = tokens.get(start)?;
-    if name.kind != TokenKind::Identifier || tokens.get(start + 1)?.kind != TokenKind::LeftParen {
+    if name.kind() != TokenKind::Identifier || tokens.get(start + 1)?.kind() != TokenKind::LeftParen
+    {
         return None;
     }
 
     let mut args = Vec::new();
     let mut index = start + 2;
-    if tokens.get(index)?.kind == TokenKind::RightParen {
+    if tokens.get(index)?.kind() == TokenKind::RightParen {
         return Some((format!("{}()", name.text), index + 1));
     }
 
@@ -1472,7 +1549,7 @@ fn format_simple_call_tokens(
         args.push(arg);
         index = next_index;
 
-        match tokens.get(index)?.kind {
+        match tokens.get(index)?.kind() {
             TokenKind::Comma => index += 1,
             TokenKind::RightParen => {
                 return Some((
@@ -1493,13 +1570,13 @@ fn format_simple_list_tokens(
 ) -> Option<(String, usize)> {
     use perl_parser_core::TokenKind;
 
-    if tokens.get(start)?.kind != TokenKind::LeftParen {
+    if tokens.get(start)?.kind() != TokenKind::LeftParen {
         return None;
     }
 
     let mut items = Vec::new();
     let mut index = start + 1;
-    if tokens.get(index)?.kind == TokenKind::RightParen {
+    if tokens.get(index)?.kind() == TokenKind::RightParen {
         return Some(("()".to_string(), index + 1));
     }
 
@@ -1510,7 +1587,7 @@ fn format_simple_list_tokens(
         items.push(item);
         index = next_index;
 
-        match tokens.get(index)?.kind {
+        match tokens.get(index)?.kind() {
             TokenKind::Comma => index += 1,
             TokenKind::RightParen => {
                 return Some((
@@ -1531,20 +1608,20 @@ fn format_simple_hash_tokens(
 ) -> Option<(String, usize)> {
     use perl_parser_core::TokenKind;
 
-    if tokens.get(start)?.kind != TokenKind::LeftBrace {
+    if tokens.get(start)?.kind() != TokenKind::LeftBrace {
         return None;
     }
 
     let mut pairs = Vec::new();
     let mut index = start + 1;
-    if tokens.get(index)?.kind == TokenKind::RightBrace {
+    if tokens.get(index)?.kind() == TokenKind::RightBrace {
         return Some(("{}".to_string(), index + 1));
     }
 
     loop {
         let key = format_simple_hash_key_token(tokens.get(index)?)?;
         index += 1;
-        if tokens.get(index)?.kind != TokenKind::FatArrow {
+        if tokens.get(index)?.kind() != TokenKind::FatArrow {
             return None;
         }
         index += 1;
@@ -1554,7 +1631,7 @@ fn format_simple_hash_tokens(
         pairs.push((key, value));
         index = next_index;
 
-        match tokens.get(index)?.kind {
+        match tokens.get(index)?.kind() {
             TokenKind::Comma => index += 1,
             TokenKind::RightBrace => {
                 return Some((render_simple_hash_doc(&pairs, config, start_column), index + 1));
@@ -1626,7 +1703,7 @@ fn simple_binary_operator_text(token: &perl_parser_core::Token) -> Option<&str> 
     use perl_parser_core::TokenKind;
 
     matches!(
-        token.kind,
+        token.kind(),
         TokenKind::Plus
             | TokenKind::Minus
             | TokenKind::Star
@@ -1656,7 +1733,7 @@ fn indent_unit(config: &FormatConfig) -> String {
 fn simple_value_text(token: &perl_parser_core::Token) -> Option<&str> {
     use perl_parser_core::TokenKind;
 
-    matches!(token.kind, TokenKind::Number | TokenKind::String | TokenKind::Identifier)
+    matches!(token.kind(), TokenKind::Number | TokenKind::String | TokenKind::Identifier)
         .then_some(token.text.as_ref())
 }
 
@@ -1775,7 +1852,7 @@ fn token_literal_preserve_region_overlapping(
             return None; // LCOV_EXCL_LINE
         };
         // Check only tokens of interest for preserve regions.
-        let kind_label = match token.kind {
+        let kind_label = match token.kind() {
             TokenKind::Eof => return None,
             TokenKind::Regex => "regex literal",
             TokenKind::Substitution => "substitution operator",
@@ -1793,7 +1870,7 @@ fn token_literal_preserve_region_overlapping(
             _ => continue,
         };
         // A token overlaps the range if its byte span intersects [range_byte_start, range_byte_end).
-        if token.start < range_byte_end && token.end > range_byte_start {
+        if token.start() < range_byte_end && token.end() > range_byte_start {
             return Some(kind_label);
         }
     }
@@ -1807,7 +1884,7 @@ fn token_literal_preserve_region(source: &str) -> Option<&'static str> {
         let Ok(token) = stream.next() else {
             return None;
         };
-        match token.kind {
+        match token.kind() {
             TokenKind::Eof => return None,
             TokenKind::Regex => return Some("regex literal"),
             TokenKind::Substitution => return Some("substitution operator"),

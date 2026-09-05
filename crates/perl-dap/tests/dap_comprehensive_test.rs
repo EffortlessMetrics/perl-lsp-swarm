@@ -1,3 +1,7 @@
+#![expect(
+    clippy::print_stderr,
+    reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
+)]
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use perl_tdd_support::{must, must_some};
@@ -62,18 +66,35 @@ fn test_dap_initialize() {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false)
             );
+            // #9578: the optional breakpoint capability rows fail closed from
+            // the single breakpoint authority — the catalog rows stay
+            // advertised but cannot widen the wire. `unwrap_or(true)` so a
+            // missing key fails this assertion instead of passing vacuously.
             assert!(
-                body.get("supportsConditionalBreakpoints")
+                !body
+                    .get("supportsConditionalBreakpoints")
                     .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
+                    .unwrap_or(true),
+                "supportsConditionalBreakpoints must be false (#9578)"
+            );
+            // #9573: hover is advertised false until a pure selected-frame
+            // inspection path exists. `unwrap_or(true)` so a missing key fails
+            // this assertion instead of passing vacuously.
+            assert!(
+                !body.get("supportsEvaluateForHovers").and_then(|v| v.as_bool()).unwrap_or(true),
+                "supportsEvaluateForHovers must be false (#9573)"
             );
             assert!(
-                body.get("supportsEvaluateForHovers").and_then(|v| v.as_bool()).unwrap_or(false)
+                !body.get("supportsFunctionBreakpoints").and_then(|v| v.as_bool()).unwrap_or(true),
+                "supportsFunctionBreakpoints must be false (#9578)"
             );
+            // #9089: the routed inlineValues extension is a project extension
+            // kept outside standard DAP capability accounting. `unwrap_or(true)`
+            // so a missing key fails this assertion instead of passing vacuously.
             assert!(
-                body.get("supportsFunctionBreakpoints").and_then(|v| v.as_bool()).unwrap_or(false)
+                !body.get("supportsInlineValues").and_then(|v| v.as_bool()).unwrap_or(true),
+                "supportsInlineValues must be false until #9089's negotiation gate passes"
             );
-            assert!(body.get("supportsInlineValues").and_then(|v| v.as_bool()).unwrap_or(false));
         }
         _ => must(Err::<(), _>("Expected response message")),
     }
@@ -177,24 +198,18 @@ fn test_dap_inline_values() -> TestResult {
         })),
     );
 
+    // #9089: the routed inlineValues extension is fail-closed — every
+    // unnegotiated request is refused with the deterministic gate message,
+    // before any filesystem read or debugger query.
     match response {
-        DapMessage::Response { success, command, body, .. } => {
-            assert!(success);
+        DapMessage::Response { success, command, body, message, .. } => {
+            assert!(!success, "inlineValues must be refused while #9089 is unnegotiated");
             assert_eq!(command, "inlineValues");
-            let body = body.ok_or("missing body")?;
-            let values = body
-                .get("inlineValues")
-                .and_then(|v| v.as_array())
-                .ok_or("missing inlineValues")?;
+            assert!(body.is_none(), "a refused inlineValues response carries no body");
+            let message = message.ok_or("refusal must carry a message")?;
             assert!(
-                values.iter().any(|v| {
-                    v.get("text").and_then(|t| t.as_str()).unwrap_or("").contains("$x")
-                })
-            );
-            assert!(
-                values.iter().any(|v| {
-                    v.get("text").and_then(|t| t.as_str()).unwrap_or("").contains("$y")
-                })
+                message.contains("inlineValues"),
+                "refusal must carry the #9089 gate reason, got: {message}"
             );
         }
         _ => must(Err::<(), _>("Expected inlineValues response")),
@@ -289,6 +304,12 @@ fn test_dap_set_exception_breakpoints() -> TestResult {
 
 #[test]
 fn test_dap_set_function_breakpoints_validation() -> TestResult {
+    // #9578: the capability is floored, so every request shape — valid
+    // package-qualified names, malformed names, and injection shapes alike —
+    // receives the identical deterministic refusal before any name
+    // validation, registry mutation, or debugger command. The shared refusal
+    // across previously-valid and previously-invalid shapes is the
+    // discrimination that the gate runs ahead of the validation loop.
     let mut adapter = DebugAdapter::new();
 
     let response = adapter.handle_request(
@@ -305,19 +326,15 @@ fn test_dap_set_function_breakpoints_validation() -> TestResult {
     );
 
     match response {
-        DapMessage::Response { success, command, body, .. } => {
-            assert!(success);
+        DapMessage::Response { success, command, body, message, .. } => {
+            assert!(!success, "setFunctionBreakpoints must be refused while floored (#9578)");
             assert_eq!(command, "setFunctionBreakpoints");
-            let body = body.ok_or("Expected response body")?;
-            let breakpoints = body
-                .get("breakpoints")
-                .and_then(|v| v.as_array())
-                .ok_or("Missing breakpoints field")?;
-            assert_eq!(breakpoints.len(), 4);
-            assert_eq!(breakpoints[0].get("verified").and_then(|v| v.as_bool()), Some(true));
-            assert_eq!(breakpoints[1].get("verified").and_then(|v| v.as_bool()), Some(true));
-            assert_eq!(breakpoints[2].get("verified").and_then(|v| v.as_bool()), Some(false));
-            assert_eq!(breakpoints[3].get("verified").and_then(|v| v.as_bool()), Some(false));
+            assert!(body.is_none(), "a refused request must not carry a breakpoint body");
+            let message = message.ok_or("Expected refusal message")?;
+            assert!(
+                message.contains("supportsFunctionBreakpoints") && message.contains("#9578"),
+                "refusal must name the floored capability and gate, got {message:?}"
+            );
         }
         _ => must(Err::<(), _>("Expected response message")),
     }

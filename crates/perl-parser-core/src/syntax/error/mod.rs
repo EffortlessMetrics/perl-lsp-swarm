@@ -133,11 +133,30 @@ pub struct ParseBudget {
     /// Bounds total recovery work to prevent pathological cases.
     /// Default: 500
     pub max_recoveries: usize,
+
+    /// Maximum total bytes of source the heredoc collector may traverse across
+    /// one parse operation.
+    ///
+    /// This is the deterministic replacement for the former parser-owned
+    /// wall-clock heredoc cutoff (#7291). Heredoc body collection is charged in
+    /// source bytes, so identical source and configuration consume identical
+    /// budget regardless of host speed, tracing, or debugger pauses.
+    ///
+    /// Default: 64 MiB. Collection is monotone within a drain, so ordinary
+    /// files charge on the order of their own size; the default exists to bound
+    /// pathological inputs, not to constrain real Perl.
+    pub max_heredoc_scan_bytes: usize,
 }
 
 impl Default for ParseBudget {
     fn default() -> Self {
-        Self { max_errors: 100, max_depth: 256, max_tokens_skipped: 1000, max_recoveries: 500 }
+        Self {
+            max_errors: 100,
+            max_depth: 256,
+            max_tokens_skipped: 1000,
+            max_recoveries: 500,
+            max_heredoc_scan_bytes: 64 * 1024 * 1024,
+        }
     }
 }
 
@@ -149,7 +168,13 @@ impl ParseBudget {
 
     /// Create a strict budget for parsing untrusted input.
     pub fn strict() -> Self {
-        Self { max_errors: 10, max_depth: 64, max_tokens_skipped: 100, max_recoveries: 50 }
+        Self {
+            max_errors: 10,
+            max_depth: 64,
+            max_tokens_skipped: 100,
+            max_recoveries: 50,
+            max_heredoc_scan_bytes: 4 * 1024 * 1024,
+        }
     }
 
     /// Create an unlimited budget (use with caution).
@@ -159,6 +184,7 @@ impl ParseBudget {
             max_depth: usize::MAX,
             max_tokens_skipped: usize::MAX,
             max_recoveries: usize::MAX,
+            max_heredoc_scan_bytes: usize::MAX,
         }
     }
 }
@@ -180,6 +206,11 @@ pub struct BudgetTracker {
     pub tokens_skipped: usize,
     /// Number of recovery attempts made.
     pub recoveries_attempted: usize,
+    /// Total source bytes traversed by heredoc body collection.
+    ///
+    /// Charged in source bytes rather than elapsed time, so this value is
+    /// identical for identical source and configuration on every host (#7291).
+    pub heredoc_scan_bytes: usize,
 }
 
 impl BudgetTracker {
@@ -253,6 +284,25 @@ impl BudgetTracker {
     /// Record a recovery attempt.
     pub fn record_recovery(&mut self) {
         self.recoveries_attempted = self.recoveries_attempted.saturating_add(1);
+    }
+
+    /// Check whether the heredoc collection budget is already spent.
+    ///
+    /// This is the *before-work* rule: the parser refuses to begin another
+    /// heredoc collection once the charged total has reached the limit. Work
+    /// already in flight is charged afterwards, so a single drain may overshoot
+    /// the limit by at most the bytes that one drain traverses (bounded by the
+    /// source length). Overshoot is deterministic, not host-dependent.
+    pub fn heredoc_scan_exhausted(&self, budget: &ParseBudget) -> bool {
+        self.heredoc_scan_bytes >= budget.max_heredoc_scan_bytes
+    }
+
+    /// Record source bytes traversed by heredoc body collection.
+    ///
+    /// This is the *after-work* rule paired with
+    /// [`BudgetTracker::heredoc_scan_exhausted`].
+    pub fn record_heredoc_scan(&mut self, bytes: usize) {
+        self.heredoc_scan_bytes = self.heredoc_scan_bytes.saturating_add(bytes);
     }
 }
 
@@ -404,6 +454,22 @@ pub enum ParseError {
     #[error("Maximum recursion depth exceeded")]
     RecursionLimit,
 
+    /// Expression recursion depth exceeded by the production recursion guard
+    /// (`check_recursion`, the `with_recursion_guard` budget).
+    ///
+    /// Distinct from [`ParseError::NestingTooDeep`], which the structural
+    /// guards (block nesting, postfix chains) emit: both guards terminate the
+    /// parse, but the typed [`ParseStopCause`] must preserve which guard
+    /// produced the error instead of relabeling expression-recursion
+    /// exhaustion as structural nesting.
+    #[error("Recursion depth limit exceeded: {depth} > {max_depth}")]
+    RecursionDepthExhausted {
+        /// Recursion depth at exhaustion.
+        depth: usize,
+        /// Maximum allowed recursion depth.
+        max_depth: usize,
+    },
+
     /// Invalid numeric literal found in Perl script content
     ///
     /// Common when processing malformed configuration values during Analyze stage analysis.
@@ -439,6 +505,26 @@ pub enum ParseError {
     InvalidRegex {
         /// Specific error message describing regex syntax issue
         message: String,
+    },
+
+    /// The deterministic heredoc collection budget was exhausted.
+    ///
+    /// Heredoc body collection is charged in source bytes (#7291). This is a
+    /// resource-limit outcome, not a statement about the source: the same
+    /// source and configuration produce this error on every host or on none.
+    /// It must never be reported as an unterminated-heredoc syntax error, and
+    /// the remaining queued declarations stay unresolved rather than being
+    /// discarded into an ordinary successful parse.
+    #[error(
+        "Heredoc collection budget exhausted: {usage} of {limit} permitted source bytes scanned"
+    )]
+    HeredocBudgetExhausted {
+        /// Configured heredoc scan limit in source bytes.
+        limit: usize,
+        /// Charged heredoc scan usage in source bytes at exhaustion.
+        usage: usize,
+        /// Byte offset of the declaration whose collection was refused.
+        location: usize,
     },
 
     /// Nesting depth limit exceeded for recursive structures
@@ -477,7 +563,10 @@ impl ErrorClass for ParseError {
         match self {
             Self::Advisory { .. } => ErrorCategory::Advisory,
             Self::Cancelled => ErrorCategory::Transient,
-            Self::RecursionLimit | Self::NestingTooDeep { .. } => ErrorCategory::ResourceLimit,
+            Self::RecursionLimit
+            | Self::RecursionDepthExhausted { .. }
+            | Self::HeredocBudgetExhausted { .. }
+            | Self::NestingTooDeep { .. } => ErrorCategory::ResourceLimit,
             Self::UnexpectedEof
             | Self::UnexpectedToken { .. }
             | Self::SyntaxError { .. }
@@ -497,6 +586,184 @@ pub mod classifier;
 pub mod recovery;
 
 use perl_ast::Node;
+
+/// The exact typed cause that stopped a parse operation early.
+///
+/// This type is the canonical terminal-state authority for [`ParseOutput`].
+/// It is distinct from the ordered `diagnostics` vector: diagnostics record
+/// parser observations (syntax recoveries, warnings, etc.); `ParseStopCause`
+/// records the unique terminal cause that ended the operation before it could
+/// complete or recover.
+///
+/// An operation that collects many recoverable syntax diagnostics before a
+/// later cancellation or budget exhaustion records those diagnostics in the
+/// `diagnostics` vector; the `ParseStopCause` records only the terminal cause.
+/// The diagnostic population never determines the stop cause — the cause is set
+/// at the exact parser branch that terminates the operation.
+///
+/// Completed operations (clean or recovered) have `stop_cause: None` on
+/// [`ParseOutput`].
+///
+/// # Invariant
+///
+/// `stop_cause().is_some() == terminated_early()` on every [`ParseOutput`],
+/// forever. The invariant is enforced by construction: the cause is the only
+/// stored terminal state, the boolean is a derived accessor over it, and both
+/// are private. Contradictory state (a cause without early termination, or a
+/// boolean that disagrees with the cause) is unrepresentable for every
+/// consumer, internal or external; the only mutation path is the checked
+/// [`ParseOutput::set_stop_cause`], which re-derives the projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ParseStopCause {
+    /// Cooperative cancellation was triggered via an external cancellation token
+    /// before parsing could complete.
+    ///
+    /// The cancellation authority is an external `Arc<AtomicBool>`; no
+    /// operation-ID or named token is available from the parser itself.
+    Cancelled,
+
+    /// The parser's recursion depth exceeded the configured budget.
+    ///
+    /// When the budget authority supplies `limit` and `usage` values (as with
+    /// [`ParseError::NestingTooDeep`]), they are recorded here. For the
+    /// unit-variant [`ParseError::RecursionLimit`] path the values are `None`.
+    RecursionBudgetExhausted {
+        /// Configured recursion depth limit, if available from the budget authority.
+        limit: Option<usize>,
+        /// Recursion depth at exhaustion, if available from the budget authority.
+        usage: Option<usize>,
+    },
+
+    /// The nesting or structural depth limit was exceeded.
+    ///
+    /// Both `limit` and `usage` are recorded from [`ParseError::NestingTooDeep`].
+    NestingOrDepthBudgetExhausted {
+        /// Configured nesting depth limit.
+        limit: usize,
+        /// Nesting depth at exhaustion.
+        usage: usize,
+    },
+
+    /// The parser exhausted the deterministic heredoc collection budget.
+    ///
+    /// Charged in source bytes by [`BudgetTracker::heredoc_scan_bytes`], so the
+    /// cause is reproducible from source and configuration alone (#7291). The
+    /// AST retains unresolved heredoc placeholders: consumers must not treat
+    /// the tree as a complete parse, and must not read empty heredoc content as
+    /// evidence that the source declared an empty body.
+    HeredocBudgetExhausted {
+        /// Configured heredoc scan limit in source bytes.
+        limit: usize,
+        /// Charged heredoc scan usage in source bytes at exhaustion.
+        usage: usize,
+    },
+
+    /// The lexer exhausted a per-token budget (regex/heredoc bytes, scan
+    /// steps, or delimiter nesting) and degraded the remainder of the source
+    /// to an `UnknownRest` token.
+    ///
+    /// The parser stops at that token and returns a partial AST; the
+    /// remainder of the source is explicitly unparsed, so consumers must not
+    /// treat the truncated tree as a complete parse.
+    LexerBudgetExhausted,
+
+    /// A catastrophic, unrecoverable termination occurred that does not fall
+    /// into the above named terminal families.
+    ///
+    /// The associated [`ParseError`] is recorded in the `diagnostics` vector of
+    /// [`ParseOutput`] alongside this cause.
+    CatastrophicTermination,
+
+    /// A future or unknown typed terminal class (stable extension boundary).
+    ///
+    /// This variant is reserved for terminal paths that do not map to the current
+    /// named families. Callers receiving this variant must treat the parse as
+    /// non-current and must not infer a more specific cause from `diagnostics`.
+    FutureTypedTerminal,
+}
+
+impl ParseStopCause {
+    /// Derive the typed stop cause from the terminal [`ParseError`] returned
+    /// by the parser.
+    ///
+    /// This is the canonical conversion used by [`crate::Parser::parse_with_recovery`]
+    /// to record the cause at the branch that terminates parsing, rather than
+    /// reconstructing it later from the diagnostic vector.
+    ///
+    /// # Mapping
+    ///
+    /// | [`ParseError`] variant | [`ParseStopCause`] |
+    /// |---|---|
+    /// | `Cancelled` | `Cancelled` |
+    /// | `RecursionLimit` | `RecursionBudgetExhausted { limit: None, usage: None }` |
+    /// | `RecursionDepthExhausted { depth, max_depth }` | `RecursionBudgetExhausted { limit: Some(max_depth), usage: Some(depth) }` |
+    /// | `NestingTooDeep { depth, max_depth }` | `NestingOrDepthBudgetExhausted { limit: max_depth, usage: depth }` |
+    /// | `HeredocBudgetExhausted { limit, usage, .. }` | `HeredocBudgetExhausted { limit, usage }` |
+    /// | Any other variant | `CatastrophicTermination` |
+    ///
+    /// The heredoc row drops `location` deliberately: a stop cause answers *why the
+    /// operation ended*, which is a property of the operation, not of one position in
+    /// the source. The anchor lives on the [`ParseError`] diagnostic instead, reachable
+    /// through [`ParseError::location`] and [`ParseError::diagnostic_anchor`]. A
+    /// consumer holding only the cause therefore has quantities but no offset, and
+    /// should read the diagnostic vector when it needs to point at the refused
+    /// declaration.
+    #[must_use]
+    pub fn from_parse_error(error: &ParseError) -> Self {
+        match error {
+            ParseError::Cancelled => Self::Cancelled,
+            ParseError::RecursionLimit => {
+                Self::RecursionBudgetExhausted { limit: None, usage: None }
+            }
+            ParseError::RecursionDepthExhausted { depth, max_depth } => {
+                Self::RecursionBudgetExhausted { limit: Some(*max_depth), usage: Some(*depth) }
+            }
+            ParseError::NestingTooDeep { depth, max_depth } => {
+                Self::NestingOrDepthBudgetExhausted { limit: *max_depth, usage: *depth }
+            }
+            ParseError::HeredocBudgetExhausted { limit, usage, .. } => {
+                Self::HeredocBudgetExhausted { limit: *limit, usage: *usage }
+            }
+            _ => Self::CatastrophicTermination,
+        }
+    }
+
+    /// Whether this cause represents cooperative cancellation.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Cancelled)
+    }
+
+    /// Whether this cause represents a parser resource or budget limit being
+    /// exceeded (recursion depth, nesting depth, lexer per-token budget, or a
+    /// governed work budget).
+    #[must_use]
+    pub fn is_budget_exhaustion(&self) -> bool {
+        matches!(
+            self,
+            Self::RecursionBudgetExhausted { .. }
+                | Self::NestingOrDepthBudgetExhausted { .. }
+                | Self::HeredocBudgetExhausted { .. }
+                | Self::LexerBudgetExhausted
+        )
+    }
+
+    /// Returns the stable machine token for this cause, suitable for
+    /// receipt and log layers that must not depend on `Debug` formatting.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Cancelled => "cancelled",
+            Self::RecursionBudgetExhausted { .. } => "recursion_budget_exhausted",
+            Self::NestingOrDepthBudgetExhausted { .. } => "nesting_or_depth_budget_exhausted",
+            Self::HeredocBudgetExhausted { .. } => "heredoc_budget_exhausted",
+            Self::LexerBudgetExhausted => "lexer_budget_exhausted",
+            Self::CatastrophicTermination => "catastrophic_termination",
+            Self::FutureTypedTerminal => "future_typed_terminal",
+        }
+    }
+}
 
 /// Structured output from parsing, combining AST with all diagnostics.
 ///
@@ -523,6 +790,12 @@ use perl_ast::Node;
 /// // Budget tracking shows resource usage
 /// println!("Errors: {}", output.budget_usage.errors_emitted);
 /// ```
+///
+/// # Stop cause vs diagnostics
+///
+/// [`ParseOutput::stop_cause`] is the canonical authority for why parsing
+/// terminated early. Ordered `diagnostics` are parser observations collected
+/// during the operation and must not be used to reconstruct the stop cause.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ParseOutput {
@@ -538,16 +811,72 @@ pub struct ParseOutput {
     /// Useful for diagnosing pathological inputs.
     pub budget_usage: BudgetTracker,
 
-    /// Whether parsing completed normally or was terminated early
-    /// due to budget exhaustion.
-    pub terminated_early: bool,
-
     /// Number of recovery operations applied during this parse.
     ///
     /// Counts the [`ParseError::Recovered`] variants in `diagnostics`.
     /// LSP providers use this as a confidence signal: `0` means a clean parse,
     /// `> 0` means at least one synthetic repair was made.
     pub recovered_count: usize,
+
+    /// The exact typed cause that stopped parsing early, if any.
+    ///
+    /// Private terminal authority: the derived [`ParseOutput::terminated_early`]
+    /// projection and the checked [`ParseOutput::set_stop_cause`] mutation are
+    /// the only external surface, so the documented invariant is unbreakable
+    /// after construction.
+    stop_cause: Option<ParseStopCause>,
+}
+
+impl ParseOutput {
+    /// Whether parsing completed normally or was terminated early.
+    ///
+    /// This is a *derived accessor*, not a stored field: it answers
+    /// `self.stop_cause().is_some()`. Because the terminal cause is the only
+    /// stored state and both are private, the documented invariant
+    /// (`terminated_early() == stop_cause().is_some()`) cannot be broken by
+    /// any consumer — there is no mutable boolean to leave behind.
+    ///
+    /// Prefer [`ParseOutput::stop_cause`] when you need to distinguish the
+    /// exact terminal cause; use [`ParseOutput::terminated_early`] only as a
+    /// quick boolean guard.
+    pub fn terminated_early(&self) -> bool {
+        self.stop_cause.is_some()
+    }
+
+    /// The exact typed cause that stopped parsing early, if any.
+    ///
+    /// `None` for completed (clean or recovered) parses; `Some(cause)` when
+    /// `parse()` returned an error and `terminated_early()` is `true`.
+    ///
+    /// The cause is the single stored terminal authority; it must not be
+    /// inferred from `diagnostics` order, content, or severity.
+    ///
+    /// # Invariant
+    ///
+    /// `stop_cause().is_some() == terminated_early()` on every [`ParseOutput`],
+    /// enforced by construction (private storage + derived projection).
+    pub fn stop_cause(&self) -> Option<ParseStopCause> {
+        self.stop_cause
+    }
+
+    /// Replace the terminal stop cause (checked compatibility mutation).
+    ///
+    /// This is the only mutation path for terminal state. The derived
+    /// [`ParseOutput::terminated_early`] projection follows automatically, so
+    /// callers can never express a cause and a boolean that disagree.
+    ///
+    /// ```
+    /// # use perl_parser_core::Parser;
+    /// let mut parser = Parser::new("my $x = 1;");
+    /// let mut output = parser.parse_with_recovery();
+    /// assert_eq!(output.terminated_early(), output.stop_cause().is_some());
+    /// // The only mutation path keeps that equation true by construction.
+    /// output.set_stop_cause(output.stop_cause());
+    /// assert_eq!(output.terminated_early(), output.stop_cause().is_some());
+    /// ```
+    pub fn set_stop_cause(&mut self, cause: Option<ParseStopCause>) {
+        self.stop_cause = cause;
+    }
 }
 
 /// Closeout classification for a parsed file.
@@ -656,41 +985,51 @@ pub(crate) fn count_blocking_non_recovered(diagnostics: &[ParseError]) -> usize 
 
 impl ParseOutput {
     /// Create a successful parse output with no errors.
+    ///
+    /// Terminal state is `None`: `terminated_early()` answers `false`.
     pub fn success(ast: Node) -> Self {
         Self {
             ast,
             diagnostics: Vec::new(),
             budget_usage: BudgetTracker::new(),
-            terminated_early: false,
             recovered_count: 0,
+            stop_cause: None,
         }
     }
 
-    /// Create a parse output with errors.
+    /// Create a parse output with errors but no early-termination cause.
     ///
-    /// Note: This re-derives budget_usage from diagnostics count.
-    /// For accurate budget tracking, use `finish()` instead.
+    /// Use this for recovered parses that completed (possibly with errors) but
+    /// were not stopped by cancellation or budget exhaustion.
+    ///
+    /// Note: This re-derives `budget_usage` from the diagnostics count.
+    /// For accurate budget tracking, use [`ParseOutput::finish`] instead.
     pub fn with_errors(ast: Node, diagnostics: Vec<ParseError>) -> Self {
         let mut budget_usage = BudgetTracker::new();
         budget_usage.errors_emitted = diagnostics.len();
         let recovered_count =
             diagnostics.iter().filter(|e| matches!(e, ParseError::Recovered { .. })).count();
-        Self { ast, diagnostics, budget_usage, terminated_early: false, recovered_count }
+        Self { ast, diagnostics, budget_usage, recovered_count, stop_cause: None }
     }
 
-    /// Create a parse output with full budget tracking.
+    /// Create a parse output with full budget tracking and an optional stop cause.
     ///
-    /// This is the preferred constructor when the actual BudgetTracker
-    /// from parsing is available, as it preserves accurate metrics.
+    /// This is the preferred constructor when the actual `BudgetTracker` from
+    /// parsing is available, as it preserves accurate metrics.
+    ///
+    /// The `stop_cause` argument should be `Some(cause)` when `parse()` returned
+    /// `Err` and `None` for completed (clean or recovered) operations.
+    /// `terminated_early()` is derived from `stop_cause.is_some()` to maintain
+    /// the documented invariant.
     pub fn finish(
         ast: Node,
         diagnostics: Vec<ParseError>,
         budget_usage: BudgetTracker,
-        terminated_early: bool,
+        stop_cause: Option<ParseStopCause>,
     ) -> Self {
         let recovered_count =
             diagnostics.iter().filter(|e| matches!(e, ParseError::Recovered { .. })).count();
-        Self { ast, diagnostics, budget_usage, terminated_early, recovered_count }
+        Self { ast, diagnostics, budget_usage, recovered_count, stop_cause }
     }
 
     /// Check if parse completed without any errors.
@@ -907,6 +1246,10 @@ impl ParseError {
             ParseError::SyntaxError { location, .. } => Some(*location),
             ParseError::Advisory { location, .. } => Some(*location),
             ParseError::Recovered { location, .. } => Some(*location),
+            // Anchored at the declaration whose collection was refused, so
+            // `get_error_contexts` reports that line rather than falling back
+            // to EOF. Must stay consistent with `diagnostic_anchor`.
+            ParseError::HeredocBudgetExhausted { location, .. } => Some(*location),
             _ => None,
         }
     }
@@ -976,6 +1319,7 @@ impl ParseError {
     /// |---|---|
     /// | `UnexpectedEof` | `EndOfInput` |
     /// | `UnexpectedToken`, `SyntaxError`, `Advisory`, `Recovered` | `Exact(location)` |
+    /// | `HeredocBudgetExhausted` | `Exact(location)` — the refused declaration |
     /// | All other no-location variants | `NoSource` |
     ///
     /// See [`ParseDiagnosticAnchor`] for the full meaning of each value.
@@ -988,9 +1332,11 @@ impl ParseError {
             Self::UnexpectedToken { location, .. }
             | Self::SyntaxError { location, .. }
             | Self::Advisory { location, .. }
+            | Self::HeredocBudgetExhausted { location, .. }
             | Self::Recovered { location, .. } => ParseDiagnosticAnchor::Exact(*location),
             Self::LexerError { .. }
             | Self::RecursionLimit
+            | Self::RecursionDepthExhausted { .. }
             | Self::InvalidNumber { .. }
             | Self::InvalidString
             | Self::UnclosedDelimiter { .. }
@@ -1050,6 +1396,7 @@ mod tests {
         assert_eq!(budget.max_depth, 256);
         assert_eq!(budget.max_tokens_skipped, 1000);
         assert_eq!(budget.max_recoveries, 500);
+        assert_eq!(budget.max_heredoc_scan_bytes, 64 * 1024 * 1024);
     }
 
     #[test]
@@ -1059,6 +1406,7 @@ mod tests {
         assert_eq!(budget.max_depth, 64);
         assert_eq!(budget.max_tokens_skipped, 100);
         assert_eq!(budget.max_recoveries, 50);
+        assert_eq!(budget.max_heredoc_scan_bytes, 4 * 1024 * 1024);
     }
 
     #[test]
@@ -1132,7 +1480,7 @@ mod tests {
         assert!(output.is_ok());
         assert!(!output.has_errors());
         assert_eq!(output.error_count(), 0);
-        assert!(!output.terminated_early);
+        assert!(!output.terminated_early());
     }
 
     #[test]
@@ -1168,14 +1516,21 @@ mod tests {
         tracker.recoveries_attempted = 3;
         tracker.max_depth_reached = 10;
 
-        let output = ParseOutput::finish(ast, errors, tracker, true);
+        let output = ParseOutput::finish(
+            ast,
+            errors,
+            tracker,
+            Some(ParseStopCause::CatastrophicTermination),
+        );
 
         // Verify all tracker values are preserved
         assert_eq!(output.budget_usage.errors_emitted, 5);
         assert_eq!(output.budget_usage.tokens_skipped, 42);
         assert_eq!(output.budget_usage.recoveries_attempted, 3);
         assert_eq!(output.budget_usage.max_depth_reached, 10);
-        assert!(output.terminated_early);
+        // terminated_early is derived from stop_cause.is_some()
+        assert!(output.terminated_early());
+        assert!(output.stop_cause().is_some());
         assert_eq!(output.error_count(), 1);
     }
 
@@ -1252,10 +1607,8 @@ mod tests {
             let _ = format!("{k:?}");
             let _ = k.clone();
         }
-        // PartialEq works.
-        assert_eq!(RecoverySite::ArgList, RecoverySite::ArgList);
+        // PartialEq distinguishes sites and kinds.
         assert_ne!(RecoverySite::ArgList, RecoverySite::PostfixChain);
-        assert_eq!(RecoveryKind::InsertedCloser, RecoveryKind::InsertedCloser);
         assert_ne!(RecoveryKind::InsertedCloser, RecoveryKind::MissingOperand);
     }
 
@@ -1334,10 +1687,11 @@ mod tests {
             },
         ];
         let tracker = BudgetTracker::new();
-        let output = ParseOutput::finish(ast, errors, tracker, false);
+        let output = ParseOutput::finish(ast, errors, tracker, None);
 
         assert_eq!(output.recovered_count, 1);
-        assert!(!output.terminated_early);
+        assert!(!output.terminated_early());
+        assert!(output.stop_cause().is_none());
     }
 
     #[test]

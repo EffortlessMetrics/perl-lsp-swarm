@@ -30,12 +30,12 @@ fn test_vstring_semantic_type() {
     let ast = parse(source);
     let sexp = ast.to_sexp();
     assert!(
-        sexp.contains("(vstring \"v1.2.3\")"),
-        "expected (vstring \"v1.2.3\") in sexp but got: {}",
+        sexp.contains("(vstring (value v1.2.3))"),
+        "expected (vstring (value v1.2.3)) in sexp but got: {}",
         sexp
     );
     assert!(
-        !sexp.contains("(string \"v1.2.3\")"),
+        !sexp.contains("(string (value v1.2.3))"),
         "v-string must NOT be emitted as (string ...) but got: {}",
         sexp
     );
@@ -48,8 +48,8 @@ fn test_vstring_long_form_semantic_type() {
     let ast = parse(source);
     let sexp = ast.to_sexp();
     assert!(
-        sexp.contains("(vstring \"v1.2.3.4.5\")"),
-        "expected (vstring \"v1.2.3.4.5\") in sexp but got: {}",
+        sexp.contains("(vstring (value v1.2.3.4.5))"),
+        "expected (vstring (value v1.2.3.4.5)) in sexp but got: {}",
         sexp
     );
 }
@@ -88,8 +88,8 @@ fn test_vstring_no_dot_single_component() {
     let ast = parse(source);
     let sexp = ast.to_sexp();
     assert!(
-        sexp.contains("(vstring \"v5\")"),
-        "single-component vstring v5 should produce (vstring \"v5\") but got: {}",
+        sexp.contains("(vstring (value v5))"),
+        "single-component vstring v5 should produce (vstring (value v5)) but got: {}",
         sexp
     );
 }
@@ -112,10 +112,10 @@ fn test_vstring_lowered_by_lower_ast() {
 
     // Verify the parser emitted the VString node (exercises primary.rs arm).
     // If the PR's VString arm were reverted this assertion would fail because
-    // the sexp would contain `(string "v1.2.3")` not `(vstring "v1.2.3")`.
+    // the sexp would contain `(string (value v1.2.3))` not `(vstring (value v1.2.3))`.
     let sexp = output.ast.to_sexp();
     assert!(
-        sexp.contains("(vstring \"v1.2.3\")"),
+        sexp.contains("(vstring (value v1.2.3))"),
         "primary.rs VString arm must emit (vstring ...) in AST; got: {}",
         sexp
     );

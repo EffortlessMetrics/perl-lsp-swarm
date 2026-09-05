@@ -6,7 +6,7 @@
 
 use super::super::LspServer;
 use perl_lsp_rs_core::providers::missing_module::ModuleSearchPathDisplay;
-use perl_module::resolution::{IncRoot, build_effective_inc_roots};
+use perl_module::{IncRoot, build_effective_inc_roots};
 use std::cell::OnceCell;
 use std::path::PathBuf;
 
@@ -290,7 +290,7 @@ impl LspServer {
 mod tests {
     use super::*;
     use crate::runtime::workspace_folder::WorkspaceFolderState;
-    use perl_module::resolution::IncRootKind;
+    use perl_module::IncRootKind;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 

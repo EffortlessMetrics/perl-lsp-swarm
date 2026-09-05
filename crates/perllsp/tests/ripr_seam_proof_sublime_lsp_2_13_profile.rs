@@ -3,6 +3,7 @@
 //! This is intentionally a `*-shaped` protocol receipt. It launches the exact
 //! public `perllsp` Cargo binary but does not claim that Sublime Text itself was
 //! launched; the actual-host receipt remains owned by #7694.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 #[path = "support/real_process.rs"]
 mod real_process;

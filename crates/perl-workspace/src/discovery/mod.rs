@@ -6,14 +6,19 @@
 //!
 //! The resulting behavior is intentionally conservative: common non-source directories
 //! are skipped in both modes (`.git`, `.hg`, `.svn`, `target`, `node_modules`, `.cache`).
+//! Symlinked files and directories inside the workspace are followed so shared library
+//! trees remain visible; external targets require an explicit include path. `WalkDir`'s
+//! loop detection prevents cyclic links from making discovery unbounded.
 //! Explicit include roots can relax that skip only for configured Perl dependency
 //! trees such as `local/lib/perl5`.
 
 use crate::ignore::{is_skipped_dir_name_with_extra, path_contains_skipped_component_with_extra};
-use perl_parser_core::source_file::is_perl_source_path;
+use perl_parser_core::source_file::{
+    is_perl_source_bytes, is_perl_source_extension, is_perl_source_path,
+};
 use std::collections::HashSet;
 use std::ffi::OsString;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -69,15 +74,47 @@ impl DiscoveryConfig {
         }
     }
 
+    /// Returns `true` when `path` carries an extension this policy admits,
+    /// independent of file contents.
+    ///
+    /// This is the extension half of the single admission authority
+    /// (#14186): recognized Perl source extensions, the built-in
+    /// discovery-only formats (`.xs`, `.i`), and the normalized configured
+    /// extras all admit by path, so callers that share one
+    /// [`DiscoveryConfig`] cannot disagree about an extension-bearing file.
+    #[must_use]
+    pub fn admits_extension(&self, path: &Path) -> bool {
+        path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| {
+            is_perl_source_extension(ext)
+                || is_builtin_discovery_extension(ext)
+                || self.extra_extensions.iter().any(|candidate| candidate.eq_ignore_ascii_case(ext))
+        })
+    }
+
+    /// Returns `true` when this policy admits `path` as a Perl workspace
+    /// source, classifying extensionless candidates from `bytes`.
+    ///
+    /// This is the one admission authority shared by workspace discovery,
+    /// the startup indexing final seam, watcher reclassification, and
+    /// rename preflight (#14186). Extension-bearing paths admit through
+    /// [`Self::admits_extension`]; extensionless paths admit only when
+    /// `bytes` carry a Perl shebang, so callers must pass the bytes of the
+    /// same object they intend to consume (never re-read the path here).
+    #[must_use]
+    pub fn admits_bytes(&self, path: &Path, bytes: &[u8]) -> bool {
+        if is_perl_source_bytes(path, bytes) {
+            return true;
+        }
+        // `is_perl_source_bytes` rejects every extension-bearing path that is
+        // not a recognized Perl source; those may still be discovery-only
+        // formats this policy admits.
+        path.extension().is_some() && self.admits_extension(path)
+    }
+
     fn is_discovery_path(&self, path: &Path) -> bool {
-        is_perl_source_path(path)
-            || path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| {
-                is_builtin_discovery_extension(ext)
-                    || self
-                        .extra_extensions
-                        .iter()
-                        .any(|candidate| candidate.eq_ignore_ascii_case(ext))
-            })
+        // With no extension, `is_perl_source_path` degenerates to the
+        // extensionless shebang probe on disk.
+        self.admits_extension(path) || (path.extension().is_none() && is_perl_source_path(path))
     }
 }
 
@@ -254,11 +291,33 @@ fn try_git_discovery(
         return Err(std::io::Error::other("git ls-files failed"));
     }
 
-    let (files, excluded_count, cancelled) =
+    let (mut files, mut excluded_count, cancelled) =
         parse_git_ls_files_output_with_cancel(root, &stdout, allowlist, config, should_cancel);
     if cancelled {
         return Ok(GitDiscoveryOutcome::Cancelled);
     }
+
+    // `git ls-files` reports a tracked directory symlink as one entry and does
+    // not enumerate the linked tree. Expand those entries separately so a
+    // linked library remains visible in the fast path as well as the walk
+    // fallback. The same skip and extension policy is applied to the expansion.
+    let tracked_paths = cached_git_paths(root).unwrap_or_default();
+    let (linked_files, linked_excluded, linked_cancelled) = discover_linked_git_directories(
+        root,
+        &stdout,
+        &tracked_paths,
+        allowlist,
+        config,
+        should_cancel,
+    );
+    if linked_cancelled {
+        return Ok(GitDiscoveryOutcome::Cancelled);
+    }
+    files.extend(linked_files);
+    excluded_count += linked_excluded;
+    sort_paths_lexically(&mut files);
+    files.dedup();
+
     let result = DiscoveryResult {
         files,
         method: DiscoveryMethod::Git,
@@ -269,6 +328,82 @@ fn try_git_discovery(
 
     log_discovery(&result);
     Ok(GitDiscoveryOutcome::Complete(result))
+}
+
+fn discover_linked_git_directories(
+    root: &Path,
+    stdout: &[u8],
+    tracked_paths: &HashSet<PathBuf>,
+    allowlist: &DiscoveryIncludeAllowlist,
+    config: &DiscoveryConfig,
+    should_cancel: &impl Fn() -> bool,
+) -> (Vec<PathBuf>, usize, bool) {
+    let mut files = Vec::new();
+    let mut excluded_count = 0;
+
+    for entry in stdout.split(|byte| *byte == b'\0').filter(|entry| !entry.is_empty()) {
+        if should_cancel() {
+            return (files, excluded_count, true);
+        }
+
+        let relative_path = PathBuf::from(bytes_to_os_string(entry));
+        if !tracked_paths.contains(&relative_path) {
+            continue;
+        }
+        let path = root.join(&relative_path);
+        let is_linked_directory = std::fs::symlink_metadata(&path)
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            && std::fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir());
+        if !is_linked_directory
+            || !is_allowed_link_target(root, &path, allowlist)
+            || is_skipped_path(root, &relative_path, allowlist)
+        {
+            continue;
+        }
+
+        let mut candidates = Vec::new();
+        for linked_entry in
+            WalkDir::new(&path).follow_links(true).into_iter().filter_entry(|entry| {
+                !should_skip_dir_with_allowlist(root, entry, allowlist, config)
+                    && is_allowed_link_target(root, entry.path(), allowlist)
+            })
+        {
+            if should_cancel() {
+                return (files, excluded_count, true);
+            }
+            let linked_entry = match linked_entry {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
+            if !linked_entry.file_type().is_file() {
+                continue;
+            }
+            candidates.push(linked_entry.path().to_path_buf());
+        }
+        let ignored = git_ignored_paths(root, &candidates);
+        for linked_path in candidates {
+            let relative = linked_path.strip_prefix(root).unwrap_or(&linked_path);
+            if ignored.contains(relative) {
+                excluded_count += 1;
+            } else if config.is_discovery_path(&linked_path) {
+                files.push(linked_path);
+            } else {
+                excluded_count += 1;
+            }
+        }
+    }
+
+    (files, excluded_count, false)
+}
+
+fn is_skipped_path(
+    root: &Path,
+    relative_path: &Path,
+    allowlist: &DiscoveryIncludeAllowlist,
+) -> bool {
+    !is_safe_relative_git_path(relative_path)
+        || allowlist.has_unallowed_skipped_component(relative_path)
+        || !root.join(relative_path).is_dir()
 }
 
 #[derive(Debug)]
@@ -331,6 +466,12 @@ fn parse_git_ls_files_output_with_cancel(
         }
 
         let path = root.join(relative_path);
+        if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink())
+            && !is_allowed_link_target(root, &path, allowlist)
+        {
+            excluded_count += 1;
+            continue;
+        }
         if !config.is_discovery_path(&path) {
             excluded_count += 1;
             continue;
@@ -368,7 +509,76 @@ fn should_require_existing_git_files(root: &Path) -> bool {
 }
 
 fn is_existing_regular_file(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
+    // `metadata` follows symlinks. Git reports symlink entries through `ls-files`,
+    // but the workspace should index a linked Perl file just like its target.
+    std::fs::metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
+}
+
+fn cached_git_paths(root: &Path) -> std::io::Result<HashSet<PathBuf>> {
+    let output = std::process::Command::new("git")
+        .args(["ls-files", "-z", "--cached"])
+        .current_dir(root)
+        .output()?;
+    if !output.status.success() {
+        return Err(std::io::Error::other("git ls-files cached failed"));
+    }
+    Ok(output
+        .stdout
+        .split(|byte| *byte == b'\0')
+        .filter(|entry| !entry.is_empty())
+        .map(bytes_to_os_string)
+        .map(PathBuf::from)
+        .collect())
+}
+
+fn git_ignored_paths(root: &Path, paths: &[PathBuf]) -> HashSet<PathBuf> {
+    let relative_paths: Vec<PathBuf> = paths
+        .iter()
+        .filter_map(|path| path.strip_prefix(root).ok().map(Path::to_path_buf))
+        .collect();
+    if relative_paths.is_empty() {
+        return HashSet::new();
+    }
+
+    let mut child = match std::process::Command::new("git")
+        .args(["check-ignore", "-z", "--stdin", "--no-index"])
+        .current_dir(root)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return HashSet::new(),
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        for path in &relative_paths {
+            let _ = stdin.write_all(path.to_string_lossy().as_bytes());
+            let _ = stdin.write_all(&[0]);
+        }
+    }
+    let output = match child.wait_with_output() {
+        Ok(output) => output,
+        Err(_) => return HashSet::new(),
+    };
+    output
+        .stdout
+        .split(|byte| *byte == b'\0')
+        .filter(|entry| !entry.is_empty())
+        .map(bytes_to_os_string)
+        .map(PathBuf::from)
+        .collect()
+}
+
+fn is_allowed_link_target(root: &Path, link: &Path, allowlist: &DiscoveryIncludeAllowlist) -> bool {
+    let Ok(target) = link.canonicalize() else {
+        return false;
+    };
+    let Ok(workspace_root) = root.canonicalize() else {
+        return false;
+    };
+    target.starts_with(workspace_root)
+        || allowlist.external_include_roots.iter().any(|allowed| target.starts_with(allowed))
 }
 
 #[cfg(test)]
@@ -394,12 +604,12 @@ fn walk_discovery_with_allowlist(
     let mut skipped_dir_count: usize = 0;
     let mut cancelled = false;
 
-    for entry in WalkDir::new(root).follow_links(false).into_iter().filter_entry(|entry| {
+    for entry in WalkDir::new(root).follow_links(true).into_iter().filter_entry(|entry| {
         if should_skip_dir_with_allowlist(root, entry, allowlist, config) {
             skipped_dir_count += 1;
             return false;
         }
-        true
+        is_allowed_link_target(root, entry.path(), allowlist)
     }) {
         if should_cancel() {
             cancelled = true;
@@ -494,6 +704,7 @@ fn log_discovery(result: &DiscoveryResult) {
 #[derive(Debug, Default)]
 struct DiscoveryIncludeAllowlist {
     include_roots: Vec<PathBuf>,
+    external_include_roots: Vec<PathBuf>,
     extra_skipped_dirs: Vec<String>,
 }
 
@@ -507,9 +718,18 @@ impl DiscoveryIncludeAllowlist {
         P: AsRef<Path>,
     {
         let mut include_roots = Vec::new();
+        let mut external_include_roots = Vec::new();
         let mut seen = HashSet::new();
 
         for include_path in include_paths {
+            if include_path.as_ref().is_absolute()
+                && !include_path.as_ref().starts_with(workspace_root)
+            {
+                if let Ok(path) = include_path.as_ref().canonicalize() {
+                    external_include_roots.push(path);
+                }
+                continue;
+            }
             let Some(relative_path) = normalize_include_path(workspace_root, include_path.as_ref())
             else {
                 continue;
@@ -529,7 +749,11 @@ impl DiscoveryIncludeAllowlist {
             }
         }
 
-        Self { include_roots, extra_skipped_dirs: config.extra_skipped_dirs.clone() }
+        Self {
+            include_roots,
+            external_include_roots,
+            extra_skipped_dirs: config.extra_skipped_dirs.clone(),
+        }
     }
 
     fn has_unallowed_skipped_component(&self, relative_path: &Path) -> bool {
@@ -622,6 +846,60 @@ mod tests {
         assert!(path_contains_skipped_component(Path::new("/repo/node_modules/pkg.pm")));
         assert!(path_contains_skipped_component(Path::new("/repo/target/build/generated.pm")));
         assert!(!path_contains_skipped_component(Path::new("/repo/lib/My/Module.pm")));
+    }
+
+    /// #14186: the extension half of the admission authority must accept
+    /// exactly what discovery admits — recognized Perl extensions, the
+    /// built-in `.xs`/`.i` formats, and configured extras after the same
+    /// normalization `DiscoveryConfig::new` applies to raw user config.
+    #[test]
+    fn admits_extension_covers_perl_builtins_and_normalized_extras() {
+        let configured =
+            DiscoveryConfig::new(vec![".FOO".to_string(), " Bar ".to_string()], Vec::new());
+
+        assert!(configured.admits_extension(Path::new("lib/Mod.pm")));
+        assert!(configured.admits_extension(Path::new("src/Native.xs")));
+        assert!(configured.admits_extension(Path::new("src/NATIVE.XS")));
+        assert!(configured.admits_extension(Path::new("swig/API.i")));
+        assert!(configured.admits_extension(Path::new("assets/thing.foo")));
+        assert!(configured.admits_extension(Path::new("assets/thing.FOO")));
+        assert!(configured.admits_extension(Path::new("tpl/page.bar")));
+        assert!(!configured.admits_extension(Path::new("README")));
+        assert!(!configured.admits_extension(Path::new("assets/notes.txt")));
+        // Extras are additive per policy: the default policy keeps its
+        // built-ins only.
+        assert!(!DiscoveryConfig::default().admits_extension(Path::new("assets/thing.foo")));
+    }
+
+    /// #14186: the bytes half of the admission authority classifies
+    /// extensionless candidates from the provided bytes while extension
+    /// admission stays path-only, so startup, watcher, and rename seams
+    /// share one decision.
+    #[test]
+    fn admits_bytes_classifies_extensionless_from_shebang_bytes() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let script = tmp.path().join("deploy_hook");
+        fs::write(&script, "#!/usr/bin/env perl\nprint 1;\n")?;
+        let notes = tmp.path().join("notes");
+        fs::write(&notes, "plain documentation\n")?;
+
+        let script_bytes = fs::read(&script)?;
+        assert!(
+            DiscoveryConfig::default().admits_bytes(&script, &script_bytes),
+            "extensionless shebang script must stay admitted from bytes"
+        );
+        let notes_bytes = fs::read(&notes)?;
+        assert!(
+            !DiscoveryConfig::default().admits_bytes(&notes, &notes_bytes),
+            "extensionless non-Perl bytes must stay rejected"
+        );
+        // Discovery-only builtins admit by extension even with non-Perl
+        // body bytes; configured extras keep the same admission after
+        // normalization of raw ".FOO"-style config spellings.
+        assert!(DiscoveryConfig::default().admits_bytes(Path::new("src/Native.xs"), b"MODULE"));
+        let configured = DiscoveryConfig::new(vec![".FOO".to_string()], Vec::new());
+        assert!(configured.admits_bytes(Path::new("assets/thing.foo"), b"\x00\x01"));
+        Ok(())
     }
 
     #[test]

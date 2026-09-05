@@ -1,0 +1,51 @@
+# Upstream acceptance manifest for the #9012 Lite XL public-artifact replay.
+#
+# This is the only committed authority for released/public subject truth in
+# this lane, mirroring the DU01 registry-manifest shape. It records the
+# current reality: no relevant Lite XL upstream change has been accepted and
+# released through its normal distribution path yet, so every subject is
+# `absent` and no validation predicate holds. A train that accepts and ships
+# an upstream subject edits this manifest with exact identities (version,
+# ref, sha256) plus satisfied flags; replay receipts are then regenerated or
+# they fail closed as stale against these bytes.
+schema_version = "lite-xl-upstream-acceptance.v1"
+issue = 9012
+parent = 8950
+
+[hosts.lite_xl]
+state = "absent"
+product = "Lite XL"
+version = ""
+released_build = ""
+
+[packages.lite_xl_lsp]
+state = "absent"
+version = ""
+ref = ""
+sha256 = ""
+
+[packages.language_perl]
+state = "absent"
+version = ""
+ref = ""
+sha256 = ""
+
+[packages.lsp_perl]
+state = "absent"
+version = ""
+ref = ""
+sha256 = ""
+
+[server.perllsp]
+state = "absent"
+release_repository = ""
+release_tag = ""
+asset_name = ""
+asset_sha256 = ""
+member_sha256 = ""
+release_version = ""
+
+[validation]
+host_release_contains_changes = false
+package_versions_match_refs = false
+server_asset_digest_verified = false

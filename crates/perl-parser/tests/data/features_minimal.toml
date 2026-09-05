@@ -10,7 +10,7 @@ lsp_version = "3.18.0"
 id = "lsp.completion"
 area = "textDocument"
 spec = "3.0"
-maturity = "ga"
+maturity = "not_proven"
 advertised = true  # Keep enabled
 description = "Code completion"
 
@@ -18,7 +18,7 @@ description = "Code completion"
 id = "lsp.hover"
 area = "textDocument"
 spec = "3.0"
-maturity = "ga"
+maturity = "not_proven"
 advertised = false  # DISABLED for testing
 description = "Hover information"
 
@@ -26,7 +26,7 @@ description = "Hover information"
 id = "lsp.diagnostics"
 area = "textDocument"
 spec = "3.0"
-maturity = "ga"
+maturity = "not_proven"
 advertised = true  # Keep enabled
 description = "Error and warning diagnostics"
 
@@ -34,7 +34,7 @@ description = "Error and warning diagnostics"
 id = "lsp.rename"
 area = "textDocument"
 spec = "3.0"
-maturity = "ga"
+maturity = "not_proven"
 advertised = false  # DISABLED for testing
 description = "Symbol renaming"
 
@@ -42,7 +42,7 @@ description = "Symbol renaming"
 id = "lsp.inlay_hints"
 area = "textDocument"
 spec = "3.16"
-maturity = "ga"
+maturity = "not_proven"
 advertised = false  # DISABLED for testing
 description = "Inline parameter hints"
 
@@ -58,7 +58,7 @@ description = "Semantic highlighting"
 id = "lsp.workspace_symbols"
 area = "workspace"
 spec = "3.0"
-maturity = "ga"
+maturity = "not_proven"
 advertised = false  # DISABLED for testing
 description = "Workspace-wide symbol search"
 
