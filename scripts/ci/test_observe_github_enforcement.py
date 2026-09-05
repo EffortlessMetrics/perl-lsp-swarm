@@ -664,6 +664,23 @@ class RulesetObservation(unittest.TestCase):
                 )
                 self.assertNotEqual(snapshot["observation"]["permission"], "complete")
 
+    def test_ruleset_detail_without_rules_fails_closed(self) -> None:
+        """A 200 detail omitting `rules` is unreadable, not a ruleset with none."""
+        for label, mutate in (
+            ("absent", lambda detail: detail.pop("rules")),
+            ("explicit null", lambda detail: detail.__setitem__("rules", None)),
+        ):
+            detail = json.loads(ruleset_detail_response())
+            mutate(detail)
+            with self.subTest(mutation=label):
+                snapshot = observe(transport(detail=(200, body(detail))))
+                self.assertEqual(snapshot["rulesets"]["items"], [])
+                self.assertIn(
+                    f"{observer.RULESET_DETAIL_UNREADABLE}:{RULESET_ID}",
+                    snapshot["observation"]["limitations"],
+                )
+                self.assertNotEqual(snapshot["observation"]["permission"], "complete")
+
     def test_unrepresentable_ref_conditions_are_reported_not_dropped(self) -> None:
         """Silently dropping a ruleset would understate live enforcement."""
         detail = json.loads(ruleset_detail_response())

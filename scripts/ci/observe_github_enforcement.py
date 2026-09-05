@@ -1021,7 +1021,12 @@ def ruleset_status_checks(
     """Required-status-check settings and contexts from one ruleset's rules."""
     rules = payload.get("rules")
     if rules is None:
-        return None, None, []
+        # A 200 detail with no rules array is a payload this observer could not
+        # read, not a ruleset that requires nothing. Treating it as empty would
+        # keep permission complete and let the reconciler report DRIFT against
+        # checks that were never observed. Same fail-closed class as a
+        # required_status_checks rule without parameters or checks.
+        raise ObserverError(f"ruleset {ruleset_id} is missing rules")
     if not isinstance(rules, list):
         raise ObserverError(f"ruleset {ruleset_id} rules must be a list")
     strict: bool | None = None
