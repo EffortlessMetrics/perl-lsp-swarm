@@ -1110,34 +1110,44 @@ pub fn compose_review_packet(
     const PROFILE: &str = "read_only_reviewer";
     // The reviewer packet anchors the builder packet it challenges: compose
     // it first and propagate its refusal honestly.
-    // Try the bounded profile first and fall back to strong: a node may permit
-    // only one of the two. Both refusals are kept so a caller can see the whole
-    // chain rather than only the profile that happened to be attempted last.
-    let builder_doc = match compose_packet_document(
-        root,
-        inputs,
-        subject,
-        "coding_agent_bounded",
-        None,
-        LiveGate::Anchored,
-    ) {
-        Ok(doc) => doc,
-        Err(bounded) => compose_packet_document(
-            root,
-            inputs,
-            subject,
-            "coding_agent_strong",
-            None,
-            LiveGate::Anchored,
-        )
-        .map_err(|strong| {
-            let mut chained = strong;
-            chained.detail = format!(
-                "{}; coding_agent_bounded first refused {}: {}",
-                chained.detail, bounded.code, bounded.detail
-            );
-            chained
-        })?,
+    // Anchor the packet this review challenges.  A node that permits a coding
+    // profile is reviewed against the one it permits; a controller, fan-in,
+    // dogfood or external node permits no coding profile at all, so forcing one
+    // would refuse the very `read_only_reviewer` packet those nodes do permit
+    // and leave them unreviewable.  The reviewer profile is therefore the last
+    // anchor rather than an omitted one.
+    //
+    // Every refusal in the chain is kept, so a caller sees which profiles were
+    // attempted rather than only the one that happened to be tried last.
+    let mut refusals: Vec<Refusal> = Vec::new();
+    let mut builder_doc = None;
+    for anchor in ["coding_agent_bounded", "coding_agent_strong", PROFILE] {
+        match compose_packet_document(root, inputs, subject, anchor, None, LiveGate::Anchored) {
+            Ok(doc) => {
+                builder_doc = Some(doc);
+                break;
+            }
+            Err(refusal) => refusals.push(refusal),
+        }
+    }
+    let builder_doc = match builder_doc {
+        Some(doc) => doc,
+        None => {
+            let mut last = refusals.pop().unwrap_or_else(|| {
+                Refusal::new(subject, PROFILE, "NODE_RESOLUTION_FAILED", "no anchor".to_string())
+            });
+            if !refusals.is_empty() {
+                let earlier = refusals
+                    .iter()
+                    .map(|refusal| {
+                        format!("{} refused {}: {}", refusal.profile, refusal.code, refusal.detail)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                last.detail = format!("{}; earlier anchors: {earlier}", last.detail);
+            }
+            return Err(last);
+        }
     };
     let node = resolve_train_node(inputs, subject).map_err(|error| {
         Refusal::new(subject, PROFILE, "NODE_RESOLUTION_FAILED", error.to_string())
@@ -1645,7 +1655,18 @@ pub fn compose_reconcile_packet(
                 ),
             ));
         }
-        let state = entry.get("state").and_then(Value::as_str).unwrap_or("state_unspecified");
+        let state = entry.get("state").and_then(Value::as_str).unwrap_or_default().trim();
+        if state.is_empty() {
+            return Err(Refusal::new(
+                &node.node_id,
+                PROFILE,
+                "MALFORMED_CANDIDATE_FACTS",
+                format!(
+                    "candidate {identity} supplies no state; an absent state must not be \
+                     recorded as an observed one"
+                ),
+            ));
+        }
         let facts = entry.get("facts").and_then(Value::as_str).unwrap_or_default().trim();
         if facts.is_empty() {
             return Err(Refusal::new(
@@ -1839,11 +1860,37 @@ fn parse_live_observation(path: &Path) -> Result<LiveObservation> {
     );
     let digest = value.get("digest").and_then(Value::as_str).unwrap_or_default().to_string();
     ensure!(!digest.is_empty(), "live observation digest is required");
+    // A digest of all zeroes binds to nothing, so no consumer can tell a real
+    // sweep from a fabricated one.  `--live-observation` is a public flag and
+    // the composition fixture is a checked-in path, so the invocation is
+    // copyable: refuse the placeholder rather than let it reach a `ready`
+    // packet as evidence.
+    let digest_body = digest.rsplit(':').next().unwrap_or_default();
+    ensure!(
+        !digest_body.is_empty() && digest_body.chars().any(|character| character != '0'),
+        "live observation digest {digest} binds to nothing; an all-zero digest is a placeholder, \
+         not evidence of an observation"
+    );
     let identity = value.get("candidate_identity").and_then(Value::as_str).map(str::to_string);
     if state == "observed" {
         ensure!(
             identity.as_deref().map(|identity| !identity.is_empty()).unwrap_or(false),
             "an observed candidate requires its exact identity"
+        );
+    }
+    // Unknown keys are refused rather than dropped: a misspelled caller fact
+    // that disappears silently weakens exactly the fail-closed diagnostics this
+    // adapter exists to provide.
+    if let Some(object) = value.as_object() {
+        const KNOWN_KEYS: &[&str] =
+            &["candidate_state", "digest", "candidate_identity", "collision_state"];
+        let unknown: Vec<&str> =
+            object.keys().map(String::as_str).filter(|key| !KNOWN_KEYS.contains(key)).collect();
+        ensure!(
+            unknown.is_empty(),
+            "live observation carries unknown field(s) [{}]; supported fields are [{}]",
+            unknown.join(", "),
+            KNOWN_KEYS.join(", ")
         );
     }
     Ok(LiveObservation {

@@ -299,6 +299,106 @@ fn observed_vacant() -> LiveObservation {
 }
 
 // ---------------------------------------------------------------------------
+// A supplied observation must be evidence, not a shape. `--live-observation`
+// is a public flag and the composition fixture is a checked-in path, so a
+// placeholder that reaches a `ready` packet reintroduces the assumed vacancy
+// the live gate exists to forbid -- one layer down, as text.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_all_zero_observation_digest_is_refused_as_a_placeholder() -> Result<()> {
+    let root = fixture_tree("zero-digest")?;
+    write_json(
+        &root,
+        "observation.json",
+        &json!({
+            "candidate_state": "observed",
+            "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "candidate_identity": "no candidate",
+        }),
+    )?;
+
+    let failure = parse_live_observation(&root.join("observation.json"))
+        .expect_err("a placeholder digest is not evidence");
+    let rendered = format!("{failure:#}");
+    assert!(rendered.contains("binds to nothing"), "{rendered}");
+    Ok(())
+}
+
+#[test]
+fn a_nonzero_observation_digest_is_accepted() -> Result<()> {
+    // Negative control: the guard must reject placeholders, not every digest.
+    let root = fixture_tree("real-digest")?;
+    write_json(
+        &root,
+        "observation.json",
+        &json!({
+            "candidate_state": "observed",
+            "digest": "sha256:5f3a1c0e9b7d24486ac1f0e2d93b8570cc41a6e28d5f9017b3e4c6a8d0f21b95",
+            "candidate_identity": "PR #8800",
+        }),
+    )?;
+
+    let live = parse_live_observation(&root.join("observation.json"))?;
+    assert_eq!(live.candidate_state, "observed");
+    Ok(())
+}
+
+#[test]
+fn an_unknown_observation_field_is_refused_rather_than_dropped() -> Result<()> {
+    let root = fixture_tree("unknown-field")?;
+    write_json(
+        &root,
+        "observation.json",
+        &json!({
+            "candidate_state": "observed",
+            "digest": "sha256:5f3a1c0e9b7d",
+            "candidate_identity": "PR #8800",
+            "colision_state": "none",
+        }),
+    )?;
+
+    let failure = parse_live_observation(&root.join("observation.json"))
+        .expect_err("a misspelled fact must not vanish");
+    let rendered = format!("{failure:#}");
+    assert!(rendered.contains("colision_state"), "{rendered}");
+    Ok(())
+}
+
+#[test]
+fn the_committed_composition_fixture_parses_and_states_what_it_is() -> Result<()> {
+    // The fixture unblocks the CI render step, so its own identity travels into
+    // every packet it composes. It must not claim an observation that no code
+    // performs.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask manifest directory has a repository parent")
+        .join("fixtures/emacs_train_packet/observed_no_candidate.v1.json");
+
+    let live = parse_live_observation(&path)?;
+    let identity = live.candidate_identity.clone().unwrap_or_default();
+    assert!(identity.contains("synthetic"), "{identity}");
+    assert!(
+        !identity.contains("sweep observed"),
+        "the fixture must not assert an observation that never happens: {identity}"
+    );
+    Ok(())
+}
+
+#[test]
+fn reconcile_refuses_a_candidate_without_a_state() -> Result<()> {
+    // An absent state must not be recorded as an observed `state_unspecified`.
+    let root = fixture_tree("reconcile-no-state")?;
+    let inputs = default_fixture(&root)?;
+    let candidates = json!([{"identity": "PR #8800", "facts": "dirty unique work"}]);
+    let refusal = compose_reconcile_packet(&root, &inputs, "SUB", Some(&candidates))
+        .err()
+        .expect("a missing state must refuse");
+    assert_eq!(refusal.code, "MALFORMED_CANDIDATE_FACTS", "{}", refusal.line());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // #11719: "No live observation means no coding packet assuming vacancy."
 // A coding packet admits a repository writer, so it must not be composable
 // against an unobserved claim -- and `not_observed` records that nobody
