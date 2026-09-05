@@ -144,5 +144,7 @@ semantics only.
 ## Registration
 
 New files under this directory must be registered in
-`policy/non-rust-allowlist.toml` and the inventory regenerated
-(`cargo xtask non-rust inventory --write`) or the merge gate fails.
+`policy/non-rust-allowlist.toml` or the merge gate
+(`cargo xtask non-rust inventory --check`) fails. Nothing is regenerated:
+`docs/policy/NON_RUST_INVENTORY.md` is a frozen pointer, and the inventory
+evidence is the `non-rust-inventory-<sha>` CI artifact.

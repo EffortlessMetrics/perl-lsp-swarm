@@ -1405,9 +1405,10 @@ pub fn non_rust_inventory(root: &Path) -> Result<()> {
 /// The tracked file is a frozen pointer: it carries no counts and no rows, so
 /// it never changes on `main` and can never conflict on merge (#14688). The
 /// generated inventory lives only under `target/policy/` and in the CI
-/// artifact the policy shard uploads. The merge check requires the tracked
-/// file to match this constant byte for byte (after line-ending
-/// normalization) so a branch cannot reintroduce a generated body.
+/// artifact the policy shard uploads. The merge check binds the tracked file
+/// to the merge base's pointer blob (this constant seeds the one-time freeze
+/// and the no-baseline local fallback) so a branch cannot reintroduce a
+/// generated body or change the pointer, even together with this constant.
 pub const NON_RUST_INVENTORY_POINTER: &str = r#"# Non-Rust File Inventory
 
 This file is a frozen pointer. It carries no counts and no rows, and it never
@@ -1440,23 +1441,79 @@ Policy and authority boundaries are documented in
 /// Relative path of the frozen pointer document.
 pub const NON_RUST_INVENTORY_POINTER_PATH: &str = "docs/policy/NON_RUST_INVENTORY.md";
 
-/// Require the tracked inventory pointer to be the frozen publication.
+/// Marker that only the retired generated publication carried; a base blob
+/// containing it is the legacy counted document, not a pointer.
+const LEGACY_INVENTORY_MARKER: &str = "| Total tracked files |";
+
+/// Read the inventory pointer as the merge baseline knows it.
+fn baseline_inventory_pointer(root: &Path, baseline: &str) -> Option<String> {
+    let output = Command::new("git")
+        .args(["show", &format!("{baseline}:{NON_RUST_INVENTORY_POINTER_PATH}")])
+        .current_dir(root)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n"))
+}
+
+/// Require the tracked inventory pointer to be frozen against the merge base.
 ///
-/// A branch that regenerated the old counted Markdown into this path would
-/// reintroduce the structural merge conflict; refusing it here turns that
-/// residue into a gate-time failure with a one-command fix instead of a
-/// squash-time conflict.
-fn verify_frozen_inventory_publication(root: &Path) -> Result<()> {
+/// The candidate's pointer must equal the pointer blob the merge baseline
+/// carries, so a candidate cannot change the pointer even if it also changes
+/// the compiled constant. The compiled constant is used only for the one-time
+/// freeze (the baseline still carries the legacy counted document) and, outside
+/// CI, when no baseline resolves. In CI a missing baseline fails closed,
+/// mirroring the newly-added-path ratchet.
+fn verify_frozen_inventory_publication(root: &Path, baseline: Option<&str>) -> Result<()> {
+    verify_frozen_inventory_publication_against(root, baseline, NON_RUST_INVENTORY_POINTER)
+}
+
+fn verify_frozen_inventory_publication_against(
+    root: &Path,
+    baseline: Option<&str>,
+    fallback: &str,
+) -> Result<()> {
     let path = root.join(NON_RUST_INVENTORY_POINTER_PATH);
     let actual = fs::read_to_string(&path)
-        .with_context(|| format!("reading the frozen inventory pointer {}", path.display()))?;
-    if actual.replace("\r\n", "\n") == NON_RUST_INVENTORY_POINTER {
+        .with_context(|| format!("reading the frozen inventory pointer {}", path.display()))?
+        .replace("\r\n", "\n");
+
+    let base = baseline.and_then(|baseline| baseline_inventory_pointer(root, baseline));
+    let (expected, restore) = match base.as_deref() {
+        Some(base) if base.contains(LEGACY_INVENTORY_MARKER) => {
+            // One-time freeze: the baseline still carries the retired counted
+            // publication; only the frozen pointer may replace it.
+            (fallback, "adopt the frozen pointer document".to_string())
+        }
+        Some(base) => (
+            base,
+            format!(
+                "git checkout {} -- {NON_RUST_INVENTORY_POINTER_PATH}",
+                baseline.unwrap_or("origin/main")
+            ),
+        ),
+        None if std::env::var_os("CI").is_some() => bail!(
+            "cannot resolve a merge baseline in CI; the frozen-pointer check for \
+             {NON_RUST_INVENTORY_POINTER_PATH} did not run (fetch with full history so \
+             origin/main resolves)"
+        ),
+        None => {
+            eprintln!(
+                "warning: cannot resolve a merge baseline; {NON_RUST_INVENTORY_POINTER_PATH} \
+                 was compared against the compiled pointer instead of the base blob"
+            );
+            (fallback, format!("git checkout origin/main -- {NON_RUST_INVENTORY_POINTER_PATH}"))
+        }
+    };
+
+    if actual == expected {
         return Ok(());
     }
     bail!(
-        "{NON_RUST_INVENTORY_POINTER_PATH} is not the frozen pointer document; it is never \
-         generated (#14688). Restore it with: git checkout origin/main -- \
-         {NON_RUST_INVENTORY_POINTER_PATH}"
+        "{NON_RUST_INVENTORY_POINTER_PATH} differs from the frozen pointer; it is never \
+         generated and never changes on main (#14688). Restore it with: {restore}"
     )
 }
 
@@ -1486,7 +1543,7 @@ fn non_rust_inventory_check_with_baseline(root: &Path, baseline: Option<&str>) -
 
     let records = build_inventory(root)?;
     write_inventory_outputs(root, &records)?;
-    verify_frozen_inventory_publication(root)?;
+    verify_frozen_inventory_publication(root, baseline)?;
 
     let unclassified: Vec<&FileRecord> =
         records.iter().filter(|record| record.category == "unclassified").collect();
@@ -3523,10 +3580,11 @@ review_after = "2026-06-01"
         list_tracked_files(root)
     }
 
-    /// Place the frozen pointer in a fixture working tree (untracked, so it
-    /// never enters the fixture's inventory or ratchet population).
+    /// Place the frozen pointer in a fixture tree and stage it, as the real
+    /// tree carries it, so a fixture baseline commit exposes the base blob.
     fn seed_frozen_pointer(root: &Path) -> Result<()> {
-        write_fixture(root, NON_RUST_INVENTORY_POINTER_PATH, NON_RUST_INVENTORY_POINTER)
+        write_fixture(root, NON_RUST_INVENTORY_POINTER_PATH, NON_RUST_INVENTORY_POINTER)?;
+        run_git(root, &["add", NON_RUST_INVENTORY_POINTER_PATH])
     }
 
     fn readme_allowlist_toml() -> Result<String> {
@@ -4292,10 +4350,8 @@ review_after = "2026-11-13"
             .err()
             .ok_or_else(|| eyre!("a regenerated pointer must fail the check"))?;
         ensure!(
-            error
-                .to_string()
-                .contains("git checkout origin/main -- docs/policy/NON_RUST_INVENTORY.md"),
-            "failure must name the one-command fix: {error}"
+            error.to_string().contains("adopt the frozen pointer document"),
+            "a legacy counted base must demand the one-time freeze: {error}"
         );
         assert_eq!(fs::read(&pointer_path)?, before, "the check must not rewrite the pointer");
         let markdown = fs::read_to_string(temp.path().join("target/policy/non-rust-inventory.md"))?;
@@ -4306,6 +4362,61 @@ review_after = "2026-11-13"
         // Restoring the frozen pointer (the documented fix) makes the check pass.
         write_fixture(temp.path(), NON_RUST_INVENTORY_POINTER_PATH, NON_RUST_INVENTORY_POINTER)?;
         non_rust_inventory_check_with_baseline(temp.path(), Some("HEAD"))?;
+        Ok(())
+    }
+
+    #[test]
+    fn frozen_pointer_is_bound_to_the_base_blob_not_the_compiled_constant() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
+        seed_frozen_pointer(temp.path())?;
+        write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
+        run_git(temp.path(), &["add", "."])?;
+        run_git(
+            temp.path(),
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=test",
+                "commit",
+                "-qm",
+                "frozen baseline",
+            ],
+        )?;
+
+        // The candidate rewrites the pointer and ships a matching "constant".
+        let edited = format!("{NON_RUST_INVENTORY_POINTER}\nA candidate rewrote the pointer.\n");
+        write_fixture(temp.path(), NON_RUST_INVENTORY_POINTER_PATH, &edited)?;
+        let error = verify_frozen_inventory_publication_against(temp.path(), Some("HEAD"), &edited)
+            .err()
+            .ok_or_else(|| eyre!("an edited pointer must be refused against the base"))?;
+        ensure!(
+            error.to_string().contains("git checkout HEAD -- docs/policy/NON_RUST_INVENTORY.md"),
+            "failure must name the base restore: {error}"
+        );
+
+        // Restoring the base blob passes even when the compiled constant differs.
+        write_fixture(temp.path(), NON_RUST_INVENTORY_POINTER_PATH, NON_RUST_INVENTORY_POINTER)?;
+        verify_frozen_inventory_publication_against(temp.path(), Some("HEAD"), &edited)?;
+        Ok(())
+    }
+
+    #[test]
+    fn frozen_pointer_fails_closed_in_ci_without_a_baseline() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
+        seed_frozen_pointer(temp.path())?;
+        let error = verify_frozen_inventory_publication_against(
+            temp.path(),
+            Some("does-not-exist"),
+            NON_RUST_INVENTORY_POINTER,
+        );
+        if std::env::var_os("CI").is_some() {
+            ensure!(error.is_err(), "CI without a resolvable baseline must fail closed");
+        } else {
+            error?;
+        }
         Ok(())
     }
 
@@ -4374,11 +4485,11 @@ review_after = "2026-11-13"
     #[test]
     fn non_rust_inventory_check_accepts_unclassified_files() -> Result<()> {
         let temp = tempfile::tempdir()?;
-        seed_frozen_pointer(temp.path())?;
         init_tracked_fixture(
             temp.path(),
             &[("README.md", "# Fixture\n"), ("scripts/tool.py", "print('fixture')\n")],
         )?;
+        seed_frozen_pointer(temp.path())?;
         write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
         non_rust_inventory_check(temp.path())?;
         Ok(())
@@ -4388,11 +4499,11 @@ review_after = "2026-11-13"
     fn non_rust_inventory_check_rejects_new_unclassified_files_and_retains_evidence() -> Result<()>
     {
         let temp = tempfile::tempdir()?;
-        seed_frozen_pointer(temp.path())?;
         init_tracked_fixture(
             temp.path(),
             &[("README.md", "# Fixture\n"), ("scripts/existing.py", "print('fixture')\n")],
         )?;
+        seed_frozen_pointer(temp.path())?;
         write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
         run_git(temp.path(), &["add", "."])?;
         run_git(
@@ -4441,8 +4552,8 @@ review_after = "2026-11-13"
     #[test]
     fn non_rust_inventory_check_rejects_invalid_allowlist_classification() -> Result<()> {
         let temp = tempfile::tempdir()?;
-        seed_frozen_pointer(temp.path())?;
         init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
+        seed_frozen_pointer(temp.path())?;
         write_fixture(
             temp.path(),
             "policy/non-rust-allowlist.toml",
