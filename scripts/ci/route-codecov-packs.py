@@ -356,6 +356,12 @@ def augment_rust_focused_commands(
             commands.append(cmd)
     test_targets_by_crate = changed_integration_test_targets(paths, repo_root)
     for crate_name in changed_crates(paths):
+        if not (repo_root / "crates" / crate_name / "Cargo.toml").is_file():
+            # `git diff` reports deleted sources, so a candidate that removes or
+            # renames a crate still names it here with no manifest left to read.
+            # There is nothing to instrument; a manifest that exists but is
+            # malformed stays a hard error.
+            continue
         targets = package_test_targets(crate_name, repo_root)
         if targets.has_lib:
             lib_cmd = (

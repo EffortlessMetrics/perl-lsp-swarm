@@ -701,6 +701,52 @@ class BinaryTargetRoutingTests(unittest.TestCase):
         self.assertEqual(["bare-main"], [target.name for target in targets.binaries])
 
 
+    def test_deleted_crate_does_not_abort_the_route(self) -> None:
+        """A candidate that removes a crate must still emit a coverage route.
+
+        `git diff --name-only` reports deleted sources, so `changed_crates`
+        still names a removed crate. Reading its manifest raised and took the
+        whole router down with it — the workflow step runs under
+        `set -euo pipefail`, so no receipt was produced at all.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "surviving-directory",
+                """
+                [package]
+                name = "surviving"
+                version = "0.0.0"
+                edition = "2024"
+                """,
+                ["src/lib.rs"],
+            )
+            changed = [
+                "crates/removed-directory/src/lib.rs",
+                "crates/surviving-directory/src/changed.rs",
+            ]
+
+            commands = router.augment_rust_focused_commands([], changed, repo_root=root)
+
+        self.assertTrue(any(" -p surviving " in command for command in commands))
+        self.assertFalse(any("removed" in command for command in commands))
+
+    def test_malformed_manifest_still_fails_loudly(self) -> None:
+        """Skipping deletions must not soften a manifest that exists and is broken."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            crate_root = root / "crates" / "broken-directory"
+            (crate_root / "src").mkdir(parents=True)
+            (crate_root / "Cargo.toml").write_text("[package\nname =", encoding="utf-8")
+            (crate_root / "src" / "changed.rs").write_text("// fixture\n", encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                router.augment_rust_focused_commands(
+                    [], ["crates/broken-directory/src/changed.rs"], repo_root=root
+                )
+
+
 class WorkspaceTargetOracleTests(unittest.TestCase):
     """Differential proof against Cargo's own view of the real workspace.
 
