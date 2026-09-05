@@ -1402,7 +1402,7 @@
     },
     {
       "successor_issue": 8845,
-      "wake_event": "Wake when #8844 has landed and perl-ast-v2 is a forwarding shell; then migrate in-repo implementation consumers to the canonical path. The migration set is the gating consumer rows of this manifest: four production_implementation rows, five public_reexport rows, five package_dependency rows and eight test_fixture rows.",
+      "wake_event": "Wake when #8844 has landed and perl-ast-v2 is a forwarding shell; then migrate in-repo implementation consumers to the canonical path. The migration set is every consumer row of this manifest whose role is production_implementation, public_reexport, package_dependency or test_fixture. The counts are deliberately not restated here: prose that duplicates the rows drifts from them, and this manifest has already had that happen once.",
       "blocked_until": "#8844 landing on main."
     },
     {

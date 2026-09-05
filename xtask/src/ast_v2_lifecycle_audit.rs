@@ -71,7 +71,7 @@ const V2_CRATE_PATH: &str = "perl_ast_v2";
 /// together with the manifest bytes; patching around it silently is exactly what
 /// the pin exists to prevent.
 pub const PINNED_CANONICAL_DIGEST: &str =
-    "0D7D8CE05C05B0BA8216A234323ECE9C4EF948B12462F7AC1821DC66DD2B7A80";
+    "8EF511FAEA09F4E97D8C386BA910D45297ED099944B6EDE99B1C306093C3442A";
 
 // ---------------------------------------------------------------------------
 // Code-owned v1 vocabularies. A cardinality check lets a repinned manifest

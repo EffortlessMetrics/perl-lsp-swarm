@@ -784,6 +784,62 @@ fn a_symlink_hiding_a_reference_fails_closed_but_a_harmless_one_does_not() -> Re
 }
 
 #[test]
+fn the_prose_report_summary_cannot_drift_from_the_inventory() -> Result<()> {
+    // This exists because the drift already happened. Adding the missed
+    // diagnostic-id consumer moved the denominator 36 -> 37, and the report's
+    // summary table and the #8845 wake text kept the old figures — the very
+    // numbers a successor reads to size its migration set. The loader checks
+    // rows against source but has no opinion about prose, so nothing caught it.
+    //
+    // The wake text no longer restates counts at all; a duplicate that cannot
+    // drift is better than one that is checked. The report's table is a genuine
+    // human summary and stays, so it is pinned here instead.
+    let value = real_value()?;
+    let report = std::fs::read_to_string(
+        repo_root_for_tests()?.join(".spec/8843-ast-v2-lifecycle-audit/decision.md"),
+    )?;
+
+    let count_of = |key: &str| -> Result<usize> {
+        value[key]
+            .as_array()
+            .map(Vec::len)
+            .ok_or_else(|| color_eyre::eyre::eyre!("`{key}` is not an array"))
+    };
+
+    for (label, key) in [
+        ("public items (incl. every enum variant)", "public_items"),
+        ("public re-export paths", "reexport_paths"),
+        ("consumer rows", "consumers"),
+        ("package/release surfaces", "package_surfaces"),
+        ("external evidence rows", "external_evidence"),
+    ] {
+        let expected = count_of(key)?;
+        let row = format!("| {label} | {expected} |");
+        assert!(
+            report.contains(&row),
+            "the report's summary table has drifted from the inventory.\n  expected row: {row}\n  \
+             the manifest holds {expected} `{key}` entries"
+        );
+    }
+
+    // And the wake text must not reintroduce a hardcoded count.
+    for wake in value["successor_wake_conditions"]
+        .as_array()
+        .ok_or_else(|| color_eyre::eyre::eyre!("missing successor_wake_conditions"))?
+    {
+        let text = wake["wake_event"].as_str().unwrap_or_default();
+        for spelled in ["four production", "five public_reexport", "seven test_fixture"] {
+            assert!(
+                !text.contains(spelled),
+                "wake text restates a row count (`{spelled}`); point at the rows instead, because \
+                 a duplicated count drifts the moment the inventory moves"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn an_unmodelled_public_item_stops_the_audit_instead_of_vanishing() -> Result<()> {
     // The single worst defect this instrument could have. The first revision's
     // derivation matched only type/struct/enum/impl and skipped everything else,
