@@ -1347,3 +1347,29 @@ fn helper_only_credit_is_not_checked_against_catalog_advertisement() {
         "understating a surface is not the failure this gate is for"
     );
 }
+
+/// A complete `#[cfg(test)]` attribute quoted in a string once steered the
+/// text-based gate stripper and erased the production code after it. A parser
+/// cannot be steered by a string's contents; this pins that.
+#[test]
+fn a_quoted_cfg_attribute_cannot_erase_production_code() -> Result<(), Box<dyn std::error::Error>> {
+    let (emitted, findings) = scan_synthetic(
+        r####"
+impl Server {
+    pub fn documented(&self) {
+        let ordinary = "#[cfg(test)] mod hidden { fn x() {} }";
+        let raw = r#"#[cfg(test)] mod also_hidden;"#;
+        self.send_request("workspace/codeLens/refresh", p);
+    }
+}
+"####,
+    )?;
+
+    assert_eq!(
+        emitted.get("workspace/codeLens/refresh").map(Vec::as_slice),
+        Some(["src/runtime/synthetic.rs#documented".to_string()].as_slice()),
+        "a quoted attribute may not remove the production send that follows it"
+    );
+    assert!(findings.is_empty(), "{findings:?}");
+    Ok(())
+}
