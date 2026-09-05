@@ -3114,6 +3114,118 @@ fn resolve_tree_entry_answers_from_the_commit_not_the_worktree() -> Result<()> {
     Ok(())
 }
 
+/// A manifest path is a repository path, not a pathspec. Git reads a leading
+/// `:` as pathspec magic, so a real file named that way would otherwise be
+/// asked about as a different path.
+#[test]
+fn resolve_tree_entry_treats_pathspec_magic_bytes_literally() -> Result<()> {
+    const MAGIC_NAME: &str = ":top-secret.md";
+    let root = tempfile::tempdir()?;
+    let run = |args: &[&str]| -> Result<Vec<u8>> {
+        let out =
+            std::process::Command::new("git").arg("-C").arg(root.path()).args(args).output()?;
+        if !out.status.success() {
+            bail!("git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        }
+        Ok(out.stdout)
+    };
+    run(&["init", "-q", "."])?;
+    run(&["config", "user.email", "proof@example.invalid"])?;
+    run(&["config", "user.name", "proof"])?;
+    fs::create_dir_all(root.path().join("docs"))?;
+    fs::write(root.path().join("docs/tracked.md"), "tracked\n")?;
+    fs::write(root.path().join(MAGIC_NAME), "prepared release content\n")?;
+    run(&["add", "-A"])?;
+    run(&["commit", "-qm", "base"])?;
+    let head = resolve_checkout(root.path()).ok_or_else(|| eyre!("no checkout"))?.head;
+
+    // The file really is in the commit under that exact name.
+    let listing = String::from_utf8(run(&["ls-tree", "-r", "--name-only", &head])?)?;
+    if !listing.lines().any(|line| line == MAGIC_NAME) {
+        bail!("fixture did not commit {MAGIC_NAME}: {listing:?}");
+    }
+    // And the unfixed query really misclassifies it: without the literal flag
+    // Git strips the `:` as magic and looks for `top-secret.md` instead.
+    let interpreted =
+        String::from_utf8(run(&["ls-tree", "-r", "--name-only", &head, "--", MAGIC_NAME])?)?;
+    if !interpreted.trim().is_empty() {
+        bail!("this Git interpreted {MAGIC_NAME} as a literal path; the discriminator is void");
+    }
+
+    if resolve_tree_entry(root.path(), &head, MAGIC_NAME) != Some(true) {
+        bail!("a committed file whose name begins with pathspec magic was reported absent");
+    }
+    // Ordinary literal positive control.
+    if resolve_tree_entry(root.path(), &head, "docs/tracked.md") != Some(true) {
+        bail!("an ordinary committed path was not found");
+    }
+    // Literal semantics must not collapse every query to present: a magic-
+    // prefixed name that was never committed is still absent, as is an
+    // ordinary one.
+    if resolve_tree_entry(root.path(), &head, ":never-committed.md") != Some(false) {
+        bail!("an uncommitted magic-prefixed name was reported present");
+    }
+    if resolve_tree_entry(root.path(), &head, "docs/never-existed.md") != Some(false) {
+        bail!("an uncommitted path was reported present");
+    }
+    // Nor to absence: an unanswerable query stays `None`.
+    if resolve_tree_entry(root.path(), "not-an-object-name", MAGIC_NAME).is_some() {
+        bail!("a malformed commit produced an answer");
+    }
+    Ok(())
+}
+
+/// The row-level consequence, against real Git: a `preserve_release` row with
+/// no `source_digest` over a prepared file whose name begins with pathspec
+/// magic is blocked, not admitted as release-only.
+#[test]
+fn a_release_only_row_over_a_magic_prefixed_prepared_file_is_blocked() -> Result<()> {
+    const MAGIC_NAME: &str = ":top-secret.md";
+    let root = tempfile::tempdir()?;
+    let run = |args: &[&str]| -> Result<()> {
+        let out =
+            std::process::Command::new("git").arg("-C").arg(root.path()).args(args).output()?;
+        if !out.status.success() {
+            bail!("git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        }
+        Ok(())
+    };
+    run(&["init", "-q", "."])?;
+    run(&["config", "user.email", "proof@example.invalid"])?;
+    run(&["config", "user.name", "proof"])?;
+    fs::write(root.path().join(MAGIC_NAME), "prepared release content\n")?;
+    run(&["add", "-A"])?;
+    run(&["commit", "-qm", "base"])?;
+    let head = resolve_checkout(root.path()).ok_or_else(|| eyre!("no checkout"))?.head;
+
+    let mut document = clean_value()?;
+    document["prepared_swarm_sha"] = json!(head);
+    let row = &mut rows_mut(&mut document)?[2];
+    row["action"] = json!("preserve_release");
+    row["path"] = json!(MAGIC_NAME);
+    row["source_digest"] = Value::Null;
+
+    let schema: Value = serde_json::from_str(SCHEMA)?;
+    if !jsonschema::validator_for(&schema)?.is_valid(&document) {
+        bail!("the published schema rejects a `:`-prefixed repository path; pick another name");
+    }
+
+    let manifest: Manifest = serde_json::from_value(document.clone())?;
+    let digest = canonical_digest(&document)?;
+    let receipt = evaluate_with_surface(
+        &manifest,
+        &digest,
+        root.path(),
+        test_loader,
+        &test_product_surface(),
+        resolve_checkout,
+        resolve_tree_entry,
+    )?;
+
+    assert_verdict(&receipt, Verdict::Blocked)?;
+    assert_finding(&receipt, "row_release_only_source_present")
+}
+
 #[test]
 fn a_shipped_configuration_file_cannot_be_displaced() -> Result<()> {
     // The ledger classifies functional configuration as `config`, and twenty-one

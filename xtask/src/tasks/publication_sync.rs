@@ -1272,12 +1272,20 @@ type TreeProbe = fn(&Path, &str, &str) -> Option<bool>;
 /// repository — and "I could not tell" must not read as "absent" on the one
 /// path where absence is permissive. A successful call with empty output is a
 /// real absence; a failed call is `None`.
+///
+/// `--literal-pathspecs` makes Git match the declared path byte-for-byte. A
+/// manifest path is a repository path, not a pathspec: without the flag a name
+/// whose leading bytes are pathspec magic (a `:` prefix, for instance) would be
+/// interpreted, so a prepared file could read as absent and be displaced on
+/// the one permissive path, or an absent name could read as present.
 fn resolve_tree_entry(repo_root: &Path, commit: &str, path: &str) -> Option<bool> {
     if !is_object_name(commit) {
         return None;
     }
-    let listing =
-        git_output_lossy(repo_root, &["ls-tree", "-r", "--name-only", commit, "--", path])?;
+    let listing = git_output_lossy(
+        repo_root,
+        &["--literal-pathspecs", "ls-tree", "-r", "--name-only", commit, "--", path],
+    )?;
     Some(!listing.trim().is_empty())
 }
 
