@@ -1223,8 +1223,17 @@ fn test_rename_respects_documentchanges_client_capability() -> TestResult {
     Ok(())
 }
 
+/// A refused rename stays refused for a `documentChanges` client.
+///
+/// This test previously asserted the opposite: that renaming inside a quoted
+/// string answered `{"documentChanges": []}`. That shape is the #9827 defect,
+/// not a contract — an empty *successful* `WorkspaceEdit` is applied by the
+/// editor without any error, toast, or diagnostic, so the refactor silently
+/// evaporates. The capability plumbing it was reaching for (a `documentChanges`
+/// client gets `documentChanges`, not `changes`) is proven on a rename that
+/// actually edits, in `test_rename_respects_documentchanges_client_capability`.
 #[test]
-fn test_empty_rename_respects_documentchanges_client_capability() -> TestResult {
+fn test_refused_rename_is_null_under_documentchanges_client_capability() -> TestResult {
     let mut harness = LspHarness::new();
     let caps = json!({
         "workspace": {
@@ -1237,6 +1246,7 @@ fn test_empty_rename_respects_documentchanges_client_capability() -> TestResult 
 
     let doc_uri = "file:///test_empty_documentchanges_rename.pl";
     harness.open(doc_uri, "my $x = \"target\";\n")?;
+    // Character 10 is inside the string literal, which the provider refuses.
     let response = harness.request(
         "textDocument/rename",
         json!({
@@ -1246,9 +1256,12 @@ fn test_empty_rename_respects_documentchanges_client_capability() -> TestResult 
         }),
     )?;
 
-    assert!(response.is_object(), "empty rename response must be an object; got: {response:?}");
-    assert!(response.get("changes").is_none());
-    assert_eq!(response["documentChanges"], json!([]));
+    assert_eq!(
+        response,
+        Value::Null,
+        "a refused rename must report the position as unavailable rather than as a \
+         successful edit that changes nothing; got: {response:?}"
+    );
     Ok(())
 }
 
@@ -1281,5 +1294,237 @@ fn test_rename_uses_legacy_changes_without_documentchanges_capability() -> TestR
         response.get("documentChanges").is_none(),
         "without documentChanges capability, response must not use documentChanges format; got: {response:?}"
     );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// #9827 — an unavailable rename must be refused, never reported as a
+// successful empty edit and never left unanswered.
+// ---------------------------------------------------------------------------
+
+/// Extract the `result` of a raw JSON-RPC response, failing loudly when the
+/// server answered with an error or did not answer at all.
+///
+/// The harness synthesizes an `error` envelope on timeout, so this is what
+/// distinguishes "the server said null" from "the server said nothing and the
+/// client gave up" — the two are indistinguishable from a plain `request()`.
+fn answered_result(envelope: &Value, what: &str) -> TestResult<Value> {
+    if let Some(error) = envelope.get("error").filter(|e| !e.is_null()) {
+        return Err(format!(
+            "{what}: every request owes the client exactly one response, \
+             but the server produced an error envelope: {error}"
+        )
+        .into());
+    }
+    envelope
+        .get("result")
+        .cloned()
+        .ok_or_else(|| format!("{what}: response envelope carried no result: {envelope}").into())
+}
+
+/// A rename result must never be a *successful* WorkspaceEdit that edits nothing.
+///
+/// Editors apply such a response without any error, toast, or diagnostic, so the
+/// refactor silently evaporates. Both the legacy `changes` map and the
+/// `documentChanges` array are checked, because `to_workspace_edit_format`
+/// converts one into the other based on client capability.
+fn assert_not_an_empty_successful_edit(result: &Value, what: &str) -> TestResult {
+    if let Some(changes) = result.get("changes").and_then(Value::as_object) {
+        let total: usize = changes.values().map(|edits| edits.as_array().map_or(0, Vec::len)).sum();
+        assert!(
+            total > 0,
+            "{what}: rename returned a successful WorkspaceEdit with zero edits \
+             ({result}); an empty successful refactor is indistinguishable from a \
+             no-op in the editor"
+        );
+    }
+    if let Some(document_changes) = result.get("documentChanges").and_then(Value::as_array) {
+        let total: usize = document_changes
+            .iter()
+            .map(|entry| entry.get("edits").and_then(Value::as_array).map_or(0, Vec::len))
+            .sum();
+        assert!(
+            total > 0,
+            "{what}: rename returned a successful documentChanges edit with zero \
+             edits ({result}); an empty successful refactor is indistinguishable \
+             from a no-op in the editor"
+        );
+    }
+    Ok(())
+}
+
+fn raw_rename(harness: &mut LspHarness, uri: &str, line: u64, character: u64) -> Value {
+    harness.request_raw(json!({
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "textDocument/rename",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character },
+            "newName": "renamed_target"
+        }
+    }))
+}
+
+fn raw_prepare_rename(harness: &mut LspHarness, uri: &str, line: u64, character: u64) -> Value {
+    harness.request_raw(json!({
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "textDocument/prepareRename",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character }
+        }
+    }))
+}
+
+/// `prepareRename` must not advertise a rename that `rename` will not perform.
+///
+/// Before #9827 the server answered `prepareRename` on `package Greeter;` with a
+/// range and a `"Greeter"` placeholder — so the editor opened a rename box — and
+/// then answered the `rename` itself with `{"changes": {}}`, a success carrying
+/// no edits. The user typed a new name, pressed Enter, and nothing happened.
+#[test]
+fn test_package_rename_is_refused_rather_than_silently_dropped() -> TestResult {
+    let mut harness = LspHarness::new();
+    let _init = harness.initialize(None)?;
+
+    let uri = "file:///Greeter.pm";
+    harness.open(
+        uri,
+        "package Greeter;\nsub greet { return 1; }\nsub run { return greet(); }\n1;\n",
+    )?;
+
+    // The package name is refused up front, at the one point in the protocol
+    // designed to carry "this element cannot be renamed".
+    let prepared = answered_result(
+        &raw_prepare_rename(&mut harness, uri, 0, 9),
+        "prepareRename on a package name",
+    )?;
+    assert_eq!(
+        prepared,
+        Value::Null,
+        "prepareRename must not offer a rename box on a package name; got: {prepared}"
+    );
+
+    // And rename itself refuses instead of reporting an empty success.
+    let renamed =
+        answered_result(&raw_rename(&mut harness, uri, 0, 9), "rename on a package name")?;
+    assert_not_an_empty_successful_edit(&renamed, "rename on a package name")?;
+    assert_eq!(
+        renamed,
+        Value::Null,
+        "rename on a package name must report the position as unavailable; got: {renamed}"
+    );
+
+    // Negative control: the refusal is bound to package names specifically, not
+    // to this file, this document, or identifiers in general. A subroutine in the
+    // very same document still prepares and still renames.
+    let prepared_sub = answered_result(
+        &raw_prepare_rename(&mut harness, uri, 1, 5),
+        "prepareRename on a sub name",
+    )?;
+    assert_eq!(
+        prepared_sub.get("placeholder").and_then(Value::as_str),
+        Some("greet"),
+        "sub rename must still be advertised; got: {prepared_sub}"
+    );
+
+    let renamed_sub = answered_result(&raw_rename(&mut harness, uri, 1, 5), "rename of a sub")?;
+    let sub_edits = renamed_sub
+        .get("changes")
+        .and_then(Value::as_object)
+        .and_then(|changes| changes.get(uri))
+        .and_then(Value::as_array)
+        .ok_or("sub rename must still produce same-file edits")?;
+    assert!(
+        sub_edits.len() >= 2,
+        "sub rename must still edit the declaration and its caller; got: {renamed_sub}"
+    );
+
+    Ok(())
+}
+
+/// Every `textDocument/rename` request is answered, and no answer is an empty
+/// successful edit.
+///
+/// This sweeps the positions that reach the provider's refusal paths. Two
+/// distinct wrong implementations are challenged at once:
+///
+/// * returning `{"changes": {}}` — a success the editor applies as a no-op; and
+/// * returning `Ok(None)` — which suppresses the JSON-RPC response entirely, so
+///   a client that sent an id waits for a reply that never comes.
+///
+/// The second is why the refusal is `result: null` rather than no result at all;
+/// asserting on the raw envelope is what makes a dropped response falsifiable.
+#[test]
+fn test_rename_answers_every_request_without_empty_successful_edits() -> TestResult {
+    let mut harness = LspHarness::new();
+    let _init = harness.initialize(None)?;
+
+    let uri = "file:///Refusals.pm";
+    harness.open(
+        uri,
+        "package Refusals;\nuse Moo;\nhas name => (is => 'ro');\nmy $note = \"a Refusals string\";\n# a Refusals comment\nsub keep { return 1; }\n1;\n",
+    )?;
+
+    // line/char, and what the position is, for the failure message.
+    let refusal_positions = [
+        (0_u64, 9_u64, "package declaration name"),
+        (1, 4, "module name in a use statement"),
+        (2, 4, "generated Moo accessor declaration"),
+        (3, 15, "identifier inside a quoted string"),
+        (4, 8, "identifier inside a comment"),
+    ];
+
+    for (line, character, what) in refusal_positions {
+        let envelope = raw_rename(&mut harness, uri, line, character);
+        let result = answered_result(&envelope, &format!("rename on a {what}"))?;
+        assert_not_an_empty_successful_edit(&result, &format!("rename on a {what}"))?;
+    }
+
+    // Negative control: the sweep above is not passing merely because rename now
+    // refuses everything. A plain subroutine at the same session still renames.
+    let kept = answered_result(&raw_rename(&mut harness, uri, 5, 5), "rename of a plain sub")?;
+    assert!(
+        kept.get("changes").and_then(Value::as_object).is_some_and(|c| !c.is_empty()),
+        "rename must still edit an ordinary subroutine; got: {kept}"
+    );
+
+    Ok(())
+}
+
+/// The refusal survives the `documentChanges` capability.
+///
+/// `to_workspace_edit_format` rewrites a `changes` map into a `documentChanges`
+/// array for clients that declare the capability, so an empty edit would surface
+/// there as `{"documentChanges": []}` — the same silent no-op wearing a
+/// different shape.
+#[test]
+fn test_package_rename_refusal_holds_under_document_changes_capability() -> TestResult {
+    let mut harness = LspHarness::new();
+    let _init = harness.initialize(Some(json!({
+        "workspace": {
+            "workspaceEdit": { "documentChanges": true }
+        }
+    })))?;
+
+    let uri = "file:///DocChanges.pm";
+    harness.open(uri, "package DocChanges;\nsub greet { return 1; }\n1;\n")?;
+
+    let renamed = answered_result(
+        &raw_rename(&mut harness, uri, 0, 9),
+        "rename on a package name with documentChanges support",
+    )?;
+    assert_not_an_empty_successful_edit(
+        &renamed,
+        "rename on a package name with documentChanges support",
+    )?;
+    assert_eq!(
+        renamed,
+        Value::Null,
+        "rename must refuse rather than emit an empty documentChanges edit; got: {renamed}"
+    );
+
     Ok(())
 }
