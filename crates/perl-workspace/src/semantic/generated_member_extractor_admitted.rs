@@ -276,15 +276,18 @@ __PACKAGE__->has_many('children', 'Plain::Child', 'parent_id');
     #[test]
     fn every_legacy_dbix_emission_method_is_quarantined() {
         // Each method the shared classifier admits must both emit through the
-        // legacy oracle and be removed by the canonical gate. Adding a method to
-        // the producer without this list failing here would be a drift signal.
-        for (method, call) in [
-            ("add_columns", "__PACKAGE__->add_columns(qw/member/);"),
-            ("has_many", "__PACKAGE__->has_many('member', 'Other::Class', 'fk');"),
-            ("belongs_to", "__PACKAGE__->belongs_to('member', 'Other::Class', 'fk');"),
-            ("has_one", "__PACKAGE__->has_one('member', 'Other::Class', 'fk');"),
-            ("might_have", "__PACKAGE__->might_have('member', 'Other::Class', 'fk');"),
-        ] {
+        // legacy oracle and be removed by the canonical gate. The loop walks
+        // `DBIX_CLASS_MEMBER_METHODS` itself rather than restating the names, so
+        // a method added to the denominator is covered here the moment it is
+        // added; a restated list would be a third denominator free to drift.
+        // A dead entry fails the legacy assertion, and a method the gate stops
+        // removing fails the canonical one.
+        for method in legacy_generated_member_extractor::DBIX_CLASS_MEMBER_METHODS {
+            let call = if *method == "add_columns" {
+                "__PACKAGE__->add_columns(qw/member/);".to_string()
+            } else {
+                format!("__PACKAGE__->{method}('member', 'Other::Class', 'fk');")
+            };
             assert!(is_dbix_class_member_method(method));
             let ast =
                 parse(&format!("package Coupled::Result;\nuse DBIx::Class::Core;\n{call}\n1;\n"));

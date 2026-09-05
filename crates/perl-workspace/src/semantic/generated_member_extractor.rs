@@ -649,14 +649,19 @@ fn is_dbix_relationship_name(name: &str) -> bool {
 /// DBIx::Class DSL methods from which this extractor can emit a generated member.
 ///
 /// Shared with the canonical publication gate so the quarantine denominator
-/// cannot drift behind the producer.
-pub(crate) fn is_dbix_class_member_method(method: &str) -> bool {
-    matches!(method, "add_columns" | "has_many" | "belongs_to" | "has_one" | "might_have")
+/// cannot drift behind the producer. It is an enumerable slice rather than a
+/// `matches!` arm so proof can walk the denominator itself: a coupling test
+/// that restates the method names is a third list free to drift in turn.
+pub(super) const DBIX_CLASS_MEMBER_METHODS: &[&str] =
+    &["add_columns", "has_many", "belongs_to", "has_one", "might_have"];
+
+pub(super) fn is_dbix_class_member_method(method: &str) -> bool {
+    DBIX_CLASS_MEMBER_METHODS.contains(&method)
 }
 
 /// Whether a method-call target names `current_package` (`__PACKAGE__`, bareword,
 /// quoted string, or a same-named scalar).
-pub(crate) fn package_target_matches(object: &Node, current_package: &str) -> bool {
+pub(super) fn package_target_matches(object: &Node, current_package: &str) -> bool {
     match &object.kind {
         NodeKind::Identifier { name } => name == "__PACKAGE__" || name == current_package,
         NodeKind::String { value, .. } => {
