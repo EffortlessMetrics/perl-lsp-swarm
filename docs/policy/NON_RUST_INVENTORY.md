@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12715 |
+| Total tracked files | 12721 |
 | Rust-family files | 3967 |
-| Non-Rust files | 8748 |
-| Allowlisted | 6509 |
+| Non-Rust files | 8754 |
+| Allowlisted | 6515 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -19,8 +19,8 @@
 | config | 502 |
 | documentation | 2852 |
 | generated | 2 |
-| production | 357 |
-| test | 2111 |
+| production | 362 |
+| test | 2112 |
 | tooling | 685 |
 | unclassified | 2239 |
 
@@ -8403,6 +8403,9 @@
 | `vscode-extension/.gitignore` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/.oxfmtrc.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/.oxlintrc.json` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/.vscode/dev-workspace/sample.pl` | test | `non-rust-perl-fixtures` | parser/lsp-fixtures |
+| `vscode-extension/.vscode/launch.json` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/.vscode/tasks.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/.vscodeignore` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/CHANGELOG.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `vscode-extension/DEVELOPMENT.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -8470,6 +8473,9 @@
 | `vscode-extension/scripts/checked-command-contract.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/checked-command-contract.test.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/client-perf-policy.v1.json` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/scripts/dev-launch-contract.test.js` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/scripts/dev-supervisor.js` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/scripts/dev-supervisor.test.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/governed-tsc.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/governed-tsc.test.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/lint-canary.js` | production | `non-rust-vscode-extension` | editor/vscode |
