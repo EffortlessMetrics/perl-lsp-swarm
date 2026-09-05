@@ -12,14 +12,20 @@
 //! - Every returned symbol MUST be exactly one recognized LSP result form:
 //!   DocumentSymbol (`kind` + object `range`) or SymbolInformation (`kind` +
 //!   object `location` with `uri` and object `range`).
+//! - An astral Unicode prefix MUST preserve the exact UTF-16 `selectionRange`
+//!   for a later symbol name on the same line.
 //! - A file with no symbols MUST return an empty list.
+//! - Close/reopen MUST observe a new generation-sensitive readiness event and
+//!   document symbols MUST come from the reopened editor buffer, not the disk
+//!   snapshot or either prior open-document generation.
 //! - No request may return a JSON-RPC error or crash the server.
 
-use anyhow::Result;
-use perl_lsp_ux_tests::binary_available;
-use perl_lsp_ux_tests::{ScenarioConfig, UxHarness, document_symbol_names};
-use serde_json::Value;
-use std::time::Duration;
+use anyhow::{Result, bail};
+use perl_lsp_ux_tests::{
+    LspEvent, ScenarioConfig, UxHarness, binary_available, document_symbol_names,
+};
+use serde_json::{Value, json};
+use std::time::{Duration, Instant};
 
 /// Source with three named subs and a package declaration — rich symbol table.
 const SYMBOLS_SOURCE: &str = "\
@@ -49,16 +55,72 @@ const SYMBOL_ATTEMPTS: usize = 5;
 const SYMBOL_RETRY_DELAY: Duration = Duration::from_millis(200);
 const EXPECTED_SYMBOLS: [&str; 4] = ["Greeter", "new", "greet", "farewell"];
 
+const LIFECYCLE_FILE: &str = "lifecycle.pl";
+const READY_METHOD: &str = "perl-lsp/active-document-ready";
+const DISK_SYMBOL: &str = "disk_symbol";
+const INITIAL_SYMBOL: &str = "initial_symbol";
+const PRE_CLOSE_SYMBOL: &str = "pre_close_symbol";
+const REOPENED_SYMBOL: &str = "reopened_symbol";
+const READY_TIMEOUT: Duration = Duration::from_secs(10);
+const READY_POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+const DISK_SOURCE: &str = r#"use strict;
+use warnings;
+
+sub disk_symbol {
+    return "disk";
+}
+
+disk_symbol();
+"#;
+
+const INITIAL_SOURCE: &str = r#"use strict;
+use warnings;
+
+sub initial_symbol {
+    return "initial";
+}
+
+initial_symbol();
+"#;
+
+const PRE_CLOSE_SOURCE: &str = r#"use strict;
+use warnings;
+
+sub pre_close_symbol {
+    return "pre-close";
+}
+
+pre_close_symbol();
+"#;
+
+const REOPENED_SOURCE: &str = r#"use strict;
+use warnings;
+
+sub reopened_symbol {
+    return "reopened";
+}
+
+reopened_symbol();
+"#;
+
 fn expected_symbol_set_present(symbols: &[Value]) -> bool {
     let names = document_symbol_names(symbols);
     EXPECTED_SYMBOLS.iter().all(|expected| names.iter().any(|name| name == expected))
 }
 
-fn document_symbols_with_retry(harness: &UxHarness, path: &str) -> Result<Vec<Value>> {
+fn document_symbols_with_retry<F>(
+    harness: &UxHarness,
+    path: &str,
+    is_settled: F,
+) -> Result<Vec<Value>>
+where
+    F: Fn(&[Value]) -> bool,
+{
     let mut last = Vec::new();
     for attempt in 1..=SYMBOL_ATTEMPTS {
         let symbols = harness.document_symbols(path)?;
-        if expected_symbol_set_present(&symbols) {
+        if is_settled(&symbols) {
             return Ok(symbols);
         }
         last = symbols;
@@ -67,6 +129,68 @@ fn document_symbols_with_retry(harness: &UxHarness, path: &str) -> Result<Vec<Va
         }
     }
     Ok(last)
+}
+
+fn find_document_symbol<'a>(symbols: &'a [Value], expected_name: &str) -> Option<&'a Value> {
+    symbols.iter().find_map(|symbol| {
+        if symbol.get("name").and_then(Value::as_str) == Some(expected_name) {
+            return Some(symbol);
+        }
+
+        symbol
+            .get("children")
+            .and_then(Value::as_array)
+            .and_then(|children| find_document_symbol(children, expected_name))
+    })
+}
+
+fn ready_generation(event: &LspEvent, uri: &str) -> Option<u64> {
+    let LspEvent::Other { method, params } = event else {
+        return None;
+    };
+    if method != READY_METHOD || params.get("uri").and_then(Value::as_str) != Some(uri) {
+        return None;
+    }
+    params.get("generation").and_then(Value::as_u64)
+}
+
+fn ready_generations(events: &[LspEvent], uri: &str) -> Vec<u64> {
+    events.iter().filter_map(|event| ready_generation(event, uri)).collect()
+}
+
+fn has_generation_after(
+    generations: &[u64],
+    already_seen: usize,
+    expected_generation: u64,
+) -> bool {
+    generations
+        .get(already_seen..)
+        .is_some_and(|new_generations| new_generations.contains(&expected_generation))
+}
+
+fn wait_for_ready_generation_after(
+    harness: &UxHarness,
+    uri: &str,
+    expected_generation: u64,
+    already_seen: usize,
+    timeout: Duration,
+) -> Result<Vec<u64>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let generations = ready_generations(&harness.peek_notifications(), uri);
+        if has_generation_after(&generations, already_seen, expected_generation) {
+            return Ok(generations);
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "timed out after {}ms waiting for a new {READY_METHOD} event for {uri} with \
+                 generation {expected_generation} after {already_seen} prior matching events; \
+                 observed matching generations: {generations:?}",
+                timeout.as_millis()
+            );
+        }
+        std::thread::sleep(READY_POLL_INTERVAL);
+    }
 }
 
 fn require_lsp_range(value: &Value, context: &str) -> Result<(), String> {
@@ -153,7 +277,7 @@ fn scenario_13_rich_file_returns_all_known_symbols() -> Result<()> {
     )?;
 
     harness.open_file("Greeter.pm", SYMBOLS_SOURCE)?;
-    let symbols = document_symbols_with_retry(&harness, "Greeter.pm")?;
+    let symbols = document_symbols_with_retry(&harness, "Greeter.pm", expected_symbol_set_present)?;
 
     assert!(
         expected_symbol_set_present(&symbols),
@@ -162,6 +286,107 @@ fn scenario_13_rich_file_returns_all_known_symbols() -> Result<()> {
         document_symbol_names(&symbols)
     );
     assert_symbol_shapes(&symbols);
+
+    harness.assert_no_crash();
+    Ok(())
+}
+
+#[test]
+fn scenario_13_astral_prefix_preserves_utf16_selection_range() -> Result<()> {
+    if !binary_available() {
+        eprintln!("SKIP scenario_13: perl-lsp binary not found");
+        return Ok(());
+    }
+
+    let source = "use utf8;\nmy $label = \"🦀\"; sub target { return 1; }\n";
+    let harness = UxHarness::new(
+        ScenarioConfig {
+            timeout: Duration::from_secs(15),
+            client_capability_overrides: json!({
+                "textDocument": {
+                    "documentSymbol": {
+                        "hierarchicalDocumentSymbolSupport": true
+                    }
+                },
+                "general": {
+                    "positionEncodings": ["utf-16"]
+                }
+            }),
+            ..Default::default()
+        }
+        .with_file("unicode_symbols.pl", source),
+    )?;
+
+    harness.open_file("unicode_symbols.pl", source)?;
+    let symbols = document_symbols_with_retry(&harness, "unicode_symbols.pl", |symbols| {
+        find_document_symbol(symbols, "target").is_some()
+    })?;
+    assert_symbol_shapes(&symbols);
+
+    let target = find_document_symbol(&symbols, "target").unwrap_or_else(|| {
+        panic!(
+            "expected `target` document symbol after {SYMBOL_ATTEMPTS} settlement attempts: \
+             {symbols:?}"
+        )
+    });
+    let selection = target
+        .get("selectionRange")
+        .unwrap_or_else(|| panic!("`target` must expose a selectionRange: {target:?}"));
+    require_lsp_range(selection, "`target` selectionRange")
+        .unwrap_or_else(|err| panic!("{err}: {target:?}"));
+
+    let line = source.lines().nth(1).expect("fixture must contain the declaration line");
+    let target_byte = line.find("target").expect("fixture must contain target");
+    let prefix = &line[..target_byte];
+    let expected_start =
+        u64::try_from(prefix.encode_utf16().count()).expect("UTF-16 offset must fit u64");
+    let expected_end = expected_start
+        + u64::try_from("target".encode_utf16().count()).expect("symbol width must fit u64");
+    let byte_start = u64::try_from(target_byte).expect("byte offset must fit u64");
+    let scalar_start = u64::try_from(prefix.chars().count()).expect("scalar offset must fit u64");
+
+    assert_ne!(
+        expected_start, byte_start,
+        "fixture must distinguish UTF-16 coordinates from UTF-8 byte offsets"
+    );
+    assert_ne!(
+        expected_start, scalar_start,
+        "fixture must distinguish UTF-16 coordinates from Unicode scalar counts"
+    );
+    assert_eq!(
+        selection.pointer("/start/line").and_then(Value::as_u64),
+        Some(1),
+        "`target` selection must start on the declaration line: {target:?}"
+    );
+    assert_eq!(
+        selection.pointer("/end/line").and_then(Value::as_u64),
+        Some(1),
+        "`target` selection must end on the declaration line: {target:?}"
+    );
+    assert_eq!(
+        selection.pointer("/start/character").and_then(Value::as_u64),
+        Some(expected_start),
+        "`target` selection start must use negotiated UTF-16 coordinates: {target:?}"
+    );
+    for off_by_one in [expected_start - 1, expected_start + 1] {
+        assert_ne!(
+            selection.pointer("/start/character").and_then(Value::as_u64),
+            Some(off_by_one),
+            "`target` selection start must not be shifted by one wire code unit: {target:?}"
+        );
+    }
+    assert_eq!(
+        selection.pointer("/end/character").and_then(Value::as_u64),
+        Some(expected_end),
+        "`target` selection end must cover only the symbol name: {target:?}"
+    );
+    for off_by_one in [expected_end - 1, expected_end + 1] {
+        assert_ne!(
+            selection.pointer("/end/character").and_then(Value::as_u64),
+            Some(off_by_one),
+            "`target` selection end must not be shifted by one wire code unit: {target:?}"
+        );
+    }
 
     harness.assert_no_crash();
     Ok(())
@@ -185,9 +410,81 @@ fn scenario_13_empty_file_returns_empty() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn scenario_13_close_reopen_requires_new_generation_and_open_buffer_authority() -> Result<()> {
+    if !binary_available() {
+        eprintln!("SKIP scenario_13 close/reopen: perl-lsp binary not found");
+        return Ok(());
+    }
+
+    let harness = UxHarness::new(
+        ScenarioConfig { timeout: Duration::from_secs(15), ..Default::default() }
+            .env("PERL_LSP_WORKSPACE", "1")
+            .env("PERL_LSP_E2E", "1")
+            .with_file(LIFECYCLE_FILE, DISK_SOURCE),
+    )?;
+    let uri = harness.workspace.uri(LIFECYCLE_FILE);
+
+    harness.client.did_open(&uri, INITIAL_SOURCE)?;
+    let initial_generations = wait_for_ready_generation_after(&harness, &uri, 1, 0, READY_TIMEOUT)?;
+    let initial_ready_count = initial_generations.len();
+
+    harness.client.did_change_full(&uri, 2, PRE_CLOSE_SOURCE)?;
+    let pre_close_generations =
+        wait_for_ready_generation_after(&harness, &uri, 2, initial_ready_count, READY_TIMEOUT)?;
+    let pre_close_ready_count = pre_close_generations.len();
+
+    harness.client.notify(
+        "textDocument/didClose",
+        json!({
+            "textDocument": {
+                "uri": uri.clone()
+            }
+        }),
+    )?;
+    harness.client.did_open(&uri, REOPENED_SOURCE)?;
+
+    let reopened_generations =
+        wait_for_ready_generation_after(&harness, &uri, 1, pre_close_ready_count, READY_TIMEOUT)?;
+    assert!(
+        reopened_generations.len() > pre_close_ready_count,
+        "reopen barrier must be backed by post-snapshot readiness evidence: \
+         snapshot={pre_close_ready_count}, observed={reopened_generations:?}"
+    );
+    let post_snapshot_generations = &reopened_generations[pre_close_ready_count..];
+    assert!(
+        post_snapshot_generations.contains(&1),
+        "reopen barrier must observe generation 1 after close/reopen; \
+         post-snapshot generations: {post_snapshot_generations:?}"
+    );
+
+    let disk_source = std::fs::read_to_string(harness.workspace.path(LIFECYCLE_FILE))?;
+    assert_eq!(
+        disk_source, DISK_SOURCE,
+        "test setup must keep the backing file distinct from all open-buffer generations"
+    );
+
+    let symbols = harness.document_symbols(LIFECYCLE_FILE)?;
+    let names = document_symbol_names(&symbols);
+    assert!(
+        names.iter().any(|name| *name == REOPENED_SYMBOL),
+        "document symbols after the reopen barrier must come from the reopened buffer; got {names:?}"
+    );
+    for stale_symbol in [DISK_SYMBOL, INITIAL_SYMBOL, PRE_CLOSE_SYMBOL] {
+        assert!(
+            !names.iter().any(|name| *name == stale_symbol),
+            "document symbols after reopen must not expose stale/backing `{stale_symbol}`; got {names:?}"
+        );
+    }
+
+    harness.assert_no_crash();
+    Ok(())
+}
+
 #[cfg(test)]
 mod shape_unit_tests {
-    use super::assert_symbol_shapes;
+    use super::{READY_METHOD, assert_symbol_shapes, has_generation_after, ready_generations};
+    use perl_lsp_ux_tests::LspEvent;
     use serde_json::json;
 
     #[test]
@@ -240,5 +537,50 @@ mod shape_unit_tests {
             }
         })];
         assert_symbol_shapes(&symbols);
+    }
+
+    #[test]
+    fn late_pre_close_generation_does_not_release_reopen_barrier() {
+        let mut generations = vec![1, 2];
+        let snapshot = generations.len();
+
+        assert!(!has_generation_after(&generations, snapshot, 1));
+
+        generations.push(2);
+        assert!(
+            !has_generation_after(&generations, snapshot, 1),
+            "a delayed pre-close generation must not release the generation-1 reopen barrier"
+        );
+
+        generations.push(1);
+        assert!(
+            has_generation_after(&generations, snapshot, 1),
+            "a new post-snapshot generation 1 must release the reopen barrier"
+        );
+    }
+
+    #[test]
+    fn readiness_filter_requires_matching_uri_method_and_numeric_generation() {
+        let wanted_uri = "file:///workspace/lifecycle.pl";
+        let events = vec![
+            LspEvent::Other {
+                method: READY_METHOD.to_string(),
+                params: json!({"uri": wanted_uri, "generation": 1}),
+            },
+            LspEvent::Other {
+                method: READY_METHOD.to_string(),
+                params: json!({"uri": "file:///workspace/other.pl", "generation": 2}),
+            },
+            LspEvent::Other {
+                method: "perl-lsp/other".to_string(),
+                params: json!({"uri": wanted_uri, "generation": 3}),
+            },
+            LspEvent::Other {
+                method: READY_METHOD.to_string(),
+                params: json!({"uri": wanted_uri, "generation": "4"}),
+            },
+        ];
+
+        assert_eq!(ready_generations(&events, wanted_uri), vec![1]);
     }
 }
