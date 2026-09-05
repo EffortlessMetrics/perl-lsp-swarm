@@ -3,8 +3,9 @@
 use std::collections::{HashSet, VecDeque};
 
 /// Split Perl source into semicolon-terminated statements without treating
-/// semicolons inside simple quoted strings, line comments, POD, or heredoc
-/// bodies as terminators.
+/// semicolons inside simple quoted strings, quote-like operator bodies
+/// (`q{}`, `qw()`, `m//`, `s{}{}`, ...), line comments, POD, or heredoc bodies
+/// as terminators.
 ///
 /// Because the split is semicolon-driven, each slice is then normalized by
 /// [`strip_statement_prefix`]: leading closing braces from blocks that already
@@ -118,6 +119,28 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
             continue;
         }
 
+        // A quote-like operator (`q{...}`, `qw(...)`, `m/.../`, `s{..}{..}`, ...)
+        // owns everything up to its closing delimiter, semicolons and braces
+        // included. Cutting inside it produced a slice such as
+        // `} use lib 'phantom';` whose leading brace the prefix trim then
+        // removed, so a *quoted* pragma became an active include path. An
+        // unterminated body never compiles, so nothing below it can activate:
+        // the scan stops there and the open statement is discarded.
+        if !in_single && !in_double && quote_like_at(source, &chars, i).is_some() {
+            match skip_quote_like(source, &chars, i) {
+                Some(body_end) => {
+                    has_content = true;
+                    has_code_content = true;
+                    i = advance_char_index(&chars, i, body_end);
+                    continue;
+                }
+                None => {
+                    scan_end = start;
+                    break;
+                }
+            }
+        }
+
         // Skip Perl line comments: # ... <newline>
         // A `#` is only a comment when outside of any string literal.
         if ch == '#' && !in_single && !in_double {
@@ -203,7 +226,11 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
 fn is_data_section_marker(rest: &str) -> bool {
     ["__END__", "__DATA__"].iter().any(|marker| {
         rest.strip_prefix(marker).is_some_and(|tail| {
-            if tail.chars().next().is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+            // Any identifier-continue character, ASCII or not, keeps the token
+            // an identifier: under `use utf8` `__END__é` is a bareword Perl
+            // compiles, so treating it as a marker would hide code and the
+            // pragmas in it.
+            if tail.chars().next().is_some_and(|ch| ch.is_alphanumeric() || ch == '_') {
                 return false;
             }
             // A colon *adjacent* to the marker continues the token: `__END__:`
@@ -221,6 +248,133 @@ fn is_data_section_marker(rest: &str) -> bool {
             !spaced.starts_with(':') || spaced.starts_with("::")
         })
     })
+}
+
+/// The quote-like operator at `chars[i]`, as (body count, delimiter index).
+///
+/// Recognized operators: `q`, `qq`, `qw`, `qr`, `m`, `s`, `tr`, `y`. The word
+/// must stand alone (not preceded by an identifier character, a sigil, `-` or
+/// `:`, so `$h{q}`, `->m(...)`, `-s $f`, `Foo::y` and `qux` are untouched), and
+/// the delimiter must be punctuation Perl accepts as one: never a closing
+/// bracket, never `=`/`,`/`;`/`)` (so `q => 1` and `y, ...` stay barewords),
+/// and never an identifier character. `s`, `tr` and `y` carry two bodies.
+fn quote_like_at(source: &str, chars: &[(usize, char)], i: usize) -> Option<(u8, usize)> {
+    let (idx, ch) = chars[i];
+    if !matches!(ch, 'q' | 'm' | 's' | 't' | 'y') {
+        return None;
+    }
+    if let Some(prev) = source[..idx].chars().next_back()
+        && (prev.is_alphanumeric() || matches!(prev, '_' | '$' | '@' | '%' | '&' | '*' | '-' | ':'))
+    {
+        return None;
+    }
+    let (bodies, word_len) = match ch {
+        'q' => match chars.get(i + 1).map(|(_, c)| *c) {
+            Some('q' | 'w' | 'r') => (1u8, 2usize),
+            _ => (1, 1),
+        },
+        'm' => (1, 1),
+        's' => (2, 1),
+        't' => {
+            if chars.get(i + 1).map(|(_, c)| *c) != Some('r') {
+                return None;
+            }
+            (2, 2)
+        }
+        'y' => (2, 1),
+        _ => return None,
+    };
+    // The word must end here: `qw` followed by `x` is the bareword `qwx`.
+    if chars.get(i + word_len).is_some_and(|(_, c)| c.is_alphanumeric() || *c == '_') {
+        return None;
+    }
+    let mut delim_i = i + word_len;
+    // Whitespace may separate the word from a punctuation delimiter, but a `#`
+    // after whitespace is a comment, not a delimiter.
+    let mut spaced = false;
+    while chars.get(delim_i).is_some_and(|(_, c)| *c == ' ' || *c == '\t') {
+        delim_i += 1;
+        spaced = true;
+    }
+    let (_, delim) = *chars.get(delim_i)?;
+    if delim.is_alphanumeric()
+        || delim.is_whitespace()
+        || matches!(delim, '_' | '=' | ',' | ';' | ')' | ']' | '}' | '>')
+        || (spaced && delim == '#')
+    {
+        return None;
+    }
+    Some((bodies, delim_i))
+}
+
+/// Byte offset just past the quote-like operator opening at `chars[i]`, or
+/// `None` when a body is unterminated.
+///
+/// Bracket delimiters nest; every other delimiter closes at its next unescaped
+/// occurrence. With bracket delimiters the second body of `s`/`tr`/`y` opens
+/// with its own delimiter after optional whitespace, as Perl allows; with a
+/// shared delimiter (`s/a/b/`) the first body's closer opens the second.
+fn skip_quote_like(source: &str, chars: &[(usize, char)], i: usize) -> Option<usize> {
+    let (bodies, delim_i) = quote_like_at(source, chars, i)?;
+    let (_, open) = chars[delim_i];
+    let close = closing_delimiter(open);
+    let mut cursor = skip_delimited_body(chars, delim_i, open, close)?;
+    if bodies == 2 {
+        if close == open {
+            cursor = skip_delimited_body(chars, cursor, open, close)?;
+        } else {
+            cursor += 1;
+            while chars.get(cursor).is_some_and(|(_, c)| c.is_whitespace()) {
+                cursor += 1;
+            }
+            let (_, second_open) = *chars.get(cursor)?;
+            let second_close = closing_delimiter(second_open);
+            cursor = skip_delimited_body(chars, cursor, second_open, second_close)?;
+        }
+    }
+    let (end_idx, end_ch) = chars[cursor];
+    Some(end_idx + end_ch.len_utf8())
+}
+
+/// Index of the delimiter that closes the body opened at `chars[open_i]`.
+///
+/// Backslash escapes the next character. Bracket pairs nest.
+fn skip_delimited_body(
+    chars: &[(usize, char)],
+    open_i: usize,
+    open: char,
+    close: char,
+) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut cursor = open_i + 1;
+    while let Some(&(_, c)) = chars.get(cursor) {
+        if c == '\\' {
+            cursor += 2;
+            continue;
+        }
+        if c == close {
+            if depth == 0 {
+                return Some(cursor);
+            }
+            depth -= 1;
+        } else if c == open && close != open {
+            depth += 1;
+        }
+        cursor += 1;
+    }
+    None
+}
+
+/// The closing delimiter paired with `open`; non-bracket delimiters close
+/// themselves.
+fn closing_delimiter(open: char) -> char {
+    match open {
+        '(' => ')',
+        '[' => ']',
+        '{' => '}',
+        '<' => '>',
+        other => other,
+    }
 }
 
 /// Advance `index` through `chars` until it points at the first entry at or

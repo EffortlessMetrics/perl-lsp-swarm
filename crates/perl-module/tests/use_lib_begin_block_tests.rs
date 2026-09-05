@@ -507,6 +507,90 @@ fn data_section_markers_end_the_scanned_region() {
     }
 }
 
+/// A quote-like body owns its semicolons and braces. Cutting inside
+/// `q{{foo;} use lib 'phantom';}` produced the slice `} use lib 'phantom';`,
+/// the prefix trim removed the brace, and a *quoted* pragma became an active
+/// include path Perl never adds.
+#[test]
+fn quote_like_bodies_do_not_yield_phantom_pragmas() {
+    let sources = [
+        "use lib 'real';\nmy $s = q{{foo;} use lib 'phantom';};\n",
+        "use lib 'real';\nmy @w = qw(a; use lib 'phantom';);\n",
+        "use lib 'real';\nmy $t = qq[x; use lib 'phantom';];\n",
+        "use lib 'real';\nif ($x =~ m/;} use lib 'phantom';/) {}\n",
+        "use lib 'real';\n$x =~ s{;} use lib 'phantom';}{replacement};\n",
+        "use lib 'real';\n$x =~ s/;} use lib 'phantom';/y/;\n",
+        "use lib 'real';\n$x =~ tr/;}/ab/; my $u = q{use lib 'phantom';};\n",
+        // Whitespace between the word and a punctuation delimiter is Perl.
+        "use lib 'real';\nmy $s = q {;} use lib 'phantom';};\n",
+        // Escaped delimiter inside the body does not close it.
+        "use lib 'real';\nmy $s = q/a\\/;} use lib 'phantom';/;\n",
+    ];
+
+    for source in sources {
+        assert_eq!(
+            extract_use_lib_operations(source),
+            vec![UseLibAction::Add(vec![UseLibPath {
+                path: "real".to_string(),
+                from_findbin: false,
+            }])],
+            "quoted pragma reached the rail: {source:?}"
+        );
+    }
+}
+
+/// Words that merely start with a quote-like letter, hash keys, methods,
+/// filetests and fat-comma barewords are not quote-like operators; a pragma
+/// after them still activates.
+#[test]
+fn quote_like_lookalikes_do_not_swallow_following_pragmas() {
+    let sources = [
+        "my %h = (q => 1, y => 2, s => 3);\nuse lib 'real';\n",
+        "my $v = $h{q};\nuse lib 'real';\n",
+        "my $v = $obj->m(1);\nuse lib 'real';\n",
+        "my $size = -s $file;\nuse lib 'real';\n",
+        "my $qux = quux();\nuse lib 'real';\n",
+        "my $v = Foo::y();\nuse lib 'real';\n",
+        "my $v = $m;\nuse lib 'real';\n",
+    ];
+
+    for source in sources {
+        assert_eq!(
+            extract_use_lib_operations(source),
+            vec![UseLibAction::Add(vec![UseLibPath {
+                path: "real".to_string(),
+                from_findbin: false,
+            }])],
+            "pragma after a quote-like lookalike was swallowed: {source:?}"
+        );
+    }
+}
+
+/// An unterminated quote-like body never compiles, so nothing below it can
+/// activate: the scan stops at the opener and the open statement is dropped.
+#[test]
+fn unterminated_quote_like_fails_closed() {
+    let source = "use lib 'real';\nmy $s = q{never closed; use lib 'phantom';\nuse lib 'later';\n";
+
+    assert_eq!(
+        extract_use_lib_operations(source),
+        vec![UseLibAction::Add(vec![UseLibPath { path: "real".to_string(), from_findbin: false }])]
+    );
+}
+
+/// Identifier-continue characters beyond ASCII keep `__END__` an identifier:
+/// under `use utf8` `__END__é` is a bareword Perl compiles, not a marker.
+#[test]
+fn non_ascii_identifier_continue_is_not_a_data_marker() {
+    let source = "use utf8;\nmy $__END__é = 1;\n__END__é;\nuse lib 'real';\n";
+
+    assert_eq!(
+        extract_use_lib_operations(source),
+        vec![UseLibAction::Add(vec![UseLibPath { path: "real".to_string(), from_findbin: false }])],
+        "a non-ASCII identifier continuation was read as a data-section marker"
+    );
+}
+
 /// A colon after the marker makes it a *label*, so the code region continues.
 ///
 /// Measured by running each form: `__END__;` and `__END__ trailing words` print
@@ -672,21 +756,18 @@ fn braced_filehandle_heredoc_bodies_do_not_create_lib_operations() {
     assert!(extract_use_lib_operations(still_being_typed).is_empty());
 }
 
-/// A data-section marker inside a quote-like literal is prose, and the rail
-/// cannot tell — it has no `q{}` / `qq{}` state, by design.
-///
-/// `perl` runs the code after such a literal (the marker is not a marker), but
-/// the scanner truncates there and loses later pragmas. This pins the boundary
-/// as proof rather than silence. The direction is the acceptable one: candidates
-/// are lost, never invented. Exact `q{}` handling belongs to the parser-native
-/// `@INC` train (#10568/#10569).
+/// A data-section marker inside a quote-like literal is prose: the body is
+/// skipped whole, so the marker neither ends the scan nor hides the pragma
+/// below it. Before the rail tracked quote-like bodies this was a documented
+/// truncation; it now matches `perl`, which runs the code after the literal.
 #[test]
-fn data_marker_inside_a_quote_like_literal_is_a_known_truncation() {
-    let source = "my $text = q{\n__END__\n};\nuse lib 'unreachable_for_this_rail';\n";
+fn data_marker_inside_a_quote_like_literal_does_not_end_the_scan() {
+    let source = "my $text = q{\n__END__\n};\nuse lib 'real';\n";
 
-    assert!(
-        extract_use_lib_operations(source).is_empty(),
-        "boundary changed: update the documented q{{}} limitation if this now resolves"
+    assert_eq!(
+        extract_use_lib_operations(source),
+        vec![UseLibAction::Add(vec![UseLibPath { path: "real".to_string(), from_findbin: false }])],
+        "a data marker inside a q{{}} body ended the scan"
     );
 }
 
