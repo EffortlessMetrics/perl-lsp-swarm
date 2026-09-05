@@ -1,0 +1,208 @@
+{
+  "check": "release-scope-v2",
+  "schema_version": "perl_lsp.release_scope.v2",
+  "event": "local",
+  "verdict": "pass",
+  "release": "0.18.0",
+  "track": "public-beta",
+  "phase": "final-frozen",
+  "observation_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "frozen_product_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "prepared_swarm_sha": null,
+  "observed_pull_requests": [
+    {
+      "number": 90001,
+      "head_sha": "1111111111111111111111111111111111111111",
+      "state": "open",
+      "is_draft": false,
+      "disposition": "0.18-blocker",
+      "controlling_issue": 80001,
+      "evidence": {
+        "kind": "repository_receipt",
+        "ref": "repo:receipts/release-scope/observation.json@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      }
+    },
+    {
+      "number": 90002,
+      "head_sha": "2222222222222222222222222222222222222222",
+      "state": "open",
+      "is_draft": false,
+      "disposition": "0.18-candidate",
+      "controlling_issue": 80002,
+      "evidence": {
+        "kind": "repository_receipt",
+        "ref": "repo:receipts/release-scope/observation.json@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      }
+    },
+    {
+      "number": 90003,
+      "head_sha": "3333333333333333333333333333333333333333",
+      "state": "open",
+      "is_draft": true,
+      "disposition": "post-0.18",
+      "controlling_issue": 80003,
+      "evidence": {
+        "kind": "repository_receipt",
+        "ref": "repo:receipts/release-scope/observation.json@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      }
+    },
+    {
+      "number": 90004,
+      "head_sha": "4444444444444444444444444444444444444444",
+      "state": "closed",
+      "is_draft": false,
+      "disposition": "superseded",
+      "controlling_issue": 80004,
+      "evidence": {
+        "kind": "repository_receipt",
+        "ref": "repo:receipts/release-scope/observation.json@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      }
+    },
+    {
+      "number": 90005,
+      "head_sha": "5555555555555555555555555555555555555555",
+      "state": "merged",
+      "is_draft": false,
+      "disposition": "already-included",
+      "controlling_issue": 80005,
+      "evidence": {
+        "kind": "repository_receipt",
+        "ref": "repo:receipts/release-scope/observation.json@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      }
+    }
+  ],
+  "blockers": [
+    {
+      "blocker_id": "native-critic",
+      "status": "resolved",
+      "proof": {
+        "kind": "repository_receipt",
+        "ref": "repo:receipts/blockers/native-critic.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    },
+    {
+      "blocker_id": "text-sync",
+      "status": "bounded_limitation",
+      "proof": {
+        "kind": "repository_receipt",
+        "ref": "repo:receipts/blockers/text-sync.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      }
+    }
+  ],
+  "known_limitations": [
+    {
+      "id": "dap-preview",
+      "statement": "DAP remains a bounded preview rather than a parity claim.",
+      "evidence": {
+        "kind": "github_issue",
+        "ref": "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/80006",
+        "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      }
+    }
+  ],
+  "product_claims": [
+    {
+      "id": "full-document-utf16",
+      "strength": "full",
+      "statement": "The accepted installed text synchronization envelope is full-document UTF-16.",
+      "evidence": {
+        "kind": "repository_receipt",
+        "ref": "repo:receipts/claims/full-document-utf16.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      }
+    },
+    {
+      "id": "native-critic-only",
+      "strength": "full",
+      "statement": "Normal installed Critic behavior is Rust-native and process-free.",
+      "evidence": {
+        "kind": "repository_receipt",
+        "ref": "repo:receipts/claims/native-critic-only.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      }
+    },
+    {
+      "id": "vscode-primary",
+      "strength": "bounded",
+      "statement": "VS Code is the primary installed editor; other editors retain bounded standard-LSP compatibility.",
+      "evidence": {
+        "kind": "repository_receipt",
+        "ref": "repo:receipts/claims/vscode-primary.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      }
+    }
+  ],
+  "topology": {
+    "subject_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+    "evidence": {
+      "kind": "repository_receipt",
+      "ref": "repo:receipts/release-topology/final.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+    }
+  },
+  "installed_acceptance": {
+    "subject_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "evidence": {
+      "kind": "repository_receipt",
+      "ref": "repo:receipts/installed/public-beta.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "release_integrity": {
+    "subject_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "evidence": {
+      "kind": "repository_receipt",
+      "ref": "repo:receipts/release-integrity/final.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  "lineage": {
+    "subject_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "evidence": {
+      "kind": "repository_receipt",
+      "ref": "repo:receipts/release-lineage/final.json@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  },
+  "freeze_rules": {
+    "feature_intake_closed": true,
+    "allowed_changes": [
+      "release-blocker",
+      "regression-fix",
+      "release-proof",
+      "packaging",
+      "version-notes-status",
+      "release-integrity",
+      "release-lineage"
+    ]
+  },
+  "invalidation": {
+    "product_change": {
+      "class": "product-change",
+      "invalidates": [
+        "freeze",
+        "preparation",
+        "publication-sync",
+        "candidate",
+        "authorization"
+      ]
+    },
+    "release_metadata_change": {
+      "class": "release-metadata-change",
+      "invalidates": [
+        "preparation",
+        "publication-sync",
+        "candidate",
+        "authorization"
+      ]
+    }
+  }
+}
