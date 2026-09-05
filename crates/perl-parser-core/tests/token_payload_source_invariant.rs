@@ -33,6 +33,12 @@ const CORPUS_DIRS: [&str; 4] = ["test_corpus", "fixtures", "testdata", "examples
 /// up. Guards against the sweep silently becoming a no-op if the corpus moves.
 const MIN_FILES: usize = 200;
 
+/// The corpus deliberately carries a non-UTF-8 fixture (`legacy_encoding.pl`).
+/// The lexer takes `&str`, so such a file cannot be swept by this instrument at
+/// all; it is exempted rather than skipped silently, and bounded so the
+/// exemption cannot quietly widen.
+const MAX_NON_UTF8: usize = 1;
+
 fn workspace_root() -> PathBuf {
     // CARGO_MANIFEST_DIR is <root>/crates/perl-parser-core.
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
@@ -68,10 +74,16 @@ fn every_corpus_token_payload_is_the_source_it_spans() -> Result<(), Box<dyn std
     let root = workspace_root();
     let files = perl_files(&root);
 
+    // This test *is* the evidence for the payload contract, so absent or
+    // partial evidence is a failure, never a pass. `perl-parser-core` does not
+    // package `tests/`, so an absent corpus means the instrument is broken
+    // rather than legitimately unavailable.
     if files.is_empty() {
-        // A vendored or packaged checkout carries no corpus. Skip rather than
-        // fail: the contract is unchanged, the instrument is simply absent.
-        return Ok(());
+        return Err(format!(
+            "corpus sweep found no files under {CORPUS_DIRS:?}; the payload contract is then \
+             unproven, which is an instrument failure rather than a pass."
+        )
+        .into());
     }
     if files.len() < MIN_FILES {
         return Err(format!(
@@ -85,18 +97,29 @@ fn every_corpus_token_payload_is_the_source_it_spans() -> Result<(), Box<dyn std
 
     let mut tokens_checked = 0usize;
     let mut files_read = 0usize;
-    let mut unreadable: Vec<String> = Vec::new();
+    let mut skipped_non_utf8: Vec<String> = Vec::new();
     let mut violations: Vec<String> = Vec::new();
     let mut saw_a_gap = false;
 
     for file in &files {
-        // An unreadable or non-UTF-8 file must not silently shrink coverage:
-        // the floor below counts files actually swept, not paths discovered.
+        // A selected file that cannot be read is coverage silently lost, so it
+        // must be accounted for rather than skipped. The one legitimate class is
+        // a deliberately non-UTF-8 fixture: the lexer takes `&str`, so such a
+        // file is outside this contract's domain rather than a gap in it. It is
+        // counted separately and bounded below, so the exemption cannot grow
+        // unnoticed. Any other read error fails.
         let source = match std::fs::read_to_string(file) {
             Ok(source) => source,
-            Err(error) => {
-                unreadable.push(format!("{}: {error}", file.display()));
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                skipped_non_utf8.push(file.display().to_string());
                 continue;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "cannot read selected corpus file {}: {error}",
+                    file.display()
+                )
+                .into());
             }
         };
         files_read += 1;
@@ -105,7 +128,14 @@ fn every_corpus_token_payload_is_the_source_it_spans() -> Result<(), Box<dyn std
         let mut stream = TokenStream::new(&source);
         let mut previous_end = 0usize;
 
-        while let Ok(token) = stream.next() {
+        loop {
+            // A lexer error must not quietly end this file's scan: the
+            // remainder would go uninspected while the file still counted as
+            // swept. The corpus is expected to lex, so an error is a real
+            // finding about the instrument or the corpus.
+            let token = stream
+                .next()
+                .map_err(|error| format!("{display}: lexer failed mid-sweep: {error:?}"))?;
             tokens_checked += 1;
             let (start, end) = (token.start(), token.end());
 
@@ -164,11 +194,21 @@ fn every_corpus_token_payload_is_the_source_it_spans() -> Result<(), Box<dyn std
         .into());
     }
 
-    if files_read < MIN_FILES {
+    if files_read + skipped_non_utf8.len() != files.len() {
         return Err(format!(
-            "only {files_read} of {} discovered files could be swept (needed {MIN_FILES}); \
-             unreadable: {unreadable:?}. Coverage loss is an instrument failure, not a pass.",
+            "swept {files_read} and exempted {} of {} selected files; every selected file must be \
+             either inspected or explicitly accounted for.",
+            skipped_non_utf8.len(),
             files.len()
+        )
+        .into());
+    }
+    if skipped_non_utf8.len() > MAX_NON_UTF8 {
+        return Err(format!(
+            "{} corpus files are not valid UTF-8, above the accounted-for maximum of \
+             {MAX_NON_UTF8}: {skipped_non_utf8:?}. The lexer takes `&str`, so these are outside \
+             this contract's domain, but the exemption must not grow silently.",
+            skipped_non_utf8.len()
         )
         .into());
     }
