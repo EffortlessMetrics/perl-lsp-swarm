@@ -716,16 +716,31 @@ pub fn derive_reference_files(repo_root: &Path) -> Result<BTreeSet<String>> {
             // `WalkDir` does not follow symlinks by default, so this is not a
             // recursion guard — it is a completeness guard. A symlinked source
             // file is yielded with a symlink file type, so the `is_file` check
-            // below would skip it silently, and a real consumer could sit behind
-            // a link and never enter the denominator. For an audit whose claim
-            // is that nothing references the package unaccounted for, silently
-            // skipping is the wrong failure: fail closed and make someone decide.
+            // below skips it silently, and a real consumer could sit behind a
+            // link and never enter the denominator.
+            //
+            // The guard is deliberately narrow rather than "reject every
+            // symlink": an unrelated symlinked source file is harmless, and
+            // failing on it would block work this audit has no business
+            // blocking. It fails only when the link actually hides a reference,
+            // or when the link cannot be read at all and therefore cannot be
+            // shown to be harmless. A link is not resolved into the denominator
+            // under its own path, because the target may already be there under
+            // its real one and one file must not occupy two rows.
             if entry.path_is_symlink() && is_scannable(path) {
-                bail!(
-                    "`{}` is a symbolic link to scannable source. The consumer denominator cannot \
-                     silently skip it: resolve the link, or exclude it deliberately.",
-                    relative_slash_path(repo_root, path)?
-                );
+                let relative = relative_slash_path(repo_root, path)?;
+                match std::fs::read_to_string(path) {
+                    Ok(text) if mentions_audited_package(&text) => bail!(
+                        "`{relative}` is a symbolic link whose target references the audited \
+                         package. It would be skipped silently, so the denominator cannot account \
+                         for it: replace the link with the file, or exclude it deliberately."
+                    ),
+                    Ok(_) => {}
+                    Err(err) => bail!(
+                        "`{relative}` is a symbolic link to scannable source that cannot be read \
+                         ({err}), so it cannot be shown not to reference the audited package."
+                    ),
+                }
             }
 
             if !entry.file_type().is_file() {

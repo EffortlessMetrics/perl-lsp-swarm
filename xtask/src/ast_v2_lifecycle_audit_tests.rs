@@ -725,6 +725,64 @@ fn excluded_directories_hide_no_reference_to_the_audited_package() -> Result<()>
     Ok(())
 }
 
+/// Build a minimal tree with the shape `derive_reference_files` requires, so
+/// symlink behaviour can be proven without mutating the real repository.
+#[cfg(unix)]
+fn synthetic_root() -> Result<tempfile::TempDir> {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("crates/probe/src"))?;
+    std::fs::create_dir_all(root.join("xtask/src"))?;
+    std::fs::create_dir_all(root.join("policy"))?;
+    std::fs::write(root.join("Cargo.toml"), "[workspace]\n")?;
+    std::fs::write(root.join("policy/empty.toml"), "\n")?;
+    std::fs::write(root.join("xtask/src/lib.rs"), "// nothing\n")?;
+    Ok(dir)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_hiding_a_reference_fails_closed_but_a_harmless_one_does_not() -> Result<()> {
+    // Three cases, because the guard has to be narrow to be usable: it must
+    // catch a link that hides a consumer, must NOT block an unrelated link (or
+    // it becomes a gate on work this audit has no business gating), and must
+    // refuse a link it cannot read at all rather than assume it is harmless.
+    use std::os::unix::fs::symlink;
+
+    // A link whose target references the package: the scan would skip it
+    // silently, so it must fail closed.
+    let dir = synthetic_root()?;
+    let root = dir.path();
+    std::fs::write(root.join("crates/probe/real.rs"), "use perl_ast_v2::Node;\n")?;
+    symlink(root.join("crates/probe/real.rs"), root.join("crates/probe/src/linked.rs"))?;
+    let err = derive_reference_files(root)
+        .err()
+        .ok_or_else(|| color_eyre::eyre::eyre!("a reference-hiding symlink must fail closed"))?;
+    assert!(
+        format!("{err:#}").contains("whose target references the audited package"),
+        "unexpected rejection: {err:#}"
+    );
+
+    // An unrelated link must not block the audit.
+    let dir = synthetic_root()?;
+    let root = dir.path();
+    std::fs::write(root.join("crates/probe/plain.rs"), "pub fn unrelated() -> u8 { 7 }\n")?;
+    symlink(root.join("crates/probe/plain.rs"), root.join("crates/probe/src/linked.rs"))?;
+    let scanned = derive_reference_files(root)?;
+    assert!(scanned.is_empty(), "an unrelated symlink must not enter the denominator: {scanned:?}");
+
+    // A link that cannot be read cannot be shown harmless.
+    let dir = synthetic_root()?;
+    let root = dir.path();
+    symlink(root.join("crates/probe/does-not-exist.rs"), root.join("crates/probe/src/broken.rs"))?;
+    let err = derive_reference_files(root)
+        .err()
+        .ok_or_else(|| color_eyre::eyre::eyre!("an unreadable symlink must fail closed"))?;
+    assert!(format!("{err:#}").contains("cannot be read"), "unexpected rejection: {err:#}");
+
+    Ok(())
+}
+
 #[test]
 fn a_path_qualified_derive_is_recorded_rather_than_silently_dropped() -> Result<()> {
     // Adding `serde::Serialize` is a real public-contract change, and the audit
