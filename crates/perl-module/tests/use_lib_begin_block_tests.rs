@@ -206,8 +206,12 @@ fn top_level_pragma_after_a_block_keeps_lexical_order() {
 }
 
 /// The brace trim is not special to `BEGIN`: a top-level pragma after any block
-/// is real code. The pragma *inside* a conditional block stays out of the rail,
-/// because the peel is only applied to a leading `BEGIN` header.
+/// is real code.
+///
+/// The pragma inside the conditional block stays out here only because it shares
+/// its slice with the `if (1) {` opener — not because the rail excludes
+/// conditional pragmas in general. It does not; see
+/// `conditional_pragma_below_its_block_opener_is_an_ordinary_candidate`.
 #[test]
 fn top_level_pragma_after_a_conditional_block_is_scanned() {
     let source = "if (1) {\n    use lib 'conditional';\n}\nuse lib 'top_level';\n";
@@ -354,4 +358,37 @@ fn unterminated_term_position_heredoc_suppresses_rather_than_invents() {
     let source = "my $s = <<'EOF';\nuse lib 'phantom_typing';\n";
 
     assert!(extract_use_lib_operations(source).is_empty());
+}
+
+/// `<<\EOF` is a heredoc with single-quote semantics — `perl -c` accepts it and
+/// prints the body — so its body is prose, not code.
+#[test]
+fn backslash_heredoc_bodies_do_not_create_lib_operations() {
+    let source = "my $s = <<\\EOF;\nuse lib 'phantom_backslash';\nEOF\nuse lib 'real';\n";
+
+    assert_eq!(
+        extract_use_lib_operations(source),
+        vec![UseLibAction::Add(vec![UseLibPath { path: "real".to_string(), from_findbin: false }])]
+    );
+}
+
+/// The rail does not exclude conditional pragmas, and never did.
+///
+/// A pragma that shares its slice with the block opener is invisible because the
+/// slice starts with `if`, not because of a conditional rule. One that does not
+/// share that slice is an ordinary approximate candidate — the same on `main` as
+/// here, with or without the brace trim. This pins that boundary so the
+/// neighbouring `..._after_a_conditional_block_...` test is not read as a
+/// promise the rail does not make.
+#[test]
+fn conditional_pragma_below_its_block_opener_is_an_ordinary_candidate() {
+    let source = "if ($x) {\n    foo();\n    use lib 'conditional';\n}\n";
+
+    assert_eq!(
+        extract_use_lib_operations(source),
+        vec![UseLibAction::Add(vec![UseLibPath {
+            path: "conditional".to_string(),
+            from_findbin: false,
+        }])]
+    );
 }

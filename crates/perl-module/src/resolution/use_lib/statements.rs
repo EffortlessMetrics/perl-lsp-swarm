@@ -260,6 +260,32 @@ fn parse_heredoc_opener(source: &str, start: usize) -> Option<(usize, String, bo
             .count();
 
     let first = *source.as_bytes().get(spaced_tag_start)?;
+
+    // `<<\EOF` is a heredoc whose bareword delimiter carries single-quote
+    // semantics. The backslash removes the left-shift ambiguity of a bare
+    // `<<EOF`, so it is confirmed on the same rule as a quoted delimiter.
+    if first == b'\\' {
+        let tag_start_after_escape = spaced_tag_start + 1;
+        let mut tag_end = tag_start_after_escape;
+        while let Some(byte) = source.as_bytes().get(tag_end) {
+            if !(byte.is_ascii_alphanumeric() || *byte == b'_') {
+                break;
+            }
+            tag_end += 1;
+        }
+        if tag_end == tag_start_after_escape {
+            return None;
+        }
+        let requires_terminator =
+            spaced_tag_start != tag_start || follows_complete_term(source, start);
+        return Some((
+            tag_end,
+            source[tag_start_after_escape..tag_end].to_string(),
+            strip_indent,
+            requires_terminator,
+        ));
+    }
+
     if first == b'\'' || first == b'"' || first == b'`' {
         let quote = first as char;
         let content_start = spaced_tag_start + 1;
