@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/release_scope.v2.schema.json",
   "title": "perl_lsp.release_scope.v2",
-  "description": "Structural contract for one final v0.18 public-beta product freeze. It can represent exact freeze inputs and invalidation but cannot observe GitHub, decide readiness, prepare a release, or authorize publication.",
+  "description": "Structural contract for one final v0.18 public-beta product freeze. It can represent exact freeze inputs and invalidation but cannot observe GitHub, decide readiness, prepare a release, or authorize publication. The generic pass verdict means only that the packet satisfies this structural contract.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -30,8 +30,11 @@
   "properties": {
     "check": {"const": "release-scope-v2"},
     "schema_version": {"const": "perl_lsp.release_scope.v2"},
-    "event": {"enum": ["local", "push"]},
-    "verdict": {"const": "pass"},
+    "event": {"enum": ["local", "pull_request", "merge_group", "push"]},
+    "verdict": {
+      "const": "pass",
+      "description": "The packet passed structural release_scope.v2 validation. This is not freeze_ready or publication authorization."
+    },
     "release": {"const": "0.18.0"},
     "track": {"const": "public-beta"},
     "phase": {"const": "final-frozen"},
@@ -104,27 +107,27 @@
       "allOf": [
         {
           "if": {"properties": {"kind": {"const": "github_issue"}}, "required": ["kind"]},
-          "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/issues/[1-9][0-9]*$"}}}
+          "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/(perl-lsp-swarm|perl-lsp)/issues/[1-9][0-9]*$"}}}
         },
         {
           "if": {"properties": {"kind": {"const": "github_issue_comment"}}, "required": ["kind"]},
-          "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/issues/[1-9][0-9]*#issuecomment-[1-9][0-9]*$"}}}
+          "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/(perl-lsp-swarm|perl-lsp)/issues/[1-9][0-9]*#issuecomment-[1-9][0-9]*$"}}}
         },
         {
           "if": {"properties": {"kind": {"const": "github_pull"}}, "required": ["kind"]},
-          "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/pull/[1-9][0-9]*$"}}}
+          "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/(perl-lsp-swarm|perl-lsp)/pull/[1-9][0-9]*$"}}}
         },
         {
           "if": {"properties": {"kind": {"const": "github_review"}}, "required": ["kind"]},
-          "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/pull/[1-9][0-9]*#pullrequestreview-[1-9][0-9]*$"}}}
+          "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/(perl-lsp-swarm|perl-lsp)/pull/[1-9][0-9]*#pullrequestreview-[1-9][0-9]*$"}}}
         },
         {
           "if": {"properties": {"kind": {"const": "github_check"}}, "required": ["kind"]},
-          "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/perl-lsp-swarm/actions/runs/[1-9][0-9]*/job/[1-9][0-9]*$"}}}
+          "then": {"properties": {"ref": {"pattern": "^https://github\\.com/EffortlessMetrics/(perl-lsp-swarm|perl-lsp)/actions/runs/[1-9][0-9]*/job/[1-9][0-9]*$"}}}
         },
         {
           "if": {"properties": {"kind": {"enum": ["repository_blob", "repository_receipt"]}}, "required": ["kind"]},
-          "then": {"properties": {"ref": {"pattern": "^repo:[^@\\s]+@[0-9a-f]{40}$"}}}
+          "then": {"properties": {"ref": {"pattern": "^repo:EffortlessMetrics/(perl-lsp-swarm|perl-lsp):[^@\\s]+@[0-9a-f]{40}$"}}}
         }
       ]
     },
