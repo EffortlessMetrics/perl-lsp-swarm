@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 12716 |
-| Rust-family files | 3968 |
-| Non-Rust files | 8748 |
-| Allowlisted | 6509 |
+| Total tracked files | 12766 |
+| Rust-family files | 3973 |
+| Non-Rust files | 8793 |
+| Allowlisted | 6554 |
 | Unclassified | 2239 |
 
 ## Non-Rust files by category
@@ -20,7 +20,7 @@
 | documentation | 2852 |
 | generated | 2 |
 | production | 357 |
-| test | 2111 |
+| test | 2156 |
 | tooling | 685 |
 | unclassified | 2239 |
 
@@ -6319,6 +6319,51 @@
 | `fixtures/product_health_status/sources/sec-b.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
 | `fixtures/product_health_status/sources/sec-ind.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
 | `fixtures/product_health_status/sources/unproven.json` | test | `non-rust-product-health-status-fixtures` | tooling/product-health |
+| `fixtures/standalone_install_vectors/corpus.v1.json` | test | `non-rust-standalone-install-corpus-manifest` | release/standalone-install |
+| `fixtures/standalone_install_vectors/expected/v001-archive-pair-success.json` | test | `non-rust-standalone-install-expected-goldens` | release/standalone-install |
+| `fixtures/standalone_install_vectors/expected/v002-archive-historical-server-only.json` | test | `non-rust-standalone-install-expected-goldens` | release/standalone-install |
+| `fixtures/standalone_install_vectors/expected/v003-registry-source-server-only.json` | test | `non-rust-standalone-install-expected-goldens` | release/standalone-install |
+| `fixtures/standalone_install_vectors/expected/v004-local-development-non-authoritative.json` | test | `non-rust-standalone-install-expected-goldens` | release/standalone-install |
+| `fixtures/standalone_install_vectors/expected/v005-provenance-required-satisfied.json` | test | `non-rust-standalone-install-expected-goldens` | release/standalone-install |
+| `fixtures/standalone_install_vectors/expected/v006-provenance-not-required.json` | test | `non-rust-standalone-install-expected-goldens` | release/standalone-install |
+| `fixtures/standalone_install_vectors/expected/v007-fallback-allowed-new-branch.json` | test | `non-rust-standalone-install-expected-goldens` | release/standalone-install |
+| `fixtures/standalone_install_vectors/expected/v008-fallback-forbidden-no-registry-action.json` | test | `non-rust-standalone-install-expected-goldens` | release/standalone-install |
+| `fixtures/standalone_install_vectors/expected/v009-transport-checksum-subject-mix.json` | test | `non-rust-standalone-install-expected-goldens` | release/standalone-install |
+| `fixtures/standalone_install_vectors/expected/v010-wrong-predecessor-receipt.json` | test | `non-rust-standalone-install-expected-goldens` | release/standalone-install |
+| `fixtures/standalone_install_vectors/expected/v011-missing-mandatory-stage.json` | test | `non-rust-standalone-install-expected-goldens` | release/standalone-install |
+| `fixtures/standalone_install_vectors/expected/v012-mandatory-mislabeled-not-applicable.json` | test | `non-rust-standalone-install-expected-goldens` | release/standalone-install |
+| `fixtures/standalone_install_vectors/expected/v013-pair-missing-dap.json` | test | `non-rust-standalone-install-expected-goldens` | release/standalone-install |
+| `fixtures/standalone_install_vectors/expected/v014-health-failure-rollback.json` | test | `non-rust-standalone-install-expected-goldens` | release/standalone-install |
+| `fixtures/standalone_install_vectors/expected/v015-path-persisted-fresh-process-fails.json` | test | `non-rust-standalone-install-expected-goldens` | release/standalone-install |
+| `fixtures/standalone_install_vectors/expected/v016-retry-stale-completion.json` | test | `non-rust-standalone-install-expected-goldens` | release/standalone-install |
+| `fixtures/standalone_install_vectors/expected/v017-cancel-before-staging.json` | test | `non-rust-standalone-install-expected-goldens` | release/standalone-install |
+| `fixtures/standalone_install_vectors/expected/v018-cancel-after-promotion.json` | test | `non-rust-standalone-install-expected-goldens` | release/standalone-install |
+| `fixtures/standalone_install_vectors/expected/v019-instrument-failure-redaction.json` | test | `non-rust-standalone-install-expected-goldens` | release/standalone-install |
+| `fixtures/standalone_install_vectors/expected/v020-latest-drift-detected.json` | test | `non-rust-standalone-install-expected-goldens` | release/standalone-install |
+| `fixtures/standalone_install_vectors/expected/v021-unknown-schema-receipt.json` | test | `non-rust-standalone-install-expected-goldens` | release/standalone-install |
+| `fixtures/standalone_install_vectors/expected/v022-retry-succeeds-erase-prior-attempt.json` | test | `non-rust-standalone-install-expected-goldens` | release/standalone-install |
+| `fixtures/standalone_install_vectors/vectors/v001-archive-pair-success.json` | test | `non-rust-standalone-install-vectors` | release/standalone-install |
+| `fixtures/standalone_install_vectors/vectors/v002-archive-historical-server-only.json` | test | `non-rust-standalone-install-vectors` | release/standalone-install |
+| `fixtures/standalone_install_vectors/vectors/v003-registry-source-server-only.json` | test | `non-rust-standalone-install-vectors` | release/standalone-install |
+| `fixtures/standalone_install_vectors/vectors/v004-local-development-non-authoritative.json` | test | `non-rust-standalone-install-vectors` | release/standalone-install |
+| `fixtures/standalone_install_vectors/vectors/v005-provenance-required-satisfied.json` | test | `non-rust-standalone-install-vectors` | release/standalone-install |
+| `fixtures/standalone_install_vectors/vectors/v006-provenance-not-required.json` | test | `non-rust-standalone-install-vectors` | release/standalone-install |
+| `fixtures/standalone_install_vectors/vectors/v007-fallback-allowed-new-branch.json` | test | `non-rust-standalone-install-vectors` | release/standalone-install |
+| `fixtures/standalone_install_vectors/vectors/v008-fallback-forbidden-no-registry-action.json` | test | `non-rust-standalone-install-vectors` | release/standalone-install |
+| `fixtures/standalone_install_vectors/vectors/v009-transport-checksum-subject-mix.json` | test | `non-rust-standalone-install-vectors` | release/standalone-install |
+| `fixtures/standalone_install_vectors/vectors/v010-wrong-predecessor-receipt.json` | test | `non-rust-standalone-install-vectors` | release/standalone-install |
+| `fixtures/standalone_install_vectors/vectors/v011-missing-mandatory-stage.json` | test | `non-rust-standalone-install-vectors` | release/standalone-install |
+| `fixtures/standalone_install_vectors/vectors/v012-mandatory-mislabeled-not-applicable.json` | test | `non-rust-standalone-install-vectors` | release/standalone-install |
+| `fixtures/standalone_install_vectors/vectors/v013-pair-missing-dap.json` | test | `non-rust-standalone-install-vectors` | release/standalone-install |
+| `fixtures/standalone_install_vectors/vectors/v014-health-failure-rollback.json` | test | `non-rust-standalone-install-vectors` | release/standalone-install |
+| `fixtures/standalone_install_vectors/vectors/v015-path-persisted-fresh-process-fails.json` | test | `non-rust-standalone-install-vectors` | release/standalone-install |
+| `fixtures/standalone_install_vectors/vectors/v016-retry-stale-completion.json` | test | `non-rust-standalone-install-vectors` | release/standalone-install |
+| `fixtures/standalone_install_vectors/vectors/v017-cancel-before-staging.json` | test | `non-rust-standalone-install-vectors` | release/standalone-install |
+| `fixtures/standalone_install_vectors/vectors/v018-cancel-after-promotion.json` | test | `non-rust-standalone-install-vectors` | release/standalone-install |
+| `fixtures/standalone_install_vectors/vectors/v019-instrument-failure-redaction.json` | test | `non-rust-standalone-install-vectors` | release/standalone-install |
+| `fixtures/standalone_install_vectors/vectors/v020-latest-drift-detected.json` | test | `non-rust-standalone-install-vectors` | release/standalone-install |
+| `fixtures/standalone_install_vectors/vectors/v021-unknown-schema-receipt.json` | test | `non-rust-standalone-install-vectors` | release/standalone-install |
+| `fixtures/standalone_install_vectors/vectors/v022-retry-succeeds-erase-prior-attempt.json` | test | `non-rust-standalone-install-vectors` | release/standalone-install |
 | `fixtures/train_edge_contract/external_stages.v1.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
 | `fixtures/train_edge_contract/invalid/expected_errors.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |
 | `fixtures/train_edge_contract/invalid/external_stage_satisfied_internally.json` | test | `non-rust-train-edge-contract-fixtures` | tooling/train-graph |

@@ -792,6 +792,56 @@ review_after = "2026-08-07"
 # =============================================================================
 
 [[allow]]
+id = "non-rust-standalone-install-corpus-manifest"
+path = "fixtures/standalone_install_vectors/corpus.v1.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "release/standalone-install"
+reason = "Manifest enumerating the #13295 standalone-install conformance corpus: the vector ids, their platform-neutrality, and the denominator the coverage test reconciles against. It is the corpus's own index, so a vector that exists on disk but is missing here is a corpus authoring error the CLI contract fails on."
+covered_by = [
+  "cargo test -p xtask --test standalone_vectors_cli --locked",
+  "cargo run -p xtask -- standalone-vectors check",
+]
+created = "2026-09-05"
+review_after = "2027-03-05"
+
+[[allow]]
+id = "non-rust-standalone-install-vectors"
+glob = "fixtures/standalone_install_vectors/vectors/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "release/standalone-install"
+reason = "Input vectors for the #13295 standalone-install oracle, encoding the transaction semantics of #10243 and the negative controls #11550 requires. Each is a declarative transcript of one install attempt — stage graph, receipts, executable observations — consumed by an independent proof harness that mutation control 16 forbids from importing production crates or spawning processes."
+covered_by = [
+  "cargo test -p xtask --test standalone_vectors_cli --locked",
+  "cargo run -p xtask -- standalone-vectors check",
+  "cargo run -p xtask -- standalone-vectors mutation-check",
+]
+created = "2026-09-05"
+review_after = "2027-03-05"
+
+[[allow]]
+id = "non-rust-standalone-install-expected-goldens"
+glob = "fixtures/standalone_install_vectors/expected/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "release/standalone-install"
+reason = "Golden derived packets for the #13295 corpus, one per input vector. They are the discrimination surface for the 15-mutation bank: 17 of the 22 mutation applications are caught by these bytes diverging, so regenerating them to make a red run green would defeat their purpose. They change only through the explicit --update-golden writer action when an oracle change is intended."
+covered_by = [
+  "cargo test -p xtask --test standalone_vectors_cli --locked",
+  "cargo run -p xtask -- standalone-vectors check",
+  "cargo run -p xtask -- standalone-vectors mutation-check",
+]
+created = "2026-09-05"
+review_after = "2027-03-05"
+
+[[allow]]
 id = "non-rust-rename-subroutine-diagnostics-gold"
 path = "test_corpus/gold/rename_subroutine/expected.json"
 kind = "test_fixture"

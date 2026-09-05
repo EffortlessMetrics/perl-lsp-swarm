@@ -1614,6 +1614,7 @@ jobs:
       # corpus vector or a regressed oracle cannot land undetected.
       - name: Standalone semantic conformance corpus contract (required merge surface)
         run: cargo test -p xtask --test standalone_vectors_cli --locked -- --nocapture
+
       # #14585: nothing executed `xtask/tests/file_policy.rs`. No workflow named
       # `--test file_policy`, the merge gate runs `cargo test --workspace --lib`
       # (which does not build `tests/`), and the policy shard runs
