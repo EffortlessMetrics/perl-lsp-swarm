@@ -184,7 +184,7 @@ disappears:
 Use issues for durable research/rulings/plans/dependencies/goal synthesis; PR bodies or
 comments for candidate-wide route/proof/limitation summaries; inline reviews for
 localized findings; review replies for dispositions; submitted reviews for cumulative
-judgment; and issue closeout for landed effects and residual work.
+judgment; and issue closeout for landed effects and residual claims.
 
 Keep agent identity, topology, liveness, retries, task state, provisional reasoning,
 raw logs, unchanged polling, and routine skill transitions runtime-local.
