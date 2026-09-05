@@ -52,7 +52,7 @@ jobs:
               + "            fixture_set_digest: canonical_subject_manifest_identity_digest()?,\\n",
           )
           '''
-          script, replacements = brittle.subn(robust, script, count=1)
+          script, replacements = brittle.subn(lambda _match: robust, script, count=1)
           if replacements != 1:
               raise SystemExit('could not replace the brittle cell-builder matcher')
 
