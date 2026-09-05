@@ -336,6 +336,11 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
             unqualified_retired_references("docs/NO_PANIC_POLICY.md", body),
             [],
         )
+        self.assertIn(qualified_line, body)
+        self.assertIn(
+            "by [`docs/CLIPPY_POLICY.md`](CLIPPY_POLICY.md) and retained only as a record.",
+            body,
+        )
 
     def test_local_banners_match_registry(self) -> None:
         by_path = registry_rows()
