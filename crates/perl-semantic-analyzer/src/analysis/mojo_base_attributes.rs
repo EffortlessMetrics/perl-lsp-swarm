@@ -56,9 +56,17 @@
 //! A `has` inside a subroutine body runs at call time; one under runtime
 //! control flow in either spelling — a block form (`if (...) { has 'x'; }`) or
 //! a postfix modifier (`has 'x' if $flag;`) — runs only when that construct
-//! does; one inside an `END` block runs at process shutdown, after the program
-//! the accessor would serve has finished. None of those declares a class
-//! attribute.
+//! does; one inside `defer { ... }` runs at scope exit; one inside an `END`
+//! block runs at process shutdown, after the program the accessor would serve
+//! has finished. None of those declares a class attribute.
+//!
+//! Each extracted declaration also carries *when* it runs, as a
+//! [`MojoBaseExecutionPhase`]. That is not the same question as whether it
+//! runs: an ordinary statement executes after the whole file is compiled,
+//! while a phaser executes during compilation. Two minting decisions turn on
+//! it — whether source order against the activating import matters, and
+//! whether a same-named explicit `sub` has a determinate winner — and both
+//! have opposite answers for the two phases.
 //!
 //! Phase blocks are the exception to that containment, because Perl schedules
 //! them independently of their lexical position. Verified against `perl`
@@ -83,7 +91,7 @@ use crate::analysis::dancer2_handler_targets::SubroutineTargetIndex;
 use crate::ast::{Node, NodeKind};
 use perl_semantic_facts::framework_adapters::mojo_base_facts::{
     MojoBaseAttributeDeclaration, MojoBaseAttributeDefault, MojoBaseAttributeName,
-    MojoBaseExplicitMethodState,
+    MojoBaseExecutionPhase, MojoBaseExplicitMethodState,
 };
 use perl_semantic_facts::{AnchorId, FileId, SourceAnchor, SourceGeneration};
 use regex::Regex;
@@ -130,6 +138,7 @@ pub fn extract_mojo_base_attribute_declarations(
         next_declaration_index: 0,
         declarations: Vec::new(),
         deferred: false,
+        compile_phase: false,
     };
     // An unqualified file's caller package is `main` in Perl, matching the
     // #9681 activation walk.
@@ -152,6 +161,9 @@ struct WalkState<'a> {
     /// whatever encloses it. A declaration counts as a class attribute only
     /// while this is false.
     deferred: bool,
+    /// Whether the current position runs during compilation rather than at run
+    /// time — that is, whether it sits inside an early phaser.
+    compile_phase: bool,
 }
 
 /// Whether this node owns runtime control flow, so statements inside it do not
@@ -175,6 +187,9 @@ fn owns_runtime_control_flow(node: &Node) -> bool {
             | NodeKind::When { .. }
             | NodeKind::Eval { .. }
             | NodeKind::Try { .. }
+            // `defer { ... }` runs at scope exit, so a `has` inside it has not
+            // declared anything for the code that precedes that exit.
+            | NodeKind::Defer { .. }
             // Postfix modifiers are control flow too: `has 'name' if $flag;`
             // and `has 'name' for @list;` run conditionally exactly like the
             // block forms above.
@@ -268,7 +283,13 @@ impl WalkState<'_> {
             // would serve has finished, so it exists for no part of the run
             // and the context defers.
             NodeKind::PhaseBlock { phase, .. } => {
-                self.walk_deferring(node, current_package, phase == "END");
+                let end_block = phase == "END";
+                let enclosing_phase = self.compile_phase;
+                // Only an early phaser runs during compilation. An `END` body
+                // runs at shutdown, which is later than run phase, not earlier.
+                self.compile_phase = !end_block;
+                self.walk_deferring(node, current_package, end_block);
+                self.compile_phase = enclosing_phase;
                 return;
             }
             // `Mojo::Base` attributes are declared at package level. A `has`
@@ -348,6 +369,11 @@ impl WalkState<'_> {
                 name,
                 default: parsed.default.clone(),
                 explicit_method,
+                execution_phase: if self.compile_phase {
+                    MojoBaseExecutionPhase::Compile
+                } else {
+                    MojoBaseExecutionPhase::Run
+                },
                 unmodeled_options: parsed.unmodeled_options.clone(),
                 source_generation: self.generation.clone(),
             });

@@ -155,9 +155,42 @@ pub enum MojoBaseAttributeDefault {
 /// is itself worth surfacing — an explicit method silently replaced by an
 /// accessor is usually a mistake in the source, not an intent.
 ///
-/// Scope of that determinacy: a top-level `has` in the same file as the `sub`.
-/// A `has` under `BEGIN`, or a method installed at runtime after the `has`
-/// executes, is outside the reviewed profile and is not modelled here.
+/// Scope of that determinacy: a **run-phase** `has` in the same file as the
+/// `sub`. It runs after the whole file is compiled, so the `sub` already
+/// exists and `monkey_patch` overwrites it unconditionally — source order
+/// between the two does not matter.
+///
+/// A compile-phase `has` (inside `BEGIN`, `UNITCHECK`, `CHECK` or `INIT`)
+/// interleaves with subroutine compilation instead, so whichever comes later
+/// in source wins and the accessor can itself be overwritten. That winner is
+/// reported as undetermined rather than guessed; see
+/// [`MojoBaseExecutionPhase`]. A method installed at runtime after the `has`
+/// executes remains outside the reviewed profile.
+/// When a declaration's `has` call executes, relative to compilation.
+///
+/// Perl runs `use` inside an implicit `BEGIN`, so the whole file is compiled —
+/// and every `use` in it imported — before any ordinary statement runs. That
+/// makes execution phase, not source position, the thing that decides whether
+/// a declaration saw the imported `has` and whether it survives a same-named
+/// explicit `sub`. Both questions have opposite answers for the two phases, so
+/// the phase travels with the carrier rather than being re-guessed at minting.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MojoBaseExecutionPhase {
+    /// An ordinary statement, which runs after the whole file is compiled.
+    ///
+    /// Every `use` in the file has already imported by then, so such a
+    /// declaration reaches the imported `has` regardless of whether it is
+    /// written above or below the import.
+    Run,
+    /// A statement inside an early phaser (`BEGIN`, `UNITCHECK`, `CHECK`,
+    /// `INIT`), which runs during compilation.
+    ///
+    /// Source order against the activating import therefore does matter: a
+    /// phaser above the import runs before `has` exists.
+    Compile,
+}
+
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MojoBaseExplicitMethodState {
@@ -204,6 +237,8 @@ pub struct MojoBaseAttributeDeclaration {
     pub default: MojoBaseAttributeDefault,
     /// Same-named explicit source method state in the owning package.
     pub explicit_method: MojoBaseExplicitMethodState,
+    /// When this declaration's `has` call executes, relative to compilation.
+    pub execution_phase: MojoBaseExecutionPhase,
     /// Option keys supplied after the default that the reviewed profile does
     /// not model.
     ///
@@ -448,9 +483,25 @@ pub fn mojo_base_object_facts(
         if declaration.source_generation != *generation {
             continue;
         }
-        // `Mojo::Base` installs `has` at import time, so a call before the
-        // activating import is not this framework's `has` at all.
-        if declaration.declaration_anchor.start_byte < import_end_byte {
+        // Source order against the import only decides anything for a
+        // declaration that runs during compilation.
+        //
+        // Perl runs `use` inside an implicit `BEGIN`, so the import completes
+        // while the file is still being compiled — before any ordinary
+        // statement executes. An ordinary `has` written above the import
+        // therefore still calls the imported `has` when it finally runs, and
+        // rejecting it on byte order would drop a real accessor. (In the
+        // reviewed paren-less spelling that arrangement does not compile at
+        // all — `has 'x';` above the import is a syntax error, since `has` is
+        // not predeclared there — so this admits the parenthesized spelling
+        // and costs nothing on the paren-less one.)
+        //
+        // A declaration inside an early phaser is the case where order does
+        // decide: a phaser above the activating import runs before `has`
+        // exists.
+        if declaration.execution_phase == MojoBaseExecutionPhase::Compile
+            && declaration.declaration_anchor.start_byte < import_end_byte
+        {
             continue;
         }
         // Only a literal spelling names a method. A computed or malformed
@@ -554,19 +605,41 @@ fn mint_member_fact(
         .declaration_anchor
         .anchor_id
         .unwrap_or(AnchorId(u64::from(declaration.declaration_anchor.start_byte)));
-    // The generated accessor is the live method after initialization
-    // (`monkey_patch` overwrites unconditionally), so the member is minted
-    // normally. The boundary records that it shadows an explicit declaration
-    // which keeps the stronger source evidence — a conflict a consumer should
-    // be able to see rather than one silently resolved here.
-    let boundary = match declaration.explicit_method {
-        MojoBaseExplicitMethodState::None => None,
-        MojoBaseExplicitMethodState::Collides => Some(BoundaryLink::new(
-            None,
-            BoundaryKind::Compatibility,
-            BoundaryDisposition::Degrade,
-            SemanticReasonCode::CompatibilityBoundary,
-        )),
+    // Which of a colliding pair is live after initialization depends on the
+    // declaration's phase, so the two cases cannot share one boundary.
+    //
+    // A run-phase `has` executes after the whole file is compiled, so every
+    // explicit `sub` in the file already exists and `monkey_patch` overwrites
+    // it unconditionally: the accessor is determinately live. The boundary
+    // records only that it shadows a declaration which keeps the stronger
+    // source evidence — a conflict a consumer should see rather than one
+    // silently resolved here.
+    //
+    // A compile-phase `has` interleaves with subroutine compilation instead,
+    // so whichever comes later in source wins, and a phaser can be overwritten
+    // by a `sub` below it. Resolving that would need the explicit method's own
+    // position and phase, which this carrier does not hold, so the winner is
+    // reported as undetermined rather than guessed. Claiming the accessor is
+    // live here would be exactly the overclaim this producer refuses
+    // elsewhere.
+    let boundary = match (declaration.explicit_method, declaration.execution_phase) {
+        (MojoBaseExplicitMethodState::None, _) => None,
+        (MojoBaseExplicitMethodState::Collides, MojoBaseExecutionPhase::Run) => {
+            Some(BoundaryLink::new(
+                None,
+                BoundaryKind::Compatibility,
+                BoundaryDisposition::Degrade,
+                SemanticReasonCode::CompatibilityBoundary,
+            ))
+        }
+        (MojoBaseExplicitMethodState::Collides, MojoBaseExecutionPhase::Compile) => {
+            Some(BoundaryLink::new(
+                None,
+                BoundaryKind::CompileTimeExecution,
+                BoundaryDisposition::Degrade,
+                SemanticReasonCode::UnsupportedEffect,
+            ))
+        }
     };
     MojoBaseGeneratedMemberFact {
         envelope: generated_envelope(
@@ -757,6 +830,32 @@ fn mint_parent_fact(
         anchor_end,
     );
     let from_package = package.unwrap_or("main").to_string();
+    // The two activation forms do not have the same evidence, so they must not
+    // claim the same provenance.
+    //
+    // `use Mojo::Base 'Parent'` spells the parent in source: the edge repeats a
+    // literal the reader can point at, anchored on that spelling's own range,
+    // so it is exact.
+    //
+    // `use Mojo::Base -base` spells no parent at all. That the resulting
+    // superclass is `Mojo::Base` is knowledge about the framework, not a
+    // reading of this file, and the anchor falls back to the import statement
+    // because there is no parent range to point at. Claiming `ExactAst` there
+    // would assert a source backing that does not exist — the same overclaim
+    // this producer refuses for generated accessors.
+    let literal_parent = matches!(
+        activation.outcome,
+        MojoBaseActivationOutcome::ExactLiteralParentActivation { .. }
+    );
+    let (provenance, confidence, reason_code) = if literal_parent {
+        (Provenance::ExactAst, Confidence::High, SemanticReasonCode::ExactSource)
+    } else {
+        (
+            Provenance::FrameworkSynthesis,
+            Confidence::Medium,
+            SemanticReasonCode::GeneratedFromSource,
+        )
+    };
     MojoBaseParentFact {
         envelope: SemanticFactEnvelope::new(
             fact_id,
@@ -768,23 +867,20 @@ fn mint_parent_fact(
             Some(from_package.clone()),
             LifecyclePhase::Runtime,
             SemanticProducer::FrameworkAdapter,
-            // Unlike a generated accessor, the parent relationship is written
-            // literally in source by the activating import: `use Mojo::Base
-            // 'Parent'` sets `@ISA` to that exact spelling.
-            SemanticProvenance::Known(Provenance::ExactAst),
-            SemanticConfidence::Known(Confidence::High),
+            SemanticProvenance::Known(provenance),
+            SemanticConfidence::Known(confidence),
             SemanticFreshness::Fresh,
             None,
             dependencies(file_id, generation),
-            SemanticReasonCode::ExactSource,
+            reason_code,
         ),
         edge: PackageEdge::new(
             from_package,
             parent.to_string(),
             PackageEdgeKind::Inherits,
             Some(AnchorId(u64::from(anchor_start))),
-            Provenance::ExactAst,
-            Confidence::High,
+            provenance,
+            confidence,
         ),
     }
 }
@@ -831,6 +927,7 @@ mod tests {
             name: MojoBaseAttributeName::Literal(name.to_string()),
             default,
             explicit_method: MojoBaseExplicitMethodState::None,
+            execution_phase: MojoBaseExecutionPhase::Run,
             unmodeled_options: Vec::new(),
             source_generation: SourceGeneration::known("gen-1"),
         }
@@ -975,9 +1072,24 @@ mod tests {
     fn a_declaration_must_match_the_activation_on_file_generation_and_order() {
         let activation = exact_activation(MojoBaseActivationOutcome::ExactBaseActivation);
 
-        // Before the activating import: `has` is not installed yet.
-        let before = declaration_at(0, 0, "early", MojoBaseAttributeDefault::Absent);
+        // A compile-phase declaration above the activating import: it runs
+        // during compilation, before the import has installed `has`.
+        let mut before = declaration_at(0, 0, "early", MojoBaseAttributeDefault::Absent);
+        before.execution_phase = MojoBaseExecutionPhase::Compile;
         assert!(mint_with_detection(&activation, &[before]).members.is_empty());
+
+        // The same position at run phase does mint: `use` completes during
+        // compilation, so an ordinary statement reaches the imported `has`
+        // whether it is written above or below the import. This pairs with the
+        // refusal above so the guard is pinned against widening as well as
+        // narrowing.
+        let before_at_run = declaration_at(0, 0, "early", MojoBaseAttributeDefault::Absent);
+        assert_eq!(
+            before_at_run.execution_phase,
+            MojoBaseExecutionPhase::Run,
+            "fixture default is run phase"
+        );
+        assert_eq!(mint_with_detection(&activation, &[before_at_run]).members.len(), 1);
 
         // Another file, same package name.
         let mut foreign_file = declaration(1, "elsewhere", MojoBaseAttributeDefault::Absent);

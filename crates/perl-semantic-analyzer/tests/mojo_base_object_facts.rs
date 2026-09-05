@@ -26,13 +26,13 @@ use perl_semantic_facts::framework_adapters::mojo_base::{
     detect_mojo_base, mojo_base_activation_facts, mojo_base_descriptor,
 };
 use perl_semantic_facts::framework_adapters::mojo_base_facts::{
-    MojoBaseAttributeDeclaration, MojoBaseAttributeDefault, MojoBaseExplicitMethodState,
-    MojoBaseObjectFacts, mojo_base_object_facts,
+    MojoBaseAttributeDeclaration, MojoBaseAttributeDefault, MojoBaseExecutionPhase,
+    MojoBaseExplicitMethodState, MojoBaseObjectFacts, mojo_base_object_facts,
 };
 use perl_semantic_facts::{
-    CallableResultLimitation, CallableResultRelation, Confidence, FileId, GeneratedMemberKind,
-    PackageEdgeKind, Provenance, SemanticFactStatus, SemanticReasonCode, SourceGeneration,
-    ValueShape,
+    BoundaryKind, CallableResultLimitation, CallableResultRelation, Confidence, FileId,
+    GeneratedMemberKind, PackageEdgeKind, Provenance, SemanticFactStatus, SemanticReasonCode,
+    SourceGeneration, ValueShape,
 };
 use perl_tdd_support::{must, must_some};
 
@@ -372,16 +372,45 @@ fn a_non_code_reference_default_stays_an_unsupported_boundary() {
 }
 
 #[test]
-fn a_has_call_before_the_activating_import_is_not_an_accessor() {
-    // `Mojo::Base` installs `has` at import time, so a call earlier in the
-    // package is a different function entirely — the later activation must not
-    // retroactively turn it into an accessor.
-    let code =
-        concat!("package App;\n", "has 'before';\n", "use Mojo::Base -base;\n", "has 'after';\n",);
-    // Both calls are observed by extraction; only the later one may mint.
-    assert_eq!(declarations(code, FileId(1), "gen-1").len(), 2, "extraction observes both calls");
+fn an_early_phaser_above_the_activating_import_is_not_an_accessor() {
+    // Source order against the import decides only for code that also runs at
+    // compile time. Verified against `perl`: `use` runs inside an implicit
+    // `BEGIN`, so a phaser written above the activating import runs before
+    // `Mojo::Base` has installed `has`, and one written below it does not.
+    let code = concat!(
+        "package App;\n",
+        "BEGIN { has('too_early'); }\n",
+        "use Mojo::Base -base;\n",
+        "BEGIN { has('after_import'); }\n",
+        "has 'ordinary';\n",
+    );
+    assert_eq!(
+        declarations(code, FileId(1), "gen-1").len(),
+        3,
+        "extraction observes all three calls; only minting rejects"
+    );
     let facts = only_facts(code);
-    assert_eq!(member_names(&facts), ["after"], "a pre-import `has` is not this framework's `has`");
+    assert_eq!(member_names(&facts), ["after_import", "ordinary"]);
+}
+
+#[test]
+fn an_ordinary_has_above_the_activating_import_still_declares_an_accessor() {
+    // The counterpart to the control above, and the reason phase is carried
+    // rather than source position alone. An ordinary statement runs after the
+    // whole file is compiled, so every `use` in the file has already imported
+    // by then — the call reaches `Mojo::Base`'s `has` even though it is
+    // written above the import. Rejecting it on byte order would drop a real
+    // accessor.
+    //
+    // The spelling is parenthesized deliberately: `has 'before';` above the
+    // import is a Perl syntax error ("String found where operator expected"),
+    // because `has` is not predeclared at that point. So this arrangement can
+    // only occur in compiling source with parentheses, and that is exactly the
+    // form that does declare an attribute.
+    let code =
+        concat!("package App;\n", "has('before');\n", "use Mojo::Base -base;\n", "has 'after';\n",);
+    let facts = only_facts(code);
+    assert_eq!(member_names(&facts), ["before", "after"]);
 }
 
 #[test]
@@ -617,4 +646,103 @@ fn an_early_phaser_declares_an_accessor_wherever_it_is_nested() {
         "an early phaser mints wherever it is nested; a deferred or conditional \
          position without one mints nothing"
     );
+}
+
+#[test]
+fn a_compile_phase_collision_reports_an_undetermined_winner() {
+    // Which of a colliding pair survives depends on the declaration's phase,
+    // verified against `perl`:
+    //
+    //   BEGIN { *name = sub {...} }  sub name {...}   -> the explicit sub wins
+    //   sub name {...}  BEGIN { *name = sub {...} }   -> the accessor wins
+    //
+    // A run-phase `has` runs after the whole file is compiled, so it always
+    // overwrites the explicit sub and the accessor is determinately live. A
+    // compile-phase `has` interleaves with subroutine compilation, so the
+    // winner depends on relative position — which this producer does not
+    // resolve, and therefore must not claim.
+    let run_phase = concat!(
+        "package App;\n",
+        "use Mojo::Base -base;\n",
+        "has 'name';\n",
+        "sub name { 'explicit' }\n",
+    );
+    let compile_phase = concat!(
+        "package App;\n",
+        "use Mojo::Base -base;\n",
+        "BEGIN { has('name'); }\n",
+        "sub name { 'explicit' }\n",
+    );
+
+    let run_facts = only_facts(run_phase);
+    assert_eq!(run_facts.members[0].explicit_method, MojoBaseExplicitMethodState::Collides);
+    let run_boundary = must_some(run_facts.members[0].envelope.boundary.clone());
+    assert_eq!(
+        run_boundary.kind,
+        BoundaryKind::Compatibility,
+        "a run-phase accessor determinately overwrites the explicit sub"
+    );
+
+    let compile_facts = only_facts(compile_phase);
+    assert_eq!(
+        declarations(compile_phase, FileId(1), "gen-1")[0].execution_phase,
+        MojoBaseExecutionPhase::Compile,
+        "the declaration really is carried as compile-phase"
+    );
+    assert_eq!(compile_facts.members[0].explicit_method, MojoBaseExplicitMethodState::Collides);
+    let compile_boundary = must_some(compile_facts.members[0].envelope.boundary.clone());
+    assert_eq!(
+        compile_boundary.kind,
+        BoundaryKind::CompileTimeExecution,
+        "a compile-phase collision cannot claim the accessor is the live method"
+    );
+    assert_ne!(
+        run_boundary.kind, compile_boundary.kind,
+        "the two phases must not collapse to one boundary"
+    );
+}
+
+#[test]
+fn only_a_literal_parent_activation_claims_exact_source_provenance() {
+    // `use Mojo::Base 'Parent'` spells the parent in source, so the edge
+    // repeats a literal and is exact. `use Mojo::Base -base` spells no parent
+    // at all: that the superclass is `Mojo::Base` is knowledge about the
+    // framework, not a reading of this file, so it must carry synthesis
+    // provenance like every other generated fact here.
+    let literal = "package App;\nuse Mojo::Base 'Parent';\n";
+    let base = "package App;\nuse Mojo::Base -base;\n";
+
+    let literal_facts = only_facts(literal);
+    assert_eq!(literal_facts.parents.len(), 1);
+    assert_eq!(literal_facts.parents[0].edge.provenance, Provenance::ExactAst);
+    assert_eq!(literal_facts.parents[0].edge.confidence, Confidence::High);
+    assert_eq!(
+        literal_facts.parents[0].envelope.reason_code,
+        SemanticReasonCode::ExactSource,
+        "the parent spelling is literally in source"
+    );
+
+    let base_facts = only_facts(base);
+    assert_eq!(base_facts.parents.len(), 1);
+    assert_eq!(
+        base_facts.parents[0].edge.provenance,
+        Provenance::FrameworkSynthesis,
+        "`-base` names no parent in source; the edge is framework knowledge"
+    );
+    assert_eq!(base_facts.parents[0].edge.confidence, Confidence::Medium);
+    assert_eq!(base_facts.parents[0].envelope.reason_code, SemanticReasonCode::GeneratedFromSource);
+}
+
+#[test]
+fn a_declaration_inside_defer_declares_no_accessor() {
+    // `defer { ... }` runs at scope exit, so the accessor does not exist for
+    // the code that precedes that exit.
+    let code = concat!(
+        "package App;\n",
+        "use Mojo::Base -base;\n",
+        "defer { has 'at_scope_exit'; }\n",
+        "has 'always';\n",
+    );
+    let facts = only_facts(code);
+    assert_eq!(member_names(&facts), ["always"]);
 }
