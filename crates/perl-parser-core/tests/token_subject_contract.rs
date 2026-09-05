@@ -928,6 +928,87 @@ fn a_bound_symbol_table_makes_the_configuration_unverifiable() -> R {
     Ok(())
 }
 
+// ── Negative: the lexer's own budget-stop recovery ────────────────────────────
+
+/// Source whose regex literal exceeds the lexer's byte budget, so the lexer
+/// abandons the remainder. `MAX_REGEX_BYTES` is 64KB.
+fn over_budget_regex_source() -> String {
+    format!("my $x = 1;\nmy $r = /{}/;\nmy $after_the_giveup = 42;\n", "a".repeat(70_000))
+}
+
+/// The defect this rule exists for: a budget-stopped lex still ends with an EOF
+/// token at `source.len()`, so terminal state alone reports a 70KB file whose
+/// lexer stopped at byte 19 as complete. Without a coverage rule, the module
+/// manufactures exactly the omitted-token forgery it refuses from callers.
+#[test]
+fn a_budget_stopped_lex_is_not_a_complete_production_subject() -> R {
+    let source = over_budget_regex_source();
+
+    // Establish the premise rather than assume it: the lexer really does give
+    // up here, really does abandon most of the file, and really does still end
+    // at EOF.
+    let tokens = lex(&source)?;
+    let abandoned = tokens
+        .iter()
+        .find(|token| token.is_geometry_only())
+        .ok_or("fixture must trigger the lexer's budget-stop recovery")?;
+    assert!(
+        abandoned.end() - abandoned.start() > 60_000,
+        "the recovery token should span the abandoned remainder"
+    );
+    assert!(
+        !tokens.iter().any(|token| &*token.text == "$after_the_giveup"),
+        "code after the budget stop must genuinely never be lexed"
+    );
+    let last = tokens.last().ok_or("expected tokens")?;
+    assert_eq!(last.kind(), TokenKind::Eof);
+    assert_eq!(last.start(), source.len(), "the stream still terminates at end of source");
+
+    // So the terminal state cannot distinguish coverage from abandonment, and
+    // the coverage rule has to.
+    let error = err_of(ValidatedTokenStream::from_fresh_lex(identity(&source), &source))?;
+
+    assert_rule(&error, "incomplete_stream", "the lexer abandoned")?;
+    assert!(error.requires_full_source_fallback());
+    Ok(())
+}
+
+/// A replay claims completeness too, so it owes the same rule.
+#[test]
+fn a_budget_stopped_replay_is_rejected_for_the_same_reason() -> R {
+    let source = over_budget_regex_source();
+
+    let error = err_of(ValidatedTokenStream::from_checkpoint_replay(
+        identity_for(&source, "lib/Demo.pm", "7"),
+        &source,
+        lex(&source)?,
+        complete(&source),
+        SourceGeneration::known("6"),
+        ClassificationAuthority::LiveUndirectedLex,
+    ))?;
+
+    assert_rule(&error, "incomplete_stream", "the lexer abandoned")?;
+    Ok(())
+}
+
+/// A fixture makes no completeness claim, so it may legitimately carry the
+/// recovery shape — the payload exemption exists so such a stream is
+/// representable at all. Pinning this keeps the rule from being a blanket ban.
+#[test]
+fn a_budget_stopped_fixture_remains_representable() -> R {
+    let source = over_budget_regex_source();
+
+    let subject = ValidatedTokenStream::from_test_fixture(
+        identity(&source),
+        &source,
+        lex(&source)?,
+        complete(&source),
+    )?;
+
+    assert!(!subject.is_production_valid());
+    Ok(())
+}
+
 // ── Negative control on the suite itself ──────────────────────────────────────
 
 /// Every negative case above perturbs a stream that is otherwise accepted. If

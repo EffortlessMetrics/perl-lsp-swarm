@@ -52,6 +52,14 @@
 //! text over a non-empty span and is exempted from the payload check rather
 //! than special-cased away.
 //!
+//! That exemption has a sharp edge worth stating: the same geometry-only shape
+//! is how the lexer reports giving up. On a regex past `MAX_REGEX_BYTES` it
+//! jumps to end of input, emits an empty-payload `UnknownRest` over everything
+//! it abandoned, and still terminates with EOF at `source.len()` — so a 70KB
+//! file whose lexer stopped at byte 19 is indistinguishable from a complete one
+//! by terminal state alone. Any provenance claiming a complete stream rejects
+//! such a stream outright; see `validate_coverage`.
+//!
 //! Tokens are ordered but **not** contiguous: trivia, POD, and heredoc bodies
 //! occupy the gaps between token spans, so ordering is validated as
 //! non-overlap (`start >= previous end`), never as adjacency.
@@ -902,6 +910,7 @@ impl<'a> ValidatedTokenStream<'a> {
         validate_generation(&identity, &provenance)?;
         validate_classification_authority(&provenance, classification_authority)?;
         validate_tokens(source, &tokens)?;
+        validate_coverage(&tokens, &provenance)?;
         validate_terminal(source, &tokens, terminal, &provenance)?;
 
         Ok(Self { identity, source, tokens, terminal, provenance, classification_authority })
@@ -1189,6 +1198,36 @@ fn validate_tokens(source: &str, tokens: &[Token]) -> Result<(), TokenSubjectErr
     }
 
     Ok(())
+}
+
+/// A geometry-only `UnknownRest` is the lexer's budget-stop recovery: it
+/// abandons the remaining source, jumps to EOF, and emits an empty-payload
+/// token spanning what it gave up on. The stream still ends with an EOF token
+/// at `source.len()`, so terminal state alone cannot tell coverage apart from
+/// abandonment — a 70KB file whose lexer stopped at byte 19 looks terminated.
+///
+/// Any provenance that claims a complete stream therefore has to reject it:
+/// the tokens do not cover the source, whatever the terminal says.
+fn validate_coverage(
+    tokens: &[Token],
+    provenance: &TokenStreamProvenance,
+) -> Result<(), TokenSubjectError> {
+    if !provenance.claims_complete_stream() {
+        return Ok(());
+    }
+    let Some(abandoned) = tokens.iter().find(|token| token.is_geometry_only()) else {
+        return Ok(());
+    };
+    Err(TokenSubjectError::IncompleteStream {
+        detail: format!(
+            "the lexer abandoned {}..{} ({} bytes) under its budget-stop recovery, so a {} \
+             subject does not cover its source even though the stream ends at EOF",
+            abandoned.start(),
+            abandoned.end(),
+            abandoned.end().saturating_sub(abandoned.start()),
+            provenance.label()
+        ),
+    })
 }
 
 fn validate_terminal(
