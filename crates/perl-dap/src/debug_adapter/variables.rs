@@ -1598,10 +1598,12 @@ mod value_format_family_tests {
     }
 
     #[test]
-    fn valid_hex_format_is_accepted_by_all_four_families() -> TestResult {
+    fn valid_hex_format_is_accepted_by_supported_families_and_floored_for_set_expression()
+    -> TestResult {
         // A well-formed format deserializes cleanly: without a session the
-        // handlers proceed to their normal "No debugger session" failure, NOT
-        // to a format error - proving the option is consumed, not rejected.
+        // setVariable/evaluate handlers proceed to their normal "No debugger
+        // session" failure, NOT to a format error - proving the option is
+        // consumed, not rejected.
         //
         // #9568: setExpression refuses at the capability floor before any
         // session work, so its well-formed-format leg expects the authority

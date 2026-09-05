@@ -434,7 +434,7 @@ pub const SET_EXPRESSION_UNSUPPORTED_MESSAGE: &str = "setExpression is not suppo
 /// the native gate does not silently open an external-peer or mirror path that
 /// has no assignment proof of its own.
 #[must_use]
-pub(crate) fn refuse_set_expression(advertised_set_expression: bool) -> bool {
+pub(crate) const fn refuse_set_expression(advertised_set_expression: bool) -> bool {
     !advertised_set_expression
 }
 

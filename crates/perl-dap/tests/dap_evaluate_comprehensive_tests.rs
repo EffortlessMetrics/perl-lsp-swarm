@@ -1130,8 +1130,15 @@ fn test_set_expression_empty_value_returns_error() -> TestResult {
         DapMessage::Response { success, command, message, .. } => {
             assert_eq!(command, "setExpression");
             assert!(!success);
+            // #9568: the floor refuses after envelope validation only, so an
+            // empty value receives the deterministic refusal like every other
+            // valid envelope — input screening is unreachable.
             let msg = message.ok_or("expected error message")?;
-            assert!(msg.contains("value") || msg.contains("Missing"), "got: {msg:?}");
+            assert_eq!(
+                msg,
+                perl_dap::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE,
+                "empty-value shape must receive the deterministic #9568 refusal"
+            );
         }
         other => return Err(format!("expected Response, got {other:?}").into()),
     }
@@ -1254,17 +1261,18 @@ fn test_set_expression_rejects_newline_in_lhs() -> TestResult {
 }
 
 #[test]
-fn test_set_expression_legitimate_lhs_passes_validation() -> TestResult {
+fn test_set_expression_legitimate_lhs_receives_the_same_refusal() -> TestResult {
     let mut adapter = new_adapter();
-    // A legitimate l-value must pass LHS validation; the only failure should be
-    // a session-related error (no active debugger), not a validation rejection.
+    // #9568: there is no LHS validation behind the floor — a legitimate
+    // l-value is refused with the identical deterministic message as every
+    // hostile shape, regardless of session state.
     let response = adapter.handle_request(
         1,
         "setExpression",
         Some(json!({ "expression": "$hash{key}", "value": "42" })),
     );
-    // #9568: legitimate and hostile shapes are refused identically — the
-    // deterministic floor refusal, with no validation side channel left.
+    // Legitimate and hostile shapes are refused identically — no validation
+    // side channel is left.
     assert_set_expression_blocked(response)?;
     Ok(())
 }

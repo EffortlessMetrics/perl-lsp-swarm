@@ -1182,6 +1182,10 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
 
     // --- setVariable: response rendering only; assignment stays client-bound
     let mutation_ref: i64;
+    // Exact read-back baseline captured after the setVariable assignment: the
+    // refused setExpression leg below must reproduce this string byte-for-byte
+    // (a `contains("66")` check would also pass a wrong mutation like `166`).
+    let assigned_read_back: String;
     {
         let body = dap.expect_success(
             "setVariable",
@@ -1207,10 +1211,11 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
             "evaluate",
             Some(json!({ "expression": "$pos", "frameId": frame_id })),
         )?;
-        let read_back_result = read_back.get("result").and_then(Value::as_str).unwrap_or("");
-        if !read_back_result.contains("66") {
+        assigned_read_back =
+            read_back.get("result").and_then(Value::as_str).unwrap_or("").to_string();
+        if !assigned_read_back.contains("66") {
             return Err(format!(
-                "assigned data must be the admitted client value 66, read-back `{read_back_result}`"
+                "assigned data must be the admitted client value 66, read-back `{assigned_read_back}`"
             )
             .into());
         }
@@ -1250,10 +1255,10 @@ fn value_format_stdio_proof_matrix() -> ProofResult<()> {
             Some(json!({ "expression": "$pos", "frameId": frame_id })),
         )?;
         let read_back_result = read_back.get("result").and_then(Value::as_str).unwrap_or("");
-        if !read_back_result.contains("66") {
+        if read_back_result != assigned_read_back {
             return Err(format!(
                 "refused setExpression must not mutate: read-back `{read_back_result}` \
-                 must still hold the setVariable-assigned 66"
+                 must exactly equal the setVariable-assigned read-back `{assigned_read_back}`"
             )
             .into());
         }
