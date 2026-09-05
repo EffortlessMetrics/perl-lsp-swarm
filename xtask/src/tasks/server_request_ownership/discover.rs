@@ -140,6 +140,10 @@ struct CallSite {
 struct FnFacts {
     name: String,
     forwards_method: bool,
+    /// Whether the item carries an executable body. A trait method may be a
+    /// bare declaration, which defines no behaviour: it can neither forward a
+    /// request nor make another definition of the same name ambiguous.
+    has_body: bool,
     sites: Vec<CallSite>,
 }
 
@@ -155,10 +159,11 @@ struct FnCollector {
 }
 
 impl FnCollector {
-    fn enter(&mut self, name: String, signature: &syn::Signature) {
+    fn enter(&mut self, name: String, signature: &syn::Signature, has_body: bool) {
         self.functions.push(FnFacts {
             name,
             forwards_method: declares_forwarded_method(signature),
+            has_body,
             sites: Vec::new(),
         });
         self.stack.push(self.functions.len() - 1);
@@ -200,19 +205,21 @@ impl<'ast> Visit<'ast> for FnCollector {
     }
 
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
-        self.enter(node.sig.ident.to_string(), &node.sig);
+        self.enter(node.sig.ident.to_string(), &node.sig, true);
         syn::visit::visit_item_fn(self, node);
         self.stack.pop();
     }
 
     fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
-        self.enter(node.sig.ident.to_string(), &node.sig);
+        self.enter(node.sig.ident.to_string(), &node.sig, true);
         syn::visit::visit_impl_item_fn(self, node);
         self.stack.pop();
     }
 
     fn visit_trait_item_fn(&mut self, node: &'ast syn::TraitItemFn) {
-        self.enter(node.sig.ident.to_string(), &node.sig);
+        // A trait method with no default body declares a name and nothing more;
+        // only a provided body is a definition that can forward or collide.
+        self.enter(node.sig.ident.to_string(), &node.sig, node.default.is_some());
         syn::visit::visit_trait_item_fn(self, node);
         self.stack.pop();
     }
@@ -517,14 +524,19 @@ pub(super) fn scan_emission(
     // name would therefore make its own callers' arguments read as emitted
     // methods. Telling the two apart needs the types a syntactic reader does
     // not have, so the collision is reported instead of guessed. Base senders
-    // are exempt: a trait declaration and its impl legitimately share a name.
+    // are exempt: they are the sending API itself, not a helper promoted for
+    // reaching it, so an impl of one is never "a definition that does not
+    // forward". Bare trait declarations are excluded everywhere by `has_body`.
     let base: BTreeSet<&str> = REQUEST_SENDERS.iter().copied().collect();
     let mut unattributable: BTreeSet<String> = BTreeSet::new();
     for name in senders.iter().filter(|name| !base.contains(name.as_str())) {
         let defined: Vec<&str> = files
             .iter()
             .flat_map(|(relative, functions)| {
-                functions.iter().filter(|facts| &facts.name == name).map(move |_| relative.as_str())
+                functions
+                    .iter()
+                    .filter(|facts| &facts.name == name && facts.has_body)
+                    .map(move |_| relative.as_str())
             })
             .collect();
         // Every definition of a promoted name must itself forward, or a call
@@ -532,7 +544,7 @@ pub(super) fn scan_emission(
         let forwarding = files
             .iter()
             .flat_map(|(_, functions)| functions.iter())
-            .filter(|facts| &facts.name == name)
+            .filter(|facts| &facts.name == name && facts.has_body)
             .filter(|facts| {
                 facts.forwards_method
                     && facts

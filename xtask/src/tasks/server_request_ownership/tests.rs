@@ -789,6 +789,86 @@ impl Unrelated {
     Ok(())
 }
 
+/// A forwarder that implements a trait method is the ordinary shape here --
+/// `OutboundSink` is exactly it. The declaration carries no body, so counting it
+/// as a second, non-forwarding definition made the ambiguity check fire on a
+/// perfectly attributable call and suppress the emission it should have found.
+#[test]
+fn a_bare_trait_declaration_is_not_a_competing_definition() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (emitted, findings) = scan_synthetic_files(&[
+        (
+            "sink.rs",
+            r"
+pub(crate) trait Sink {
+    fn relay(&self, method: &str, params: Value) -> io::Result<()>;
+}
+",
+        ),
+        (
+            "impl.rs",
+            r#"
+impl Sink for Server {
+    fn relay(&self, method: &str, params: Value) -> io::Result<()> {
+        self.send_request(id, method, params)
+    }
+}
+impl Server {
+    fn caller(&self) -> io::Result<()> {
+        self.relay("window/showDocument", params)
+    }
+}
+"#,
+        ),
+    ])?;
+
+    assert!(findings.is_empty(), "a bare declaration is not a rival definition: {findings:?}");
+    assert_eq!(
+        emitted.get("window/showDocument").map(Vec::len),
+        Some(1),
+        "the call through the trait forwarder is still an emission: {emitted:?}"
+    );
+    Ok(())
+}
+
+/// A trait method *with* a default body is a real definition, so it still
+/// counts -- otherwise the exclusion above would reopen the collision it closes.
+#[test]
+fn a_defaulted_trait_method_still_counts_as_a_definition() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (emitted, findings) = scan_synthetic_files(&[
+        (
+            "real.rs",
+            r"
+impl Server {
+    fn relay(&self, method: &str, params: Value) -> io::Result<()> {
+        self.send_request(id, method, params)
+    }
+}
+",
+        ),
+        (
+            "defaulted.rs",
+            r#"
+pub(crate) trait Unrelated {
+    fn relay(&self, label: &str) -> String {
+        label.to_string()
+    }
+}
+impl Server {
+    fn caller(&self) -> String {
+        self.relay("phantom/method")
+    }
+}
+"#,
+        ),
+    ])?;
+
+    assert_eq!(findings, vec!["forwarder-ambiguous".to_string()], "{findings:?}");
+    assert!(!emitted.contains_key("phantom/method"), "{emitted:?}");
+    Ok(())
+}
+
 /// The mirror of the above: when every definition of a shared name really does
 /// forward, resolving by name is sound and must stay silent, or a trait with
 /// several implementations would be unusable.
