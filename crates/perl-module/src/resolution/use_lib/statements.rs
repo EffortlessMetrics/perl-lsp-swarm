@@ -160,20 +160,37 @@ pub(super) fn split_perl_statements(source: &str) -> Vec<&str> {
 /// as data, while `__ENDS__ = 1;` is still compiled as code — so requiring
 /// whitespace would leave a punctuated marker's payload scanned as code.
 ///
-/// A colon is the one punctuation that does not end the token, in either form.
-/// `__END__:` is a *label* and `__END__::foo()` a package-qualified call; Perl
-/// compiles and runs the code after both. Verified by running each:
-/// `__END__;` and `__END__ trailing words` print only the line above them,
-/// while `__END__:` and `__DATA__:` print the line below as well.
+/// A colon is the punctuation that can continue the token, and whether it does
+/// depends on adjacency. Each row was measured by running the file:
+///
+/// | written | Perl |
+/// | --- | --- |
+/// | `__END__;`, `__END__ trailing words` | marker |
+/// | `__END__:` | label, so code continues |
+/// | `__END__::foo()` | package-qualified call, so code |
+/// | `__END__ ::foo()` | **marker** — `::` cannot open a label |
+///
+/// The last row is the one that bites: reading it as code would scan data
+/// payload and invent `@INC` roots from it.
 fn is_data_section_marker(rest: &str) -> bool {
     ["__END__", "__DATA__"].iter().any(|marker| {
         rest.strip_prefix(marker).is_some_and(|tail| {
             if tail.chars().next().is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
                 return false;
             }
-            // Only spaces and tabs, so a colon opening the *next* line is not
-            // mistaken for a label on this one.
-            !tail.trim_start_matches([' ', '\t']).starts_with(':')
+            // A colon *adjacent* to the marker continues the token: `__END__:`
+            // is a label and `__END__::foo()` a package-qualified call, and
+            // Perl compiles both.
+            if tail.starts_with(':') {
+                return false;
+            }
+            // Across horizontal whitespace only a single colon still forms a
+            // label. `::` cannot, so `__END__ ::foo()` is data payload and
+            // Perl stops there — reading it as code would invent `@INC` roots
+            // out of data. Spaces and tabs only, so a colon opening the *next*
+            // line is never mistaken for a label on this one.
+            let spaced = tail.trim_start_matches([' ', '\t']);
+            !spaced.starts_with(':') || spaced.starts_with("::")
         })
     })
 }

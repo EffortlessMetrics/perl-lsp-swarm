@@ -554,6 +554,51 @@ fn colon_suffixed_markers_are_labels_and_do_not_truncate_the_scan() {
     }
 }
 
+/// Across whitespace, `::` stays data while a single colon still makes a label.
+///
+/// Measured: `__END__ ::foo();` stops the program (marker), `__END__::foo();`
+/// dies calling the sub (code), and `__END__ :` keeps printing (label). A
+/// label cannot be spelled `::`, so a spaced `::` is just data payload.
+///
+/// This direction is the dangerous one. Treating `__END__ ::foo()` as code
+/// makes the scanner read the data section and *invent* include paths from it,
+/// rather than merely losing one.
+#[test]
+fn a_spaced_double_colon_stays_inside_the_data_section() {
+    for marker in ["__END__", "__DATA__"] {
+        for gap in [" ", "  ", "\t"] {
+            let source =
+                format!("use lib 'real';\n{marker}{gap}::pkg::call();\nuse lib 'phantom';\n");
+
+            assert_eq!(
+                extract_use_lib_operations(&source),
+                vec![UseLibAction::Add(vec![UseLibPath {
+                    path: "real".to_string(),
+                    from_findbin: false
+                }])],
+                "{marker}{gap:?}:: was read as code, inventing a path from data"
+            );
+        }
+    }
+}
+
+/// An *adjacent* `::` is a package-qualified call, so the code region continues.
+#[test]
+fn an_adjacent_double_colon_is_a_package_qualified_call() {
+    let source = "use lib 'real';\n__END__::foo();\nuse lib 'still_code';\n";
+
+    assert_eq!(
+        extract_use_lib_operations(source),
+        vec![
+            UseLibAction::Add(vec![UseLibPath { path: "real".to_string(), from_findbin: false }]),
+            UseLibAction::Add(vec![UseLibPath {
+                path: "still_code".to_string(),
+                from_findbin: false,
+            }]),
+        ]
+    );
+}
+
 /// A marker lookalike is ordinary code and must not truncate the scan.
 #[test]
 fn data_section_marker_lookalikes_do_not_end_the_scan() {
