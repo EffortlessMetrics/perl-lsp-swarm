@@ -28,6 +28,10 @@ TEST_SUPPORT_CRATE_PREFIXES = (
     "crates/perl-test-must/",
 )
 FEATURE_CFG_RE = re.compile(r'feature\s*=\s*"([^"]+)"')
+# scripts/ci/route-codecov-packs.py -> repository root.  Resolving from the
+# script keeps manifest and source lookups stable when the workflow runs the
+# router from a directory other than the checkout root.
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class BinaryTestTarget(NamedTuple):
@@ -69,7 +73,10 @@ def changed_crates(paths: list[str]) -> list[str]:
     return result
 
 
-def changed_integration_test_targets(paths: list[str]) -> dict[str, list[tuple[str, tuple[str, ...]]]]:
+def changed_integration_test_targets(
+    paths: list[str],
+    repo_root: Path = REPO_ROOT,
+) -> dict[str, list[tuple[str, tuple[str, ...]]]]:
     """Return changed top-level integration test targets by crate directory."""
     result: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
     seen: set[tuple[str, str]] = set()
@@ -86,13 +93,13 @@ def changed_integration_test_targets(paths: list[str]) -> dict[str, list[tuple[s
         if key in seen:
             continue
         seen.add(key)
-        result.setdefault(crate_name, []).append((target, tuple(required_features_for_test(path))))
+        result.setdefault(crate_name, []).append((target, tuple(required_features_for_test(path, repo_root))))
     return result
 
 
-def required_features_for_test(path: str) -> list[str]:
+def required_features_for_test(path: str, repo_root: Path = REPO_ROOT) -> list[str]:
     """Return crate features gated by a changed integration test target."""
-    test_path = Path(path)
+    test_path = repo_root / path
     if not test_path.exists():
         return []
     try:
@@ -124,12 +131,76 @@ def _target_name_from_path(path_value: str, package_name: str) -> str:
     return path.stem or package_name
 
 
-def package_test_targets(crate_name: str, repo_root: Path = Path(".")) -> PackageTestTargets:
+def _lib_source_path(explicit_lib: dict[str, object], crate_name: str) -> PurePosixPath:
+    """Return the effective library source path for occupancy accounting."""
+    raw_path = explicit_lib.get("path")
+    if raw_path is not None:
+        if not isinstance(raw_path, str) or not raw_path:
+            raise ValueError(f"Cargo lib path for changed crate {crate_name} must be a non-empty string")
+        return PurePosixPath(raw_path.replace("\\", "/"))
+    return PurePosixPath("src/lib.rs")
+
+
+def _explicit_bin_source_path(
+    name: str,
+    raw_path: object,
+    package_name: str,
+    crate_root: Path,
+    crate_name: str,
+) -> PurePosixPath | None:
+    """Resolve the source file a `[[bin]]` target occupies.
+
+    Cargo infers a pathless binary's source from its name: `src/main.rs` when
+    the target is named after the package, otherwise `src/bin/<name>.rs` or
+    `src/bin/<name>/main.rs`.  Resolving it here is what lets autobin discovery
+    skip files an explicit target already claims, instead of inventing a second
+    target for the same source.
+    """
+    if raw_path is not None:
+        if not isinstance(raw_path, str) or not raw_path:
+            raise ValueError(f"Cargo bin path for changed crate {crate_name} must be a non-empty string")
+        return PurePosixPath(raw_path.replace("\\", "/"))
+    candidates: list[PurePosixPath] = []
+    if name == package_name:
+        candidates.append(PurePosixPath("src/main.rs"))
+    candidates.append(PurePosixPath(f"src/bin/{name}.rs"))
+    candidates.append(PurePosixPath(f"src/bin/{name}/main.rs"))
+    for candidate in candidates:
+        if (crate_root / candidate).is_file():
+            return candidate
+    # Cargo itself rejects a manifest whose binary has no discoverable source.
+    # Report no occupancy rather than guessing a path that does not exist.
+    return None
+
+
+def _autobins_default(package: dict[str, object], manifest: dict[str, object]) -> bool:
+    """Return Cargo's edition-aware autobin default for one package.
+
+    A 2015-edition package that declares any target manually turns target
+    auto-discovery off; 2018 and later keep it on.  Registering an
+    auto-discovered `--bin` that Cargo does not have is a hard command failure,
+    so honour the edition rather than assuming discovery is always active.
+    """
+    explicit = package.get("autobins")
+    if explicit is not None:
+        return explicit is not False
+    edition = package.get("edition")
+    if edition == "2015":
+        has_manual_target = any(
+            manifest.get(key) for key in ("lib", "bin", "example", "test", "bench")
+        )
+        return not has_manual_target
+    return True
+
+
+def package_test_targets(crate_name: str, repo_root: Path = REPO_ROOT) -> PackageTestTargets:
     """Derive testable lib/bin targets for one local Cargo package.
 
     Cargo's fallback route used to assume every changed package had a library
     and no ordinary binary unit tests.  Read the local manifest and source
     layout instead, including explicit targets and Cargo's autobin conventions.
+    Targets are de-duplicated by the source file they occupy, so an explicit
+    `[[bin]]` pointing into `src/bin/` does not also surface under its file name.
     """
     crate_root = repo_root / "crates" / crate_name
     manifest_path = crate_root / "Cargo.toml"
@@ -150,11 +221,16 @@ def package_test_targets(crate_name: str, repo_root: Path = Path(".")) -> Packag
     explicit_lib = manifest.get("lib")
     if explicit_lib is not None and not isinstance(explicit_lib, dict):
         raise ValueError(f"Cargo manifest for changed crate {crate_name} has an invalid [lib] table")
+    occupied: set[PurePosixPath] = set()
     if isinstance(explicit_lib, dict):
-        has_lib = explicit_lib.get("test") is not False
+        lib_path = _lib_source_path(explicit_lib, crate_name)
+        occupied.add(lib_path)
+        has_lib = explicit_lib.get("test") is not False and (crate_root / lib_path).is_file()
     else:
         autolib = package.get("autolib", True) is not False
         has_lib = autolib and (crate_root / "src" / "lib.rs").is_file()
+        if has_lib:
+            occupied.add(PurePosixPath("src/lib.rs"))
 
     binaries: dict[str, BinaryTestTarget] = {}
     explicit_bins = manifest.get("bin") or []
@@ -163,11 +239,9 @@ def package_test_targets(crate_name: str, repo_root: Path = Path(".")) -> Packag
     for target in explicit_bins:
         if not isinstance(target, dict):
             raise ValueError(f"Cargo manifest for changed crate {crate_name} has an invalid [[bin]] row")
-        if target.get("test") is False:
-            continue
         raw_name = target.get("name")
+        raw_path = target.get("path")
         if raw_name is None:
-            raw_path = target.get("path")
             if raw_path is not None and not isinstance(raw_path, str):
                 raise ValueError(f"Cargo bin path for changed crate {crate_name} must be a string")
             name = _target_name_from_path(raw_path or "src/main.rs", package_name)
@@ -175,21 +249,32 @@ def package_test_targets(crate_name: str, repo_root: Path = Path(".")) -> Packag
             name = raw_name
         else:
             raise ValueError(f"Cargo bin name for changed crate {crate_name} must be non-empty")
+        source = _explicit_bin_source_path(name, raw_path, package_name, crate_root, crate_name)
+        if source is not None:
+            occupied.add(source)
+        if target.get("test") is False:
+            continue
         if name in binaries:
             raise ValueError(f"Cargo manifest for changed crate {crate_name} repeats bin target {name}")
         binaries[name] = BinaryTestTarget(name, _target_features(target))
 
-    if package.get("autobins", True) is not False:
+    if _autobins_default(package, manifest):
         src_root = crate_root / "src"
+        discovered: list[tuple[str, PurePosixPath]] = []
         if (src_root / "main.rs").is_file():
-            binaries.setdefault(package_name, BinaryTestTarget(package_name))
+            discovered.append((package_name, PurePosixPath("src/main.rs")))
         bin_root = src_root / "bin"
         if bin_root.is_dir():
             for entry in sorted(bin_root.iterdir(), key=lambda path: path.name):
                 if entry.is_file() and entry.suffix == ".rs":
-                    binaries.setdefault(entry.stem, BinaryTestTarget(entry.stem))
+                    discovered.append((entry.stem, PurePosixPath(f"src/bin/{entry.name}")))
                 elif entry.is_dir() and (entry / "main.rs").is_file():
-                    binaries.setdefault(entry.name, BinaryTestTarget(entry.name))
+                    discovered.append((entry.name, PurePosixPath(f"src/bin/{entry.name}/main.rs")))
+        for name, source in discovered:
+            if source in occupied or name in binaries:
+                continue
+            occupied.add(source)
+            binaries[name] = BinaryTestTarget(name)
 
     return PackageTestTargets(
         package_name=package_name,
@@ -211,7 +296,7 @@ def binary_target_command(package_name: str, target: BinaryTestTarget) -> str:
 def augment_rust_focused_commands(
     base_commands: list[str],
     paths: list[str],
-    repo_root: Path = Path("."),
+    repo_root: Path = REPO_ROOT,
 ) -> list[str]:
     """Append per-package unit/integration coverage commands to the fallback pack.
 
@@ -241,7 +326,7 @@ def augment_rust_focused_commands(
             continue
         if cmd not in commands:
             commands.append(cmd)
-    test_targets_by_crate = changed_integration_test_targets(paths)
+    test_targets_by_crate = changed_integration_test_targets(paths, repo_root)
     for crate_name in changed_crates(paths):
         targets = package_test_targets(crate_name, repo_root)
         if targets.has_lib:
@@ -420,7 +505,7 @@ def selected_packs(packs: list[dict[str, object]], paths: list[str]) -> list[dic
 def normalize_pack(
     pack: dict[str, object],
     paths: list[str] | None = None,
-    repo_root: Path = Path("."),
+    repo_root: Path = REPO_ROOT,
 ) -> dict[str, object]:
     commands: list[str] = list(pack.get("commands") or [])
     if pack.get("id") == FALLBACK_PACK_ID and paths is not None:

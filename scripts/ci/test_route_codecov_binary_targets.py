@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 import textwrap
 import unittest
@@ -278,6 +281,336 @@ class BinaryTargetRoutingTests(unittest.TestCase):
             commands = self._commands_for(root, "disabled-lib-directory")
 
         self.assertFalse(any(" --lib " in command for command in commands))
+
+
+    def test_explicit_bin_path_claims_its_source_file(self) -> None:
+        """An explicit `[[bin]]` into `src/bin/` must not also autobin its file.
+
+        `crates/perl-corpus` is the live witness: it declares
+        `[[bin]] name = "perl-corpus" path = "src/bin/main.rs"`, and name-only
+        de-duplication invented a second `--bin main` that Cargo does not have.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "claimed-source-directory",
+                """
+                [package]
+                name = "claimed-source"
+                version = "0.0.0"
+                edition = "2024"
+
+                [[bin]]
+                name = "claimed-source"
+                path = "src/bin/main.rs"
+                """,
+                ["src/lib.rs", "src/bin/main.rs", "src/changed.rs"],
+            )
+
+            targets = router.package_test_targets("claimed-source-directory", root)
+            commands = self._commands_for(root, "claimed-source-directory")
+
+        self.assertEqual(["claimed-source"], [target.name for target in targets.binaries])
+        self.assertFalse(any(" --bin main " in command for command in commands))
+
+    def test_pathless_explicit_bin_resolves_its_inferred_source(self) -> None:
+        """A pathless `[[bin]]` claims the `src/bin/<name>.rs` Cargo infers."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "pathless-bin-directory",
+                """
+                [package]
+                name = "pathless-bin"
+                version = "0.0.0"
+                edition = "2024"
+
+                [[bin]]
+                name = "helper"
+                required-features = ["cli"]
+                """,
+                ["src/lib.rs", "src/bin/helper.rs", "src/changed.rs"],
+            )
+
+            targets = router.package_test_targets("pathless-bin-directory", root)
+
+        self.assertEqual(["helper"], [target.name for target in targets.binaries])
+        self.assertEqual(("cli",), targets.binaries[0].required_features)
+
+    def test_pathless_explicit_bin_resolves_nested_main(self) -> None:
+        """Cargo also infers `src/bin/<name>/main.rs` for a pathless binary."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "nested-pathless-directory",
+                """
+                [package]
+                name = "nested-pathless"
+                version = "0.0.0"
+                edition = "2024"
+
+                [[bin]]
+                name = "helper"
+                """,
+                ["src/lib.rs", "src/bin/helper/main.rs", "src/changed.rs"],
+            )
+
+            targets = router.package_test_targets("nested-pathless-directory", root)
+
+        self.assertEqual(["helper"], [target.name for target in targets.binaries])
+
+    def test_test_disabled_explicit_bin_still_claims_its_source(self) -> None:
+        """`test = false` removes the command but must not re-open autobin."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "untested-bin-directory",
+                """
+                [package]
+                name = "untested-bin"
+                version = "0.0.0"
+                edition = "2024"
+
+                [[bin]]
+                name = "untested-bin"
+                path = "src/bin/main.rs"
+                test = false
+                """,
+                ["src/lib.rs", "src/bin/main.rs", "src/changed.rs"],
+            )
+
+            targets = router.package_test_targets("untested-bin-directory", root)
+
+        self.assertEqual([], [target.name for target in targets.binaries])
+
+    def test_edition_2015_manual_target_disables_autobins(self) -> None:
+        """A 2015 package declaring any target turns Cargo auto-discovery off."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "legacy-2015-directory",
+                """
+                [package]
+                name = "legacy-2015"
+                version = "0.0.0"
+                edition = "2015"
+
+                [[bin]]
+                name = "declared"
+                path = "src/declared.rs"
+                """,
+                ["src/lib.rs", "src/declared.rs", "src/bin/undiscovered.rs", "src/changed.rs"],
+            )
+
+            targets = router.package_test_targets("legacy-2015-directory", root)
+
+        self.assertEqual(["declared"], [target.name for target in targets.binaries])
+
+    def test_edition_2015_without_manual_targets_keeps_autobins(self) -> None:
+        """Auto-discovery stays on for a 2015 package with no manual target."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "legacy-2015-auto-directory",
+                """
+                [package]
+                name = "legacy-2015-auto"
+                version = "0.0.0"
+                edition = "2015"
+                """,
+                ["src/lib.rs", "src/bin/discovered.rs", "src/changed.rs"],
+            )
+
+            targets = router.package_test_targets("legacy-2015-auto-directory", root)
+
+        self.assertEqual(["discovered"], [target.name for target in targets.binaries])
+
+    def test_edition_2018_manual_target_keeps_autobins(self) -> None:
+        """The 2015 rule must not leak into later editions."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "modern-manual-directory",
+                """
+                [package]
+                name = "modern-manual"
+                version = "0.0.0"
+                edition = "2018"
+
+                [[bin]]
+                name = "declared"
+                path = "src/declared.rs"
+                """,
+                ["src/lib.rs", "src/declared.rs", "src/bin/discovered.rs", "src/changed.rs"],
+            )
+
+            targets = router.package_test_targets("modern-manual-directory", root)
+
+        self.assertEqual(
+            ["declared", "discovered"], [target.name for target in targets.binaries]
+        )
+
+    def test_explicit_lib_path_is_required_to_exist(self) -> None:
+        """An explicit `[lib]` whose source is absent must not emit `--lib`."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "absent-lib-directory",
+                """
+                [package]
+                name = "absent-lib"
+                version = "0.0.0"
+                edition = "2024"
+
+                [lib]
+                path = "src/library.rs"
+                """,
+                ["src/main.rs", "src/changed.rs"],
+            )
+
+            targets = router.package_test_targets("absent-lib-directory", root)
+
+        self.assertFalse(targets.has_lib)
+        self.assertEqual(["absent-lib"], [target.name for target in targets.binaries])
+
+    def test_explicit_lib_path_claims_a_main_source(self) -> None:
+        """`[lib] path = "src/main.rs"` occupies the file autobins would claim."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "lib-claims-main-directory",
+                """
+                [package]
+                name = "lib-claims-main"
+                version = "0.0.0"
+                edition = "2024"
+
+                [lib]
+                path = "src/main.rs"
+                """,
+                ["src/main.rs", "src/changed.rs"],
+            )
+
+            targets = router.package_test_targets("lib-claims-main-directory", root)
+
+        self.assertTrue(targets.has_lib)
+        self.assertEqual([], [target.name for target in targets.binaries])
+
+    def test_routing_is_stable_from_an_unrelated_working_directory(self) -> None:
+        """Manifest and required-feature lookups must not depend on the cwd.
+
+        The workflow does not guarantee the router runs from the checkout root,
+        and a cwd-relative lookup fails silently: the feature flag disappears
+        and the instrumented command stops matching the real target.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir, tempfile.TemporaryDirectory() as elsewhere:
+            root = Path(temp_dir)
+            self._write_package(
+                root,
+                "cwd-stable-directory",
+                """
+                [package]
+                name = "cwd-stable"
+                version = "0.0.0"
+                edition = "2024"
+
+                [[bin]]
+                name = "cwd-stable"
+                path = "src/main.rs"
+                """,
+                ["src/lib.rs", "src/main.rs", "src/changed.rs"],
+            )
+            gated_test = root / "crates/cwd-stable-directory/tests/gated.rs"
+            gated_test.parent.mkdir(parents=True, exist_ok=True)
+            gated_test.write_text('#![cfg(feature = "integration")]\n', encoding="utf-8")
+            changed = [
+                "crates/cwd-stable-directory/src/changed.rs",
+                "crates/cwd-stable-directory/tests/gated.rs",
+            ]
+
+            original_cwd = Path.cwd()
+            try:
+                os.chdir(elsewhere)
+                selected = router.selected_packs([self._fallback_pack()], changed)
+                commands = router.normalize_pack(selected[0], changed, repo_root=root)["commands"]
+            finally:
+                os.chdir(original_cwd)
+
+        self.assertTrue(any(" --bin cwd-stable " in command for command in commands))
+        self.assertTrue(
+            any("--features integration" in command for command in commands),
+            f"required features were dropped off-root: {commands}",
+        )
+
+
+class WorkspaceTargetOracleTests(unittest.TestCase):
+    """Differential proof against Cargo's own view of the real workspace.
+
+    Fixtures encode what we believe Cargo does; `cargo metadata` reports what it
+    actually does.  Comparing every local crate against that oracle is what
+    caught the `perl-corpus` and `tree-sitter-perl-c` phantom targets, and it
+    keeps catching manifest forms no fixture anticipated.
+    """
+
+    def test_derived_targets_match_cargo_metadata(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        try:
+            completed = subprocess.run(
+                ["cargo", "metadata", "--no-deps", "--format-version", "1", "--offline"],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            self.skipTest(f"cargo metadata is unavailable: {error}")
+        if completed.returncode != 0:
+            self.skipTest(f"cargo metadata failed: {completed.stderr.strip()[-400:]}")
+
+        packages = json.loads(completed.stdout)["packages"]
+        mismatches: list[str] = []
+        compared = 0
+        for package in packages:
+            manifest_path = Path(package["manifest_path"])
+            if manifest_path.parent.parent.name != "crates":
+                continue
+            compared += 1
+            expected_bins = sorted(
+                target["name"]
+                for target in package["targets"]
+                if "bin" in target["kind"] and target.get("test", True)
+            )
+            expected_lib = any(
+                kind in ("lib", "rlib", "proc-macro", "cdylib")
+                for target in package["targets"]
+                if target.get("test", True)
+                for kind in target["kind"]
+            )
+            derived = router.package_test_targets(manifest_path.parent.name, repo_root)
+            actual_bins = sorted(target.name for target in derived.binaries)
+            if (
+                actual_bins != expected_bins
+                or derived.has_lib != expected_lib
+                or derived.package_name != package["name"]
+            ):
+                mismatches.append(
+                    f"{manifest_path.parent.name}: bins {actual_bins} != {expected_bins}, "
+                    f"lib {derived.has_lib} != {expected_lib}"
+                )
+
+        self.assertGreater(compared, 0, "no local crates were compared against cargo metadata")
+        self.assertEqual([], mismatches)
+
 
 
 if __name__ == "__main__":
