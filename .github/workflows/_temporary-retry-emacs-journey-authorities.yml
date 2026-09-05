@@ -1,0 +1,81 @@
+name: Temporary retry Emacs journey authority repair
+
+on:
+  push:
+    branches:
+      - codex/11768-emacs-journeys-r2
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Apply, prove, and publish the authority repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import textwrap
+
+          old_workflow = Path('.github/workflows/_temporary-fix-emacs-journey-authorities.yml')
+          source = old_workflow.read_text()
+          match = re.search(
+              r"python3 - <<'PY'\n(?P<script>.*?)\n          PY\n",
+              source,
+              re.DOTALL,
+          )
+          if match is None:
+              raise SystemExit('could not extract the original repair script')
+          script = textwrap.dedent(match.group('script'))
+
+          brittle = re.compile(
+              r"build_field = '''.*?journeys = journeys\.replace\(build_field, build_field_new\)\n",
+              re.DOTALL,
+          )
+          robust = '''build_marker = "            fixture_owners: SUBJECT_FIXTURE_SUBSTRATE.iter().map(|f| (*f).to_string()).collect(),\\n"
+          if journeys.count(build_marker) != 1:
+              raise SystemExit('cell builder insertion point drifted')
+          journeys = journeys.replace(
+              build_marker,
+              build_marker
+              + "            fixture_set_digest: canonical_subject_manifest_identity_digest()?,\\n",
+          )
+          '''
+          script, replacements = brittle.subn(robust, script, count=1)
+          if replacements != 1:
+              raise SystemExit('could not replace the brittle cell-builder matcher')
+
+          namespace = {'__name__': '__main__'}
+          exec(compile(script, '<extracted-authority-repair>', 'exec'), namespace)
+          PY
+
+          cargo fmt -p xtask
+          cargo test -p xtask --test emacs_host_journeys_contract --locked
+          cargo test -p xtask --lib --locked emacs_host_journeys
+          cargo xtask integration emacs journeys check | tee /tmp/emacs-summary-1.json
+          cargo xtask integration emacs journeys check > /tmp/emacs-summary-2.json
+          cmp /tmp/emacs-summary-1.json /tmp/emacs-summary-2.json
+
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git rm -- \
+            .github/workflows/_temporary-fix-emacs-journey-authorities.yml \
+            .github/workflows/_temporary-retry-emacs-journey-authorities.yml
+          git add -- \
+            xtask/src/emacs_subject_manifest.rs \
+            xtask/src/emacs_host_journeys.rs \
+            xtask/tests/emacs_host_journeys_contract.rs
+          git diff --cached --check
+          git commit -m "fix(emacs): bind cells to real semantic and subject authorities"
+          git push origin HEAD:codex/11768-emacs-journeys-r2
