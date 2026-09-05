@@ -336,6 +336,7 @@ fn test_parser_accuracy_artifact_renders_denominator_and_metric_rows() -> Result
                     reason: "legacy_hash_oracle_untrusted".to_string(),
                     packet_policy: "none".to_string(),
                     floor_eligible: false,
+                    unknown_fields: serde_json::Map::new(),
                 },
             ],
             legacy_population: ParserAccuracyLegacyPopulation {

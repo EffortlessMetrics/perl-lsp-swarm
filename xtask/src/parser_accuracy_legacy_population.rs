@@ -170,6 +170,24 @@ impl LegacyPopulation {
     }
 }
 
+/// The single runtime authority for the canonical population-identity format.
+///
+/// `perl_lsp_rs_core::hashing::sha256_hex` — the only producer of these
+/// identities — emits `sha256:` followed by 64 **lowercase** hex characters,
+/// and `.ci/schemas/parser-accuracy.schema.json` pins the same
+/// `^sha256:[0-9a-f]{64}$`. A validator written as `is_ascii_hexdigit` would
+/// also admit uppercase `A-F`, so an artifact the schema rejects would render
+/// as current status. Both the generator's `validate_legacy_population_evidence`
+/// and the status reader's `trust_disposition_is_fail_closed` call this, so the
+/// runtime has one definition rather than one per consumer.
+#[must_use]
+pub fn is_canonical_population_identity(value: &str) -> bool {
+    let Some(digest) = value.strip_prefix("sha256:") else {
+        return false;
+    };
+    digest.len() == 64 && digest.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 /// Fail-closed population construction errors.
 #[derive(Debug)]
 pub enum LegacyPopulationError {

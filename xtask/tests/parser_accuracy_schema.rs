@@ -105,8 +105,22 @@ fn parser_accuracy_schema_declares_required_contract() -> TestResult {
     }
     assert_eq!(investigation["properties"]["state"]["const"], "investigation_only");
     assert_eq!(investigation["properties"]["evidence_class"]["const"], "investigation_only");
-    assert_eq!(investigation["properties"]["terminal_disposition"]["enum"][0], "not_proven");
-    assert_eq!(investigation["properties"]["packet_policy"]["enum"][0], "none");
+    // Whole-array comparison, not `enum[0]`: indexing the first element passes
+    // even after the vocabulary is widened (adding "trusted" to
+    // `terminal_disposition` to meet #8177's taxonomy, say), because index 0
+    // still reads "not_proven". The negative-control matrix below only proves
+    // *unknown* values are rejected; it cannot see the canonical set growing.
+    // These two vocabularies are closed, exactly like the `const` checks above.
+    assert_eq!(
+        investigation["properties"]["terminal_disposition"]["enum"],
+        serde_json::json!(["not_proven"]),
+        "the investigation terminal-disposition vocabulary must stay closed"
+    );
+    assert_eq!(
+        investigation["properties"]["packet_policy"]["enum"],
+        serde_json::json!(["none"]),
+        "the investigation packet-policy vocabulary must stay closed"
+    );
     assert_eq!(investigation["properties"]["floor_eligible"]["const"], false);
 
     let population = &schema["$defs"]["legacyPopulation"];

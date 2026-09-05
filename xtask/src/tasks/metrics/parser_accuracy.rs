@@ -47,7 +47,8 @@ use crate::tasks::metrics::parser_accuracy_metamorphic_registry;
 use crate::tasks::metrics::ratchet::MetricReceipt;
 use crate::utils::project_root;
 use xtask::parser_accuracy_legacy_population::{
-    LegacyFixtureInput, build_legacy_whitespace_population, legacy_whitespace_case_applies,
+    LegacyFixtureInput, build_legacy_whitespace_population, is_canonical_population_identity,
+    legacy_whitespace_case_applies,
 };
 
 mod failure_packet;
@@ -1111,6 +1112,16 @@ pub fn run(
             artifact.denominator.fixture_count, artifact.denominator.fixture_family_count
         );
         return Ok(());
+    }
+
+    // Publication is gated on the same contract `--check` enforces. A written
+    // artifact is consumed by the status reader and the ratchet, so an invalid
+    // one must never reach disk; previously strict validation was a `--check`
+    // path property only, and constructor drift could publish an artifact the
+    // reader then refuses — or worse, one it renders. `print_summary` stays
+    // ungated: it publishes nothing.
+    if json || export_status_receipts {
+        validate_artifact_contract(&artifact)?;
     }
 
     if json {
@@ -6278,12 +6289,14 @@ fn validate_artifact_contract(artifact: &ParserAccuracyArtifact) -> Result<()> {
 fn validate_legacy_population_evidence(artifact: &ParserAccuracyArtifact) -> Result<()> {
     let population = &artifact.legacy_population;
 
-    let digest = population
-        .population_identity
-        .strip_prefix("sha256:")
-        .ok_or_else(|| eyre!("legacy population identity must be sha256-tagged"))?;
-    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        bail!("legacy population identity digest must be 64 hexadecimal characters");
+    // One runtime authority for the format, shared with the status reader and
+    // matching the schema's `^sha256:[0-9a-f]{64}$`. `is_ascii_hexdigit` would
+    // also admit uppercase `A-F`, which the schema rejects.
+    if !is_canonical_population_identity(&population.population_identity) {
+        bail!(
+            "legacy population identity {} must be sha256: followed by 64 lowercase hexadecimal characters",
+            population.population_identity
+        );
     }
     if population.transformation_profile.is_empty() {
         bail!("legacy population transformation_profile must not be empty");
@@ -6297,9 +6310,19 @@ fn validate_legacy_population_evidence(artifact: &ParserAccuracyArtifact) -> Res
     if population.population_total_count == 0 {
         bail!("legacy population must retain at least one fixture row");
     }
-    if population.population_applied_count + population.population_unclassified_count
-        != population.population_total_count
-    {
+    // Checked: a wrapping sum can forge a closing population, and the plain `+`
+    // aborts a debug build outright on oversized counts.
+    let closed = population
+        .population_applied_count
+        .checked_add(population.population_unclassified_count)
+        .ok_or_else(|| {
+            eyre!(
+                "legacy population counts overflow: applied ({}) plus unclassified ({}) exceeds u64",
+                population.population_applied_count,
+                population.population_unclassified_count
+            )
+        })?;
+    if closed != population.population_total_count {
         bail!(
             "legacy population counts do not close: applied ({}) plus unclassified ({}) must equal total ({})",
             population.population_applied_count,
@@ -6308,7 +6331,15 @@ fn validate_legacy_population_evidence(artifact: &ParserAccuracyArtifact) -> Res
         );
     }
 
-    let mut aggregate_row: Option<&MetricRow> = None;
+    // A retained population that applied to nothing has nothing to observe, so
+    // `investigation_rate` honestly emits the aggregate as `insufficient_data`.
+    // That is a valid run, not a contract violation: rejecting it fails a valid
+    // custom `--manifest` whose fixtures are all excluded by the legacy
+    // whitespace heuristic, and makes `--json` write an artifact this same
+    // validator and the status reader then refuse.
+    let expects_observation = population.population_applied_count > 0;
+    let mut aggregate_investigation_rows: Vec<&MetricRow> = Vec::new();
+    let mut aggregate_insufficient_rows = 0_usize;
     for row in &artifact.metrics {
         match row {
             MetricRow::InvestigationOnly {
@@ -6333,12 +6364,21 @@ fn validate_legacy_population_evidence(artifact: &ParserAccuracyArtifact) -> Res
                             population.transformation_profile
                         );
                     }
-                    aggregate_row = Some(row);
+                    aggregate_investigation_rows.push(row);
                 }
             }
-            MetricRow::Measured { metric, .. } | MetricRow::InsufficientData { metric, .. }
+            MetricRow::InsufficientData { metric, .. }
                 if metric == &population.aggregate_metric =>
             {
+                if expects_observation {
+                    bail!(
+                        "legacy aggregate {metric} is serialized as untyped insufficient evidence while the retained population applied to {} rows; typed investigation evidence is required",
+                        population.population_applied_count
+                    );
+                }
+                aggregate_insufficient_rows += 1;
+            }
+            MetricRow::Measured { metric, .. } if metric == &population.aggregate_metric => {
                 bail!(
                     "legacy aggregate {metric} is serialized as trusted evidence; the retained population requires typed investigation rows"
                 );
@@ -6347,18 +6387,50 @@ fn validate_legacy_population_evidence(artifact: &ParserAccuracyArtifact) -> Res
         }
     }
 
-    let Some(MetricRow::InvestigationOnly { sample_count, .. }) = aggregate_row else {
-        bail!(
-            "retained legacy population declares aggregate {} but no matching investigation row exists",
-            population.aggregate_metric
-        );
-    };
-    if *sample_count != population.population_applied_count {
-        bail!(
-            "aggregate sample count {} does not equal the exact applied-row count {} for the retained population",
-            sample_count,
-            population.population_applied_count
-        );
+    // Exactly one row carries the aggregate. Without uniqueness, two otherwise
+    // valid rows with different values both pass and the reported value is
+    // decided by array order.
+    if expects_observation {
+        let [aggregate_row] = aggregate_investigation_rows.as_slice() else {
+            if aggregate_investigation_rows.is_empty() {
+                bail!(
+                    "retained legacy population declares aggregate {} but no matching investigation row exists",
+                    population.aggregate_metric
+                );
+            }
+            bail!(
+                "retained legacy population declares aggregate {} but {} investigation rows carry it; exactly one is required",
+                population.aggregate_metric,
+                aggregate_investigation_rows.len()
+            );
+        };
+        let MetricRow::InvestigationOnly { sample_count, .. } = aggregate_row else {
+            bail!(
+                "retained legacy population declares aggregate {} but no matching investigation row exists",
+                population.aggregate_metric
+            );
+        };
+        if *sample_count != population.population_applied_count {
+            bail!(
+                "aggregate sample count {} does not equal the exact applied-row count {} for the retained population",
+                sample_count,
+                population.population_applied_count
+            );
+        }
+    } else {
+        if !aggregate_investigation_rows.is_empty() {
+            bail!(
+                "retained legacy population applied to no rows but aggregate {} carries investigation evidence",
+                population.aggregate_metric
+            );
+        }
+        if aggregate_insufficient_rows != 1 {
+            bail!(
+                "retained legacy population applied to no rows so aggregate {} must appear exactly once as insufficient evidence, found {}",
+                population.aggregate_metric,
+                aggregate_insufficient_rows
+            );
+        }
     }
 
     for (floor_metric, _) in SAFETY_FLOOR_METRICS {
@@ -9921,6 +9993,126 @@ sub dynamic_boundary_case {
         );
         assert!(newline_style_invariance_variant("package Demo;\r\n1;\r\n").is_none());
         assert!(newline_style_invariance_variant("print <<'EOF';\nEOF\n").is_none());
+    }
+
+    #[test]
+    fn generator_contract_rejects_forged_or_duplicated_legacy_population_evidence() {
+        // Mirrors the status reader's controls: the generator writes what the
+        // reader consumes, so a shape one accepts and the other refuses is a
+        // contract split that only shows up after publication.
+        let artifact = |population: LegacyPopulationEvidence, metrics: Vec<MetricRow>| {
+            ParserAccuracyArtifact {
+                schema_version: 1,
+                subsystem: "parser_accuracy".to_string(),
+                generated_at: "2026-05-02T00:00:00Z".to_string(),
+                commit: "test".to_string(),
+                cadence: Cadence::Pr,
+                denominator: Denominator::default(),
+                families: Vec::new(),
+                metrics,
+                legacy_population: population,
+                failure_packets: Vec::new(),
+                gold_drift: GoldDrift::default(),
+                metric_runtime: MetricRuntime::default(),
+            }
+        };
+        let aggregate_row = |sample_count: u64, value: f64| MetricRow::InvestigationOnly {
+            metric: LEGACY_WHITESPACE_AGGREGATE_METRIC.to_string(),
+            value,
+            sample_count,
+            transformation_profile: "trailing_horizontal_whitespace.legacy.v1".to_string(),
+            evidence_class: EvidenceClass::InvestigationOnly,
+            terminal_disposition: TerminalDisposition::NotProven,
+            reason: InvestigationReason::LegacyHashOracleUntrusted,
+            packet_policy: PacketPolicy::None,
+            floor_eligible: false,
+        };
+
+        // Positive control: without this the rejections below could all be
+        // failing on an unrelated invariant.
+        let valid = artifact(test_legacy_population(), vec![aggregate_row(2, 0.5)]);
+        assert!(
+            validate_legacy_population_evidence(&valid).is_ok(),
+            "the base artifact must be valid, or these controls prove nothing"
+        );
+
+        // Uppercase digests are not the canonical format the schema pins.
+        let mut uppercase_population = test_legacy_population();
+        uppercase_population.population_identity = format!("sha256:{}", "A".repeat(64));
+        assert!(
+            validate_legacy_population_evidence(&artifact(
+                uppercase_population,
+                vec![aggregate_row(2, 0.5)]
+            ))
+            .is_err(),
+            "an uppercase population digest must be refused"
+        );
+
+        // A population forged to close by wrapping: u64::MAX + 5 wraps to 4,
+        // and the aggregate sample count matches the applied count, so every
+        // other invariant holds and only checked arithmetic can reject it.
+        let mut overflow_population = test_legacy_population();
+        overflow_population.population_total_count = 4;
+        overflow_population.population_applied_count = u64::MAX;
+        overflow_population.population_unclassified_count = 5;
+        assert!(
+            validate_legacy_population_evidence(&artifact(
+                overflow_population,
+                vec![aggregate_row(u64::MAX, 0.5)]
+            ))
+            .is_err(),
+            "counts that overflow must be refused, not wrapped into a closing total"
+        );
+
+        // Two well-formed aggregate rows leave the reported value to array
+        // order.
+        assert!(
+            validate_legacy_population_evidence(&artifact(
+                test_legacy_population(),
+                vec![aggregate_row(2, 0.5), aggregate_row(2, 0.9)]
+            ))
+            .is_err(),
+            "a duplicated aggregate row must be refused"
+        );
+
+        // A retained population that applied to nothing has nothing to observe,
+        // so the honest aggregate is insufficient evidence — a valid run, not a
+        // contract violation.
+        let mut zero_applied = test_legacy_population();
+        zero_applied.population_total_count = 4;
+        zero_applied.population_applied_count = 0;
+        zero_applied.population_unclassified_count = 4;
+        assert!(
+            validate_legacy_population_evidence(&artifact(
+                zero_applied.clone(),
+                vec![insufficient(
+                    LEGACY_WHITESPACE_AGGREGATE_METRIC,
+                    "no retained fixture matched the legacy whitespace profile",
+                )]
+            ))
+            .is_ok(),
+            "a zero-applied population must report rather than fail the run"
+        );
+        // Opposite-direction control: nothing applied means there is nothing to
+        // have investigated.
+        assert!(
+            validate_legacy_population_evidence(&artifact(
+                zero_applied,
+                vec![aggregate_row(2, 0.5)]
+            ))
+            .is_err(),
+            "a zero-applied population must not carry investigation evidence"
+        );
+
+        // And with rows applied, an untyped aggregate stays refused.
+        assert!(
+            validate_legacy_population_evidence(&artifact(
+                test_legacy_population(),
+                vec![insufficient(LEGACY_WHITESPACE_AGGREGATE_METRIC, "not wired yet")]
+            ))
+            .is_err(),
+            "an untyped aggregate must be refused while the population applied to rows"
+        );
     }
 
     #[test]

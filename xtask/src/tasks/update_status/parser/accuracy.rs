@@ -8,7 +8,24 @@ use std::fs;
 use std::path::Path;
 
 use serde::Deserialize;
+use xtask::parser_accuracy_legacy_population::is_canonical_population_identity;
 
+// Strictness here is deliberately per-object, not blanket.
+//
+// `.ci/schemas/parser-accuracy.schema.json` sets `additionalProperties: false`
+// everywhere, but this reader is a *projection*: the artifact carries twelve
+// top-level keys (`commit`, `generated_at`, `gold_drift`, `metric_runtime`
+// besides these) and status rendering needs eight. So the artifact and the
+// family/measured/insufficient rows stay permissive — making them strict would
+// reject every real artifact.
+//
+// The objects this reader models *completely* are strict, because that is where
+// the trust contract lives and where a stray field would smuggle a contradictory
+// claim past the typed checks: `legacy_population` (all seven schema fields) and
+// `denominator` (all thirteen). The investigation row is likewise complete and is
+// enforced through `unknown_fields` below — it cannot use `deny_unknown_fields`
+// because that attribute applies to every variant of an internally tagged enum,
+// including the two that are projections.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct ParserAccuracyArtifactSummary {
     pub(super) schema_version: u32,
@@ -24,6 +41,7 @@ pub(super) struct ParserAccuracyArtifactSummary {
 
 /// Retained identity of the quarantined legacy metamorphic population.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ParserAccuracyLegacyPopulation {
     pub(super) transformation_profile: String,
     pub(super) population_identity: String,
@@ -35,6 +53,7 @@ pub(super) struct ParserAccuracyLegacyPopulation {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ParserAccuracyDenominator {
     pub(super) fixture_count: u64,
     pub(super) fixture_family_count: u64,
@@ -80,6 +99,15 @@ pub(super) enum ParserAccuracyMetricSummary {
         reason: String,
         packet_policy: String,
         floor_eligible: bool,
+        /// Anything the schema's `investigationOnlyMetric` does not permit.
+        ///
+        /// The schema sets `additionalProperties: false` on this variant, so a
+        /// non-empty map is an artifact the schema rejects. Notably `confidence`
+        /// is legal on measured and insufficient rows but not here, so without
+        /// this a hand-edited row could carry a trust signal the contract
+        /// forbids and still render as current status.
+        #[serde(flatten)]
+        unknown_fields: serde_json::Map<String, serde_json::Value>,
     },
 }
 
@@ -109,15 +137,18 @@ pub(super) fn read_parser_accuracy_artifact(root: &Path) -> Option<ParserAccurac
 /// Fail-closed consumption of the typed trust and disposition contract.
 ///
 /// Unknown trust or disposition values, contradictory shapes, identities that
-/// are not sha256-tagged digests, populations whose counts do not close, and
+/// are not canonical sha256 digests, populations whose counts do not close, and
 /// investigation rows that claim floor eligibility or packet emission all
 /// reject the artifact instead of silently rendering trusted accuracy.
+///
+/// The one case that is *not* a rejection is a retained population with zero
+/// applied rows: a manifest whose fixtures are all excluded by the legacy
+/// whitespace heuristic has nothing to observe, so the aggregate is honestly
+/// `insufficient_data` rather than an investigation row. Refusing that shape
+/// would fail a valid no-observation run instead of reporting it.
 fn trust_disposition_is_fail_closed(artifact: &ParserAccuracyArtifactSummary) -> bool {
     let population = &artifact.legacy_population;
-    let Some(digest) = population.population_identity.strip_prefix("sha256:") else {
-        return false;
-    };
-    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if !is_canonical_population_identity(&population.population_identity) {
         return false;
     }
     if population.transformation_profile.is_empty()
@@ -127,13 +158,21 @@ fn trust_disposition_is_fail_closed(artifact: &ParserAccuracyArtifactSummary) ->
     {
         return false;
     }
-    if population.population_applied_count + population.population_unclassified_count
-        != population.population_total_count
-    {
+    // Checked, because these are attacker- or migration-supplied `u64`s: a
+    // wrapping sum can forge a closing population, and in a debug build the
+    // plain `+` aborts status generation outright.
+    let Some(closed) =
+        population.population_applied_count.checked_add(population.population_unclassified_count)
+    else {
+        return false;
+    };
+    if closed != population.population_total_count {
         return false;
     }
 
-    let mut saw_aggregate_investigation = false;
+    let expects_observation = population.population_applied_count > 0;
+    let mut aggregate_investigation_rows = 0_usize;
+    let mut aggregate_insufficient_rows = 0_usize;
     for metric in &artifact.metrics {
         match metric {
             ParserAccuracyMetricSummary::InvestigationOnly {
@@ -146,7 +185,13 @@ fn trust_disposition_is_fail_closed(artifact: &ParserAccuracyArtifactSummary) ->
                 reason,
                 packet_policy,
                 floor_eligible,
+                unknown_fields,
             } => {
+                // The schema forbids extra properties on this variant, so an
+                // artifact carrying any is one the schema rejects.
+                if !unknown_fields.is_empty() {
+                    return false;
+                }
                 if evidence_class != "investigation_only"
                     || terminal_disposition != "not_proven"
                     || packet_policy != "none"
@@ -164,11 +209,24 @@ fn trust_disposition_is_fail_closed(artifact: &ParserAccuracyArtifactSummary) ->
                     if *sample_count != population.population_applied_count {
                         return false;
                     }
-                    saw_aggregate_investigation = true;
+                    aggregate_investigation_rows += 1;
                 }
             }
+            // The aggregate may be `insufficient_data` only when the retained
+            // population applied to nothing. With applied rows present, an
+            // untyped aggregate is the exact conflation this contract exists to
+            // reject.
+            ParserAccuracyMetricSummary::InsufficientData { metric, .. }
+                if metric == &population.aggregate_metric =>
+            {
+                if expects_observation {
+                    return false;
+                }
+                aggregate_insufficient_rows += 1;
+            }
+            // A measured aggregate is trusted accuracy by another name, at any
+            // applied count.
             ParserAccuracyMetricSummary::Measured { metric, .. }
-            | ParserAccuracyMetricSummary::InsufficientData { metric, .. }
                 if metric == &population.aggregate_metric =>
             {
                 return false;
@@ -177,7 +235,15 @@ fn trust_disposition_is_fail_closed(artifact: &ParserAccuracyArtifactSummary) ->
             | ParserAccuracyMetricSummary::InsufficientData { .. } => {}
         }
     }
-    saw_aggregate_investigation
+
+    // Exactly one row carries the aggregate. Without the uniqueness check two
+    // otherwise-valid rows with different values both pass and the rendered
+    // status is decided by array order.
+    if expects_observation {
+        aggregate_investigation_rows == 1
+    } else {
+        aggregate_investigation_rows == 0 && aggregate_insufficient_rows == 1
+    }
 }
 
 pub(super) fn parser_accuracy_rows(artifact: Option<&ParserAccuracyArtifactSummary>) -> String {
@@ -344,8 +410,43 @@ fn render_parser_accuracy_metric(metric: &ParserAccuracyMetricSummary) -> String
 mod tests {
     use super::{
         ParserAccuracyArtifactSummary, ParserAccuracyLegacyPopulation, ParserAccuracyMetricSummary,
-        parser_accuracy_metric_summary, trust_disposition_is_fail_closed,
+        parser_accuracy_metric_summary, read_parser_accuracy_artifact,
+        trust_disposition_is_fail_closed,
     };
+
+    /// The advertised example artifact must be consumable by the production reader.
+    ///
+    /// The schema suite proves the fixture is *shape*-valid, which is a weaker
+    /// claim: the fixture previously carried both an `investigation_only` and a
+    /// stale `insufficient_data` row for `whitespace_invariance_rate`, passing
+    /// the schema while the runtime validators rejected the duplicate. So the
+    /// documented valid example could not be read by the code that reads real
+    /// artifacts, and the negative-control suite rested on a contradictory
+    /// input. This runs the fixture through the real entry point.
+    #[test]
+    fn example_artifact_is_consumable_by_the_production_reader() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/parser-accuracy/example-artifact.json");
+        let raw = std::fs::read_to_string(&fixture)
+            .unwrap_or_else(|error| panic!("example artifact must be readable: {error}"));
+
+        let Ok(root) = tempfile::tempdir() else {
+            panic!("temp root must be creatable");
+        };
+        let metrics_dir = root.path().join("target/metrics");
+        if let Err(error) = std::fs::create_dir_all(&metrics_dir) {
+            panic!("metrics directory must be creatable: {error}");
+        }
+        if let Err(error) = std::fs::write(metrics_dir.join("parser_accuracy.json"), &raw) {
+            panic!("example artifact must be writable into the temp root: {error}");
+        }
+
+        let artifact = read_parser_accuracy_artifact(root.path());
+        assert!(
+            artifact.is_some(),
+            "the advertised example artifact must load through the production reader"
+        );
+    }
 
     fn investigation_row(
         metric: &str,
@@ -383,6 +484,7 @@ mod tests {
             reason: "legacy_hash_oracle_untrusted".to_string(),
             packet_policy: packet_policy.to_string(),
             floor_eligible,
+            unknown_fields: serde_json::Map::new(),
         }
     }
 
@@ -468,7 +570,41 @@ mod tests {
 
     #[test]
     fn fail_closed_reader_rejects_missing_or_stale_population_evidence() {
-        let artifact_json = |legacy_population: serde_json::Value| {
+        // The base artifact is deliberately VALID and asserted so below. Before
+        // this, the base carried no row for the aggregate metric at all, so
+        // `trust_disposition_is_fail_closed` returned false for every case in
+        // this test whether or not the mutation under test was present — the
+        // controls could not discriminate.
+        let artifact_json = |legacy_population: serde_json::Value,
+                             extra_metrics: Vec<serde_json::Value>| {
+            let mut metrics = vec![
+                serde_json::json!({
+                    "state": "insufficient_data",
+                    "metric": "line_construct_f1",
+                    "reason": "line-level gold scorer is not wired yet",
+                    "sample_count": 0,
+                    "confidence": "low",
+                }),
+                serde_json::json!({
+                    "state": "investigation_only",
+                    "metric": "whitespace_invariance_rate",
+                    "value": 0.5,
+                    // Tracks the population block, so a control that mutates
+                    // only the counts is not also failing the applied-count
+                    // check and thereby proving nothing about its own subject.
+                    "sample_count": legacy_population
+                        .get("population_applied_count")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(2),
+                    "transformation_profile": "trailing_horizontal_whitespace.legacy.v1",
+                    "evidence_class": "investigation_only",
+                    "terminal_disposition": "not_proven",
+                    "reason": "legacy_hash_oracle_untrusted",
+                    "packet_policy": "none",
+                    "floor_eligible": false,
+                }),
+            ];
+            metrics.extend(extra_metrics);
             serde_json::json!({
                 "schema_version": 1,
                 "subsystem": "parser_accuracy",
@@ -492,13 +628,7 @@ mod tests {
                     "family": "packages",
                     "fixture_count": 4,
                 }],
-                "metrics": [{
-                    "state": "insufficient_data",
-                    "metric": "line_construct_f1",
-                    "reason": "line-level gold scorer is not wired yet",
-                    "sample_count": 0,
-                    "confidence": "low",
-                }],
+                "metrics": metrics,
                 "legacy_population": legacy_population,
                 "failure_packets": [],
                 "gold_drift": {},
@@ -525,47 +655,245 @@ mod tests {
             }
             base
         };
+        let parse = |raw: &str| -> ParserAccuracyArtifactSummary {
+            serde_json::from_str(raw)
+                .expect("artifact with a well-shaped population must deserialize")
+        };
+
+        // Positive control. Without this every assertion below could pass
+        // against a base that was already failing for an unrelated reason.
+        let valid = artifact_json(population_json(serde_json::json!({})), Vec::new());
+        assert!(
+            trust_disposition_is_fail_closed(&parse(&valid)),
+            "the base artifact must be valid, or the negative controls prove nothing"
+        );
 
         // A missing population block must not deserialize to a readable artifact.
-        let missing = artifact_json(serde_json::json!({}));
+        let missing = artifact_json(serde_json::json!({}), Vec::new());
         assert!(
             serde_json::from_str::<ParserAccuracyArtifactSummary>(&missing).is_err(),
             "artifact without retained population evidence must fail closed"
         );
 
         // Counts that do not close over retained rows reject the artifact.
-        let unclosed = artifact_json(population_json(serde_json::json!({
-            "population_unclassified_count": 1,
-        })));
-        let unclosed: ParserAccuracyArtifactSummary = serde_json::from_str(&unclosed)
-            .expect("artifact with a well-shaped population must deserialize");
+        let unclosed = artifact_json(
+            population_json(serde_json::json!({ "population_unclassified_count": 1 })),
+            Vec::new(),
+        );
         assert!(
-            !trust_disposition_is_fail_closed(&unclosed),
+            !trust_disposition_is_fail_closed(&parse(&unclosed)),
             "population counts that do not close must fail closed"
         );
 
         // An identity that is not a sha256-tagged digest rejects the artifact.
-        let untagged = artifact_json(population_json(serde_json::json!({
-            "population_identity": "legacy-digest",
-        })));
-        let untagged: ParserAccuracyArtifactSummary = serde_json::from_str(&untagged)
-            .expect("artifact with a well-shaped population must deserialize");
+        let untagged = artifact_json(
+            population_json(serde_json::json!({ "population_identity": "legacy-digest" })),
+            Vec::new(),
+        );
         assert!(
-            !trust_disposition_is_fail_closed(&untagged),
+            !trust_disposition_is_fail_closed(&parse(&untagged)),
             "an untagged population identity must fail closed"
         );
 
-        // A zero population is not a valid retained population.
-        let empty = artifact_json(population_json(serde_json::json!({
-            "population_total_count": 0,
-            "population_applied_count": 0,
-            "population_unclassified_count": 0,
-        })));
-        let empty: ParserAccuracyArtifactSummary = serde_json::from_str(&empty)
-            .expect("artifact with a well-shaped population must deserialize");
+        // Uppercase hex is not the canonical format. The schema pins
+        // `^sha256:[0-9a-f]{64}$`, so an `is_ascii_hexdigit` check would admit
+        // an artifact the schema rejects.
+        let uppercase = artifact_json(
+            population_json(serde_json::json!({
+                "population_identity": format!("sha256:{}", "A".repeat(64)),
+            })),
+            Vec::new(),
+        );
         assert!(
-            !trust_disposition_is_fail_closed(&empty),
+            !trust_disposition_is_fail_closed(&parse(&uppercase)),
+            "an uppercase population digest must fail closed"
+        );
+        let mixed_case = artifact_json(
+            population_json(serde_json::json!({
+                "population_identity": format!("sha256:{}{}", "A", "a".repeat(63)),
+            })),
+            Vec::new(),
+        );
+        assert!(
+            !trust_disposition_is_fail_closed(&parse(&mixed_case)),
+            "a single uppercase digit in the digest must fail closed"
+        );
+
+        // Counts that overflow u64 must be refused, not wrapped into a total
+        // that closes and not left to abort a debug build.
+        //
+        // This is a *forged* population: `u64::MAX + 5` wraps to 4, which
+        // matches the declared total, and the aggregate row's sample count is
+        // set to the same `u64::MAX` so the applied-count check agrees too.
+        // Every other invariant holds, so only the checked addition can reject
+        // it — with `wrapping_add` this artifact renders as current status.
+        let overflow = artifact_json(
+            population_json(serde_json::json!({
+                "population_total_count": 4,
+                "population_applied_count": u64::MAX,
+                "population_unclassified_count": 5,
+            })),
+            Vec::new(),
+        );
+        assert!(
+            !trust_disposition_is_fail_closed(&parse(&overflow)),
+            "population counts that overflow must fail closed"
+        );
+
+        // Two rows carrying the aggregate leave the reported value to array
+        // order. Both rows here are individually well formed.
+        let duplicate = artifact_json(
+            population_json(serde_json::json!({})),
+            vec![serde_json::json!({
+                "state": "investigation_only",
+                "metric": "whitespace_invariance_rate",
+                "value": 0.9,
+                "sample_count": 2,
+                "transformation_profile": "trailing_horizontal_whitespace.legacy.v1",
+                "evidence_class": "investigation_only",
+                "terminal_disposition": "not_proven",
+                "reason": "legacy_hash_oracle_untrusted",
+                "packet_policy": "none",
+                "floor_eligible": false,
+            })],
+        );
+        assert!(
+            !trust_disposition_is_fail_closed(&parse(&duplicate)),
+            "a duplicated aggregate row must fail closed"
+        );
+
+        // The schema forbids extra properties on an investigation row.
+        // `confidence` is legal on measured and insufficient rows but not here,
+        // so it is the exact trust signal this contract must not admit.
+        let stray_field = artifact_json(
+            population_json(serde_json::json!({
+                "aggregate_metric": "comment_invariance_rate",
+            })),
+            vec![serde_json::json!({
+                "state": "investigation_only",
+                "metric": "comment_invariance_rate",
+                "value": 0.5,
+                "sample_count": 2,
+                "transformation_profile": "trailing_horizontal_whitespace.legacy.v1",
+                "evidence_class": "investigation_only",
+                "terminal_disposition": "not_proven",
+                "reason": "legacy_hash_oracle_untrusted",
+                "packet_policy": "none",
+                "floor_eligible": false,
+                "confidence": "high",
+            })],
+        );
+        assert!(
+            !trust_disposition_is_fail_closed(&parse(&stray_field)),
+            "an investigation row carrying a schema-forbidden field must fail closed"
+        );
+
+        // A zero population is not a valid retained population.
+        let empty = artifact_json(
+            population_json(serde_json::json!({
+                "population_total_count": 0,
+                "population_applied_count": 0,
+                "population_unclassified_count": 0,
+            })),
+            Vec::new(),
+        );
+        assert!(
+            !trust_disposition_is_fail_closed(&parse(&empty)),
             "an empty retained population must fail closed"
+        );
+    }
+
+    #[test]
+    fn zero_applied_population_reports_instead_of_failing() {
+        // A retained population whose fixtures are all excluded by the legacy
+        // whitespace heuristic has nothing to observe, so the generator emits
+        // the aggregate as `insufficient_data`. That is a valid no-observation
+        // run: rejecting it would fail a valid custom `--manifest` and make
+        // `--json` write an artifact this reader then refuses.
+        let artifact = |aggregate_row: serde_json::Value| {
+            serde_json::json!({
+                "schema_version": 1,
+                "subsystem": "parser_accuracy",
+                "cadence": "pr",
+                "denominator": {
+                    "fixture_count": 4,
+                    "fixture_family_count": 1,
+                    "scored_line_count": 4,
+                    "scored_symbol_count": 2,
+                    "fully_labeled_region_count": 1,
+                    "partial_labeled_region_count": 1,
+                    "unknown_region_count": 1,
+                    "negative_region_count": 1,
+                    "dynamic_boundary_case_count": 0,
+                    "unsupported_construct_case_count": 0,
+                    "real_project_file_count": 0,
+                    "generated_fixture_count": 0,
+                    "hand_labeled_fixture_count": 4,
+                },
+                "families": [{ "family": "packages", "fixture_count": 4 }],
+                "metrics": [aggregate_row],
+                "legacy_population": {
+                    "transformation_profile": "trailing_horizontal_whitespace.legacy.v1",
+                    "population_identity": format!("sha256:{}", "a".repeat(64)),
+                    "aggregate_metric": "whitespace_invariance_rate",
+                    "population_total_count": 4,
+                    "population_applied_count": 0,
+                    "population_unclassified_count": 4,
+                    "manifest_schema_version": 1,
+                },
+                "failure_packets": [],
+                "gold_drift": {},
+                "metric_runtime": {},
+            })
+            .to_string()
+        };
+        let parse = |raw: &str| -> ParserAccuracyArtifactSummary {
+            serde_json::from_str(raw).expect("well-shaped artifact must deserialize")
+        };
+
+        let insufficient = artifact(serde_json::json!({
+            "state": "insufficient_data",
+            "metric": "whitespace_invariance_rate",
+            "reason": "no retained fixture matched the legacy whitespace profile",
+            "sample_count": 0,
+            "confidence": "low",
+        }));
+        assert!(
+            trust_disposition_is_fail_closed(&parse(&insufficient)),
+            "a zero-applied population must report, not fail the artifact"
+        );
+
+        // Opposite-direction control: with nothing applied there is nothing to
+        // have investigated, so an investigation row is a claim about evidence
+        // that does not exist.
+        let investigated = artifact(serde_json::json!({
+            "state": "investigation_only",
+            "metric": "whitespace_invariance_rate",
+            "value": 0.5,
+            "sample_count": 2,
+            "transformation_profile": "trailing_horizontal_whitespace.legacy.v1",
+            "evidence_class": "investigation_only",
+            "terminal_disposition": "not_proven",
+            "reason": "legacy_hash_oracle_untrusted",
+            "packet_policy": "none",
+            "floor_eligible": false,
+        }));
+        assert!(
+            !trust_disposition_is_fail_closed(&parse(&investigated)),
+            "a zero-applied population must not carry investigation evidence"
+        );
+
+        // And a measured aggregate stays trusted accuracy by another name at
+        // any applied count.
+        let measured = artifact(serde_json::json!({
+            "state": "measured",
+            "metric": "whitespace_invariance_rate",
+            "value": 1.0,
+            "sample_count": 4,
+        }));
+        assert!(
+            !trust_disposition_is_fail_closed(&parse(&measured)),
+            "a measured aggregate must fail closed at any applied count"
         );
     }
 

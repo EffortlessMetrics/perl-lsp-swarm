@@ -1464,13 +1464,6 @@
     },
     {
       "state": "insufficient_data",
-      "metric": "whitespace_invariance_rate",
-      "reason": "metamorphic whitespace fixtures are not wired yet",
-      "sample_count": 0,
-      "confidence": "low"
-    },
-    {
-      "state": "insufficient_data",
       "metric": "comment_invariance_rate",
       "reason": "metamorphic comment fixtures are not wired yet",
       "sample_count": 0,
