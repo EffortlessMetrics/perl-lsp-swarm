@@ -144,11 +144,7 @@ impl Lowerer {
             }
             HirKind::DerefExpr(deref) => self.lower_deref(item, deref),
             HirKind::DynamicBoundary(boundary) => {
-                self.lower_dynamic_boundary(
-                    item,
-                    map_boundary_kind(boundary.kind),
-                    boundary.reason.clone(),
-                );
+                self.lower_dynamic_boundary(item, boundary.kind, boundary.reason.clone());
             }
             HirKind::LiteralExpr(literal) => self.lower_literal(item, literal.kind),
             HirKind::RegexExpr(regex) => self.lower_regex_literal(item, regex),
@@ -388,17 +384,24 @@ impl Lowerer {
     fn lower_dynamic_boundary(
         &mut self,
         item: &HirItem,
-        kind: PirDynamicBoundaryKind,
+        hir_kind: DynamicBoundaryKind,
         reason: String,
     ) -> PirId {
+        let kind = map_boundary_kind(hir_kind);
         let anchor = PirSourceAnchor::dynamic_boundary(item.range, item.id);
-        let id = self.push_node(
-            item,
-            anchor,
-            PirOperation::DynamicBoundary { kind, reason },
-            PirContext::Unknown,
-            None,
-        );
+        let operation = PirOperation::DynamicBoundary { kind, reason };
+        let id = if matches!(
+            hir_kind,
+            DynamicBoundaryKind::TiedPlaceBinding | DynamicBoundaryKind::TiedPlaceRelease
+        ) {
+            // Tie and untie are the post-order boundary forms in flat HIR:
+            // their operands precede the hidden dispatch boundary. When one is
+            // nested, splice that boundary before the already-lowered consumer
+            // without changing adjacency for the pre-order boundary families.
+            self.push_node_maybe_operand(item, anchor, operation, None)
+        } else {
+            self.push_node(item, anchor, operation, PirContext::Unknown, None)
+        };
         // Control may not return through a dynamic boundary; record the exit
         // edge instead of dropping it.
         self.edges.push(PirEdge { from: id, to: None, kind: PirEdgeKind::DynamicExit });
@@ -726,6 +729,14 @@ fn map_boundary_kind(kind: DynamicBoundaryKind) -> PirDynamicBoundaryKind {
         DynamicBoundaryKind::Autoload => PirDynamicBoundaryKind::Autoload,
         DynamicBoundaryKind::SymbolicReferenceDeref => PirDynamicBoundaryKind::SymbolicReference,
         DynamicBoundaryKind::EmbeddedRegexCode => PirDynamicBoundaryKind::EmbeddedRegexCode,
+        // Tie/untie reach PIR as unclassified boundaries on purpose. The
+        // boundary itself is real — control leaves through hidden TIE*/UNTIE
+        // dispatch — so it must not be dropped, but PIR has no tied-place
+        // concept to classify it with yet. Giving it one is #6683's work, not
+        // this mapping's; `Unknown` states exactly what is known today.
+        DynamicBoundaryKind::TiedPlaceBinding | DynamicBoundaryKind::TiedPlaceRelease => {
+            PirDynamicBoundaryKind::Unknown
+        }
     }
 }
 

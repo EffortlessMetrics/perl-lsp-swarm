@@ -713,6 +713,69 @@ impl Lowerer {
                 }
                 self.visit_children(node, confidence);
             }
+            // `tie`/`untie` change what a place *is*. After a tie, ordinary-looking
+            // reads and writes of the target dispatch to hidden TIE* methods, so
+            // flat HIR must not present the place as ordinary storage.
+            //
+            // Children are traversed *before* the boundary is pushed, unlike the
+            // pre-order shape used elsewhere in this lowerer. That is deliberate:
+            // Perl evaluates the target, the class expression, and the constructor
+            // arguments first, and only then dispatches the hidden TIE* method.
+            // `pir::lower` turns consecutive items into `Fallthrough` edges, so
+            // pushing the boundary first would make it fall through into its own
+            // arguments and assert an evaluation order Perl does not have. The
+            // boundary belongs at the hidden dispatch point, after the operands.
+            //
+            // The reasons are deliberately constant and do not name the tie class.
+            // Modeling the tied place identity, the hidden constructor dispatch,
+            // and the tied access classes belongs to #6683; a class name embedded
+            // in prose here would imply a machine-readable fact this slice has not
+            // established.
+            NodeKind::Tie { .. } => {
+                // Capture the tie *site's* context before traversing. An operand
+                // can contain a no-block `package Foo;` (legal inside a `do`
+                // block), which mutates `package_context` and leaves an unpopped
+                // package scope behind. Reading the context after traversal would
+                // then attribute the boundary to the operand's package and scope
+                // rather than the one the tie statement actually sits in.
+                let site_package = self.package_context.clone();
+                let site_scope = self.current_scope();
+                self.visit_children(node, confidence);
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::DynamicBoundary(DynamicBoundary {
+                        kind: DynamicBoundaryKind::TiedPlaceBinding,
+                        reason: "tie binds the place to a tie class; subsequent access \
+                                 dispatches to hidden TIE* methods"
+                            .to_string(),
+                    }),
+                    site_package,
+                    Some(site_scope),
+                );
+            }
+            NodeKind::Untie { .. } => {
+                // Same site-context capture as `Tie` above: the target expression
+                // may carry a package declaration that must not be attributed to
+                // the untie boundary.
+                let site_package = self.package_context.clone();
+                let site_scope = self.current_scope();
+                self.visit_children(node, confidence);
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::DynamicBoundary(DynamicBoundary {
+                        kind: DynamicBoundaryKind::TiedPlaceRelease,
+                        reason: "untie releases a tied place; hidden UNTIE/DESTROY effects \
+                                 and the resulting storage semantics are not modeled"
+                            .to_string(),
+                    }),
+                    site_package,
+                    Some(site_scope),
+                );
+            }
             NodeKind::Regex { pattern, replacement, modifiers, has_embedded_code } => {
                 self.push_item(
                     node,

@@ -40,7 +40,8 @@ Initial current-main ownership and stage-state seed for the compiler frontier; n
 | --- | --- | ---: |
 | Parser / AST | `not_applicable` | 1 |
 | Parser / AST | `parsed` | 27 |
-| Flat HIR | `absent` | 16 |
+| Flat HIR | `absent` | 14 |
+| Flat HIR | `boundary` | 2 |
 | Flat HIR | `bridge` | 1 |
 | Flat HIR | `modeled` | 8 |
 | Flat HIR | `not_applicable` | 1 |
@@ -78,8 +79,8 @@ Initial current-main ownership and stage-state seed for the compiler frontier; n
 | `control.postfix_modifier` | `StatementModifier` | `parsed` | `modeled` | `modeled` | `boundary` | `not_applicable` | `absent` | `missing` | `missing` | `missing` | `fallback_only` | #4886 |
 | `control.when` | `When` | `parsed` | `absent` | `opaque` | `absent` | `boundary` | `absent` | `missing` | `missing` | `missing` | `ineligible` | #6674 |
 | `declarations.nested_variable_list` | `NestedVariableList` | `parsed` | `absent` | `bridge` | `boundary` | `not_applicable` | `absent` | `missing` | `missing` | `missing` | `fallback_only` | #6659 |
-| `dynamic.tie` | `Tie` | `parsed` | `absent` | `opaque` | `absent` | `not_applicable` | `boundary` | `missing` | `missing` | `missing` | `ineligible` | #6683 |
-| `dynamic.untie` | `Untie` | `parsed` | `absent` | `opaque` | `absent` | `not_applicable` | `boundary` | `missing` | `missing` | `missing` | `ineligible` | #6683 |
+| `dynamic.tie` | `Tie` | `parsed` | `boundary` | `opaque` | `absent` | `not_applicable` | `boundary` | `missing` | `missing` | `missing` | `ineligible` | #6683 |
+| `dynamic.untie` | `Untie` | `parsed` | `boundary` | `opaque` | `absent` | `not_applicable` | `boundary` | `missing` | `missing` | `missing` | `ineligible` | #6683 |
 | `exceptions.defer` | `Defer` | `parsed` | `modeled` | `opaque` | `boundary` | `not_applicable` | `absent` | `missing` | `missing` | `missing` | `ineligible` | #6661 |
 | `exceptions.try` | `Try` | `parsed` | `modeled` | `opaque` | `boundary` | `not_applicable` | `absent` | `missing` | `missing` | `missing` | `ineligible` | #6661 |
 | `formats.declaration` | `Format` | `parsed` | `skipped` | `not_applicable` | `not_applicable` | `boundary` | `absent` | `missing` | `missing` | `missing` | `ineligible` | #6675 |
@@ -109,8 +110,8 @@ Initial current-main ownership and stage-state seed for the compiler frontier; n
 - **`control.postfix_modifier` (#4886):** Flat/body shells exist; canonical PIR branch/loop edges and loop-control composition remain spec-gated.
 - **`control.when` (#6674):** Arm ordering, topicalized comparison, and version-specific smartmatch behavior are absent.
 - **`declarations.nested_variable_list` (#6659):** Parent declaration traversal retains entries, but no canonical nested-list identity or place graph is proven.
-- **`dynamic.tie` (#6683):** Tie lifecycle, target place, hidden method effects, and capability boundaries are not represented.
-- **`dynamic.untie` (#6683):** Untie and tied-place lifetime/destructor consequences are not represented.
+- **`dynamic.tie` (#6683):** Flat HIR marks the tie site itself with DynamicBoundary(TiedPlaceBinding), emitted after the operands. When tie is nested in another flat-HIR expression, flat PIR splices that boundary before the consuming operation while preserving the conservative DynamicExit edge. Canonical PIR-A lowers from the body arenas, where the construct is still an opaque call, so PIR-A carries no tie boundary. Only the binding site is marked: subsequent reads and writes of the tied place remain indistinguishable from ordinary storage. Tie lifecycle, target place identity, hidden TIE* method effects, and capability boundaries are not represented.
+- **`dynamic.untie` (#6683):** Flat HIR marks the untie site itself with DynamicBoundary(TiedPlaceRelease), emitted after the target expression. When untie is nested in another flat-HIR expression, flat PIR splices that boundary before the consuming operation while preserving the conservative DynamicExit edge. Canonical PIR-A lowers from the body arenas, where the construct is still an opaque call, so PIR-A carries no untie boundary. Only the release site is marked: the tied place's storage character before and after it is not tracked. Tied-place lifetime and hidden UNTIE/DESTROY consequences are not represented.
 - **`exceptions.defer` (#6661):** A flat marker exists; registration order and cleanup obligations on every exit path are not modeled.
 - **`exceptions.try` (#6661):** A flat shell exists; exception regions, handlers, bindings, and exceptional CFG are not canonical.
 - **`formats.declaration` (#6675):** Scope/stash metadata exists; specialized format source, slot identity, and execution capability remain incomplete.

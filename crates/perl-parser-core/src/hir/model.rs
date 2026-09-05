@@ -3436,6 +3436,14 @@ pub enum DynamicBoundaryKind {
     /// inline `(?{...})`/`(??{...})` pattern block, or (for substitution) an
     /// `e`/`ee` modifier that evaluates the replacement string as Perl code.
     EmbeddedRegexCode,
+    /// `tie` binds a place to a tie class. The binding runs a hidden
+    /// `TIESCALAR`/`TIEARRAY`/`TIEHASH`/`TIEHANDLE` constructor, and from
+    /// here on every read, write, iteration, and destruction of that place
+    /// dispatches to hidden methods rather than touching ordinary storage.
+    TiedPlaceBinding,
+    /// `untie` releases a tied place. The release may run hidden `UNTIE` and
+    /// `DESTROY` methods, and the place's storage semantics change again.
+    TiedPlaceRelease,
 }
 
 /// Conditional-branch shell payload.
