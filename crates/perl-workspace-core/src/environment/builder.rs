@@ -1201,6 +1201,9 @@ mod tests {
         // It is an accepted authority that contributes no search path — the receipt
         // exists precisely so that "enabled and empty" is readable, not inferred.
         assert_eq!(enabled_empty.active_include_entries().count(), 0);
+        // An accepted input that contributes no include entry must still be a
+        // valid snapshot, not merely a buildable one.
+        enabled_empty.validate()?;
 
         let not_supplied = declare(Perl5LibDeclaration::NotSupplied).compile()?;
         let disabled = declare(Perl5LibDeclaration::Disabled {
@@ -1258,6 +1261,7 @@ mod tests {
             "a probe that ran and returned nothing owes exactly one selected receipt"
         );
         assert_eq!(available_empty.active_include_entries().count(), 0);
+        available_empty.validate()?;
         // A successful-but-empty probe is not a degraded surface, so it must not
         // manufacture a limitation the way `ProbeUnavailable` legitimately does.
         assert!(
