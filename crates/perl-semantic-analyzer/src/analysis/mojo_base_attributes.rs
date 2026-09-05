@@ -317,12 +317,27 @@ impl WalkState<'_> {
                 self.walk_deferring(node, current_package, true);
                 return;
             }
-            // A block passed to a function is a callback body: `map`, `grep`,
-            // `sort` and the List::Util family all run it once per element, so
-            // a `has` inside one runs zero or many times rather than exactly
-            // once. Keying on the block's *position* — an argument of a call —
-            // rather than on a list of known function names keeps this correct
-            // for any block-taking function, including user-defined ones.
+            // A block passed to a function is treated as a callback body:
+            // `map`, `grep`, `sort` and the List::Util family all run it once
+            // per element, so a `has` inside one runs zero or many times
+            // rather than exactly once.
+            //
+            // **Documented limitation.** Whether braces after a function name
+            // are a deferred callback or an immediately-evaluated hash
+            // constructor depends on the callee's prototype, verified under
+            // `perl`: `f { ... }` on a plain sub evaluates the braces at once
+            // and passes a HASH, while `g(&@) { ... }` defers them. The parser
+            // emits the identical `FunctionCall` → `Block` shape for both, and
+            // the prototype is not in this AST — the sub may be imported from
+            // another file — so the two cannot be told apart here.
+            //
+            // Deferring both is the deliberate choice, because the two errors
+            // are not equally bad. Deferring an immediate hash omits an
+            // accessor that exists; descending a real callback publishes one
+            // that does not, and this producer's documented bias is to omit
+            // rather than invent. Keying on a name list of known callbacks
+            // would invert that, over-reporting for every user-defined
+            // `(&@)` function.
             NodeKind::FunctionCall { .. } => {
                 for child in node.children() {
                     if matches!(child.kind, NodeKind::Block { .. }) {

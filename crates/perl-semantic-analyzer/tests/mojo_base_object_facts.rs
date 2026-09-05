@@ -854,3 +854,28 @@ fn an_odd_option_tail_keeps_the_declared_default() {
     let facts = only_facts(code);
     assert_eq!(member_names(&facts), ["name"]);
 }
+
+#[test]
+fn a_brace_argument_is_deferred_even_when_it_may_be_an_immediate_hash() {
+    // Pins a deliberate under-report, so it stays a known limitation rather
+    // than drifting silently.
+    //
+    // Under `perl`, braces after a plain sub are an immediately-evaluated hash
+    // constructor, while braces after a `(&@)`-prototyped sub are a deferred
+    // callback. The parser emits the identical `FunctionCall` -> `Block` shape
+    // for both and the prototype is not available here, so the two cannot be
+    // distinguished. Both are deferred: omitting an accessor that exists is
+    // recoverable, publishing one that cannot exist is not.
+    let code = concat!(
+        "package App;\n",
+        "use Mojo::Base -base;\n",
+        "some_function { has 'maybe_immediate'; };\n",
+        "has 'always';\n",
+    );
+    let facts = only_facts(code);
+    assert_eq!(
+        member_names(&facts),
+        ["always"],
+        "an ambiguous brace argument is deferred rather than guessed either way"
+    );
+}
