@@ -49,19 +49,25 @@ pub const REQUIRED_FILE_FAMILIES: &[(&str, &str)] = &[
     ("template.tt2", "template.tt2"),
 ];
 
-/// Root cells that must appear in every envelope, each bound to the marker it
-/// is about, for the same reason as the file families above.
-pub const REQUIRED_ROOT_CELLS: &[(&str, &str)] = &[
-    ("boundary.no_marker_single_file", "none"),
-    ("conflict.competing_markers_at_depth", "cpanfile"),
-    ("conflict.nearest_perl_marker_beats_farther", "Makefile.PL"),
-    ("conflict.perl_marker_beats_git", "cpanfile"),
-    ("fallback.git_file_linked_worktree", ".git"),
-    ("fallback.git_only", ".git"),
-    ("isolation.sibling_same_relative_path", "cpanfile"),
-    ("marker.build_pl", "Build.PL"),
-    ("marker.dist_ini", "dist.ini"),
-    ("marker.perl_lsp_toml", ".perl-lsp.toml"),
+/// Root cells that must appear in every envelope, each bound to the marker
+/// *and* the fixture root it is about.
+///
+/// The marker alone is not enough: three cells legitimately share `cpanfile`
+/// and two share `.git`, so one proven row could otherwise be copied across the
+/// identifiers that share its marker and the distinct conflict and isolation
+/// scenarios would disappear while validation passed. The expected role is what
+/// makes each required cell name its own scenario.
+pub const REQUIRED_ROOT_CELLS: &[(&str, &str, &str)] = &[
+    ("boundary.no_marker_single_file", "none", "observation_only"),
+    ("conflict.competing_markers_at_depth", "cpanfile", "fixture:roots/depth-conflict/nested/deep"),
+    ("conflict.nearest_perl_marker_beats_farther", "Makefile.PL", "fixture:roots/nearest-perl/sub"),
+    ("conflict.perl_marker_beats_git", "cpanfile", "fixture:roots/perl-beats-git/app"),
+    ("fallback.git_file_linked_worktree", ".git", "fixture:roots/worktree-linked"),
+    ("fallback.git_only", ".git", "fixture:roots/git-only"),
+    ("isolation.sibling_same_relative_path", "cpanfile", "fixture:roots/siblings/alpha"),
+    ("marker.build_pl", "Build.PL", "fixture:roots/marker-build"),
+    ("marker.dist_ini", "dist.ini", "fixture:roots/marker-dist"),
+    ("marker.perl_lsp_toml", ".perl-lsp.toml", "fixture:roots/marker-dot"),
 ];
 
 /// Root cells whose whole point is that an identically-spelled fact exists in a
@@ -451,7 +457,7 @@ fn validate_file_families(root: &Map<String, Value>, config: &RecordedConfig) ->
 fn validate_roots(root: &Map<String, Value>, config: &RecordedConfig) -> Validated {
     let roots = require_object(root, "roots", "envelope.roots")?;
 
-    for (required, marker) in REQUIRED_ROOT_CELLS {
+    for (required, marker, expected_role) in REQUIRED_ROOT_CELLS {
         let Some(row) = roots.get(*required) else {
             return Err(EnvelopeValidationError::new(format!(
                 "envelope.roots: required root cell `{required}` is missing"
@@ -461,6 +467,13 @@ fn validate_roots(root: &Map<String, Value>, config: &RecordedConfig) -> Validat
         if recorded != *marker {
             return Err(EnvelopeValidationError::new(format!(
                 "envelope.roots.{required}.marker: expected `{marker}`, found `{recorded}`"
+            )));
+        }
+        let role = row.get("expected_role").and_then(Value::as_str).unwrap_or_default();
+        if role != *expected_role {
+            return Err(EnvelopeValidationError::new(format!(
+                "envelope.roots.{required}.expected_role: expected `{expected_role}`, found \
+                 `{role}`"
             )));
         }
     }
@@ -631,7 +644,7 @@ fn validate_roots(root: &Map<String, Value>, config: &RecordedConfig) -> Validat
                          `{OBSERVATION_ONLY_OUTCOME}`, found `{outcome}`"
                     )));
                 }
-            } else if REQUIRED_ROOT_CELLS.iter().any(|(name, _)| *name == id.as_str()) {
+            } else if REQUIRED_ROOT_CELLS.iter().any(|(name, _, _)| *name == id.as_str()) {
                 // Marker coverage alone cannot carry this: several cells share
                 // one marker, so a degraded conflict or isolation cell would
                 // otherwise hide behind a sibling cell naming the same marker.

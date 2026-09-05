@@ -100,7 +100,7 @@ fn a_real_failed_run_is_rejected_even_though_it_is_well_formed() -> Result<(), B
             "the failed run should still carry family `{family}`"
         );
     }
-    for (cell, _) in REQUIRED_ROOT_CELLS {
+    for (cell, _, _) in REQUIRED_ROOT_CELLS {
         assert!(
             envelope["roots"].get(*cell).is_some(),
             "the failed run should still carry root cell `{cell}`"
@@ -142,10 +142,15 @@ fn every_required_file_family_is_present_in_the_captured_run() -> Result<(), Box
 #[test]
 fn every_required_root_cell_is_present_in_the_captured_run() -> Result<(), Box<dyn Error>> {
     let envelope = valid_envelope()?;
-    for (cell, marker) in REQUIRED_ROOT_CELLS {
+    for (cell, marker, expected_role) in REQUIRED_ROOT_CELLS {
         let row = &envelope["roots"][*cell];
         assert!(!row.is_null(), "captured run is missing required root cell `{cell}`");
         assert_eq!(row["marker"], json!(marker), "`{cell}` should be about `{marker}`");
+        assert_eq!(
+            row["expected_role"],
+            json!(expected_role),
+            "`{cell}` should be about the `{expected_role}` scenario"
+        );
     }
     Ok(())
 }
@@ -169,6 +174,17 @@ fn a_relabelled_row_cannot_stand_in_for_a_required_identifier() -> Result<(), Bo
     assert_eq!(
         rejection(validate_envelope(&roots))?,
         "envelope.roots.marker.dist_ini.marker: expected `dist.ini`, found `Build.PL`"
+    );
+
+    // Three cells share `cpanfile`, so the marker alone cannot tell their
+    // scenarios apart: only the expected role does.
+    let mut shared_marker = valid_envelope()?;
+    let proven = shared_marker["roots"]["isolation.sibling_same_relative_path"].clone();
+    shared_marker["roots"]["conflict.perl_marker_beats_git"] = proven;
+    assert_eq!(
+        rejection(validate_envelope(&shared_marker))?,
+        "envelope.roots.conflict.perl_marker_beats_git.expected_role: expected \
+         `fixture:roots/perl-beats-git/app`, found `fixture:roots/siblings/alpha`"
     );
     Ok(())
 }

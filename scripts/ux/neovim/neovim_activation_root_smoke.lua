@@ -366,6 +366,45 @@ local ROOT_CASES = {
   },
 }
 
+-- Every marker the canonical config can select must win a root case here.
+--
+-- Without this the matrix silently stops covering a marker the moment one is
+-- added to `perllsp.lua`: the run would stay green while an unexercised marker
+-- shipped as if it were proven. The groups are read, not flattened in place —
+-- `config.root_markers` is emitted verbatim as `root_marker_groups`, and the
+-- nesting is what makes the Perl markers equal priority above `.git`.
+local function configured_markers()
+  local markers = {}
+  for _, group in ipairs(config.root_markers) do
+    if type(group) == 'table' then
+      for _, marker in ipairs(group) do
+        markers[marker] = true
+      end
+    else
+      markers[group] = true
+    end
+  end
+  return markers
+end
+
+-- The no-marker boundary cell is deliberately outside this denominator: it
+-- exercises the absence of every marker rather than any one of them.
+local function report_uncovered_markers(proven_markers)
+  local uncovered = {}
+  for marker in pairs(configured_markers()) do
+    if not proven_markers[marker] then
+      table.insert(uncovered, marker)
+    end
+  end
+  table.sort(uncovered)
+  for _, marker in ipairs(uncovered) do
+    table.insert(
+      failures,
+      ('configured root marker %s: no root case proved it'):format(marker)
+    )
+  end
+end
+
 local function request(client, bufnr, method, params)
   local response = client:request_sync(method, params, 10000, bufnr)
   if response == nil then
@@ -524,13 +563,20 @@ local function evaluate_root_case(case)
   return row, reason
 end
 
+local proven_markers = {}
 for _, case in ipairs(ROOT_CASES) do
   local row, reason = evaluate_root_case(case)
   envelope.roots[case.id] = row
   if reason then
     table.insert(failures, ('root case %s (%s): %s'):format(case.id, case.marker, reason))
+  else
+    proven_markers[case.marker] = true
   end
 end
+
+-- Coverage is judged on proven rows, not on the case list: a marker whose only
+-- case failed is no better covered than one that was never exercised.
+report_uncovered_markers(proven_markers)
 
 -- Single-file/no-marker behaviour stays an observed cell rather than an
 -- assumption: it is recorded, not asserted, and carries no semantic claim.
