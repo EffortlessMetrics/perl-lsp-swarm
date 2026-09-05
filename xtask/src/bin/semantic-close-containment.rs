@@ -707,10 +707,14 @@ fn evaluate_relation(
         }
     }
 
-    let explicitly_unproven_text = relation_scoped_section_text(
-        sections,
-        &[SectionKind::ClaimBoundary, SectionKind::NonGoals],
-        relation_count,
+    let explicitly_unproven_text = exclusion_text_attributable_to_closed_issue(
+        &relation_scoped_section_text(
+            sections,
+            &[SectionKind::ClaimBoundary, SectionKind::NonGoals],
+            relation_count,
+            &relation.key,
+            &pull.repository,
+        ),
         &relation.key,
         &pull.repository,
     );
@@ -1096,23 +1100,23 @@ fn proof_level_is_explicitly_excluded(
     TERMS.iter().any(|term| issue_requirements.contains(term) && exclusions.contains(term))
 }
 
+const REQUIRED_WORK_SCOPE_MARKERS: [&str; 10] = [
+    "full",
+    "complete",
+    "remaining",
+    "every",
+    "all",
+    "installed",
+    "public",
+    "packaged",
+    "acceptance",
+    "presentation",
+];
+
 fn explicitly_not_proven_required_work(text: &str) -> bool {
     let text = text.to_ascii_lowercase();
     contains_explicit_exclusion(&text)
-        && [
-            "full",
-            "complete",
-            "remaining",
-            "every",
-            "all ",
-            "installed",
-            "public",
-            "packaged",
-            "acceptance",
-            "presentation",
-        ]
-        .iter()
-        .any(|marker| text.contains(marker))
+        && REQUIRED_WORK_SCOPE_MARKERS.iter().any(|marker| contains_word(&text, marker))
 }
 
 fn contains_explicit_exclusion(text: &str) -> bool {
@@ -1174,6 +1178,54 @@ fn relation_scoped_section_text(
         .filter(|line| references_issue(line, key, current_repository))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Keep claim-boundary / non-goal paragraphs whose exclusions can be attributed
+/// to the issue named in the closing relation.
+///
+/// A paragraph that mentions some other issue and does not mention the closed
+/// issue is a neighboring-issue disclaimer, not a statement that this close
+/// left required work unproven. Unnumbered prose still counts: atomic closes
+/// often describe "the remaining work" without repeating `#N`.
+fn exclusion_text_attributable_to_closed_issue(
+    text: &str,
+    key: &IssueKey,
+    current_repository: &str,
+) -> String {
+    text.split("\n\n")
+        .filter(|paragraph| {
+            let paragraph = paragraph.trim();
+            !paragraph.is_empty() && !foreign_issue_disclaimer(paragraph, key, current_repository)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn foreign_issue_disclaimer(text: &str, key: &IssueKey, current_repository: &str) -> bool {
+    mentions_an_issue_subject(text) && !references_issue(text, key, current_repository)
+}
+
+fn mentions_an_issue_subject(text: &str) -> bool {
+    hash_issue_number_present(text) || github_issue_url_present(text)
+}
+
+fn hash_issue_number_present(text: &str) -> bool {
+    text.match_indices('#').any(|(index, _)| {
+        text.get(index + 1..)
+            .and_then(|tail| tail.chars().next())
+            .is_some_and(|character| character.is_ascii_digit())
+    })
+}
+
+fn github_issue_url_present(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let Some(index) = lower.find("/issues/") else {
+        return false;
+    };
+    lower
+        .get(index + "/issues/".len()..)
+        .and_then(|tail| tail.chars().next())
+        .is_some_and(|character| character.is_ascii_digit())
 }
 
 fn references_number(text: &str, number: u64) -> bool {
@@ -1314,7 +1366,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    const FIXTURES: [(&str, &str); 12] = [
+    const FIXTURES: [(&str, &str); 15] = [
         (
             "invalid-phase-terminal-5023-5001",
             include_str!(concat!(
@@ -1358,6 +1410,13 @@ mod tests {
             )),
         ),
         (
+            "invalid-explicit-unproven-named-closed-issue",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/invalid-explicit-unproven-named-closed-issue.json"
+            )),
+        ),
+        (
             "invalid-remaining-same-issue",
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -1383,6 +1442,20 @@ mod tests {
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../.ci/semantic-close-containment/fixtures/valid-atomic.json"
+            )),
+        ),
+        (
+            "valid-neighbor-disclaimer-unproven",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-neighbor-disclaimer-unproven.json"
+            )),
+        ),
+        (
+            "valid-representation-scope-substring",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-representation-scope-substring.json"
             )),
         ),
         (
@@ -1551,6 +1624,59 @@ mod tests {
         assert_eq!(report.rows[0].code, ResultCode::FailExplicitUnprovenRequiredWork);
         assert_eq!(report.rows[1].code, ResultCode::PassNoHighConfidenceContradiction);
         Ok(())
+    }
+
+    #[test]
+    fn contains_word_rejects_presentation_inside_representation() {
+        assert!(contains_word("presentation", "presentation"));
+        assert!(contains_word("a presentation layer", "presentation"));
+        assert!(!contains_word("representation", "presentation"));
+        assert!(!contains_word("the hir representation of this slice", "presentation"));
+        assert!(!contains_word("fallback", "all"));
+        assert!(!contains_word("called", "all"));
+        assert!(contains_word("in all four families", "all"));
+        assert!(!contains_word("completeness", "complete"));
+        assert!(!contains_word("everything", "every"));
+        assert!(!contains_word("publicly", "public"));
+        assert!(!contains_word("uninstalled", "installed"));
+    }
+
+    #[test]
+    fn explicitly_not_proven_required_work_uses_whole_word_scope_markers() {
+        assert!(explicitly_not_proven_required_work(
+            "this does not prove remaining work in all four families"
+        ));
+        assert!(explicitly_not_proven_required_work(
+            "the complete remaining call-site cohort is not established"
+        ));
+        assert!(!explicitly_not_proven_required_work(
+            "the required hir representation, fallback path, called helper, completeness remainder, everything publicly uninstalled here is not established"
+        ));
+        assert!(!explicitly_not_proven_required_work("this pr proves the claim in full"));
+    }
+
+    #[test]
+    fn neighbor_issue_disclaimer_is_not_attributable_unproven_required_work() {
+        let key = IssueKey { repository: "effortlessmetrics/perl-lsp-swarm".into(), number: 10 };
+        let current = "effortlessmetrics/perl-lsp-swarm";
+        let text = "This PR proves #10's claim in full.\n\nWork owned by #11 is not established.";
+        let attributable = exclusion_text_attributable_to_closed_issue(text, &key, current);
+        assert!(
+            !explicitly_not_proven_required_work(&attributable),
+            "filtered text must drop the neighboring-issue exclusion: {attributable:?}"
+        );
+        assert!(
+            explicitly_not_proven_required_work(text),
+            "unfiltered text must still show why attribution is load-bearing"
+        );
+
+        let named_closed = "This PR does not prove #10's remaining required work.\n\nWork owned by #11 is separately not established.";
+        let attributable_named =
+            exclusion_text_attributable_to_closed_issue(named_closed, &key, current);
+        assert!(
+            explicitly_not_proven_required_work(&attributable_named),
+            "naming the closed issue must keep the exclusion: {attributable_named:?}"
+        );
     }
 
     #[test]
