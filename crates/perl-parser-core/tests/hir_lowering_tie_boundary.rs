@@ -247,6 +247,67 @@ fn canonical_pir_a_does_not_yet_carry_a_tie_boundary() -> TestResult {
     Ok(())
 }
 
+/// The boundary belongs to the package and scope the tie *statement* sits in,
+/// not to whatever its operands happen to leave behind.
+///
+/// Traversing children before pushing the boundary (required for evaluation
+/// order) exposes this: a no-block `package Foo;` is legal inside a `do` block
+/// in an operand, and it mutates the lowerer's `package_context` and pushes a
+/// package scope that is never popped. Reading the context after traversal
+/// would attribute the tie to the operand's package.
+#[test]
+fn tie_boundary_keeps_the_tie_site_package_and_scope() -> TestResult {
+    let control = lower_source("package Main;\ntie %hash, 'Tie::StdHash', 42;\n");
+    let (control_item, _) =
+        must_some(sole_boundary(&control, DynamicBoundaryKind::TiedPlaceBinding));
+    let expected_package = control_item.package_context.clone();
+    let expected_scope = control_item.scope_context;
+    assert_eq!(
+        expected_package.as_deref(),
+        Some("Main"),
+        "control: a tie in package Main must be attributed to Main"
+    );
+
+    let leaky =
+        lower_source("package Main;\ntie %hash, 'Tie::StdHash', do { package Other; 42 };\n");
+    let (leaky_item, _) = must_some(sole_boundary(&leaky, DynamicBoundaryKind::TiedPlaceBinding));
+    assert_eq!(
+        leaky_item.package_context, expected_package,
+        "a package declared inside a tie operand must not be attributed to the tie boundary"
+    );
+    assert_eq!(
+        leaky_item.scope_context, expected_scope,
+        "a scope opened inside a tie operand must not become the tie boundary's scope"
+    );
+    Ok(())
+}
+
+/// The same site-context guarantee for `untie`, whose target expression can
+/// carry the same kind of declaration.
+#[test]
+fn untie_boundary_keeps_the_untie_site_package_and_scope() -> TestResult {
+    let control = lower_source("package Main;\nuntie $hash{key};\n");
+    let (control_item, _) =
+        must_some(sole_boundary(&control, DynamicBoundaryKind::TiedPlaceRelease));
+    assert_eq!(
+        control_item.package_context.as_deref(),
+        Some("Main"),
+        "control: an untie in package Main must be attributed to Main"
+    );
+
+    let leaky = lower_source("package Main;\nuntie $hash{ do { package Other; 1 } };\n");
+    let (leaky_item, _) = must_some(sole_boundary(&leaky, DynamicBoundaryKind::TiedPlaceRelease));
+    assert_eq!(
+        leaky_item.package_context, control_item.package_context,
+        "a package declared inside an untie operand must not be attributed to the boundary"
+    );
+    assert_eq!(
+        leaky_item.scope_context, control_item.scope_context,
+        "a scope opened inside an untie operand must not become the boundary's scope"
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Negative controls
 // ---------------------------------------------------------------------------

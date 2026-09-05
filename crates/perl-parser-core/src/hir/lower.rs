@@ -732,6 +732,14 @@ impl Lowerer {
             // in prose here would imply a machine-readable fact this slice has not
             // established.
             NodeKind::Tie { .. } => {
+                // Capture the tie *site's* context before traversing. An operand
+                // can contain a no-block `package Foo;` (legal inside a `do`
+                // block), which mutates `package_context` and leaves an unpopped
+                // package scope behind. Reading the context after traversal would
+                // then attribute the boundary to the operand's package and scope
+                // rather than the one the tie statement actually sits in.
+                let site_package = self.package_context.clone();
+                let site_scope = self.current_scope();
                 self.visit_children(node, confidence);
                 self.push_item(
                     node,
@@ -743,11 +751,16 @@ impl Lowerer {
                                  dispatches to hidden TIE* methods"
                             .to_string(),
                     }),
-                    self.package_context.clone(),
-                    Some(self.current_scope()),
+                    site_package,
+                    Some(site_scope),
                 );
             }
             NodeKind::Untie { .. } => {
+                // Same site-context capture as `Tie` above: the target expression
+                // may carry a package declaration that must not be attributed to
+                // the untie boundary.
+                let site_package = self.package_context.clone();
+                let site_scope = self.current_scope();
                 self.visit_children(node, confidence);
                 self.push_item(
                     node,
@@ -759,8 +772,8 @@ impl Lowerer {
                                  and the resulting storage semantics are not modeled"
                             .to_string(),
                     }),
-                    self.package_context.clone(),
-                    Some(self.current_scope()),
+                    site_package,
+                    Some(site_scope),
                 );
             }
             NodeKind::Regex { pattern, replacement, modifiers, has_embedded_code } => {
