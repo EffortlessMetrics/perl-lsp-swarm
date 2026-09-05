@@ -306,6 +306,17 @@ pub fn mojo_base_setter_identity(
 
 /// Deterministic literal-parent relationship identity for one activation
 /// site.
+///
+/// A parent relationship belongs to the activating import, not to a `has`
+/// statement, so there is no declaration order to key it by. The import's
+/// start byte is passed through [`mojo_base_member_identity`]'s
+/// `declaration_index` slot instead — deliberately, because that slot is just
+/// a distinguishing integer inside the mix. Reusing it is safe only because
+/// the parent domain separator below is XORed in afterwards: without it, a
+/// `has` statement whose declaration index happened to equal the import's
+/// start byte would collide with this fact. The separator, not the slot
+/// value, is what keeps the families disjoint — see
+/// `parent_identity_never_collides_with_a_member_family_identity`.
 #[must_use]
 pub fn mojo_base_parent_identity(
     file_id: FileId,
@@ -498,7 +509,7 @@ fn mint_member_fact(
 /// leaves the read result unknown.
 fn reader_relation(
     default: &MojoBaseAttributeDefault,
-) -> (CallableResultRelation, Vec<CallableResultLimitation>) {
+) -> (CallableResultRelation, Vec<CallableResultLimitation>, BoundaryKind) {
     match default {
         MojoBaseAttributeDefault::Constant => (
             CallableResultRelation::Concrete(ValueShape::Scalar),
@@ -506,6 +517,10 @@ fn reader_relation(
                 CallableResultLimitation::GeneratedNoSource,
                 CallableResultLimitation::DynamicValue,
             ],
+            // The default's shape is proven; what stays open is the stored
+            // value a later write may put there — a dynamic value, not an
+            // unsupported form.
+            BoundaryKind::DynamicValue,
         ),
         // A lazy builder's value is whatever its body returns; this leaf does
         // not evaluate default expressions.
@@ -515,6 +530,7 @@ fn reader_relation(
                 CallableResultLimitation::GeneratedNoSource,
                 CallableResultLimitation::DynamicValue,
             ],
+            BoundaryKind::DynamicValue,
         ),
         MojoBaseAttributeDefault::Dynamic { .. } => (
             CallableResultRelation::Unknown,
@@ -522,13 +538,17 @@ fn reader_relation(
                 CallableResultLimitation::GeneratedNoSource,
                 CallableResultLimitation::DynamicValue,
             ],
+            BoundaryKind::DynamicValue,
         ),
+        // The only genuinely unsupported case: `Mojo::Base` rejects this
+        // default at runtime, so the reviewed profile models no result at all.
         MojoBaseAttributeDefault::Unsupported { .. } => (
             CallableResultRelation::Unknown,
             vec![
                 CallableResultLimitation::GeneratedNoSource,
                 CallableResultLimitation::Unsupported,
             ],
+            BoundaryKind::Unsupported,
         ),
     }
 }
@@ -544,7 +564,7 @@ fn mint_reader_fact(
         declaration.name_index,
         generation,
     );
-    let (relation, limitations) = reader_relation(&declaration.default);
+    let (relation, limitations, boundary_kind) = reader_relation(&declaration.default);
     CallableResultFact::new(
         generated_envelope(
             SemanticFactKind::CallableResult,
@@ -554,9 +574,13 @@ fn mint_reader_fact(
             declaration.declaration_anchor,
             generation,
             declaration.file_id,
+            // The reader's certainty really is limited: what the accessor
+            // returns depends on values this leaf cannot enumerate. The kind
+            // names *which* limit applies, so a consumer that filters on
+            // `Unsupported` sees only genuinely unsupported declarations.
             Some(BoundaryLink::new(
                 None,
-                BoundaryKind::Unsupported,
+                boundary_kind,
                 BoundaryDisposition::Degrade,
                 SemanticReasonCode::GeneratedFromSource,
             )),
@@ -590,12 +614,14 @@ fn mint_setter_fact(
             declaration.declaration_anchor,
             generation,
             declaration.file_id,
-            Some(BoundaryLink::new(
-                None,
-                BoundaryKind::Unsupported,
-                BoundaryDisposition::Degrade,
-                SemanticReasonCode::GeneratedFromSource,
-            )),
+            // No boundary: unlike the reader, nothing about this relation is
+            // dynamic or unsupported — `Mojo::Base` always returns the
+            // invocant from a write. The fact is still not exact source (the
+            // `GeneratedFromSource` reason code degrades it, and the
+            // `GeneratedNoSource` limitation records that there is no method
+            // body), but claiming a *boundary* here would mislabel a
+            // determinate framework contract as unmodeled.
+            None,
         ),
         // The framework contract is determinate regardless of default-value
         // uncertainty: a write returns the invocant. The relation stays
@@ -665,6 +691,7 @@ fn mint_parent_fact(
 mod tests {
     use super::*;
     use crate::envelope::SemanticFactStatus;
+    use perl_test_must::must_some;
 
     fn anchor(start: u32, end: u32) -> SourceAnchor {
         SourceAnchor::new(Some(AnchorId(u64::from(start))), FileId(1), start, end)
@@ -806,6 +833,102 @@ mod tests {
         assert_eq!(facts.members[0].explicit_method, MojoBaseExplicitMethodState::Collides);
         let boundary = facts.members[0].envelope.boundary.as_ref();
         assert!(boundary.is_some(), "the collision must remain visible as conflict evidence");
+    }
+
+    #[test]
+    fn parent_identity_never_collides_with_a_member_family_identity() {
+        // The parent fact passes the import's start byte through the slot the
+        // member families use for a declaration index, so only the parent
+        // domain separator keeps the two apart. Sweep the byte offsets and
+        // declaration indices of a realistic file against each other: without
+        // the separator the diagonal (import_start_byte == declaration_index)
+        // would collide on every row.
+        let generation = SourceGeneration::known("gen-1");
+        for import_start_byte in 0..64_u32 {
+            let (parent_fact, parent_entity) =
+                mojo_base_parent_identity(FileId(1), import_start_byte, &generation);
+            for declaration_index in 0..64_u32 {
+                for name_index in 0..4_u32 {
+                    for (fact, entity) in [
+                        mojo_base_member_identity(
+                            FileId(1),
+                            declaration_index,
+                            name_index,
+                            &generation,
+                        ),
+                        mojo_base_reader_identity(
+                            FileId(1),
+                            declaration_index,
+                            name_index,
+                            &generation,
+                        ),
+                        mojo_base_setter_identity(
+                            FileId(1),
+                            declaration_index,
+                            name_index,
+                            &generation,
+                        ),
+                    ] {
+                        assert_ne!(
+                            parent_fact, fact,
+                            "parent fact id collided with a member-family fact id at \
+                             import_start_byte={import_start_byte} \
+                             declaration_index={declaration_index} name_index={name_index}"
+                        );
+                        assert_ne!(
+                            parent_entity, entity,
+                            "parent entity collided with a member-family entity at \
+                             import_start_byte={import_start_byte} \
+                             declaration_index={declaration_index} name_index={name_index}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn member_reader_and_setter_identities_are_mutually_disjoint() {
+        let generation = SourceGeneration::known("gen-1");
+        let member = mojo_base_member_identity(FileId(1), 3, 1, &generation);
+        let reader = mojo_base_reader_identity(FileId(1), 3, 1, &generation);
+        let setter = mojo_base_setter_identity(FileId(1), 3, 1, &generation);
+        assert_ne!(member.0, reader.0);
+        assert_ne!(member.0, setter.0);
+        assert_ne!(reader.0, setter.0);
+        assert_eq!(
+            (member.1, reader.1),
+            (setter.1, setter.1),
+            "all three facts describe one accessor entity"
+        );
+    }
+
+    #[test]
+    fn only_a_genuinely_unsupported_default_carries_an_unsupported_boundary() {
+        let activation = exact_activation(MojoBaseActivationOutcome::ExactBaseActivation);
+        let determinate = [
+            MojoBaseAttributeDefault::Constant,
+            MojoBaseAttributeDefault::LazyBuilder,
+            MojoBaseAttributeDefault::Absent,
+        ];
+        for default in determinate {
+            let facts = mint_with_detection(&activation, &[declaration(1, "name", default)]);
+            let boundary = must_some(facts.reader_results[0].envelope.boundary.as_ref());
+            assert_eq!(
+                boundary.kind,
+                BoundaryKind::DynamicValue,
+                "an admitted default limits the reader dynamically, not as unsupported"
+            );
+            assert!(
+                facts.setter_results[0].envelope.boundary.is_none(),
+                "the write contract is determinate and carries no boundary"
+            );
+        }
+
+        let unsupported = MojoBaseAttributeDefault::Unsupported { reason: "ref".to_string() };
+        let facts = mint_with_detection(&activation, &[declaration(1, "name", unsupported)]);
+        let boundary = must_some(facts.reader_results[0].envelope.boundary.as_ref());
+        assert_eq!(boundary.kind, BoundaryKind::Unsupported);
     }
 
     #[test]

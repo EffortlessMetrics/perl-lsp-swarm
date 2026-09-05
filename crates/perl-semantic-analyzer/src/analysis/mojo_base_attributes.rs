@@ -19,6 +19,19 @@
 //! has [qw(host port)] => 'default';
 //! ```
 //!
+//! **Known unmodeled spelling.** A bare `qw` list with no brackets and no
+//! parentheses — `has qw(name default);` — is not extracted, and unlike every
+//! other unsupported form here it yields no typed boundary either. The parser
+//! does not bind the `qw` list to the `has` bareword: it emits two sibling
+//! statements (a bare `Identifier` and a free-standing `ArrayLiteral`), so no
+//! `has` declaration shape is present to observe. Recognizing it would mean
+//! stitching two statements back together in this extractor to compensate for
+//! a parse shape, which belongs upstream in the parser rather than here. The
+//! spelling is legal Perl (`qw` flattens, so it means name plus default, not
+//! two attributes) but is rare in reviewed `Mojo::Base` source, which spells a
+//! multi-attribute declaration `has [qw(...)]`. Tracked as #14808; see
+//! `a_bare_qw_list_without_brackets_is_a_known_unmodeled_spelling`.
+//!
 //! `Mojo::Base` binds the first operand to the attribute name (or an array
 //! reference of names) and the optional second operand to the default, so
 //! `has 'a', 'b';` declares the attribute `a` with default `'b'` — it is not
@@ -483,6 +496,19 @@ mod tests {
     #[test]
     fn a_has_call_inside_a_sub_body_is_not_a_class_attribute() {
         assert!(declarations("package App;\nsub build { has 'runtime'; }\n").is_empty());
+    }
+
+    #[test]
+    fn a_bare_qw_list_without_brackets_is_a_known_unmodeled_spelling() {
+        // Pins the documented limitation rather than asserting it is correct:
+        // the parser emits `has` and the `qw` list as two sibling statements,
+        // so no declaration shape reaches this extractor. The bracketed
+        // spelling immediately below is the control proving the extractor
+        // itself handles `qw` words fine — the gap is the unbracketed parse,
+        // not `qw` support.
+        assert!(declarations("package App;\nhas qw(name);\n").is_empty());
+        assert!(declarations("package App;\nhas qw(name default);\n").is_empty());
+        assert_eq!(names("package App;\nhas [qw(name other)];\n"), ["name", "other"]);
     }
 
     #[test]
