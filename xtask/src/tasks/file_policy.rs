@@ -432,7 +432,7 @@ const POLICY_MATCH_OPTIONS: MatchOptions = MatchOptions {
 ///
 /// Every allowlist matcher goes through here so glob breadth is decided in one
 /// place instead of per call site.
-fn glob_matches_path(pattern: &Pattern, path: &str) -> bool {
+pub(crate) fn glob_matches_path(pattern: &Pattern, path: &str) -> bool {
     pattern.matches_with(path, POLICY_MATCH_OPTIONS)
 }
 

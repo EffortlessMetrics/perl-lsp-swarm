@@ -841,8 +841,10 @@ fn entry_governs(entry: &AllowEntry, candidate: &str) -> bool {
     if let Some(path) = entry.path.as_deref() {
         return path == candidate;
     }
+    // Same breadth rule as the ledger's own matcher (#9994): `*` does not
+    // cross `/`, so a single-segment glob stays single-segment here too.
     match entry.glob.as_deref().map(glob::Pattern::new) {
-        Some(Ok(pattern)) => pattern.matches(candidate),
+        Some(Ok(pattern)) => file_policy::glob_matches_path(&pattern, candidate),
         _ => false,
     }
 }
