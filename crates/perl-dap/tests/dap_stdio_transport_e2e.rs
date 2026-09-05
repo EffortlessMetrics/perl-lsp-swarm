@@ -304,10 +304,13 @@ fn stdio_transport_framing_initialize_threads_disconnect() -> Result<()> {
         Some(true),
         "initialize over stdio must advertise configurationDone support"
     );
+    // #9089: the routed inlineValues extension is a project extension kept
+    // outside standard DAP capability accounting; it must stay unadvertised
+    // over the stdio transport too, until the negotiation gate passes.
     assert_eq!(
         init_body.get("supportsInlineValues").and_then(Value::as_bool),
-        Some(true),
-        "initialize over stdio must preserve inline value capability"
+        Some(false),
+        "initialize over stdio must not advertise the unnegotiated inlineValues extension"
     );
     dap.wait_for_event("initialized")?;
 
