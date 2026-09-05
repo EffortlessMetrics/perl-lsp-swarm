@@ -191,21 +191,17 @@ impl fmt::Display for CorpusRootError {
                 "corpus root pathname no longer names the retained directory: {}",
                 path.display()
             ),
-            Self::WorkspaceNotFound { start } => write!(
-                formatter,
-                "could not discover a Cargo workspace above {}",
-                start.display()
-            ),
+            Self::WorkspaceNotFound { start } => {
+                write!(formatter, "could not discover a Cargo workspace above {}", start.display())
+            }
             Self::WorkspaceManifestInvalid { path, message } => write!(
                 formatter,
                 "could not parse Cargo workspace candidate {}: {message}",
                 path.display()
             ),
-            Self::RequiredLayerMissing { layer, path } => write!(
-                formatter,
-                "required corpus layer {layer} is missing at {}",
-                path.display()
-            ),
+            Self::RequiredLayerMissing { layer, path } => {
+                write!(formatter, "required corpus layer {layer} is missing at {}", path.display())
+            }
             Self::RequiredLayerSymlinkOrReparse { layer, path } => write!(
                 formatter,
                 "required corpus layer {layer} crosses a symbolic link or reparse point at {}",
@@ -216,11 +212,7 @@ impl fmt::Display for CorpusRootError {
                 "required corpus layer {layer} is not a directory at {}",
                 path.display()
             ),
-            Self::RequiredLayerUnreadable {
-                layer,
-                path,
-                message,
-            } => write!(
+            Self::RequiredLayerUnreadable { layer, path, message } => write!(
                 formatter,
                 "required corpus layer {layer} cannot be enumerated at {}: {message}",
                 path.display()
@@ -286,13 +278,12 @@ impl CorpusRoot {
     /// traversal. The returned file does not grant path-based member authority
     /// by itself.
     pub fn try_clone_directory(&self) -> Result<File, CorpusRootError> {
-        self.directory
-            .as_file()
-            .try_clone()
-            .map_err(|error| CorpusRootError::CapabilityUnavailable {
+        self.directory.as_file().try_clone().map_err(|error| {
+            CorpusRootError::CapabilityUnavailable {
                 path: self.path.clone(),
                 message: error.to_string(),
-            })
+            }
+        })
     }
 
     /// Require the two checked-in top-level corpus layers.
@@ -307,29 +298,21 @@ impl CorpusRoot {
 
     fn bind(path: &Path, source: CorpusRootSource) -> Result<Self, CorpusRootError> {
         let canonical = validate_absolute_directory(path)?;
-        let directory =
-            Handle::from_path(&canonical).map_err(|error| CorpusRootError::CapabilityUnavailable {
+        let directory = Handle::from_path(&canonical).map_err(|error| {
+            CorpusRootError::CapabilityUnavailable {
                 path: canonical.clone(),
                 message: error.to_string(),
-            })?;
-        let metadata =
-            directory
-                .as_file()
-                .metadata()
-                .map_err(|error| CorpusRootError::RootUnreadable {
-                    path: canonical.clone(),
-                    message: error.to_string(),
-                })?;
+            }
+        })?;
+        let metadata = directory.as_file().metadata().map_err(|error| {
+            CorpusRootError::RootUnreadable { path: canonical.clone(), message: error.to_string() }
+        })?;
         if !metadata.is_dir() {
             return Err(CorpusRootError::RootNotDirectory { path: canonical });
         }
 
         validate_absolute_directory_identity(&canonical, &directory)?;
-        Ok(Self {
-            path: canonical,
-            source,
-            directory: Arc::new(directory),
-        })
+        Ok(Self { path: canonical, source, directory: Arc::new(directory) })
     }
 
     fn require_directory(
@@ -352,10 +335,7 @@ impl CorpusRoot {
             let metadata = match fs::symlink_metadata(&current) {
                 Ok(metadata) => metadata,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    return Err(CorpusRootError::RequiredLayerMissing {
-                        layer,
-                        path: current,
-                    });
+                    return Err(CorpusRootError::RequiredLayerMissing { layer, path: current });
                 }
                 Err(error) => {
                     return Err(CorpusRootError::RequiredLayerUnreadable {
@@ -372,10 +352,7 @@ impl CorpusRoot {
                 });
             }
             if !metadata.is_dir() {
-                return Err(CorpusRootError::RequiredLayerNotDirectory {
-                    layer,
-                    path: current,
-                });
+                return Err(CorpusRootError::RequiredLayerNotDirectory { layer, path: current });
             }
         }
 
@@ -397,23 +374,15 @@ impl CorpusRoot {
     }
 
     fn verify_bound_path(&self) -> Result<(), CorpusRootError> {
-        let current =
-            Handle::from_path(&self.path).map_err(|_| CorpusRootError::RootIdentityChanged {
-                path: self.path.clone(),
-            })?;
+        let current = Handle::from_path(&self.path)
+            .map_err(|_| CorpusRootError::RootIdentityChanged { path: self.path.clone() })?;
         if self.directory.as_ref() != &current {
-            return Err(CorpusRootError::RootIdentityChanged {
-                path: self.path.clone(),
-            });
+            return Err(CorpusRootError::RootIdentityChanged { path: self.path.clone() });
         }
-        let canonical =
-            fs::canonicalize(&self.path).map_err(|_| CorpusRootError::RootIdentityChanged {
-                path: self.path.clone(),
-            })?;
+        let canonical = fs::canonicalize(&self.path)
+            .map_err(|_| CorpusRootError::RootIdentityChanged { path: self.path.clone() })?;
         if canonical != self.path {
-            return Err(CorpusRootError::RootIdentityChanged {
-                path: self.path.clone(),
-            });
+            return Err(CorpusRootError::RootIdentityChanged { path: self.path.clone() });
         }
         Ok(())
     }
@@ -434,9 +403,7 @@ fn resolve_authoritative_from(
 
 fn validate_absolute_directory(path: &Path) -> Result<PathBuf, CorpusRootError> {
     if !path.is_absolute() {
-        return Err(CorpusRootError::RelativePath {
-            path: path.to_path_buf(),
-        });
+        return Err(CorpusRootError::RelativePath { path: path.to_path_buf() });
     }
     validate_directory_components(path)?;
     let canonical =
@@ -449,18 +416,12 @@ fn validate_absolute_directory_identity(
     canonical: &Path,
     retained: &Handle,
 ) -> Result<(), CorpusRootError> {
-    let rebound =
-        Handle::from_path(canonical).map_err(|_| CorpusRootError::RootIdentityChanged {
-            path: canonical.to_path_buf(),
-        })?;
-    let recanonicalized =
-        fs::canonicalize(canonical).map_err(|_| CorpusRootError::RootIdentityChanged {
-            path: canonical.to_path_buf(),
-        })?;
+    let rebound = Handle::from_path(canonical)
+        .map_err(|_| CorpusRootError::RootIdentityChanged { path: canonical.to_path_buf() })?;
+    let recanonicalized = fs::canonicalize(canonical)
+        .map_err(|_| CorpusRootError::RootIdentityChanged { path: canonical.to_path_buf() })?;
     if retained != &rebound || recanonicalized != canonical {
-        return Err(CorpusRootError::RootIdentityChanged {
-            path: canonical.to_path_buf(),
-        });
+        return Err(CorpusRootError::RootIdentityChanged { path: canonical.to_path_buf() });
     }
     Ok(())
 }
@@ -496,17 +457,13 @@ fn validate_directory_components(path: &Path) -> Result<(), CorpusRootError> {
     }
 
     if !saw_normal_component {
-        let metadata =
-            fs::symlink_metadata(path).map_err(|error| classify_root_io(path.to_path_buf(), error))?;
+        let metadata = fs::symlink_metadata(path)
+            .map_err(|error| classify_root_io(path.to_path_buf(), error))?;
         if is_link_or_reparse(&metadata) {
-            return Err(CorpusRootError::SymlinkOrReparseUnsupported {
-                path: path.to_path_buf(),
-            });
+            return Err(CorpusRootError::SymlinkOrReparseUnsupported { path: path.to_path_buf() });
         }
         if !metadata.is_dir() {
-            return Err(CorpusRootError::RootNotDirectory {
-                path: path.to_path_buf(),
-            });
+            return Err(CorpusRootError::RootNotDirectory { path: path.to_path_buf() });
         }
     }
     Ok(())
@@ -519,10 +476,7 @@ fn validate_relative_directory_path(relative: &Path) -> Result<(), CorpusRootErr
             reason: "required_layer_path_must_be_nonempty_and_relative",
         });
     }
-    if relative
-        .components()
-        .any(|component| !matches!(component, Component::Normal(_)))
-    {
+    if relative.components().any(|component| !matches!(component, Component::Normal(_))) {
         return Err(CorpusRootError::InvalidPath {
             path: relative.to_path_buf(),
             reason: "required_layer_path_must_use_normal_components",
@@ -535,10 +489,7 @@ fn classify_root_io(path: PathBuf, error: io::Error) -> CorpusRootError {
     if error.kind() == io::ErrorKind::NotFound {
         CorpusRootError::RootMissing { path }
     } else {
-        CorpusRootError::RootUnreadable {
-            path,
-            message: error.to_string(),
-        }
+        CorpusRootError::RootUnreadable { path, message: error.to_string() }
     }
 }
 
@@ -580,27 +531,19 @@ fn find_workspace_root_from(start: &Path) -> Result<PathBuf, CorpusRootError> {
                 message: error.to_string(),
             }
         })?;
-        if parsed
-            .get("workspace")
-            .and_then(toml::Value::as_table)
-            .is_some()
-        {
+        if parsed.get("workspace").and_then(toml::Value::as_table).is_some() {
             return Ok(ancestor.to_path_buf());
         }
     }
 
-    Err(CorpusRootError::WorkspaceNotFound {
-        start: start.to_path_buf(),
-    })
+    Err(CorpusRootError::WorkspaceNotFound { start: start.to_path_buf() })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::CWD_TEST_LOCK;
     use std::error::Error;
-    use std::sync::Mutex;
-
-    static CWD_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     struct CurrentDirGuard {
         original: PathBuf,
@@ -635,9 +578,7 @@ mod tests {
         if actual == expected {
             Ok(())
         } else {
-            Err(test_failure(format!(
-                "unexpected source tokens: {actual:?}"
-            )))
+            Err(test_failure(format!("unexpected source tokens: {actual:?}")))
         }
     }
 
@@ -645,8 +586,10 @@ mod tests {
     fn explicit_precedence_never_falls_through_to_environment() -> Result<(), Box<dyn Error>> {
         let explicit = tempfile::tempdir()?;
         let environment = tempfile::tempdir()?;
-        let selected =
-            resolve_authoritative_from(Some(explicit.path()), Some(environment.path().as_os_str()))?;
+        let selected = resolve_authoritative_from(
+            Some(explicit.path()),
+            Some(environment.path().as_os_str()),
+        )?;
         if selected.source() != CorpusRootSource::Explicit
             || selected.path() != explicit.path().canonicalize()?
         {
@@ -671,9 +614,9 @@ mod tests {
             {
                 Ok(())
             }
-            other => Err(test_failure(format!(
-                "relative environment root was not rejected: {other:?}"
-            ))),
+            other => {
+                Err(test_failure(format!("relative environment root was not rejected: {other:?}")))
+            }
         }
     }
 
@@ -692,9 +635,7 @@ mod tests {
         if before.path() == after.path() && before.same_directory(&after) {
             Ok(())
         } else {
-            Err(test_failure(
-                "same explicit root changed identity with current directory",
-            ))
+            Err(test_failure("same explicit root changed identity with current directory"))
         }
     }
 }

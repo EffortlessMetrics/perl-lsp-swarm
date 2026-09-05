@@ -6,14 +6,20 @@
 use super::super::{
     Arc, DocumentState, GLOBAL_CANCELLATION_REGISTRY, ImplementationProvider, JsonRpcError,
     JsonRpcId, LspServer, ParentMap, Parser, PerlLspCancellationToken, REQUEST_CANCELLED, Value,
-    json, location_from_path,
+    json,
 };
 use crate::cancellation::RequestCleanupGuard;
 use crate::protocol::{req_position, req_uri};
 use crate::util::{read_text_file_with_encoding, token_under_cursor};
+use perl_lsp_rs_core::providers::ProviderDecisionFreshness;
 use perl_parser_core::source_file::is_binary_content;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
+
+// Only the test-fallbacks compatibility handler (`on_definition`) needs this
+// helper; production definition dispatch is a transparent adapter (#5108).
+#[cfg(any(test, feature = "test-fallbacks"))]
+use super::super::location_from_path;
 
 /// Serialize a slice of typed values to a JSON array (#4995).
 fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
@@ -115,6 +121,28 @@ fn lsp_location_count(value: Option<&Value>) -> usize {
     }
 }
 
+/// Naive comment-only heuristic for the goto-definition and completion
+/// guards (#5066/#5408/#5411): `true` when a `#` appears earlier on the
+/// same line.
+///
+/// This is deliberately NOT the rename candidate classifier and is
+/// deliberately not string-aware: a `#` inside a string literal still reads
+/// as a comment to this guard, and that trade-off is pinned by the guard
+/// regression tests. Rename's edit policy uses the generation-bound
+/// `SourceRegionIndex` instead (#4964).
+pub(crate) fn is_in_comment_naive(position: usize, source: &str) -> bool {
+    let line_start =
+        if position == 0 { 0 } else { source[..position].rfind('\n').map_or(0, |p| p + 1) };
+    let line = &source[line_start..];
+
+    if let Some(comment_pos) = line.find('#') {
+        let comment_absolute = line_start + comment_pos;
+        position >= comment_absolute
+    } else {
+        false
+    }
+}
+
 #[derive(Debug)]
 struct NavigationDecisionTraceContext {
     provider: &'static str,
@@ -132,7 +160,6 @@ struct TypeDefinitionFallbackTrace {
     blocker: &'static str,
     source_backed_state: &'static str,
     fact_source: &'static str,
-    freshness: &'static str,
     fallback: &'static str,
     dynamic_boundary: bool,
     request_version: Option<i32>,
@@ -148,7 +175,6 @@ impl Default for TypeDefinitionFallbackTrace {
             blocker: "missing_fact",
             source_backed_state: "type_definition_not_proven",
             fact_source: "fallback",
-            freshness: "fresh",
             fallback: "no_result",
             dynamic_boundary: false,
             request_version: None,
@@ -168,7 +194,6 @@ fn stale_type_definition_fallback_trace(
         blocker: "stale_fact",
         source_backed_state: "stale_type_definition_request",
         fact_source: "request_version",
-        freshness: "stale",
         fallback: "refresh_workspace_facts",
         dynamic_boundary: false,
         request_version: Some(request_version),
@@ -184,7 +209,6 @@ fn unsupported_type_definition_source_trace() -> TypeDefinitionFallbackTrace {
         blocker: "unsupported_fact_class",
         source_backed_state: "unscannable_type_definition_source",
         fact_source: "fallback",
-        freshness: "fresh",
         fallback: "no_result",
         dynamic_boundary: false,
         request_version: None,
@@ -224,7 +248,6 @@ fn classify_type_definition_fallback_trace(
             blocker: "dynamic_boundary",
             source_backed_state: "dynamic_type_definition_boundary",
             fact_source: "dynamic_boundary",
-            freshness: "fresh",
             fallback: "no_result",
             dynamic_boundary: true,
             request_version: None,
@@ -301,8 +324,62 @@ fn is_scannable_type_definition_source(source_text: &str) -> bool {
         && !is_binary_content(source_text)
 }
 
+/// Receipt-wire spelling of `ProviderDecisionFreshness`.
+///
+/// Bound to the enum's serde `snake_case` vocabulary (`fresh` | `stale` |
+/// `unknown` | `not_applicable`) rather than the human-readable explanation
+/// label, which spells `NotApplicable` as `"not applicable"`.
+fn provider_decision_freshness_wire(freshness: ProviderDecisionFreshness) -> &'static str {
+    match freshness {
+        ProviderDecisionFreshness::Fresh => "fresh",
+        ProviderDecisionFreshness::Stale => "stale",
+        ProviderDecisionFreshness::Unknown => "unknown",
+        ProviderDecisionFreshness::NotApplicable => "not_applicable",
+        // The enum is non-exhaustive. A future variant is evidence we do not yet
+        // know how to name, so the receipt fails closed rather than claiming
+        // freshness or inventing a private spelling.
+        _ => "unknown",
+    }
+}
+
+/// Freshness of a goto-definition receipt, derived from what the handler
+/// actually answered from (#14162).
+///
+/// Locations are only returned from live open-document facts or from a
+/// workspace-index lookup that already passed the staleness gate, so a
+/// non-empty answer is current for the request. An empty answer over a stale
+/// workspace index cannot vouch that the workspace was searched and reports
+/// `unknown`. An empty answer when the index is current (or the workspace
+/// feature is off) is a negative over current sources.
+fn goto_definition_receipt_freshness(
+    result_count: usize,
+    workspace_index_stale: bool,
+) -> ProviderDecisionFreshness {
+    if result_count == 0 && workspace_index_stale {
+        ProviderDecisionFreshness::Unknown
+    } else {
+        ProviderDecisionFreshness::Fresh
+    }
+}
+
+/// Freshness of a type-definition receipt, derived from the fact source the
+/// handler actually answered from (#14162).
+///
+/// `request_version` is only recorded when the request is behind the live
+/// document, so that source is `stale`. Open-document parser facts, a dynamic
+/// boundary classified from the current buffer, and a fallback scan of current
+/// open documents are current for the request. Any other source fails closed
+/// to `unknown`.
+fn type_definition_receipt_freshness(fact_source: &'static str) -> ProviderDecisionFreshness {
+    match fact_source {
+        "request_version" => ProviderDecisionFreshness::Stale,
+        "parser_syntax" | "dynamic_boundary" | "fallback" => ProviderDecisionFreshness::Fresh,
+        _ => ProviderDecisionFreshness::Unknown,
+    }
+}
+
 #[cfg(feature = "workspace")]
-fn get_fqn_regex() -> Result<&'static regex::Regex, JsonRpcError> {
+pub(super) fn get_fqn_regex() -> Result<&'static regex::Regex, JsonRpcError> {
     FQN_RE
         .get_or_init(|| regex::Regex::new(r"([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)"))
         .as_ref()
@@ -909,15 +986,32 @@ fn cursor_in_regex_capture(regex: &regex::Regex, text: &str, cursor: usize, grou
         .any(|cap| cap.get(group).is_some_and(|m| cursor >= m.start() && cursor <= m.end()))
 }
 
+/// Which `::`-separated component of a fully-qualified name the cursor is on.
+///
+/// Shared with `references.rs` so go-to-definition and find-references answer the
+/// same question with one implementation instead of two drifting copies (#1849).
 #[cfg(feature = "workspace")]
 #[derive(Debug, PartialEq, Eq)]
-enum FqnCursorComponent {
+pub(super) enum FqnCursorComponent {
+    /// The cursor is on a package component or on a `::` separator -- not on the
+    /// final component, so the match does not name the sub the caller is after.
     Prefix,
+    /// The cursor is on the final component, which names the sub.
     Final { package: String, name: String },
 }
 
+/// Resolve which component of the fully-qualified name under `cursor` the cursor
+/// is on, or `None` when the cursor is not inside a `::`-qualified match.
+///
+/// `text` must contain the *complete* qualified name around `cursor`. The final
+/// component is identified by the last `::` in the match, so a `text` that clips
+/// the name partway through a component makes that component look final and
+/// reports `Final` where the truth is `Prefix`. Pass a whole line
+/// (`util::line_window_around_offset`) rather than a fixed-radius window: a Perl
+/// qualified name cannot span a line break, but it can easily be longer than a
+/// radius.
 #[cfg(feature = "workspace")]
-fn fqn_component_at_cursor(
+pub(super) fn fqn_component_at_cursor(
     regex: &regex::Regex,
     text: &str,
     cursor: usize,
@@ -978,6 +1072,14 @@ impl LspServer {
             return;
         };
         let result_count = lsp_location_count(result);
+        #[cfg(feature = "workspace")]
+        let workspace_index_stale = self.workspace_index_stale_for_any_open_document();
+        #[cfg(not(feature = "workspace"))]
+        let workspace_index_stale = false;
+        let freshness = provider_decision_freshness_wire(goto_definition_receipt_freshness(
+            result_count,
+            workspace_index_stale,
+        ));
         let (decision, reason, fallback_state) = if result_count == 0 {
             ("fallback", "no_result", "no_result")
         } else {
@@ -996,7 +1098,7 @@ impl LspServer {
                 "result_count": result_count,
                 "fact_source": "navigation_provider",
                 "confidence": "low",
-                "freshness": "fresh",
+                "freshness": freshness,
                 "source_backed": false,
                 "source_backed_state": "not_proven_by_provider_trace",
                 "fallback_state": fallback_state,
@@ -1249,7 +1351,7 @@ impl LspServer {
                     // also classified as a string.  This now blocks whenever the
                     // offset is inside a comment.
                     let text = &doc.text;
-                    if perl_lsp_rs_core::providers::rename::is_in_comment(offset, text) {
+                    if is_in_comment_naive(offset, text) {
                         return Ok(None);
                     }
 
@@ -2435,6 +2537,7 @@ impl LspServer {
     ) {
         let acted = result_count > 0;
         let result_count = u64::try_from(result_count).unwrap_or(u64::MAX);
+        let fact_source = if acted { "parser_syntax" } else { fallback_trace.fact_source };
         let mut receipt = json!({
             "provider": context.provider,
             "provider_action": context.provider_action,
@@ -2445,9 +2548,11 @@ impl LspServer {
             "character": context.character,
             "result_count": result_count,
             "live_provider_result_count": result_count,
-            "fact_source": if acted { "parser_syntax" } else { fallback_trace.fact_source },
+            "fact_source": fact_source,
             "confidence": if acted { "high" } else { "low" },
-            "freshness": if acted { "fresh" } else { fallback_trace.freshness },
+            "freshness": provider_decision_freshness_wire(type_definition_receipt_freshness(
+                fact_source,
+            )),
             "source_backed": acted,
             "source_backed_state": if acted {
                 "open_document_type_definition"
@@ -2486,6 +2591,7 @@ impl LspServer {
         candidate_count: usize,
     ) {
         let candidate_count = u64::try_from(candidate_count).unwrap_or(u64::MAX);
+        let fact_source = "parser_syntax";
         let receipt = json!({
             "provider": context.provider,
             "provider_action": context.provider_action,
@@ -2498,9 +2604,11 @@ impl LspServer {
             "result_count": 0,
             "live_provider_result_count": 0,
             "ambiguous_candidate_count": candidate_count,
-            "fact_source": "parser_syntax",
+            "fact_source": fact_source,
             "confidence": "low",
-            "freshness": "fresh",
+            "freshness": provider_decision_freshness_wire(type_definition_receipt_freshness(
+                fact_source,
+            )),
             "source_backed": false,
             "source_backed_state": "ambiguous_type_definition_identity",
             "fallback": "no_result",
@@ -2639,6 +2747,11 @@ impl LspServer {
     }
 
     /// Non-blocking definition handler with fallback
+    ///
+    /// Production definition dispatch is a transparent adapter over the
+    /// canonical handler, so this compatibility handler is compiled only for
+    /// the test-fallbacks path (#5108).
+    #[cfg(any(test, feature = "test-fallbacks"))]
     pub(crate) fn on_definition(
         &self,
         params: serde_json::Value,
@@ -2668,6 +2781,288 @@ impl LspServer {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn serde_freshness_spelling(variant: ProviderDecisionFreshness) -> Option<String> {
+        serde_json::to_value(variant).ok().and_then(|value| value.as_str().map(str::to_owned))
+    }
+
+    /// The receipt wire spelling must track the enum's serde `snake_case`,
+    /// including `not_applicable` rather than the human-readable
+    /// `"not applicable"` / capitalized `"Fresh"`.
+    #[test]
+    fn provider_decision_freshness_wire_matches_canonical_serde_snake_case() {
+        for variant in [
+            ProviderDecisionFreshness::Fresh,
+            ProviderDecisionFreshness::Stale,
+            ProviderDecisionFreshness::Unknown,
+            ProviderDecisionFreshness::NotApplicable,
+        ] {
+            assert_eq!(
+                Some(provider_decision_freshness_wire(variant).to_string()),
+                serde_freshness_spelling(variant),
+                "{variant:?} receipt wire spelling drifted from ProviderDecisionFreshness serde"
+            );
+        }
+        assert_eq!(
+            provider_decision_freshness_wire(ProviderDecisionFreshness::NotApplicable),
+            "not_applicable"
+        );
+        assert_ne!(provider_decision_freshness_wire(ProviderDecisionFreshness::Fresh), "Fresh");
+    }
+
+    /// Exhaustive oracle for goto-definition receipt freshness (#14162).
+    #[test]
+    fn goto_definition_receipt_freshness_is_derived_from_result_and_index_staleness() {
+        assert_eq!(
+            goto_definition_receipt_freshness(1, false),
+            ProviderDecisionFreshness::Fresh,
+            "a location from live or freshness-gated facts is current"
+        );
+        assert_eq!(
+            goto_definition_receipt_freshness(1, true),
+            ProviderDecisionFreshness::Fresh,
+            "a location under a stale index still came from live document facts"
+        );
+        assert_eq!(
+            goto_definition_receipt_freshness(0, false),
+            ProviderDecisionFreshness::Fresh,
+            "an empty answer over current sources is a trustworthy negative"
+        );
+        assert_eq!(
+            goto_definition_receipt_freshness(0, true),
+            ProviderDecisionFreshness::Unknown,
+            "an empty answer over a stale index must not claim freshness"
+        );
+    }
+
+    /// Counter-assertion: a hardcode of either polarity fails (#14162).
+    #[test]
+    fn goto_definition_receipt_freshness_is_not_a_constant() {
+        assert_ne!(
+            goto_definition_receipt_freshness(0, true),
+            goto_definition_receipt_freshness(0, false),
+            "empty-answer freshness must vary with workspace-index staleness"
+        );
+        assert_ne!(
+            goto_definition_receipt_freshness(1, true),
+            goto_definition_receipt_freshness(0, true),
+            "freshness must vary by whether a location was returned under one stale index"
+        );
+        assert_eq!(
+            provider_decision_freshness_wire(goto_definition_receipt_freshness(1, true)),
+            "fresh"
+        );
+        assert_eq!(
+            provider_decision_freshness_wire(goto_definition_receipt_freshness(0, true)),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn type_definition_receipt_freshness_is_derived_from_the_answering_fact_source() {
+        assert_eq!(
+            type_definition_receipt_freshness("parser_syntax"),
+            ProviderDecisionFreshness::Fresh,
+            "open-document parser facts are current for the request"
+        );
+        assert_eq!(
+            type_definition_receipt_freshness("dynamic_boundary"),
+            ProviderDecisionFreshness::Fresh,
+            "a dynamic boundary classified from the current buffer is current"
+        );
+        assert_eq!(
+            type_definition_receipt_freshness("fallback"),
+            ProviderDecisionFreshness::Fresh,
+            "a fallback scan of current open documents is current"
+        );
+        assert_eq!(
+            type_definition_receipt_freshness("request_version"),
+            ProviderDecisionFreshness::Stale,
+            "a request behind the live document version is stale"
+        );
+        assert_eq!(
+            type_definition_receipt_freshness("not_a_known_source"),
+            ProviderDecisionFreshness::Unknown,
+            "an unrecognized source must fail closed"
+        );
+    }
+
+    /// Counter-assertion for type-definition: acted/ambiguous parser facts and
+    /// a stale request cannot share one hardcoded polarity.
+    #[test]
+    fn type_definition_receipt_freshness_is_not_a_constant() {
+        assert_ne!(
+            type_definition_receipt_freshness("parser_syntax"),
+            type_definition_receipt_freshness("request_version"),
+            "freshness must distinguish current open-document facts from a stale request"
+        );
+        assert_eq!(
+            provider_decision_freshness_wire(type_definition_receipt_freshness("parser_syntax")),
+            "fresh"
+        );
+        assert_eq!(
+            provider_decision_freshness_wire(type_definition_receipt_freshness("request_version")),
+            "stale"
+        );
+    }
+
+    #[test]
+    fn navigation_receipt_freshness_stays_in_the_canonical_vocabulary() {
+        let canonical: Vec<String> = [
+            ProviderDecisionFreshness::Fresh,
+            ProviderDecisionFreshness::Stale,
+            ProviderDecisionFreshness::Unknown,
+            ProviderDecisionFreshness::NotApplicable,
+        ]
+        .into_iter()
+        .filter_map(serde_freshness_spelling)
+        .collect();
+        assert_eq!(
+            canonical.len(),
+            4,
+            "ProviderDecisionFreshness serde must yield four snake_case spellings"
+        );
+
+        let emitted = [
+            goto_definition_receipt_freshness(0, false),
+            goto_definition_receipt_freshness(0, true),
+            goto_definition_receipt_freshness(1, false),
+            goto_definition_receipt_freshness(1, true),
+            type_definition_receipt_freshness("parser_syntax"),
+            type_definition_receipt_freshness("dynamic_boundary"),
+            type_definition_receipt_freshness("fallback"),
+            type_definition_receipt_freshness("request_version"),
+            type_definition_receipt_freshness("unknown_source"),
+        ];
+        for freshness in emitted {
+            let value = provider_decision_freshness_wire(freshness);
+            assert!(
+                canonical.iter().any(|canonical| canonical == value),
+                "{freshness:?} emitted {value:?}, outside ProviderDecisionFreshness"
+            );
+        }
+    }
+
+    fn goto_definition_request_receipt(
+        server: &LspServer,
+        uri: &str,
+        line: u32,
+        character: u32,
+    ) -> Result<(Option<Value>, Value), Box<dyn std::error::Error>> {
+        let result = server.test_handle_definition(Some(json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character }
+        })))?;
+        let explanation = server
+            .handle_execute_command(Some(json!({
+                "command": "perl.explainProviderDecision",
+                "arguments": [{"provider": "goto_definition"}]
+            })))?
+            .ok_or("missing explain-provider-decision response")?;
+        let receipt =
+            explanation.get("request_receipt").cloned().ok_or("missing request_receipt")?;
+        Ok((result, receipt))
+    }
+
+    /// End-to-end counter-assertion that the goto-definition receipt's
+    /// `freshness` is wired to the derivation rather than emitted as a literal
+    /// (#14162).
+    ///
+    /// One server, both index states, both result polarities:
+    /// - empty over a current index → `fresh` (fails `empty => unknown`)
+    /// - live answer under a stale index → `fresh` (fails `stale index => unknown`)
+    /// - empty under that same stale index → `unknown` (fails hardcoded `fresh`)
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn handle_definition_derives_receipt_freshness_from_what_it_answered_from()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let main_uri = "file:///workspace/freshness-def-main.pl";
+        let main_text = "package Foo;\nsub bar { return 1; }\npackage main;\nFoo::bar();\n";
+        let unrelated_uri = "file:///workspace/freshness-def-unrelated.pl";
+        let unrelated_text = "package Unrelated;\nsub helper {}\n";
+
+        server.test_apply_did_open(main_uri, main_text, 1)?;
+        server.test_apply_did_open(unrelated_uri, unrelated_text, 1)?;
+        server
+            .test_index_file_in_building_state(main_uri, main_text)
+            .map_err(std::io::Error::other)?;
+        server
+            .test_index_file_in_building_state(unrelated_uri, unrelated_text)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+        assert!(
+            !server.workspace_index_stale_for_any_open_document(),
+            "the fixture starts with a current workspace index"
+        );
+
+        // Cursor on the `Foo` prefix of `Foo::bar` (line 3, character 1).
+        let (prefix_fresh_index, prefix_fresh_receipt) =
+            goto_definition_request_receipt(&server, main_uri, 3, 1)?;
+        assert!(
+            prefix_fresh_index.as_ref().and_then(Value::as_array).is_some_and(Vec::is_empty)
+                || prefix_fresh_index.is_none(),
+            "a package-prefix cursor must yield an empty answer; got {prefix_fresh_index:?}"
+        );
+        assert_eq!(prefix_fresh_receipt.get("result_count").and_then(Value::as_u64), Some(0));
+        assert_eq!(
+            prefix_fresh_receipt.get("freshness").and_then(Value::as_str),
+            Some("fresh"),
+            "an empty answer over a current index is a trustworthy negative"
+        );
+
+        server
+            .test_replace_document_without_index(
+                unrelated_uri,
+                "package Unrelated;\nsub renamed {}\n",
+                2,
+            )
+            .map_err(std::io::Error::other)?;
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "the edited unrelated buffer must stale the workspace index"
+        );
+
+        // Cursor on `bar` in `Foo::bar()` (line 3, character 5): live same-file
+        // facts still answer, so the receipt stays fresh.
+        let (live, live_receipt) = goto_definition_request_receipt(&server, main_uri, 3, 5)?;
+        assert!(
+            live.as_ref().and_then(Value::as_array).is_some_and(|locations| !locations.is_empty()),
+            "same-file Foo::bar should still resolve under a stale index: {live:?}"
+        );
+        assert_eq!(
+            live_receipt.get("freshness").and_then(Value::as_str),
+            Some("fresh"),
+            "an answer read from live document facts is current despite a stale index"
+        );
+
+        let (prefix_stale_index, prefix_stale_receipt) =
+            goto_definition_request_receipt(&server, main_uri, 3, 1)?;
+        assert!(
+            prefix_stale_index.as_ref().and_then(Value::as_array).is_some_and(Vec::is_empty)
+                || prefix_stale_index.is_none(),
+            "a package-prefix cursor must stay empty under a stale index; got {prefix_stale_index:?}"
+        );
+        assert_eq!(prefix_stale_receipt.get("result_count").and_then(Value::as_u64), Some(0));
+        assert_eq!(
+            prefix_stale_receipt.get("freshness").and_then(Value::as_str),
+            Some("unknown"),
+            "an empty answer over a stale index must not claim freshness"
+        );
+
+        assert_ne!(
+            live_receipt.get("freshness"),
+            prefix_stale_receipt.get("freshness"),
+            "freshness must discriminate a live answer from an empty stale-index answer"
+        );
+        assert_ne!(
+            prefix_fresh_receipt.get("freshness"),
+            prefix_stale_receipt.get("freshness"),
+            "empty-answer freshness must vary with the index state actually observed"
+        );
+
+        Ok(())
+    }
 
     #[cfg(feature = "workspace")]
     #[test]

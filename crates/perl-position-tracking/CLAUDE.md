@@ -91,7 +91,9 @@ assert_eq!(mapper.text(), "hello Rust");
 ## Important Notes
 
 - UTF-16 conversion must be round-trip safe (byte -> LSP position -> byte).
-- `LineStartsCache` handles CR, LF, and CRLF line endings.
+- `LineStartsCache` uses the LF-delimited source-line contract: LF and CRLF
+  delimit lines; bare CR remains content. `PositionMapper` is a separate
+  legacy coordinate surface until its owning migration completes.
 - `PositionMapper` re-detects `LineEnding` after each edit.
 - Engine `Position` uses 1-based line/column; wire `WirePosition` uses 0-based line + UTF-16 character.
 - The `lsp-compat` feature gates `From` impls between wire types and `lsp_types` -- it is optional to avoid pulling in `lsp-types` for non-LSP consumers.

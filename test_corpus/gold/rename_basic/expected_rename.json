@@ -7,6 +7,36 @@
       "line": 5,
       "character": 7,
       "new_name": "$total",
+      "expected_edits": [
+        {
+          "line": 5,
+          "character": 7,
+          "end_line": 5,
+          "end_character": 13,
+          "new_text": "$total"
+        },
+        {
+          "line": 6,
+          "character": 4,
+          "end_line": 6,
+          "end_character": 10,
+          "new_text": "$total"
+        },
+        {
+          "line": 7,
+          "character": 18,
+          "end_line": 7,
+          "end_character": 24,
+          "new_text": "$total"
+        },
+        {
+          "line": 8,
+          "character": 11,
+          "end_line": 8,
+          "end_character": 17,
+          "new_text": "$total"
+        }
+      ],
       "rationale": "rename on $count declaration (line 5, char 7 = '$' in $count) must return a WorkspaceEdit"
     },
     {
@@ -15,6 +45,36 @@
       "line": 5,
       "character": 7,
       "new_name": "$total",
+      "expected_edits": [
+        {
+          "line": 5,
+          "character": 7,
+          "end_line": 5,
+          "end_character": 13,
+          "new_text": "$total"
+        },
+        {
+          "line": 6,
+          "character": 4,
+          "end_line": 6,
+          "end_character": 10,
+          "new_text": "$total"
+        },
+        {
+          "line": 7,
+          "character": 18,
+          "end_line": 7,
+          "end_character": 24,
+          "new_text": "$total"
+        },
+        {
+          "line": 8,
+          "character": 11,
+          "end_line": 8,
+          "end_character": 17,
+          "new_text": "$total"
+        }
+      ],
       "rationale": "$count appears at declaration + $count++ + print + return — at least 3 edits"
     }
   ]

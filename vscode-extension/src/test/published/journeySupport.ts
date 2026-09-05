@@ -245,6 +245,7 @@ export const RETAINED_SUPPORT_COMMAND_IDS = [
   'perl-lsp.openConfigurationGuide',
   'perl-lsp.checkForUpdate',
   'perl-lsp.reportIssue',
+  'perl-lsp.showCoexistenceStatus',
 ] as const;
 
 /** Activation-registered commands that carry no `contributes.commands` entry. */
