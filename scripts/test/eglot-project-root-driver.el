@@ -47,16 +47,13 @@
                     (with-current-buffer events
                       (buffer-string)))))
     (when (and text
-               (string-match "\"rootUri\"[[:space:]]*:[[:space:]]*\\(\"[^\"]*\"[[:space:]]*\\|null\\)"
+               (string-match "\"rootUri\"[[:space:]]*:[[:space:]]*\\(?:\"\\([^\"]*\\)\"\\|null\\)"
                              text))
-      (let ((token (match-string 1 text)))
-        (cond
-         ((string= token "null") nil)
-         ((and (> (length token) 1)
-               (= (aref token 0) ?\")
-               (= (aref token (1- (length token))) ?\"))
-          (substring token 1 -1))
-         (t token))))))
+      ;; Only the quoted alternative captures, so a literal `null' leaves
+      ;; group 1 unset and the caller records the native null sentinel.  The
+      ;; group holds the URI itself: no surrounding quotes, no trailing
+      ;; whitespace can reach the receipt as part of the observed root.
+      (match-string 1 text))))
 
 (defun perl-lsp-root-probe--live-server-count (server)
   "Return one only when this case's exact server process is still live."

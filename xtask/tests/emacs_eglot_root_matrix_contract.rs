@@ -184,7 +184,11 @@ fn root_probe_driver_observes_stock_selection_without_prebinding() -> Result<(),
     let driver = read(&root, DRIVER)?;
     // The instrument must call the exact stock seams.
     for seam in [
-        "(require 'eglot)", "(project-current nil)", "(project-root project)", "(eglot--current-project)"] {
+        "(require 'eglot)",
+        "(project-current nil)",
+        "(project-root project)",
+        "(eglot--current-project)",
+    ] {
         assert!(driver.contains(seam), "driver must observe through stock seam: {seam}");
     }
     // No-prebinding falsifiers: the instrument never injects, remembers, or
@@ -259,5 +263,71 @@ fn root_matrix_record_and_driver_paths_are_the_declared_instrument() -> Result<(
         .and_then(Value::as_str)
         .ok_or("instrument.fixtures missing")?;
     assert!(fixtures.contains("#11366"), "fixtures reference must consume #11366 unchanged");
+    Ok(())
+}
+
+/// Scan the driver's receipt payload for the keys it actually emits.
+///
+/// The payload is a backquoted alist, so every emitted slot appears as an
+/// `(ident . ,value)` pair. Any other parenthesized form in the region is a
+/// call whose head is followed by an argument rather than a dot, so it is
+/// skipped without a hand-maintained exclusion list.
+fn driver_receipt_slots(driver: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    let call = driver.find("(perl-lsp-root-probe--record").ok_or("driver has no receipt call")?;
+    let end =
+        driver.find("(defun perl-lsp-root-probe--record").ok_or("driver has no receipt writer")?;
+    let region = driver.get(call..end).ok_or("receipt payload region is malformed")?;
+
+    let mut slots = Vec::new();
+    for fragment in region.split('(').skip(1) {
+        let ident: String = fragment
+            .chars()
+            .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
+            .collect();
+        if ident.is_empty() {
+            continue;
+        }
+        let rest = fragment[ident.len()..].trim_start();
+        if rest.starts_with('.') && !slots.contains(&ident) {
+            slots.push(ident);
+        }
+    }
+    Ok(slots)
+}
+
+/// The record's declared slot vocabulary and the driver's emitted receipt
+/// keys are one contract. Drift in either direction — a declared slot the
+/// instrument never fills, or an undeclared key smuggled into a receipt —
+/// silently corrupts the eventual hosted observation, so it fails here.
+#[test]
+fn declared_observation_slots_match_the_driver_receipt_keys() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let driver = read(&root, DRIVER)?;
+    let record: Value = serde_json::from_str(&read(&root, RECORD)?)?;
+
+    let mut declared: Vec<String> = record
+        .pointer("/observation_slots/slots")
+        .and_then(Value::as_array)
+        .ok_or("observation_slots.slots missing")?
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    assert!(!declared.is_empty(), "the record must declare a closed slot vocabulary");
+
+    let mut emitted = driver_receipt_slots(&driver)?;
+    // Negative control on the scanner itself: a payload that parsed to
+    // nothing would make the comparison below vacuously satisfiable.
+    assert!(
+        emitted.contains(&"case_id".to_owned()) && emitted.contains(&"driver_complete".to_owned()),
+        "receipt-key scan found no recognizable payload: {emitted:?}"
+    );
+
+    declared.sort();
+    emitted.sort();
+    assert_eq!(
+        emitted, declared,
+        "driver receipt keys and declared observation slots must agree exactly"
+    );
     Ok(())
 }
