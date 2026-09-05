@@ -306,6 +306,7 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
           shared-key: ci-platform-scope-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
       - name: Classify platform overrides
         id: scope
         shell: bash
@@ -382,8 +383,13 @@ jobs:
         shell: bash
         env:
           WINDOWS_TEST_CRATES: ${{ needs.platform-overrides.outputs.windows_test_crates }}
+        # Keep the existing library smoke execution, then compile the
+        # Unix-only integration target on Windows so its cfg boundary cannot
+        # silently bit-rot. Unix remains the execution authority for the
+        # Bash/chmod smoke.
         run: |
           cargo test $WINDOWS_TEST_CRATES --locked --lib
+          cargo test -p xtask --test release_artifact_size_smoke_script --locked --no-run
           if [[ " $WINDOWS_TEST_CRATES " == *" -p perl-ci-hygiene "* ]]; then
             cargo test -p perl-ci-hygiene --locked --bin perl-ci-hygiene process::tests::
           fi
@@ -431,6 +437,7 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
           shared-key: ci-contract-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
       - name: Run Repository Contract
         env:
           SUBJECT_BASE_SHA: ${{ inputs.base_sha || '' }}
@@ -584,6 +591,7 @@ jobs:
         with:
           key: public-api-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-public-api
         if: needs.draft-pr-check.outputs.api_scope == 'true'
@@ -646,6 +654,7 @@ jobs:
         with:
           key: semver-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-semver-checks
         if: needs.draft-pr-check.outputs.api_scope == 'true'
@@ -1608,6 +1617,39 @@ jobs:
       # contracts above, so it belongs on the same required merge surface.
       - name: Non-Rust file policy contract (required merge surface)
         run: cargo test -p xtask --test file_policy --locked -- --nocapture
+
+      # #14178: identical reasoning to the file-policy contract directly above.
+      # This suite asserts that every literal crate name in the Cargo dependabot
+      # entry, and every crate the dependency guide advertises, resolves to a
+      # dependency some workspace manifest declares. Its whole value is going
+      # red when a stale name is added, and `.github/dependabot.yml` is not in
+      # ci-scope's CI_CONFIG_PATHS, so a config-only edit does not even reach
+      # the advisory routed lane. Left off this surface the guard would compile
+      # and never execute — the state #14585 found `file_policy` in.
+      - name: Dependabot dependency-name contract (required merge surface)
+        run: cargo test -p xtask --test dependabot_cargo_dependency_names --locked -- --nocapture
+
+      # #13484: nothing executed the `xtask` *bin* unit tests. The merge gate
+      # runs `cargo test --workspace --lib` (a bin is not a lib target) and no
+      # workflow names `--bin xtask`, so `tasks::changelog::tests` — the proof
+      # that a malformed fragment `time:` becomes a named per-fragment finding
+      # instead of a repo-wide `changie batch` crash, and that an absent
+      # disposition artifact cannot supply the disposition removing it — could
+      # not go red. Same failure mode as #14585 above: the gate guarding the
+      # release ledger was itself guarded by a contract with no way to fail.
+      # Scoped to the changelog/changie modules rather than the whole bin
+      # suite on purpose — that suite also carries inventory ratchets which are
+      # red on main today, so enabling it wholesale would gate this surface on
+      # other lanes' work.
+      # One invocation with both filters, not two runs: libtest ORs positional
+      # filters and runs each match once, so `check_malformed_changie_yaml_is_
+      # instrument_failure_exit2` — the one name containing both words — is not
+      # executed twice. Kept as substring filters rather than exact module
+      # paths on purpose: they also pick up the `merge_ready` changelog fan-in
+      # tests and the `file_policy` changie-rule tests, which exact paths would
+      # drop from this surface.
+      - name: Changelog fragment gate contract (required merge surface)
+        run: cargo test -p xtask --bin xtask --locked -- --nocapture changelog changie
 
   lsp-memory-smoke:
     name: LSP Memory Smoke
