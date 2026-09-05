@@ -90,13 +90,24 @@ KNOWN_SKILLS = frozenset(
     }
 )
 
+# The `main` ruleset (id 16664791) sets `required_review_thread_resolution`, so an
+# armed auto-merge with one open bot or outdated thread never fires and reports no
+# failure. The finishing skills must state the precondition in identical words.
+THREAD_PRECONDITION = "zero unresolved review threads is a precondition of arming auto-merge"
+
 SEMANTIC_PARITY_MARKERS: dict[str, tuple[str, ...]] = {
-    "address-review-comments": ("NOT_PROVEN", "final-challenge"),
+    "address-review-comments": ("NOT_PROVEN", "final-challenge", THREAD_PRECONDITION),
     "build-candidate": ("CANDIDATE_READY", "NOT_PROVEN", "prepare-proof"),
     "deliver-goal": ("IN_FLIGHT", "deliver-pr", "NOT_PROVEN"),
     "deliver-pr": ("IN_FLIGHT", "NOT_PROVEN", "finish-pr"),
     "final-challenge": ("CANDIDATE_READY_FOR_REVIEW", "NOT_PROVEN", "review-pr"),
-    "finish-pr": ("REVIEW_CURRENT", "CHANGES_REQUIRED", "INTEGRATION_READY", "NOT_PROVEN"),
+    "finish-pr": (
+        "REVIEW_CURRENT",
+        "CHANGES_REQUIRED",
+        "INTEGRATION_READY",
+        "NOT_PROVEN",
+        THREAD_PRECONDITION,
+    ),
     "improve-test-suite": ("NOT_PROVEN", "review-tests", "simplify-candidate"),
     "merge-reconcile": (
         "REVIEW_CURRENT",
@@ -129,6 +140,8 @@ SEMANTIC_PARITY_MARKERS: dict[str, tuple[str, ...]] = {
         "NOT_PROVEN",
         "a rerun of a merge-tree-evaluated check replays its original merge snapshot",
         "re-evaluates the current tree and is the honest action",
+        THREAD_PRECONDITION,
+        "is `MERGE_BLOCKED` routed to `address-review-comments`, not `PR_IN_FLIGHT`",
     ),
 }
 
