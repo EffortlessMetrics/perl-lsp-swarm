@@ -210,6 +210,11 @@ The construction context must not be the only detection surface supporting a
 substantive merge. Independence comes from changed evidence, oracle, method, threat
 model, environment, or attention—not identity alone.
 
+Read-only review is non-exclusive. Multiple sessions may inspect the same candidate and
+publish useful findings concurrently without writer allocation, a claim, or a wait.
+Exclusivity begins at mutation: a reviewer that wants to change the candidate must take
+the one writer role or leave the finding for the current writer.
+
 A clean review is valid. Do not manufacture findings or edits to demonstrate that the
 review happened.
 
@@ -256,8 +261,9 @@ Otherwise detect, explain, repair, and continue.
   context-preserving `must_with`/`must_some_with`/`must_err_with`; the bare
   `must`/`must_some`/`must_err` are only correct when the call site carried no
   explanation (`cargo xtask ci-hygiene check-must-context` reports the drop);
-- do not use `git stash` for shared multi-worktree agent work; the stash ref is
-  repository-global; use scoped restore or a branch-local WIP commit;
+- never use `git stash` in this shared multi-worktree repository; `refs/stash` is
+  repository-global, so another worktree can pop or drop your entry without knowing it
+  is yours; use scoped restore or a branch-local WIP commit;
 - rewrite published candidate history only with established sole mutation ownership and
   an explicit expected remote SHA; if exclusivity is unknown, preserve the observed
   remote head and use a non-rewriting integration or stop;
