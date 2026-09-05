@@ -41,7 +41,11 @@
 //! naming the fragment(s): the renderer would crash on them repo-wide, which
 //! would bury the named findings under an exit-2 instrument failure that names
 //! nothing. "Fragment X is malformed" (above) and "render crashed" (exit 2)
-//! therefore never appear for the same run. Fragments absent from the tree
+//! therefore never appear for the same run. The repo-wide half of that guard
+//! is scoped to *renderer-fatal* defects — an unparseable fragment or a
+//! `time:` the renderer's timestamp decode rejects — not to every schema
+//! finding: another PR's policy-conformance defect renders perfectly well and
+//! must not switch the render oracle off for the whole repository. Fragments absent from the tree
 //! under check are excluded from the disposition itself before classification
 //! — an absent path cannot crash the renderer, owes no release note, and must
 //! not lend its Fragment disposition to unrelated changes in the same PR.
@@ -706,23 +710,51 @@ fn fragment_content_findings(content: &str, cfg: &ChangieConfig) -> Vec<String> 
     }
 }
 
+/// Findings that make the *renderer itself* fail, as opposed to findings that
+/// violate repository policy while rendering perfectly well.
+///
+/// Only two shapes are known to crash `changie batch`: content that does not
+/// deserialize as a fragment at all, and a `time:` Go's yaml/time decoding
+/// rejects (#12549, #12648, #13484). Everything else [`validate_fragment`]
+/// reports — an unknown component, kind, or project, a short body, a
+/// non-numeric PR — is a conformance defect the renderer tolerates. That is
+/// not an assumption: 47 fragments with an unknown `component` were live on
+/// `main` while releases rendered, and the two incidents that motivated this
+/// module were both `time:`.
+///
+/// The distinction is load-bearing only for the repo-wide guard below, which
+/// suppresses the render for the *whole repository*. Keyed on every schema
+/// finding, it matched those 47 and turned the render off for every PR —
+/// silently retiring the checker's one external oracle, and doing it for
+/// defects that were never going to crash anything (#13484 review round 4).
+fn render_fatal_findings(content: &str) -> Vec<String> {
+    let frag: Fragment = match serde_yaml_ng::from_str(content) {
+        Ok(f) => f,
+        Err(e) => return vec![format!("does not parse as YAML: {e}")],
+    };
+    let mut findings = Vec::new();
+    validate_time_field(&frag.time, &mut findings);
+    findings
+}
+
 /// Validate every on-disk unreleased fragment (not just this PR's) and return
-/// the malformed paths, reporting a WARN per finding. This is the repo-wide
-/// half of the #13484 guard: `render_disposition_projects` renders every
-/// project with unreleased fragments, so a pre-existing malformed fragment —
-/// not authored by this PR — would still crash `changie batch` and bury the
-/// findings under an unnamed exit-2 failure. Valid fragments are silent here
-/// (the PR's own fragments were already reported by [`check_fragment_file`]).
-fn on_disk_malformed_fragments(
-    root: &Path,
-    cfg: &ChangieConfig,
-    report: &mut Report,
-) -> Vec<String> {
+/// the paths that would crash the renderer, reporting a WARN per finding.
+/// This is the repo-wide half of the #13484 guard: `render_disposition_
+/// projects` renders every project with unreleased fragments, so a
+/// pre-existing renderer-fatal fragment — not authored by this PR — would
+/// still crash `changie batch` and bury the findings under an unnamed exit-2
+/// failure.
+///
+/// Scoped to [`render_fatal_findings`] rather than the full schema: another
+/// PR's policy-conformance defect is not this run's business and must not
+/// suppress the render. Renderable fragments are silent here (the PR's own
+/// were already reported by [`check_fragment_file`]).
+fn on_disk_malformed_fragments(root: &Path, report: &mut Report) -> Vec<String> {
     let unreleased = root.join(UNRELEASED_DIR);
     let Ok(entries) = std::fs::read_dir(&unreleased) else {
         return Vec::new();
     };
-    let mut malformed = Vec::new();
+    let mut unrenderable = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
@@ -734,7 +766,7 @@ fn on_disk_malformed_fragments(
         };
         let findings = std::fs::read_to_string(&path).map_or_else(
             |_| vec!["could not read fragment".to_string()],
-            |content| fragment_content_findings(&content, cfg),
+            |content| render_fatal_findings(&content),
         );
         if findings.is_empty() {
             continue;
@@ -742,10 +774,10 @@ fn on_disk_malformed_fragments(
         for f in findings {
             report.warn(format!("{rel}: {f}"));
         }
-        malformed.push(rel);
+        unrenderable.push(rel);
     }
-    malformed.sort();
-    malformed
+    unrenderable.sort();
+    unrenderable
 }
 
 /// Accumulates advisory findings for a single run.
@@ -887,13 +919,13 @@ fn check_inner(
             // findings under an exit-2 instrument failure that names nothing.
             let mut unrenderable = malformed.clone();
             if unrenderable.is_empty() {
-                unrenderable = on_disk_malformed_fragments(&root, &cfg, &mut report);
+                unrenderable = on_disk_malformed_fragments(&root, &mut report);
                 if !unrenderable.is_empty() {
                     report.info(format!(
-                        "skipping `changie batch --dry-run`: {} pre-existing malformed \
+                        "skipping `changie batch --dry-run`: {} pre-existing renderer-fatal \
                          fragment(s) on disk ({}) would crash the renderer — repair or \
-                         recreate them with `changie new` (or `cargo change`); this PR's \
-                         own fragments are valid.",
+                         recreate them with `changie new` (or `cargo change`); this PR's own \
+                         fragments are valid.",
                         unrenderable.len(),
                         unrenderable.join(", ")
                     ));
@@ -1441,9 +1473,61 @@ custom:
 "#;
         let frag: Fragment = serde_yaml_ng::from_str(orphaned).expect("orphaned time parses");
         let findings = validate_fragment(&frag, &cfg);
+        // YAML folds the orphaned line into a plain scalar, so this shape
+        // reaches the not-RFC-3339 branch rather than the non-scalar one.
+        // Assert the branch that actually fires: every finding message
+        // contains "`time:`", so matching only that cannot tell them apart
+        // and would pass whichever arm ran (#13484 review round 4).
         assert!(
-            findings.iter().any(|f| f.contains("`time:`")),
-            "orphaned bare time line must produce a named finding: {findings:?}"
+            findings.iter().any(|f| f.contains("is not RFC 3339") && f.contains("13:55:13")),
+            "orphaned bare time must be named as a non-RFC-3339 value: {findings:?}"
+        );
+    }
+
+    /// The non-scalar arm. YAML admits shapes that are neither null nor a
+    /// string — `time: 20260830` is a number, `time:` with nested keys is a
+    /// mapping — and both reach the renderer's timestamp decode. Without
+    /// these, deleting the arm entirely leaves every other test green while a
+    /// number or mapping `time:` is reported schema-valid and handed to
+    /// `changie batch` (#13484 review round 4).
+    #[test]
+    fn non_scalar_time_is_flagged() {
+        let cfg = test_config();
+        for (label, time_yaml) in [
+            ("number", "time: 20260830\n"),
+            ("float", "time: 2026.0830\n"),
+            ("bool", "time: true\n"),
+            ("mapping", "time:\n  hour: 13\n  minute: 55\n"),
+            ("sequence", "time:\n  - 2026-08-30T13:55:13Z\n"),
+        ] {
+            let yaml = format!(
+                "project: product\ncomponent: Developer experience\nkind: Added\nbody: A \
+                 sufficiently long changelog body line.\n{time_yaml}custom:\n  PR: \"1\"\n  \
+                 Breaking: \"no\"\n"
+            );
+            let frag: Fragment =
+                serde_yaml_ng::from_str(&yaml).unwrap_or_else(|e| panic!("{label} parses: {e}"));
+            let findings = validate_fragment(&frag, &cfg);
+            assert!(
+                findings.iter().any(|f| f.contains("must be an RFC 3339 timestamp string")),
+                "{label} `time:` must be flagged as non-scalar: {findings:?}"
+            );
+        }
+    }
+
+    /// A whitespace-only `time:` is empty in every sense that matters and must
+    /// report as missing rather than as a malformed timestamp.
+    #[test]
+    fn whitespace_only_time_is_flagged_as_empty() {
+        let cfg = test_config();
+        let yaml = "project: product\ncomponent: Developer experience\nkind: Added\nbody: A \
+                    sufficiently long changelog body line.\ntime: \"   \"\ncustom:\n  PR: \
+                    \"1\"\n  Breaking: \"no\"\n";
+        let frag: Fragment = serde_yaml_ng::from_str(yaml).expect("whitespace time parses");
+        let findings = validate_fragment(&frag, &cfg);
+        assert!(
+            findings.iter().any(|f| f.contains("missing or empty `time:`")),
+            "a whitespace-only `time:` must report as empty: {findings:?}"
         );
     }
 
@@ -2578,16 +2662,30 @@ changelog = "vscode-extension/CHANGELOG.md"
         Ok(())
     }
 
-    /// A pre-existing malformed fragment on disk (not authored by this PR)
-    /// must skip the render with a named finding instead of crashing
+    /// A pre-existing renderer-fatal fragment on disk (not authored by this
+    /// PR) must skip the render with a named finding instead of crashing
     /// `changie batch` repo-wide as an unnamed exit-2 failure (issue #13484
     /// review: repo-wide half of the render guard).
+    ///
+    /// The boundary is armed to **blocking** on purpose. Under an unarmed
+    /// policy every path through this arm returns `PolicySatisfied`, so the
+    /// "not this PR's escalation to bear" assertion below would hold no
+    /// matter what the code did — including a version that blamed this PR for
+    /// someone else's stale fragment. Arming it makes the assertion
+    /// discriminating (#13484 review round 4).
     #[test]
     fn check_preexisting_on_disk_malformed_fragment_skips_render_with_named_finding()
     -> std::result::Result<(), String> {
         let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
         let dir = tmp.path();
-        write_policy(dir)?;
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let armed = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "blocking", Some(&armed), Some(&armed))?;
         write_valid_changie(dir)?;
         let unreleased = dir.join(".changes/unreleased");
         std::fs::create_dir_all(&unreleased).map_err(|e| e.to_string())?;
@@ -2604,25 +2702,131 @@ changelog = "vscode-extension/CHANGELOG.md"
         )
         .map_err(|e| e.to_string())?;
         let list = write_changed_files(dir, &[own_path])?;
-        let (outcome, report) = check_inner(None, Some(list), None, false, Some(dir.to_path_buf()))
-            .map_err(|e| e.to_string())?;
+        let (outcome, report) =
+            check_inner(Some(armed), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
         assert_eq!(
             outcome,
             CheckOutcome::PolicySatisfied,
-            "a pre-existing on-disk defect is not this PR's escalation to bear"
+            "a pre-existing on-disk defect is not this PR's escalation to bear, even past \
+             the blocking boundary"
         );
         let rendered = report.lines.join("\n");
         assert!(
             rendered.contains("product-stale-Added-111111.yaml"),
-            "report must name the pre-existing malformed fragment; got:\n{rendered}"
+            "report must name the pre-existing renderer-fatal fragment; got:\n{rendered}"
         );
         assert!(
-            rendered.contains("pre-existing malformed fragment(s) on disk"),
+            rendered.contains("pre-existing renderer-fatal fragment(s) on disk"),
             "report must record the repo-wide render skip; got:\n{rendered}"
         );
         assert!(
             !rendered.contains("rendered OK"),
-            "no project may render when a pre-existing fragment is malformed; got:\n{rendered}"
+            "no project may render when a pre-existing fragment would crash it; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// The other direction, and the one that matters most: on a tree whose
+    /// on-disk fragments are all renderable, the guard must stay silent and
+    /// the render must actually be attempted.
+    ///
+    /// Every other assertion about this guard is in the firing direction, so
+    /// a guard that suppressed the render unconditionally passed the whole
+    /// suite — and that is not hypothetical. Keyed on the full fragment
+    /// schema, the repo-wide guard matched 47 on-disk fragments carrying an
+    /// unknown `component`, a policy defect the renderer has always tolerated,
+    /// and switched `changie batch --dry-run` off for every PR in the
+    /// repository. The checker's one external oracle went quiet while every
+    /// run still reported success (#13484 review round 4).
+    ///
+    /// Environment-independent: `changie` need not be installed, since the
+    /// claim is that the render step is *reached*, and its own "not on PATH"
+    /// line proves that as well as a real render does.
+    #[test]
+    fn check_renderable_on_disk_fragments_do_not_suppress_the_render()
+    -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        write_policy(dir)?;
+        write_valid_changie(dir)?;
+        let unreleased = dir.join(".changes/unreleased");
+        std::fs::create_dir_all(&unreleased).map_err(|e| e.to_string())?;
+        // Pre-existing, policy-invalid, and perfectly renderable: an unknown
+        // component is a conformance defect, not a timestamp decode failure.
+        std::fs::write(
+            dir.join(".changes/unreleased/product-stale-Added-111111.yaml"),
+            "project: product\ncomponent: Nonexistent area\nkind: Added\nbody: A long enough body.\ntime: 2026-08-30T00:00:00Z\ncustom:\n  PR: \"1\"\n",
+        )
+        .map_err(|e| e.to_string())?;
+        let own_path = ".changes/unreleased/product-12549-Added-135514.yaml";
+        std::fs::write(
+            dir.join(own_path),
+            "project: product\ncomponent: Developer experience\nkind: Added\nbody: A long enough body.\ntime: 2026-08-30T00:00:00Z\ncustom:\n  PR: \"12549\"\n",
+        )
+        .map_err(|e| e.to_string())?;
+        let list = write_changed_files(dir, &[own_path])?;
+        let (outcome, report) = check_inner(None, Some(list), None, false, Some(dir.to_path_buf()))
+            .map_err(|e| e.to_string())?;
+        assert_eq!(outcome, CheckOutcome::PolicySatisfied, "a valid fragment PR passes");
+        let rendered = report.lines.join("\n");
+        assert!(
+            !rendered.contains("renderer-fatal fragment(s) on disk"),
+            "a renderable on-disk fragment must not suppress the repo-wide render; \
+             got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("rendered OK") || rendered.contains("changie not on PATH"),
+            "the render step must be reached, not skipped; got:\n{rendered}"
+        );
+        Ok(())
+    }
+
+    /// Present-but-unreadable is not the same as absent, and the distinction
+    /// is exactly the boundary of `absent_paths`: `Path::exists()` is true for
+    /// a path that cannot be read, so such a fragment must still reach
+    /// `check_fragment_file` and escalate — never be silently excluded the way
+    /// a deleted one is, and never be handed to the renderer as valid.
+    ///
+    /// A directory named `*.yaml` is the cheapest portable way to make a path
+    /// that exists and fails to read (#13484 review round 4).
+    #[test]
+    fn check_present_but_unreadable_fragment_still_escalates() -> std::result::Result<(), String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q"])?;
+        run_git(dir, &["config", "user.email", "test@example.com"])?;
+        run_git(dir, &["config", "user.name", "test"])?;
+        std::fs::write(dir.join("seed.txt"), "seed").map_err(|e| e.to_string())?;
+        run_git(dir, &["add", "."])?;
+        run_git(dir, &["commit", "-q", "-m", "seed"])?;
+        let armed = run_git_output(dir, &["rev-parse", "HEAD"])?;
+        write_policy_with_clocks(dir, "blocking", Some(&armed), Some(&armed))?;
+        write_valid_changie(dir)?;
+        let unreadable = ".changes/unreleased/product-1-Added-000003.yaml";
+        std::fs::create_dir_all(dir.join(unreadable)).map_err(|e| e.to_string())?;
+        let list = write_changed_files(dir, &[unreadable])?;
+        let (outcome, report) =
+            check_inner(Some(armed), Some(list), None, false, Some(dir.to_path_buf()))
+                .map_err(|e| e.to_string())?;
+        let rendered = report.lines.join("\n");
+        assert_eq!(
+            outcome,
+            CheckOutcome::BlockingViolation,
+            "an unreadable fragment is malformed, not absent, and must escalate past the \
+             blocking boundary; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("could not read fragment") && rendered.contains(unreadable),
+            "the report must name the unreadable fragment; got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("ignoring deleted fragment(s)"),
+            "a present-but-unreadable fragment must not be treated as deleted; got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("rendered OK"),
+            "an unreadable fragment must not be handed to the renderer; got:\n{rendered}"
         );
         Ok(())
     }
