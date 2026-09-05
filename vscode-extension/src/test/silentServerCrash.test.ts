@@ -655,7 +655,8 @@ describe('mid-session silent server crash recovery (#4625)', () => {
     // lifecycle was not re-arbitrated through the remaining budget.
     expect(_autoRestartAttemptsForTest()).toBe(1);
     const reloadToasts = showErrorMessage.mock.calls.filter(
-      (call) => /did not finish cleaning up/i.test(String(call[0])) && call.includes('Reload Window'),
+      (call) =>
+        /did not finish cleaning up/i.test(String(call[0])) && call.includes('Reload Window'),
     );
     expect(reloadToasts).toHaveLength(1);
   });
@@ -671,7 +672,8 @@ describe('mid-session silent server crash recovery (#4625)', () => {
     expect(blocked).toBe(true);
     expect(lifecycle.snapshot.state).toBe('failed');
     const reloadToasts = showErrorMessage.mock.calls.filter(
-      (call) => /did not finish cleaning up/i.test(String(call[0])) && call.includes('Reload Window'),
+      (call) =>
+        /did not finish cleaning up/i.test(String(call[0])) && call.includes('Reload Window'),
     );
     expect(reloadToasts).toHaveLength(1);
     const genericFailures = showErrorMessage.mock.calls.filter((call) =>
