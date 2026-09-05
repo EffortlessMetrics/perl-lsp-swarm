@@ -170,10 +170,18 @@ fn test_set_scalar_value_is_refused_and_value_unchanged() -> TestResult {
                  got: {result:?}"
             );
         }
-        DapMessage::Response { success: false, .. } => {
+        DapMessage::Response { success: false, message, .. } => {
             // evaluate may fail if the safe-eval policy blocks `$x` lookup in
             // this session mode. The refusal itself carried no body, so there
-            // is no fabricated value to contradict the cache.
+            // is no fabricated value to contradict the cache. The branch is
+            // not vacuous, though: the session must still be alive — a lost
+            // session would make the non-mutation claim unobservable.
+            let msg = message.unwrap_or_default();
+            assert!(
+                !msg.contains("No debugger session"),
+                "the debug session must survive the refused setVariable; evaluate failed \
+                 with: {msg}"
+            );
         }
         other => return Err(format!("unexpected evaluate response: {other:?}").into()),
     }
