@@ -8,11 +8,11 @@
 //! Tests return `Result` and use `ok_or`/`?` rather than `expect`/`panic`, per
 //! the crate's integration-test lint policy.
 
-use perl_lexer::LexerConfig;
+use perl_lexer::{LexerConfig, LocalSymbolTable};
 use perl_parser_core::ParserConfigIdentity;
 use perl_parser_core::tokens::token_stream::{Token, TokenKind};
 use perl_parser_core::tokens::token_subject::{
-    ContextualAuthority, LexerConfigIdentity, TerminalState, TokenStreamProvenance,
+    ClassificationAuthority, LexerConfigIdentity, TerminalState, TokenStreamProvenance,
     TokenSubjectError, TokenSubjectIdentity, ValidatedTokenStream,
 };
 use perl_source_identity::{
@@ -43,6 +43,15 @@ fn identity(source: &str) -> TokenSubjectIdentity {
     identity_for(source, "lib/Demo.pm", "1")
 }
 
+/// A lexer configuration that differs from the production default in a way that
+/// changes token segmentation.
+fn flipped_lexer_config() -> LexerConfig {
+    LexerConfig {
+        parse_interpolation: !LexerConfigIdentity::production_default().parse_interpolation(),
+        ..LexerConfig::default()
+    }
+}
+
 fn complete(source: &str) -> TerminalState {
     TerminalState::CompleteEof { at: source.len() }
 }
@@ -54,12 +63,22 @@ fn lex(source: &str) -> Result<Vec<Token>, Box<dyn std::error::Error>> {
 /// A valid production subject over `source`, the baseline every negative case
 /// perturbs exactly once.
 fn fresh_subject(source: &str) -> Result<ValidatedTokenStream<'_>, Box<dyn std::error::Error>> {
-    Ok(ValidatedTokenStream::from_fresh_lex(
-        identity(source),
-        source,
-        lex(source)?,
-        complete(source),
-    )?)
+    Ok(ValidatedTokenStream::from_fresh_lex(identity(source), source)?)
+}
+
+/// A structurally-validated fixture over a caller-supplied token vector.
+///
+/// `from_fresh_lex` deliberately takes no tokens (it lexes itself), so every
+/// case that must inject a *corrupted* stream goes through the fixture seam.
+/// The structural rules live in one shared validation plane, so they are
+/// exercised identically either way — and routing corrupt streams here is the
+/// point of having a non-production seam at all.
+fn fixture_with(
+    source: &str,
+    tokens: Vec<Token>,
+    terminal: TerminalState,
+) -> Result<ValidatedTokenStream<'_>, TokenSubjectError> {
+    ValidatedTokenStream::from_test_fixture(identity(source), source, tokens, terminal)
 }
 
 /// Rebuild the token at `index` with a new kind/text/span, leaving the rest of
@@ -112,7 +131,7 @@ fn fresh_full_lex_over_exact_source_is_production_valid() -> R {
     assert_eq!(subject.provenance().label(), "fresh_full_lex");
     assert_eq!(subject.source(), source);
     assert_eq!(subject.terminal(), TerminalState::CompleteEof { at: source.len() });
-    assert_eq!(subject.contextual_authority(), ContextualAuthority::LiveBoundaryCheckpoints);
+    assert_eq!(subject.classification_authority(), ClassificationAuthority::ResolvedByLivePass);
     assert!(!subject.tokens().is_empty());
     Ok(())
 }
@@ -199,7 +218,7 @@ fn checkpoint_replay_to_eof_with_live_checkpoints_is_production_valid() -> R {
         lex(source)?,
         complete(source),
         SourceGeneration::known("6"),
-        ContextualAuthority::LiveBoundaryCheckpoints,
+        ClassificationAuthority::ResolvedByLivePass,
     )?;
 
     assert!(subject.is_production_valid());
@@ -279,45 +298,30 @@ fn fingerprint_separates_every_identity_field() -> R {
     assert_ne!(base, fresh_subject(other_source)?.subject_fingerprint());
 
     // Same bytes, different logical source.
-    let elsewhere = ValidatedTokenStream::from_fresh_lex(
-        identity_for(source, "lib/Other.pm", "1"),
-        source,
-        lex(source)?,
-        complete(source),
-    )?;
+    let elsewhere =
+        ValidatedTokenStream::from_fresh_lex(identity_for(source, "lib/Other.pm", "1"), source)?;
     assert_ne!(base, elsewhere.subject_fingerprint());
 
     // Same bytes and logical source, different generation. Edit-then-undo
     // returns to the same digest but is not the same subject.
-    let regenerated = ValidatedTokenStream::from_fresh_lex(
-        identity_for(source, "lib/Demo.pm", "2"),
-        source,
-        lex(source)?,
-        complete(source),
-    )?;
+    let regenerated =
+        ValidatedTokenStream::from_fresh_lex(identity_for(source, "lib/Demo.pm", "2"), source)?;
     assert_ne!(base, regenerated.subject_fingerprint());
 
     // Same bytes, logical source and generation, different lexer configuration.
-    let default_identity = LexerConfigIdentity::production_default();
-    let flipped_config = LexerConfig {
-        parse_interpolation: !default_identity.parse_interpolation(),
-        ..LexerConfig::default()
-    };
-    let reconfigured = ValidatedTokenStream::from_fresh_lex(
-        TokenSubjectIdentity::new(
-            ContentRevision::new(
-                logical_source("lib/Demo.pm"),
-                ContentDigest::of_bytes(source.as_bytes()),
-            ),
-            SourceGeneration::known("1"),
-            LexerConfigIdentity::of(&flipped_config),
-            ParserConfigIdentity::production_default(),
+    // A non-default lexer configuration cannot go through `from_fresh_lex` (that
+    // seam lexes under the default), so compare the identity fingerprint
+    // directly — the field still has to separate the two.
+    let reconfigured = TokenSubjectIdentity::new(
+        ContentRevision::new(
+            logical_source("lib/Demo.pm"),
+            ContentDigest::of_bytes(source.as_bytes()),
         ),
-        source,
-        lex(source)?,
-        complete(source),
-    )?;
-    assert_ne!(base, reconfigured.subject_fingerprint());
+        SourceGeneration::known("1"),
+        LexerConfigIdentity::of(&flipped_lexer_config()),
+        ParserConfigIdentity::production_default(),
+    );
+    assert_ne!(base, reconfigured.fingerprint());
 
     Ok(())
 }
@@ -325,12 +329,16 @@ fn fingerprint_separates_every_identity_field() -> R {
 // ── Negative: source binding ──────────────────────────────────────────────────
 
 /// The headline failure the bare `Vec<Token> + &str` pair cannot detect.
+///
+/// `from_fresh_lex` can no longer express this mistake at all — it lexes the
+/// source it is given — so the case is posed where a caller *does* supply
+/// tokens: an identity bound to source A, paired with source B.
 #[test]
 fn tokens_from_source_a_paired_with_source_b_are_rejected() -> R {
     let source_a = "my $x = 1;";
     let source_b = "my $y = 2;";
 
-    let error = err_of(ValidatedTokenStream::from_fresh_lex(
+    let error = err_of(ValidatedTokenStream::from_test_fixture(
         identity(source_a),
         source_b,
         lex(source_a)?,
@@ -377,12 +385,7 @@ fn a_shifted_span_with_unchanged_payload_is_rejected() -> R {
     let mut tokens = lex(source)?;
     replace_token(&mut tokens, 0, TokenKind::My, "my", 1, 3)?;
 
-    let error = err_of(ValidatedTokenStream::from_fresh_lex(
-        identity(source),
-        source,
-        tokens,
-        complete(source),
-    ))?;
+    let error = err_of(fixture_with(source, tokens, complete(source)))?;
 
     assert_rule(&error, "payload_source_mismatch", "index 0")?;
     Ok(())
@@ -394,12 +397,7 @@ fn a_changed_payload_over_unchanged_source_is_rejected() -> R {
     let mut tokens = lex(source)?;
     replace_token(&mut tokens, 3, TokenKind::Number, "2", 8, 9)?;
 
-    let error = err_of(ValidatedTokenStream::from_fresh_lex(
-        identity(source),
-        source,
-        tokens,
-        complete(source),
-    ))?;
+    let error = err_of(fixture_with(source, tokens, complete(source)))?;
 
     assert_rule(&error, "payload_source_mismatch", "index 3")?;
     Ok(())
@@ -411,12 +409,7 @@ fn a_span_past_the_end_of_source_is_rejected() -> R {
     let mut tokens = lex(source)?;
     replace_token(&mut tokens, 4, TokenKind::Semicolon, ";", source.len(), source.len() + 1)?;
 
-    let error = err_of(ValidatedTokenStream::from_fresh_lex(
-        identity(source),
-        source,
-        tokens,
-        complete(source),
-    ))?;
+    let error = err_of(fixture_with(source, tokens, complete(source)))?;
 
     // An out-of-range offset is also not a character boundary, so a reason-only
     // assertion here would still pass with the bounds rule deleted. Pin the
@@ -435,12 +428,7 @@ fn a_span_off_a_utf8_character_boundary_is_rejected() -> R {
     let mut tokens = lex(source)?;
     replace_token(&mut tokens, 1, TokenKind::Identifier, "x", 5, 6)?;
 
-    let error = err_of(ValidatedTokenStream::from_fresh_lex(
-        identity(source),
-        source,
-        tokens,
-        complete(source),
-    ))?;
+    let error = err_of(fixture_with(source, tokens, complete(source)))?;
 
     assert_rule(&error, "invalid_token_range", "UTF-8 character boundary")?;
     Ok(())
@@ -454,12 +442,7 @@ fn overlapping_tokens_are_rejected() -> R {
     // so only the ordering rule can reject it.
     replace_token(&mut tokens, 1, TokenKind::Identifier, "y ", 1, 3)?;
 
-    let error = err_of(ValidatedTokenStream::from_fresh_lex(
-        identity(source),
-        source,
-        tokens,
-        complete(source),
-    ))?;
+    let error = err_of(fixture_with(source, tokens, complete(source)))?;
 
     assert_rule(&error, "invalid_token_range", "overlaps or precedes")?;
     Ok(())
@@ -484,12 +467,7 @@ fn non_contiguous_tokens_are_accepted_because_trivia_occupies_the_gaps() -> R {
 #[test]
 fn a_terminal_eof_claimed_before_the_end_of_source_is_rejected() -> R {
     let source = "my $x = 1;";
-    let error = err_of(ValidatedTokenStream::from_fresh_lex(
-        identity(source),
-        source,
-        lex(source)?,
-        TerminalState::CompleteEof { at: 5 },
-    ))?;
+    let error = err_of(fixture_with(source, lex(source)?, TerminalState::CompleteEof { at: 5 }))?;
 
     assert_rule(&error, "invalid_terminal_state", "complete EOF claimed at")?;
     Ok(())
@@ -503,12 +481,7 @@ fn an_eof_token_disagreeing_with_the_terminal_offset_is_rejected() -> R {
         Token::new_checked(TokenKind::Eof, "", 5, 5)?,
     ];
 
-    let error = err_of(ValidatedTokenStream::from_fresh_lex(
-        identity(source),
-        source,
-        tokens,
-        complete(source),
-    ))?;
+    let error = err_of(fixture_with(source, tokens, complete(source)))?;
 
     assert_rule(&error, "invalid_terminal_state", "does not agree with the terminal EOF")?;
     Ok(())
@@ -521,12 +494,7 @@ fn a_complete_eof_without_a_terminal_eof_token_is_rejected() -> R {
     let mut tokens = lex(source)?;
     tokens.retain(|token| token.kind() != TokenKind::Eof);
 
-    let error = err_of(ValidatedTokenStream::from_fresh_lex(
-        identity(source),
-        source,
-        tokens,
-        complete(source),
-    ))?;
+    let error = err_of(fixture_with(source, tokens, complete(source)))?;
 
     assert_rule(&error, "invalid_terminal_state", "requires a terminal EOF token")?;
     Ok(())
@@ -539,12 +507,7 @@ fn a_complete_eof_without_a_terminal_eof_token_is_rejected() -> R {
 fn an_empty_token_stream_over_non_empty_source_is_rejected() -> R {
     let source = "my $x = 1;";
 
-    let error = err_of(ValidatedTokenStream::from_fresh_lex(
-        identity(source),
-        source,
-        Vec::new(),
-        complete(source),
-    ))?;
+    let error = err_of(fixture_with(source, Vec::new(), complete(source)))?;
 
     assert_rule(&error, "invalid_terminal_state", "requires a terminal EOF token")?;
     Ok(())
@@ -556,12 +519,7 @@ fn a_token_after_the_terminal_eof_is_rejected() -> R {
     let mut tokens = lex(source)?;
     tokens.push(Token::new_checked(TokenKind::Eof, "", source.len(), source.len())?);
 
-    let error = err_of(ValidatedTokenStream::from_fresh_lex(
-        identity(source),
-        source,
-        tokens,
-        complete(source),
-    ))?;
+    let error = err_of(fixture_with(source, tokens, complete(source)))?;
 
     assert_rule(&error, "invalid_terminal_state", "follows the terminal EOF token")?;
     Ok(())
@@ -604,6 +562,9 @@ fn an_incomplete_stream_whose_tokens_outrun_its_stop_offset_is_rejected() -> R {
     Ok(())
 }
 
+/// The same partial stream the fixture above accepts must be refused under a
+/// production provenance. `from_fresh_lex` cannot express it (it lexes to EOF
+/// itself), so the production side of the pair is posed as a replay.
 #[test]
 fn incomplete_production_stream_is_rejected() -> R {
     let source = "my $x = 1;";
@@ -611,11 +572,13 @@ fn incomplete_production_stream_is_rejected() -> R {
     tokens.retain(|token| token.kind() != TokenKind::Eof);
     tokens.truncate(2);
 
-    let error = err_of(ValidatedTokenStream::from_fresh_lex(
-        identity(source),
+    let error = err_of(ValidatedTokenStream::from_checkpoint_replay(
+        identity_for(source, "lib/Demo.pm", "7"),
         source,
         tokens,
         TerminalState::Incomplete { stopped_at: 5 },
+        SourceGeneration::known("6"),
+        ClassificationAuthority::ResolvedByLivePass,
     ))?;
 
     assert_rule(&error, "incomplete_stream", "must reach a complete terminal EOF")?;
@@ -638,12 +601,7 @@ fn a_production_subject_without_a_known_generation_is_rejected() -> R {
         ParserConfigIdentity::production_default(),
     );
 
-    let error = err_of(ValidatedTokenStream::from_fresh_lex(
-        unknown,
-        source,
-        lex(source)?,
-        complete(source),
-    ))?;
+    let error = err_of(ValidatedTokenStream::from_fresh_lex(unknown, source))?;
 
     assert_rule(&error, "wrong_generation", "requires a known generation")?;
     Ok(())
@@ -660,7 +618,7 @@ fn a_replay_naming_its_own_generation_as_predecessor_is_rejected() -> R {
         lex(source)?,
         complete(source),
         SourceGeneration::known("7"),
-        ContextualAuthority::LiveBoundaryCheckpoints,
+        ClassificationAuthority::ResolvedByLivePass,
     ))?;
 
     assert_rule(&error, "wrong_generation", "cannot be relabelled")?;
@@ -676,7 +634,7 @@ fn a_replay_without_a_known_predecessor_generation_is_rejected() -> R {
         lex(source)?,
         complete(source),
         SourceGeneration::Unknown,
-        ContextualAuthority::LiveBoundaryCheckpoints,
+        ClassificationAuthority::ResolvedByLivePass,
     ))?;
 
     assert_rule(&error, "wrong_generation", "known predecessor generation")?;
@@ -684,7 +642,7 @@ fn a_replay_without_a_known_predecessor_generation_is_rejected() -> R {
 }
 
 #[test]
-fn a_replay_without_live_boundary_checkpoints_is_rejected() -> R {
+fn a_replay_whose_kinds_were_never_re_resolved_is_rejected() -> R {
     let source = "my $x = 1;";
     let error = err_of(ValidatedTokenStream::from_checkpoint_replay(
         identity_for(source, "lib/Demo.pm", "7"),
@@ -692,10 +650,10 @@ fn a_replay_without_live_boundary_checkpoints_is_rejected() -> R {
         lex(source)?,
         complete(source),
         SourceGeneration::known("6"),
-        ContextualAuthority::CachedClassificationsOnly,
+        ClassificationAuthority::CarriedFromPredecessor,
     ))?;
 
-    assert_rule(&error, "missing_contextual_authority", "requires live boundary checkpoints")?;
+    assert_rule(&error, "missing_classification_authority", "resolved by a live pass")?;
     assert!(error.requires_full_source_fallback());
     Ok(())
 }
@@ -726,8 +684,6 @@ fn an_unknown_subject_schema_is_rejected() -> R {
     let error = err_of(ValidatedTokenStream::from_fresh_lex(
         identity(source).with_schema_version(999),
         source,
-        lex(source)?,
-        complete(source),
     ))?;
 
     assert_rule(&error, "wrong_configuration", "unknown subject schema")?;
@@ -836,15 +792,91 @@ fn the_documented_quick_start_example_runs() -> R {
         ParserConfigIdentity::production_default(),
     );
 
-    let tokens = ValidatedTokenStream::lex_for_subject(source)?;
-    let subject = ValidatedTokenStream::from_fresh_lex(
-        subject_identity,
-        source,
-        tokens,
-        TerminalState::CompleteEof { at: source.len() },
-    )?;
+    let subject = ValidatedTokenStream::from_fresh_lex(subject_identity, source)?;
 
     assert!(subject.is_production_valid());
+    Ok(())
+}
+
+/// The forgery `from_fresh_lex` now structurally prevents.
+///
+/// Each of these streams satisfies every structural rule — payloads match the
+/// source they span, ordering holds, the terminal EOF is carried — yet none is
+/// the canonical lex. Structural validation cannot tell the difference, which is
+/// exactly why the fresh seam performs the lex itself instead of accepting
+/// tokens. Posed here through the fixture seam, they are accepted structurally
+/// but are never production-valid.
+#[test]
+fn a_structurally_valid_forgery_can_never_be_production_valid() -> R {
+    let source = "my $x = 1;";
+
+    // A wrong token kind: "my" relabelled as an identifier.
+    let mut wrong_kind = lex(source)?;
+    replace_token(&mut wrong_kind, 0, TokenKind::Identifier, "my", 0, 2)?;
+    let forged = fixture_with(source, wrong_kind, complete(source))
+        .map_err(|e| format!("wrong-kind stream should still be structurally valid: {e}"))?;
+    assert!(!forged.is_production_valid());
+
+    // Omitted semantic tokens: indistinguishable from the gaps trivia leaves.
+    let mut truncated = lex(source)?;
+    truncated.retain(|token| matches!(token.kind(), TokenKind::My | TokenKind::Eof));
+    let gapped = fixture_with(source, truncated, complete(source))
+        .map_err(|e| format!("gapped stream should still be structurally valid: {e}"))?;
+    assert!(!gapped.is_production_valid());
+
+    // And the production seam cannot be handed either one: it takes no tokens.
+    let honest = fresh_subject(source)?;
+    assert!(honest.is_production_valid());
+    assert!(honest.tokens().len() > gapped.tokens().len());
+    Ok(())
+}
+
+/// `from_fresh_lex` lexes under the default configuration, so an identity
+/// claiming another one would describe a lex that never happened.
+#[test]
+fn a_fresh_lex_under_a_non_default_lexer_configuration_is_refused() -> R {
+    let source = "my $x = 1;";
+    let reconfigured = TokenSubjectIdentity::new(
+        ContentRevision::new(
+            logical_source("lib/Demo.pm"),
+            ContentDigest::of_bytes(source.as_bytes()),
+        ),
+        SourceGeneration::known("1"),
+        LexerConfigIdentity::of(&flipped_lexer_config()),
+        ParserConfigIdentity::production_default(),
+    );
+
+    let error = err_of(ValidatedTokenStream::from_fresh_lex(reconfigured, source))?;
+
+    assert_rule(&error, "wrong_configuration", "default lexer configuration")?;
+    Ok(())
+}
+
+/// A bound symbol table changes bareword/regex classification, but
+/// `LocalSymbolTable` exposes no content identity, so two different tables look
+/// identical here. Verification refuses rather than silently accepting a subject
+/// lexed under a different table.
+#[test]
+fn a_bound_symbol_table_makes_the_configuration_unverifiable() -> R {
+    let source = "my $x = 1;";
+    let subject = fresh_subject(source)?;
+
+    let table = LocalSymbolTable::scan_subs("sub helper { 1 }\n");
+    let bound = LexerConfig { symbol_table: Some(table), ..LexerConfig::default() };
+    let expected = TokenSubjectIdentity::new(
+        ContentRevision::new(
+            logical_source("lib/Demo.pm"),
+            ContentDigest::of_bytes(source.as_bytes()),
+        ),
+        SourceGeneration::known("1"),
+        LexerConfigIdentity::of(&bound),
+        ParserConfigIdentity::production_default(),
+    );
+    assert!(expected.lexer_config().symbol_table_bound());
+
+    let error = err_of(subject.verify_against(&expected))?;
+
+    assert_rule(&error, "wrong_configuration", "no content identity")?;
     Ok(())
 }
 

@@ -11,7 +11,7 @@
 //! This module defines the one subject a token-fed parse may be run against:
 //! [`ValidatedTokenStream`], which binds an ordered token sequence to the
 //! exact source, canonical source identity, lexer/parser configuration
-//! identity, terminal EOF disposition, contextual-replay authority, and
+//! identity, terminal EOF disposition, classification authority, and
 //! production provenance that together make the stream valid.
 //!
 //! # Two validation planes
@@ -65,21 +65,37 @@
 //! body-token lexer output through some other path would need those kinds
 //! considered for the payload exemption.
 //!
-//! # Unreachable failures are not modelled
+//! # What structural validation can and cannot prove
 //!
-//! Controller #8132 sketches an illustrative failure list that includes an
-//! `instrument_failure` class for violations such as a reversed token span.
-//! [`Token`]'s public constructors are checked and its unchecked constructor is
-//! private to `perl-token`, so a reversed span cannot reach this validator from
-//! outside that crate. A variant that no input can produce would be an
-//! unfalsifiable claim and dead code, so it is deliberately absent. Every
-//! variant of [`TokenSubjectError`] is reachable and covered by a test.
+//! It proves that every token's payload is the source it spans, that the
+//! sequence is ordered and terminated, and that the declared identity matches
+//! the bytes. It **cannot** prove that a token sequence *is* the canonical lex
+//! of that source: a fabricated stream carrying a wrong token kind, or one that
+//! omits semantic tokens (an omission is indistinguishable from the gap trivia
+//! legitimately leaves), satisfies every structural rule.
 //!
-//! The one unreachable arm that remains is a safety floor rather than a failure
-//! class: the payload check slices with `str::get` and maps `None` onto
+//! So provenance is not left to a caller's word where it need not be.
+//! [`ValidatedTokenStream::from_fresh_lex`] takes no token vector and lexes the
+//! source itself, which makes `fresh_full_lex` a fact this module establishes.
+//! [`ValidatedTokenStream::from_checkpoint_replay`] must accept the producer's
+//! tokens — reusing them is the point of a replay — so there its provenance and
+//! classification authority are producer attestations, and are documented as
+//! such rather than presented as checked. Closing that remaining gap needs the
+//! checkpoint-bearing value from #8128 / #7294, which A05b (#9625) is the first
+//! consumer positioned to supply.
+//!
+//! Every variant of [`TokenSubjectError`] is covered by a test except
+//! [`TokenSubjectError::InstrumentFailure`], which is documented at its
+//! definition: the lexer is error-tolerant and no probed input makes it fail,
+//! but the arm must exist because `lex_for_subject` returns a `Result` and
+//! every other label would misreport a lexer failure as a caller error.
+//!
+//! One *arm* is deliberately unreachable, as a safety floor rather than a
+//! failure class: the payload check slices with `str::get` and maps `None` onto
 //! [`TokenSubjectError::InvalidTokenRange`], so a reversed span would be
-//! refused instead of panicking. `perl-token`'s constructors mean no caller can
-//! reach it; that is precisely why it must not be an index expression.
+//! refused instead of panicking. `perl-token`'s checked constructors mean no
+//! caller can reach it; that is precisely why it must not be an index
+//! expression.
 
 use std::fmt;
 
@@ -157,49 +173,49 @@ impl fmt::Display for TokenStreamProvenance {
     }
 }
 
-// ── Contextual authority ──────────────────────────────────────────────────────
+// ── Classification authority ──────────────────────────────────────────────────
 
-/// Whether parser-directed contextual token operations (#8128) can be served.
+/// How the token *kinds* in a subject were arrived at.
 ///
-/// The live backing applies a contextual operation by restoring a real captured
-/// boundary checkpoint. A buffered backing cannot: today every
-/// classification-level contextual request against a buffered stream returns
-/// `ContextualOpResult::FallbackRequired`. A subject therefore has to declare
-/// which of the two it can honour.
+/// Perl cannot be lexed without context: whether `/` opens a regex or divides,
+/// where a heredoc body ends, and what a bareword means all depend on
+/// parser-directed contextual operations (#8128), which a live pass resolves by
+/// restoring a real captured boundary checkpoint. A stream whose kinds were
+/// resolved that way and one whose kinds were carried over from a predecessor
+/// are not equally trustworthy, so a subject records which it is.
 ///
-/// # What this is, and is not, today
+/// # This describes production, not capability
 ///
-/// This is a **producer's declaration, not verified evidence**. Unlike the
-/// source binding — which is cross-checked against a real
-/// [`ContentDigest`] — nothing in A05a can confirm that a caller passing
-/// [`ContextualAuthority::LiveBoundaryCheckpoints`] actually holds a captured
-/// boundary checkpoint, because no checkpoint value is in scope for this module
-/// to check against. What the type buys today is that the claim must be made
-/// explicitly and is recorded on the subject, so a replay cannot reach
-/// production validity while *saying nothing* about its contextual authority.
+/// It says how the classifications were *obtained*. It is **not** a promise
+/// that the subject can serve a contextual operation now: a subject carries
+/// tokens and source, so anything a consumer reconstructs from it has a
+/// buffered backing, and buffered backings return
+/// `ContextualOpResult::FallbackRequired`. Reading
+/// [`ClassificationAuthority::ResolvedByLivePass`] as "contextual replay is
+/// available here" would be wrong.
 ///
-/// Turning the declaration into verified evidence requires the real
-/// checkpoint-bearing value from #8128 / #7294, which A05b (#9625) is the first
-/// consumer positioned to supply. Do not read this field as a proof that
-/// contextual replay is available.
+/// [`ValidatedTokenStream::from_fresh_lex`] earns
+/// [`ClassificationAuthority::ResolvedByLivePass`], because that seam performs
+/// the lex itself. On [`ValidatedTokenStream::from_checkpoint_replay`] it is a
+/// producer attestation this module cannot check; see that constructor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContextualAuthority {
-    /// Backed by real captured boundary checkpoints from a live pass.
-    LiveBoundaryCheckpoints,
-    /// Cached classifications only; contextual requests return typed fallback.
+pub enum ClassificationAuthority {
+    /// Kinds were resolved by a live lexer pass over this subject's own source.
+    ResolvedByLivePass,
+    /// Kinds were carried over from a predecessor and not re-resolved.
     ///
-    /// Valid for a consumer that never requests a contextual reclassification,
-    /// and never sufficient for a replay-to-EOF production subject.
-    CachedClassificationsOnly,
+    /// Valid for a consumer that never depends on a context-sensitive
+    /// classification, and never sufficient for a production subject.
+    CarriedFromPredecessor,
 }
 
-impl ContextualAuthority {
+impl ClassificationAuthority {
     /// Stable machine label for this authority class.
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
-            Self::LiveBoundaryCheckpoints => "live_boundary_checkpoints",
-            Self::CachedClassificationsOnly => "cached_classifications_only",
+            Self::ResolvedByLivePass => "resolved_by_live_pass",
+            Self::CarriedFromPredecessor => "carried_from_predecessor",
         }
     }
 }
@@ -289,6 +305,14 @@ impl LexerConfigIdentity {
 
     /// Whether a file-local symbol table was bound for bareword/regex
     /// disambiguation.
+    ///
+    /// Only *whether*, not *which*: `LocalSymbolTable` exposes no content
+    /// identity, so two tables with different known-sub sets — which classify
+    /// the same `/` differently — project here identically. Rather than let
+    /// that silently accept a subject lexed under another table,
+    /// [`ValidatedTokenStream::verify_against`] refuses to compare a
+    /// configuration with a bound table at all. Giving the table a
+    /// deterministic identity belongs to `perl-lexer` (#14819).
     #[must_use]
     pub fn symbol_table_bound(self) -> bool {
         self.symbol_table_bound
@@ -500,10 +524,28 @@ pub enum TokenSubjectError {
         detail: String,
     },
 
-    /// A replay subject cannot serve parser-directed contextual operations.
-    #[error("missing contextual authority: {detail}")]
-    MissingContextualAuthority {
+    /// A replay subject's token kinds were never resolved by a live pass.
+    #[error("missing classification authority: {detail}")]
+    MissingClassificationAuthority {
         /// What specifically was missing.
+        detail: String,
+    },
+
+    /// The instrument that was supposed to produce the subject failed.
+    ///
+    /// [`ValidatedTokenStream::from_fresh_lex`] runs the lexer itself, so a
+    /// lexer error is the producing instrument failing rather than a malformed
+    /// input the caller supplied — and this is the only truthful label for it.
+    ///
+    /// It is the one variant with no test: the lexer is error-tolerant by
+    /// design and no probed input (deep nesting, unterminated strings and
+    /// heredocs, a million tokens, embedded NUL) makes it return `Err`. The
+    /// arm exists because `lex_for_subject` returns a `Result` that must be
+    /// handled, and mapping a lexer failure onto any other variant would
+    /// misreport it as a caller error.
+    #[error("instrument failure: {detail}")]
+    InstrumentFailure {
+        /// What specifically failed.
         detail: String,
     },
 
@@ -527,7 +569,8 @@ impl TokenSubjectError {
             Self::PayloadSourceMismatch { .. } => "payload_source_mismatch",
             Self::InvalidTerminalState { .. } => "invalid_terminal_state",
             Self::IncompleteStream { .. } => "incomplete_stream",
-            Self::MissingContextualAuthority { .. } => "missing_contextual_authority",
+            Self::MissingClassificationAuthority { .. } => "missing_classification_authority",
+            Self::InstrumentFailure { .. } => "instrument_failure",
             Self::UnsupportedProvenance { .. } => "unsupported_provenance",
         }
     }
@@ -542,7 +585,7 @@ impl TokenSubjectError {
         matches!(
             self,
             Self::IncompleteStream { .. }
-                | Self::MissingContextualAuthority { .. }
+                | Self::MissingClassificationAuthority { .. }
                 | Self::UnsupportedProvenance { .. }
         )
     }
@@ -611,32 +654,59 @@ pub struct ValidatedTokenStream<'a> {
     tokens: Vec<Token>,
     terminal: TerminalState,
     provenance: TokenStreamProvenance,
-    contextual_authority: ContextualAuthority,
+    classification_authority: ClassificationAuthority,
 }
 
 impl<'a> ValidatedTokenStream<'a> {
-    /// Build a subject from one complete fresh lexer pass over `source`.
+    /// Build a subject by performing one complete fresh lexer pass over
+    /// `source`.
     ///
-    /// A fresh pass carries live boundary checkpoints, so it can serve
-    /// parser-directed contextual operations.
+    /// This seam takes **no** token vector. Structural validation can prove
+    /// that each token's payload matches the source it spans, but it cannot
+    /// prove that a caller-supplied sequence *is* the canonical lex: a
+    /// fabricated stream with a wrong token kind, or one that silently omits
+    /// semantic tokens (an omission is indistinguishable from the gap trivia
+    /// legitimately leaves), satisfies every structural rule. So the module
+    /// lexes here itself, and `fresh_full_lex` provenance becomes a fact this
+    /// type establishes rather than a label a caller applies.
+    ///
+    /// The lex uses the documented default lexer configuration, so `identity`
+    /// must carry [`LexerConfigIdentity::production_default`]; anything else is
+    /// [`TokenSubjectError::WrongConfiguration`]. The terminal state is derived,
+    /// not accepted, for the same reason.
+    ///
+    /// A caller holding tokens from somewhere else wants
+    /// [`ValidatedTokenStream::from_checkpoint_replay`] (whose provenance is an
+    /// explicit producer attestation) or
+    /// [`ValidatedTokenStream::from_test_fixture`] (never production-valid).
     ///
     /// # Errors
     ///
-    /// Returns the first [`TokenSubjectError`] that the validation contract
-    /// detects.
+    /// [`TokenSubjectError::InstrumentFailure`] if the lexer itself fails, then
+    /// the first [`TokenSubjectError`] the validation contract detects.
     pub fn from_fresh_lex(
         identity: TokenSubjectIdentity,
         source: &'a str,
-        tokens: Vec<Token>,
-        terminal: TerminalState,
     ) -> Result<Self, TokenSubjectError> {
+        if identity.lexer_config != LexerConfigIdentity::production_default() {
+            return Err(TokenSubjectError::WrongConfiguration {
+                detail: "a fresh lex is performed under the default lexer configuration; this \
+                         identity claims another one"
+                    .to_owned(),
+            });
+        }
+
+        let tokens = Self::lex_for_subject(source).map_err(|error| {
+            TokenSubjectError::InstrumentFailure { detail: format!("fresh lex failed: {error}") }
+        })?;
+
         Self::assemble(
             identity,
             source,
             tokens,
-            terminal,
+            TerminalState::CompleteEof { at: source.len() },
             TokenStreamProvenance::FreshFullLex,
-            ContextualAuthority::LiveBoundaryCheckpoints,
+            ClassificationAuthority::ResolvedByLivePass,
         )
     }
 
@@ -644,9 +714,18 @@ impl<'a> ValidatedTokenStream<'a> {
     ///
     /// `predecessor_generation` names the generation the replayed tokens were
     /// originally produced from and must differ from the subject's own
-    /// generation. `contextual_authority` must be
-    /// [`ContextualAuthority::LiveBoundaryCheckpoints`]: a replay that can only
-    /// offer cached classifications cannot back a production token-fed parse.
+    /// generation. `classification_authority` must be
+    /// [`ClassificationAuthority::ResolvedByLivePass`]: a replay whose token
+    /// kinds were carried over without being re-resolved cannot back a
+    /// production token-fed parse.
+    ///
+    /// Unlike [`ValidatedTokenStream::from_fresh_lex`], this seam must accept
+    /// the producer's tokens — a replay's whole purpose is to reuse them — so
+    /// its provenance and classification authority are **producer
+    /// attestations, not facts this module can check**. Structural validation
+    /// still applies in full. Making the attestation unforgeable needs the
+    /// checkpoint-bearing value from #8128 / #7294, which A05b (#9625) is the
+    /// first consumer positioned to supply.
     ///
     /// # Errors
     ///
@@ -658,7 +737,7 @@ impl<'a> ValidatedTokenStream<'a> {
         tokens: Vec<Token>,
         terminal: TerminalState,
         predecessor_generation: SourceGeneration,
-        contextual_authority: ContextualAuthority,
+        classification_authority: ClassificationAuthority,
     ) -> Result<Self, TokenSubjectError> {
         Self::assemble(
             identity,
@@ -666,7 +745,7 @@ impl<'a> ValidatedTokenStream<'a> {
             tokens,
             terminal,
             TokenStreamProvenance::CheckpointReplayToEof { predecessor_generation },
-            contextual_authority,
+            classification_authority,
         )
     }
 
@@ -692,7 +771,7 @@ impl<'a> ValidatedTokenStream<'a> {
             tokens,
             terminal,
             TokenStreamProvenance::TestFixtureUnchecked,
-            ContextualAuthority::CachedClassificationsOnly,
+            ClassificationAuthority::CarriedFromPredecessor,
         )
     }
 
@@ -719,7 +798,7 @@ impl<'a> ValidatedTokenStream<'a> {
             tokens,
             terminal,
             TokenStreamProvenance::ExactSuffixSync,
-            ContextualAuthority::CachedClassificationsOnly,
+            ClassificationAuthority::CarriedFromPredecessor,
         )
     }
 
@@ -745,7 +824,7 @@ impl<'a> ValidatedTokenStream<'a> {
             tokens,
             terminal,
             TokenStreamProvenance::UnsupportedOrIncomplete,
-            ContextualAuthority::CachedClassificationsOnly,
+            ClassificationAuthority::CarriedFromPredecessor,
         )
     }
 
@@ -778,17 +857,17 @@ impl<'a> ValidatedTokenStream<'a> {
         tokens: Vec<Token>,
         terminal: TerminalState,
         provenance: TokenStreamProvenance,
-        contextual_authority: ContextualAuthority,
+        classification_authority: ClassificationAuthority,
     ) -> Result<Self, TokenSubjectError> {
         validate_provenance(&provenance)?;
         validate_schema(&identity)?;
         validate_source_binding(&identity, source)?;
         validate_generation(&identity, &provenance)?;
-        validate_contextual_authority(&provenance, contextual_authority)?;
+        validate_classification_authority(&provenance, classification_authority)?;
         validate_tokens(source, &tokens)?;
         validate_terminal(source, &tokens, terminal, &provenance)?;
 
-        Ok(Self { identity, source, tokens, terminal, provenance, contextual_authority })
+        Ok(Self { identity, source, tokens, terminal, provenance, classification_authority })
     }
 
     /// Identity this subject is bound to.
@@ -824,10 +903,10 @@ impl<'a> ValidatedTokenStream<'a> {
         &self.provenance
     }
 
-    /// Which contextual operations this subject can serve.
+    /// How this subject's token kinds were arrived at.
     #[must_use]
-    pub fn contextual_authority(&self) -> ContextualAuthority {
-        self.contextual_authority
+    pub fn classification_authority(&self) -> ClassificationAuthority {
+        self.classification_authority
     }
 
     /// Whether this subject may back a production token-fed parse.
@@ -889,6 +968,21 @@ impl<'a> ValidatedTokenStream<'a> {
                     "subject {} does not match expected {}",
                     self.identity.generation, expected.generation
                 ),
+            });
+        }
+        // A bound symbol table changes bareword/regex classification, but
+        // `LocalSymbolTable` exposes no content identity, so two different
+        // tables project to the same `LexerConfigIdentity`. Comparing them
+        // would silently accept a subject lexed under a different table, so
+        // refuse the comparison instead of getting it wrong. Giving the table a
+        // deterministic identity belongs to `perl-lexer`; see #14819.
+        if self.identity.lexer_config.symbol_table_bound || expected.lexer_config.symbol_table_bound
+        {
+            return Err(TokenSubjectError::WrongConfiguration {
+                detail: "a bound lexer symbol table has no content identity, so two different \
+                         tables are indistinguishable here; this configuration cannot be verified \
+                         (see #14819)"
+                    .to_owned(),
             });
         }
         if self.identity.lexer_config != expected.lexer_config {
@@ -979,16 +1073,17 @@ fn validate_generation(
     Ok(())
 }
 
-fn validate_contextual_authority(
+fn validate_classification_authority(
     provenance: &TokenStreamProvenance,
-    authority: ContextualAuthority,
+    authority: ClassificationAuthority,
 ) -> Result<(), TokenSubjectError> {
     if matches!(provenance, TokenStreamProvenance::CheckpointReplayToEof { .. })
-        && authority == ContextualAuthority::CachedClassificationsOnly
+        && authority == ClassificationAuthority::CarriedFromPredecessor
     {
-        return Err(TokenSubjectError::MissingContextualAuthority {
-            detail: "a replay-to-EOF subject requires live boundary checkpoints; cached \
-                     classifications cannot serve a parser-directed contextual operation"
+        return Err(TokenSubjectError::MissingClassificationAuthority {
+            detail: "a replay-to-EOF subject must have had its token kinds resolved by a live \
+                     pass; kinds carried over from a predecessor were never re-resolved against \
+                     this source"
                 .to_owned(),
         });
     }

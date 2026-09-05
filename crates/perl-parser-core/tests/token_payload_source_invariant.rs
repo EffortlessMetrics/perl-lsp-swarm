@@ -50,8 +50,11 @@ fn perl_files(root: &Path) -> Vec<PathBuf> {
                 stack.push(entry_path);
                 continue;
             }
-            let extension = entry_path.extension().and_then(|ext| ext.to_str()).unwrap_or_default();
-            if matches!(extension, "pl" | "pm" | "t") {
+            // Compare the extension as an `OsStr`: converting through `to_str`
+            // would silently drop a non-UTF-8 path instead of matching it.
+            let is_perl =
+                entry_path.extension().is_some_and(|ext| ext == "pl" || ext == "pm" || ext == "t");
+            if is_perl {
                 found.push(entry_path);
             }
         }
@@ -81,11 +84,22 @@ fn every_corpus_token_payload_is_the_source_it_spans() -> Result<(), Box<dyn std
     }
 
     let mut tokens_checked = 0usize;
+    let mut files_read = 0usize;
+    let mut unreadable: Vec<String> = Vec::new();
     let mut violations: Vec<String> = Vec::new();
     let mut saw_a_gap = false;
 
     for file in &files {
-        let Ok(source) = std::fs::read_to_string(file) else { continue };
+        // An unreadable or non-UTF-8 file must not silently shrink coverage:
+        // the floor below counts files actually swept, not paths discovered.
+        let source = match std::fs::read_to_string(file) {
+            Ok(source) => source,
+            Err(error) => {
+                unreadable.push(format!("{}: {error}", file.display()));
+                continue;
+            }
+        };
+        files_read += 1;
         let display = file.strip_prefix(&root).unwrap_or(file).display();
 
         let mut stream = TokenStream::new(&source);
@@ -143,10 +157,18 @@ fn every_corpus_token_payload_is_the_source_it_spans() -> Result<(), Box<dyn std
 
     if !violations.is_empty() {
         return Err(format!(
-            "payload/geometry contract violated in {} place(s) across {} files:\n  {}",
+            "payload/geometry contract violated in {} place(s) across {files_read} swept files:\n  {}",
             violations.len(),
-            files.len(),
             violations.join("\n  ")
+        )
+        .into());
+    }
+
+    if files_read < MIN_FILES {
+        return Err(format!(
+            "only {files_read} of {} discovered files could be swept (needed {MIN_FILES}); \
+             unreadable: {unreadable:?}. Coverage loss is an instrument failure, not a pass.",
+            files.len()
         )
         .into());
     }
