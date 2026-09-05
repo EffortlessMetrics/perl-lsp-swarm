@@ -250,12 +250,19 @@ Before resolving a substantive thread, reply with one supported disposition and 
 concise engineering decision record:
 
 ```text
-Disposition: fixed | refuted | superseded | follow-up
+Disposition: fixed | refuted | superseded | post-merge-follow-up
+             (terminal: resolves the thread)
+Disposition: current-blocker | blocked-by-prerequisite | not-proven
+             (non-terminal: the thread stays open)
 
 <judgment, architectural reason, and what changed or why no change is warranted>
 
 Evidence: current candidate, focused test or oracle, governing source, or linked follow-up
 ```
+
+Terminal classes resolve the thread; non-terminal classes record a live blocker
+or missing evidence and keep the thread open. The legacy `follow-up` class is
+rejected because it does not say which of those the finding is.
 
 Evaluate the concern and the suggested repair separately. Do not blindly agree and do
 not reflexively defend the candidate. A reviewer can identify a real failure while

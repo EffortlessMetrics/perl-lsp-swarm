@@ -66,9 +66,25 @@ const MATRIX_MARKERS: &[RequiredMarker] = &[
         marker: "`negative-gated+documented`",
     },
     RequiredMarker { label: "matrix notebook classification", marker: "Notebook 3.18 additions" },
+    RequiredMarker {
+        label: "matrix document-filter relative-pattern row (#8897)",
+        marker: "Document-filter `relative pattern`",
+    },
+    RequiredMarker {
+        label: "matrix notebook document-filter relative-pattern row (#8897)",
+        marker: "Notebook document-filter `relative pattern`",
+    },
 ];
 
 const NEGATIVE_TEST_MARKERS: &[RequiredMarker] = &[
+    RequiredMarker {
+        label: "document-filter relative-pattern negative gate (#8897)",
+        marker: "document_filter_relative_pattern_is_never_emitted",
+    },
+    RequiredMarker {
+        label: "notebook document-filter relative-pattern negative gate (#8897)",
+        marker: "notebook_document_filter_relative_pattern_is_never_emitted",
+    },
     RequiredMarker {
         label: "StringValue object-form negative receipt",
         marker: "inline_completion_does_not_emit_object_form_string_value",
@@ -600,6 +616,22 @@ fn check_folding_range_refresh_guard(root: &Path, violations: &mut Vec<Violation
 }
 
 fn check_relative_pattern_guard(root: &Path, violations: &mut Vec<Violation>) -> Result<()> {
+    // #8897: the watcher relative-pattern surface (LSP 3.17 watcher globs) and
+    // the document-filter/notebook-filter surfaces (LSP 3.18) must keep
+    // separate stable feature identities in the catalog.
+    let features_catalog = read_required(root, FEATURE_CATALOG)?;
+    require_all(
+        FEATURE_CATALOG,
+        &features_catalog,
+        &[
+            "id = \"lsp.file_watcher_relative_pattern\"",
+            "id = \"lsp.document_filter_relative_pattern\"",
+            "id = \"lsp.notebook_document_filter_relative_pattern\"",
+        ],
+        "separate relative-pattern feature identities (watcher 3.17 vs document/notebook 3.18)",
+        violations,
+    );
+
     let state_document = read_required(root, STATE_DOCUMENT)?;
     let lifecycle_capabilities = read_required(root, LIFECYCLE_CAPABILITIES)?;
     let lifecycle_watchers = read_required(root, LIFECYCLE_WATCHERS)?;

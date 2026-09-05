@@ -38,13 +38,22 @@ pub enum TokenType {
     // String and quote tokens
     /// String literal: "string" or 'string'
     StringLiteral,
-    /// Single quote: q//
+    /// Single quote: q// (non-interpolating; invariant under the
+    /// interpolation setting)
     QuoteSingle,
-    /// Double quote: qq//
-    QuoteDouble,
+    /// Double quote: qq// with the body's string parts (#8779).
+    ///
+    /// Per the #8244/#8779 interpolation policy: when `parse_interpolation`
+    /// is enabled the body is segmented during the original body scan; when
+    /// disabled the body is one opaque `StringPart::Literal`. The token
+    /// identity is unchanged — qq stays qq.
+    QuoteDouble(Vec<StringPart>),
     /// Quote words: qw//
     QuoteWords,
     /// Quote command: qx// or `backticks`
+    ///
+    /// Intentional interpolation boundary (#8779): command bodies stay
+    /// opaque under every interpolation configuration.
     QuoteCommand,
 
     // String interpolation tokens
@@ -54,8 +63,17 @@ pub enum TokenType {
     // Heredoc tokens
     /// Heredoc start: <<EOF or <<'EOF'
     HeredocStart,
-    /// Heredoc body content
+    /// Heredoc body content (non-interpolating bodies, and interpolating
+    /// bodies outside the interpolation setting's authority): geometry only.
     HeredocBody(Arc<str>),
+    /// Interpolating heredoc body with string parts (#8779).
+    ///
+    /// Emitted for bareword and `<<"EOF"` bodies: segmented when
+    /// `parse_interpolation` is enabled, one opaque `StringPart::Literal`
+    /// of the whole body when disabled. `<<'EOF'`, `<<\EOF`, and backtick
+    /// bodies never consume the setting and stay `HeredocBody` (control
+    /// invariance).
+    InterpolatedHeredocBody(Vec<StringPart>),
 
     // Format declarations
     /// Format body content

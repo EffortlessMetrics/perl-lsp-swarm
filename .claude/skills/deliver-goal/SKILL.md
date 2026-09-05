@@ -1,59 +1,44 @@
 ---
 name: deliver-goal
-description: Operate a durable multi-PR outcome through campaign-root orchestration, claim-local deliver-pr lanes, useful GitHub summaries, and current acceptance evidence.
+description: Operate a durable multi-PR outcome from the accountable root through logical claim frames, provider-native SDLC flows, useful GitHub summaries, and current acceptance evidence.
 argument-hint: "[umbrella issue or durable outcome]"
 ---
 
 # Deliver goal
 
-This is a campaign-root flow. Preserve the verbatim goal source when available; the
-current interpretation, constraints, non-goals, and acceptance predicates; governing
-contracts; current main and evidence; directly linked claims and PRs; explicit
-dependencies; merged effects; known limitations; and `NOT_PROVEN` predicates.
+This is the main-thread goal flow. Preserve the verbatim goal source when available; the
+current interpretation, constraints, non-goals, acceptance predicates, governing
+contracts, current main and evidence, directly linked claims and PRs, explicit
+dependencies, merged effects, known limitations, and `NOT_PROVEN` predicates.
 
-The campaign root owns goal meaning, claim selection, cross-lane dependencies,
-contradictions, frontier decisions, goal-level evidence joins, and final reconciliation.
-It normally does not perform claim-local leaf implementation, broad repository
-archaeology, raw log analysis, or repetitive proof. Route those into claim-local lanes,
-subagents, or Ultracode workflows unless direct inspection of one load-bearing seam is
-itself the campaign judgment.
+The main Claude thread owns goal meaning, claim selection, cross-claim dependencies,
+contradictions, runtime-local claim frames, evidence joins, wake events, and final
+reconciliation.
 
-For a durable campaign, keep one useful current synthesis on the umbrella issue. For a
-session-sized goal, runtime context may be sufficient. Do not scan or score the whole
-backlog, inspect sibling worktrees for overlap, mutate a tracked active-goal pointer,
-or write the runtime frontier to a file.
-
-## Reconstruct the runtime-local frontier
-
-Maintain only the bounded claims required by this goal:
+A claim frame is logical root state, not normally another agent:
 
 | Field | Meaning |
 | --- | --- |
 | Claim | one coherent acceptance-and-rollback claim |
 | Acceptance predicate | goal condition the claim can satisfy |
-| Lane context | active/resumable claim-local orchestrator, if any |
 | Durable subject | controlling issue, PR, merge, or closeout |
-| Current judgment | current typed lane result or missing judgment |
+| Current candidate | branch/PR/head and one writer, when mutation exists |
+| Current judgment | current typed result or missing judgment |
 | External wait | GitHub, prerequisite, platform, or owner condition |
 | Wake event | the material event that can change the judgment |
 
-This frontier is runtime-local and disposable. Reconstruct it from GitHub and repository
-artifacts after compaction or provider replacement. Never commit it, serialize agent
-liveness, or mirror it through labels/comments.
-
-Revisit an in-flight lane only when its wake event occurs. Unchanged checks, reviews,
-queue state, or base movement do not justify polling or route churn.
+Keep these frames runtime-local and disposable. Reconstruct them from GitHub and
+repository artifacts after compaction or replacement. Never commit them, serialize
+teammate liveness, or mirror them through labels/comments.
 
 ## Phase eligibility
 
 Admission asks whether the host can run a claim. Phase eligibility asks whether this
-campaign should run it now. They are different questions, and a campaign can fail on
-either.
+goal should run it now. They are different questions.
 
-Name the goal's current phase and what it admits. The failure this prevents is not
-picking bad work — it is that every valuable adjacent finding becomes runnable while the
-phase predicate stays unsatisfied, so the campaign accumulates good PRs and never
-converges on its own acceptance criterion:
+Name the goal's current phase and what it admits. Valuable adjacent findings do not
+become runnable merely because they are true. Record deferred work durably and keep the
+phase predicate governing selection.
 
 ```text
 phase: honest-main
@@ -71,40 +56,39 @@ defer
   release work the phase does not require
 ```
 
-Deferring is not discarding. Record a deferred finding as a durable issue and move on;
-the cost of losing it is what makes adjacent work feel urgent.
+Deferring is not discarding. A discovery may change the phase, but change it deliberately
+and state why; widening the phase to accommodate work already started makes the
+predicate stop governing selection.
 
-A discovery may change the phase, but change it deliberately and state why. Widening the
-phase to accommodate work already started is how the predicate quietly stops governing.
-
-## Select and run a claim route
+## Select and run a claim
 
 Choose one distinct claim that is phase-eligible, still required, actionable, not
 already represented by an equivalent current PR, and independently reviewable.
 
-For substantial work, delegate the whole claim as a lane-root route:
+Then focus the main thread on that claim by invoking `deliver-pr` in the same root
+context:
 
 ```text
-Take issue #123 through `deliver-pr`.
-You are the accountable lane root for this claim. Use GitHub and repository artifacts
-as durable state, invoke `orchestrate-work` within the claim, keep one candidate
-writer, follow every normal and material backward route, and return RECONCILED,
-IN_FLIGHT, PARTIAL, SUPERSEDED, BLOCKED, or NOT_PROVEN.
-Do not select unrelated claims or change the parent goal.
+select claim frame
+→ `deliver-pr`
+→ delegate bounded research/build/review programmes as useful
+→ join evidence in the main thread
+→ update the claim frame
+→ return to the goal loop
 ```
 
-The lane root chooses claim-local task agents, a writer, proof agents, review agents,
-context forks, or an Ultracode workflow as useful. The campaign root does not hand-
-script a substitute lifecycle.
+Do **not** create a subordinate orchestrator merely because the claim is substantial.
+The main thread retains claim meaning, route selection, evidence joins, review
+disposition, and continuation. Researchers, builders, reviewers, subagents, context
+forks, Ultracode workflows, or Teams are bounded execution contexts.
 
-For a tiny claim where another leaf agent would cost more than it saves, keep the work
-inside a claim-local lane context and let that lane root or current writer execute it
-directly. Do not convert the campaign root into the leaf worker merely because the
-patch is small.
+Claude may physically nest an agent, fork, workflow, or Team when that specific
+execution has an evidence-backed advantage. That does not change logical authority and
+must not become a required whole-flow hierarchy.
 
 ## Traceable route and useful GitHub boundaries
 
-When another context will need the route and it is not already obvious, add one compact
+When another session will need the route and it is not already obvious, add one compact
 route declaration to the controlling issue or PR:
 
 ```text
@@ -125,12 +109,12 @@ Publish goal-level information only when it changes or usefully summarizes accep
 goal interpretation/predicates, claim selection, prerequisite/supersession,
 cross-PR contracts, shared blockers/wake events, merged effects, residual claims, or
 completion judgment. Keep runtime topology, task lists, liveness, retries, raw logs,
-and unchanged status local to the campaign root.
+and unchanged status local to the main thread.
 
 ## Bounded related-PR review orchestration
 
 When directly linked PRs have interacting contracts, authority, or merge order, each PR
-keeps its own lane and provider-native review:
+still receives its own provider-native review through its claim frame:
 
 ```text
 `deliver-pr`
@@ -143,14 +127,14 @@ keeps its own lane and provider-native review:
 → INTEGRATION_READY | PR_IN_FLIGHT | MERGE_BLOCKED | NOT_PROVEN
 ```
 
-The campaign root may synthesize:
+The main thread may synthesize cross-PR contracts and order only after each candidate
+has its own review evidence:
 
 | PR | Candidate identity | Current checks | Substantive review result | Integration posture | Explicit prerequisite |
 | --- | --- | --- | --- | --- | --- |
 
-Verify parent/child schema and validator agreement, complete candidate/artifact identity,
-semantic ownership, status and limitation propagation, fan-in evidence loading,
-`NOT_PROVEN` visibility, and real repair/merge order.
+Verify complete candidate identity, semantic ownership, status and limitation
+propagation, `NOT_PROVEN` visibility, and real repair/merge order.
 
 A green aggregate cannot outrun untrustworthy children. The synthesis is goal-level
 judgment, not batch approval or a substitute for per-PR review.
@@ -158,33 +142,27 @@ judgment, not batch approval or a substitute for per-PR review.
 ## Loop
 
 ```text
-reconstruct goal and runtime-local frontier
+reconstruct goal and claim frames
 → select one actionable claim
-→ run `deliver-pr` through a lane root
-→ when the lane reaches a durable GitHub-owned wait, record the wake event once
-→ retain the lane as IN_FLIGHT
+→ run `deliver-pr` in the main thread against that frame
+→ when the claim reaches a GitHub-owned wait, record its wake event once
+→ retain the logical frame as IN_FLIGHT; no live agent required
 → advance another independent claim
 → reconcile merged or deliberately closed claims
-→ sweep worktree residue
+→ sweep safe worktree residue
 → publish useful goal-level deltas
 → re-evaluate every original acceptance predicate
 ```
 
-Sweep each pass, not at wind-down. Per-claim release misses whatever ended without
-reconciling — superseded, abandoned, or a lane that died mid-flight — so residue
-accumulates even when every individual release worked. Deferring the sweep to the end of
-a campaign means running it exactly when local evidence is least trustworthy and the
-context that knew what each worktree was for is gone.
-
-Run `bash scripts/cleanup-completed-worktrees.sh --dry-run` to report disposition; it
-keeps anything holding uncommitted changes, unpushed commits, detached work outside the
-base, or a worktree-manager owner. Review the output, then run the same command without
-`--dry-run` to apply safe removals, or release owned slots via
-`worktree-manager.py release` when the allocator still holds the lease.
+Start a residue sweep with `bash scripts/cleanup-completed-worktrees.sh --dry-run` and
+review every disposition against current Git/worktree state. Rerun it without
+`--dry-run` only for proven-safe removals; when `scripts/worktree-manager.py` still owns
+the slot, release it through the manager with the allocation's owner token instead of
+deleting around that local lease.
 
 If another PR lands and a candidate remains valid, do nothing. If an actual conflict,
-explicit stack change, or combined-tree failure appears, the affected lane repairs its
-own candidate and refreshes only affected proof and review.
+explicit stack change, or combined-tree failure appears, repair the affected claim and
+refresh only affected proof and review.
 
 ## Goal completion contract
 
@@ -199,14 +177,12 @@ claim shares one real external condition or accountable owner decision. Use
 
 ## What this establishes
 
-A bounded, resumable goal-level orchestration result: required claims and acceptance
-predicates are explicit; each active claim has a durable subject, current judgment, and
-wake event; interacting PR contracts and merge order are synthesized only after each
-candidate receives its own provider-native review; merged effects and every residual
-required claim are reconciled against the original goal.
+A bounded, resumable goal result whose claims are explicit root-held frames with durable
+subjects, current judgments, candidates/writers where applicable, and wake events.
 
 ## What this does not establish
 
-A repository scheduler, tracked frontier, active-goal file, portfolio queue, build-all
-wave, overlap ledger, agent registry, comment-per-transition protocol, batch review
-approval, or merge authority independent of each candidate's review and live ruleset.
+A subordinate claim-orchestrator hierarchy, repository scheduler, tracked frontier,
+active-goal file, portfolio queue, build-all wave, overlap ledger, agent registry,
+comment-per-transition protocol, batch review approval, or merge authority independent
+of each candidate's review and live ruleset.

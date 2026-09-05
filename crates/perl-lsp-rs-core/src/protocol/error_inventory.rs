@@ -7,6 +7,24 @@
 use crate::protocol::error_disposition::{Disposition, disposition_for};
 use perl_parser_core::ErrorCategory;
 
+/// How a type's canonical [`ErrorCategory`] is reached.
+///
+/// A type can carry a canonical category without implementing `ErrorClass`:
+/// runtime-neutral errors are projected onto the Perl taxonomy by an
+/// application-owned adapter instead (#13997). Distinguishing the two keeps
+/// [`unclassified_types`] a list of real gaps rather than a list of
+/// deliberate neutrality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClassificationRoute {
+    /// The type implements `perl_parser_core::ErrorClass` directly.
+    TraitImpl,
+    /// The type is deliberately taxonomy-neutral; the named application-owned
+    /// adapter projects it onto an [`ErrorCategory`].
+    AppAdapter(&'static str),
+    /// The type has no canonical category yet. This is a real gap.
+    Unclassified,
+}
+
 /// A single entry in the error classification inventory.
 #[derive(Debug, Clone)]
 pub struct ErrorInventoryEntry {
@@ -15,7 +33,12 @@ pub struct ErrorInventoryEntry {
     /// Crate where the type is defined.
     pub crate_name: &'static str,
     /// Whether the type implements ErrorClass.
+    ///
+    /// This is narrower than "has a canonical category": see
+    /// [`ErrorInventoryEntry::classification_route`].
     pub has_error_class: bool,
+    /// How this type's canonical category is reached.
+    pub classification_route: ClassificationRoute,
     /// The category that would be assigned (sampled from the first variant
     /// for display purposes; actual classification may vary by variant).
     pub sample_category: Option<ErrorCategory>,
@@ -35,6 +58,7 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             type_name: "ParseError",
             crate_name: "perl-parser-core",
             has_error_class: true,
+            classification_route: ClassificationRoute::TraitImpl,
             sample_category: Some(ErrorCategory::UserError),
             sample_disposition: Some(disposition_for(ErrorCategory::UserError)),
         },
@@ -43,6 +67,7 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             type_name: "FramingError",
             crate_name: "perl-lsp-rs-core",
             has_error_class: true,
+            classification_route: ClassificationRoute::TraitImpl,
             sample_category: Some(ErrorCategory::Protocol),
             sample_disposition: Some(disposition_for(ErrorCategory::Protocol)),
         },
@@ -50,6 +75,7 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             type_name: "LaunchParseError",
             crate_name: "perl-lsp-rs-core",
             has_error_class: true,
+            classification_route: ClassificationRoute::TraitImpl,
             sample_category: Some(ErrorCategory::UserError),
             sample_disposition: Some(disposition_for(ErrorCategory::UserError)),
         },
@@ -57,6 +83,7 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             type_name: "CatalogError",
             crate_name: "perl-lsp-rs-core",
             has_error_class: true,
+            classification_route: ClassificationRoute::TraitImpl,
             sample_category: Some(ErrorCategory::Infra),
             sample_disposition: Some(disposition_for(ErrorCategory::Infra)),
         },
@@ -64,13 +91,21 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             type_name: "FormattingError",
             crate_name: "perl-lsp-rs-core",
             has_error_class: true,
+            classification_route: ClassificationRoute::TraitImpl,
             sample_category: Some(ErrorCategory::Infra),
             sample_disposition: Some(disposition_for(ErrorCategory::Infra)),
         },
+        // Taxonomy-neutral runtime error (#13997): the type deliberately does
+        // not implement ErrorClass so the cancellation mechanism can move below
+        // the Perl product (#7611). Its category comes from the app-owned
+        // adapter, which #7612 retires.
         ErrorInventoryEntry {
             type_name: "CancellationError",
             crate_name: "perl-lsp-rs-core",
-            has_error_class: true,
+            has_error_class: false,
+            classification_route: ClassificationRoute::AppAdapter(
+                crate::protocol::cancellation_error_class::CANCELLATION_ERROR_ADAPTER,
+            ),
             sample_category: Some(ErrorCategory::Bug),
             sample_disposition: Some(disposition_for(ErrorCategory::Bug)),
         },
@@ -78,21 +113,35 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             type_name: "BackendError (inline-completion)",
             crate_name: "perl-lsp-rs-core",
             has_error_class: true,
+            classification_route: ClassificationRoute::TraitImpl,
             sample_category: Some(ErrorCategory::Infra),
             sample_disposition: Some(disposition_for(ErrorCategory::Infra)),
         },
+        // `JsonRpcError` implements `ErrorClass` in `protocol/jsonrpc.rs`, mapping
+        // JSON-RPC codes to categories. The row previously read `false` with a
+        // "needs type refinement (#4978)" note; #4978 has since closed and the
+        // impl is present, so the row was stale. Its category varies by code —
+        // `Protocol` for parse/invalid-request, `UserError` for
+        // method-not-found/invalid-params, `Bug` for internal and unknown codes,
+        // `Transient` for cancellation/content-modified, `Infra` for
+        // server-not-initialized — so the sample below is representative only,
+        // matching the first arm. #4978 notes that `RequestFailed` ideally
+        // carries its originating category rather than inferring one from the
+        // code; that refinement is not this row's to make.
         ErrorInventoryEntry {
             type_name: "JsonRpcError",
             crate_name: "perl-lsp-rs-core",
-            has_error_class: false, // Needs type refinement (#4978)
-            sample_category: None,
-            sample_disposition: None,
+            has_error_class: true,
+            classification_route: ClassificationRoute::TraitImpl,
+            sample_category: Some(ErrorCategory::Protocol),
+            sample_disposition: Some(disposition_for(ErrorCategory::Protocol)),
         },
         // ── perl-dap (DAP boundary) ──
         ErrorInventoryEntry {
             type_name: "BackendError (DAP)",
             crate_name: "perl-dap",
             has_error_class: true,
+            classification_route: ClassificationRoute::TraitImpl,
             sample_category: Some(ErrorCategory::Infra),
             sample_disposition: Some(disposition_for(ErrorCategory::Infra)),
         },
@@ -100,6 +149,7 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             type_name: "BreakpointError",
             crate_name: "perl-dap",
             has_error_class: true,
+            classification_route: ClassificationRoute::TraitImpl,
             sample_category: Some(ErrorCategory::UserError),
             sample_disposition: Some(disposition_for(ErrorCategory::UserError)),
         },
@@ -107,6 +157,7 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             type_name: "ValidationError",
             crate_name: "perl-dap",
             has_error_class: true,
+            classification_route: ClassificationRoute::TraitImpl,
             sample_category: Some(ErrorCategory::UserError),
             sample_disposition: Some(disposition_for(ErrorCategory::UserError)),
         },
@@ -114,6 +165,7 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             type_name: "SecurityError",
             crate_name: "perl-dap",
             has_error_class: true,
+            classification_route: ClassificationRoute::TraitImpl,
             sample_category: Some(ErrorCategory::UserError),
             sample_disposition: Some(disposition_for(ErrorCategory::UserError)),
         },
@@ -121,6 +173,7 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             type_name: "PeerFrameError",
             crate_name: "perl-dap",
             has_error_class: true,
+            classification_route: ClassificationRoute::TraitImpl,
             sample_category: Some(ErrorCategory::Protocol),
             sample_disposition: Some(disposition_for(ErrorCategory::Protocol)),
         },
@@ -131,6 +184,7 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             type_name: "StackParseError",
             crate_name: "perl-dap",
             has_error_class: false, // Origin-ambiguous without OriginatedParseError
+            classification_route: ClassificationRoute::Unclassified,
             sample_category: None,
             sample_disposition: None,
         },
@@ -138,6 +192,7 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             type_name: "VariableParseError",
             crate_name: "perl-dap",
             has_error_class: false, // Origin-ambiguous without OriginatedParseError
+            classification_route: ClassificationRoute::Unclassified,
             sample_category: None,
             sample_disposition: None,
         },
@@ -145,6 +200,7 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             type_name: "FixedOriginStackParseError",
             crate_name: "perl-dap",
             has_error_class: true,
+            classification_route: ClassificationRoute::TraitImpl,
             sample_category: Some(ErrorCategory::Bug),
             sample_disposition: Some(disposition_for(ErrorCategory::Bug)),
         },
@@ -152,6 +208,7 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             type_name: "FixedOriginVariableParseError",
             crate_name: "perl-dap",
             has_error_class: true,
+            classification_route: ClassificationRoute::TraitImpl,
             sample_category: Some(ErrorCategory::ResourceLimit),
             sample_disposition: Some(disposition_for(ErrorCategory::ResourceLimit)),
         },
@@ -159,6 +216,7 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             type_name: "OriginatedParseError<StackParseError>",
             crate_name: "perl-dap",
             has_error_class: true,
+            classification_route: ClassificationRoute::TraitImpl,
             sample_category: Some(ErrorCategory::Protocol),
             sample_disposition: Some(disposition_for(ErrorCategory::Protocol)),
         },
@@ -166,6 +224,7 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             type_name: "OriginatedParseError<VariableParseError>",
             crate_name: "perl-dap",
             has_error_class: true,
+            classification_route: ClassificationRoute::TraitImpl,
             sample_category: Some(ErrorCategory::Protocol),
             sample_disposition: Some(disposition_for(ErrorCategory::Protocol)),
         },
@@ -173,28 +232,43 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             type_name: "VariableReferenceError",
             crate_name: "perl-dap",
             has_error_class: true,
+            classification_route: ClassificationRoute::TraitImpl,
             sample_category: Some(ErrorCategory::Bug),
             sample_disposition: Some(disposition_for(ErrorCategory::Bug)),
         },
     ]
 }
 
-/// Returns the count of error types that have ErrorClass implemented.
+/// Returns the count of error types that have a canonical category, whether
+/// through an `ErrorClass` impl or an application-owned adapter.
 #[must_use]
 pub fn classified_count() -> usize {
-    error_type_inventory().iter().filter(|e| e.has_error_class).count()
+    error_type_inventory()
+        .iter()
+        .filter(|e| e.classification_route != ClassificationRoute::Unclassified)
+        .count()
 }
 
-/// Returns the count of error types that still need ErrorClass.
+/// Returns the count of error types that still need a canonical category.
 #[must_use]
 pub fn unclassified_count() -> usize {
-    error_type_inventory().iter().filter(|e| !e.has_error_class).count()
+    error_type_inventory()
+        .iter()
+        .filter(|e| e.classification_route == ClassificationRoute::Unclassified)
+        .count()
 }
 
-/// Returns the names of unclassified error types.
+/// Returns the names of error types that still need a canonical category.
+///
+/// A deliberately taxonomy-neutral type classified through an adapter is not a
+/// gap and must not appear here.
 #[must_use]
 pub fn unclassified_types() -> Vec<&'static str> {
-    error_type_inventory().iter().filter(|e| !e.has_error_class).map(|e| e.type_name).collect()
+    error_type_inventory()
+        .iter()
+        .filter(|e| e.classification_route == ClassificationRoute::Unclassified)
+        .map(|e| e.type_name)
+        .collect()
 }
 
 #[cfg(test)]
@@ -209,13 +283,57 @@ mod tests {
     }
 
     #[test]
-    fn unclassified_types_are_jsonrpc_and_origin_ambiguous_parse_errors() {
+    fn unclassified_types_are_only_the_origin_ambiguous_parse_errors() {
         let unclassified = unclassified_types();
         assert_eq!(
             unclassified,
-            vec!["JsonRpcError", "StackParseError", "VariableParseError"],
-            "JsonRpcError needs type refinement (#4978); stack/variable parse enums stay unclassified without origin"
+            vec!["StackParseError", "VariableParseError"],
+            "stack/variable parse enums stay unclassified without origin; JsonRpcError is classified in protocol::jsonrpc"
         );
+    }
+
+    #[test]
+    fn jsonrpc_error_is_inventoried_as_classified_because_it_implements_the_trait() {
+        // Regression guard for a row that had drifted: the inventory recorded
+        // `has_error_class: false` for `JsonRpcError` long after
+        // `impl ErrorClass for JsonRpcError` landed in `protocol/jsonrpc.rs`,
+        // which made both the gap list and the classified/unclassified counts
+        // wrong. Bind the row to the trait rather than to a hand-maintained bool.
+        const _: () = assert!(
+            ErrorClassProbe::<crate::protocol::JsonRpcError>::IMPLEMENTS_ERROR_CLASS,
+            "JsonRpcError implements ErrorClass; the inventory row must say so"
+        );
+
+        let inv = error_type_inventory();
+        let rows: Vec<_> = inv.iter().filter(|e| e.type_name == "JsonRpcError").collect();
+        assert_eq!(rows.len(), 1, "JsonRpcError must remain inventoried exactly once");
+
+        for row in rows {
+            assert!(row.has_error_class, "JsonRpcError implements ErrorClass");
+            assert_eq!(row.classification_route, ClassificationRoute::TraitImpl);
+            assert!(
+                row.sample_category.is_some(),
+                "a classified row must record a representative category"
+            );
+        }
+        assert!(!unclassified_types().contains(&"JsonRpcError"));
+    }
+
+    /// Compile-time "does `T` implement `ErrorClass`?" probe.
+    ///
+    /// Inherent associated items win over trait ones, but only where the
+    /// inherent impl applies — so the bound below selects `true` exactly when
+    /// `T: ErrorClass`, and the blanket trait impl answers otherwise.
+    struct ErrorClassProbe<T>(core::marker::PhantomData<T>);
+
+    trait ErrorClassProbeFallback {
+        const IMPLEMENTS_ERROR_CLASS: bool = false;
+    }
+
+    impl<T> ErrorClassProbeFallback for ErrorClassProbe<T> {}
+
+    impl<T: perl_parser_core::ErrorClass> ErrorClassProbe<T> {
+        const IMPLEMENTS_ERROR_CLASS: bool = true;
     }
 
     #[test]
@@ -266,9 +384,39 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_error_is_classified_through_the_app_adapter_not_a_trait_impl() {
+        let inv = error_type_inventory();
+        let entries: Vec<_> = inv.iter().filter(|e| e.type_name == "CancellationError").collect();
+        assert_eq!(entries.len(), 1, "CancellationError must remain inventoried exactly once");
+
+        for entry in entries {
+            assert!(
+                !entry.has_error_class,
+                "CancellationError must stay taxonomy-neutral (#13997): no ErrorClass impl"
+            );
+            assert_eq!(
+                entry.classification_route,
+                ClassificationRoute::AppAdapter(
+                    crate::protocol::cancellation_error_class::CANCELLATION_ERROR_ADAPTER
+                ),
+                "the app-owned adapter is the single category map for CancellationError"
+            );
+            assert_eq!(
+                entry.sample_category,
+                Some(ErrorCategory::Bug),
+                "neutrality must not lose the recorded category"
+            );
+        }
+        assert!(
+            !unclassified_types().contains(&"CancellationError"),
+            "deliberate neutrality is not a classification gap"
+        );
+    }
+
+    #[test]
     fn all_classified_entries_have_dispositions() {
         for entry in error_type_inventory() {
-            if entry.has_error_class {
+            if entry.classification_route != ClassificationRoute::Unclassified {
                 assert!(
                     entry.sample_category.is_some(),
                     "{} has ErrorClass but no sample category",

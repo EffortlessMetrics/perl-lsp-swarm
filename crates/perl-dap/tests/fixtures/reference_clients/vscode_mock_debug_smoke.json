@@ -76,13 +76,13 @@
     {
       "command": "completions",
       "arguments": { "text": "$foo", "column": 2 },
-      "expectSuccess": true,
-      "requiredBodyKeys": ["targets"]
+      "expectSuccess": false,
+      "requiredMessageContains": "unsupported"
     },
     {
       "command": "loadedSources",
-      "expectSuccess": true,
-      "requiredBodyKeys": ["sources"]
+      "expectSuccess": false,
+      "requiredMessageContains": "unsupported"
     },
     {
       "command": "disconnect",

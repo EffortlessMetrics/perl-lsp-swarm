@@ -89,3 +89,31 @@ fn complete_geometry_matches_the_canonical_extractor_for_operator_forms()
     }
     Ok(())
 }
+
+#[test]
+fn geometry_rejects_unicode_comment_gaps_like_strict_transliteration_parsing() {
+    for whitespace in ['\u{a0}', '\u{2003}'] {
+        for operator in ["tr", "y"] {
+            let first_body = format!("{operator}{whitespace}# comment\n {{a}} {{b}}");
+            assert!(
+                extract_regex_family_geometry(&first_body, 0).is_none(),
+                "geometry must reject Unicode first-body comment gap: {first_body:?}"
+            );
+
+            let second_body = format!("{operator}{{a}}{whitespace}# comment\n {{b}}");
+            assert!(
+                extract_regex_family_geometry(&second_body, 0).is_none(),
+                "geometry must reject Unicode second-body comment gap: {second_body:?}"
+            );
+
+            let mixed_second_body = format!(
+                "{operator}{{a}} {unicode_whitespace}# comment\n {{b}}",
+                unicode_whitespace = '\u{a0}'
+            );
+            assert!(
+                extract_regex_family_geometry(&mixed_second_body, 0).is_none(),
+                "geometry must reject mixed ASCII/Unicode second-body gap: {mixed_second_body:?}"
+            );
+        }
+    }
+}

@@ -69,7 +69,7 @@
             "null"
           ],
           "minimum": 1,
-          "description": "Pull request carrying the exact-head verification run."
+          "description": "Pull request carrying the exact-head verification run. Required (non-null) when verification_state is verified; quarantine_registry_contract re-verifies this binding and fails on a null, non-integer, or placeholder identity."
         },
         "verified_sha": {
           "type": [
@@ -119,6 +119,10 @@
           },
           "then": {
             "properties": {
+              "verification_pr": {
+                "type": "integer",
+                "minimum": 1
+              },
               "verified_sha": {
                 "type": "string",
                 "pattern": "^[0-9a-f]{40}$"

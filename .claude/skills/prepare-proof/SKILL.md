@@ -10,12 +10,12 @@ Use the issue plan, governing contract, current semantic owner, production path,
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Root decisions
 
-The lane root retains accepted behavior and semantic ownership, the production seam the
-proof must reach, what sufficient discrimination means, acceptable proof cost, which
-evidence may remain remote, and whether the claim genuinely has no executable proof
-subject.
+The main Claude thread retains accepted behavior and semantic ownership, the production
+seam the proof must reach, what sufficient discrimination means, acceptable proof cost,
+which evidence may remain remote, and whether the claim genuinely has no executable
+proof subject.
 
 ### Useful subagent work
 

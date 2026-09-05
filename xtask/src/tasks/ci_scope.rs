@@ -181,7 +181,10 @@ fn is_ci_config_file(file: &str) -> bool {
 /// planner and does not read arbitrary file contents while classifying a diff.
 /// The selected paths are the repository's known portability seams: shell
 /// hooks/scripts, the `perl-ci-hygiene` process-helper seam, URI and
-/// workspace-index code, and explicitly named Windows implementations.
+/// workspace-index code, and explicitly named Windows implementations. The
+/// Unix-only release-artifact integration target is one deliberate exception:
+/// it is included solely for Windows compile admission, while its Bash/chmod
+/// behavior remains Unix-owned and is not claimed as Windows runtime coverage.
 pub fn requires_windows_runner(files: &[String]) -> bool {
     files.iter().any(|file| {
         let normalized = file.replace('\\', "/").to_ascii_lowercase();
@@ -196,6 +199,11 @@ pub fn requires_windows_runner(files: &[String]) -> bool {
             || normalized.contains("/windows/")
             || normalized.ends_with("_windows.rs")
             || normalized.ends_with("windows.rs")
+            // This integration target imports `std::os::unix` and drives a
+            // Bash/chmod smoke script. Its crate-root cfg keeps the target
+            // empty on Windows, but the target still needs Windows compile
+            // admission so the platform boundary cannot silently bit-rot.
+            || normalized == "xtask/tests/release_artifact_size_smoke_script.rs"
     })
 }
 
@@ -1126,6 +1134,7 @@ mod tests {
             "crates/perl-uri/src/fs.rs",
             "crates/perl-workspace/src/workspace-index.rs",
             "crates/perl-workspace/src/platform/windows.rs",
+            "xtask/tests/release_artifact_size_smoke_script.rs",
         ] {
             assert!(
                 requires_windows_runner(&[file.to_string()]),

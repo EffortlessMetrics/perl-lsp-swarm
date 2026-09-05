@@ -22,9 +22,12 @@ use std::sync::Arc;
 pub mod native;
 
 pub use native::{
-    BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatDiagnostic,
-    FormatDiagnosticSeverity, FormatDoc, FormatResult, FormatterMode, KeywordSpacing,
-    NativeFormatter, PerlFormatter, TextEdit, TextPosition, TextRange, TrailingComma,
+    BracePlacement, COUNTER_CLOCK_TAG, COUNTER_SCHEMA_V1, ElsePlacement, FinalNewline,
+    FormatConfig, FormatDiagnostic, FormatDiagnosticSeverity, FormatDoc, FormatResult,
+    FormatterMode, KeywordSpacing, MAX_REPLACEMENT_BYTES_PER_SOURCE_BYTE_V1, NativeFormatter,
+    NativePipelineCounters, PerlFormatter, PipelineCollectorScope, SCALING_ABSOLUTE_SLACK_V1,
+    SCALING_RATIO_BOUND_V1, TextEdit, TextPosition, TextRange, TrailingComma,
+    exceeds_replacement_envelope_v1,
 };
 
 /// Configuration for perltidy.

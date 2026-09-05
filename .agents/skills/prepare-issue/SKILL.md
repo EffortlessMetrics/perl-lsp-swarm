@@ -30,9 +30,9 @@ The claim is already reconciled, or the requested work is a genuinely mechanical
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Root decisions
 
-The lane root retains:
+The accountable root retains:
 
 - the accepted problem and whether the work should exist;
 - semantic owner and live consumers;
@@ -55,8 +55,8 @@ and a bounded return. It does not choose the claim or update the issue independe
 
 ### Mutation owner and join
 
-One issue-body integrator owns durable synthesis and plan updates. Join worker returns as
-evidence and contradictions, not votes.
+One issue-body integrator owns durable synthesis and plan updates under the root-held
+claim frame. Join worker returns as evidence and contradictions, not votes.
 
 The join is ready when:
 

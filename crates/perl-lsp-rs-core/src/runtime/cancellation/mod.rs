@@ -421,7 +421,14 @@ impl CancellationMetrics {
     }
 }
 
-/// Cancellation errors
+/// Cancellation errors.
+///
+/// These are cancellation *mechanism* facts and carry no Perl operational
+/// judgment: this type deliberately does not implement
+/// `perl_parser_core::ErrorClass` (#13997). The Perl product's category
+/// projection lives in the application-owned adapter
+/// [`crate::protocol::cancellation_error_category`]; do not reintroduce a
+/// taxonomy implementation or import here.
 #[derive(Debug)]
 pub enum CancellationError {
     /// Lock acquisition failed
@@ -446,19 +453,6 @@ impl std::fmt::Display for CancellationError {
 }
 
 impl std::error::Error for CancellationError {}
-
-impl perl_parser_core::ErrorClass for CancellationError {
-    fn error_class(&self) -> perl_parser_core::ErrorCategory {
-        match self {
-            // Internal lock or routing failures — our bug.
-            Self::LockError(_) | Self::ProviderNotFound(_) => perl_parser_core::ErrorCategory::Bug,
-            // Malformed request from the client.
-            Self::InvalidRequest(_) => perl_parser_core::ErrorCategory::Protocol,
-            // Operation may succeed if retried.
-            Self::Timeout(_) => perl_parser_core::ErrorCategory::Transient,
-        }
-    }
-}
 
 /// Trait for cancellable LSP providers
 pub trait CancellableProvider {

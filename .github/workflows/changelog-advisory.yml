@@ -88,4 +88,4 @@ jobs:
           echo "Changed files:"
           cat /tmp/changed-files.txt
           echo "---"
-          cargo xtask changelog check --changed-files /tmp/changed-files.txt
+          cargo xtask changelog check --base "$base" --changed-files /tmp/changed-files.txt

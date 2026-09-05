@@ -1,0 +1,54 @@
+name: Critic Rule Proof
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'schemas/critic_rule_proof.v1.schema.json'
+      - 'fixtures/critic-rule-proof/**'
+      - 'docs/project/status/critic_rule_proof.md'
+      - 'xtask/src/critic_rule_proof/**'
+      - 'xtask/src/tasks/critic_rule_proof.rs'
+      - 'xtask/tests/critic_rule_proof.rs'
+      - 'crates/perl-lsp-rs-core/src/tooling/perl_critic/identity.rs'
+      - 'crates/perl-lsp-rs-core/src/tooling/perl_critic/remediation.rs'
+      - 'crates/perl-lsp-rs-core/src/tooling/perl_critic/types.rs'
+      - 'crates/perl-lsp-rs-core/src/tooling/perl_critic/native.rs'
+      - 'crates/perl-lsp-rs-core/src/tooling/perl_critic/native/**'
+      - 'crates/perl-parser/**'
+      - 'crates/perl-parser-core/**'
+      - 'crates/perl-lexer/**'
+      - 'crates/perl-ast/**'
+      - 'crates/perl-semantic-analyzer/**'
+      - 'crates/perl-module/**'
+      - 'crates/perl-workspace/**'
+      - 'crates/perl-tdd-support/**'
+      - '.github/workflows/critic-rule-proof.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: critic-rule-proof-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate critic rule-proof manifest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: 1.95.0
+
+      - name: Discriminating tests
+        run: cargo test -p xtask --locked --test critic_rule_proof
+
+      - name: Check manifest, live critic cases, and generated status
+        run: cargo xtask critic-rule-proof check

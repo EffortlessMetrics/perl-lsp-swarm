@@ -1,0 +1,9 @@
+project: product
+component: "Packaging and distribution"
+kind: Fixed
+body: "Historical Kwalitee release checks no longer accept detached passing evidence when no staged `dist` input is named (#13067)."
+time: 2026-08-28T02:10:09Z
+custom:
+  PR: "13100"
+  Slug: kwalitee-release-dist-binding
+  Breaking: "no"

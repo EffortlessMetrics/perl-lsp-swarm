@@ -470,17 +470,10 @@ impl Scheduler {
         ];
 
         // Install diagnostic debouncer now that server is wrapped in Arc.
-        // Use the runtime-configured interval so e2e mode (debounce=0) and
-        // user-tuned values from the CLI/env take effect.
-        let debounce_server = Arc::clone(&server);
-        let debounce_interval = server.runtime_tuning().diagnostic_debounce();
-        let debouncer = super::diagnostic_debounce::DiagnosticDebouncer::with_interval(
-            debounce_interval,
-            move |uri| {
-                debounce_server.publish_diagnostics(uri);
-            },
-        );
-        server.install_diagnostic_debouncer(debouncer);
+        // The wiring (weak capture, runtime-configured interval) lives on
+        // `LspServer` so the ownership contract it depends on is reachable
+        // from a test -- see #14539.
+        server.install_default_diagnostic_debouncer();
 
         // Install file watcher debouncer now that server is wrapped in Arc.
         // The callback captures the server weakly (#8064): the debouncer is

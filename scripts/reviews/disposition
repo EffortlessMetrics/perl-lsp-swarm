@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # scripts/reviews/disposition — evidence-backed review-thread disposition.
 #
-# Reply with evidence, then resolve. Idempotency is based on stable finding
-# identity (the GitHub thread), disposition class, and evidence identity. The
-# observed PR head is retained as forensic metadata; unrelated head movement
-# does not create another disposition reply.
+# Reply with evidence, then apply the disposition's truthful thread transition.
+# Terminal dispositions resolve; current blockers and NOT_PROVEN remain open.
+# Idempotency is based on stable finding identity (the GitHub thread),
+# disposition class, and evidence identity. The observed PR head is forensic
+# metadata; unrelated head movement does not create another disposition reply.
 set -euo pipefail
 
 die_usage() { echo "ERROR: $1" >&2; exit 2; }
@@ -35,26 +36,55 @@ done
 [[ -n "$REPLY" ]]  || die_usage "--reply is required"
 command -v jq >/dev/null 2>&1 || die_usage "jq not found on PATH"
 
+positive_issue() {
+    [[ "$ISSUE" =~ ^[0-9]+$ && "$ISSUE" -gt 0 ]]
+}
+
 EVIDENCE=""
+THREAD_TRANSITION=""
 case "$CLASS" in
     fixed)
         [[ -n "$COMMIT" ]] || die_usage "class=fixed requires --commit <sha>"
         EVIDENCE="$(jq -cn --arg c "$COMMIT" '{commit:$c}')"
+        THREAD_TRANSITION="resolve"
         ;;
     refuted)
         [[ -n "$ARGUMENT" ]] || die_usage "class=refuted requires --argument <text>"
         EVIDENCE="$(jq -cn --arg a "$ARGUMENT" '{argument:$a}')"
+        THREAD_TRANSITION="resolve"
         ;;
     superseded)
         [[ -n "$SUPERSEDED_BY" ]] || die_usage "class=superseded requires --superseded-by <n|url>"
         EVIDENCE="$(jq -cn --arg s "$SUPERSEDED_BY" '{superseded_by:$s}')"
+        THREAD_TRANSITION="resolve"
+        ;;
+    post-merge-follow-up)
+        positive_issue || die_usage "class=post-merge-follow-up requires --issue <positive-integer>"
+        [[ -n "$ARGUMENT" ]] || die_usage "class=post-merge-follow-up requires --argument <why the current claim is already satisfied>"
+        EVIDENCE="$(jq -cn --argjson i "$ISSUE" --arg a "$ARGUMENT" '{issue:$i,argument:$a}')"
+        THREAD_TRANSITION="resolve"
+        ;;
+    current-blocker)
+        [[ -n "$ARGUMENT" ]] || die_usage "class=current-blocker requires --argument <current defect and required repair>"
+        EVIDENCE="$(jq -cn --arg a "$ARGUMENT" '{argument:$a}')"
+        THREAD_TRANSITION="keep_open"
+        ;;
+    blocked-by-prerequisite)
+        positive_issue || die_usage "class=blocked-by-prerequisite requires --issue <positive-integer>"
+        [[ -n "$ARGUMENT" ]] || die_usage "class=blocked-by-prerequisite requires --argument <why the defect remains current>"
+        EVIDENCE="$(jq -cn --argjson i "$ISSUE" --arg a "$ARGUMENT" '{issue:$i,argument:$a}')"
+        THREAD_TRANSITION="keep_open"
+        ;;
+    not-proven)
+        [[ -n "$ARGUMENT" ]] || die_usage "class=not-proven requires --argument <missing or contradictory evidence>"
+        EVIDENCE="$(jq -cn --arg a "$ARGUMENT" '{argument:$a}')"
+        THREAD_TRANSITION="keep_open"
         ;;
     follow-up)
-        [[ "$ISSUE" =~ ^[0-9]+$ && "$ISSUE" -gt 0 ]] || die_usage "class=follow-up requires --issue <positive-integer>"
-        EVIDENCE="$(jq -cn --argjson i "$ISSUE" '{issue:$i}')"
+        die_usage "class=follow-up is ambiguous; use post-merge-follow-up when the current claim is already satisfied, or current-blocker/blocked-by-prerequisite when the defect remains"
         ;;
     *)
-        die_usage "invalid --class '$CLASS' (fixed|refuted|superseded|follow-up)"
+        die_usage "invalid --class '$CLASS' (fixed|refuted|superseded|post-merge-follow-up|current-blocker|blocked-by-prerequisite|not-proven)"
         ;;
 esac
 
@@ -68,12 +98,13 @@ else
     [[ -n "$BY" ]]   || BY="dryrun-actor"
 fi
 
-# v1 marker remains readable by existing historical parsers. `head` records the
-# observed candidate but does not participate in idempotency.
+# Keep the v1 marker envelope readable by historical parsers. The added
+# thread_transition field makes the intended GitHub state explicit without
+# changing existing class/evidence identity. `head` remains forensic metadata.
 MARKER="$(jq -cn \
     --arg class "$CLASS" --arg tid "$THREAD" --arg by "$BY" --arg head "$HEAD" \
-    --argjson ev "$EVIDENCE" \
-    '{v:1, class:$class, thread_id:$tid, by:$by, head:$head, evidence:$ev}')"
+    --arg transition "$THREAD_TRANSITION" --argjson ev "$EVIDENCE" \
+    '{v:1,class:$class,thread_id:$tid,by:$by,head:$head,evidence:$ev,thread_transition:$transition}')"
 BODY="$(printf '%s\n\n<!-- disposition:v1 %s -->' "$REPLY" "$MARKER")"
 
 _resolve_thread() {
@@ -83,7 +114,17 @@ _resolve_thread() {
             resolveReviewThread(input: {threadId: $threadId}) {
                 thread { id isResolved }
             }
-        }'
+        }' | jq -e '.data.resolveReviewThread.thread.isResolved == true' >/dev/null
+}
+
+_unresolve_thread() {
+    local thread_id="$1"
+    gh api graphql -f threadId="$thread_id" -f query='
+        mutation($threadId: ID!) {
+            unresolveReviewThread(input: {threadId: $threadId}) {
+                thread { id isResolved }
+            }
+        }' | jq -e '.data.unresolveReviewThread.thread.isResolved == false' >/dev/null
 }
 
 _post_reply() {
@@ -97,17 +138,21 @@ _post_reply() {
 }
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
-    echo "DRY-RUN disposition for PR #$PR thread $THREAD (class=$CLASS, by=$BY, observed_head=$HEAD)"
+    echo "DRY-RUN disposition for PR #$PR thread $THREAD (class=$CLASS, transition=$THREAD_TRANSITION, by=$BY, observed_head=$HEAD)"
     echo "--- reply body ---"
     printf '%s\n' "$BODY"
-    echo "--- then: resolveReviewThread($THREAD) ---"
+    if [[ "$THREAD_TRANSITION" == "resolve" ]]; then
+        echo "--- then: resolveReviewThread($THREAD) ---"
+    else
+        echo "--- then: keep thread unresolved; if currently resolved, unresolveReviewThread($THREAD) BEFORE posting the reply, and enforce unresolved again after posting ---"
+    fi
     exit 0
 fi
 
 # Stable idempotency: establish the existing thread state before any mutation.
 # Provider, JSON, or marker-parser failure is NOT equivalent to a proven zero
-# match; fail closed so an unavailable observation cannot create a duplicate
-# reply and immediately resolve the thread.
+# match; fail closed so unavailable observation cannot create a duplicate reply
+# or apply the wrong thread transition.
 THREAD_RESPONSE=""
 if ! THREAD_RESPONSE="$(gh api graphql -f threadId="$THREAD" -f query='
     query($threadId: ID!) {
@@ -141,7 +186,8 @@ if ! MARKER_STATE="$(jq -ce --arg class "$CLASS" --argjson evidence "$EVIDENCE" 
             matching: ([
               $parsed[]
               | select(. != null and .class == $class and .evidence == $evidence)
-            ] | length)
+            ] | length),
+            is_resolved: ($node.isResolved == true)
           }
       end
 ' <<<"$THREAD_RESPONSE" 2>/dev/null)"; then
@@ -151,8 +197,9 @@ fi
 
 INVALID="$(jq -r '.invalid' <<<"$MARKER_STATE")"
 EXISTING="$(jq -r '.matching' <<<"$MARKER_STATE")"
-if [[ ! "$INVALID" =~ ^[0-9]+$ || ! "$EXISTING" =~ ^[0-9]+$ ]]; then
-    echo "ERROR: non-numeric disposition state for thread $THREAD" >&2
+IS_RESOLVED="$(jq -r '.is_resolved' <<<"$MARKER_STATE")"
+if [[ ! "$INVALID" =~ ^[0-9]+$ || ! "$EXISTING" =~ ^[0-9]+$ || ! "$IS_RESOLVED" =~ ^(true|false)$ ]]; then
+    echo "ERROR: invalid disposition state values for thread $THREAD" >&2
     exit 2
 fi
 if [[ "$INVALID" -gt 0 ]]; then
@@ -160,19 +207,48 @@ if [[ "$INVALID" -gt 0 ]]; then
     exit 2
 fi
 
+# For a live blocker, restore truthful GitHub state before doing anything that
+# can fail. If evidence posting later fails, the thread remains visibly open
+# rather than falling back to the falsely-clean state this command repairs.
+REOPENED=0
+if [[ "$THREAD_TRANSITION" == "keep_open" && "$IS_RESOLVED" == "true" ]]; then
+    if ! _unresolve_thread "$THREAD" >/dev/null; then
+        echo "ERROR: failed to reopen thread $THREAD before recording non-terminal disposition" >&2
+        exit 2
+    fi
+    REOPENED=1
+fi
+
 if [[ "$EXISTING" -gt 0 ]]; then
-    echo "OK matching disposition already exists on thread $THREAD (class=$CLASS, evidence=$EVIDENCE) — re-resolving without duplicate reply"
+    echo "OK matching disposition already exists on thread $THREAD (class=$CLASS, evidence=$EVIDENCE) — reapplying transition without duplicate reply"
 else
     if ! _post_reply "$THREAD" "$BODY" >/dev/null; then
         echo "ERROR: failed to post disposition reply to thread $THREAD" >&2
         exit 2
     fi
-    echo "OK posted disposition reply (class=$CLASS, evidence=$EVIDENCE) to thread $THREAD"
+    echo "OK posted disposition reply (class=$CLASS, transition=$THREAD_TRANSITION, evidence=$EVIDENCE) to thread $THREAD"
 fi
 
-if ! _resolve_thread "$THREAD" >/dev/null; then
-    echo "ERROR: failed to resolve thread $THREAD after disposition" >&2
+if [[ "$THREAD_TRANSITION" == "resolve" ]]; then
+    if ! _resolve_thread "$THREAD" >/dev/null; then
+        echo "ERROR: failed to resolve thread $THREAD after terminal disposition" >&2
+        exit 2
+    fi
+    echo "OK resolved thread $THREAD (class=$CLASS, evidence=$EVIDENCE, observed_head=$HEAD)"
+    exit 0
+fi
+
+# Close the race window: the initial isResolved observation is stale the moment
+# it returns, so a concurrent resolve could otherwise leave this command
+# reporting success while the live blocker sits resolved. Enforce the final
+# state after posting; unresolve is idempotent on an already-open thread.
+if ! _unresolve_thread "$THREAD" >/dev/null; then
+    echo "ERROR: failed to enforce unresolved state on thread $THREAD after non-terminal disposition" >&2
     exit 2
 fi
 
-echo "OK resolved thread $THREAD (class=$CLASS, evidence=$EVIDENCE, observed_head=$HEAD)"
+if [[ "$REOPENED" -eq 1 ]]; then
+    echo "OK reopened thread $THREAD (class=$CLASS, evidence=$EVIDENCE, observed_head=$HEAD)"
+else
+    echo "OK kept thread $THREAD unresolved (class=$CLASS, evidence=$EVIDENCE, observed_head=$HEAD)"
+fi

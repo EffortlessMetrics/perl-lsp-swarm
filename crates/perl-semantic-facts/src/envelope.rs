@@ -69,6 +69,25 @@ pub enum SemanticProvenance {
     Unknown,
 }
 
+impl SemanticProvenance {
+    /// Whether this provenance is precise enough to back an exact answer.
+    ///
+    /// One allowlist serves every exact-capable consumer in this crate so the
+    /// envelope classifier and the semantic-query contract cannot drift apart.
+    #[must_use]
+    pub fn is_exact_grade(&self) -> bool {
+        matches!(
+            self,
+            Self::Known(
+                Provenance::ExactAst
+                    | Provenance::DesugaredAst
+                    | Provenance::SemanticAnalyzer
+                    | Provenance::LiteralRequireImport
+            )
+        )
+    }
+}
+
 /// Confidence that preserves an explicit unknown state at the transport boundary.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -324,15 +343,7 @@ impl SemanticFactEnvelope {
     }
 
     fn has_exact_provenance(&self) -> bool {
-        matches!(
-            self.provenance,
-            SemanticProvenance::Known(
-                Provenance::ExactAst
-                    | Provenance::DesugaredAst
-                    | Provenance::SemanticAnalyzer
-                    | Provenance::LiteralRequireImport
-            )
-        )
+        self.provenance.is_exact_grade()
     }
 
     /// Classify the envelope for a provider decision.

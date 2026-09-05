@@ -50,6 +50,14 @@ retired         = false               # optional; true keeps the receipt for his
 - **`glob` vs `path`.** Use `path` for an exact file. Use `glob` for a tree
   or extension. A glob entry must include `**`, `*`, or `?` to be considered
   a glob; otherwise the checker treats it as a typo.
+
+  `*` and `?` match **within one path segment** and stop at `/`; only `**`
+  crosses directory boundaries. So `.changes/unreleased/*.yaml` governs the
+  files sitting directly in that directory and nothing nested beneath it,
+  while `docs/**` owns the whole tree and `**/*.md` owns markdown at every
+  depth. Pick the narrowest matcher that covers the surface: a single-segment
+  glob is the way to govern one flat directory class without also adopting
+  everything a future subdirectory might hold.
 - **`kind`.** A short category. The current vocabulary:
   `documentation`, `language_fixture`, `editor_extension`,
   `native_parser_binding`, `ci_declarative`, `ci_policy_config`,

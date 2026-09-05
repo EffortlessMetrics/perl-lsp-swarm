@@ -44,7 +44,7 @@ Current state — regenerate with `python3 scripts/ci/validate_gate_lane_mapping
 which is the authority for these counts. Last refreshed 2026-09-01 (#14505):
 
 - 80 gates in `.ci/gate-policy.yaml`
-- 24 lanes in `policy/ci-lanes.toml`
+- 25 lanes in `policy/ci-lanes.toml`
 - 80 / 80 gates have at least one lane mapping
 - 0 gates point at a non-existent lane
 
@@ -71,11 +71,11 @@ which is the authority for these counts. Last refreshed 2026-09-01 (#14505):
 
 Lanes without any gate mapping today: `pr_plan`, `draft_guard`, `preflight_latest`,
 `merge_gate_aggregate`, `lsp_memory_smoke`, `windows_guardrails`, `ripr_advisory`,
-`memory_plateau`, `vscode_smoke_matrix`, `droid_auto_review`. These either have no
-`.ci/gate-policy.yaml` entry (workflow-level controls, not gates) or run under
-standalone workflows.
+`memory_plateau`, `vscode_smoke_matrix`, `droid_auto_review`, `critic_rule_proof`.
+These either have no `.ci/gate-policy.yaml` entry (workflow-level controls, not
+gates) or run under standalone workflows.
 
-The two lists above partition the lane set: 14 mapped + 10 unmapped = 24 lanes,
+The two lists above partition the lane set: 14 mapped + 11 unmapped = 25 lanes,
 matching the count block. Both are checkable against
 `scripts/ci/validate_gate_lane_mapping.py` and `policy/ci-lanes.toml`; if the
 arithmetic stops reconciling, this page has drifted from its stated authority.

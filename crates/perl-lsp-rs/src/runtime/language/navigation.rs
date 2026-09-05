@@ -6,7 +6,7 @@
 use super::super::{
     Arc, DocumentState, GLOBAL_CANCELLATION_REGISTRY, ImplementationProvider, JsonRpcError,
     JsonRpcId, LspServer, ParentMap, Parser, PerlLspCancellationToken, REQUEST_CANCELLED, Value,
-    json, location_from_path,
+    json,
 };
 use crate::cancellation::RequestCleanupGuard;
 use crate::protocol::{req_position, req_uri};
@@ -15,6 +15,11 @@ use perl_lsp_rs_core::providers::ProviderDecisionFreshness;
 use perl_parser_core::source_file::is_binary_content;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
+
+// Only the test-fallbacks compatibility handler (`on_definition`) needs this
+// helper; production definition dispatch is a transparent adapter (#5108).
+#[cfg(any(test, feature = "test-fallbacks"))]
+use super::super::location_from_path;
 
 /// Serialize a slice of typed values to a JSON array (#4995).
 fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
@@ -43,7 +48,8 @@ use self::core_modules::is_core_perl_module;
 use self::mojolicious_routes::resolve_mojolicious_route_definition;
 use self::xs_bootstrap::{extract_xs_bootstrap_target, xs_bootstrap_location};
 
-#[cfg(feature = "workspace")]
+// Ungated with `fqn_component_at_cursor`, which is reached from the rename and
+// find-references refusal guards in every build (#14757).
 static FQN_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
 
 #[cfg(feature = "workspace")]
@@ -113,6 +119,28 @@ fn lsp_location_count(value: Option<&Value>) -> usize {
         Some(Value::Array(items)) => items.len(),
         Some(Value::Object(obj)) if obj.contains_key("uri") || obj.contains_key("targetUri") => 1,
         _ => 0,
+    }
+}
+
+/// Naive comment-only heuristic for the goto-definition and completion
+/// guards (#5066/#5408/#5411): `true` when a `#` appears earlier on the
+/// same line.
+///
+/// This is deliberately NOT the rename candidate classifier and is
+/// deliberately not string-aware: a `#` inside a string literal still reads
+/// as a comment to this guard, and that trade-off is pinned by the guard
+/// regression tests. Rename's edit policy uses the generation-bound
+/// `SourceRegionIndex` instead (#4964).
+pub(crate) fn is_in_comment_naive(position: usize, source: &str) -> bool {
+    let line_start =
+        if position == 0 { 0 } else { source[..position].rfind('\n').map_or(0, |p| p + 1) };
+    let line = &source[line_start..];
+
+    if let Some(comment_pos) = line.find('#') {
+        let comment_absolute = line_start + comment_pos;
+        position >= comment_absolute
+    } else {
+        false
     }
 }
 
@@ -351,8 +379,7 @@ fn type_definition_receipt_freshness(fact_source: &'static str) -> ProviderDecis
     }
 }
 
-#[cfg(feature = "workspace")]
-fn get_fqn_regex() -> Result<&'static regex::Regex, JsonRpcError> {
+pub(super) fn get_fqn_regex() -> Result<&'static regex::Regex, JsonRpcError> {
     FQN_RE
         .get_or_init(|| regex::Regex::new(r"([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)"))
         .as_ref()
@@ -959,15 +986,36 @@ fn cursor_in_regex_capture(regex: &regex::Regex, text: &str, cursor: usize, grou
         .any(|cap| cap.get(group).is_some_and(|m| cursor >= m.start() && cursor <= m.end()))
 }
 
-#[cfg(feature = "workspace")]
+/// Which `::`-separated component of a fully-qualified name the cursor is on.
+///
+/// Shared with `references.rs` so go-to-definition and find-references answer the
+/// same question with one implementation instead of two drifting copies (#1849).
+///
+/// Not `#[cfg(feature = "workspace")]`: the classification is text-level -- one
+/// regex over one line, then a `::` split -- and consults no workspace index.
+/// `rename.rs` and `references.rs` both refuse wrong-symbol edits on it, and
+/// those refusals must not disappear from a build that merely lacks the index
+/// (#14757).
 #[derive(Debug, PartialEq, Eq)]
-enum FqnCursorComponent {
+pub(super) enum FqnCursorComponent {
+    /// The cursor is on a package component or on a `::` separator -- not on the
+    /// final component, so the match does not name the sub the caller is after.
     Prefix,
+    /// The cursor is on the final component, which names the sub.
     Final { package: String, name: String },
 }
 
-#[cfg(feature = "workspace")]
-fn fqn_component_at_cursor(
+/// Resolve which component of the fully-qualified name under `cursor` the cursor
+/// is on, or `None` when the cursor is not inside a `::`-qualified match.
+///
+/// `text` must contain the *complete* qualified name around `cursor`. The final
+/// component is identified by the last `::` in the match, so a `text` that clips
+/// the name partway through a component makes that component look final and
+/// reports `Final` where the truth is `Prefix`. Pass a whole line
+/// (`util::line_window_around_offset`) rather than a fixed-radius window: a Perl
+/// qualified name cannot span a line break, but it can easily be longer than a
+/// radius.
+pub(super) fn fqn_component_at_cursor(
     regex: &regex::Regex,
     text: &str,
     cursor: usize,
@@ -994,6 +1042,54 @@ fn fqn_component_at_cursor(
             Some(FqnCursorComponent::Final { package, name })
         }
     })
+}
+
+/// Whether the cursor at `offset` sits *off* the token that names `symbol_name`.
+///
+/// Rename and find-references both need this before acting on a resolved symbol:
+/// for a qualified name the resolver answers with the callable wherever the
+/// cursor is, so a cursor that is not on the callable's own token would edit --
+/// or report references for -- a symbol the user never pointed at (#9827,
+/// #1849). Both providers asked it with their own copy until #14757; this is the
+/// single implementation they now share.
+///
+/// Two cursor positions are off the named symbol:
+///
+/// * a **prefix** component, which never names the callable -- `Alpha` in
+///   `Alpha::target()` resolves to the sub `target`;
+/// * a **final** component whose text disagrees with the resolved symbol. In
+///   `Some::Module->new()` the qualified-name match stops at the `->`, so
+///   `Module` is that match's final component while the key names the method
+///   `new`. Testing only for `Prefix` lets that receiver through.
+///
+/// Everything else is on the symbol, or not a question this predicate answers:
+/// a final component that agrees, and a cursor outside any `::`-qualified match,
+/// are both `false`. `symbol_name` of `None` is `false` for a final component
+/// too -- with nothing to disagree with there is no disagreement to report.
+///
+/// Inherits `fqn_component_at_cursor`'s ASCII-only bound (#14616); fixing that
+/// now touches one place instead of three.
+pub(super) fn cursor_is_off_named_symbol(
+    text: &str,
+    offset: usize,
+    symbol_name: Option<&str>,
+) -> bool {
+    let Ok(regex) = get_fqn_regex() else {
+        return false;
+    };
+    // Classify over the whole line, not a radius window: a window can end inside
+    // a long middle component, which makes that component look like the final
+    // one and lets the wrong target through. A Perl qualified name cannot span a
+    // line break, so the line always contains the whole name.
+    let (line_start, line_text) = crate::util::line_window_around_offset(text, offset);
+    let cursor_in_line = offset.saturating_sub(line_start);
+    match fqn_component_at_cursor(regex, line_text, cursor_in_line) {
+        Some(FqnCursorComponent::Prefix) => true,
+        Some(FqnCursorComponent::Final { name, .. }) => {
+            symbol_name.is_some_and(|symbol_name| name.as_str() != symbol_name)
+        }
+        None => false,
+    }
 }
 
 impl LspServer {
@@ -1307,7 +1403,7 @@ impl LspServer {
                     // also classified as a string.  This now blocks whenever the
                     // offset is inside a comment.
                     let text = &doc.text;
-                    if perl_lsp_rs_core::providers::rename::is_in_comment(offset, text) {
+                    if is_in_comment_naive(offset, text) {
                         return Ok(None);
                     }
 
@@ -2703,6 +2799,11 @@ impl LspServer {
     }
 
     /// Non-blocking definition handler with fallback
+    ///
+    /// Production definition dispatch is a transparent adapter over the
+    /// canonical handler, so this compatibility handler is compiled only for
+    /// the test-fallbacks path (#5108).
+    #[cfg(any(test, feature = "test-fallbacks"))]
     pub(crate) fn on_definition(
         &self,
         params: serde_json::Value,
@@ -3026,6 +3127,93 @@ mod tests {
             Some(FqnCursorComponent::Final { package: "Foo".to_string(), name: "bar".to_string() })
         );
         assert_eq!(fqn_component_at_cursor(regex, "Foo::bar", 9), None);
+        Ok(())
+    }
+
+    /// The predicate `rename.rs` and `references.rs` share (#14757).
+    ///
+    /// Each caller kept its own copy of this match until the two were lifted
+    /// here. The cases below are the union of what those copies answered, so a
+    /// divergence in either direction is a red test rather than a provider that
+    /// quietly misbehaves for one surface only.
+    ///
+    /// The document is deliberately multi-line and every offset is off line one:
+    /// the predicate derives its own line window, and the callers that used to do
+    /// that themselves must not lose the whole-line requirement in the move.
+    ///
+    /// Each case pins the component it classifies to before asserting the
+    /// predicate's answer. Without that, an offset can silently land on a
+    /// different arm than its comment claims -- `new` in `Some::Module->new()`
+    /// looks like a final component but carries no `::`, so it classifies as
+    /// `None` -- and the case then proves nothing about the arm it names.
+    #[test]
+    fn shared_off_symbol_predicate_answers_for_rename_and_references()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let regex = get_fqn_regex()?;
+        let text = "use Some::Module;\nSome::Module->new();\nAlpha::target();\n";
+        let line2 = text.find("Some::Module->new").ok_or("fixture line 2")?;
+        let line3 = text.find("Alpha::target").ok_or("fixture line 3")?;
+        let arm = |offset: usize, line_start: usize| {
+            let (_, line_text) = crate::util::line_window_around_offset(text, offset);
+            fqn_component_at_cursor(regex, line_text, offset - line_start)
+        };
+
+        // Arrow receiver: the qualified-name match stops at the `->`, so `Module`
+        // is that match's *final* component while the resolved symbol is the
+        // method `new`. Off the named symbol -- the wrong-symbol edit this
+        // predicate exists to refuse. A predicate keyed on `Prefix` alone
+        // answers `false` here.
+        assert!(matches!(arm(line2 + 6, line2), Some(FqnCursorComponent::Final { .. })));
+        assert!(
+            cursor_is_off_named_symbol(text, line2 + 6, Some("new")),
+            "a cursor on the arrow receiver is off the method the key names"
+        );
+        // The method itself carries no `::`, so it is not inside a qualified
+        // match at all. The predicate must not refuse it -- this is the one
+        // position on this line rename has to keep working.
+        assert!(arm(line2 + 14, line2).is_none());
+        assert!(
+            !cursor_is_off_named_symbol(text, line2 + 14, Some("new")),
+            "a cursor on the method names the symbol being acted on"
+        );
+
+        // Package prefix of a qualified call: never names the callable.
+        assert!(matches!(arm(line3 + 1, line3), Some(FqnCursorComponent::Prefix)));
+        assert!(
+            cursor_is_off_named_symbol(text, line3 + 1, Some("target")),
+            "a cursor on a package prefix is off the sub it resolves to"
+        );
+        // Final component agreeing with the resolved name: on the symbol.
+        // Refusing every `Final` would break rename here.
+        assert!(matches!(arm(line3 + 8, line3), Some(FqnCursorComponent::Final { .. })));
+        assert!(
+            !cursor_is_off_named_symbol(text, line3 + 8, Some("target")),
+            "a cursor on the final component names the sub"
+        );
+
+        // Not inside a `::`-qualified match at all: not a question this
+        // predicate answers, so it must not refuse. `references.rs` reaches this
+        // for every unqualified cursor.
+        assert!(
+            !cursor_is_off_named_symbol("my $x = 1;\n", 4, Some("x")),
+            "an unqualified cursor is not classified as off the symbol"
+        );
+
+        // `rename.rs` alone reaches an unresolved cursor: `references.rs` only
+        // calls the predicate with a resolved bare sub key. A final component
+        // with nothing to disagree with is not a disagreement, so the union arm
+        // must stay `false` -- refusing here would refuse rename wherever
+        // resolution came back empty on a qualified line.
+        assert!(
+            !cursor_is_off_named_symbol(text, line3 + 8, None),
+            "with no resolved symbol a final component reports no disagreement"
+        );
+        // A prefix stays off the symbol even unresolved: it never names a
+        // callable regardless of what resolution found.
+        assert!(
+            cursor_is_off_named_symbol(text, line3 + 1, None),
+            "a prefix component is off the symbol independently of resolution"
+        );
         Ok(())
     }
 

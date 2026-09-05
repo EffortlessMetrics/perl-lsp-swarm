@@ -1,0 +1,9 @@
+project: vscode
+component: Editor behavior
+kind: Fixed
+body: "Per-folder include paths now reach the language server. The server asks for its configuration once per workspace folder, but those requests were resolved against the unrelated `perl` settings namespace instead of the extension's `perl-lsp` one, so every folder-scoped answer came back empty and only a single workspace-wide push was ever applied. Include paths set on one folder of a multi-root workspace are now answered for that folder alone — note this means a folder-scoped `perl-lsp.includePaths` value that previously had no effect will now take precedence over a checked-in project config for that folder. Critic settings remain session-wide on the server and are unchanged. Accepting the discovered-include-paths suggestion, and setting Critic severity from the command palette, now write to the folder you acted on rather than publishing the value to every folder in the workspace."
+time: 2026-09-01T19:30:00Z
+custom:
+  PR: "14447"
+  Slug: folder-owned-configuration-transport
+  Breaking: "no"

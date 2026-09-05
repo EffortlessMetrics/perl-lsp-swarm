@@ -1,4 +1,5 @@
 use super::{LspServer, Value, json};
+use perl_parser_core::syntax::source_context::{SourceRegionIndex, SourceRegionKind};
 
 impl LspServer {
     /// Build a hover response when the cursor is inside a Perl regex literal.
@@ -6,9 +7,27 @@ impl LspServer {
     /// Detects `/pattern/`, `m/pattern/`, `s/pattern/repl/`, and `qr/pattern/`
     /// operators (including paired-delimiter variants) and returns a Markdown
     /// table explaining each metacharacter in the pattern.
-    pub(super) fn extract_regex_hover(text: &str, offset: usize) -> Option<Value> {
-        let pattern = Self::find_regex_at_offset(text, offset)?;
-        let entries = Self::explain_regex(&pattern);
+    ///
+    /// The detection is a whole-line lexical heuristic, so it may only answer
+    /// when the generation-bound source-region index proves the exact claimed
+    /// pattern span is a [`SourceRegionKind::RegexLike`] region (#4967):
+    /// regex-shaped text inside comments, strings, POD, heredocs, or
+    /// recovery-ambiguous input carries no such evidence and fails closed.
+    /// A missing index fails closed as well.
+    pub(super) fn extract_regex_hover(
+        text: &str,
+        offset: usize,
+        region_index: Option<&SourceRegionIndex>,
+    ) -> Option<Value> {
+        let Some(index) = region_index else {
+            return None; // no generation-bound evidence: fail closed (#4967)
+        };
+        let (pattern_start, pattern_end) = Self::find_regex_span_at_offset(text, offset)?;
+        if !index.range_fully_within(pattern_start, pattern_end, &[SourceRegionKind::RegexLike]) {
+            return None;
+        }
+        let pattern = text.get(pattern_start..pattern_end)?;
+        let entries = Self::explain_regex(pattern);
         if entries.is_empty() {
             return None;
         }
@@ -27,24 +46,27 @@ impl LspServer {
         }))
     }
 
-    /// Return the inner pattern string if `offset` falls inside a regex literal.
-    fn find_regex_at_offset(text: &str, offset: usize) -> Option<String> {
+    /// Return the absolute byte span `[start, end)` of the pattern claimed by
+    /// the lexical scan if `offset` falls inside a regex literal.
+    fn find_regex_span_at_offset(text: &str, offset: usize) -> Option<(usize, usize)> {
         // Find which line contains the offset and compute the column within it.
         let mut line_start = 0usize;
         for line in text.split('\n') {
             let line_end = line_start + line.len();
             if offset <= line_end {
                 let col = offset - line_start;
-                return Self::find_regex_in_line(line, col);
+                return Self::find_regex_span_in_line(line, col)
+                    .map(|(start, end)| (line_start + start, line_start + end));
             }
             line_start = line_end + 1; // +1 for the '\n'
         }
         None
     }
 
-    /// Scan `line` for Perl regex operators and return the inner pattern if
-    /// `col` (0-based byte index into `line`) falls inside the pattern.
-    fn find_regex_in_line(line: &str, col: usize) -> Option<String> {
+    /// Scan `line` for Perl regex operators and return the claimed pattern
+    /// span `[pattern_start, pattern_end)` (line-relative) if `col` (0-based
+    /// byte index into `line`) falls inside the pattern.
+    fn find_regex_span_in_line(line: &str, col: usize) -> Option<(usize, usize)> {
         let bytes = line.as_bytes();
         let len = bytes.len();
         let mut i = 0usize;
@@ -76,7 +98,7 @@ impl LspServer {
                         if bytes[j] == b'/' {
                             // col inside [pattern_start, j)?
                             if col >= pattern_start && col < j {
-                                return Some(line[pattern_start..j].to_string());
+                                return Some((pattern_start, j));
                             }
                             i = j + 1;
                             break;
@@ -139,7 +161,7 @@ impl LspServer {
                         j += 1;
                     }
                     if j <= len && col >= pattern_start && col < j {
-                        return Some(line[pattern_start..j].to_string());
+                        return Some((pattern_start, j));
                     }
                     i = j + 1;
                     continue;

@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 # scripts/reviews/threads — READ-ONLY enumeration of one PR's review threads (#6178).
 #
-# `scripts/reviews/disposition` is the only sanctioned resolve path and it
-# REQUIRES `--thread <threadId>`. Nothing told an agent where that ID comes
-# from: `scripts/reviews/state` returns an aggregate classification with no
-# per-thread identity, and the one `reviewThreads` query in the repo lives
-# inside `scripts/ci/check-pr-review-convergence-core`, which is a verdict gate
-# and never emits IDs. So every agent hand-rolled its own GraphQL, or skipped
-# dispositioning and left the PR parked at FINDINGS_OPEN.
+# `scripts/reviews/disposition` is the only sanctioned thread-state transition
+# path and it REQUIRES `--thread <threadId>`. Nothing told an agent where that
+# ID comes from: `scripts/reviews/state` returns an aggregate classification
+# with no per-thread identity, and the one `reviewThreads` query in the repo
+# lives inside `scripts/ci/check-pr-review-convergence-core`, which is a verdict
+# gate and never emits IDs. So every agent hand-rolled its own GraphQL, or
+# skipped dispositioning and left the PR parked at FINDINGS_OPEN.
 #
 # This script is that missing input. Its output feeds `disposition --thread`
 # unchanged.
 #
 # It is strictly read-only: one paged GraphQL query, no mutation of any kind.
-# Resolution stays exclusively in `scripts/reviews/disposition` (#3693 R1
-# FILE 3) — this script deliberately contains no resolve mutation.
+# Resolution and keep-open transitions stay exclusively in
+# `scripts/reviews/disposition` — this script deliberately contains no
+# resolve/unresolve mutation.
 #
 # ── Usage ────────────────────────────────────────────────────────────────────
 #   scripts/reviews/threads <pr-number> [owner/repo] [--unresolved-only] [--json]
@@ -223,8 +224,8 @@ jq -r --arg repo "$REPO" --arg pr "$PR" --argjson filtered "$UNRESOLVED_ONLY" '
 UNRESOLVED="$(jq -r '.unresolved_count' "$SUMMARY_FILE")"
 if [[ "$UNRESOLVED" -gt 0 ]]; then
     cat <<EOF
-Resolve each unresolved thread through the sanctioned path (reply-with-evidence,
-then resolve — never a raw resolve API):
+Disposition each unresolved thread through the sanctioned reply-with-evidence path.
+Terminal classes resolve the thread; current blockers and NOT_PROVEN keep it open:
 
   scripts/reviews/disposition --pr $PR --repo $REPO --thread <id> \\
       --class fixed --commit <sha> --reply 'Disposition: fixed
@@ -233,7 +234,19 @@ then resolve — never a raw resolve API):
 
 Evidence: <claim-bounded evidence>'
 
-Classes: fixed (--commit) | refuted (--argument) | superseded (--superseded-by) | follow-up (--issue)
+Resolving classes:
+  fixed (--commit)
+  refuted (--argument)
+  superseded (--superseded-by)
+  post-merge-follow-up (--issue and --argument proving the current claim is satisfied)
+
+Keep-open classes:
+  current-blocker (--argument)
+  blocked-by-prerequisite (--issue and --argument)
+  not-proven (--argument)
+
+The legacy class 'follow-up' is rejected because it does not say whether the
+current candidate is already correct or still blocked.
 EOF
 fi
 exit 0

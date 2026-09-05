@@ -6,6 +6,7 @@ mod heredoc_delimiter;
 mod interpolation_scan;
 mod line_scanning;
 mod operator_classification;
+mod quote_interpolation;
 mod regex_literal;
 mod word_classification;
 

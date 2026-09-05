@@ -214,7 +214,7 @@ fn red_test_deep_nesting_100_levels_no_panic() {
     for _ in 0..100 {
         code.push_str("{ ");
     }
-    code.push_str("1");
+    code.push('1');
     for _ in 0..100 {
         code.push_str(" }");
     }
@@ -235,7 +235,7 @@ fn red_test_deep_nesting_1000_levels_no_panic() {
     for _ in 0..1000 {
         code.push_str("{ ");
     }
-    code.push_str("1");
+    code.push('1');
     for _ in 0..1000 {
         code.push_str(" }");
     }

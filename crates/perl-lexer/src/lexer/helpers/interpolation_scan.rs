@@ -82,18 +82,25 @@ impl PerlLexer<'_> {
     /// (it serves bare-word identifiers, where there is no closing delimiter to
     /// protect), so the `'` case is tested first here rather than falling into
     /// it.
+    ///
+    /// `terminator` is the active quote close (`Some('"')` for the ordinary
+    /// scanner, the `qq` delimiter, or `None` for heredoc bodies, which have
+    /// no close). A separator fold that would consume the terminator loses the
+    /// close instead (`qq:$a::b:`, `qq'$foo'bar'`), so the terminator wins and
+    /// the scan stops at the name read so far.
     #[inline]
-    pub(crate) fn consume_qualified_identifier_in_string(&mut self) {
+    pub(crate) fn consume_qualified_identifier_in_string(&mut self, terminator: Option<char>) {
         while let Some(ch) = self.current_char() {
             if ch == '\'' {
-                if self.peek_char(1).is_some_and(is_perl_identifier_start) {
+                if terminator != Some(ch) && self.peek_char(1).is_some_and(is_perl_identifier_start)
+                {
                     self.advance();
                 } else {
                     break;
                 }
             } else if is_perl_identifier_continue(ch) {
                 self.advance();
-            } else if ch == ':' && self.peek_char(1) == Some(':') {
+            } else if ch == ':' && self.peek_char(1) == Some(':') && terminator != Some(ch) {
                 self.advance();
                 self.advance();
             } else {
@@ -133,7 +140,7 @@ mod tests {
     #[test]
     fn consume_qualified_identifier_in_string_folds_package_separators() {
         let mut lexer = PerlLexer::new("main::array rest");
-        lexer.consume_qualified_identifier_in_string();
+        lexer.consume_qualified_identifier_in_string(None);
 
         assert_eq!(lexer.position, "main::array".len());
     }
@@ -141,7 +148,7 @@ mod tests {
     #[test]
     fn consume_qualified_identifier_in_string_stops_at_a_lone_colon() {
         let mut lexer = PerlLexer::new("arr:tail");
-        lexer.consume_qualified_identifier_in_string();
+        lexer.consume_qualified_identifier_in_string(None);
 
         assert_eq!(lexer.position, "arr".len());
     }
@@ -149,7 +156,7 @@ mod tests {
     #[test]
     fn consume_qualified_identifier_in_string_folds_old_style_apostrophe_separators() {
         let mut lexer = PerlLexer::new("Foo'Bar rest");
-        lexer.consume_qualified_identifier_in_string();
+        lexer.consume_qualified_identifier_in_string(None);
 
         assert_eq!(lexer.position, "Foo'Bar".len());
     }
@@ -161,7 +168,7 @@ mod tests {
         // name segment follows it.
         for (input, expected) in [("foo'", 3), ("foo'9", 3), ("foo''bar", 3)] {
             let mut lexer = PerlLexer::new(input);
-            lexer.consume_qualified_identifier_in_string();
+            lexer.consume_qualified_identifier_in_string(None);
 
             assert_eq!(lexer.position, expected, "scanning {input:?} must stop at {expected}");
         }
@@ -170,7 +177,7 @@ mod tests {
     #[test]
     fn consume_qualified_identifier_in_string_consumes_nothing_at_a_non_identifier() {
         let mut lexer = PerlLexer::new("+rest");
-        lexer.consume_qualified_identifier_in_string();
+        lexer.consume_qualified_identifier_in_string(None);
 
         assert_eq!(lexer.position, 0);
     }
@@ -205,7 +212,7 @@ mod tests {
         for (start, expected_stop) in EXPECTED_STOPS.into_iter().enumerate() {
             let mut lexer = PerlLexer::new(INPUT);
             lexer.position = start;
-            lexer.consume_qualified_identifier_in_string();
+            lexer.consume_qualified_identifier_in_string(None);
 
             assert_eq!(
                 lexer.position, expected_stop,

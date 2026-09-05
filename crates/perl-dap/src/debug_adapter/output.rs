@@ -13,6 +13,11 @@ impl DebugAdapter {
     ///
     /// Queries the Perl debugger for runtime variable values and returns
     /// inline value hints with Perl-idiomatic formatting.
+    ///
+    /// #9089: the extension is fail-closed — the capability is advertised false
+    /// and every unnegotiated request is refused at the gate below — until a
+    /// versioned negotiation contract is proven. The remaining path stays so a
+    /// future promotion flips advertisement and service together.
     pub(super) fn handle_inline_values(
         &self,
         seq: i64,
@@ -43,6 +48,36 @@ impl DebugAdapter {
                 };
             }
         };
+
+        // #9089: the routed `inlineValues` request is a project extension, and
+        // no versioned negotiation contract exists yet, so every client is an
+        // unnegotiated client. Refuse here — before workspace path validation,
+        // before any filesystem read, and before any debugger query — so the
+        // extension cannot serve source-derived occurrences or runtime values
+        // while it is disabled.
+        //
+        // The gate is deliberately input-independent: every request that passes
+        // envelope validation receives the same deterministic refusal, whatever
+        // its source or range, and no rejected request touches the filesystem,
+        // the session, or the debugger.
+        // Bound to the same authority `handle_initialize` advertises, so a
+        // future promotion cannot leave the capability true while this still
+        // refuses.
+        if crate::backend::capabilities::refuse_inline_values_extension(
+            crate::backend::capabilities::advertises_inline_values_extension(),
+        ) {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "inlineValues".to_string(),
+                body: None,
+                message: Some(
+                    crate::backend::capabilities::INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE
+                        .to_string(),
+                ),
+            };
+        }
 
         let Some(source_path) = args.source.path else {
             return DapMessage::Response {

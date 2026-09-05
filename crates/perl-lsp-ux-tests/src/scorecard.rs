@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
+use crate::taxonomy::UxEvidenceClass;
+
 /// Per-scenario UX measurements for scorecard aggregation.
 #[derive(Debug, Clone, Default)]
 pub struct ScenarioScore {
@@ -23,6 +25,13 @@ pub struct ScenarioScore {
     pub rename_success: Option<bool>,
     /// Cross-file workflow succeeded.
     pub cross_file_success: Option<bool>,
+    /// Evidence class of this row.
+    ///
+    /// [`UxEvidenceClass::TransportCharacterization`] rows contribute to
+    /// scenario counts and latency only; the aggregator excludes them from
+    /// every semantic correctness percentage regardless of the recorded
+    /// metric values.
+    pub evidence_class: UxEvidenceClass,
     /// Mean latency per request class in milliseconds for this scenario.
     ///
     /// Keys are request-class names such as `hover`, `completion`,
@@ -68,20 +77,35 @@ impl EditorUxScorecard {
 }
 
 /// Aggregate per-scenario UX measurements into release-facing scorecard rows.
+///
+/// Rows whose [`ScenarioScore::evidence_class`] is
+/// [`UxEvidenceClass::TransportCharacterization`] count toward
+/// `scenario_count` and latency aggregation but are excluded from every
+/// semantic correctness percentage: a transport-only pass (including an empty
+/// `Ok`) is not definition correctness, recovery exactness, or
+/// first-correct-answer evidence.
 pub fn aggregate_editor_ux_scorecard(scenarios: &[ScenarioScore]) -> EditorUxScorecard {
-    let hover_correctness_pct = percent_true(scenarios.iter().filter_map(|s| s.hover_correct));
-    let completion_top1_pct =
-        percent_true(scenarios.iter().filter_map(|s| s.completion_top1_correct));
-    let completion_top5_pct =
-        percent_true(scenarios.iter().filter_map(|s| s.completion_top5_correct));
-    let definition_exact_hit_pct =
-        percent_true(scenarios.iter().filter_map(|s| s.definition_exact_hit));
-    let symbol_correctness_pct = percent_true(scenarios.iter().filter_map(|s| s.symbol_correct));
-    let diagnostics_correct_pct =
-        percent_true(scenarios.iter().filter_map(|s| s.diagnostics_correct));
-    let rename_success_pct = percent_true(scenarios.iter().filter_map(|s| s.rename_success));
+    let semantic = |s: &ScenarioScore| s.evidence_class.supports_semantic_proof();
+    let hover_correctness_pct =
+        percent_true(scenarios.iter().filter(|s| semantic(s)).filter_map(|s| s.hover_correct));
+    let completion_top1_pct = percent_true(
+        scenarios.iter().filter(|s| semantic(s)).filter_map(|s| s.completion_top1_correct),
+    );
+    let completion_top5_pct = percent_true(
+        scenarios.iter().filter(|s| semantic(s)).filter_map(|s| s.completion_top5_correct),
+    );
+    let definition_exact_hit_pct = percent_true(
+        scenarios.iter().filter(|s| semantic(s)).filter_map(|s| s.definition_exact_hit),
+    );
+    let symbol_correctness_pct =
+        percent_true(scenarios.iter().filter(|s| semantic(s)).filter_map(|s| s.symbol_correct));
+    let diagnostics_correct_pct = percent_true(
+        scenarios.iter().filter(|s| semantic(s)).filter_map(|s| s.diagnostics_correct),
+    );
+    let rename_success_pct =
+        percent_true(scenarios.iter().filter(|s| semantic(s)).filter_map(|s| s.rename_success));
     let cross_file_success_pct =
-        percent_true(scenarios.iter().filter_map(|s| s.cross_file_success));
+        percent_true(scenarios.iter().filter(|s| semantic(s)).filter_map(|s| s.cross_file_success));
 
     let mut latency_accum: BTreeMap<String, (f64, usize)> = BTreeMap::new();
     for scenario in scenarios {
@@ -111,6 +135,44 @@ pub fn aggregate_editor_ux_scorecard(scenarios: &[ScenarioScore]) -> EditorUxSco
     }
 }
 
+/// Reject a characterization row that carries semantic metric values.
+///
+/// Transport-characterization rows must carry `None` for every semantic
+/// metric; carrying a value is a misclassification that projections would
+/// otherwise have to keep filtering forever. Call this when a scenario
+/// reports its measurements so the contradiction surfaces at the source
+/// instead of silently depending on aggregator exclusion.
+pub fn ensure_score_evidence_consistent(score: &ScenarioScore) -> Result<(), String> {
+    const SEMANTIC_METRICS: &[(&str, fn(&ScenarioScore) -> Option<bool>)] = &[
+        ("hover_correct", |s| s.hover_correct),
+        ("completion_top1_correct", |s| s.completion_top1_correct),
+        ("completion_top5_correct", |s| s.completion_top5_correct),
+        ("definition_exact_hit", |s| s.definition_exact_hit),
+        ("symbol_correct", |s| s.symbol_correct),
+        ("diagnostics_correct", |s| s.diagnostics_correct),
+        ("rename_success", |s| s.rename_success),
+        ("cross_file_success", |s| s.cross_file_success),
+    ];
+
+    if score.evidence_class.supports_semantic_proof() {
+        return Ok(());
+    }
+
+    for (metric, accessor) in SEMANTIC_METRICS {
+        if accessor(score).is_some() {
+            return Err(format!(
+                "scenario `{}` is transport characterization but carries semantic metric \
+                 `{metric}`: an empty `Ok` or transport pass is not definition correctness, \
+                 recovery exactness, or first-correct-answer evidence; clear the metric or \
+                 reclassify the row with the owning semantic-proof issue",
+                score.scenario_id
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn percent_true<I>(iter: I) -> Option<f64>
 where
     I: Iterator<Item = bool>,
@@ -134,7 +196,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{ScenarioScore, aggregate_editor_ux_scorecard, percent_true};
+    use super::{
+        ScenarioScore, aggregate_editor_ux_scorecard, ensure_score_evidence_consistent,
+        percent_true,
+    };
+    use crate::taxonomy::UxEvidenceClass;
     use anyhow::Result;
 
     fn make_score(
@@ -421,5 +487,74 @@ mod tests {
         // 2 true out of 5 = 40%
         let result = percent_true([true, false, true, false, false].iter().copied());
         assert_eq!(result, Some(40.0));
+    }
+
+    // ── Evidence-class separation (#13570) ───────────────────────────────
+
+    /// The Scenario 24 misclassification shape: a transport-characterization
+    /// row whose navigation check recorded `definition_exact_hit = Some(true)`
+    /// (or any `Some`) must not raise the semantic definition percentage even
+    /// when its transport call returned `Ok`.
+    #[test]
+    fn transport_characterization_rows_are_excluded_from_semantic_percentages() -> Result<()> {
+        let semantic_hit = make_score(
+            "scenario-10-exact-hit",
+            None,
+            None,
+            None,
+            Some(true),
+            None,
+            None,
+            &[("definition", 30.0)],
+        );
+        let characterization = ScenarioScore {
+            scenario_id: "scenario-24-post-edit-navigation".to_string(),
+            definition_exact_hit: Some(true),
+            evidence_class: UxEvidenceClass::TransportCharacterization,
+            mean_latency_ms: [("definition".to_string(), 20.0)].into_iter().collect(),
+            ..Default::default()
+        };
+
+        let scorecard = aggregate_editor_ux_scorecard(&[semantic_hit, characterization]);
+
+        // The characterization row's `Some(true)` must not dilute or feed the
+        // semantic projection: one semantic row, one hit → 100%, not 50%.
+        assert_eq!(
+            scorecard.definition_exact_hit_pct,
+            Some(100.0),
+            "transport-characterization pass must not count as definition correctness"
+        );
+        // Characterization rows still count toward volume and latency.
+        assert_eq!(scorecard.scenario_count, 2);
+        assert_eq!(scorecard.mean_latency_ms_by_request.get("definition"), Some(&25.0));
+
+        Ok(())
+    }
+
+    /// A characterization row carrying semantic metrics is a misclassification
+    /// the projection must surface, not silently filter forever.
+    #[test]
+    fn ensure_score_evidence_consistent_rejects_characterization_with_semantic_metrics() {
+        let mut characterization = ScenarioScore {
+            scenario_id: "scenario-24-post-edit-navigation".to_string(),
+            evidence_class: UxEvidenceClass::TransportCharacterization,
+            ..Default::default()
+        };
+        assert!(ensure_score_evidence_consistent(&characterization).is_ok());
+
+        characterization.definition_exact_hit = Some(true);
+        let rejection = ensure_score_evidence_consistent(&characterization);
+        assert!(
+            matches!(&rejection, Err(message) if message.contains("definition_exact_hit") && message.contains("scenario-24")),
+            "characterization row carrying definition_exact_hit must be rejected with the \
+             metric and row named, got {rejection:?}"
+        );
+
+        let semantic = ScenarioScore {
+            scenario_id: "scenario-10".to_string(),
+            definition_exact_hit: Some(true),
+            ..Default::default()
+        };
+        assert!(ensure_score_evidence_consistent(&semantic).is_ok());
     }
 }

@@ -275,6 +275,33 @@ Review the generated `.ci/public-api-baselines/` changes and include only intent
 surface movement. A focused compile or unit test does not prove downstream compatibility;
 document migration impact and the exact baseline change.
 
+### Dependency updates
+
+Dependabot opens weekly Cargo, GitHub Actions, and VS Code extension candidates. The
+repository explicitly disables Dependabot labels with `labels: []`; omitting that option
+restores GitHub's default dependency labels. Discover candidates by bot author instead:
+
+```bash
+gh pr list --author "app/dependabot"
+```
+
+Author and CI status are discovery fields, not update-risk classifiers. Inspect each
+candidate's version table, changelog, diff, and checks. For a grouped PR, use the highest
+semver impact in the group. Enable auto-merge only for one reviewed patch or security
+update; minor and major updates follow the stronger review paths in the canonical guide.
+
+```bash
+gh pr view <pr-number>
+gh pr checks <pr-number>
+gh pr merge <pr-number> --auto --squash
+```
+
+Do not pipe an `app/dependabot` plus `status:success` query into `gh pr merge`; it also
+selects passing minor and major updates. See the
+[Dependency Management Guide](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/DEPENDENCY_MANAGEMENT.md)
+and
+[Dependency Update Quick Reference](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/DEPENDENCY_QUICK_REFERENCE.md).
+
 ### New crates, manifests, and publish topology
 
 When adding, removing, or renaming a crate:

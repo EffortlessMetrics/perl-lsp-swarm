@@ -20,17 +20,17 @@ pub(crate) enum CliCommand {
     Preflight,
     /// Run cargo test with concurrency caps for Rust tasks.
     TestCapped {
-        #[arg(trailing_var_arg = true)]
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         cargo_args: Vec<String>,
     },
     /// Run E2E test subset with a shared lock to cap parallel invocations.
     E2eGate {
-        #[arg(trailing_var_arg = true)]
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         cargo_args: Vec<String>,
     },
     /// Run preflight checks then E2E lock-gated cargo test.
     TestE2ECapped {
-        #[arg(trailing_var_arg = true)]
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         cargo_args: Vec<String>,
     },
     /// Verify stacker behavior in release/debug modes.

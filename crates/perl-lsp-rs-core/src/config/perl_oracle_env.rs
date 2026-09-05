@@ -55,6 +55,19 @@ fn effective_startup_inc_probe_timeout() -> Duration {
         .unwrap_or(SYSTEM_INC_PROBE_TIMEOUT)
 }
 
+#[cfg(all(not(target_arch = "wasm32"), test))]
+struct StartupIncProbeTimeoutGuard {
+    previous: Option<Duration>,
+    _thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), test))]
+impl Drop for StartupIncProbeTimeoutGuard {
+    fn drop(&mut self) {
+        STARTUP_INC_PROBE_TIMEOUT_OVERRIDE.with(|timeout| timeout.set(self.previous));
+    }
+}
+
 #[cfg(all(not(target_arch = "wasm32"), windows))]
 const PERLDOC_EXECUTABLE_CANDIDATES: &[&str] =
     &["perldoc.bat", "perldoc.cmd", "perldoc.exe", "perldoc"];
@@ -162,9 +175,12 @@ impl PerlOracleEnv {
     #[cfg(test)]
     pub(crate) fn with_startup_inc_probe_timeout<T>(timeout: Duration, f: impl FnOnce() -> T) -> T {
         STARTUP_INC_PROBE_TIMEOUT_OVERRIDE.with(|override_timeout| {
-            let previous = override_timeout.replace(Some(timeout));
+            let guard = StartupIncProbeTimeoutGuard {
+                previous: override_timeout.replace(Some(timeout)),
+                _thread_bound: std::marker::PhantomData,
+            };
             let result = f();
-            override_timeout.set(previous);
+            drop(guard);
             result
         })
     }
@@ -949,6 +965,95 @@ mod tests {
             assert!(!e.allow_perl5opt, "allow_perl5opt must always be false for startup probe");
             assert!(!e.allow_local_lib, "allow_local_lib must always be false for startup probe");
         }
+    }
+
+    #[test]
+    fn startup_inc_probe_timeout_override_wires_through_constructor() -> TestResult {
+        let config = WorkspaceConfig {
+            perl_path: Some("synthetic-perl-for-constructor-test".into()),
+            ..WorkspaceConfig::default()
+        };
+        let unmistakable = Duration::from_nanos(1);
+        let timeout = PerlOracleEnv::with_startup_inc_probe_timeout(unmistakable, || {
+            PerlOracleEnv::for_startup_inc_probe(&config).map(|oracle| oracle.timeout)
+        })
+        .ok_or("startup probe constructor returned None with a resolved Perl")?;
+
+        if timeout != unmistakable {
+            return Err(format!("constructor used {timeout:?}, expected {unmistakable:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn startup_inc_probe_timeout_scopes_normal_early_nested() -> TestResult {
+        let baseline = effective_startup_inc_probe_timeout();
+        let outer = Duration::from_secs(2);
+        let inner = Duration::from_secs(3);
+
+        PerlOracleEnv::with_startup_inc_probe_timeout(outer, || -> TestResult {
+            if effective_startup_inc_probe_timeout() != outer {
+                return Err("normal scope did not install its timeout".into());
+            }
+            let early = PerlOracleEnv::with_startup_inc_probe_timeout(inner, || -> TestResult {
+                if effective_startup_inc_probe_timeout() != inner {
+                    return Err("nested scope did not install its timeout".into());
+                }
+                Err("controlled early return".into())
+            });
+            if early.is_ok() {
+                return Err("early-return scope unexpectedly succeeded".into());
+            }
+            if effective_startup_inc_probe_timeout() != outer {
+                return Err("nested scope did not restore its enclosing timeout".into());
+            }
+            Ok(())
+        })?;
+
+        if effective_startup_inc_probe_timeout() != baseline {
+            return Err("normal return did not restore the prior timeout".into());
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn startup_inc_probe_timeout_restores_after_caught_unwind() -> TestResult {
+        let baseline = effective_startup_inc_probe_timeout();
+        let widened = Duration::from_secs(3);
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            PerlOracleEnv::with_startup_inc_probe_timeout(widened, || {
+                std::panic::resume_unwind(Box::new("controlled unwind"));
+            });
+        }));
+        if unwind.is_ok() {
+            return Err("controlled unwind unexpectedly completed".into());
+        }
+        if effective_startup_inc_probe_timeout() != baseline {
+            return Err("caught unwind did not restore the prior timeout".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn startup_inc_probe_timeout_restores_after_nested_caught_unwind() -> TestResult {
+        let baseline = effective_startup_inc_probe_timeout();
+        let outer = Duration::from_secs(2);
+        let inner = Duration::from_secs(3);
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            PerlOracleEnv::with_startup_inc_probe_timeout(outer, || {
+                PerlOracleEnv::with_startup_inc_probe_timeout(inner, || {
+                    std::panic::resume_unwind(Box::new("nested controlled unwind"));
+                });
+            });
+        }));
+        if unwind.is_ok() {
+            return Err("nested controlled unwind unexpectedly completed".into());
+        }
+        if effective_startup_inc_probe_timeout() != baseline {
+            return Err("nested caught unwind did not restore the prior timeout".into());
+        }
+        Ok(())
     }
 
     /// `for_module_resolution` maps system-include and PERL5LIB config to the

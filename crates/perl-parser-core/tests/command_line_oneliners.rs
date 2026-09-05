@@ -14,7 +14,7 @@ use cpan_test_helpers::{assert_clean_parse, assert_no_blocking_diagnostics};
 use perl_parser_core::hir::{CompilePhase, HirFile, HirKind, lower_ast};
 use perl_parser_core::{Node, Parser};
 
-fn collect_ast_shapes<'a>(node: &'a Node, shapes: &mut Vec<(&'static str, usize, usize)>) {
+fn collect_ast_shapes(node: &Node, shapes: &mut Vec<(&'static str, usize, usize)>) {
     shapes.push((node.kind.kind_name(), node.location.start, node.location.end));
     for child in node.children() {
         collect_ast_shapes(child, shapes);
@@ -60,14 +60,16 @@ fn assert_hir_range_contains(source: &str, hir: &HirFile, anchor_kind: &str, fra
 }
 
 fn assert_hir_kind(hir: &HirFile, expected: &str, source: &str) {
-    let found = hir.items.iter().any(|item| match (&item.kind, expected) {
-        (HirKind::RegexExpr(_), "RegexExpr")
-        | (HirKind::MatchExpr(_), "MatchExpr")
-        | (HirKind::SubstitutionExpr(_), "SubstitutionExpr")
-        | (HirKind::TransliterationExpr(_), "TransliterationExpr")
-        | (HirKind::LiteralExpr(_), "LiteralExpr")
-        | (HirKind::ReadlineMigrationAdapter(_), "ReadlineMigrationAdapter") => true,
-        _ => false,
+    let found = hir.items.iter().any(|item| {
+        matches!(
+            (&item.kind, expected),
+            (HirKind::RegexExpr(_), "RegexExpr")
+                | (HirKind::MatchExpr(_), "MatchExpr")
+                | (HirKind::SubstitutionExpr(_), "SubstitutionExpr")
+                | (HirKind::TransliterationExpr(_), "TransliterationExpr")
+                | (HirKind::LiteralExpr(_), "LiteralExpr")
+                | (HirKind::ReadlineMigrationAdapter(_), "ReadlineMigrationAdapter")
+        )
     });
     assert!(found, "expected HIR {expected} for {source:?}");
 }

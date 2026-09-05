@@ -19,6 +19,7 @@ on:
       - 'scripts/install.sh'
       - 'scripts/publish-topo.py'
       - 'scripts/tests/test-install-target-selection.sh'
+      - 'scripts/tests/test-install-source-version-binding.sh'
       # Install-surface honesty gates (issue #5448): the zero-argument
       # bootstrap path and the public package manifests.
       - 'install.ps1'
@@ -217,6 +218,31 @@ jobs:
             echo "## Installer PATH contract self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The installer PATH source contract regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  installer-source-version-binding-self-test:
+    name: Installer source-version binding self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run installer source-version binding self-test
+        run: bash scripts/tests/test-install-source-version-binding.sh
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## Installer source-version binding self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "Source-mode VERSION requests bind Cargo's exact selector and the staged perllsp identity, while malformed or unrelated identities fail closed before promotion." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Installer source-version binding self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "The source installer may be able to build or promote a registry subject different from the requested VERSION." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   windows-fresh-path-oracle-self-test:

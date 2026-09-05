@@ -6,9 +6,9 @@ use super::{
     DapEvent, DapMessage, DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
     Instant, Mutex, Read, RestartArguments, ResumeMode, Source, StackFrame, Stdio, SyncSender,
     TcpAttachConfig, TcpAttachSession, TerminateArguments, TerminationState, Value, Write,
-    ansi_escape_re, catalog_has_feature, context_re, die_suffix_re, dispatch_event,
-    emit_event_safe, error_re, exception_re, json, lock_or_recover, module_path_to_name, prompt_re,
-    security, stack_frame_re, thread, warning_re,
+    ansi_escape_re, catalog_has_feature, context_re, die_suffix_re, emit_event_safe, error_re,
+    exception_re, json, lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re,
+    thread, warning_re,
 };
 #[cfg(unix)]
 use nix::sys::signal::{self, Signal};
@@ -16,9 +16,14 @@ use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-// The internal TCP-attach DapEvent fan-in channel is still unbounded (non-goal of #5149).
+// The internal TCP-attach DapEvent fan-in queue is bounded with a
+// generation-aware forwarder (#9521); the reader-side admission policy lives in
+// `tcp_attach::reader`.
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::sync_channel;
+
+use super::sync_utils::{GuardedDispatchResult, dispatch_event_generation_guarded};
+use super::tcp_attach_forwarder::{TCP_ATTACH_EVENT_CAPACITY, spawn_tcp_attach_event_forwarder};
 
 mod perl_info;
 mod perl_spawn;
@@ -57,13 +62,7 @@ impl DebugAdapter {
         self.initialized.store(true, std::sync::atomic::Ordering::Release);
 
         let supports_core = catalog_has_feature("dap.core");
-        let supports_basic_breakpoints = catalog_has_feature("dap.breakpoints.basic");
-        let supports_hit_conditions = catalog_has_feature("dap.breakpoints.hit_condition");
-        let supports_log_points = catalog_has_feature("dap.breakpoints.logpoints");
         let supports_exceptions = catalog_has_feature("dap.exceptions.die");
-        let supports_inline_values = catalog_has_feature("dap.inline_values");
-        let supports_completions = catalog_has_feature("dap.completions");
-        let supports_modules = catalog_has_feature("dap.modules");
         let supports_watchpoints = catalog_has_feature("dap.watchpoints");
         let supports_warn = catalog_has_feature("dap.exceptions.warn");
         let supports_any_exception = supports_exceptions || supports_warn;
@@ -75,8 +74,17 @@ impl DebugAdapter {
         let supports_restart_frame = catalog_has_feature("dap.restart_frame");
         let supports_terminate_threads = catalog_has_feature("dap.terminate_threads");
         let supports_step_in_targets = catalog_has_feature("dap.step_in_targets");
-        let supports_restart = catalog_has_feature("dap.restart");
-        let supports_loaded_sources = catalog_has_feature("dap.loaded_sources");
+        // `gotoTargets`/`goto` are fail-closed while the native backend only has
+        // a run-to-line primitive (`f <source>` + `c <line>` resumes execution
+        // instead of moving the next statement).  The catalog row is
+        // `not_proven`/unadvertised (#9064), so this flag stays `false` until a
+        // backend proves a real next-statement relocation primitive.
+        // Advertising requires the complete contract: targets that can never
+        // be executed (`dap.goto` unadvertised) must not be published, so a
+        // one-row promotion of `dap.goto_targets` alone cannot expose
+        // selectable-but-dead targets.
+        let supports_goto_targets =
+            catalog_has_feature("dap.goto_targets") && catalog_has_feature("dap.goto");
 
         let mut filters = Vec::new();
         if supports_exceptions {
@@ -102,46 +110,100 @@ impl DebugAdapter {
 
         let capabilities = json!({
             "supportsConfigurationDoneRequest": supports_core,
-            "supportsFunctionBreakpoints": supports_core,
-            "supportsConditionalBreakpoints": supports_basic_breakpoints,
-            "supportsHitConditionalBreakpoints": supports_hit_conditions,
+            // #9578: the four optional breakpoint capability rows fail closed
+            // from the single `backend::capabilities` authority. They are not
+            // derived from `supports_core`, `dap.breakpoints.*` catalog rows,
+            // maturity, handler presence, or backend method existence: the
+            // runtime contracts (engine resolution/install, condition
+            // enforcement, attributed hit counting, correlated logpoint
+            // output) are unproven on this seam. Per-capability re-enable
+            // gates: #8645 (function), #8988 (conditional), #8994 (hit),
+            // #9000 (logpoint).
+            "supportsFunctionBreakpoints":
+                crate::backend::capabilities::advertises_function_breakpoints(),
+            "supportsConditionalBreakpoints":
+                crate::backend::capabilities::advertises_conditional_breakpoints(),
+            "supportsHitConditionalBreakpoints":
+                crate::backend::capabilities::advertises_hit_conditional_breakpoints(),
+            "supportsLogPoints": crate::backend::capabilities::advertises_log_points(),
             // #9573: not `supports_core`. Hover is gated on a pure
             // selected-frame inspection proof that does not exist yet, so the
             // wire value comes from the single hover authority and no catalog
             // row can widen it.
             "supportsEvaluateForHovers": crate::backend::capabilities::advertises_evaluate_for_hovers(),
             "supportsStepBack": false,
-            "supportsSetVariable": supports_core,
+            // #8354: not `supports_core`. setVariable is gated on an exact
+            // mutation proof that does not exist yet, so the wire value comes
+            // from the single setVariable authority and no catalog row can
+            // widen it.
+            "supportsSetVariable":
+                crate::backend::capabilities::advertises_set_variable(),
             "supportsRestartFrame": supports_restart_frame,
-            "supportsGotoTargetsRequest": supports_core,
+            "supportsGotoTargetsRequest": supports_goto_targets,
             "supportsStepInTargetsRequest": supports_step_in_targets,
-            "supportsCompletionsRequest": supports_completions,
-            "supportsModulesRequest": supports_modules,
-            "supportsRestartRequest": supports_restart,
+            // --- #9581 secondary-capability floor -------------------------------
+            // The seven rows below are independent literal `false` cells. None
+            // of them may be derived from `supports_core`, catalog maturity,
+            // handler/type presence, or another mode's support: the useful
+            // handler pieces exist, but their advertised contracts are not yet
+            // exact behavior facts (#9581). Each row re-enables only through
+            // its own gate, owned by the per-feature issues named in its
+            // comment; one field's receipt never widens another. While a row
+            // is false, its request is rejected by the dispatcher before any
+            // handler computation (see `dispatch_request`), so the floored
+            // paths perform no debugger I/O and mutate no state.
+            //
+            // completions: column/current-frame semantics unproven.
+            // Gate: #9021 + #9046 + #9050 + #8581 + #9582 + #9584.
+            "supportsCompletionsRequest": false,
+            // modules: `%INC` output without stable module/source identity.
+            // Gate: #8581 + #7667/#8668 + #9585 + #9586.
+            "supportsModulesRequest": false,
+            // restart: no atomic fresh-debuggee transaction yet.
+            // Gate: #9051 + #8691/#8703 + #8974 + #9587 + #8726 + #7568.
+            "supportsRestartRequest": false,
             "supportsExceptionOptions": supports_any_exception,
-            "supportsValueFormattingOptions": supports_core,
+            // ValueFormat: formatting honor is not proven consistently across
+            // variables/evaluate/mutation. Gate: #9050 + #8364 + #9070 +
+            // #7342/#7345 + #9588 + #9590.
+            "supportsValueFormattingOptions": false,
             "supportsExceptionInfoRequest": supports_any_exception,
             "supportTerminateDebuggee": supports_core,
             "supportsDelayedStackTraceLoading": false,
-            "supportsLoadedSourcesRequest": supports_loaded_sources,
-            "supportsLogPoints": supports_log_points,
+            // loadedSources: same identity gate as modules, as its own row.
+            // Gate: #8581 + #7667/#8668 + #9585 + #9586.
+            "supportsLoadedSourcesRequest": false,
             "supportsTerminateThreadsRequest": supports_terminate_threads,
             // #8294: exactly one synthetic main execution context is exposed;
             // single-thread execution requests are not a distinct capability
             // and stay unadvertised.
             "supportsSingleThreadExecutionRequests": false,
-            "supportsSetExpression": supports_core,
+            // #9568: not `supports_core`. setExpression is gated on an exact
+            // current-frame l-value assignment proof (#9570 promotion boundary)
+            // that does not exist yet, so the wire value comes from the single
+            // setExpression authority and no catalog row can widen it.
+            "supportsSetExpression": crate::backend::capabilities::advertises_set_expression(),
             "supportsTerminateRequest": supports_core,
             "supportsDataBreakpoints": supports_watchpoints,
             "supportsReadMemoryRequest": false,
             "supportsDisassembleRequest": false,
-            "supportsCancelRequest": supports_core,
-            "supportsBreakpointLocationsRequest": supports_basic_breakpoints,
+            // cancel: the shared flag can affect another request; request-scoped
+            // correlation is unproven. Gate: #9074 + #8712 + #7568.
+            "supportsCancelRequest": false,
+            // breakpointLocations: canonical geometry/coordinate contract
+            // unproven. Gate: #10524 + #2300 + #9021 + #7566.
+            "supportsBreakpointLocationsRequest": false,
+            // --- end #9581 secondary-capability floor ---------------------------
             "supportsClipboardContext": false,
             "supportsSteppingGranularity": false,
             "supportsInstructionBreakpoints": false,
             "supportsExceptionFilterOptions": supports_any_exception,
-            "supportsInlineValues": supports_inline_values,
+            // #9089: not the `dap.inline_values` catalog row. The routed
+            // `inlineValues` request is a project extension, not standard DAP,
+            // so the standard capability cell comes from the single
+            // inline-values extension authority and no catalog row can widen
+            // it while the negotiation contract is unproven.
+            "supportsInlineValues": crate::backend::capabilities::advertises_inline_values_extension(),
             "exceptionBreakpointFilters": exception_breakpoint_filters
         });
 
@@ -1761,8 +1823,8 @@ impl DebugAdapter {
                 // Create TCP attach session
                 let mut session = TcpAttachSession::new();
 
-                // Set up event channel for TCP events
-                let (tx, rx) = channel::<DapEvent>();
+                // Set up the bounded event channel for TCP events (#9521)
+                let (tx, rx) = sync_channel::<DapEvent>(TCP_ATTACH_EVENT_CAPACITY);
                 session.set_event_sender(tx);
 
                 // Attempt to connect (validate is called inside connect,
@@ -1791,44 +1853,23 @@ impl DebugAdapter {
                             *guard = Some(session);
                         }
 
-                        // Start event handler thread for TCP events
+                        // Start the generation-aware forwarder for TCP events.
+                        // Events are published only while the attach's session
+                        // generation is current; a replacement attach,
+                        // termination, or disconnect discards the dead
+                        // generation's queued events before DAP publication
+                        // (#9521).
                         let seq_counter = self.seq.clone();
                         let event_sender = self.event_sender.clone();
                         let termination_state = self.termination_state.clone();
                         let session_generation = self.current_session_generation();
-                        thread::spawn(move || {
-                            while let Ok(event) = rx.recv() {
-                                match event {
-                                    DapEvent::Terminated { reason } => {
-                                        if let Some(ref sender) = event_sender {
-                                            emit_terminated_event(
-                                                sender,
-                                                &seq_counter,
-                                                &termination_state,
-                                                Some(session_generation),
-                                                Some(json!({"reason": reason})),
-                                            );
-                                        }
-                                    }
-                                    DapEvent::Error { message } => {
-                                        tracing::error!(message, "TCP attach error");
-                                    }
-                                    identity_event => {
-                                        // The editor must only ever observe the
-                                        // advertised synthetic context: `threads`, every
-                                        // thread-scoped request, and `stopped`/`continued`
-                                        // events all carry the same id on the TCP-attach
-                                        // path (#8294).
-                                        if let Some((name, body)) =
-                                            Self::tcp_event_message(identity_event)
-                                            && let Some(ref sender) = event_sender
-                                        {
-                                            dispatch_event(sender, &seq_counter, name, body);
-                                        }
-                                    }
-                                }
-                            }
-                        });
+                        spawn_tcp_attach_event_forwarder(
+                            rx,
+                            event_sender,
+                            seq_counter,
+                            termination_state,
+                            session_generation,
+                        );
 
                         // When stopOnEntry is requested, emit a stopped event so the IDE
                         // pauses at the first available program location after the TCP
@@ -2164,7 +2205,7 @@ impl DebugAdapter {
     /// carry [`Self::TCP_ATTACH_SYNTHETIC_THREAD_ID`] (#8294). `Terminated`
     /// and `Error` carry no execution-context identity and are handled at
     /// the pump; this translation returns `None` for them.
-    fn tcp_event_message(event: DapEvent) -> Option<(&'static str, Option<Value>)> {
+    pub(super) fn tcp_event_message(event: DapEvent) -> Option<(&'static str, Option<Value>)> {
         match event {
             DapEvent::Output { category, output } => {
                 Some(("output", Some(json!({ "category": category, "output": output }))))
@@ -2353,7 +2394,7 @@ impl DebugAdapter {
 ///
 /// Returns `true` if this caller now owns emission (and must deliver the event),
 /// `false` if another path already reserved or emitted termination.
-fn reserve_terminated_event(
+pub(super) fn reserve_terminated_event(
     termination_state: &Mutex<TerminationState>,
     expected_generation: Option<u64>,
 ) -> bool {
@@ -2412,12 +2453,39 @@ fn emit_logpoint_messages(
     }
 }
 
-fn emit_terminated_event(
+pub(super) fn emit_terminated_event(
     sender: &SyncSender<DapMessage>,
     seq: &Mutex<i64>,
     termination_state: &Mutex<TerminationState>,
     expected_generation: Option<u64>,
     body: Option<Value>,
+) -> bool {
+    emit_terminated_event_guarded(
+        sender,
+        seq,
+        termination_state,
+        expected_generation,
+        body,
+        &|| false,
+    )
+}
+
+/// [`emit_terminated_event`] with a staleness hook for the generation-aware
+/// TCP-attach forwarder (#9521).
+///
+/// Reservation and delivery-currentness are unchanged; the final send is
+/// generation-aware across the ENTIRE queue wait: a `terminated` event that
+/// cannot be enqueued immediately re-validates the generation before every
+/// commit attempt, so a replacement session retires a blocked stale terminal
+/// event instead of an unbounded blocking send publishing it into the
+/// replacement's conversation after validation passed.
+pub(super) fn emit_terminated_event_guarded(
+    sender: &SyncSender<DapMessage>,
+    seq: &Mutex<i64>,
+    termination_state: &Mutex<TerminationState>,
+    expected_generation: Option<u64>,
+    body: Option<Value>,
+    stale: &dyn Fn() -> bool,
 ) -> bool {
     if !reserve_terminated_event(termination_state, expected_generation) {
         return false;
@@ -2428,7 +2496,10 @@ fn emit_terminated_event(
         // terminal event into a newer client conversation (#12092 review).
         return false;
     }
-    emit_event_safe(sender, seq, "terminated", body)
+    !matches!(
+        dispatch_event_generation_guarded(sender, seq, "terminated", body, stale),
+        GuardedDispatchResult::Disconnected
+    )
 }
 
 #[cfg(test)]
@@ -2439,6 +2510,7 @@ mod tests {
         reserve_terminated_event, terminated_delivery_is_current,
     };
     use crate::tcp_attach::DapEvent;
+    use perl_test_must::must_some_with;
     use std::collections::HashMap;
     use std::sync::mpsc::{TryRecvError, sync_channel};
     use std::sync::{Arc, Mutex};
@@ -2504,35 +2576,40 @@ mod tests {
     /// thread-scoped requests, and events cannot disagree (#8294).
     #[test]
     fn tcp_events_normalize_foreign_thread_ids_to_the_advertised_context() {
-        let (stopped_name, stopped_body) = DebugAdapter::tcp_event_message(DapEvent::Stopped {
-            reason: "breakpoint".to_string(),
-            thread_id: 9,
-        })
-        .expect("stopped events translate");
+        let (stopped_name, stopped_body) = must_some_with(
+            DebugAdapter::tcp_event_message(DapEvent::Stopped {
+                reason: "breakpoint".to_string(),
+                thread_id: 9,
+            }),
+            "stopped events translate",
+        );
         assert_eq!(stopped_name, "stopped");
-        let stopped_body = stopped_body.expect("stopped events carry a body");
+        let stopped_body = must_some_with(stopped_body, "stopped events carry a body");
         assert_eq!(stopped_body["threadId"], DebugAdapter::TCP_ATTACH_SYNTHETIC_THREAD_ID);
         assert_eq!(stopped_body["threadId"], 1);
         assert_eq!(stopped_body["reason"], "breakpoint");
         assert_eq!(stopped_body["allThreadsStopped"], true);
 
-        let (continued_name, continued_body) =
-            DebugAdapter::tcp_event_message(DapEvent::Continued { thread_id: 9 })
-                .expect("continued events translate");
+        let (continued_name, continued_body) = must_some_with(
+            DebugAdapter::tcp_event_message(DapEvent::Continued { thread_id: 9 }),
+            "continued events translate",
+        );
         assert_eq!(continued_name, "continued");
-        let continued_body = continued_body.expect("continued events carry a body");
+        let continued_body = must_some_with(continued_body, "continued events carry a body");
         assert_eq!(continued_body["threadId"], DebugAdapter::TCP_ATTACH_SYNTHETIC_THREAD_ID);
         assert_eq!(continued_body["allThreadsContinued"], true);
 
         // Non-identity events keep their shape and stay decoupled from the
         // execution-context contract.
-        let (output_name, output_body) = DebugAdapter::tcp_event_message(DapEvent::Output {
-            category: "stdout".to_string(),
-            output: "hi".to_string(),
-        })
-        .expect("output events translate");
+        let (output_name, output_body) = must_some_with(
+            DebugAdapter::tcp_event_message(DapEvent::Output {
+                category: "stdout".to_string(),
+                output: "hi".to_string(),
+            }),
+            "output events translate",
+        );
         assert_eq!(output_name, "output");
-        assert!(output_body.expect("output events carry a body")["threadId"].is_null());
+        assert!(must_some_with(output_body, "output events carry a body")["threadId"].is_null());
         assert!(
             DebugAdapter::tcp_event_message(DapEvent::Terminated { reason: "exit".to_string() })
                 .is_none()

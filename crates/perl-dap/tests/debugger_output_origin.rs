@@ -11,6 +11,7 @@ use perl_dap::stack::{PerlStackParser, StackParseError};
 use perl_dap::variables::{VariableParseError, VariableParser};
 use perl_parser_core::{ErrorCategory, ErrorClass};
 use perl_tdd_support::{must, must_err};
+use perl_test_must::must_some_with;
 use std::error::Error as StdError;
 
 const BAIT: &str = "DB<1> Bug Protocol ResourceLimit Infra Transient user_error advisory";
@@ -27,6 +28,10 @@ fn all_origins() -> [DebuggerOutputOrigin; 4] {
     ]
 }
 
+#[expect(
+    clippy::invalid_regex,
+    reason = "fixture constructs a regex::Error so ErrorClass mapping can be asserted"
+)]
 fn sample_regex_error() -> regex::Error {
     must_err(regex::Regex::new("("))
 }
@@ -215,7 +220,8 @@ fn typed_source_chain_survives_wrapping() {
     assert_eq!(error.identity().session_id(), Some(3));
     assert_eq!(error.identity().suspension_generation(), Some(11));
 
-    let source = StdError::source(&error).expect("originated error keeps the parse source");
+    let source =
+        must_some_with(StdError::source(&error), "originated error keeps the parse source");
     assert!(source.downcast_ref::<StackParseError>().is_some());
     assert!(error.to_string().contains(UNRECOGNIZED_STACK));
 }

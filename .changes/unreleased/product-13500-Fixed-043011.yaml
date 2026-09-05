@@ -1,0 +1,13 @@
+project: product
+component: Parser and lexer
+kind: Fixed
+body: >-
+  Preserve simple and compound assignments embedded in `local` declarations in
+  canonical body HIR, including read-modify-write access for contiguous `x=`,
+  and make `local $x = EXPR` declaration nodes span the whole assignment
+  instead of stopping at the localized variable.
+time: 2026-08-29T04:30:11Z
+custom:
+  PR: "13500"
+  Slug: hir-local-assignment-payloads
+  Breaking: "no"

@@ -128,6 +128,20 @@ impl RuntimeModuleGenerationClock {
         self.current
     }
 
+    /// A clock positioned at an arbitrary generation.
+    ///
+    /// Test seam only. A production clock always starts fresh with its
+    /// debuggee process and only ever moves through [`Self::apply`]; this
+    /// exists so the exhaustion ceiling can be reached in a test without
+    /// counting to `u64::MAX`. It adds no production behavior and changes
+    /// no frozen semantics.
+    #[cfg(test)]
+    pub(crate) const fn at_generation(
+        current: RuntimeModuleGeneration,
+    ) -> RuntimeModuleGenerationClock {
+        RuntimeModuleGenerationClock { current }
+    }
+
     /// Apply one transaction outcome, advancing only for the two terminal
     /// mutation outcomes. Returns the resulting generation and whether it
     /// advanced.

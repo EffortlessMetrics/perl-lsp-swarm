@@ -117,7 +117,13 @@ fn dap_attach_e2e_tcp_loopback() -> TestResult {
 
     let init_body = response_success(adapter.handle_request(1, "initialize", None), "initialize")?;
     let capabilities = init_body.ok_or("initialize response missing capability body")?;
-    assert!(capabilities.get("supportsRestartRequest").and_then(|v| v.as_bool()).unwrap_or(false));
+    // #9581: restart is a floored secondary capability in attach mode too —
+    // the TCP attach surface shares the native initialize rows and each is an
+    // explicit `false` until its own gate passes.
+    assert!(
+        !capabilities.get("supportsRestartRequest").and_then(|v| v.as_bool()).unwrap_or(true),
+        "supportsRestartRequest must be false under the #9581 floor (attach mode)"
+    );
     let _initialized = wait_for_event(&rx, "initialized", timeout)?;
 
     response_success(
@@ -146,7 +152,9 @@ fn dap_attach_e2e_tcp_loopback() -> TestResult {
     let stopped = wait_for_event(&rx, "stopped", timeout)?;
     let stopped_body = event_body(&stopped).ok_or("stopped event missing body")?;
     assert_eq!(stopped_body.get("reason").and_then(Value::as_str), Some("breakpoint"));
-    assert_eq!(stopped_body.get("threadId").and_then(Value::as_i64), Some(7));
+    // #8294/#14787: TCP attach exposes one synthetic execution context; the
+    // peer thread id (7) must not leak through to the stopped event.
+    assert_eq!(stopped_body.get("threadId").and_then(Value::as_i64), Some(1));
 
     response_success(adapter.handle_request(4, "disconnect", Some(json!({}))), "disconnect")?;
     let _terminated = wait_for_event(&rx, "terminated", timeout)?;
@@ -223,7 +231,8 @@ fn dap_attach_e2e_tcp_loopback_stop_on_entry_and_server_stopped() -> TestResult 
     let second_stopped = wait_for_event(&rx, "stopped", timeout)?;
     let second_body = event_body(&second_stopped).ok_or("second stopped event missing body")?;
     assert_eq!(second_body.get("reason").and_then(Value::as_str), Some("pause"));
-    assert_eq!(second_body.get("threadId").and_then(Value::as_i64), Some(19));
+    // #8294/#14787: the peer thread id (19) is normalised to the synthetic 1.
+    assert_eq!(second_body.get("threadId").and_then(Value::as_i64), Some(1));
 
     response_success(adapter.handle_request(3, "disconnect", Some(json!({}))), "disconnect")?;
     let _terminated = wait_for_event(&rx, "terminated", timeout)?;

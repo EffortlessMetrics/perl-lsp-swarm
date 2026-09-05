@@ -16,7 +16,7 @@ use perl_lsp_rs_core::runtime::launcher::{
     LaunchAction, LaunchConfig, LaunchParseError, StartupTimer, TransportMode,
     format_health_output, format_info_output, format_startup_banner, help_text, init_logging,
     log_server_startup, logging_filter, parse_args, port_in_use_message, shell_completion,
-    should_enable_logging, should_use_ansi_stdout,
+    should_enable_logging, should_use_ansi_stdout, shutdown_logging,
 };
 use perl_lsp_rs_core::tooling::native_compat::{
     classify_perlcritic_profile, classify_perltidy_profile, render_perlcritic_compat_markdown,
@@ -457,6 +457,7 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                 }
 
                 server.serve_async(rx).await;
+                shutdown_logging();
             });
         }
         TransportMode::Socket { port } => {

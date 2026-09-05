@@ -30,7 +30,7 @@
         "supportsConfigurationDoneRequest": true,
         "supportsEvaluateForHovers": false,
         "supportsStepBack": false,
-        "supportsSetVariable": true,
+        "supportsSetVariable": false,
         "supportsRestartFrame": false,
         "supportsConditionalBreakpoints": true,
         "supportsHitConditionalBreakpoints": false,

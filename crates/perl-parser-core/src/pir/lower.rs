@@ -16,11 +16,63 @@ use crate::hir::{
 };
 
 use super::model::{
-    LexicalName, PIR_RECEIPT_VERSION, PirAnchorCoverage, PirCallee, PirContext,
-    PirDynamicBoundaryKind, PirEdge, PirEdgeKind, PirGraph, PirId, PirLiteralKind, PirLoweringMode,
-    PirMethod, PirNode, PirOperation, PirReceipt, PirReceiver, PirRegexModifiers, PirRegexTarget,
-    PirSourceAnchor, PirTargetAccess, SymbolName,
+    LexicalName, PIR_RECEIPT_VERSION, PirAccessMode, PirAnchorCoverage, PirCallee, PirContext,
+    PirDynamicBoundaryKind, PirEdge, PirEdgeKind, PirEvaluationDemand, PirGraph, PirId,
+    PirLiteralKind, PirLoweringMode, PirMethod, PirNode, PirOperation, PirReceipt, PirReceiver,
+    PirRegexModifiers, PirRegexTarget, PirSourceAnchor, PirTargetAccess, SymbolName,
 };
+
+/// Place access implied by an operation family, or `None` when the operation
+/// does not access a place.
+///
+/// Only operations whose family names a place carry an access fact. Literals,
+/// calls, assignment expressions, control nodes, returns, dynamic boundaries,
+/// and regex literals produce or consume values without touching a place, so
+/// they carry no access fact rather than a fabricated `Read`. Dereferences are
+/// also left without an access fact: element-place identity is owned by the
+/// place model (#4847) and is not proven here.
+fn access_for_operation(operation: &PirOperation) -> Option<PirAccessMode> {
+    match operation {
+        PirOperation::LexicalRead { .. } | PirOperation::StashRead { .. } => {
+            Some(PirAccessMode::Read)
+        }
+        PirOperation::LexicalWrite { .. } | PirOperation::StashWrite { .. } => {
+            Some(PirAccessMode::Write)
+        }
+        PirOperation::Modify { .. } | PirOperation::StashModify { .. } => {
+            Some(PirAccessMode::ReadModifyWrite)
+        }
+        PirOperation::Match { target, access, .. }
+        | PirOperation::Substitution { target, access, .. }
+        | PirOperation::Transliteration { target, access, .. } => {
+            regex_target_access(target, *access)
+        }
+        _ => None,
+    }
+}
+
+/// Place access of a regex-family operation on its bound target.
+///
+/// A bound expression (`foo() =~ ...`) is not a place, so it carries no access
+/// fact. A named place (or a `DefaultTopic`, should lowering ever construct
+/// one) is read by a match and by a `/r` mutate-copy, and read-then-written by
+/// an in-place `s///` or `tr///`.
+fn regex_target_access(target: &PirRegexTarget, access: PirTargetAccess) -> Option<PirAccessMode> {
+    match target {
+        PirRegexTarget::Expression { .. } => None,
+        _ => Some(match access {
+            PirTargetAccess::Mutate => PirAccessMode::ReadModifyWrite,
+            PirTargetAccess::MutateCopy | PirTargetAccess::ReadOnly => PirAccessMode::Read,
+        }),
+    }
+}
+
+fn demand_for_operation(operation: &PirOperation) -> PirEvaluationDemand {
+    match operation {
+        PirOperation::Branch { .. } | PirOperation::Loop { .. } => PirEvaluationDemand::TruthTest,
+        _ => PirEvaluationDemand::Value,
+    }
+}
 
 /// Lower a [`HirFile`] into a PIR v0 graph with no caller-supplied identity.
 #[must_use]
@@ -223,8 +275,13 @@ impl Lowerer {
                     },
                 }
             };
-            // The declaration names a write target, which is a known lvalue.
-            self.push_node(item, anchor, operation, PirContext::Lvalue, None);
+            // The declaration names a write target; `access_for_operation`
+            // classifies the write. The flat path cannot prove whether the
+            // place is assigned in scalar or list context (`my ($x) = ...`
+            // is a list assignment with a scalar sigil), so the value
+            // context stays `Unknown` rather than borrowing the statement's
+            // `Void` or guessing from the sigil.
+            self.push_node(item, anchor, operation, PirContext::Unknown, None);
         }
 
         if decl.has_initializer {
@@ -445,7 +502,7 @@ impl Lowerer {
         // Statement branches are control-flow forks that yield no value at
         // statement level. A ternary is different: it is a value-producing
         // conditional expression that may participate in an lvalue context,
-        // but the flat path cannot prove its enclosing Scalar/List/Lvalue
+        // but the flat path cannot prove its enclosing Scalar/List
         // context. Keep it Unknown, matching the body path, rather than
         // claiming Void and losing the value-producing distinction.
         let context = match branch.keyword {
@@ -538,11 +595,15 @@ impl Lowerer {
         self.last_in_scope.insert(scope, id);
 
         let is_parent = is_expression_parent(&operation);
+        let demand = demand_for_operation(&operation);
+        let access = access_for_operation(&operation);
         self.nodes.push(PirNode {
             id,
             source_anchor,
             operation,
             context,
+            demand,
+            access,
             dynamic_boundary,
             scope,
             package_context: item.package_context.clone(),
@@ -582,11 +643,15 @@ impl Lowerer {
         self.edges.push(PirEdge { from: id, to: Some(parent), kind: PirEdgeKind::Fallthrough });
 
         let is_parent = is_expression_parent(&operation);
+        let demand = demand_for_operation(&operation);
+        let access = access_for_operation(&operation);
         self.nodes.push(PirNode {
             id,
             source_anchor,
             operation,
             context: PirContext::Unknown,
+            demand,
+            access,
             dynamic_boundary,
             scope: item.scope_context,
             package_context: item.package_context.clone(),
@@ -666,12 +731,18 @@ fn build_receipt(
 ) -> PirReceipt {
     let mut operation_counts = std::collections::BTreeMap::new();
     let mut context_counts = std::collections::BTreeMap::new();
+    let mut demand_counts = std::collections::BTreeMap::new();
+    let mut access_counts = std::collections::BTreeMap::new();
     let mut dynamic_boundary_counts = std::collections::BTreeMap::new();
     let mut coverage = PirAnchorCoverage::default();
 
     for node in nodes {
         *operation_counts.entry(node.operation.name()).or_insert(0) += 1;
         *context_counts.entry(node.context.name()).or_insert(0) += 1;
+        *demand_counts.entry(node.demand.name()).or_insert(0) += 1;
+        if let Some(access) = node.access {
+            *access_counts.entry(access.name()).or_insert(0) += 1;
+        }
         if node.source_anchor.is_anchored() {
             coverage.anchored += 1;
         } else {
@@ -692,6 +763,8 @@ fn build_receipt(
         edge_count,
         operation_counts,
         context_counts,
+        demand_counts,
+        access_counts,
         source_anchor_coverage: coverage,
         dynamic_boundary_counts,
         unsupported_construct_counts,
@@ -887,6 +960,8 @@ pub fn lower_hir_bodies_with_identity(file: &HirFile, source_identity: Option<St
             edge_count: 0,
             operation_counts: Default::default(),
             context_counts: Default::default(),
+            demand_counts: Default::default(),
+            access_counts: Default::default(),
             source_anchor_coverage: Default::default(),
             dynamic_boundary_counts: Default::default(),
             unsupported_construct_counts: Default::default(),
@@ -991,19 +1066,36 @@ impl BodyLowerer {
                             name: LexicalName { sigil: sigil_str(sigil), name: name.clone() },
                         },
                     };
-                    self.push_body_node(anchor, op, PirContext::Lvalue, None, file);
+                    // The write access comes from `access_for_operation`; the
+                    // value context of the declared place is not proven by
+                    // this lowering (scalar versus list assignment shape), so
+                    // it stays `Unknown` rather than the statement's `Void`.
+                    self.push_body_node(anchor, op, PirContext::Unknown, None, file);
                 }
-                // Lower the RHS of the initialiser. The init expr in the HIR body
-                // is an HirExpr::Assign { lhs: Variable(Write), rhs, mode: Simple }.
-                // We skip the Assign wrapper and lower only the rhs to avoid
-                // re-emitting the LHS Variable as a second Write.
+                // Lower the initialiser. A simple initialiser is
+                // HirExpr::Assign { lhs: Variable(Write), rhs, mode: Simple }; the
+                // declaration write above already covers its LHS, so lower only
+                // the rhs to avoid re-emitting the LHS Variable as a second Write.
+                // A read-modify-write initialiser (`local $x += EXPR`, `.=`, `x=`)
+                // is a real modification of the slot on top of the localization,
+                // so lower the whole Assign: the RMW arm emits one Modify node for
+                // the place plus the RHS read, never a second plain Write.
+                // A simple initialiser whose target is not a plain variable
+                // (`local $ENV{PATH} = EXPR`) is not covered by the declaration
+                // write above, which only names the declared symbol; lower the
+                // whole Assign so the real target reaches PIR (today as the
+                // fail-closed `Subscript` marker) instead of vanishing.
                 if let Some(init_id) = init {
-                    if let Some(HirExpr::Assign { rhs, .. }) = body.expr(*init_id) {
-                        self.lower_expr(body, *rhs, file);
-                    } else {
-                        // Not an Assign node (shouldn't happen in well-formed HIR,
-                        // but handle defensively — lower the init as-is).
-                        self.lower_expr(body, *init_id, file);
+                    match body.expr(*init_id) {
+                        Some(HirExpr::Assign { lhs, rhs, mode: AssignMode::Simple })
+                            if matches!(body.expr(*lhs), Some(HirExpr::Variable(_))) =>
+                        {
+                            self.lower_expr(body, *rhs, file);
+                        }
+                        // ReadModifyWrite, a non-variable target, or not an Assign
+                        // node (shouldn't happen in well-formed HIR): lower the
+                        // init as-is.
+                        _ => self.lower_expr(body, *init_id, file),
                     }
                 }
             }
@@ -1588,11 +1680,15 @@ impl BodyLowerer {
         self.last_in_scope.insert(scope, id);
 
         let _ = file; // reserved for future scope/package lookup from ScopeGraph
+        let demand = demand_for_operation(&operation);
+        let access = access_for_operation(&operation);
         self.nodes.push(PirNode {
             id,
             source_anchor,
             operation,
             context,
+            demand,
+            access,
             dynamic_boundary,
             scope,
             package_context: None, // deferred: body arenas don't carry package_context yet
@@ -1779,7 +1875,7 @@ mod tests {
         let graph = lower("my $x = 1;");
         assert_eq!(graph.nodes.len(), 3);
         assert_eq!(graph.nodes[0].operation.name(), "LexicalWrite");
-        assert_eq!(graph.nodes[0].context, PirContext::Lvalue);
+        assert_eq!(graph.nodes[0].access, Some(PirAccessMode::Write));
         assert_eq!(graph.nodes[1].operation.name(), "Assign");
         assert_eq!(graph.nodes[1].context, PirContext::Void);
         assert!(matches!(

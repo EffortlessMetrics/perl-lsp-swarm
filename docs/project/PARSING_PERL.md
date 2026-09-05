@@ -371,10 +371,19 @@ Safety limits prevent pathological input from causing hangs:
 
 - `MAX_HEREDOC_BYTES`: 256 KB per heredoc body
 - `MAX_HEREDOC_DEPTH`: 100 nested heredocs
-- `HEREDOC_TIMEOUT_MS`: 5-second wall-clock timeout
+- `ParseBudget::max_heredoc_scan_bytes`: 64 MiB of heredoc body collection
+  per parse, charged in source bytes
 
-When any limit is exceeded, the lexer emits an `UnknownRest` token and
-continues, preserving all previously parsed tokens for IDE features.
+Every limit is deterministic: the same source and configuration reach the same
+outcome on every host, so tracing, sanitizers, or a loaded machine cannot change
+what a file parses to.
+
+When a lexer limit is exceeded, the lexer emits an `UnknownRest` token and
+continues, preserving all previously parsed tokens for IDE features. When the
+parser's heredoc collection budget is exhausted, the parse stops with the typed
+`ParseStopCause::HeredocBudgetExhausted` terminal and leaves the affected
+heredoc placeholders unresolved — consumers must not read that empty content as
+a heredoc that declared an empty body.
 
 ### Quote Operator Parsing with Delimiter Tracking
 
@@ -414,8 +423,8 @@ model**:
 
 - **Returns `Ok(ast)` with ERROR nodes** for most parse failures (recovered
   errors).
-- **Returns `Err`** only for catastrophic failures (recursion limits,
-  timeouts).
+- **Returns `Err`** only for catastrophic failures (recursion and nesting
+  limits, cancellation).
 
 This means the LSP server always gets a partial AST, even for incomplete
 or malformed code.  A developer typing `sub foo { if (` gets code completion,
@@ -428,7 +437,7 @@ The parser protects itself with multiple layers:
 | Recursion depth | 128 levels | Prevents stack overflow on deeply nested code |
 | Parse budget | Configurable | Caps error recovery iterations |
 | AST node count | 100,000 nodes | Memory protection |
-| Wall-clock timeout | 5 seconds | Prevents hangs on pathological input |
+| Heredoc collection budget | 64 MiB scanned | Bounds heredoc body collection deterministically |
 
 ### Checkpointing for Backtracking
 
@@ -504,9 +513,14 @@ perl-lsp's approach is pragmatic:
    navigation, completion, and diagnostics -- they might just be slightly
    wrong in pathological edge cases.
 
-3. **Never hang, never crash.**  Budget limits, timeouts, and recursion
-   guards ensure the parser always terminates.  When limits are exceeded,
-   an `UnknownRest` token preserves everything parsed so far.
+3. **Never hang, never crash.**  Byte budgets and recursion
+   guards ensure the parser always terminates.  How a breach surfaces depends
+   on which layer owns the limit: lexer-side limits emit an `UnknownRest`
+   token that preserves everything scanned so far, while a parser-side budget
+   such as heredoc collection records a typed `ParseStopCause` and leaves the
+   affected placeholders visibly unresolved.  Either way what was parsed is
+   kept, and the outcome is a resource limit rather than a syntax error
+   against the user's code.
 
 4. **Let the user help.**  When the parser genuinely cannot disambiguate
    a construct, it picks the most common interpretation and moves on.
@@ -537,10 +551,13 @@ ambiguity tables, no runtime costs.
 
 Real-world input is adversarial.  Fuzz testing will find the pathological
 heredoc, the 200-level nested regex, the 10 MB single-line string.  Set
-explicit byte budgets, recursion limits, and wall-clock timeouts from
-day one.  Emit a degraded token and move on.  A slow parser that eventually
-produces output is worse than a fast parser that says "I gave up here" and
-keeps going.
+explicit byte budgets and recursion limits from day one -- deterministic
+ones, so the same source always parses the same way.  A wall clock makes
+the result depend on the host rather than the input.  Then say where you
+stopped and move on -- a degraded token where the scanner owns the limit, a
+typed terminal where the parser does -- but never blame the source for a
+limit it did not violate.  A slow parser that eventually produces output is
+worse than a fast parser that says "I gave up here" and keeps going.
 
 ### 3. IDE Parsers Are Not Compiler Parsers
 

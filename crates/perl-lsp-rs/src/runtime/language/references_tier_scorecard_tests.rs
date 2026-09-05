@@ -24,9 +24,12 @@
 //! | `"building"` | `"partial"` |
 //! | `"none"`     | `"none"`    |
 //!
-//! Exception: the `empty` tier hardcodes `index_state = "none"` in the handler
+//! Exception: the `empty` tier's terminal return hardcodes `index_state = "none"`
 //! regardless of the actual coordinator state (the index is irrelevant when no
-//! symbol exists under the cursor).  H-B is skipped for `empty` rows.
+//! symbol exists under the cursor).  H-B is skipped for `empty` rows.  The
+//! qualified-name prefix guard (#1849) also answers `empty` but reports the
+//! observed index state, so the skip is permissive rather than an assertion that
+//! `empty` implies `"none"`.
 //!
 //! If the assertion fails the harness reports the discrepancy so the caller
 //! can fix `set_index_building` (or drop the "building" column and document why).
@@ -345,12 +348,18 @@ use warnings;
 
         // H-B: observed index_state matches the intended label — for non-empty tiers.
         //
-        // The `empty` tier hardcodes `index_state = "none"` in the handler
-        // (references.rs terminal return) regardless of coordinator state.  This is
-        // an implementation shortcut: when there is no symbol under the cursor the
+        // The `empty` tier's terminal return in references.rs hardcodes
+        // `index_state = "none"` regardless of coordinator state.  This is an
+        // implementation shortcut: when there is no symbol under the cursor the
         // index state is irrelevant.  We skip H-B for empty rows to avoid a false
         // assertion; the `observed_state` column in the matrix will show "none" for
         // these rows, which is documented behaviour, not a harness bug.
+        //
+        // Not every `empty` row reports "none" any more: the qualified-name
+        // prefix guard (#1849) also answers `empty`, and it reports the index
+        // state it actually observed, because a symbol *does* exist under that
+        // cursor — just not the one being searched for.  The skip below is
+        // therefore permissive, not a claim that `empty` implies "none".
         let observed_state =
             receipt.get("index_state").and_then(Value::as_str).unwrap_or("").to_string();
         let answering_tier =

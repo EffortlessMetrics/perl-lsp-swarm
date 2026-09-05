@@ -29,6 +29,9 @@
 mod parser;
 mod renderer;
 
+/// Bounded stopped-state snapshot model for lexical collections (#7358 PR 1).
+pub mod lexical_snapshot;
+
 pub use crate::value::PerlValue;
 pub use parser::{FixedOriginVariableParseError, VariableParseError, VariableParser};
 pub use renderer::{

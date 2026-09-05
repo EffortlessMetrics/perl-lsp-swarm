@@ -1134,6 +1134,12 @@ fn test_feature_catalog_has_feature_known() {
 
 #[test]
 fn test_feature_catalog_all_dap_features_registered() {
+    // `has_feature` reports the *advertised* set. #9089 floors the routed
+    // inlineValues extension: its catalog row stays registered for inventory
+    // honesty while `advertised = false`, so it is deliberately absent here
+    // (the goto rows #9064 likewise). The unadvertised value is pinned by the
+    // coverage suite's feature-gate test.
+    //
     // #9091: `dap.watchpoints` is deliberately excluded — the row remains in
     // features.toml with full maturity metadata, but it is no longer advertised
     // until watchpoint identity/install/hit proof exists.
@@ -1145,7 +1151,6 @@ fn test_feature_catalog_all_dap_features_registered() {
         "dap.completions",
         "dap.exceptions.die",
         "dap.exceptions.warn",
-        "dap.inline_values",
         "dap.modules",
     ];
     for id in all_ids {
@@ -1154,6 +1159,10 @@ fn test_feature_catalog_all_dap_features_registered() {
             "feature `{id}` should be registered in the DAP catalog"
         );
     }
+    assert!(
+        !perl_dap::feature_catalog::has_feature("dap.inline_values"),
+        "dap.inline_values must stay unadvertised until #9089's negotiation gate passes"
+    );
 }
 
 /// #9091: watchpoints stay unadvertised while the re-enable gate

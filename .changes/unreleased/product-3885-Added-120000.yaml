@@ -6,6 +6,7 @@ body: >-
   "Workflow Contracts" scaffold for `.github/workflows/*.yml` (local
   action/reusable-workflow ref integrity, explicit permissions, and
   action-pinning policy checks). Advisory-unarmed; cannot block a PR.
+time: 2026-07-11T20:27:26Z
 custom:
   PR: "3885"
   Breaking: "no"

@@ -175,7 +175,9 @@ fn test_session_lifecycle_terminate_without_session() {
 #[test]
 // AC:5.5
 fn test_set_variable_without_session_returns_error() {
-    // setVariable should fail clearly when no debugger session is active
+    // setVariable must fail clearly when no debugger session is active. Since
+    // #8354 the capability floor refuses before session lookup, so the
+    // refusal is the capability message, not the session message.
     let (mut adapter, _rx) = create_test_adapter();
 
     let response = adapter.handle_request(
@@ -194,8 +196,8 @@ fn test_set_variable_without_session_returns_error() {
             assert_eq!(command, "setVariable");
             let msg = must_some(message);
             assert!(
-                msg.contains("No debugger session"),
-                "Error should mention missing session: {}",
+                msg.contains("supportsSetVariable"),
+                "the #8354 capability refusal must fire before session lookup: {}",
                 msg
             );
         }
@@ -206,7 +208,9 @@ fn test_set_variable_without_session_returns_error() {
 #[test]
 // AC:5.5
 fn test_set_variable_rejects_invalid_variable_name() {
-    // setVariable should reject names that could inject debugger commands
+    // setVariable must reject names that could inject debugger commands.
+    // Since #8354 the capability floor rejects every request before the name
+    // screening runs, so the refusal is the capability message.
     let (mut adapter, _rx) = create_test_adapter();
 
     let response = adapter.handle_request(
@@ -225,8 +229,8 @@ fn test_set_variable_rejects_invalid_variable_name() {
             assert_eq!(command, "setVariable");
             let msg = must_some(message);
             assert!(
-                msg.contains("Invalid variable name"),
-                "Error should report invalid variable name: {}",
+                msg.contains("supportsSetVariable"),
+                "the #8354 capability refusal must fire before name screening: {}",
                 msg
             );
         }
@@ -239,7 +243,9 @@ fn test_set_variable_rejects_invalid_variable_name() {
 #[test]
 fn bdd_set_variable_rejects_system_call_in_value() {
     // WHEN a setVariable request contains `system(...)` in the value field
-    // THEN the adapter must reject it before sending any command to the debugger
+    // THEN the adapter must reject it before sending any command to the
+    // debugger. Since #8354 the capability floor rejects every request before
+    // value screening runs, which is strictly earlier than the #7271 screen.
     let (mut adapter, _rx) = create_test_adapter();
 
     let response = adapter.handle_request(
@@ -258,8 +264,8 @@ fn bdd_set_variable_rejects_system_call_in_value() {
             assert_eq!(command, "setVariable");
             let msg = must_some(message);
             assert!(
-                msg.contains("unsafe value rejected"),
-                "Error must mention unsafe value rejection: {msg}"
+                msg.contains("supportsSetVariable"),
+                "the #8354 capability refusal must fire before value screening: {msg}"
             );
         }
         _ => must(Err::<(), _>("Expected Response message".to_string())),
@@ -269,7 +275,8 @@ fn bdd_set_variable_rejects_system_call_in_value() {
 #[test]
 fn bdd_set_variable_rejects_exec_injection_in_value() {
     // WHEN a setVariable value field contains exec() (shell exec injection)
-    // THEN the adapter must reject it
+    // THEN the adapter must reject it before any debugger mutation
+    // Floor authority: #8354 gate (supportsSetVariable=false) refuses every setVariable before value screening.
     let (mut adapter, _rx) = create_test_adapter();
 
     let response = adapter.handle_request(
@@ -283,13 +290,17 @@ fn bdd_set_variable_rejects_exec_injection_in_value() {
     );
 
     match response {
-        DapMessage::Response { success, command, message, .. } => {
+        DapMessage::Response { success, command, message, body, .. } => {
             assert!(!success, "setVariable must reject exec() in value");
             assert_eq!(command, "setVariable");
             let msg = must_some(message);
             assert!(
-                msg.contains("unsafe value rejected"),
-                "Error must mention unsafe value rejection: {msg}"
+                msg.contains("supportsSetVariable"),
+                "the #8354 capability refusal must fire before value screening: {msg}"
+            );
+            assert!(
+                body.is_none(),
+                "a refused setVariable must not mutate the debugger or allocate a result body: {body:?}"
             );
         }
         _ => must(Err::<(), _>("Expected Response message".to_string())),
@@ -299,7 +310,8 @@ fn bdd_set_variable_rejects_exec_injection_in_value() {
 #[test]
 fn bdd_set_variable_rejects_backtick_shell_in_value() {
     // WHEN a setVariable value field contains backtick shell execution
-    // THEN the adapter must reject it
+    // THEN the adapter must reject it before any debugger mutation
+    // Floor authority: #8354 gate (supportsSetVariable=false) refuses every setVariable before value screening.
     let (mut adapter, _rx) = create_test_adapter();
 
     let response = adapter.handle_request(
@@ -313,13 +325,17 @@ fn bdd_set_variable_rejects_backtick_shell_in_value() {
     );
 
     match response {
-        DapMessage::Response { success, command, message, .. } => {
+        DapMessage::Response { success, command, message, body, .. } => {
             assert!(!success, "setVariable must reject backtick shell execution in value");
             assert_eq!(command, "setVariable");
             let msg = must_some(message);
             assert!(
-                msg.contains("unsafe value rejected"),
-                "Error must mention unsafe value rejection: {msg}"
+                msg.contains("supportsSetVariable"),
+                "the #8354 capability refusal must fire before value screening: {msg}"
+            );
+            assert!(
+                body.is_none(),
+                "a refused setVariable must not mutate the debugger or allocate a result body: {body:?}"
             );
         }
         _ => must(Err::<(), _>("Expected Response message".to_string())),
@@ -329,7 +345,8 @@ fn bdd_set_variable_rejects_backtick_shell_in_value() {
 #[test]
 fn bdd_set_variable_rejects_statement_injection_via_semicolon_with_system() {
     // WHEN a setVariable value contains `1; system(...)` (statement injection)
-    // THEN the adapter must reject it because system() is dangerous
+    // THEN the adapter must reject it before any system() value screening can run
+    // Floor authority: #8354 gate (supportsSetVariable=false) refuses every setVariable before value screening.
     let (mut adapter, _rx) = create_test_adapter();
 
     let response = adapter.handle_request(
@@ -343,13 +360,17 @@ fn bdd_set_variable_rejects_statement_injection_via_semicolon_with_system() {
     );
 
     match response {
-        DapMessage::Response { success, command, message, .. } => {
+        DapMessage::Response { success, command, message, body, .. } => {
             assert!(!success, "setVariable must reject statement injection via semicolon");
             assert_eq!(command, "setVariable");
             let msg = must_some(message);
             assert!(
-                msg.contains("unsafe value rejected"),
-                "Error must mention unsafe value rejection: {msg}"
+                msg.contains("supportsSetVariable"),
+                "the #8354 capability refusal must fire before value screening: {msg}"
+            );
+            assert!(
+                body.is_none(),
+                "a refused setVariable must not mutate the debugger or allocate a result body: {body:?}"
             );
         }
         _ => must(Err::<(), _>("Expected Response message".to_string())),
@@ -359,7 +380,8 @@ fn bdd_set_variable_rejects_statement_injection_via_semicolon_with_system() {
 #[test]
 fn bdd_set_variable_rejects_statement_separator_before_unlisted_call() {
     // WHEN a setVariable value contains a statement separator before an unlisted call
-    // THEN the adapter must reject it even if the safe-eval builtin denylist does not match it
+    // THEN the adapter must reject it before any debugger mutation, regardless of the safe-eval denylist
+    // Floor authority: #8354 gate (supportsSetVariable=false) refuses every setVariable before the statement-separator screen.
     let (mut adapter, _rx) = create_test_adapter();
 
     let response = adapter.handle_request(
@@ -373,13 +395,17 @@ fn bdd_set_variable_rejects_statement_separator_before_unlisted_call() {
     );
 
     match response {
-        DapMessage::Response { success, command, message, .. } => {
+        DapMessage::Response { success, command, message, body, .. } => {
             assert!(!success, "setVariable must reject unquoted statement separators");
             assert_eq!(command, "setVariable");
             let msg = must_some(message);
             assert!(
-                msg.contains("statement separators are not allowed"),
-                "Error must explain the statement separator rejection: {msg}"
+                msg.contains("supportsSetVariable"),
+                "the #8354 capability refusal must fire before the statement-separator screen: {msg}"
+            );
+            assert!(
+                body.is_none(),
+                "a refused setVariable must not mutate the debugger or allocate a result body: {body:?}"
             );
         }
         _ => must(Err::<(), _>("Expected Response message".to_string())),
@@ -389,7 +415,8 @@ fn bdd_set_variable_rejects_statement_separator_before_unlisted_call() {
 #[test]
 fn bdd_set_variable_rejects_unlisted_function_call_value() {
     // WHEN a setVariable value is a package-qualified function call
-    // THEN the adapter must reject it instead of treating evaluate's broader safe mode as enough
+    // THEN the adapter must reject it before the value grammar or any debugger mutation runs
+    // Floor authority: #8354 gate (supportsSetVariable=false) refuses every setVariable before the value grammar.
     let (mut adapter, _rx) = create_test_adapter();
 
     let response = adapter.handle_request(
@@ -403,13 +430,17 @@ fn bdd_set_variable_rejects_unlisted_function_call_value() {
     );
 
     match response {
-        DapMessage::Response { success, command, message, .. } => {
+        DapMessage::Response { success, command, message, body, .. } => {
             assert!(!success, "setVariable must reject function-call values");
             assert_eq!(command, "setVariable");
             let msg = must_some(message);
             assert!(
-                msg.contains("only literal or simple variable-reference values are allowed"),
-                "Error must explain the setVariable value grammar: {msg}"
+                msg.contains("supportsSetVariable"),
+                "the #8354 capability refusal must fire before the value grammar: {msg}"
+            );
+            assert!(
+                body.is_none(),
+                "a refused setVariable must not mutate the debugger or allocate a result body: {body:?}"
             );
         }
         _ => must(Err::<(), _>("Expected Response message".to_string())),
@@ -419,7 +450,8 @@ fn bdd_set_variable_rejects_unlisted_function_call_value() {
 #[test]
 fn bdd_set_variable_rejects_bareword_call_value() {
     // WHEN a setVariable value is a bareword-style function call without parentheses
-    // THEN the adapter must reject it before sending a debugger command
+    // THEN the adapter must reject it before the value grammar or any debugger mutation runs
+    // Floor authority: #8354 gate (supportsSetVariable=false) refuses every setVariable before the value grammar.
     let (mut adapter, _rx) = create_test_adapter();
 
     let response = adapter.handle_request(
@@ -433,13 +465,17 @@ fn bdd_set_variable_rejects_bareword_call_value() {
     );
 
     match response {
-        DapMessage::Response { success, command, message, .. } => {
+        DapMessage::Response { success, command, message, body, .. } => {
             assert!(!success, "setVariable must reject bareword-call values");
             assert_eq!(command, "setVariable");
             let msg = must_some(message);
             assert!(
-                msg.contains("only literal or simple variable-reference values are allowed"),
-                "Error must explain the setVariable value grammar: {msg}"
+                msg.contains("supportsSetVariable"),
+                "the #8354 capability refusal must fire before the value grammar: {msg}"
+            );
+            assert!(
+                body.is_none(),
+                "a refused setVariable must not mutate the debugger or allocate a result body: {body:?}"
             );
         }
         _ => must(Err::<(), _>("Expected Response message".to_string())),
@@ -862,10 +898,15 @@ fn test_session_lifecycle_inline_values_missing_source_path() {
 
     match response {
         DapMessage::Response { success, command, message, .. } => {
-            assert!(!success, "inlineValues should fail without source.path");
+            // #9089: the floor refuses after envelope validation only — the
+            // missing source.path never reaches path handling.
+            assert!(!success, "inlineValues must be refused while #9089 is unnegotiated");
             assert_eq!(command, "inlineValues");
-            assert!(message.is_some());
-            assert!(must_some(message).contains("source.path"));
+            assert_eq!(
+                must_some(message),
+                perl_dap::backend::capabilities::INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE,
+                "expected the deterministic #9089 refusal"
+            );
         }
         _ => must(Err::<(), _>("Expected Response message".to_string())),
     }
@@ -886,10 +927,15 @@ fn test_session_lifecycle_inline_values_invalid_line_range() {
 
     match response {
         DapMessage::Response { success, command, message, .. } => {
-            assert!(!success, "inlineValues should reject non-positive line numbers");
+            // #9089: line-range validation sits behind the negotiation gate —
+            // the request is refused deterministically before any range check.
+            assert!(!success, "inlineValues must be refused while #9089 is unnegotiated");
             assert_eq!(command, "inlineValues");
-            assert!(message.is_some());
-            assert!(must_some(message).contains("startLine/endLine"));
+            assert_eq!(
+                must_some(message),
+                perl_dap::backend::capabilities::INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE,
+                "expected the deterministic #9089 refusal"
+            );
         }
         _ => must(Err::<(), _>("Expected Response message".to_string())),
     }
@@ -910,10 +956,15 @@ fn test_session_lifecycle_inline_values_missing_file() {
 
     match response {
         DapMessage::Response { success, command, message, .. } => {
-            assert!(!success, "inlineValues should fail when file cannot be read");
+            // #9089: the gate fires before any filesystem read, so the
+            // missing file cannot change the refusal.
+            assert!(!success, "inlineValues must be refused while #9089 is unnegotiated");
             assert_eq!(command, "inlineValues");
-            assert!(message.is_some());
-            assert!(must_some(message).contains("Failed to read source file"));
+            assert_eq!(
+                must_some(message),
+                perl_dap::backend::capabilities::INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE,
+                "expected the deterministic #9089 refusal"
+            );
         }
         _ => must(Err::<(), _>("Expected Response message".to_string())),
     }
@@ -937,12 +988,17 @@ fn test_session_lifecycle_inline_values_swapped_line_order() {
     let response = adapter.handle_request(1, "inlineValues", Some(args));
 
     match response {
-        DapMessage::Response { success, command, body, .. } => {
-            assert!(success, "inlineValues should normalize line ordering");
+        DapMessage::Response { success, command, body, message, .. } => {
+            // #9089: line normalization sits behind the negotiation gate — the
+            // request is refused deterministically and never served.
+            assert!(!success, "inlineValues must be refused while #9089 is unnegotiated");
             assert_eq!(command, "inlineValues");
-            let body = must_some(body);
-            let inline_values = must_some(body.get("inlineValues").and_then(|v| v.as_array()));
-            assert!(!inline_values.is_empty(), "Expected inline values in response");
+            assert!(body.is_none(), "a refused inlineValues response carries no body");
+            assert_eq!(
+                must_some(message),
+                perl_dap::backend::capabilities::INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE,
+                "expected the deterministic #9089 refusal"
+            );
         }
         _ => must(Err::<(), _>("Expected Response message".to_string())),
     }

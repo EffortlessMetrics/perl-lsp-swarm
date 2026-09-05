@@ -12,7 +12,7 @@
 //! # Disjoint-band invariant
 //!
 //! ```text
-//! Scope:      [1, 999_999]              (frame_id ∈ [0, 99_999], kind ∈ [1,3])
+//! Scope:      [1, 999_999]              (frame_id ∈ [0, 99_999], kind ∈ [1,4])
 //! EvalResult: [1_000_000, 1_999_999_999]
 //! Child:      [2_000_000_000, i32::MAX]
 //! ```
@@ -313,13 +313,13 @@ fn test_h5_decode_i32_min_returns_none() -> Result<(), Box<dyn std::error::Error
 /// H5: Decode(999_999) is None (kind_disc=9 is invalid).
 ///
 /// Wire 999_999 is in the Scope band [1, 999_999] but has kind_disc = 9 (invalid;
-/// must be 1-3). Confirms the Scope band's upper edge is correctly rejected.
+/// must be 1-4). Confirms the Scope band's upper edge is correctly rejected.
 #[test]
 fn test_h5_decode_gap_999999_returns_none() -> Result<(), Box<dyn std::error::Error>> {
     let result = VariableReference::decode(999_999);
     assert_eq!(
         result, None,
-        "H5: decode(999_999) should return None (frame_id=99_999, kind_disc=9 is invalid; must be 1-3)"
+        "H5: decode(999_999) should return None (frame_id=99_999, kind_disc=9 is invalid; must be 1-4)"
     );
     Ok(())
 }
@@ -342,15 +342,29 @@ fn test_h5_decode_scope_boundary_valid() -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-/// H5: Decode with invalid scope kind discriminant (kind_disc=4).
-/// Wire 900_004: frame_id=90_000, kind_disc=4 (invalid). Should return None.
+/// H5: Decode Scope discriminator 4 as Arguments.
+#[test]
+fn test_h5_decode_scope_arguments_valid() -> Result<(), Box<dyn std::error::Error>> {
+    let wire = 900_004; // frame_id=90_000, kind_disc=4
+    let result = VariableReference::decode(wire);
+    let expected = Some(VariableReference::Scope { frame_id: 90_000, kind: ScopeKind::Arguments });
+    if result != expected {
+        return Err(format!(
+            "H5: decode(900_004) should return Scope(90_000, Arguments), got {result:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// H5: Decode with invalid scope kind discriminator 5.
 #[test]
 fn test_h5_decode_invalid_scope_kind_returns_none() -> Result<(), Box<dyn std::error::Error>> {
-    let wire = 900_004; // frame_id=90_000, kind_disc=4
+    let wire = 900_005; // frame_id=90_000, kind_disc=5
     let result = VariableReference::decode(wire);
     assert_eq!(
         result, None,
-        "H5: decode(900_004) should return None (kind_disc=4 is invalid for Scope)"
+        "H5: decode(900_005) should return None (kind_disc=5 is invalid for Scope)"
     );
     Ok(())
 }
@@ -396,7 +410,7 @@ fn test_h5_decode_child_base_valid() -> Result<(), Box<dyn std::error::Error>> {
 // ScopeKind::TryFrom<i32> tests (bonus: ensures ScopeKind validity)
 // ============================================================================
 
-/// Verify ScopeKind::try_from accepts valid discriminants (1, 2, 3).
+/// Verify ScopeKind::try_from accepts valid discriminants (1, 2, 3, 4).
 #[test]
 fn test_scope_kind_try_from_valid_locals() -> Result<(), Box<dyn std::error::Error>> {
     let kind = ScopeKind::try_from(1)?;
@@ -418,7 +432,16 @@ fn test_scope_kind_try_from_valid_globals() -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
-/// Verify ScopeKind::try_from rejects invalid discriminants (0, 4, -1).
+#[test]
+fn test_scope_kind_try_from_valid_arguments() -> Result<(), Box<dyn std::error::Error>> {
+    let kind = ScopeKind::try_from(4)?;
+    if kind != ScopeKind::Arguments {
+        return Err(format!("ScopeKind::try_from(4) should be Arguments, got {kind:?}").into());
+    }
+    Ok(())
+}
+
+/// Verify ScopeKind::try_from rejects invalid discriminants (0, 5, -1).
 #[test]
 fn test_scope_kind_try_from_invalid_zero() -> Result<(), Box<dyn std::error::Error>> {
     let result = ScopeKind::try_from(0);
@@ -427,9 +450,9 @@ fn test_scope_kind_try_from_invalid_zero() -> Result<(), Box<dyn std::error::Err
 }
 
 #[test]
-fn test_scope_kind_try_from_invalid_four() -> Result<(), Box<dyn std::error::Error>> {
-    let result = ScopeKind::try_from(4);
-    assert!(result.is_err(), "ScopeKind::try_from(4) should be Err");
+fn test_scope_kind_try_from_invalid_five() -> Result<(), Box<dyn std::error::Error>> {
+    let result = ScopeKind::try_from(5);
+    assert!(result.is_err(), "ScopeKind::try_from(5) should be Err");
     Ok(())
 }
 
@@ -522,11 +545,11 @@ fn test_adversarial_evalresult_sparse_upper_sweep() -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-/// Scope max boundary: frame_id=99_999 (true max) round-trips for all three kinds.
+/// Scope max boundary: frame_id=99_999 (true max) round-trips for all four kinds.
 #[test]
 fn test_adversarial_scope_max_frame_id_all_kinds() -> Result<(), Box<dyn std::error::Error>> {
     let frame_id = 99_999_i32;
-    for kind in [ScopeKind::Locals, ScopeKind::Package, ScopeKind::Globals] {
+    for kind in [ScopeKind::Locals, ScopeKind::Package, ScopeKind::Globals, ScopeKind::Arguments] {
         let original = VariableReference::Scope { frame_id, kind };
         let wire =
             original.encode().ok_or(format!("encode Scope({frame_id}, {kind:?}) must succeed"))?;
@@ -560,9 +583,9 @@ fn test_adversarial_scope_frame_id_100000_encode_none() -> Result<(), Box<dyn st
 /// disjoint by construction. This test verifies the boundary directly.
 #[test]
 fn test_adversarial_scope_evalresult_no_overlap() -> Result<(), Box<dyn std::error::Error>> {
-    // Max possible Scope wire: 99_999 * 10 + 3 = 999_993
-    let max_scope_wire = 99_999_i32 * 10 + 3;
-    assert_eq!(max_scope_wire, 999_993);
+    // Max possible Scope wire: 99_999 * 10 + 4 = 999_994
+    let max_scope_wire = 99_999_i32 * 10 + 4;
+    assert_eq!(max_scope_wire, 999_994);
     // Min EvalResult wire: 1_000_000
     let min_eval_wire = 1_000_000_i32;
     assert!(
@@ -571,11 +594,11 @@ fn test_adversarial_scope_evalresult_no_overlap() -> Result<(), Box<dyn std::err
     );
 
     // Decode the boundary values to confirm they land in the right variants
-    // 999_993 = 99_999 * 10 + 3 → frame_id=99_999, kind_disc=3 → Globals
+    // 999_994 = 99_999 * 10 + 4 → frame_id=99_999, kind_disc=4 → Arguments
     assert_eq!(
-        VariableReference::decode(999_993),
-        Some(VariableReference::Scope { frame_id: 99_999, kind: ScopeKind::Globals }),
-        "999_993 must decode as Scope(99_999, Globals) (disc=3)"
+        VariableReference::decode(999_994),
+        Some(VariableReference::Scope { frame_id: 99_999, kind: ScopeKind::Arguments }),
+        "999_994 must decode as Scope(99_999, Arguments) (disc=4)"
     );
     assert_eq!(
         VariableReference::decode(1_000_000),

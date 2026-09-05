@@ -9,7 +9,7 @@
 | <!-- BEGIN: PARSER_TRACKING_TABLE -->
 | **Ubuntu system Perl** | 99.3% clean (`7047/7095`) | Compatibility baseline; Perl `5.038002`, `48` unreadable, `0` recovery-only, `0` ERROR-node files, `0` catastrophic, baseline `2026-05-18` | `.ci/parser-corpus-baseline.json` |
 | **CPAN top 1000** | 95.3% clean (`8931/9372`) | Ecosystem breadth baseline; `6` unreadable, `insufficient_data` recovery-only, `insufficient_data` ERROR-node files, `insufficient_data` catastrophic, cached downloads in `target/cpan-corpus/.cpanm`, baseline `2026-04-09` | `.ci/cpan-corpus-baseline.json` |
-| **Project corpus** | 100.0% clean (`201/201`) | Deterministic regression baseline; `179` `test_corpus/` + `22` `perl-corpus` files, `0` errors, `0` timeouts, `0` panics, `73/76` NodeKinds, `12/12` GA features | `test_corpus/` + `crates/perl-corpus/src/gen` |
+| **Project corpus** | 100.0% clean (`205/205`) | Deterministic regression baseline; `183` `test_corpus/` + `22` `perl-corpus` files, `0` errors, `0` timeouts, `0` panics, `73/76` NodeKinds, `12/12` GA features | `test_corpus/` + `crates/perl-corpus/src/gen` |
 <!-- END: PARSER_TRACKING_TABLE -->
 
 ## Parser Scorecard
@@ -17,7 +17,7 @@
 | Metric | Value | Notes | Source |
 | --- | --- | --- | --- |
 <!-- BEGIN: PARSER_NODEKIND_ROW -->
-| **Node-kind coverage** | 73/76 (96.1%) | 0 actionable never-seen; 3 recovery-only allowlisted | `corpus_audit` |
+| **Project-corpus NodeKind reachability** | 73/76 (96.1%) | unique canonical NodeKind variants observed at least once across successfully parsed files in the broad project-corpus audit this row reports; extraction skips files that do not decode as UTF-8; not parser-accuracy gold and not an occurrence count; 0 actionable never-seen; 3 recovery-only allowlisted | `corpus_audit` |
 <!-- END: PARSER_NODEKIND_ROW -->
 <!-- BEGIN: PARSER_RELIABILITY_ROW -->
 | **Reliability** | Ubuntu: 48 unread / CPAN: 6 unread / Project: 0 timeout, 0 panic, 0 unread | -- | `.ci/*-baseline.json` |

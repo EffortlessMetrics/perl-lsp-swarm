@@ -393,7 +393,18 @@ fn workspace_edit_texts_for_uri<'a>(
     Ok(edits.iter().filter_map(|edit| edit.get("newText").and_then(Value::as_str)).collect())
 }
 
+/// Count the text edits a rename result carries.
+///
+/// A refused rename is `null` rather than a `WorkspaceEdit` (#9827): the
+/// provider will not edit here, and saying so with an empty-but-successful
+/// `changes` map made the refusal indistinguishable from an applied no-op in
+/// the editor. Both shapes carry zero edits, so callers asserting "this blocker
+/// path produced no edit" keep their claim — and still fail if a blocked path
+/// ever starts returning one.
 fn workspace_edit_change_count(edit: &Value) -> Result<usize, Box<dyn std::error::Error>> {
+    if edit.is_null() {
+        return Ok(0);
+    }
     let changes =
         edit.get("changes").and_then(Value::as_object).ok_or("missing workspace edit changes")?;
     Ok(changes.values().filter_map(Value::as_array).map(Vec::len).sum())
@@ -1053,10 +1064,9 @@ fn refactor_runtime_blocker_ux_package_rename_preview_records_imported_call_nois
         Some("compiler_missing")
     );
     assert_eq!(fallback_noise.get("compiler_available").and_then(Value::as_bool), Some(false));
-    assert_eq!(
-        fallback_noise.get("live_provider_state").and_then(Value::as_str),
-        Some("empty_edit")
-    );
+    // The live provider refuses this position outright rather than returning an
+    // empty successful edit (#9827); the receipt records that refusal honestly.
+    assert_eq!(fallback_noise.get("live_provider_state").and_then(Value::as_str), Some("null"));
     assert_eq!(fallback_noise.get("live_provider_edit_count").and_then(Value::as_u64), Some(0));
 
     let rollback_receipt =
@@ -1777,11 +1787,7 @@ fn refactor_runtime_blocker_ux_package_local_live_pilot_blocks_real_workspace_im
         })))?
         .ok_or("missing package-local live rename blocker result")?;
 
-    let edit_count = rename_result
-        .get("changes")
-        .and_then(Value::as_object)
-        .map(|changes| changes.values().filter_map(Value::as_array).map(Vec::len).sum::<usize>())
-        .ok_or("missing package-local live rename blocker changes")?;
+    let edit_count = workspace_edit_change_count(&rename_result)?;
     assert_eq!(
         edit_count, 0,
         "imported/exported real-workspace package symbol must not be falsely allowed as a package-local edit: {rename_result}"
@@ -1950,8 +1956,20 @@ fn refactor_runtime_blocker_ux_package_local_live_pilot_real_workspace_false_all
     let updated_app = app.replace("helper($self->name);", "helper($self->name);\n    $self->name;");
     change_document(&server, REAL_BASELINE_APP_URI, 2, &updated_app)?;
 
+    // The inserted line shifts `sub name` down one row, so the second request
+    // must carry the position a real client computes against the updated
+    // document. Under the LF-delimited source-line contract (#4973) an
+    // out-of-range character clamps to the line content end instead of
+    // spilling onto the next line start, so reusing the pre-edit position
+    // would land on the closing brace line.
+    let (fresh_line, fresh_character) = position_of(&updated_app, "name {")?;
+    let fresh_rename_request = json!({
+        "textDocument": {"uri": REAL_BASELINE_APP_URI},
+        "position": {"line": fresh_line, "character": fresh_character},
+        "newName": "renamed_name"
+    });
     let fresh_live_result = server
-        .handle_rename_workspace(Some(rename_request))?
+        .handle_rename_workspace(Some(fresh_rename_request))?
         .ok_or("missing package-local fresh fallback result")?;
     let fresh_edit_count = workspace_edit_change_count(&fresh_live_result)?;
     assert!(
@@ -2433,9 +2451,11 @@ fn refactor_runtime_blocker_ux_rename_receipt_records_imported_call_fallback_noi
         Some(0),
         "imported-call receipt should not count unsafe same-file fallback edits as noise: {fallback_noise}"
     );
+    // `null`, not `empty_edit`: the provider reports the position as unavailable
+    // instead of fabricating a successful edit that changes nothing (#9827).
     assert_eq!(
         fallback_noise.get("live_provider_state").and_then(Value::as_str),
-        Some("empty_edit"),
+        Some("null"),
         "unexpected imported-call live provider state: {fallback_noise}"
     );
     assert!(

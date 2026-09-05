@@ -4,13 +4,11 @@
 //! so that `mod.rs` is limited to the struct definition and core accessors.
 
 use super::{
-    Arc, AtomicBool, AtomicI32, BufReader, ClientCapabilities, FeatureProfile, HashMap, HashSet,
-    IndexCoordinator, LspServer, Mutex, Read, ServerConfig, SymbolIndex, UseLibHirCache,
+    Arc, AtomicBool, AtomicI32, AtomicU64, BufReader, ClientCapabilities, FeatureProfile, HashMap,
+    HashSet, IndexCoordinator, LspServer, Mutex, Read, ServerConfig, SymbolIndex, UseLibHirCache,
     WorkspaceConfig, Write, io, notebook, outbound, refresh,
 };
 use perl_lsp_rs_core::runtime::tuning::RuntimeTuning;
-#[cfg(any(test, feature = "expose_lsp_test_api"))]
-use std::sync::atomic::AtomicU64;
 
 impl LspServer {
     /// Create a new LSP server
@@ -65,6 +63,10 @@ impl LspServer {
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
+            workspace_identity_generation: Arc::new(AtomicU64::new(0)),
+            workspace_identity_lock: Arc::new(Mutex::new(())),
+            single_file_project_config: Arc::new(Mutex::new(None)),
+            single_file_project_config_generation: Arc::new(AtomicU64::new(0)),
             root_path: Arc::new(Mutex::new(None)),
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
             advertised_features: Mutex::new(default_features),
@@ -113,6 +115,8 @@ impl LspServer {
             indexing_rescan_pending: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
             indexing_transition_lock: Arc::new(Mutex::new(())),
+            #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+            indexing_commit_gate: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
@@ -252,6 +256,10 @@ impl LspServer {
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
+            workspace_identity_generation: Arc::new(AtomicU64::new(0)),
+            workspace_identity_lock: Arc::new(Mutex::new(())),
+            single_file_project_config: Arc::new(Mutex::new(None)),
+            single_file_project_config_generation: Arc::new(AtomicU64::new(0)),
             root_path: Arc::new(Mutex::new(None)),
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
             advertised_features: Mutex::new(default_features),
@@ -300,6 +308,8 @@ impl LspServer {
             indexing_rescan_pending: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
             indexing_transition_lock: Arc::new(Mutex::new(())),
+            #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+            indexing_commit_gate: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
@@ -380,6 +390,10 @@ impl LspServer {
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
+            workspace_identity_generation: Arc::new(AtomicU64::new(0)),
+            workspace_identity_lock: Arc::new(Mutex::new(())),
+            single_file_project_config: Arc::new(Mutex::new(None)),
+            single_file_project_config_generation: Arc::new(AtomicU64::new(0)),
             root_path: Arc::new(Mutex::new(None)),
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
             advertised_features: Mutex::new(default_features),
@@ -428,6 +442,8 @@ impl LspServer {
             indexing_rescan_pending: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
             indexing_transition_lock: Arc::new(Mutex::new(())),
+            #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+            indexing_commit_gate: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),

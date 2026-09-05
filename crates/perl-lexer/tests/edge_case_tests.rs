@@ -425,13 +425,22 @@ fn substitution_immediate_hash_stays_delimiter() -> R {
 fn quote_ops_allow_comment_gap_before_delimiter() -> R {
     for (input, expected_kind, expected_text) in [
         ("q # comment\n \"b\"# tail", TokenType::QuoteSingle, "q # comment\n \"b\""),
-        ("qq # comment\n \"b\"# tail", TokenType::QuoteDouble, "qq # comment\n \"b\""),
+        (
+            "qq # comment
+ \"b\"# tail",
+            TokenType::QuoteDouble(Vec::new()),
+            "qq # comment
+ \"b\"",
+        ),
         ("qw # comment\n \"b\"# tail", TokenType::QuoteWords, "qw # comment\n \"b\""),
         ("m # comment\n \"b\"# tail", TokenType::RegexMatch, "m # comment\n \"b\""),
         ("qr # comment\n \"b\"# tail", TokenType::QuoteRegex, "qr # comment\n \"b\""),
     ] {
         let first = first_significant(input).ok_or("missing token")?;
-        assert_eq!(first.token_type, expected_kind, "input {input:?} got {first:?}");
+        assert!(
+            std::mem::discriminant(&first.token_type) == std::mem::discriminant(&expected_kind),
+            "input {input:?} got {first:?}"
+        );
         assert_eq!(first.text.as_ref(), expected_text, "input {input:?} got {first:?}");
     }
 
@@ -686,7 +695,7 @@ fn qq_paren_operator() -> R {
     let sig = significant(input);
     let first = sig.first().ok_or("no tokens")?;
     assert!(
-        matches!(first.token_type, TokenType::QuoteDouble),
+        matches!(first.token_type, TokenType::QuoteDouble(_)),
         "Expected QuoteDouble for qq(...), got {:?}",
         first.token_type
     );
@@ -700,7 +709,7 @@ fn qq_bracket_operator() -> R {
     let sig = significant(input);
     let first = sig.first().ok_or("no tokens")?;
     assert!(
-        matches!(first.token_type, TokenType::QuoteDouble),
+        matches!(first.token_type, TokenType::QuoteDouble(_)),
         "Expected QuoteDouble for qq[...], got {:?}",
         first.token_type
     );
@@ -714,7 +723,7 @@ fn qq_angle_operator() -> R {
     let sig = significant(input);
     let first = sig.first().ok_or("no tokens")?;
     assert!(
-        matches!(first.token_type, TokenType::QuoteDouble),
+        matches!(first.token_type, TokenType::QuoteDouble(_)),
         "Expected QuoteDouble for qq<...>, got {:?}",
         first.token_type
     );
@@ -812,7 +821,7 @@ fn qq_with_nested_parens() -> R {
     let sig = significant(input);
     let first = sig.first().ok_or("no tokens")?;
     assert!(
-        matches!(first.token_type, TokenType::QuoteDouble),
+        matches!(first.token_type, TokenType::QuoteDouble(_)),
         "Expected QuoteDouble for nested qq(...), got {:?}",
         first.token_type
     );
@@ -841,7 +850,7 @@ fn quote_like_optional_whitespace_before_paired_delimiter() -> R {
     let sig = significant(input);
     let first = sig.first().ok_or("no tokens")?;
     assert!(
-        matches!(first.token_type, TokenType::QuoteDouble),
+        matches!(first.token_type, TokenType::QuoteDouble(_)),
         "Expected QuoteDouble for qq {{...}}, got {:?}",
         first.token_type
     );
@@ -1292,7 +1301,7 @@ fn multiple_quote_operators_in_sequence() -> R {
     assert_terminates(input);
     let sig = significant(input);
     let has_q = sig.iter().any(|t| matches!(t.token_type, TokenType::QuoteSingle));
-    let has_qq = sig.iter().any(|t| matches!(t.token_type, TokenType::QuoteDouble));
+    let has_qq = sig.iter().any(|t| matches!(t.token_type, TokenType::QuoteDouble(_)));
     let has_qw = sig.iter().any(|t| matches!(t.token_type, TokenType::QuoteWords));
     assert!(has_q, "expected QuoteSingle");
     assert!(has_qq, "expected QuoteDouble");

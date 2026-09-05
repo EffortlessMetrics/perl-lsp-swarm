@@ -183,10 +183,14 @@ test('adds discovered module directories and caches the resulting layout', async
 
   await suggestDiscoveredIncludePaths({ globalState } as unknown as vscode.ExtensionContext);
 
+  // `includePaths` is resource-scoped and these directories were discovered
+  // under this folder's own root, so the write belongs to the folder. Writing
+  // ConfigurationTarget.Workspace published one folder's include paths to every
+  // other folder in a multi-root workspace (#14447).
   expect(update).toHaveBeenCalledWith(
     'includePaths',
     expect.arrayContaining(['src', 'vendor']),
-    vscode.ConfigurationTarget.Workspace,
+    vscode.ConfigurationTarget.WorkspaceFolder,
   );
   expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
     'Added src, vendor to perl-lsp.includePaths.',

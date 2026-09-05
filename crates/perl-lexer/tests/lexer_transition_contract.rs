@@ -229,7 +229,12 @@ fn heredoc_body_event_precedes_the_resumed_statement() -> R {
         .ok_or_else(|| missing("missing heredoc opener token"))?;
     let body_index = tokens
         .iter()
-        .position(|token| matches!(&token.token_type, TokenType::HeredocBody(_)))
+        .position(|token| {
+            matches!(
+                &token.token_type,
+                TokenType::HeredocBody(_) | TokenType::InterpolatedHeredocBody(_)
+            )
+        })
         .ok_or_else(|| missing("missing heredoc body token"))?;
     let resumed_index = tokens
         .iter()

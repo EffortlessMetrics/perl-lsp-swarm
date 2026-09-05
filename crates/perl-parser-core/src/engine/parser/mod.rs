@@ -59,12 +59,12 @@ use crate::{
     error::{ParseError, ParseOutput, ParseResult, ParseStopCause, RecoveryKind, RecoverySite},
     heredoc_collector::{self, HeredocContent, PendingHeredoc, collect_at_declaration_offsets},
     quote_parser,
-    token_stream::{Token, TokenKind, TokenStream},
+    token_stream::{ContextualOpResult, ContextualTokenOp, Token, TokenKind, TokenStream},
 };
+use perl_lexer::LexerMode;
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::time::Instant;
 
 mod operation;
 use operation::ParserOperationContext;
@@ -145,8 +145,6 @@ pub struct Parser<'a> {
     /// Delimiter from an unrecognised heredoc introducer whose body leaked into
     /// the ordinary token stream.  Only the matching bareword may be exempted.
     heredoc_recovery_tag: Option<String>,
-    /// Start time of parsing for timeout enforcement (specifically heredocs)
-    heredoc_start_time: Option<Instant>,
     /// Collection of parse errors encountered during parsing (for error recovery)
     errors: Vec<ParseError>,
     /// Live production operation context. Fresh counters, terminal state, and
@@ -231,7 +229,6 @@ impl<'a> Parser<'a> {
             src_bytes: source.as_bytes(),
             byte_cursor: 0,
             heredoc_recovery_tag: None,
-            heredoc_start_time: None,
             errors: Vec::new(),
             operation: ParserOperationContext::new(config, cancellation),
             #[cfg(test)]
@@ -315,12 +312,16 @@ impl<'a> Parser<'a> {
     ///
     /// # Context-sensitive token disambiguation
     ///
-    /// The standard parser uses `relex_as_term` to re-lex ambiguous tokens (e.g.
-    /// `/` as division vs. regex) in context-sensitive positions. When using
-    /// pre-lexed tokens the kind is fixed from the original lex pass, so the
-    /// original parse context must have been correct. In practice this means
+    /// The standard parser directs contextual token operations (issue #8128) to
+    /// re-classify ambiguous tokens (e.g. `/` as division vs. regex) in
+    /// context-sensitive positions. A buffered stream cannot re-derive
+    /// classifications: each request returns a typed fallback requirement that
+    /// this parser records as an [`ParseError::Advisory`] diagnostic while
+    /// continuing with the cached classification. In practice this means
     /// `from_tokens` is safe to use when the token stream comes from a previous
-    /// successful parse of the same source.
+    /// successful parse of the same source, where the cached kinds already
+    /// reflect every parser-directed correction; advisory diagnostics for
+    /// fallback requirements indicate a misaligned or stale token cache.
     ///
     /// # Examples
     ///
@@ -360,7 +361,10 @@ impl<'a> Parser<'a> {
     /// See the pre-lexed token example above.
     pub fn from_tokens(tokens: Vec<Token>, source: &'a str) -> Self {
         Self::assemble(
-            TokenStream::from_vec(tokens),
+            // Retain the exact source identity so contextual operation
+            // fallbacks distinguish missing source from missing checkpoint
+            // authority (#8128).
+            TokenStream::from_vec_with_source(tokens, source),
             source,
             ParserConfigIdentity::production_default(),
             None,
@@ -487,6 +491,59 @@ impl<'a> Parser<'a> {
     /// ```
     pub fn errors(&self) -> &[ParseError] {
         &self.errors
+    }
+
+    /// Observe a parser-directed contextual token operation (issue #8128).
+    ///
+    /// Applied, replayed, and not-required outcomes continue silently: the
+    /// requested classification is in force. A buffered stream that cannot
+    /// honor the request records an [`ParseError::Advisory`] so the
+    /// conservative continuation with cached classification is observable and
+    /// never reported as an application, and returns `Ok(())` — callers keep
+    /// parsing with the tokens the stream still holds.
+    fn observe_contextual_operation(
+        &mut self,
+        operation: ContextualTokenOp,
+        location: usize,
+    ) -> ParseResult<()> {
+        let label = operation.label();
+        match self.tokens.apply_contextual(operation) {
+            ContextualOpResult::AppliedLive
+            | ContextualOpResult::AppliedReplay
+            | ContextualOpResult::NotRequired => Ok(()),
+            ContextualOpResult::FallbackRequired { reason } => {
+                self.errors.push(ParseError::Advisory {
+                    message: format!(
+                        "{label} requires a rebuild through a live lexer ({reason:?}); \
+                         continuing with cached classification"
+                    ),
+                    location,
+                });
+                Ok(())
+            }
+            ContextualOpResult::Unsupported => {
+                self.errors.push(ParseError::Advisory {
+                    message: format!(
+                        "{label} is not supported for this stream state; \
+                         continuing with cached classification"
+                    ),
+                    location,
+                });
+                Ok(())
+            }
+        }
+    }
+
+    /// Reclassify the head lookahead token as a term-context token (issue
+    /// #8128). Used where the parser knows a `/` classified as division must
+    /// become a regex delimiter; on a buffered stream that refuses the
+    /// operation an advisory records the conservative continuation.
+    fn reclassify_head_as_term(&mut self) -> ParseResult<()> {
+        let location = self.tokens.peek()?.start();
+        self.observe_contextual_operation(
+            ContextualTokenOp::ReclassifyFromBoundary { expected_context: LexerMode::ExpectTerm },
+            location,
+        )
     }
 
     /// Parse with error recovery and return comprehensive output.

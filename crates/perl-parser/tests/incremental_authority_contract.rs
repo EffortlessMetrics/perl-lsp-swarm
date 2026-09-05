@@ -217,9 +217,9 @@ fn discovered_lower_tier_consumers() -> Result<BTreeSet<String>, Box<dyn std::er
     Ok(consumers)
 }
 
-fn declared_consumers_by_source<'a>(
-    consumers: &'a [AllowedConsumer],
-) -> BTreeMap<String, Vec<&'a AllowedConsumer>> {
+fn declared_consumers_by_source(
+    consumers: &[AllowedConsumer],
+) -> BTreeMap<String, Vec<&AllowedConsumer>> {
     let mut by_source = BTreeMap::<String, Vec<&AllowedConsumer>>::new();
     for consumer in consumers {
         by_source.entry(consumer.source_path.clone()).or_default().push(consumer);

@@ -25,6 +25,8 @@ pub struct WorkspaceFolderState {
     pub name: Option<String>,
     /// Project configuration loaded from `.perl-lsp.toml` in this folder
     pub project_config: Option<ProjectConfig>,
+    /// Accepted project-configuration generation for this folder.
+    pub project_config_generation: u64,
     /// Effective workspace configuration for this folder
     ///
     /// This will eventually be computed by merging:
@@ -43,6 +45,7 @@ impl WorkspaceFolderState {
             path: None,
             name: None,
             project_config: None,
+            project_config_generation: 0,
             effective_workspace_config: WorkspaceConfig::default(),
         }
     }
@@ -179,22 +182,33 @@ mod tests {
         Ok(())
     }
 
+    /// Migrated Carmel detection (#13642 §2/§3): a rolled-out Carmel project
+    /// (discriminated by the `local/.carmel` sentinel) contributes the shared
+    /// install-base root `local/lib/perl5`. The previous `vendor/lib/perl5`
+    /// marker had no basis in Carmel source and is retired.
     #[test]
     fn refresh_workspace_metadata_adds_carmel_include_path()
     -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
-        std::fs::write(temp.path().join("cpanfile"), "requires 'JSON';\n")?;
-        std::fs::create_dir_all(temp.path().join("vendor/lib/perl5"))?;
+        let mut config = WorkspaceConfig::default();
+        config.include_paths = vec!["lib".to_string(), ".".to_string()];
         let mut folder = WorkspaceFolderState::new("file:///workspace".to_string())
-            .with_path(temp.path().to_path_buf());
+            .with_path(temp.path().to_path_buf())
+            .with_effective_workspace_config(config);
 
         folder.refresh_workspace_metadata();
 
-        assert!(
-            folder
-                .effective_workspace_config
-                .include_paths
-                .contains(&"vendor/lib/perl5".to_string())
+        assert_eq!(folder.effective_workspace_config.include_paths, vec!["lib", "."]);
+
+        std::fs::write(temp.path().join("cpanfile"), "requires 'JSON';\n")?;
+        std::fs::create_dir_all(temp.path().join("local"))?;
+        std::fs::write(temp.path().join("local/.carmel"), "")?;
+        std::fs::create_dir_all(temp.path().join("local/lib/perl5"))?;
+        folder.refresh_workspace_metadata();
+
+        assert_eq!(
+            folder.effective_workspace_config.include_paths,
+            vec!["lib", ".", "local/lib/perl5"]
         );
         Ok(())
     }

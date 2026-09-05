@@ -1,0 +1,9 @@
+project: product
+component: Parser and lexer
+kind: Fixed
+body: Accepted parser-supported keyword and composite term forms after Perl's string-repetition operator without treating `x =>` keys as repetition.
+time: 2026-08-28T02:27:31Z
+custom:
+  PR: "13102"
+  Slug: parser-string-repetition-composite-rhs
+  Breaking: "no"

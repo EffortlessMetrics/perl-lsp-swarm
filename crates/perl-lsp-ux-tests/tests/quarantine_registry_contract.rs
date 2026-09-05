@@ -9,6 +9,10 @@
 //!    re-verifies that binding: it fails when the recorded sha is fabricated or
 //!    pruned in a full-history clone, when the sha does not carry the recorded
 //!    blob, or when the quarantined artifact has drifted since verification.
+//! 3. Every `verified` disposition names the concrete `verification_pr` that
+//!    carried the evidence run, and all verified Scenario 14 rows share one
+//!    (verification_pr, verified_sha, artifact blob) evidence event, so stale
+//!    or free-floating provenance cannot hide behind the sha↔blob checks.
 
 use std::fs;
 use std::io;
@@ -38,6 +42,22 @@ fn git(root: &Path, args: &[&str]) -> io::Result<Result<String, String>> {
 
 fn is_40_hex(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Bind the verification provenance: a `verified` row must name the concrete
+/// pull request that carried the exact-head evidence run. Without this check
+/// the field is a free annotation — null, non-integer, or placeholder values
+/// leave every sha↔blob check green while the recorded provenance is
+/// fabricated. This detector is shared by the live contract test and the
+/// provenance negative control.
+fn check_verification_pr(test: &str, verification_pr: &Value) -> Result<(), String> {
+    match verification_pr.as_u64() {
+        Some(pr) if pr >= 1 => Ok(()),
+        _ => Err(format!(
+            "{test}: verified row must record the concrete verification_pr that carried the \
+             evidence run, got {verification_pr}"
+        )),
+    }
 }
 
 /// Re-verify one recorded `verified_sha` binding against the quarantined
@@ -123,6 +143,9 @@ fn scenario_14_quarantine_rows_have_terminal_executable_dispositions() -> TestRe
 
     let mut verified_count = 0usize;
     let mut unverified_count = 0usize;
+    // (test, verification_pr, verified_sha, artifact blob) per verified row,
+    // for the single-evidence-event join asserted after the loop.
+    let mut verification_events: Vec<(&str, u64, &str, &str)> = Vec::new();
     for entry in scenario_rows {
         let test = entry["test"].as_str().unwrap_or("<missing test>");
         let evidence = &entry["evidence"];
@@ -153,6 +176,11 @@ fn scenario_14_quarantine_rows_have_terminal_executable_dispositions() -> TestRe
                     unverified_reason.is_none(),
                     "{test} claims verified but also carries an unverified_reason"
                 );
+                check_verification_pr(test, &evidence["verification_pr"])
+                    .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
+                if let Some(pr) = evidence["verification_pr"].as_u64() {
+                    verification_events.push((test, pr, verified_sha, recorded_blob));
+                }
             }
             "unverified" => {
                 unverified_count += 1;
@@ -224,6 +252,23 @@ fn scenario_14_quarantine_rows_have_terminal_executable_dispositions() -> TestRe
 
     assert_eq!(verified_count, 10, "exactly 10 rows carry an exact-head binding");
     assert_eq!(unverified_count, 1, "only the FindBin row is honestly unverified");
+
+    // Durable provenance join: every verified row binds the same Scenario 14
+    // artifact blob, so drift invalidates all of them at once and an honest
+    // re-verification is a single evidence event. The rows must therefore
+    // record one identical (verification_pr, verified_sha, artifact blob)
+    // triple; per-row provenance tampering cannot hide behind the aggregate
+    // sha↔blob re-verification.
+    if let Some((_, first_pr, first_sha, first_blob)) = verification_events.first() {
+        for (test, pr, sha, blob) in &verification_events {
+            assert!(
+                (pr, sha, blob) == (first_pr, first_sha, first_blob),
+                "{test}: verified rows must share one exact-head evidence event; this row \
+                 records (pr {pr}, sha {sha}, blob {blob}) but another row records \
+                 (pr {first_pr}, sha {first_sha}, blob {first_blob})"
+            );
+        }
+    }
 
     assert_eq!(ledger["summary"]["active"], 1);
     assert_eq!(ledger["summary"]["resolved"], 10);
@@ -339,4 +384,24 @@ fn drift_negative_control_fails_on_tampered_bindings() {
     )
     .expect_err("shallow clones must still detect artifact drift");
     assert!(err.contains("drifted"), "{err}");
+}
+
+#[test]
+fn verification_pr_negative_control_fails_on_tampered_identity() {
+    // Provenance negative control (fault-injection half): the detector must
+    // fail on each tampered verification_pr shape, not just pass on the
+    // healthy ledger. Dropping or blurring the PR identity must fail even
+    // while the sha↔blob drift checks still pass.
+    assert!(check_verification_pr("t", &Value::from(14393)).is_ok());
+
+    let err = check_verification_pr("t", &Value::Null).expect_err("null verification_pr must fail");
+    assert!(err.contains("verification_pr"), "{err}");
+
+    let err = check_verification_pr("t", &Value::from(0))
+        .expect_err("placeholder verification_pr must fail");
+    assert!(err.contains("verification_pr"), "{err}");
+
+    let err = check_verification_pr("t", &Value::from("14393"))
+        .expect_err("string verification_pr must fail");
+    assert!(err.contains("verification_pr"), "{err}");
 }

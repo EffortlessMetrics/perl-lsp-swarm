@@ -7,15 +7,17 @@ argument-hint: "[issue, branch, or candidate]"
 # Build candidate
 
 Existing coherent work enters midstream; do not replay completed chronology. Before
-creating another candidate, check only whether an equivalent current PR already
-implements the same claim. Do not inspect sibling lanes, touched-file overlap, or nearby
-symbols as a routine ownership check.
+creating another candidate, check the root-held claim frame first for an existing
+current candidate branch or worktree with a current writer — a candidate can exist
+before a PR is opened — and use the current-PR lookup only as an additional duplicate
+check on top of that. Do not inspect sibling claim frames, touched-file overlap,
+or nearby symbols as a routine ownership check.
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Root decisions
 
-The lane root retains the material claim/non-goals and semantic owner, accepted
+The main Claude thread retains the material claim/non-goals and semantic owner, accepted
 implementation latitude, proof sufficiency, risk/rollback boundary, finding
 dispositions, material return-to-issue/proof decisions, and candidate sufficiency for PR
 convergence.

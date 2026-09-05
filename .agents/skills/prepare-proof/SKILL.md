@@ -19,9 +19,9 @@ Turn the accepted issue plan or durable contract into the cheapest executable pr
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Root decisions
 
-The lane root retains:
+The accountable root retains:
 
 - accepted behavior and semantic owner;
 - the production seam the proof must reach;

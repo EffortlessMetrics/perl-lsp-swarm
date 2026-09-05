@@ -305,6 +305,14 @@ mod activation_anchoring_tests {
         path.replace('\\', "/")
     }
 
+    /// Expand 8.3 short names (and strip a Windows `\\?\` prefix) once at the
+    /// temp root so later joins match the server's canonicalized paths.
+    /// `normalized` stays separator-only; it must not hide alias inequality.
+    fn resolved_temp_root(temp: &tempfile::TempDir) -> Result<PathBuf, TestError> {
+        let canonical = std::fs::canonicalize(temp.path())?;
+        Ok(crate::execute_command::normalize_path_for_external_command(&canonical))
+    }
+
     fn request_context(
         server: &LspServer,
         doc_path: &Path,
@@ -406,10 +414,38 @@ mod activation_anchoring_tests {
     }
 
     #[test]
+    fn normalized_does_not_treat_8_3_aliases_as_equal() {
+        assert_ne!(
+            normalized(r"C:\Users\runneradmin\AppData\Local\Temp\.tmpYuZyBT\svc-b\lib\Dancer2.pm"),
+            normalized(r"C:\Users\RUNNER~1\AppData\Local\Temp\.tmpYuZyBT\svc-b\lib\Dancer2.pm"),
+            "separator rewriting must not collapse Windows 8.3 aliases into a suffix or basename match"
+        );
+    }
+
+    #[test]
+    fn resolved_temp_root_matches_canonicalized_child_file() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let root = resolved_temp_root(&temp)?;
+        let child = root.join("svc-b").join("lib").join("Dancer2.pm");
+        std::fs::create_dir_all(child.parent().ok_or("missing fixture parent")?)?;
+        std::fs::write(&child, stub_module("1.102.002"))?;
+        let canonical_child = crate::execute_command::normalize_path_for_external_command(
+            &std::fs::canonicalize(&child)?,
+        );
+        assert_eq!(
+            normalized(canonical_child.to_string_lossy().as_ref()),
+            normalized(child.to_string_lossy().as_ref()),
+            "expectations built from the resolved temp root must equal a canonicalized child path"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn relative_lexical_root_resolves_against_owning_folder_only() -> TestResult {
         let temp = tempfile::tempdir()?;
-        let svc_a = make_app_folder(temp.path(), "svc-a", "1.101.001")?;
-        let svc_b = make_app_folder(temp.path(), "svc-b", "1.102.002")?;
+        let root = resolved_temp_root(&temp)?;
+        let svc_a = make_app_folder(&root, "svc-a", "1.101.001")?;
+        let svc_b = make_app_folder(&root, "svc-b", "1.102.002")?;
 
         // Registration order matters: the owning folder must NOT be first.
         let server = server_with_folders(&[(&svc_a, None), (&svc_b, None)])?;
@@ -424,10 +460,17 @@ mod activation_anchoring_tests {
             .as_ref()
             .ok_or("expected an owning-folder module resolution")?;
         assert_eq!(module.declared_version, "1.102.002", "the owning folder's stub wins");
+        let expected_owning = svc_b.join("lib").join("Dancer2.pm");
+        let first_registered = svc_a.join("lib").join("Dancer2.pm");
         assert_eq!(
             normalized(&module.resolved_path),
-            normalized(svc_b.join("lib").join("Dancer2.pm").to_string_lossy().as_ref()),
+            normalized(expected_owning.to_string_lossy().as_ref()),
             "relative lexical roots bind to the owning workspace folder, not folder order"
+        );
+        assert_ne!(
+            normalized(&module.resolved_path),
+            normalized(first_registered.to_string_lossy().as_ref()),
+            "owning-folder binding must not collapse onto the first-registered folder"
         );
         assert!(
             context.activations.has_exact(),

@@ -51,10 +51,6 @@ pub struct ModelLimitation {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::unwrap_used,
-        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-    )]
     use super::*;
 
     #[test]
@@ -68,14 +64,15 @@ mod tests {
     }
 
     #[test]
-    fn limitation_round_trips() {
+    fn limitation_round_trips() -> Result<(), Box<dyn std::error::Error>> {
         let lim = ModelLimitation {
             id: "parse-failed:lib/App.pm".to_string(),
             kind: "parse_failure".to_string(),
             message: "could not parse".to_string(),
         };
-        let json = serde_json::to_string(&lim).unwrap();
-        let back: ModelLimitation = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&lim)?;
+        let back: ModelLimitation = serde_json::from_str(&json)?;
         assert_eq!(lim, back);
+        Ok(())
     }
 }

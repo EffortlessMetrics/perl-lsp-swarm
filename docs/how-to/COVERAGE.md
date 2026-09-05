@@ -8,7 +8,7 @@ The perl-lsp project uses **cargo-llvm-cov** for code coverage generation and **
 
 Branch coverage is enabled in the coverage lane with `cargo-llvm-cov --branch`. That requires a nightly Rust toolchain because LLVM branch coverage uses unstable `-Z coverage-options=branch` support.
 
-The scheduled/manual coverage lane keeps branch diagnostics on library/unit tests (`--lib`) so it stays stable on current master. Integration snapshot suites can still be run separately outside the coverage lane.
+The scheduled/manual coverage lane keeps branch diagnostics on library/unit tests (`--lib`) so it stays stable on current main. Integration snapshot suites can still be run separately outside the coverage lane.
 
 ## Quick Start
 
@@ -62,7 +62,7 @@ use the broader workspace proof. Manual routed diagnostics can still run
 explicitly wants changed-surface LCOV evidence. Project coverage remains
 informational during burn-down.
 
-### Patch Coverage Quality Gate
+### Explicit Patch Coverage Quality Gate
 
 Generate the coverage receipt from LCOV before running the patch gate:
 
@@ -113,9 +113,9 @@ ratchet outside normal PR and merge-queue validation.
 
 ### Coverage Badge
 
-The README includes a Codecov badge showing the current coverage on the `master` branch:
+The README includes a Codecov badge showing the current coverage on the `main` branch:
 
-[![codecov](https://codecov.io/gh/EffortlessMetrics/perl-lsp/branch/master/graph/badge.svg)](https://codecov.io/gh/EffortlessMetrics/perl-lsp)
+[![codecov](https://codecov.io/gh/EffortlessMetrics/perl-lsp/branch/main/graph/badge.svg)](https://codecov.io/gh/EffortlessMetrics/perl-lsp)
 
 ## Coverage Thresholds
 
@@ -123,12 +123,12 @@ Coverage thresholds are defined in `codecov.yml`:
 
 | Target | Threshold | Notes |
 |--------|-----------|-------|
-| **Patch** | 95% | Blocking PR gate with `0%` threshold |
+| **Patch** | 95% | `0%` threshold inside explicit coverage runs; advisory and not a normal PR gate |
 | **Project** | 95% | Informational during burn-down; final target is blocking |
 
 ### Threshold Philosophy
 
-- **95% for patches**: New code must carry its own proof.
+- **95% for patches**: Explicit coverage runs require new code to carry its own proof; this is not a normal PR check.
 - **95% project target**: Project coverage remains transitional until the burn-down closes.
 - **No per-flag targets**: Codecov status targets live under project and patch status blocks.
 

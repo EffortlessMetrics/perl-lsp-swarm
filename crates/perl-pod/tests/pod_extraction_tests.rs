@@ -189,6 +189,37 @@ fn name_field_never_exceeds_source_after_link_display_text() {
 }
 
 #[test]
+fn synopsis_field_never_exceeds_source_after_link_display_text() {
+    // Regression for the pod_extraction fuzz panic (nightly run 33230657955):
+    // the SYNOPSIS arm still used markdown link rendering, so an unterminated
+    // L<...> percent-encoded its "target" and produced a synopsis several
+    // times longer than the source (#12824 family — display-text rendering).
+    let source =
+        "=head1 SYNOPSIS\n\nL<b0stsor(\"\u{0}\u{FFFD} dynp and more trailing bytes here\n\n=cut\n";
+    let doc = extract_pod(source);
+    let synopsis = doc.synopsis.as_deref().unwrap_or_default();
+    assert!(!synopsis.is_empty(), "SYNOPSIS should be present and non-empty: {:?}", doc.synopsis);
+    assert!(
+        synopsis.contains("b0stsor"),
+        "SYNOPSIS should preserve the display text: {synopsis:?}"
+    );
+    assert!(
+        synopsis.len() <= source.len(),
+        "SYNOPSIS ({} bytes) must not exceed source ({} bytes) — the fuzz target invariant: {synopsis:?}",
+        synopsis.len(),
+        source.len()
+    );
+    assert!(
+        synopsis.chars().count() <= source.chars().count(),
+        "SYNOPSIS ({} chars) must not exceed source ({} chars): {synopsis:?}",
+        synopsis.chars().count(),
+        source.chars().count()
+    );
+    assert!(!synopsis.contains("perldoc://"), "SYNOPSIS must carry no link target: {synopsis:?}");
+    assert!(!synopsis.contains('%'), "SYNOPSIS must carry no percent-encoding: {synopsis:?}");
+}
+
+#[test]
 fn mixed_formatting() {
     let doc = extract_pod("=head1 NAME\n\nUse B<new> to create a C<Foo> object\n\n=cut\n");
     assert_eq!(doc.name.as_deref(), Some("Use new to create a Foo object"));

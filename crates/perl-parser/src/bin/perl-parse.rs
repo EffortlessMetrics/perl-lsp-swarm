@@ -262,6 +262,7 @@ fn main() {
                 eprintln!("Error reading {}: {}", path_str, e);
                 if args.continue_on_error {
                     had_error = true;
+                    total_stats.add_error(&path_str);
                     continue;
                 } else {
                     std::process::exit(1);

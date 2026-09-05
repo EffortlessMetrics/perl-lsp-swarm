@@ -13,9 +13,16 @@ on:
       - 'docs/reference/WORKTREE_PROTOCOL.md'
       - 'AGENTS.md'
       - 'CLAUDE.md'
+      - '.agents/skills/**'
+      - '.claude/skills/**'
+      - '.claude/agents/**'
+      - 'docs/agents/DEVELOPMENT_METHOD.md'
+      - 'docs/agents/REVIEW_CURRENTNESS.md'
+      - 'docs/agents/SKILL_CONTRACT.md'
       - 'justfile'
       - '.gitignore'
       - 'tests/test_active_authority_contract.py'
+      - 'tests/test_writer_authority_transfer_contract.py'
       - '.github/workflows/active-authority-contract.yml'
   push:
     branches: [main]
@@ -26,9 +33,16 @@ on:
       - 'docs/reference/WORKTREE_PROTOCOL.md'
       - 'AGENTS.md'
       - 'CLAUDE.md'
+      - '.agents/skills/**'
+      - '.claude/skills/**'
+      - '.claude/agents/**'
+      - 'docs/agents/DEVELOPMENT_METHOD.md'
+      - 'docs/agents/REVIEW_CURRENTNESS.md'
+      - 'docs/agents/SKILL_CONTRACT.md'
       - 'justfile'
       - '.gitignore'
       - 'tests/test_active_authority_contract.py'
+      - 'tests/test_writer_authority_transfer_contract.py'
       - '.github/workflows/active-authority-contract.yml'
 
 permissions:
@@ -49,4 +63,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Check current maintainer entrypoints
-        run: python3 -m unittest tests/test_active_authority_contract.py
+        # Kept on one line: test_workflow_runs_only_its_own_surface asserts the
+        # contiguous source substring "python3 -m unittest tests/test_active_authority_contract.py",
+        # which folded (>-) YAML would break.
+        run: python3 -m unittest tests/test_active_authority_contract.py tests/test_writer_authority_transfer_contract.py

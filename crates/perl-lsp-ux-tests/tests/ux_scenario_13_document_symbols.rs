@@ -12,6 +12,8 @@
 //! - Every returned symbol MUST be exactly one recognized LSP result form:
 //!   DocumentSymbol (`kind` + object `range`) or SymbolInformation (`kind` +
 //!   object `location` with `uri` and object `range`).
+//! - An astral Unicode prefix MUST preserve the exact UTF-16 `selectionRange`
+//!   for a later symbol name on the same line.
 //! - A file with no symbols MUST return an empty list.
 //! - Close/reopen MUST observe a new generation-sensitive readiness event and
 //!   document symbols MUST come from the reopened editor buffer, not the disk
@@ -107,11 +109,18 @@ fn expected_symbol_set_present(symbols: &[Value]) -> bool {
     EXPECTED_SYMBOLS.iter().all(|expected| names.iter().any(|name| name == expected))
 }
 
-fn document_symbols_with_retry(harness: &UxHarness, path: &str) -> Result<Vec<Value>> {
+fn document_symbols_with_retry<F>(
+    harness: &UxHarness,
+    path: &str,
+    is_settled: F,
+) -> Result<Vec<Value>>
+where
+    F: Fn(&[Value]) -> bool,
+{
     let mut last = Vec::new();
     for attempt in 1..=SYMBOL_ATTEMPTS {
         let symbols = harness.document_symbols(path)?;
-        if expected_symbol_set_present(&symbols) {
+        if is_settled(&symbols) {
             return Ok(symbols);
         }
         last = symbols;
@@ -120,6 +129,19 @@ fn document_symbols_with_retry(harness: &UxHarness, path: &str) -> Result<Vec<Va
         }
     }
     Ok(last)
+}
+
+fn find_document_symbol<'a>(symbols: &'a [Value], expected_name: &str) -> Option<&'a Value> {
+    symbols.iter().find_map(|symbol| {
+        if symbol.get("name").and_then(Value::as_str) == Some(expected_name) {
+            return Some(symbol);
+        }
+
+        symbol
+            .get("children")
+            .and_then(Value::as_array)
+            .and_then(|children| find_document_symbol(children, expected_name))
+    })
 }
 
 fn ready_generation(event: &LspEvent, uri: &str) -> Option<u64> {
@@ -255,7 +277,7 @@ fn scenario_13_rich_file_returns_all_known_symbols() -> Result<()> {
     )?;
 
     harness.open_file("Greeter.pm", SYMBOLS_SOURCE)?;
-    let symbols = document_symbols_with_retry(&harness, "Greeter.pm")?;
+    let symbols = document_symbols_with_retry(&harness, "Greeter.pm", expected_symbol_set_present)?;
 
     assert!(
         expected_symbol_set_present(&symbols),
@@ -264,6 +286,107 @@ fn scenario_13_rich_file_returns_all_known_symbols() -> Result<()> {
         document_symbol_names(&symbols)
     );
     assert_symbol_shapes(&symbols);
+
+    harness.assert_no_crash();
+    Ok(())
+}
+
+#[test]
+fn scenario_13_astral_prefix_preserves_utf16_selection_range() -> Result<()> {
+    if !binary_available() {
+        eprintln!("SKIP scenario_13: perl-lsp binary not found");
+        return Ok(());
+    }
+
+    let source = "use utf8;\nmy $label = \"🦀\"; sub target { return 1; }\n";
+    let harness = UxHarness::new(
+        ScenarioConfig {
+            timeout: Duration::from_secs(15),
+            client_capability_overrides: json!({
+                "textDocument": {
+                    "documentSymbol": {
+                        "hierarchicalDocumentSymbolSupport": true
+                    }
+                },
+                "general": {
+                    "positionEncodings": ["utf-16"]
+                }
+            }),
+            ..Default::default()
+        }
+        .with_file("unicode_symbols.pl", source),
+    )?;
+
+    harness.open_file("unicode_symbols.pl", source)?;
+    let symbols = document_symbols_with_retry(&harness, "unicode_symbols.pl", |symbols| {
+        find_document_symbol(symbols, "target").is_some()
+    })?;
+    assert_symbol_shapes(&symbols);
+
+    let target = find_document_symbol(&symbols, "target").unwrap_or_else(|| {
+        panic!(
+            "expected `target` document symbol after {SYMBOL_ATTEMPTS} settlement attempts: \
+             {symbols:?}"
+        )
+    });
+    let selection = target
+        .get("selectionRange")
+        .unwrap_or_else(|| panic!("`target` must expose a selectionRange: {target:?}"));
+    require_lsp_range(selection, "`target` selectionRange")
+        .unwrap_or_else(|err| panic!("{err}: {target:?}"));
+
+    let line = source.lines().nth(1).expect("fixture must contain the declaration line");
+    let target_byte = line.find("target").expect("fixture must contain target");
+    let prefix = &line[..target_byte];
+    let expected_start =
+        u64::try_from(prefix.encode_utf16().count()).expect("UTF-16 offset must fit u64");
+    let expected_end = expected_start
+        + u64::try_from("target".encode_utf16().count()).expect("symbol width must fit u64");
+    let byte_start = u64::try_from(target_byte).expect("byte offset must fit u64");
+    let scalar_start = u64::try_from(prefix.chars().count()).expect("scalar offset must fit u64");
+
+    assert_ne!(
+        expected_start, byte_start,
+        "fixture must distinguish UTF-16 coordinates from UTF-8 byte offsets"
+    );
+    assert_ne!(
+        expected_start, scalar_start,
+        "fixture must distinguish UTF-16 coordinates from Unicode scalar counts"
+    );
+    assert_eq!(
+        selection.pointer("/start/line").and_then(Value::as_u64),
+        Some(1),
+        "`target` selection must start on the declaration line: {target:?}"
+    );
+    assert_eq!(
+        selection.pointer("/end/line").and_then(Value::as_u64),
+        Some(1),
+        "`target` selection must end on the declaration line: {target:?}"
+    );
+    assert_eq!(
+        selection.pointer("/start/character").and_then(Value::as_u64),
+        Some(expected_start),
+        "`target` selection start must use negotiated UTF-16 coordinates: {target:?}"
+    );
+    for off_by_one in [expected_start - 1, expected_start + 1] {
+        assert_ne!(
+            selection.pointer("/start/character").and_then(Value::as_u64),
+            Some(off_by_one),
+            "`target` selection start must not be shifted by one wire code unit: {target:?}"
+        );
+    }
+    assert_eq!(
+        selection.pointer("/end/character").and_then(Value::as_u64),
+        Some(expected_end),
+        "`target` selection end must cover only the symbol name: {target:?}"
+    );
+    for off_by_one in [expected_end - 1, expected_end + 1] {
+        assert_ne!(
+            selection.pointer("/end/character").and_then(Value::as_u64),
+            Some(off_by_one),
+            "`target` selection end must not be shifted by one wire code unit: {target:?}"
+        );
+    }
 
     harness.assert_no_crash();
     Ok(())

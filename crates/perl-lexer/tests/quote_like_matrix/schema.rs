@@ -140,7 +140,7 @@ impl ExpectedKind {
     pub fn matches(self, token_type: &TokenType) -> bool {
         match self {
             Self::QuoteSingle => matches!(token_type, TokenType::QuoteSingle),
-            Self::QuoteDouble => matches!(token_type, TokenType::QuoteDouble),
+            Self::QuoteDouble => matches!(token_type, TokenType::QuoteDouble(_)),
             Self::QuoteWords => matches!(token_type, TokenType::QuoteWords),
             Self::QuoteCommand => matches!(token_type, TokenType::QuoteCommand),
             Self::QuoteRegex => matches!(token_type, TokenType::QuoteRegex),
