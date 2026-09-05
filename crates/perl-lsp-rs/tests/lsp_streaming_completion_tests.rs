@@ -31,19 +31,29 @@ fn init_harness() -> Result<LspHarness, String> {
 /// Await a cheap later request so a prior notification is known consumed.
 ///
 /// Notifications (`workspace/didChangeConfiguration`, `textDocument/didClose`)
-/// have no response. The harness dispatches inbound messages in order, so a
-/// `workspace/symbol` result proves the earlier handler returned. This is not
-/// a generation-bound configuration wait (#10840) and does not swallow timeout
-/// the way `LspHarness::barrier` does.
+/// have no response. The harness dispatches inbound messages in order, so any
+/// later JSON-RPC response proves the earlier handler returned.
+///
+/// This uses an unknown request rather than `workspace/symbol`: that handler
+/// WaitBriefly for index readiness (up to 2s), while this harness's adaptive
+/// request timeout is 600ms at `RUST_TEST_THREADS=2`. Index wait is a
+/// different wait than "notification consumed" and would time out without
+/// proving the claim. MethodNotFound (-32601) is still a dispatch-path
+/// response (see `punctuated_unknown_method_returns_32601_not_32600`).
+///
+/// Not a generation-bound configuration wait (#10840). Unlike
+/// `LspHarness::barrier`, a timeout is a test failure.
 fn await_prior_notification(harness: &mut LspHarness) -> Result<Value, Box<dyn std::error::Error>> {
-    let result = harness.request("workspace/symbol", json!({ "query": "" }))?;
-    if !result.is_array() {
-        return Err(format!(
-            "order-preserving round trip expected workspace/symbol array, got {result}"
-        )
-        .into());
+    match harness.request("perl-lsp/__testOrderBarrier", json!({})) {
+        Ok(result) => Ok(result),
+        Err(err) if request_failed_without_response(&err) => Err(err.into()),
+        Err(err) if err.contains("-32601") => Ok(json!({ "code": -32601 })),
+        Err(err) => Err(err.into()),
     }
-    Ok(result)
+}
+
+fn request_failed_without_response(err: &str) -> bool {
+    err.contains("timed out") || err.contains("No response") || err.contains("Server send error")
 }
 
 fn notify_and_await(harness: &mut LspHarness, method: &str, params: Value) -> TestResult {
@@ -115,10 +125,11 @@ fn enable_ai_disable_streaming(harness: &mut LspHarness) -> TestResult {
 
 // ==================== Order-preserving notification round-trip (#14865) ====================
 
-/// The round-trip helper must wait for a JSON-RPC result, not a wall-clock
-/// sleep. A sleep-only helper cannot produce this array.
+/// The round-trip helper must wait for a JSON-RPC response, not a wall-clock
+/// sleep. A sleep-only helper cannot produce MethodNotFound (-32601).
 #[test]
-fn await_prior_notification_after_did_change_configuration_returns_symbol_array() -> TestResult {
+fn await_prior_notification_after_did_change_configuration_returns_json_rpc_response() -> TestResult
+{
     let mut harness = init_harness()?;
     harness.notify(
         "workspace/didChangeConfiguration",
@@ -133,24 +144,27 @@ fn await_prior_notification_after_did_change_configuration_returns_symbol_array(
             }
         }),
     );
-    let symbols = await_prior_notification(&mut harness)?;
-    assert!(
-        symbols.is_array(),
-        "later in-order workspace/symbol must return an array after didChangeConfiguration"
+    let response = await_prior_notification(&mut harness)?;
+    assert_eq!(
+        response.get("code").and_then(Value::as_i64),
+        Some(-32601),
+        "later in-order unknown request must be answered after didChangeConfiguration"
     );
     Ok(())
 }
 
 /// Opposite-direction control: the round-trip request itself is not a
-/// configuration notification. It must succeed with no preceding
+/// configuration notification. It must still be answered with no preceding
 /// `didChangeConfiguration`.
 #[test]
-fn await_prior_notification_without_preceding_notify_still_returns_array() -> TestResult {
+fn await_prior_notification_without_preceding_notify_still_returns_json_rpc_response() -> TestResult
+{
     let mut harness = init_harness()?;
-    let symbols = await_prior_notification(&mut harness)?;
-    assert!(
-        symbols.is_array(),
-        "workspace/symbol round-trip must succeed without a preceding configuration notify"
+    let response = await_prior_notification(&mut harness)?;
+    assert_eq!(
+        response.get("code").and_then(Value::as_i64),
+        Some(-32601),
+        "order-preserving round-trip must succeed without a preceding configuration notify"
     );
     Ok(())
 }
@@ -197,15 +211,16 @@ fn sequential_did_change_configuration_notifications_each_await_a_response() -> 
 }
 
 /// didClose of an unknown URI must not break in-order dispatch: the later
-/// workspace/symbol round-trip still returns an array, and streaming is null.
+/// barrier request is still answered, and streaming is null.
 #[test]
 fn did_close_of_never_opened_uri_then_round_trip_streaming_is_null() -> TestResult {
     let mut harness = init_harness()?;
     let uri = "file:///never_opened.pl";
     harness.close(uri)?;
-    let symbols = await_prior_notification(&mut harness)?;
-    assert!(
-        symbols.is_array(),
+    let response = await_prior_notification(&mut harness)?;
+    assert_eq!(
+        response.get("code").and_then(Value::as_i64),
+        Some(-32601),
         "didClose of an unknown URI must not prevent the order-preserving round-trip"
     );
 
