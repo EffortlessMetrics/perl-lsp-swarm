@@ -135,7 +135,11 @@ pub fn extract_mojo_base_attribute_declarations(
 ) -> Vec<MojoBaseAttributeDeclaration> {
     let subroutines = SubroutineTargetIndex::build(ast, file_id);
     let mut nested_subroutines = HashSet::new();
-    collect_nested_package_subroutines(ast, &mut None, &mut nested_subroutines);
+    // Start from the same implicit `main` the declaration walk uses. Starting
+    // from `None` would silently record nothing in an unqualified file, and a
+    // missed collision mints the member with no boundary — asserting there is
+    // no conflict when there is one.
+    collect_nested_package_subroutines(ast, &mut Some("main".to_string()), &mut nested_subroutines);
     let mut state = WalkState {
         file_id,
         generation,

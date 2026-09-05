@@ -913,3 +913,25 @@ fn a_subroutine_nested_in_another_subroutine_still_collides() {
     assert_eq!(clean_facts.members[0].explicit_method, MojoBaseExplicitMethodState::None);
     assert!(clean_facts.members[0].envelope.boundary.is_none());
 }
+
+#[test]
+fn a_nested_method_in_an_unqualified_file_still_collides() {
+    // An unqualified file's caller package is `main`, which is how the
+    // declaration walk already scopes it. The nested-subroutine supplement
+    // must start from the same implicit package, or a collision in such a file
+    // is missed and the member is minted with no boundary — asserting there is
+    // no conflict when there is one.
+    let code = concat!(
+        "use Mojo::Base -base;\n",
+        "has 'name';\n",
+        "sub outer { sub name { 'explicit' } }\n",
+    );
+    let facts = only_facts(code);
+    assert_eq!(member_names(&facts), ["name"]);
+    assert_eq!(
+        facts.members[0].explicit_method,
+        MojoBaseExplicitMethodState::Collides,
+        "the implicit `main` package must be scoped the same way in both walks"
+    );
+    assert!(facts.members[0].envelope.boundary.is_some());
+}
