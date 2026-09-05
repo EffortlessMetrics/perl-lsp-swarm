@@ -736,6 +736,19 @@ def parse_peer_dispatch_routes(source: str, owner: Path) -> set[str]:
                 raise AuthorityError(
                     f"{owner} capability-floor dispatch does not apply the capability floor"
                 )
+        elif "self.secondary_floor_response(" in wrapper_body:
+            # A wrapper may delegate to the floor response directly, but a
+            # call-and-discard would pass delegation while letting floored
+            # requests fall through to the route match. The result must be
+            # bound and returned.
+            if (
+                "= self.secondary_floor_response(" not in wrapper_body
+                or "return" not in wrapper_body
+            ):
+                raise AuthorityError(
+                    f"{owner} public dispatch calls the capability floor without "
+                    "binding and returning its response"
+                )
         functions = route_functions
     if len(functions) != 1:
         raise AuthorityError(
