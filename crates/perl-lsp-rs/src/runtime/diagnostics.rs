@@ -3104,8 +3104,16 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::io::Write;
+    use std::path::PathBuf;
     use std::sync::Arc as StdArc;
     use std::time::{Duration, Instant};
+
+    /// Expand 8.3 short names (and strip a Windows `\\?\` prefix) once at the
+    /// temp root so later joins match the server's canonicalized folder paths.
+    fn resolved_temp_root(temp: &tempfile::TempDir) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let canonical = std::fs::canonicalize(temp.path())?;
+        Ok(crate::execute_command::normalize_path_for_external_command(&canonical))
+    }
 
     /// Shared-buffer writer for capturing outbound LSP notifications in tests.
     struct SharedVecWriter {
@@ -3744,8 +3752,9 @@ mod tests {
     fn workspace_reload_preserves_per_folder_project_version_isolation()
     -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
-        let first_folder = temp.path().join("first-project");
-        let second_folder = temp.path().join("second-project");
+        let root = resolved_temp_root(&temp)?;
+        let first_folder = root.join("first-project");
+        let second_folder = root.join("second-project");
         std::fs::create_dir_all(&first_folder)?;
         std::fs::create_dir_all(&second_folder)?;
         std::fs::write(first_folder.join(".perl-lsp.toml"), "[perl]\nversion = \"5.20\"\n")?;

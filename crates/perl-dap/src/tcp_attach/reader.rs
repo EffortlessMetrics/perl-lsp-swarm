@@ -410,6 +410,7 @@ fn mark_disconnected_if_current(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_test_must::must_with;
     use std::sync::mpsc::sync_channel;
     use std::thread;
     use std::time::Duration;
@@ -630,16 +631,14 @@ mod tests {
         let epoch = Arc::new(AtomicU64::new(1));
 
         mark_disconnected_if_current(&connected, &epoch, 0);
-        assert_eq!(
+        assert!(
             *connected.lock().unwrap_or_else(|error| error.into_inner()),
-            true,
             "a stale reader id must not clear the connection state"
         );
 
         mark_disconnected_if_current(&connected, &epoch, 1);
-        assert_eq!(
-            *connected.lock().unwrap_or_else(|error| error.into_inner()),
-            false,
+        assert!(
+            !*connected.lock().unwrap_or_else(|error| error.into_inner()),
             "the current reader id marks the connection disconnected"
         );
     }
@@ -667,6 +666,9 @@ mod tests {
         );
 
         drop(gate_guard);
-        handle.join().expect("retire thread must finish once the gate opens");
+        must_with(
+            handle.join().map_err(|_| "retire thread panicked"),
+            "retire thread must finish once the gate opens",
+        );
     }
 }

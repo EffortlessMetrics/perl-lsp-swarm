@@ -777,6 +777,7 @@ pub fn intersect_dap_capabilities(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_test_must::must_some_with;
 
     /// Authority-binding contract (#9578 review): each `advertises_*`
     /// accessor reads exactly its own per-capability proof authority, and the
@@ -792,10 +793,10 @@ mod tests {
         // the removed authority in its own assertions.
         let source =
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/backend/capabilities.rs"));
-        let source = source
-            .split("#[cfg(test)]")
-            .next()
-            .expect("module source always has a production half");
+        let source = must_some_with(
+            source.split("#[cfg(test)]").next(),
+            "module source always has a production half",
+        );
 
         let bindings = [
             ("advertises_function_breakpoints", "OPTIONAL_FUNCTION_BREAKPOINTS_PROVEN"),
@@ -831,10 +832,10 @@ mod tests {
     fn every_optional_breakpoint_authority_floors_at_false() {
         let source =
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/backend/capabilities.rs"));
-        let source = source
-            .split("#[cfg(test)]")
-            .next()
-            .expect("module source always has a production half");
+        let source = must_some_with(
+            source.split("#[cfg(test)]").next(),
+            "module source always has a production half",
+        );
         for authority in [
             "OPTIONAL_FUNCTION_BREAKPOINTS_PROVEN",
             "OPTIONAL_CONDITIONAL_BREAKPOINTS_PROVEN",
@@ -855,15 +856,15 @@ mod tests {
     /// body breaks the exact-atom equality.
     fn accessor_return_atom(source: &str, accessor: &str) -> String {
         let signature = format!("fn {accessor}()");
-        let start = source
-            .find(&signature)
-            .unwrap_or_else(|| panic!("{accessor} must stay defined in capabilities.rs"));
-        let open = source[start..].find('{').expect("accessor body brace") + start;
-        let close = source[open..].find('}').expect("accessor body close") + open;
+        let start = must_some_with(
+            source.find(&signature),
+            format!("{accessor} must stay defined in capabilities.rs"),
+        );
+        let open = must_some_with(source[start..].find('{'), "accessor body brace") + start;
+        let close = must_some_with(source[open..].find('}'), "accessor body close") + open;
         let body = &source[open + 1..close];
 
         let mut stripped = String::with_capacity(body.len());
-        let mut in_block_comment = false;
         for line in body.lines() {
             let mut rest = line;
             while !rest.is_empty() {
@@ -878,7 +879,6 @@ mod tests {
                         let block_comment = block_comment.unwrap_or_default();
                         stripped.push_str(&rest[..block_comment]);
                         rest = &rest[block_comment + 2..];
-                        in_block_comment = true;
                     }
                     // A line comment (or a line comment preceding a block
                     // comment start): the rest of the line is commentary.
@@ -1258,8 +1258,10 @@ mod tests {
             "expression": "$x",
             "format": { "hex": true, "radix": 16 }
         });
-        let message = capability_floor_message("evaluate", Some(&args))
-            .expect("unknown ValueFormat fields must be rejected");
+        let message = must_some_with(
+            capability_floor_message("evaluate", Some(&args)),
+            "unknown ValueFormat fields must be rejected",
+        );
         assert!(message.contains("Invalid arguments"), "unexpected message: {message}");
         assert!(message.contains("radix"), "unexpected message: {message}");
         assert!(!message.contains("non-default `format` option"));

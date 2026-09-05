@@ -42,6 +42,7 @@
 use perl_dap::backend::BackendError;
 use perl_dap::peer_protocol::PeerFailureCause;
 use perl_parser_core::{ErrorCategory, ErrorClass};
+use perl_test_must::must;
 
 /// Build the error the external-peer path produces for a `success: false`
 /// reply, so each test states the peer's reported reason rather than the
@@ -224,7 +225,9 @@ fn peer_command_survives_construction() {
             assert_eq!(message, "no active suspension");
             assert_eq!(*cause, None, "this helper builds the causeless reply");
         }
-        other => panic!("expected PeerReported, got {other:?}"),
+        other => {
+            must(Err::<(), _>(format!("expected PeerReported, got {other:?}")));
+        }
     }
 }
 
