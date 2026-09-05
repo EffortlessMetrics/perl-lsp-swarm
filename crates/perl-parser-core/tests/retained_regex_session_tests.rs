@@ -290,15 +290,24 @@ fn a_retained_table_reports_staleness_against_edited_source() {
     );
 }
 
-/// A failed parse retains no records, and says so through a source-bound empty
-/// table. The falsifier this pins is the opposite: fabricating a clean result.
+/// A session that recorded nothing retains nothing, and says so through a
+/// source-bound empty table. The falsifier this pins is fabricating a clean result
+/// for a document this session never analyzed.
+///
+/// Note what this does *not* say. No parse runs here at all, so no geometry is ever
+/// recorded — the emptiness comes from having observed nothing, not from the absence
+/// of a tree. A parse that ran and then failed does retain what it recorded before
+/// failing; that is
+/// [`a_fatal_parse_still_retains_geometry_recorded_before_it_failed`]. Reading this
+/// test as "a failed parse retains no records" would state a contract the seam
+/// deliberately does not have, because that contract loses findings.
 #[test]
-fn a_parse_without_a_usable_tree_retains_no_fabricated_records() {
+fn a_session_that_recorded_nothing_retains_no_fabricated_records() {
     let source = "my $re = qr/(a+)+b/;";
     let session = RetainedRegexSession::begin(source);
     let table = session.finish(None);
 
-    assert!(table.records.is_empty(), "no tree means no records");
+    assert!(table.records.is_empty(), "nothing observed means nothing retained");
     assert!(
         table.source_matches(source),
         "an empty table still binds its source so a consumer can tell empty from stale"
@@ -342,3 +351,71 @@ fn transliteration_is_retained_without_regex_body_analysis() {
     let Some(record) = record else { return };
     assert!(record.pattern.is_none(), "a transliteration body is not analyzed as a regex");
 }
+
+/// A fatal parse must not silently drop findings the parser already recorded (#7024).
+///
+/// `finish(None)` previously returned an empty table, which meant a document holding
+/// both a regex finding and a fatal structural failure lost the finding outright: the
+/// session suppresses the legacy per-operator scan, so with nothing canonical retained
+/// there was nothing left to publish. Measured before the fix, the parse below reported
+/// one backtracking advisory without a session and none with one.
+#[test]
+fn a_fatal_parse_still_retains_geometry_recorded_before_it_failed() {
+    // Deep nesting exhausts the parser and yields no tree; the regex sits before it.
+    let source = format!("my $re = qr/(a+)+b/;\n{}\n", "if (1) {".repeat(3000));
+
+    let session = RetainedRegexSession::begin(&source);
+    let mut parser = Parser::new(&source);
+    let parsed = parser.parse();
+    assert!(parsed.is_err(), "fixture must actually fail to parse, or it proves nothing");
+    let table = session.finish(None);
+
+    assert!(
+        !table.records.is_empty(),
+        "geometry recorded before the failure must survive it: {table:#?}"
+    );
+    let analyzed = table
+        .records
+        .iter()
+        .any(|record| record.availability == RegexAnalysisAvailability::Analyzed);
+    assert!(analyzed, "the retained record must carry real analysis: {table:#?}");
+}
+
+// The session is bound to the thread that began it, and the type system enforces it.
+//
+// Its stack entry lives in a thread-local registered by `begin`. A session moved to
+// another thread would retire an id that thread never registered — retaining nothing
+// there while the originating thread keeps the entry for the rest of its life. No
+// runtime check can close that; only `!Send` can.
+//
+// This is asserted at compile time rather than in a `#[test]`, deliberately: `Send`ness
+// is a property of the type, so a change that makes the session `Send` again should
+// fail to build rather than fail a run. The inherent `impl` below applies only when
+// `T: Send` and wins over the trait default when it does, so `IS_SEND` reads that
+// difference.
+// `dead_code` does not count a const-assertion initializer as a use, so these read as
+// unused even though the assertions below depend on them and fail to compile without
+// them. The mutation receipt for that is in this commit's message.
+#[allow(dead_code)]
+struct IsSend<T>(core::marker::PhantomData<T>);
+#[allow(dead_code)]
+trait NotSend {
+    const IS_SEND: bool = false;
+}
+impl<T> NotSend for IsSend<T> {}
+impl<T: Send> IsSend<T> {
+    #[allow(dead_code)]
+    const IS_SEND: bool = true;
+}
+
+// Note the unqualified path. Writing `<IsSend<_> as NotSend>::IS_SEND` would name the
+// trait constant explicitly and always read `false`, making this assertion vacuous no
+// matter what the session does — an earlier draft of this test did exactly that.
+// Unqualified, the inherent `impl` shadows the trait default whenever `T: Send`, which
+// is the only form that actually discriminates.
+const _SESSION_IS_NOT_SEND: () = assert!(!IsSend::<RetainedRegexSession<'static>>::IS_SEND);
+
+// Control. The probe reports `true` for a type that really is `Send`, which rules out
+// the degenerate reading of the assertion above: that the probe always answers `false`
+// and would hold no matter what `RetainedRegexSession` does.
+const _PROBE_CAN_REPORT_SEND: () = assert!(IsSend::<String>::IS_SEND);

@@ -8,6 +8,7 @@
 
 use std::{
     cell::RefCell,
+    marker::PhantomData,
     ops::Deref,
     sync::{Arc, atomic::AtomicBool},
 };
@@ -147,19 +148,28 @@ pub fn parse_tokens_with_regex_analysis(tokens: Vec<Token>, source: &str) -> Reg
 /// downstream. Holding the borrow makes that unrepresentable rather than merely
 /// validated.
 ///
-/// The session is thread-local. Dropping it without calling
-/// [`RetainedRegexSession::finish`] releases it and retains nothing.
+/// The session is thread-local, and that is enforced rather than documented: it is
+/// deliberately `!Send`. Its stack entry lives in a thread-local registered by the
+/// thread that called [`RetainedRegexSession::begin`], so a session moved to another
+/// thread would retire an id that thread never registered — retaining nothing there
+/// while the originating thread keeps the entry for the rest of its life. That is the
+/// same orphaned-entry failure that identity-based retirement closes for out-of-order
+/// finishes on one thread, reached along the other axis, and no runtime check can
+/// close it: only the type system can. `PhantomData<*const ()>` is what makes the move
+/// a compile error instead.
 #[derive(Debug)]
 pub struct RetainedRegexSession<'source> {
     guard: PendingGeometryGuard,
     source: &'source str,
+    /// Binds the session to the thread that began it. See the type-level note.
+    _not_send: PhantomData<*const ()>,
 }
 
 impl<'source> RetainedRegexSession<'source> {
     /// Begin retaining parser-owned geometry for a parse of `source`.
     #[must_use]
     pub fn begin(source: &'source str) -> Self {
-        Self { guard: PendingGeometryGuard::begin(source), source }
+        Self { guard: PendingGeometryGuard::begin(source), source, _not_send: PhantomData }
     }
 
     /// Finish the session and build the canonical table for the parsed `ast`.
@@ -167,10 +177,23 @@ impl<'source> RetainedRegexSession<'source> {
     /// The table is built against the source this session began with, and binds its
     /// digest so a later consumer can prove freshness.
     ///
-    /// `ast` is `None` when the caller's parse produced no usable tree. That case
-    /// returns an empty source-bound table rather than a fabricated clean one: no
-    /// record is not the same claim as no finding, and the caller can still tell the
-    /// two apart through [`RegexAnalysisTable::source_matches`].
+    /// `ast` is `None` when the caller's parse produced no usable tree — a fatal
+    /// failure such as recursion or nesting exhaustion. The geometry the parser
+    /// recorded *before* it gave up is still real evidence about this exact buffer, so
+    /// it is retained rather than discarded.
+    ///
+    /// Discarding it lost findings outright. Measured on a document holding both a
+    /// nested-quantifier regex and 3000 levels of nesting: without a session the parse
+    /// reports one backtracking advisory, and with one it reported none and retained no
+    /// record — the legacy scan suppressed, nothing canonical to replace it. Retaining
+    /// the pending geometry keeps the finding, which is the whole point of the seam.
+    ///
+    /// The one thing this path cannot supply is the compile-time pragma environment,
+    /// which is built from the tree. Records retained here are therefore analyzed under
+    /// the default profile rather than the file's own pragma state, so a finding that
+    /// depends on `use utf8` or a feature pragma may differ from what a successful
+    /// parse would have produced. That is a narrower inaccuracy than silence, and it is
+    /// confined to documents that failed to parse at all.
     ///
     /// A session finished out of order — while a session begun after it is still
     /// active — retains nothing rather than consuming the other session's geometry.
@@ -203,7 +226,7 @@ impl<'source> RetainedRegexSession<'source> {
         let source = self.source;
         let pending = self.guard.finish().unwrap_or_else(PendingGeometrySession::empty);
         let Some(ast) = ast else {
-            return RegexAnalysisTable::for_source(source);
+            return build_table_without_ast(source, pending);
         };
         let table = build_table(source, ast, pending);
         apply_ast_compatibility_flags(ast, &table);
@@ -268,6 +291,35 @@ fn finish_output(
 /// entry points above and the caller-driven [`RetainedRegexSession`]. Keeping one
 /// body is what stops a second regex authority from appearing for callers that
 /// drive their own parse.
+/// Build the table from parser-recorded geometry alone, for a parse that produced no
+/// usable tree.
+///
+/// Everything the AST would have contributed is deliberately absent: no
+/// [`collect_ast_geometry`] supplementation, and no unavailable-candidate records,
+/// since both are derived from a tree there isn't one of. What remains is geometry the
+/// parser recorded against this exact buffer before it failed, which is evidence in its
+/// own right.
+///
+/// The pragma environment defaults, because it is built from the tree. See
+/// [`RetainedRegexSession::finish`] for what that costs.
+fn build_table_without_ast(
+    source: &str,
+    mut pending: PendingGeometrySession,
+) -> RegexAnalysisTable {
+    let environment = CompileTimePragmaEnvironment::default();
+    pending.geometries.sort_by_key(geometry_sort_key);
+    pending.geometries.dedup_by(|left, right| {
+        left.operator == right.operator && left.full_range == right.full_range
+    });
+
+    let mut table = RegexAnalysisTable::for_source(source);
+    for geometry in pending.geometries {
+        let profile = profile_at(&environment, geometry.pattern.range.start);
+        let _record = table.retain_geometry(geometry, profile);
+    }
+    table
+}
+
 fn build_table(
     source: &str,
     ast: &Node,
