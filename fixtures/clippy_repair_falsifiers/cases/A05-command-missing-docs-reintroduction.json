@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "case_id": "A05-command-missing-docs-reintroduction",
+  "family": "verifier_denominator_weakening",
+  "purpose": "Reintroducing a command-level -A missing_docs allowance after its accepted exit would restore a broad documentation exemption.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "-A missing_docs",
+      "removed broad exemption"
+    ],
+    "content": "# hypothetical command fragment adding back a removed broad exemption\ncargo clippy --workspace --lib --locked -- -D warnings -A missing_docs -W clippy::missing_docs_in_private_items\n",
+    "sha256": "2338f3e6e9f897bc38f48bafe8199f6069a2679a667ffcfedcd5900b0cee3a49"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 11412,
+    "unresolved_reason": "The current product proof still carries the accepted -A missing_docs exit; its removal route (#11412/#2318) has not landed, so no post-exit rejector exists."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "command_level_broad_allow"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "check_missing_docs.sh"
+    ],
+    "note": "Documentation cohorts own the gap precisely.",
+    "content": "# documentation cohorts own the gap precisely\nbash ci/check_missing_docs.sh\n",
+    "sha256": "42aeec28c25f92d78a0319975820cb8754fdfd6b1d6a5db4c81b54e9c703b0b8"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Precondition (accepted exit) is itself future state; the case stays unresolved until #11412 lands."
+}

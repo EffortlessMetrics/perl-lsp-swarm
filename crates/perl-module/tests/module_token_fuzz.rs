@@ -1,4 +1,4 @@
-use perl_module::token::{contains_module_token, replace_module_token};
+use perl_module::{contains_module_token, replace_module_token};
 
 fn next_u64(state: &mut u64) -> u64 {
     *state ^= *state >> 12;

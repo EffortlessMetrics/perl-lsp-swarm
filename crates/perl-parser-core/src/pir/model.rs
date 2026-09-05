@@ -17,7 +17,7 @@ use perl_semantic_facts::AnchorId;
 use std::collections::BTreeMap;
 
 /// Current PIR lowering-receipt schema version.
-pub const PIR_RECEIPT_VERSION: u32 = 1;
+pub const PIR_RECEIPT_VERSION: u32 = 2;
 
 /// Stable identifier for a PIR node within one lowering receipt.
 ///
@@ -49,7 +49,7 @@ impl PirId {
 /// Every source-derived node anchors to the workspace range that caused it.
 /// Generated, framework, or ambient nodes only exist when their provenance is
 /// explicit, so a provider can never mistake a modeled fact for source text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 #[non_exhaustive]
 pub enum PirAnchorKind {
     /// Node anchors directly to source text.
@@ -135,7 +135,7 @@ impl PirSourceAnchor {
     }
 }
 
-/// Expression context modeled by PIR v0.
+/// Value context modeled by PIR.
 ///
 /// Unknown context is allowed when the compiler substrate cannot prove context
 /// without executing Perl. Unknown context is visible in receipts and is never
@@ -149,8 +149,6 @@ pub enum PirContext {
     List,
     /// Void context.
     Void,
-    /// Lvalue (assignment-target) context.
-    Lvalue,
     /// Context that cannot be proven statically.
     Unknown,
 }
@@ -163,8 +161,58 @@ impl PirContext {
             Self::Scalar => "Scalar",
             Self::List => "List",
             Self::Void => "Void",
-            Self::Lvalue => "Lvalue",
             Self::Unknown => "Unknown",
+        }
+    }
+}
+
+/// Evaluation demand is independent from the value context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PirEvaluationDemand {
+    /// The expression's value is consumed.
+    Value,
+    /// The expression is consumed as a boolean condition.
+    TruthTest,
+    /// The expression is consumed only for definedness.
+    ///
+    /// This variant is reserved for the follow-up definedness-demand slice;
+    /// PIR v0 currently emits it only as vocabulary, not from lowering.
+    DefinednessTest,
+}
+
+impl PirEvaluationDemand {
+    /// Stable name used in receipts and snapshots.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Value => "Value",
+            Self::TruthTest => "TruthTest",
+            Self::DefinednessTest => "DefinednessTest",
+        }
+    }
+}
+
+/// Access mode is independent from value context and identifies place use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PirAccessMode {
+    /// Read a value.
+    Read,
+    /// Write a place.
+    Write,
+    /// Read and then write a place.
+    ReadModifyWrite,
+}
+
+impl PirAccessMode {
+    /// Stable name used in receipts and snapshots.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Read => "Read",
+            Self::Write => "Write",
+            Self::ReadModifyWrite => "ReadModifyWrite",
         }
     }
 }
@@ -719,6 +767,16 @@ pub struct PirNode {
     pub operation: PirOperation,
     /// Expression context, possibly `Unknown`.
     pub context: PirContext,
+    /// How the node's value is consumed.
+    pub demand: PirEvaluationDemand,
+    /// Whether the node reads or writes a place.
+    ///
+    /// `None` when the operation does not access a place at all (literals,
+    /// calls, assignment expressions, branches, loops, returns, dynamic
+    /// boundaries, regex literals, expression-target regex operations, and
+    /// dereferences whose place identity is still owned by the place model).
+    /// Lowering never fabricates a `Read` for those nodes.
+    pub access: Option<PirAccessMode>,
     /// Link to a dynamic-boundary node this operation defers to, when any.
     pub dynamic_boundary: Option<PirId>,
     /// HIR scope this node belongs to, when known.
@@ -833,6 +891,13 @@ pub struct PirReceipt {
     pub operation_counts: BTreeMap<&'static str, usize>,
     /// Context counts, keyed by context name.
     pub context_counts: BTreeMap<&'static str, usize>,
+    /// Evaluation-demand counts, keyed by demand name.
+    pub demand_counts: BTreeMap<&'static str, usize>,
+    /// Access-mode counts, keyed by access name.
+    ///
+    /// Only nodes that access a place are counted, so the values sum to the
+    /// number of place-accessing nodes rather than to `node_count`.
+    pub access_counts: BTreeMap<&'static str, usize>,
     /// Source-anchor coverage summary.
     pub source_anchor_coverage: PirAnchorCoverage,
     /// Dynamic-boundary counts, keyed by boundary-kind name.
@@ -900,8 +965,15 @@ mod tests {
         assert_eq!(PirContext::Scalar.name(), "Scalar");
         assert_eq!(PirContext::List.name(), "List");
         assert_eq!(PirContext::Void.name(), "Void");
-        assert_eq!(PirContext::Lvalue.name(), "Lvalue");
         assert_eq!(PirContext::Unknown.name(), "Unknown");
+    }
+
+    #[test]
+    fn context_demand_and_access_are_orthogonal() {
+        assert_eq!(PirEvaluationDemand::TruthTest.name(), "TruthTest");
+        assert_eq!(PirEvaluationDemand::DefinednessTest.name(), "DefinednessTest");
+        assert_eq!(PirAccessMode::ReadModifyWrite.name(), "ReadModifyWrite");
+        assert_ne!(PirContext::Scalar, PirContext::Unknown);
     }
 
     #[test]
@@ -953,7 +1025,9 @@ mod tests {
 
     #[test]
     fn pir_callee_dynamic_equality() {
-        assert_eq!(PirCallee::Dynamic, PirCallee::Dynamic);
+        let left = PirCallee::Dynamic;
+        let right = PirCallee::Dynamic;
+        assert_eq!(left, right);
     }
 
     #[test]
@@ -1149,13 +1223,15 @@ mod tests {
             nodes: vec![],
             edges: vec![],
             receipt: PirReceipt {
-                schema_version: 1,
+                schema_version: PIR_RECEIPT_VERSION,
                 source_identity: None,
                 lowering_mode: PirLoweringMode::HirV0,
                 node_count: 0,
                 edge_count: 0,
                 operation_counts: Default::default(),
                 context_counts: Default::default(),
+                demand_counts: Default::default(),
+                access_counts: Default::default(),
                 source_anchor_coverage: Default::default(),
                 dynamic_boundary_counts: Default::default(),
                 unsupported_construct_counts: Default::default(),
@@ -1174,6 +1250,8 @@ mod tests {
             source_anchor: PirSourceAnchor::explicit(loc, HirId::from_index(1)),
             operation: PirOperation::Assign,
             context: PirContext::Void,
+            demand: PirEvaluationDemand::Value,
+            access: None,
             dynamic_boundary: None,
             scope: None,
             package_context: None,
@@ -1182,13 +1260,15 @@ mod tests {
             nodes: vec![node],
             edges: vec![],
             receipt: PirReceipt {
-                schema_version: 1,
+                schema_version: PIR_RECEIPT_VERSION,
                 source_identity: None,
                 lowering_mode: PirLoweringMode::HirV0,
                 node_count: 1,
                 edge_count: 0,
                 operation_counts: Default::default(),
                 context_counts: Default::default(),
+                demand_counts: Default::default(),
+                access_counts: Default::default(),
                 source_anchor_coverage: Default::default(),
                 dynamic_boundary_counts: Default::default(),
                 unsupported_construct_counts: Default::default(),
@@ -1207,6 +1287,8 @@ mod tests {
             source_anchor: PirSourceAnchor::explicit(loc, HirId::from_index(1)),
             operation: PirOperation::Assign,
             context: PirContext::Void,
+            demand: PirEvaluationDemand::Value,
+            access: None,
             dynamic_boundary: None,
             scope: None,
             package_context: None,
@@ -1215,13 +1297,15 @@ mod tests {
             nodes: vec![node.clone()],
             edges: vec![],
             receipt: PirReceipt {
-                schema_version: 1,
+                schema_version: PIR_RECEIPT_VERSION,
                 source_identity: None,
                 lowering_mode: PirLoweringMode::HirV0,
                 node_count: 1,
                 edge_count: 0,
                 operation_counts: Default::default(),
                 context_counts: Default::default(),
+                demand_counts: Default::default(),
+                access_counts: Default::default(),
                 source_anchor_coverage: Default::default(),
                 dynamic_boundary_counts: Default::default(),
                 unsupported_construct_counts: Default::default(),
@@ -1239,13 +1323,15 @@ mod tests {
             nodes: vec![],
             edges: vec![],
             receipt: PirReceipt {
-                schema_version: 1,
+                schema_version: PIR_RECEIPT_VERSION,
                 source_identity: None,
                 lowering_mode: PirLoweringMode::HirV0,
                 node_count: 0,
                 edge_count: 0,
                 operation_counts: Default::default(),
                 context_counts: Default::default(),
+                demand_counts: Default::default(),
+                access_counts: Default::default(),
                 source_anchor_coverage: Default::default(),
                 dynamic_boundary_counts: Default::default(),
                 unsupported_construct_counts: Default::default(),

@@ -79,6 +79,70 @@ fn completion_provider(source: &str) -> Result<CompletionProvider, Box<dyn std::
     Ok(CompletionProvider::new_with_index_and_source(&ast, source, Some(index)))
 }
 
+#[test]
+fn production_method_completion_ignores_pod_looking_heredoc_content()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\nmy $text = <<'END';\n=begin comment\n=for comment\n=end comment\nEND\n$http->po";
+    let provider = completion_provider(source)?;
+    let completions = provider.get_completions(source, source.len());
+
+    assert!(
+        completions.iter().any(|item| item.label == "post"),
+        "constructor methods must remain available after POD-looking heredoc content"
+    );
+    Ok(())
+}
+
+#[test]
+fn production_method_completion_accepts_real_cut_and_rejects_pod_or_reassigned_context()
+-> Result<(), Box<dyn std::error::Error>> {
+    let for_source = "use HTTP::Tiny;\n=for comment\ndocumentation\n\n=cut\nmy $http = HTTP::Tiny->new;\n$http->po";
+    let for_provider = completion_provider(for_source)?;
+    assert!(
+        for_provider
+            .get_completions(for_source, for_source.len())
+            .iter()
+            .any(|item| item.label == "post"),
+        "code after =cut must remain reachable after a =for paragraph"
+    );
+
+    let malformed_source =
+        "use HTTP::Tiny;\n=begin\nnot a valid region\nmy $http = HTTP::Tiny->new;\n$http->po";
+    let malformed_provider = completion_provider(malformed_source)?;
+    assert!(
+        !malformed_provider
+            .get_completions(malformed_source, malformed_source.len())
+            .iter()
+            .any(|item| item.label == "post"),
+        "a targetless =begin without =cut must keep the trailing code in POD"
+    );
+
+    let reassigned_source =
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$http = make_other();\n$http->po";
+    let reassigned_provider = completion_provider(reassigned_source)?;
+    assert!(
+        !reassigned_provider
+            .get_completions(reassigned_source, reassigned_source.len())
+            .iter()
+            .any(|item| item.label == "post"),
+        "constructor inference must stop after a later reassignment"
+    );
+    Ok(())
+}
+
+#[test]
+fn production_method_completion_ignores_indented_pod_directives()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = "use HTTP::Tiny;\n  =begin comment\n  =for comment\n  =cut\nmy $http = HTTP::Tiny->new;\n$http->po";
+    let provider = completion_provider(source)?;
+
+    assert!(
+        provider.get_completions(source, source.len()).iter().any(|item| item.label == "post"),
+        "indented POD-looking lines must not suppress production completion"
+    );
+    Ok(())
+}
+
 fn completion_provider_with_receiver_fact(
     source: &str,
     receiver_fact: Option<perl_semantic_analyzer::analysis::type_facts::TypeFact>,
@@ -8949,5 +9013,399 @@ fn test_empty_prefix_emits_document_variables() {
         labels.contains(&"if"),
         "empty-prefix completion must include control-flow keyword 'if'; got ({} items): {labels:?}",
         labels.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #8941 — lexical visibility admission before ranking.
+//
+// A lexical that is not visible at the cursor must not appear at ANY rank.
+// Sibling/child/ended scopes, later declarations, and shadowed outers are
+// admission failures, not low-priority Workspace-distance candidates.
+// ---------------------------------------------------------------------------
+
+fn variable_labels(completions: &[CompletionItem]) -> Vec<&str> {
+    completions
+        .iter()
+        .filter(|c| c.kind == CompletionItemKind::Variable)
+        .map(|c| c.label.as_ref())
+        .collect()
+}
+
+/// Sibling blocks: `$left` lives in a sibling block that has ended before
+/// the cursor. It must not be offered at any rank (#8941).
+#[test]
+fn test_sibling_block_lexical_is_not_offered() {
+    let code = concat!("{\n", "    my $left = 1;\n", "}\n", "{\n", "    $le\n", "}\n");
+    let trigger = code.rfind("$le").unwrap_or(0) + 3;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        !labels.iter().any(|l| l.contains("left")),
+        "sibling-block lexical $left must not be offered; got {labels:?}"
+    );
+}
+
+/// Sibling subs: `$only_a` belongs to sub a's scope; completion inside sub b
+/// must not offer it (#8941).
+#[test]
+fn test_sibling_sub_lexical_is_not_offered() {
+    let code = concat!(
+        "sub only_a_host {\n",
+        "    my $only_a = 1;\n",
+        "}\n",
+        "sub consumer {\n",
+        "    $only\n",
+        "}\n"
+    );
+    let trigger = code.rfind("$only").unwrap_or(0) + 5;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        !labels.iter().any(|l| l.contains("only_a")),
+        "sibling-sub lexical $only_a must not be offered; got {labels:?}"
+    );
+}
+
+/// Child scope: after the child block closed, its lexical is gone. The cursor
+/// back in the parent scope must not see it (#8941 negative control: an
+/// incomplete/recovered child scope must not reactivate a closed binding).
+#[test]
+fn test_ended_child_scope_lexical_is_not_offered() {
+    let code = concat!(
+        "sub host {\n",
+        "    if (1) {\n",
+        "        my $inner_only = 2;\n",
+        "    }\n",
+        "    $inner\n",
+        "}\n"
+    );
+    let trigger = code.rfind("$inner").unwrap_or(0) + 6;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        !labels.iter().any(|l| l.contains("inner_only")),
+        "closed child-scope lexical $inner_only must not be offered; got {labels:?}"
+    );
+}
+
+/// Nested shadowing: inside the block, `$value` names exactly one binding —
+/// the inner one. The shadowed outer binding must not be offered alongside it,
+/// and the surviving item must carry the inner binding's identity evidence
+/// (its leading-comment documentation), not merely an identical label.
+#[test]
+fn test_nested_shadow_offers_exactly_inner_binding() {
+    let code = concat!(
+        "# outer documentation marker\n",
+        "my $value = 1;\n",
+        "{\n",
+        "    # inner documentation marker\n",
+        "    my $value = 2;\n",
+        "    $val\n",
+        "}\n"
+    );
+    let trigger = code.rfind("$val").unwrap_or(0) + 4;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let value_items: Vec<&CompletionItem> =
+        completions.iter().filter(|c| c.label == "$value").collect();
+    assert_eq!(
+        value_items.len(),
+        1,
+        "shadowed outer binding must be excluded so exactly one $value remains; got {} items with sort_text {:?}",
+        value_items.len(),
+        value_items.iter().map(|i| i.sort_text.as_deref()).collect::<Vec<_>>()
+    );
+
+    let doc = value_items[0].documentation.as_deref().unwrap_or("");
+    assert!(
+        doc.contains("inner documentation marker"),
+        "surviving $value must be the INNER binding (doc evidence), got doc: {doc:?}"
+    );
+}
+
+/// Declaration after cursor: same scope, but the declaration has not been
+/// reached yet. Must be excluded from both the sigil path and the general
+/// no-sigil path (`add_all_variables`) (#8941 negative control).
+#[test]
+fn test_declaration_after_cursor_is_excluded_on_sigil_path() {
+    // NOTE: use find(), not rfind(): the typed prefix also occurs inside the
+    // later declaration's own name, and the cursor must sit at the USAGE site
+    // before the declaration.
+    let code = "$coun\n# separation\nmy $council = 1;\n";
+    let trigger = code.find("$coun").unwrap_or(0) + 5;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        !labels.iter().any(|l| l.contains("council")),
+        "future lexical $council must not be offered on sigil path; got {labels:?}"
+    );
+}
+
+/// Same future-declaration exclusion through the general no-sigil path
+/// (`add_all_variables`), which historically had no source-order gate.
+#[test]
+fn test_declaration_after_cursor_is_excluded_on_general_path() {
+    let code = "coun\n# separation\nmy $council = 1;\n";
+    let trigger = code.find("coun").unwrap_or(0) + 4;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        !labels.iter().any(|l| l.contains("council")),
+        "future lexical $council must not be offered through add_all_variables; got {labels:?}"
+    );
+}
+
+/// Closure capture: a named sub defined AFTER a file-level `my` does see the
+/// lexical (its declaring scope is an ancestor of the sub scope). Admission
+/// must not over-block this visible case (#8941 closure-capture bullet).
+#[test]
+fn test_closure_capture_of_file_lexical_remains_visible() {
+    let code = concat!("my $outer_capture = 1;\n", "sub inner {\n", "    $out\n", "}\n");
+    let trigger = code.rfind("$out").unwrap_or(0) + 4;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        labels.iter().any(|l| l.contains("outer_capture")),
+        "file lexical captured by named sub must remain visible; got {labels:?}"
+    );
+}
+
+/// Ancestor visibility: file-level `my` stays visible inside nested blocks.
+#[test]
+fn test_ancestor_file_lexical_visible_in_nested_block() {
+    let code =
+        concat!("my $file_lexical = 1;\n", "{\n", "    {\n", "        $file\n", "    }\n", "}\n");
+    let trigger = code.rfind("$file").unwrap_or(0) + 5;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        labels.iter().any(|l| l.contains("file_lexical")),
+        "ancestor file lexical must stay visible inside nested blocks; got {labels:?}"
+    );
+}
+
+/// `our` package globals keep their bounded always-visible behavior
+/// (declaration role distinct from lexicals), including after the cursor.
+#[test]
+fn test_our_package_global_keeps_bounded_visibility() {
+    let code = concat!("our $pkg_before;\n", "$pk\n", "our $pkg_after;\n");
+    let trigger = code.rfind("$pk").unwrap_or(0) + 3;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        labels.iter().any(|l| l.contains("pkg_before")),
+        "our declared before cursor must stay visible; got {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|l| l.contains("pkg_after")),
+        "our declared after cursor keeps package-global visibility (bounded behavior); got {labels:?}"
+    );
+}
+
+/// Signature parameters are recorded as `my` lexicals of the subroutine
+/// scope: visible in the body, invisible from sibling scopes.
+#[test]
+fn test_signature_param_visible_in_body_only() {
+    let body_code = concat!("sub sized ($param_len) {\n", "    $param\n", "}\n");
+    let trigger = body_code.rfind("$param").unwrap_or(0) + 6;
+
+    let mut parser = Parser::new(body_code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, body_code, None);
+    let completions = provider.get_completions(body_code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        labels.iter().any(|l| l.contains("param_len")),
+        "signature parameter must be visible in its own sub body; got {labels:?}"
+    );
+
+    let sibling_code = concat!(
+        "sub sized ($param_len) {\n",
+        "    1;\n",
+        "}\n",
+        "sub other {\n",
+        "    $param\n",
+        "}\n"
+    );
+    let sibling_trigger = sibling_code.rfind("$param").unwrap_or(0) + 6;
+
+    let mut sibling_parser = Parser::new(sibling_code);
+    let sibling_ast = must(sibling_parser.parse());
+    let sibling_provider =
+        CompletionProvider::new_with_index_and_source(&sibling_ast, sibling_code, None);
+    let sibling_completions = sibling_provider.get_completions(sibling_code, sibling_trigger);
+
+    let sibling_labels = variable_labels(&sibling_completions);
+    assert!(
+        !sibling_labels.iter().any(|l| l.contains("param_len")),
+        "signature parameter must not leak into sibling sub; got {sibling_labels:?}"
+    );
+}
+
+/// `for`/`foreach` iterator variables follow lexical admission rules.
+///
+/// BOUNDED (#8941): the current SymbolTable does not represent bare
+/// `for my $x (...)` iterators at all — the analyzer's Foreach handler
+/// receives a VariableDeclaration node its recorder silently skips, so no
+/// symbol exists to admit or reject (producer gap transferred to #7423/
+/// #7424). Until canonical loop bindings land, this test pins that neither
+/// half fabricates candidates: nothing appears inside or after the loop,
+/// and admission of a *represented* loop lexical is covered by the
+/// predicate unit tests in lexical_visibility.
+#[test]
+fn test_foreach_iterator_scoped_to_loop() {
+    let inside_code = concat!("for my $loop_item (1 .. 3) {\n", "    $loop\n", "}\n");
+    let trigger = inside_code.rfind("$loop").unwrap_or(0) + 5;
+
+    let mut parser = Parser::new(inside_code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, inside_code, None);
+    let completions = provider.get_completions(inside_code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        !labels.iter().any(|l| l.contains("loop_item")),
+        "unrepresented iterators must not be fabricated; got {labels:?}"
+    );
+
+    // The analyzer genuinely lacks the binding: confirm the producer gap
+    // rather than an admission rejection, so #7423/#7424 own the fix.
+    assert!(
+        provider.symbol_table.symbols.get("loop_item").is_none(),
+        "analyzer now records foreach iterators — revisit this seam for real admission coverage"
+    );
+
+    let after_code = concat!("for my $loop_item (1 .. 3) {\n", "    1;\n", "}\n", "$loop\n");
+    let after_trigger = after_code.rfind("$loop").unwrap_or(0) + 5;
+
+    let mut after_parser = Parser::new(after_code);
+    let after_ast = must(after_parser.parse());
+    let after_provider =
+        CompletionProvider::new_with_index_and_source(&after_ast, after_code, None);
+    let after_completions = after_provider.get_completions(after_code, after_trigger);
+
+    let after_labels = variable_labels(&after_completions);
+    assert!(
+        !after_labels.iter().any(|l| l.contains("loop_item")),
+        "ended loop scope must not contribute its iterator; got {after_labels:?}"
+    );
+}
+
+/// CRLF line endings must not change admission decisions.
+#[test]
+fn test_sibling_block_admission_under_crlf() {
+    let code = "{\r\n    my $crlf_left = 1;\r\n}\r\n{\r\n    $crlf_le\r\n}\r\n";
+    let trigger = code.rfind("$crlf_le").unwrap_or(0) + 8;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        !labels.iter().any(|l| l.contains("crlf_left")),
+        "CRLF sources must still exclude sibling-block lexicals; got {labels:?}"
+    );
+}
+
+/// A multi-byte character before the cursor must not shift byte-offset
+/// source-order math: the earlier ASCII lexical stays visible.
+#[test]
+fn test_astral_char_before_cursor_preserves_byte_offset_order() {
+    let code = "my $emoji_seed = \"\u{1D306}\";\nmy $plain_after = 1;\n$pla\n";
+    let trigger = code.rfind("$pla").unwrap_or(0) + 4;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        labels.iter().any(|l| l.contains("plain_after")),
+        "astral character before cursor must not break byte-offset admission; got {labels:?}"
+    );
+}
+
+/// Incomplete block under recovery: while typing inside an unclosed block,
+/// ancestors stay visible and closed siblings stay excluded.
+#[test]
+fn test_incomplete_block_keeps_ancestor_and_excludes_closed_sibling() {
+    let code = concat!(
+        "my $done_first = 1;\n",
+        "{\n",
+        "    my $closed_block_only = 0;\n",
+        "}\n",
+        "sub typing {\n",
+        "    if (1) {\n",
+        "        my $live_here = 2;\n",
+        "        $li\n"
+    );
+    let trigger = code.len();
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, trigger);
+
+    let labels = variable_labels(&completions);
+    assert!(
+        labels.iter().any(|l| l.contains("live_here")),
+        "incomplete inner block must keep its own lexical visible; got {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|l| l.contains("done_first")),
+        "file-level ancestor lexical must stay visible during recovery; got {labels:?}"
+    );
+    assert!(
+        !labels.iter().any(|l| l.contains("closed_block_only")),
+        "ended sibling block must not reactivate during recovery; got {labels:?}"
     );
 }

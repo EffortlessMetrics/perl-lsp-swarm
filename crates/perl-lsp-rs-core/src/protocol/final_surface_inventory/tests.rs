@@ -574,7 +574,6 @@ fn competing_builder_diff_preserves_known_dual_writers() {
         "cap.workspaceSymbolProvider.resolveProvider",
         "cap.experimental.typeHierarchyProvider",
         "cap.typeHierarchyProvider.workDoneProgressOptions",
-        "cap.documentRangeFormattingProvider.rangesSupport",
         "cap.textDocumentSync.save",
         "cap.declarationProvider",
         "cap.inlineCompletionProvider",

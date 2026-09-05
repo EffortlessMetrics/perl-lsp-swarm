@@ -6,7 +6,7 @@ use super::{
     DapEvent, DapMessage, DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
     Instant, Mutex, Read, RestartArguments, ResumeMode, Source, StackFrame, Stdio, SyncSender,
     TcpAttachConfig, TcpAttachSession, TerminateArguments, TerminationState, Value, Write,
-    ansi_escape_re, catalog_has_feature, context_re, dispatch_event, emit_event_safe, error_re,
+    ansi_escape_re, catalog_has_feature, context_re, die_suffix_re, emit_event_safe, error_re,
     exception_re, json, lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re,
     thread, warning_re,
 };
@@ -16,8 +16,14 @@ use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-// The internal TCP-attach DapEvent fan-in channel is still unbounded (non-goal of #5149).
-use std::sync::mpsc::channel;
+// The internal TCP-attach DapEvent fan-in queue is bounded with a
+// generation-aware forwarder (#9521); the reader-side admission policy lives in
+// `tcp_attach::reader`.
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::sync_channel;
+
+use super::sync_utils::{GuardedDispatchResult, dispatch_event_generation_guarded};
+use super::tcp_attach_forwarder::{TCP_ATTACH_EVENT_CAPACITY, spawn_tcp_attach_event_forwarder};
 
 mod perl_info;
 mod perl_spawn;
@@ -57,10 +63,7 @@ impl DebugAdapter {
 
         let supports_core = catalog_has_feature("dap.core");
         let supports_basic_breakpoints = catalog_has_feature("dap.breakpoints.basic");
-        let supports_hit_conditions = catalog_has_feature("dap.breakpoints.hit_condition");
-        let supports_log_points = catalog_has_feature("dap.breakpoints.logpoints");
         let supports_exceptions = catalog_has_feature("dap.exceptions.die");
-        let supports_inline_values = catalog_has_feature("dap.inline_values");
         let supports_completions = catalog_has_feature("dap.completions");
         let supports_modules = catalog_has_feature("dap.modules");
         let supports_watchpoints = catalog_has_feature("dap.watchpoints");
@@ -76,6 +79,17 @@ impl DebugAdapter {
         let supports_step_in_targets = catalog_has_feature("dap.step_in_targets");
         let supports_restart = catalog_has_feature("dap.restart");
         let supports_loaded_sources = catalog_has_feature("dap.loaded_sources");
+        // `gotoTargets`/`goto` are fail-closed while the native backend only has
+        // a run-to-line primitive (`f <source>` + `c <line>` resumes execution
+        // instead of moving the next statement).  The catalog row is
+        // `not_proven`/unadvertised (#9064), so this flag stays `false` until a
+        // backend proves a real next-statement relocation primitive.
+        // Advertising requires the complete contract: targets that can never
+        // be executed (`dap.goto` unadvertised) must not be published, so a
+        // one-row promotion of `dap.goto_targets` alone cannot expose
+        // selectable-but-dead targets.
+        let supports_goto_targets =
+            catalog_has_feature("dap.goto_targets") && catalog_has_feature("dap.goto");
 
         let mut filters = Vec::new();
         if supports_exceptions {
@@ -101,14 +115,36 @@ impl DebugAdapter {
 
         let capabilities = json!({
             "supportsConfigurationDoneRequest": supports_core,
-            "supportsFunctionBreakpoints": supports_core,
-            "supportsConditionalBreakpoints": supports_basic_breakpoints,
-            "supportsHitConditionalBreakpoints": supports_hit_conditions,
-            "supportsEvaluateForHovers": supports_core,
+            // #9578: the four optional breakpoint capability rows fail closed
+            // from the single `backend::capabilities` authority. They are not
+            // derived from `supports_core`, `dap.breakpoints.*` catalog rows,
+            // maturity, handler presence, or backend method existence: the
+            // runtime contracts (engine resolution/install, condition
+            // enforcement, attributed hit counting, correlated logpoint
+            // output) are unproven on this seam. Per-capability re-enable
+            // gates: #8645 (function), #8988 (conditional), #8994 (hit),
+            // #9000 (logpoint).
+            "supportsFunctionBreakpoints":
+                crate::backend::capabilities::advertises_function_breakpoints(),
+            "supportsConditionalBreakpoints":
+                crate::backend::capabilities::advertises_conditional_breakpoints(),
+            "supportsHitConditionalBreakpoints":
+                crate::backend::capabilities::advertises_hit_conditional_breakpoints(),
+            "supportsLogPoints": crate::backend::capabilities::advertises_log_points(),
+            // #9573: not `supports_core`. Hover is gated on a pure
+            // selected-frame inspection proof that does not exist yet, so the
+            // wire value comes from the single hover authority and no catalog
+            // row can widen it.
+            "supportsEvaluateForHovers": crate::backend::capabilities::advertises_evaluate_for_hovers(),
             "supportsStepBack": false,
-            "supportsSetVariable": supports_core,
+            // #8354: not `supports_core`. setVariable is gated on an exact
+            // mutation proof that does not exist yet, so the wire value comes
+            // from the single setVariable authority and no catalog row can
+            // widen it.
+            "supportsSetVariable":
+                crate::backend::capabilities::advertises_set_variable(),
             "supportsRestartFrame": supports_restart_frame,
-            "supportsGotoTargetsRequest": supports_core,
+            "supportsGotoTargetsRequest": supports_goto_targets,
             "supportsStepInTargetsRequest": supports_step_in_targets,
             "supportsCompletionsRequest": supports_completions,
             "supportsModulesRequest": supports_modules,
@@ -119,9 +155,16 @@ impl DebugAdapter {
             "supportTerminateDebuggee": supports_core,
             "supportsDelayedStackTraceLoading": false,
             "supportsLoadedSourcesRequest": supports_loaded_sources,
-            "supportsLogPoints": supports_log_points,
             "supportsTerminateThreadsRequest": supports_terminate_threads,
-            "supportsSetExpression": supports_core,
+            // #8294: exactly one synthetic main execution context is exposed;
+            // single-thread execution requests are not a distinct capability
+            // and stay unadvertised.
+            "supportsSingleThreadExecutionRequests": false,
+            // #9568: not `supports_core`. setExpression is gated on an exact
+            // current-frame l-value assignment proof (#9570 promotion boundary)
+            // that does not exist yet, so the wire value comes from the single
+            // setExpression authority and no catalog row can widen it.
+            "supportsSetExpression": crate::backend::capabilities::advertises_set_expression(),
             "supportsTerminateRequest": supports_core,
             "supportsDataBreakpoints": supports_watchpoints,
             "supportsReadMemoryRequest": false,
@@ -132,7 +175,12 @@ impl DebugAdapter {
             "supportsSteppingGranularity": false,
             "supportsInstructionBreakpoints": false,
             "supportsExceptionFilterOptions": supports_any_exception,
-            "supportsInlineValues": supports_inline_values,
+            // #9089: not the `dap.inline_values` catalog row. The routed
+            // `inlineValues` request is a project extension, not standard DAP,
+            // so the standard capability cell comes from the single
+            // inline-values extension authority and no catalog row can widen
+            // it while the negotiation contract is unproven.
+            "supportsInlineValues": crate::backend::capabilities::advertises_inline_values_extension(),
             "exceptionBreakpointFilters": exception_breakpoint_filters
         });
 
@@ -383,6 +431,29 @@ impl DebugAdapter {
         .unwrap_or_else(|| "perl".to_string())
     }
 
+    /// Allocate the next execution-context id (#8294).
+    ///
+    /// Monotonic, exhaustion-aware, and poison-free by construction: the
+    /// counter never wraps, never issues zero or negative ids, and has no
+    /// failure path that can return an already-minted constant, so a replaced
+    /// session's id can never be revived. `None` means the id space is
+    /// exhausted and the caller must fail the launch.
+    fn allocate_thread_id(&self) -> Option<i32> {
+        let mut current = self.thread_counter.load(Ordering::Relaxed);
+        loop {
+            let next = current.checked_add(1).filter(|next| *next > 0)?;
+            match self.thread_counter.compare_exchange(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Some(next),
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
     /// Launch the Perl debugger for the given script.
     ///
     /// Validates the program path and interpreter, runs a pre-launch `perl -c`
@@ -516,20 +587,21 @@ impl DebugAdapter {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
+        // Allocate the execution-context id BEFORE spawning: a launch that
+        // cannot mint a fresh id must fail without side effects.
+        let Some(thread_id) = self.allocate_thread_id() else {
+            return Err(
+                "Debugger could not be started: the execution-context id space is exhausted. \
+                 Restart the debug adapter to reset execution contexts."
+                    .to_string(),
+            );
+        };
+
         match cmd.spawn() {
             Ok(child) => {
                 // Only advance the session generation once spawning has succeeded. A rejected
                 // launch must leave the currently active reader valid for its existing session.
                 self.prepare_replacement_session();
-                let thread_id = {
-                    if let Ok(mut counter) = self.thread_counter.lock() {
-                        *counter += 1;
-                        *counter
-                    } else {
-                        tracing::warn!("Failed to lock thread counter, using 1");
-                        1
-                    }
-                };
 
                 let session = DebugSession {
                     process: child,
@@ -741,6 +813,11 @@ impl DebugAdapter {
             let mut current_func = String::new();
             let mut current_line = 0;
             let mut _debugger_ready = false;
+            // Most recent `error_re` message line (`<text> at FILE line N`). An
+            // uncaught die arrives as that message line followed by the bare
+            // perl5db-handler suffix line; the suffix is the detection signal,
+            // but the message line is the text `exceptionInfo` should serve.
+            let mut last_error_message = String::new();
             // In-flight logpoint value query, if any. A logpoint hit queues a framed
             // `p` query for the scalars its template mentions; the replies stream back
             // through this same loop and are folded into the message here (#5045).
@@ -899,8 +976,33 @@ impl DebugAdapter {
                             break; // Exit the loop if client is gone
                         }
 
+                        // perl5db prints this fixed line when the debuggee
+                        // program ends — on normal exit AND on an uncaught die —
+                        // and then idles at a prompt instead of exiting, so
+                        // without this the client never observes `terminated`
+                        // for a completed run. Emit the terminal event at the
+                        // real program end. Session state intentionally stays
+                        // intact so cached frames remain answerable; process
+                        // cleanup remains with disconnect/watchdog (#9081).
+                        if analysis_text.starts_with("Debugged program terminated") {
+                            if let Some(ref sender) = sender {
+                                emit_terminated_event(
+                                    sender,
+                                    &seq,
+                                    &termination_state,
+                                    Some(session_generation),
+                                    Some(json!({ "reason": "debuggee_exit" })),
+                                );
+                            }
+                            continue;
+                        }
+
                         // Enhanced context information parsing with multiple patterns
                         let mut context_updated = false;
+                        // Whether THIS line is the perl5db die/warn-handler suffix
+                        // (` at FILE line N.`) — the stream signal that the
+                        // debugger's `__DIE__` handler observed an uncaught `die`.
+                        let mut matched_die_suffix = false;
 
                         // Try main context pattern
                         if let Some(re) = context_re()
@@ -950,6 +1052,7 @@ impl DebugAdapter {
                                 current_line = line_num.as_str().parse::<i32>().unwrap_or(0);
                             }
                             context_updated = true;
+                            last_error_message = analysis_text.clone();
 
                             // Send error event to client
                             if let Some(ref sender) = sender {
@@ -965,24 +1068,65 @@ impl DebugAdapter {
                             }
                         }
 
+                        // perl5db's `__DIE__` handler reports an uncaught `die` as
+                        // the message line followed by a bare ` at FILE line N.`
+                        // suffix line — including for `die "msg\n"`, whose own text
+                        // carries no suffix. A `print` of byte-identical text never
+                        // fires the handler, and a `die` caught by `eval` propagates
+                        // silently, so this line is the honest stream signal that an
+                        // uncaught die reached the debugger. `warn` fires the
+                        // sibling `__WARN__` handler with an indistinguishable
+                        // suffix line; that warn/die ambiguity is inherent to the
+                        // perl5db stream and stays with the residual #9081 warn
+                        // claim. The suffix carries the authoritative die location,
+                        // so attribute file/line from it.
+                        if !context_updated
+                            && let Some(re) = die_suffix_re()
+                            && let Some(caps) = re.captures(&analysis_text)
+                        {
+                            if let Some(file) = caps.name("file") {
+                                current_file = file.as_str().to_string();
+                            }
+                            if let Some(line_num) = caps.name("line") {
+                                current_line = line_num.as_str().parse::<i32>().unwrap_or(0);
+                            }
+                            context_updated = true;
+                            matched_die_suffix = true;
+                        }
+
                         if context_updated {
                             let break_on_die =
                                 exception_break_on_die.lock().map(|guard| *guard).unwrap_or(false);
                             let break_on_warn =
                                 exception_break_on_warn.lock().map(|guard| *guard).unwrap_or(false);
-                            let is_exception_line =
-                                exception_re().is_some_and(|re| re.is_match(&analysis_text));
+                            // Detection must not key on words inside the user's
+                            // die message (`exception_re` trigger words are kept
+                            // for compatibility); an ordinary uncaught `die` is
+                            // attributed from the perl5db handler suffix line.
+                            let is_exception_line = exception_re()
+                                .is_some_and(|re| re.is_match(&analysis_text))
+                                || matched_die_suffix;
                             let is_warning_line =
                                 warning_re().is_some_and(|re| re.is_match(&analysis_text));
                             let exception_match = break_on_die && is_exception_line;
                             let warning_match =
                                 break_on_warn && is_warning_line && !is_exception_line;
 
-                            // Store exception message for exceptionInfo request
+                            // Store exception message for exceptionInfo request.
+                            // When the handler suffix line is the detection
+                            // signal, its own text (`at FILE line N.`) is
+                            // content-free — serve the remembered die message
+                            // line instead.
                             if (exception_match || warning_match)
                                 && let Ok(mut guard) = last_exception_message.lock()
                             {
-                                *guard = Some(analysis_text.clone());
+                                let message =
+                                    if matched_die_suffix && !last_error_message.is_empty() {
+                                        last_error_message.clone()
+                                    } else {
+                                        analysis_text.clone()
+                                    };
+                                *guard = Some(message);
                             }
 
                             let mut should_emit_stopped = false;
@@ -1429,9 +1573,15 @@ impl DebugAdapter {
                 tracing::error!("Debuggee watchdog: failed to kill hung debuggee process");
             }
 
-            // Deliver the reserved timeout reason after kill. Blocking send is OK:
-            // the debuggee is already dead; the emitted flag was set at reserve time.
-            if let Some(ref sender) = sender {
+            // Deliver the reserved timeout reason after kill, but only if the
+            // session generation has not been closed or replaced since the
+            // reservation was claimed (before the kill): a stale timeout event
+            // must not leak into a newer client conversation (#12092 review).
+            // Blocking send is OK: the debuggee is already dead; the emitted
+            // flag was set at reserve time.
+            if let Some(ref sender) = sender
+                && terminated_delivery_is_current(&termination_state, Some(session_generation))
+            {
                 let _ = emit_event_safe(
                     sender,
                     &seq,
@@ -1650,8 +1800,8 @@ impl DebugAdapter {
                 // Create TCP attach session
                 let mut session = TcpAttachSession::new();
 
-                // Set up event channel for TCP events
-                let (tx, rx) = channel::<DapEvent>();
+                // Set up the bounded event channel for TCP events (#9521)
+                let (tx, rx) = sync_channel::<DapEvent>(TCP_ATTACH_EVENT_CAPACITY);
                 session.set_event_sender(tx);
 
                 // Attempt to connect (validate is called inside connect,
@@ -1680,71 +1830,23 @@ impl DebugAdapter {
                             *guard = Some(session);
                         }
 
-                        // Start event handler thread for TCP events
+                        // Start the generation-aware forwarder for TCP events.
+                        // Events are published only while the attach's session
+                        // generation is current; a replacement attach,
+                        // termination, or disconnect discards the dead
+                        // generation's queued events before DAP publication
+                        // (#9521).
                         let seq_counter = self.seq.clone();
                         let event_sender = self.event_sender.clone();
                         let termination_state = self.termination_state.clone();
                         let session_generation = self.current_session_generation();
-                        thread::spawn(move || {
-                            while let Ok(event) = rx.recv() {
-                                match event {
-                                    DapEvent::Output { category, output } => {
-                                        if let Some(ref sender) = event_sender {
-                                            dispatch_event(
-                                                sender,
-                                                &seq_counter,
-                                                "output",
-                                                Some(json!({
-                                                    "category": category,
-                                                    "output": output
-                                                })),
-                                            );
-                                        }
-                                    }
-                                    DapEvent::Stopped { reason, thread_id } => {
-                                        if let Some(ref sender) = event_sender {
-                                            dispatch_event(
-                                                sender,
-                                                &seq_counter,
-                                                "stopped",
-                                                Some(json!({
-                                                    "reason": reason,
-                                                    "threadId": thread_id,
-                                                    "allThreadsStopped": true
-                                                })),
-                                            );
-                                        }
-                                    }
-                                    DapEvent::Continued { thread_id } => {
-                                        if let Some(ref sender) = event_sender {
-                                            dispatch_event(
-                                                sender,
-                                                &seq_counter,
-                                                "continued",
-                                                Some(json!({
-                                                    "threadId": thread_id,
-                                                    "allThreadsContinued": true
-                                                })),
-                                            );
-                                        }
-                                    }
-                                    DapEvent::Terminated { reason } => {
-                                        if let Some(ref sender) = event_sender {
-                                            emit_terminated_event(
-                                                sender,
-                                                &seq_counter,
-                                                &termination_state,
-                                                Some(session_generation),
-                                                Some(json!({"reason": reason})),
-                                            );
-                                        }
-                                    }
-                                    DapEvent::Error { message } => {
-                                        tracing::error!(message, "TCP attach error");
-                                    }
-                                }
-                            }
-                        });
+                        spawn_tcp_attach_event_forwarder(
+                            rx,
+                            event_sender,
+                            seq_counter,
+                            termination_state,
+                            session_generation,
+                        );
 
                         // When stopOnEntry is requested, emit a stopped event so the IDE
                         // pauses at the first available program location after the TCP
@@ -1938,6 +2040,7 @@ impl DebugAdapter {
             emit_terminated_event(sender, &self.seq, &self.termination_state, None, None);
         }
         self.clear_active_session_state();
+        self.close_terminal_session_generation();
 
         DapMessage::Response {
             seq,
@@ -1972,6 +2075,7 @@ impl DebugAdapter {
             );
         }
         self.clear_active_session_state();
+        self.close_terminal_session_generation();
 
         DapMessage::Response {
             seq,
@@ -2069,6 +2173,39 @@ impl DebugAdapter {
         }
     }
 
+    /// Translate an identity-carrying inbound TCP-attach debuggee event into
+    /// the DAP event name and body dispatched to the editor.
+    ///
+    /// The remote peer's raw thread id is never forwarded: the adapter
+    /// advertises exactly one synthetic execution context, so `threads`,
+    /// every thread-scoped request, and `stopped`/`continued` events all
+    /// carry [`Self::TCP_ATTACH_SYNTHETIC_THREAD_ID`] (#8294). `Terminated`
+    /// and `Error` carry no execution-context identity and are handled at
+    /// the pump; this translation returns `None` for them.
+    pub(super) fn tcp_event_message(event: DapEvent) -> Option<(&'static str, Option<Value>)> {
+        match event {
+            DapEvent::Output { category, output } => {
+                Some(("output", Some(json!({ "category": category, "output": output }))))
+            }
+            DapEvent::Stopped { reason, thread_id: _ } => Some((
+                "stopped",
+                Some(json!({
+                    "reason": reason,
+                    "threadId": Self::TCP_ATTACH_SYNTHETIC_THREAD_ID,
+                    "allThreadsStopped": true
+                })),
+            )),
+            DapEvent::Continued { thread_id: _ } => Some((
+                "continued",
+                Some(json!({
+                    "threadId": Self::TCP_ATTACH_SYNTHETIC_THREAD_ID,
+                    "allThreadsContinued": true
+                })),
+            )),
+            DapEvent::Terminated { .. } | DapEvent::Error { .. } => None,
+        }
+    }
+
     /// Handle threads request
     pub(super) fn handle_threads(&self, seq: i64, request_seq: i64) -> DapMessage {
         let threads = if let Some(ref session) =
@@ -2085,7 +2222,10 @@ impl DebugAdapter {
                 "name": format!("Attached Process ({pid})")
             })]
         } else if lock_or_recover(&self.tcp_session, "debug_adapter.tcp_session").is_some() {
-            vec![json!({ "id": 1, "name": "TCP Attached Thread" })]
+            vec![json!({
+                "id": Self::TCP_ATTACH_SYNTHETIC_THREAD_ID,
+                "name": "TCP Attached Thread"
+            })]
         } else {
             vec![]
         };
@@ -2231,7 +2371,7 @@ impl DebugAdapter {
 ///
 /// Returns `true` if this caller now owns emission (and must deliver the event),
 /// `false` if another path already reserved or emitted termination.
-fn reserve_terminated_event(
+pub(super) fn reserve_terminated_event(
     termination_state: &Mutex<TerminationState>,
     expected_generation: Option<u64>,
 ) -> bool {
@@ -2242,6 +2382,30 @@ fn reserve_terminated_event(
     }
     state.emitted = true;
     true
+}
+
+/// Whether a terminal emission reserved under `expected_generation` may still be
+/// delivered: the session generation must not have been closed or replaced since
+/// the reservation was claimed.
+///
+/// A reservation can be held across slow work before its send (the debuggee
+/// watchdog reserves before killing the process and delivers after), so a client
+/// terminal request or a replacement launch can advance the generation while the
+/// send is still outstanding. Delivering that stale send would leak an old
+/// session's `terminated` event into a newer client conversation (e.g. a client
+/// reading it as the replacement session terminating), so delivery must
+/// revalidate and retire it (#12092 review).
+///
+/// `None` (the synchronous client `terminate`/`disconnect` path) is always
+/// current: reservation, send, and generation close run sequentially on the
+/// caller's thread, so nothing can interleave.
+fn terminated_delivery_is_current(
+    termination_state: &Mutex<TerminationState>,
+    expected_generation: Option<u64>,
+) -> bool {
+    let Some(expected) = expected_generation else { return true };
+    let state = lock_or_recover(termination_state, "debug_adapter.termination_state");
+    state.generation == expected
 }
 
 /// Emit interpolated logpoint text on the debug console.
@@ -2266,17 +2430,53 @@ fn emit_logpoint_messages(
     }
 }
 
-fn emit_terminated_event(
+pub(super) fn emit_terminated_event(
     sender: &SyncSender<DapMessage>,
     seq: &Mutex<i64>,
     termination_state: &Mutex<TerminationState>,
     expected_generation: Option<u64>,
     body: Option<Value>,
 ) -> bool {
+    emit_terminated_event_guarded(
+        sender,
+        seq,
+        termination_state,
+        expected_generation,
+        body,
+        &|| false,
+    )
+}
+
+/// [`emit_terminated_event`] with a staleness hook for the generation-aware
+/// TCP-attach forwarder (#9521).
+///
+/// Reservation and delivery-currentness are unchanged; the final send is
+/// generation-aware across the ENTIRE queue wait: a `terminated` event that
+/// cannot be enqueued immediately re-validates the generation before every
+/// commit attempt, so a replacement session retires a blocked stale terminal
+/// event instead of an unbounded blocking send publishing it into the
+/// replacement's conversation after validation passed.
+pub(super) fn emit_terminated_event_guarded(
+    sender: &SyncSender<DapMessage>,
+    seq: &Mutex<i64>,
+    termination_state: &Mutex<TerminationState>,
+    expected_generation: Option<u64>,
+    body: Option<Value>,
+    stale: &dyn Fn() -> bool,
+) -> bool {
     if !reserve_terminated_event(termination_state, expected_generation) {
         return false;
     }
-    emit_event_safe(sender, seq, "terminated", body)
+    if !terminated_delivery_is_current(termination_state, expected_generation) {
+        // The generation was closed or replaced between reservation and
+        // delivery; retire the stale send rather than leak an old session's
+        // terminal event into a newer client conversation (#12092 review).
+        return false;
+    }
+    !matches!(
+        dispatch_event_generation_guarded(sender, seq, "terminated", body, stale),
+        GuardedDispatchResult::Disconnected
+    )
 }
 
 #[cfg(test)]
@@ -2284,7 +2484,9 @@ mod tests {
     use super::{
         DebugAdapter, DebugState, current_stopped_frame_id, detect_perl_info,
         emit_terminated_event, format_perl_spawn_error, is_valid_perl_interpreter,
+        reserve_terminated_event, terminated_delivery_is_current,
     };
+    use crate::tcp_attach::DapEvent;
     use std::collections::HashMap;
     use std::sync::mpsc::{TryRecvError, sync_channel};
     use std::sync::{Arc, Mutex};
@@ -2342,6 +2544,66 @@ mod tests {
             return Err(format!("exhausted generation revived a scope frame: {still_exhausted}"));
         }
         Ok(())
+    }
+
+    /// A remote TCP peer's raw thread id must never reach the editor: a peer
+    /// that reports a non-1 id still produces `stopped`/`continued` events
+    /// carrying the advertised synthetic execution context, so `threads`,
+    /// thread-scoped requests, and events cannot disagree (#8294).
+    #[test]
+    fn tcp_events_normalize_foreign_thread_ids_to_the_advertised_context() {
+        let (stopped_name, stopped_body) = DebugAdapter::tcp_event_message(DapEvent::Stopped {
+            reason: "breakpoint".to_string(),
+            thread_id: 9,
+        })
+        .expect("stopped events translate");
+        assert_eq!(stopped_name, "stopped");
+        let stopped_body = stopped_body.expect("stopped events carry a body");
+        assert_eq!(stopped_body["threadId"], DebugAdapter::TCP_ATTACH_SYNTHETIC_THREAD_ID);
+        assert_eq!(stopped_body["threadId"], 1);
+        assert_eq!(stopped_body["reason"], "breakpoint");
+        assert_eq!(stopped_body["allThreadsStopped"], true);
+
+        let (continued_name, continued_body) =
+            DebugAdapter::tcp_event_message(DapEvent::Continued { thread_id: 9 })
+                .expect("continued events translate");
+        assert_eq!(continued_name, "continued");
+        let continued_body = continued_body.expect("continued events carry a body");
+        assert_eq!(continued_body["threadId"], DebugAdapter::TCP_ATTACH_SYNTHETIC_THREAD_ID);
+        assert_eq!(continued_body["allThreadsContinued"], true);
+
+        // Non-identity events keep their shape and stay decoupled from the
+        // execution-context contract.
+        let (output_name, output_body) = DebugAdapter::tcp_event_message(DapEvent::Output {
+            category: "stdout".to_string(),
+            output: "hi".to_string(),
+        })
+        .expect("output events translate");
+        assert_eq!(output_name, "output");
+        assert!(output_body.expect("output events carry a body")["threadId"].is_null());
+        assert!(
+            DebugAdapter::tcp_event_message(DapEvent::Terminated { reason: "exit".to_string() })
+                .is_none()
+        );
+    }
+
+    /// Allocation is monotonic from 1 and fails closed at exhaustion: an
+    /// unchecked fetch_add would panic (checked builds) or wrap into negative
+    /// ids (release) near `i32::MAX`, reviving the stale-id hazard the atomic
+    /// counter exists to remove (#8294).
+    #[test]
+    fn thread_id_allocation_is_monotonic_and_fails_closed_at_exhaustion() {
+        let adapter = DebugAdapter::new();
+        assert_eq!(adapter.allocate_thread_id(), Some(1));
+        assert_eq!(adapter.allocate_thread_id(), Some(2));
+
+        adapter.thread_counter.store(i32::MAX - 1, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(adapter.allocate_thread_id(), Some(i32::MAX));
+        assert_eq!(
+            adapter.allocate_thread_id(),
+            None,
+            "exhaustion must fail closed, never wrap into negative or reused ids"
+        );
     }
 
     #[test]
@@ -2473,6 +2735,67 @@ mod tests {
             return Err("current session failed to emit termination".to_string());
         }
         Ok(())
+    }
+
+    #[test]
+    fn reserved_termination_retired_when_generation_advances_before_delivery() -> Result<(), String>
+    {
+        let (sender, receiver) = sync_channel(64);
+        let seq = Arc::new(Mutex::new(0));
+        let termination_state =
+            Arc::new(Mutex::new(super::TerminationState { generation: 3, emitted: false }));
+
+        // Watchdog-style early reservation: the debuggee watchdog reserves
+        // before killing the process and delivers only after, so a client
+        // terminal request (or replacement launch) can advance the generation
+        // while this send is still outstanding.
+        if !reserve_terminated_event(&termination_state, Some(3)) {
+            return Err("watchdog-style reservation under the current generation failed".into());
+        }
+
+        // The generation advances while the reserved send is in flight
+        // (`close_terminal_session_generation` / replacement launch shape).
+        {
+            let mut state = termination_state
+                .lock()
+                .map_err(|_| "termination state lock poisoned".to_string())?;
+            state.generation = 4;
+            state.emitted = false;
+        }
+
+        // The stale delivery is retired, not sent.
+        if terminated_delivery_is_current(&termination_state, Some(3)) {
+            return Err("stale delivery reported current after generation advanced".into());
+        }
+
+        // A delivery under the now-current generation is still acknowledged.
+        if !emit_terminated_event(
+            &sender,
+            &seq,
+            &termination_state,
+            Some(4),
+            Some(serde_json::json!({"reason": "current_generation"})),
+        ) {
+            return Err("current-generation emission was suppressed".into());
+        }
+
+        // Exactly one event reached the channel: the current generation's.
+        match receiver.try_recv() {
+            Ok(super::DapMessage::Event { event, body, .. }) => {
+                if event != "terminated"
+                    || body.as_ref().and_then(|v| v.get("reason")).and_then(|v| v.as_str())
+                        != Some("current_generation")
+                {
+                    return Err(format!("unexpected termination event: {event}, {body:?}"));
+                }
+            }
+            other => return Err(format!("expected termination event, got {other:?}")),
+        }
+        match receiver.try_recv() {
+            Err(TryRecvError::Empty) => Ok(()),
+            Err(error) => Err(format!("termination channel error: {error}")),
+            Ok(other) => Err(format!("stale reservation leaked a duplicate event: {other:?}")),
+        }
     }
 
     #[test]
@@ -2916,6 +3239,10 @@ mod tests {
     }
 
     /// `terminate_child_process` returns `true` immediately if the process already exited.
+    ///
+    /// The "already exited" precondition uses a bounded poll instead of a fixed
+    /// sleep: process-start latency under AV/load spikes exceeds any constant
+    /// sleep and made this suite-order-dependent on Windows (#12791).
     #[test]
     fn terminate_child_process_already_exited_returns_true() -> Result<(), String> {
         use std::process::Command;
@@ -2930,8 +3257,12 @@ mod tests {
         let mut child =
             Command::new("true").spawn().map_err(|e| format!("Failed to spawn: {e}"))?;
 
-        // Wait for it to exit.
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        // Wait for it to exit — deterministically, within a generous bound.
+        if !DebugAdapter::wait_for_child_exit(&mut child, std::time::Duration::from_secs(10)) {
+            return Err(
+                "child did not exit within 10s; host process latency pathological".to_string()
+            );
+        }
         let result = DebugAdapter::terminate_child_process(&mut child);
         if !result {
             return Err("terminate_child_process should return true for an already-exited process"

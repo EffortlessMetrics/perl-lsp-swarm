@@ -126,10 +126,10 @@ fn scenario_23_request_timeout_comes_from_scenario_config() -> Result<()> {
 }
 
 fn workspace_edit_count_for_uri(workspace_edit: &Value, uri: &str) -> Result<usize> {
-    if let Some(changes) = workspace_edit.get("changes").and_then(Value::as_object) {
-        if let Some(edits) = changes.get(uri).and_then(Value::as_array) {
-            return Ok(edits.len());
-        }
+    if let Some(changes) = workspace_edit.get("changes").and_then(Value::as_object)
+        && let Some(edits) = changes.get(uri).and_then(Value::as_array)
+    {
+        return Ok(edits.len());
     }
 
     if let Some(document_changes) = workspace_edit.get("documentChanges").and_then(Value::as_array)

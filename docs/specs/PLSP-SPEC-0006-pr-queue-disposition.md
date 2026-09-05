@@ -93,6 +93,15 @@ That does not authorize a rebase, empty commit, or unrelated source change. Let 
 current run report, rerun or redispatch the same head where the platform supports it, or
 return `NOT_PROVEN` with the missing capability.
 
+One bounded exception: a `pull_request` check evaluates the merge tree, not the head
+alone. After material base movement (release bumps, sweeping landings on `main`), a
+same-head rerun replays the run's ORIGINAL merge snapshot, so it can never report on
+the current tree. For that case the sanctioned fresh trigger is an empty-commit head
+bump (`ci: re-request fresh merge-tree checks`), which re-evaluates the changed
+subject; the ban covers manufacturing a current status on an unchanged subject, not
+re-evaluating a merge tree that base movement itself invalidated (#12174, #12251,
+#12256, #12258 each unblocked only through the fresh trigger).
+
 ### Merge race and landed result
 
 The live PR head SHA is compare-and-swap protection at the irreversible merge boundary:

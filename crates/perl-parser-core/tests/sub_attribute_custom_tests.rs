@@ -292,7 +292,7 @@ fn test_custom_attribute_captured_in_ast_sexp() {
     let ast = parse(code);
     let sexp = ast.to_sexp();
     assert!(
-        sexp.contains(":public"),
+        sexp.contains("public"),
         "Expected ':public' in AST sexp to confirm attribute is recorded, got: {}",
         sexp
     );
@@ -304,8 +304,8 @@ fn test_multiple_custom_attributes_captured_in_ast_sexp() {
     let code = "sub handler :Path('/users') :Args(1) { }";
     let ast = parse(code);
     let sexp = ast.to_sexp();
-    assert!(sexp.contains(":Path("), "Expected ':Path(' in AST sexp, got: {}", sexp);
-    assert!(sexp.contains(":Args("), "Expected ':Args(' in AST sexp, got: {}", sexp);
+    assert!(sexp.contains("Path"), "Expected ':Path(' in AST sexp, got: {}", sexp);
+    assert!(sexp.contains("Args"), "Expected ':Args(' in AST sexp, got: {}", sexp);
 }
 
 // ============================================================================
@@ -346,7 +346,7 @@ fn test_custom_attribute_before_prototype() {
     let ast = parse(code);
     let sexp = ast.to_sexp();
     assert!(
-        sexp.contains(":public"),
+        sexp.contains("public"),
         "Expected ':public' in AST sexp when attribute precedes prototype, got: {}",
         sexp
     );
@@ -373,6 +373,9 @@ fn test_adjacent_attrs_on_same_colon_only_identifiers() {
     assert_clean_parse(code);
     let ast = parse(code);
     let sexp = ast.to_sexp();
-    assert!(sexp.contains(":public"), "Expected ':public' in AST sexp, got: {}", sexp);
-    assert!(sexp.contains(":method"), "Expected ':method' in AST sexp, got: {}", sexp);
+    assert!(
+        sexp.contains("(attributes public method)"),
+        "Expected public and method attributes in AST sexp, got: {}",
+        sexp
+    );
 }

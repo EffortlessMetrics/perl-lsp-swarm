@@ -5,11 +5,18 @@ use super::{
     DEBUGGER_QUERY_WAIT_MS, DapMessage, DebugAdapter, DebugState, EvaluateArguments,
     EvaluateResponseBody, Ordering, SafeEvaluator, SetExpressionArguments,
     SetExpressionResponseBody, Value, Variable, VariableCacheKind, lock_or_recover,
-    module_path_to_name, validate_safe_expression,
+    module_path_to_name, parse_dap_arguments, validate_safe_expression,
 };
+use crate::parse_origin::{DebuggerOutputOrigin, ParseIdentity};
+use crate::value::PerlValue;
+use crate::value_format::ValueFormatPolicy;
 use std::sync::LazyLock;
 
 static SAFE_EVALUATOR: LazyLock<SafeEvaluator> = LazyLock::new(SafeEvaluator::new);
+
+use crate::backend::capabilities::{
+    HOVER_UNSUPPORTED_MESSAGE, advertises_evaluate_for_hovers, refuse_hover_evaluation,
+};
 
 impl DebugAdapter {
     /// Handle evaluate request with policy validation and timeout enforcement.
@@ -23,19 +30,45 @@ impl DebugAdapter {
         request_seq: i64,
         arguments: Option<Value>,
     ) -> DapMessage {
-        let args: EvaluateArguments = match arguments.and_then(|v| serde_json::from_value(v).ok()) {
-            Some(a) => a,
-            None => {
+        let args: EvaluateArguments = match parse_dap_arguments(arguments) {
+            Ok(a) => a,
+            Err(message) => {
                 return DapMessage::Response {
                     seq,
                     request_seq,
                     success: false,
                     command: "evaluate".to_string(),
                     body: None,
-                    message: Some("Missing arguments".to_string()),
+                    message: Some(message),
                 };
             }
         };
+        // #9573: `supportsEvaluateForHovers` is advertised false because there is
+        // no pure selected-frame inspection path. Refuse hover-context evaluation
+        // here — before expression screening, before the `allowSideEffects`
+        // branch, before frame lookup, before any variable/result reference is
+        // allocated, and before any debugger command is written — so a client
+        // that ignores the advertised floor still cannot reach the raw evaluator.
+        //
+        // This gate is deliberately ahead of the `allowSideEffects` check: that
+        // field must not be able to widen hover into REPL authority.
+        // Bound to the same authority `handle_initialize` advertises, so a future
+        // promotion cannot leave the capability true while this still refuses.
+        if refuse_hover_evaluation(advertises_evaluate_for_hovers(), args.context.as_deref()) {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "evaluate".to_string(),
+                body: None,
+                message: Some(HOVER_UNSUPPORTED_MESSAGE.to_string()),
+            };
+        }
+
+        // One typed presentation policy for this response (#9588): projected
+        // from the typed facts retained at read-back, never by reparsing the
+        // display string, and never affecting the evaluation itself.
+        let format_policy = ValueFormatPolicy::from_options(args.format.as_ref());
 
         {
             let expression = &args.expression;
@@ -219,12 +252,18 @@ impl DebugAdapter {
         }
 
         let parsed = if let Some(lines) = framed_lines.as_ref() {
-            Self::parse_evaluate_result_from_lines(lines, expression, true)
+            Self::parse_evaluate_result_from_lines(
+                lines,
+                expression,
+                true,
+                DebuggerOutputOrigin::DebuggerControlPayload,
+                ParseIdentity::new().with_operation_id_from_i64(request_seq),
+            )
         } else {
             self.parse_evaluate_result_from_output(expression)
         };
 
-        let Some((result, result_type)) = parsed else {
+        let Some((default_result, result_type, typed)) = parsed else {
             return DapMessage::Response {
                 seq,
                 request_seq,
@@ -237,10 +276,21 @@ impl DebugAdapter {
             };
         };
 
-        let variables_reference =
-            self.allocate_evaluate_result_ref(expression, &result, &result_type);
-        let eval_body =
-            EvaluateResponseBody { result, type_: Some(result_type), variables_reference };
+        // The cached placeholder keeps the policy-neutral rendering plus typed
+        // facts, so a later `variables` expansion projects under its own
+        // request's format (#9588). The response result is projected under
+        // this request's policy.
+        let variables_reference = self.allocate_evaluate_result_ref(
+            expression,
+            &default_result,
+            &result_type,
+            typed.clone(),
+        );
+        let eval_body = EvaluateResponseBody {
+            result: format_policy.project_display(&default_result, typed.as_ref()),
+            type_: Some(result_type),
+            variables_reference,
+        };
 
         DapMessage::Response {
             seq,
@@ -263,20 +313,50 @@ impl DebugAdapter {
         request_seq: i64,
         arguments: Option<Value>,
     ) -> DapMessage {
-        let args: SetExpressionArguments =
-            match arguments.and_then(|v| serde_json::from_value(v).ok()) {
-                Some(a) => a,
-                None => {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "setExpression".to_string(),
-                        body: None,
-                        message: Some("Missing arguments".to_string()),
-                    };
-                }
+        let args: SetExpressionArguments = match parse_dap_arguments(arguments) {
+            Ok(a) => a,
+            Err(message) => {
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: false,
+                    command: "setExpression".to_string(),
+                    body: None,
+                    message: Some(message),
+                };
+            }
+        };
+        // #9568: `supportsSetExpression` is advertised false because there is no
+        // exact current-frame l-value assignment proof yet. Refuse here — before
+        // format parsing, before expression/value screening, before frame or
+        // session lookup, before any debugger command is written, and before any
+        // variables reference is allocated — so a client that ignores the
+        // advertised floor still cannot reach the raw assignment path.
+        //
+        // The gate is deliberately input-independent: every request that passes
+        // envelope validation receives the same deterministic refusal, whatever
+        // its expression, value, frameId, or format, and no rejected request can
+        // mutate debugger or session state.
+        // Bound to the same authority `handle_initialize` advertises, so a future
+        // promotion cannot leave the capability true while this still refuses.
+        if crate::backend::capabilities::refuse_set_expression(
+            crate::backend::capabilities::advertises_set_expression(),
+        ) {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "setExpression".to_string(),
+                body: None,
+                message: Some(
+                    crate::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE.to_string(),
+                ),
             };
+        }
+        // `format` affects the response rendering only; the assigned data below
+        // is always the admitted client `value` (#9588; #8364/#9070 own
+        // admission and read-back).
+        let format_policy = ValueFormatPolicy::from_options(args.format.as_ref());
 
         let expression = args.expression.trim().to_string();
         let value = args.value.trim().to_string();
@@ -422,9 +502,17 @@ impl DebugAdapter {
             .and_then(|(begin, end)| {
                 self.capture_framed_debugger_output(begin, end, DEBUGGER_QUERY_WAIT_MS * 8)
             })
-            .and_then(|lines| Self::parse_evaluate_result_from_lines(&lines, expression, true));
+            .and_then(|lines| {
+                Self::parse_evaluate_result_from_lines(
+                    &lines,
+                    expression,
+                    true,
+                    DebuggerOutputOrigin::DebuggerControlPayload,
+                    ParseIdentity::new().with_operation_id_from_i64(request_seq),
+                )
+            });
 
-        let Some((rendered_value, rendered_type)) = parsed else {
+        let Some((default_value, rendered_type, typed)) = parsed else {
             return DapMessage::Response {
                 seq,
                 request_seq,
@@ -437,10 +525,16 @@ impl DebugAdapter {
             };
         };
 
-        let variables_reference =
-            self.allocate_evaluate_result_ref(expression, &rendered_value, &rendered_type);
+        // Response rendering only; the placeholder cache keeps the policy-neutral
+        // rendering plus typed facts for later expansion requests (#9588).
+        let variables_reference = self.allocate_evaluate_result_ref(
+            expression,
+            &default_value,
+            &rendered_type,
+            typed.clone(),
+        );
         let body = SetExpressionResponseBody {
-            value: rendered_value,
+            value: format_policy.project_display(&default_value, typed.as_ref()),
             type_: Some(rendered_type),
             variables_reference,
         };
@@ -596,6 +690,7 @@ impl DebugAdapter {
         expression: &str,
         result: &str,
         result_type: &str,
+        typed: Option<PerlValue>,
     ) -> i64 {
         if !Self::result_type_is_expandable(result_type) {
             return 0;
@@ -622,7 +717,7 @@ impl DebugAdapter {
             session.variable_cache.upsert(
                 eval_ref,
                 VariableCacheKind::EvaluateResult,
-                vec![placeholder],
+                vec![super::CachedVariable { row: placeholder, typed }],
             );
             i64::from(eval_ref)
         } else {
@@ -677,7 +772,7 @@ mod evaluate_allocation_tests {
         // Without a session the else-branch returns 0 even for expandable types.
         // This covers the `else { 0 }` arm of allocate_evaluate_result_ref.
         let adapter = DebugAdapter::new();
-        let ref_val = adapter.allocate_evaluate_result_ref("$h", "HASH(0x1234)", "HASH");
+        let ref_val = adapter.allocate_evaluate_result_ref("$h", "HASH(0x1234)", "HASH", None);
         assert_eq!(
             ref_val, 0,
             "allocate_evaluate_result_ref must return 0 when no session is present"
@@ -688,7 +783,7 @@ mod evaluate_allocation_tests {
     fn allocate_returns_zero_for_non_expandable_type() {
         // Covers the early-return `if !Self::result_type_is_expandable` arm.
         let adapter = DebugAdapter::new();
-        let ref_val = adapter.allocate_evaluate_result_ref("$x", "42", "SCALAR");
+        let ref_val = adapter.allocate_evaluate_result_ref("$x", "42", "SCALAR", None);
         assert_eq!(
             ref_val, 0,
             "allocate_evaluate_result_ref must return 0 for non-expandable scalar type"
@@ -699,7 +794,7 @@ mod evaluate_allocation_tests {
     fn allocate_returns_zero_for_ref_type_no_session() {
         // Cover REF type (not just HASH/ARRAY) through the no-session path.
         let adapter = DebugAdapter::new();
-        let ref_val = adapter.allocate_evaluate_result_ref("\\$x", "REF(0xabcd)", "REF");
+        let ref_val = adapter.allocate_evaluate_result_ref("\\$x", "REF(0xabcd)", "REF", None);
         assert_eq!(ref_val, 0, "REF type with no session must return 0");
     }
 
@@ -708,8 +803,12 @@ mod evaluate_allocation_tests {
         // Cover the contains-HASH arm of result_type_is_expandable through the
         // no-session path of allocate_evaluate_result_ref.
         let adapter = DebugAdapter::new();
-        let ref_val =
-            adapter.allocate_evaluate_result_ref("$obj", "SomeClass=HASH(0x1)", "SomeClass=HASH");
+        let ref_val = adapter.allocate_evaluate_result_ref(
+            "$obj",
+            "SomeClass=HASH(0x1)",
+            "SomeClass=HASH",
+            None,
+        );
         assert_eq!(ref_val, 0, "blessed HASH type with no session must return 0");
     }
 
@@ -719,7 +818,7 @@ mod evaluate_allocation_tests {
         // no-session path of allocate_evaluate_result_ref.
         let adapter = DebugAdapter::new();
         let ref_val =
-            adapter.allocate_evaluate_result_ref("$arr_obj", "Iter=ARRAY(0x1)", "Iter=ARRAY");
+            adapter.allocate_evaluate_result_ref("$arr_obj", "Iter=ARRAY(0x1)", "Iter=ARRAY", None);
         assert_eq!(ref_val, 0, "blessed ARRAY type with no session must return 0");
     }
 
@@ -737,7 +836,7 @@ mod evaluate_allocation_tests {
         let adapter = DebugAdapter::new();
         adapter.seed_session_for_test()?;
 
-        let ref_val = adapter.allocate_evaluate_result_ref("$h", "HASH(0x1234)", "HASH");
+        let ref_val = adapter.allocate_evaluate_result_ref("$h", "HASH(0x1234)", "HASH", None);
 
         assert!(
             ref_val >= 1_000_000,
@@ -754,7 +853,7 @@ mod evaluate_allocation_tests {
         let adapter = DebugAdapter::new();
         adapter.seed_session_for_test()?;
 
-        let ref_val = adapter.allocate_evaluate_result_ref("@arr", "ARRAY(0xabcd)", "ARRAY");
+        let ref_val = adapter.allocate_evaluate_result_ref("@arr", "ARRAY(0xabcd)", "ARRAY", None);
 
         assert!(ref_val >= 1_000_000, "ARRAY ref must be in 1_000_000+ range; got {ref_val}");
         assert_ne!(ref_val, 0, "session-present ARRAY must return non-zero variablesReference");
@@ -768,8 +867,8 @@ mod evaluate_allocation_tests {
         let adapter = DebugAdapter::new();
         adapter.seed_session_for_test()?;
 
-        let ref1 = adapter.allocate_evaluate_result_ref("$a", "HASH(0x1)", "HASH");
-        let ref2 = adapter.allocate_evaluate_result_ref("$b", "HASH(0x2)", "HASH");
+        let ref1 = adapter.allocate_evaluate_result_ref("$a", "HASH(0x1)", "HASH", None);
+        let ref2 = adapter.allocate_evaluate_result_ref("$b", "HASH(0x2)", "HASH", None);
 
         assert!(ref1 >= 1_000_000, "first ref must be in 1_000_000+ range; got {ref1}");
         assert!(ref2 > ref1, "second ref must be greater than first; got ref1={ref1}, ref2={ref2}");
@@ -786,7 +885,8 @@ mod evaluate_allocation_tests {
         let expression = "$my_hash";
         let result_val = "HASH(0x5678)";
         let result_type = "HASH";
-        let ref_val = adapter.allocate_evaluate_result_ref(expression, result_val, result_type);
+        let ref_val =
+            adapter.allocate_evaluate_result_ref(expression, result_val, result_type, None);
 
         assert!(ref_val >= 1_000_000, "ref must be in 1_000_000+ range; got {ref_val}");
         let ref_i32 = ref_val as i32;
@@ -798,8 +898,8 @@ mod evaluate_allocation_tests {
         assert!(vars.is_some(), "cache must contain the placeholder variable for ref {ref_val}");
         let vars = vars.unwrap_or_default();
         assert_eq!(vars.len(), 1, "exactly one placeholder variable expected; got {}", vars.len());
-        assert_eq!(vars[0].name, expression, "placeholder name must match expression");
-        assert_eq!(vars[0].value, result_val, "placeholder value must match result");
+        assert_eq!(vars[0].row.name, expression, "placeholder name must match expression");
+        assert_eq!(vars[0].row.value, result_val, "placeholder value must match result");
         Ok(())
     }
 }

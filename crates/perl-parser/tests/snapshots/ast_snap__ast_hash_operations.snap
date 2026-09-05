@@ -1,5 +1,5 @@
 ---
-source: crates/perl-parser/tests/ast_snapshot_tests.rs
+source: crates/perl-parser/tests/ast_snap.rs
 expression: "parse_sexp(\"my %h = (a => 1, b => 2); my $v = $h{a};\")"
 ---
-(source_file (my_declaration (variable % h)(hash ((string "a") (number 1)) ((string "b") (number 2)))) (my_declaration (variable $ v)(binary_{} (variable $ h) (identifier a))))
+(source_file (statements (my_declaration (declarator my) (variable (variable (sigil %) (name h))) (initializer (hash (key (string (value a))) (value (number (value 1))) (key (string (value b))) (value (number (value 2))))))) (statements (my_declaration (declarator my) (variable (variable (sigil $) (name v))) (initializer (binary_{} (op {}) (left (variable (sigil $) (name h))) (right (identifier (name a))))))))

@@ -3,6 +3,10 @@
 //! This test verifies that when a user specifies a `cwd` in their launch.json,
 //! the Perl script runs in that directory, not in the script's parent directory.
 
+#![expect(
+    clippy::print_stderr,
+    reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
+)]
 mod common;
 
 use common::{DapWorkflowSession, perl_available, workflow_timeout};

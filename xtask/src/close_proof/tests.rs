@@ -62,10 +62,12 @@ fn passing_packet(contract: &IssueContract) -> Result<ClosePacket, CloseProofErr
             "single-row.defect.fixed".to_string(),
             RowDispositionValue::ProvenCurrentMain {
                 evidence: super::EvidenceRef {
-                    producer: "xtask-pr-close-proof".to_string(),
+                    producer: "xtask-landing-proof".to_string(),
                     subject: "a".repeat(64),
                     content_digest: content_digest_hex(b"evidence-bytes"),
-                    reference: "cargo xtask pr-close-proof --pr 9000400".to_string(),
+                    reference:
+                        "cargo xtask landing-proof --commit aaaa1111 --canonical-main origin/main"
+                            .to_string(),
                 },
             },
         )]

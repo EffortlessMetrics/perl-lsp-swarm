@@ -252,6 +252,7 @@ def run_direct(
     gates: list[str],
     *,
     dependencies: dict[str, list[str]] | None = None,
+    clean_restored_receipts: bool = False,
 ) -> tuple[int, dict[str, object], list[str], list[dict[str, object]]]:
     policy = write_policy(root, dependencies or {gate: [] for gate in gates})
     receipt_schema = write_receipt_schema(root)
@@ -266,6 +267,7 @@ def run_direct(
         gates=gates,
         dependency_rules=rules,
         receipt_contract=contract,
+        clean_restored_receipts=clean_restored_receipts,
     )
     invoked: list[str] = []
     options: list[dict[str, object]] = []
@@ -1416,6 +1418,112 @@ class GateShardTests(unittest.TestCase):
         self.assertEqual(1, status)
         self.assertEqual("instrument_failure", summary["gates"][0]["result"])
 
+    def test_cache_restored_foreign_receipts_are_swept_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            receipts = root / "receipts"
+            receipts.mkdir()
+            (receipts / "foreign_other_sha.json").write_text(
+                json.dumps(receipt_payload("alpha", "pass", sha="b" * 40)),
+                encoding="utf-8",
+            )
+            (receipts / "leftover.log").write_text(
+                "restored from an unrelated SHA\n", encoding="utf-8"
+            )
+            nested = receipts / "nested"
+            nested.mkdir()
+            nested_file = nested / "keep.txt"
+            nested_file.write_text("not shard-owned output\n", encoding="utf-8")
+            status, summary, _, _ = run_direct(
+                root,
+                {"alpha": {"status": "pass", "exit": 0}},
+                ["alpha"],
+            )
+            survivors = sorted(entry.name for entry in receipts.iterdir())
+            fresh_receipt = json.loads(
+                (receipts / "alpha.json").read_text(encoding="utf-8")
+            )
+            nested_file_survived = nested_file.exists()
+        self.assertEqual(0, status)
+        self.assertEqual("success", summary["gates"][0]["result"])
+        self.assertEqual(["alpha.json", "nested"], survivors)
+        self.assertEqual(SUBJECT, fresh_receipt["metadata"]["git_sha"])
+        self.assertTrue(nested_file_survived)
+        self.assertNotIn(
+            str(receipts / "foreign_other_sha.json"),
+            [row["receipt_path"] for row in summary["gates"]],
+        )
+
+    def test_receipt_clearance_failure_fails_closed_under_set_plus_e(self) -> None:
+        """A failed pre-shard receipt clearance must abort the step (#12085).
+
+        The runner step executes under `set +e`, so an unguarded `rm -rf` of
+        the cache-restored receipt surfaces would have its failure status
+        silently overwritten by the following `mkdir`/shard commands.  Only
+        `shards/*.json` and `shard-summaries/*.json` carry SHA bindings that
+        verify_gate_receipt_freshness.py can reject; `logs/*.log` and
+        `artifacts/*` have no binding, so a partial clearance could upload
+        stale auxiliary evidence alongside fresh receipts.
+        """
+        workflow = REPO_ROOT / ".github/workflows/ci.yml"
+        if not workflow.is_file():
+            self.skipTest("ci.yml not present in this checkout")
+        text = workflow.read_text(encoding="utf-8")
+        runner_step = extract_gate_shard_runner_step(text)
+        self.assertIn("set +e", runner_step)
+        clearance = runner_step[
+            runner_step.index("rm -rf target/receipts/") :
+            runner_step.index("mkdir -p target/receipts/")
+        ]
+        for surface in ("shards", "shard-summaries", "logs", "artifacts"):
+            self.assertIn(
+                f"target/receipts/{surface}",
+                clearance,
+                f"clearance must cover the uploaded {surface} surface",
+            )
+        self.assertIn("||", clearance, "clearance rm must be failure-guarded")
+        self.assertIn("exit 1", clearance, "clearance failure must abort the step")
+        self._assert_clearance_fails_closed_in_shell(clearance)
+
+    def _assert_clearance_fails_closed_in_shell(self, clearance: str) -> None:
+        """Execute the workflow's own clearance fragment with a failing rm.
+
+        Under `set +e`, the guarded fragment must exit nonzero instead of
+        reaching the trailing survival probe.  The structural assertions
+        above make this behavioral kernel self-updating: it runs whatever
+        clearance text the workflow currently ships.
+        """
+        if os.name == "nt":
+            self.skipTest("POSIX shell behavioral kernel")
+        with tempfile.TemporaryDirectory() as tmp:
+            stub_bin = Path(tmp) / "stub-bin"
+            stub_bin.mkdir()
+            stub_rm = stub_bin / "rm"
+            with open(stub_rm, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write("#!/bin/sh\nexit 1\n")
+            os.chmod(stub_rm, 0o755)
+            harness = f"set +e\n{clearance}\necho clearance-survived $?\nexit 0\n"
+            env = dict(os.environ)
+            env["PATH"] = str(stub_bin) + os.pathsep + env.get("PATH", "")
+            completed = subprocess.run(
+                ["bash", "-c", harness],
+                cwd=tmp,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+        self.assertNotEqual(
+            0,
+            completed.returncode,
+            "a failed clearance rm must abort the step even under `set +e`"
+            f" (stdout={completed.stdout!r}, stderr={completed.stderr!r})",
+        )
+        self.assertNotIn(
+            "clearance-survived",
+            completed.stdout,
+            "control flow must not continue past a failed clearance",
+        )
+
     @unittest.skipUnless(
         os.name != "nt" and hasattr(os, "killpg"),
         "POSIX process-group integration test",
@@ -1642,6 +1750,109 @@ class GateShardTests(unittest.TestCase):
             extract_gate_shard_runner_step(
                 "jobs:\n  other:\n    steps:\n      - name: meta\n        run: echo meta\n"
             )
+
+
+class RestoredReceiptCleanupTests(unittest.TestCase):
+    """Cache-restored receipt state from unrelated SHAs must not leak into
+    this run's gate-receipt artifact (#12085)."""
+
+    @staticmethod
+    def _seed_foreign_state(root: Path) -> None:
+        receipts = root / "receipts"
+        shards = receipts / "shards"
+        summaries = receipts / "shard-summaries"
+        logs = receipts / "logs"
+        artifacts = receipts / "artifacts"
+        for directory in (shards, summaries, logs, artifacts):
+            directory.mkdir(parents=True, exist_ok=True)
+        (shards / "alpha.json").write_text('{"foreign": true}', encoding="utf-8")
+        # A summary for a shard that never runs in this invocation.
+        (summaries / "other-shard.json").write_text(
+            '{"subject": "0000000000000000000000000000000000000000"}',
+            encoding="utf-8",
+        )
+        (logs / "stale.log").write_text("foreign log", encoding="utf-8")
+        (artifacts / "stale.bin").write_bytes(b"\x00\x01")
+        # A stale shard summary at this run's exact summary path.
+        (summaries / "meta.json").write_text('{"stale": true}', encoding="utf-8")
+
+    def test_clean_flag_purges_foreign_state_before_gates_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed_foreign_state(root)
+            status, summary, invoked, _ = run_direct(
+                Path(tmp),
+                {"alpha": {"status": "pass", "exit": 0}},
+                ["alpha"],
+                clean_restored_receipts=True,
+            )
+            self.assertEqual(0, status)
+            self.assertEqual(["alpha"], invoked)
+            receipts = root / "receipts"
+            # Every cache-restored artifact is gone...
+            self.assertFalse((receipts / "logs" / "stale.log").exists())
+            self.assertFalse((receipts / "artifacts" / "stale.bin").exists())
+            self.assertFalse((receipts / "shards" / "alpha.json").exists())
+            self.assertFalse((receipts / "shard-summaries" / "other-shard.json").exists())
+            self.assertFalse((receipts / "shard-summaries" / "meta.json").exists())
+            # ...and only this run's outputs remain: the fresh summary at
+            # this run's summary path plus the gate's freshly written,
+            # subject-stamped receipt.
+            self.assertTrue((root / "summary.json").exists())
+            fresh_receipt = json.loads(
+                (receipts / "alpha.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(SUBJECT, fresh_receipt["metadata"]["git_sha"])
+            self.assertEqual(
+                ["success"], [row["result"] for row in summary["gates"]]
+            )
+
+    def test_without_flag_foreign_sibling_summaries_persist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed_foreign_state(root)
+            status, _, _, _ = run_direct(
+                Path(tmp),
+                {"alpha": {"status": "pass", "exit": 0}},
+                ["alpha"],
+            )
+            self.assertEqual(0, status)
+            receipts = root / "receipts"
+            # Opt-in flag: without it the runner keeps pre-existing state so
+            # callers relying on resume-style reuse are unaffected.
+            self.assertTrue((receipts / "logs" / "stale.log").exists())
+            self.assertTrue(
+                (receipts / "shard-summaries" / "other-shard.json").exists()
+            )
+
+    def test_cleanup_refuses_symlinked_receipt_dir(self) -> None:
+        if os.name == "nt":
+            self.skipTest("directory symlinks require elevated Windows privileges")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "keep.txt").write_text("survivor", encoding="utf-8")
+            (root / "receipts").symlink_to(outside, target_is_directory=True)
+            policy = write_policy(root, {"alpha": []})
+            receipt_schema = write_receipt_schema(root)
+            rules = shard.load_execution_policy(policy, ["alpha"])
+            contract = shard.load_receipt_contract(receipt_schema)
+            runner = shard.ShardRunner(
+                xtask=Path("target/debug/xtask"),
+                gate_policy=policy,
+                receipt_dir=root / "receipts" / "shards",
+                summary_path=root / "receipts" / "shard-summaries" / "meta.json",
+                subject_sha=SUBJECT,
+                gates=["alpha"],
+                dependency_rules=rules,
+                receipt_contract=contract,
+                clean_restored_receipts=True,
+            )
+            with self.assertRaises(ValueError):
+                runner.run()
+            # Fail-closed means fail-closed: nothing behind the link was touched.
+            self.assertTrue((outside / "keep.txt").exists())
 
 
 if __name__ == "__main__":

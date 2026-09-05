@@ -1,4 +1,5 @@
 //! Tests for phase-1 `SymbolRef` extraction.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_ast::{GotoTargetForm, Node, NodeKind, SourceLocation};
 use perl_symbol::VarKind;
@@ -50,6 +51,34 @@ fn declaration_target_is_not_treated_as_reference() -> Result<()> {
     let refs = extract_symbol_refs(&program);
     assert_eq!(refs.len(), 1);
     assert_eq!(refs[0].name, "y");
+    Ok(())
+}
+
+#[test]
+fn localized_typeglob_alias_emits_both_boundary_names() -> Result<()> {
+    let lhs = Node::new(NodeKind::Typeglob { name: "ALIAS".to_string() }, loc(7, 13));
+    let rhs = Node::new(NodeKind::Typeglob { name: "STDERR".to_string() }, loc(16, 23));
+    let alias = Node::new(
+        NodeKind::Assignment { lhs: Box::new(lhs), rhs: Box::new(rhs), op: "=".to_string() },
+        loc(7, 23),
+    );
+    let declaration = Node::new(
+        NodeKind::VariableDeclaration {
+            declarator: "local".to_string(),
+            variable: Box::new(alias),
+            attributes: vec![],
+            initializer: None,
+        },
+        loc(0, 24),
+    );
+    let program = Node::new(NodeKind::Program { statements: vec![declaration] }, loc(0, 24));
+
+    let refs = extract_symbol_refs(&program);
+    assert_eq!(refs.len(), 2);
+    assert_eq!(refs[0].kind, SymbolRefKind::TypeglobReference);
+    assert_eq!(refs[0].name, "ALIAS");
+    assert_eq!(refs[1].kind, SymbolRefKind::TypeglobReference);
+    assert_eq!(refs[1].name, "STDERR");
     Ok(())
 }
 

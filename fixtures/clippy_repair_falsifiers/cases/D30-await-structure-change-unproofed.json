@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "case_id": "D30-await-structure-change-unproofed",
+  "family": "boundary_data_semantics_theater",
+  "purpose": "Adding/removing .await across guards or borrows without cancellation/scheduling proof changes async semantics silently.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": {
+    "lint": "clippy::await_holding_lock",
+    "level_source": "Cargo.toml [workspace.lints.clippy]"
+  },
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "guard held across await",
+      "tick().await"
+    ],
+    "content": "pub async fn snapshot(state: &State) -> Snapshot {\n    let guard = state.lock().expect_lock_held();\n    let inner = read_locked(&guard);\n    tick().await; // guard held across await\n    Snapshot::new(inner)\n}\n",
+    "sha256": "c95bbd2d6cb1a9e74f1d34e3a20db116d0c2f318c1de513e2b5d198446b63318"
+  },
+  "rejecting_authority": {
+    "status": "bound",
+    "authority_kind": "cargo_lints",
+    "reference": "lint:clippy::await_holding_lock"
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "await_structure_change_unproofed"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "guard dropped before await"
+    ],
+    "note": "Guard released before suspension.",
+    "content": "pub async fn snapshot(state: &State) -> Snapshot {\n    let inner = {\n        let guard = state.lock().expect_lock_held();\n        read_locked(&guard)\n    }; // guard dropped before await\n    tick().await;\n    Snapshot::new(inner)\n}\n",
+    "sha256": "bfe2e710db824a3a301e19d15dbc087b3b0d8bcef77d96b69313e6f1b84dcbf6"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "await_holding_lock and await_holding_refcell_ref deny the classic shapes at workspace level."
+}

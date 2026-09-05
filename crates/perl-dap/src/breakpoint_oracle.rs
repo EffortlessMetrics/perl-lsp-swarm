@@ -8,6 +8,8 @@
 
 use perl_parser::Parser;
 use perl_parser::ast::{Node, NodeKind};
+#[cfg(test)]
+use perl_tdd_support::{must, must_some};
 use ropey::Rope;
 
 use crate::breakpoint::{AstBreakpointValidator, BreakpointError, BreakpointValidator};
@@ -117,7 +119,7 @@ mod tests {
     use super::*;
 
     fn oracle(text: &str) -> AstBreakpointOracle {
-        AstBreakpointOracle::new(DebugSource::from_path("/work/script.pl"), text).expect("parse")
+        must(AstBreakpointOracle::new(DebugSource::from_path("/work/script.pl"), text))
     }
 
     #[test]
@@ -168,7 +170,7 @@ mod tests {
         let names: Vec<&str> = subs.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"run"), "found run: {names:?}");
         assert!(names.contains(&"helper"), "found helper: {names:?}");
-        let run = subs.iter().find(|s| s.name == "run").expect("run");
+        let run = must_some(subs.iter().find(|s| s.name == "run"));
         assert_eq!(run.start_line, 1);
         assert!(run.end_line >= run.start_line);
     }

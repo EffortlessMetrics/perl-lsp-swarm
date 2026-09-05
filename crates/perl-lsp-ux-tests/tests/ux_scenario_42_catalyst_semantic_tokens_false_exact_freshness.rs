@@ -320,10 +320,10 @@ fn overlap_count(tokens: &[DecodedToken]) -> usize {
 
     for token in tokens {
         let end = token.start.saturating_add(token.length);
-        if let Some(previous_end) = last_end_by_line.get(&token.line) {
-            if token.start < *previous_end {
-                overlaps += 1;
-            }
+        if let Some(previous_end) = last_end_by_line.get(&token.line)
+            && token.start < *previous_end
+        {
+            overlaps += 1;
         }
         last_end_by_line.insert(token.line, end);
     }

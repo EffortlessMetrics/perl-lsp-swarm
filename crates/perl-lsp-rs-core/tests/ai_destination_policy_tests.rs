@@ -8,7 +8,8 @@ use perl_lsp_rs_core::providers::inline_completion::{
     BackendRequest, InlineCompletionBackend, PreparedInlineCompletionContext, StreamChunk,
     StreamControl,
 };
-use perl_tdd_support::{must, must_err, must_some};
+use perl_tdd_support::{must, must_some};
+use perl_test_must::{must_err, must_with};
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, TcpListener};
 use std::sync::Arc;
@@ -25,6 +26,7 @@ fn backend_request() -> BackendRequest {
             current_package: None,
             variables: Vec::new(),
             imports: Vec::new(),
+            ..PreparedInlineCompletionContext::default()
         },
         max_output_tokens: 16,
         timeout_ms: 2_000,
@@ -82,7 +84,7 @@ fn rejects_private_and_metadata_targets_via_injected_resolver() {
     for (url, ip) in [
         ("https://internal.example/v1", IpAddr::V4(Ipv4Addr::new(10, 1, 2, 3))),
         ("https://metadata.example/v1", IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))),
-        ("https://[fd00::1]/v1", IpAddr::V6(must("fd00::1".parse()))),
+        ("https://[fd00::1]/v1", IpAddr::V6(must_with("fd00::1".parse(), "valid ipv6 literal"))),
     ] {
         let err = must_err(validate_endpoint_with_resolver(url, false, &move |_host, _port| {
             Ok(vec![ip])
@@ -98,7 +100,7 @@ fn rejects_private_and_metadata_targets_via_injected_resolver() {
 fn accepts_bracketed_ipv6_loopback_with_explicit_port() -> Result<(), Box<dyn std::error::Error>> {
     let approved =
         validate_endpoint_with_resolver("https://[::1]:11434/v1", false, &|_host, _port| {
-            Ok(vec![IpAddr::V6(must("::1".parse()))])
+            Ok(vec![IpAddr::V6(must_with("::1".parse(), "valid ipv6 literal"))])
         })?;
     assert_eq!(approved.host, "::1");
     assert_eq!(approved.port, 11434);
@@ -240,7 +242,7 @@ fn stream_rejects_disallowed_endpoint_before_network_io() {
 
 #[test]
 fn rejects_ipv4_mapped_private_via_injected_resolver() {
-    let mapped: IpAddr = must("::ffff:10.0.0.5".parse());
+    let mapped: IpAddr = must_with("::ffff:10.0.0.5".parse(), "valid ipv4-mapped literal");
     let err = must_err(validate_endpoint_with_resolver(
         "https://mapped.example/v1",
         false,

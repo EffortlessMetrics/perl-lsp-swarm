@@ -231,8 +231,11 @@ impl LspServer {
 
         let advertised = self.advertised_features.lock();
         match surface {
-            Surface::Document | Surface::OnType => advertised.formatting,
+            Surface::Document => advertised.formatting,
             Surface::Range | Surface::Ranges => advertised.range_formatting,
+            // On-type availability must never be inferred from whole-document
+            // formatting (#11955); it has its own advertised bit.
+            Surface::OnType => advertised.on_type_formatting,
         }
     }
 
@@ -362,5 +365,7 @@ impl LspServer {
 mod handlers;
 mod receipt;
 
+#[cfg(test)]
+mod lib_vs_test;
 #[cfg(test)]
 mod tests;

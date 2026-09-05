@@ -637,7 +637,7 @@ fn sexp_method_preserves_method_name() {
     );
 
     let sexp = node.to_sexp();
-    assert!(sexp.contains("(method_name greet)"), "method name was lost: {sexp}");
+    assert!(sexp.contains("(name greet)"), "method name was lost: {sexp}");
     assert!(!sexp.contains("(bareword)"), "method still uses the old placeholder: {sexp}");
 }
 
@@ -782,9 +782,9 @@ fn sexp_string_escapes_backslashes() {
 #[test]
 fn sexp_variable_escapes_delimiters_quotes_and_backslashes() {
     let cases = [
-        ("plain_name", "(variable $ plain_name)"),
-        ("name(with)", r#"(variable $ "name(with)")"#),
-        (r#"name"with\slash"#, r#"(variable $ "name\"with\\slash")"#),
+        ("plain_name", "(variable (sigil $) (name plain_name))"),
+        ("name(with)", r#"(variable (sigil $) (name "name(with)"))"#),
+        (r#"name"with\slash"#, r#"(variable (sigil $) (name "name\"with\\slash"))"#),
     ];
 
     for (name, expected) in cases {
@@ -796,7 +796,7 @@ fn sexp_variable_escapes_delimiters_quotes_and_backslashes() {
 #[test]
 fn sexp_variable_escapes_whitespace_as_a_quoted_string() {
     let sexp = var_node("$", "name\twith space").to_sexp();
-    assert_eq!(sexp, r#"(variable $ "name\twith space")"#);
+    assert_eq!(sexp, r#"(variable (sigil $) (name "name\twith space"))"#);
 }
 
 #[test]
@@ -855,7 +855,7 @@ fn sexp_function_call_builtin_no_args() {
     let node =
         Node::new(NodeKind::FunctionCall { name: "shift".to_string(), args: vec![] }, loc(0, 5));
     let sexp = node.to_sexp();
-    assert_eq!(sexp, "(call shift ())");
+    assert_eq!(sexp, "(call (name shift))");
 }
 
 #[test]
@@ -863,7 +863,7 @@ fn sexp_function_call_user_no_args() {
     let node =
         Node::new(NodeKind::FunctionCall { name: "my_func".to_string(), args: vec![] }, loc(0, 7));
     let sexp = node.to_sexp();
-    assert_eq!(sexp, "(function_call_expression (function))");
+    assert_eq!(sexp, "(function_call_expression (name my_func))");
 }
 
 #[test]
@@ -971,7 +971,9 @@ fn sexp_data_section_with_body() {
     let node = Node::new(
         NodeKind::DataSection {
             marker: "__DATA__".to_string(),
+            marker_span: None,
             body: Some("line1\nline2".to_string()),
+            body_span: None,
         },
         loc(0, 30),
     );
@@ -991,8 +993,8 @@ fn sexp_no_with_args_and_filter_risk() {
         loc(0, 20),
     );
     let sexp = node.to_sexp();
-    assert!(sexp.contains("(no strict"), "got: {sexp}");
-    assert!(sexp.contains("(risk:filter)"), "got: {sexp}");
+    assert!(sexp.contains("(module strict)"), "got: {sexp}");
+    assert!(sexp.contains("(has_filter_risk true)"), "got: {sexp}");
 }
 
 #[test]
@@ -1009,7 +1011,7 @@ fn sexp_method_declaration_with_attributes() {
     );
     let sexp = node.to_sexp();
     assert!(sexp.contains("method_declaration_statement"), "got: {sexp}");
-    assert!(sexp.contains("attrlist"), "got: {sexp}");
+    assert!(sexp.contains("attributes"), "got: {sexp}");
 }
 
 #[test]
@@ -1046,7 +1048,7 @@ fn sexp_anonymous_subroutine_with_attributes() {
     );
     let sexp = node.to_sexp();
     assert!(sexp.contains("anonymous_subroutine_expression"), "got: {sexp}");
-    assert!(sexp.contains("attrlist"), "got: {sexp}");
+    assert!(sexp.contains("attributes"), "got: {sexp}");
 }
 
 #[test]
@@ -1064,8 +1066,8 @@ fn sexp_named_subroutine_with_attributes() {
         loc(0, 20),
     );
     let sexp = node.to_sexp();
-    assert!(sexp.contains("(sub greet"), "got: {sexp}");
-    assert!(sexp.contains(":lvalue"), "got: {sexp}");
+    assert!(sexp.contains("(name greet)"), "got: {sexp}");
+    assert!(sexp.contains("lvalue"), "got: {sexp}");
 }
 
 #[test]
@@ -1081,7 +1083,7 @@ fn sexp_error_with_partial_and_escape() {
     );
     let sexp = node.to_sexp();
     assert!(sexp.contains("ERROR"), "got: {sexp}");
-    assert!(sexp.contains("(number 1)"), "got: {sexp}");
+    assert!(sexp.contains("(number (value 1))"), "got: {sexp}");
 }
 
 // ===========================================================================
@@ -1089,13 +1091,14 @@ fn sexp_error_with_partial_and_escape() {
 // ===========================================================================
 
 #[test]
-fn sexp_inner_unwraps_non_anon_expression_statement() {
+fn sexp_inner_matches_to_sexp_for_expression_statement() {
     let es = Node::new(
         NodeKind::ExpressionStatement { expression: Box::new(num_node("42")) },
         loc(0, 2),
     );
     let sexp = es.to_sexp_inner();
-    assert_eq!(sexp, "(number 42)");
+    assert_eq!(sexp, es.to_sexp());
+    assert!(sexp.contains("expression_statement"), "got: {sexp}");
 }
 
 #[test]
@@ -1121,7 +1124,7 @@ fn sexp_inner_keeps_anon_subroutine_wrapped() {
 fn sexp_inner_non_expression_statement() {
     let num = num_node("7");
     let sexp = num.to_sexp_inner();
-    assert_eq!(sexp, "(number 7)");
+    assert_eq!(sexp, num.to_sexp());
 }
 
 // ===========================================================================

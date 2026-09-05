@@ -1,12 +1,21 @@
 import * as assert from 'assert';
-import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { parsePackagedServerVersionStdout } from '../../packagedServerVersion';
-import { runBoundedProcess } from '../../testAdapter';
-
-type ReceiptValue = Record<string, unknown>;
+import {
+  assertProviderSucceeded,
+  bundledBinaryPath,
+  bundledServerVersion,
+  pathsEquivalent,
+  platformLabel,
+  providerPosition,
+  providerResult,
+  receiptsDir,
+  sha256,
+  waitForStartupMetrics,
+  withTimeout,
+  type ReceiptValue,
+} from './journeySupport';
 
 interface VerifiedChildArtifact {
   owner_issue: '#4346';
@@ -38,113 +47,6 @@ interface ArtifactHashes {
 
 const SOURCE_CLAIM_BOUNDARY =
   'Packaged VSIX and bundled-server journey exercised by the VS Code extension host.';
-
-function platformLabel(): string {
-  switch (process.platform) {
-    case 'win32':
-      return 'windows';
-    case 'darwin':
-      return 'macos';
-    case 'linux':
-      return 'linux';
-    default:
-      return process.platform;
-  }
-}
-
-function receiptsDir(): string {
-  const root =
-    process.env.PERL_LSP_SMOKE_RECEIPTS_DIR ??
-    path.resolve(__dirname, '..', '..', '..', '..', 'target', 'receipts', 'vscode-smoke');
-  const label = process.env.PERL_LSP_SMOKE_SOURCE_LABEL ?? 'packaged-bundle';
-  assert.match(
-    label,
-    /^[A-Za-z0-9_-]+$/,
-    'smoke receipt label must be a single safe path component',
-  );
-  const directory = path.join(root, label, platformLabel());
-  fs.mkdirSync(directory, { recursive: true });
-  return directory;
-}
-
-function sha256(filePath: string): string {
-  return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
-}
-
-type BundledServerVersion =
-  | {
-      status: 'ok';
-      version: string;
-      stdout: string;
-      stderr: string;
-      outcome: 'completed';
-      output_truncated: boolean;
-      termination_confirmed: boolean;
-    }
-  | {
-      status: 'error';
-      version?: never;
-      stdout: string;
-      stderr: string;
-      outcome: string;
-      output_truncated: boolean;
-      termination_confirmed: boolean;
-      message: string;
-    };
-
-const VERSION_PROBE_TIMEOUT_MS = 15_000;
-const VERSION_PROBE_OUTPUT_MAX_BYTES = 64 * 1024;
-
-async function bundledServerVersion(binaryPath: string): Promise<BundledServerVersion> {
-  const result = await runBoundedProcess(binaryPath, ['--version'], {
-    shell: false,
-    timeoutMs: VERSION_PROBE_TIMEOUT_MS,
-    maxOutputBytes: VERSION_PROBE_OUTPUT_MAX_BYTES,
-    terminationGraceMs: 500,
-    terminationWatchdogMs: 5_000,
-    windowsHide: true,
-  });
-  const terminationConfirmed =
-    result.outcome !== 'spawn_error' && result.outcome !== 'termination_failed';
-  const base = {
-    stdout: result.stdout,
-    stderr: result.stderr,
-    outcome: result.outcome,
-    output_truncated: result.outcome === 'output_limit',
-    termination_confirmed: terminationConfirmed,
-  };
-  if (result.outcome !== 'completed') {
-    return {
-      status: 'error',
-      ...base,
-      message:
-        result.diagnostic ??
-        `bundled server --version ended with ${result.outcome} before a clean completion`,
-    };
-  }
-  const completedBase = { ...base, outcome: 'completed' as const };
-  try {
-    const version = parsePackagedServerVersionStdout(result.stdout);
-    if (!version) {
-      return {
-        status: 'error',
-        ...completedBase,
-        message: 'bundled server --version did not contain a semantic version',
-      };
-    }
-    return {
-      status: 'ok',
-      version,
-      ...completedBase,
-    };
-  } catch (error: unknown) {
-    return {
-      status: 'error',
-      ...completedBase,
-      message: error instanceof Error ? error.message : String(error),
-    };
-  }
-}
 
 function requireCandidateArtifactManifest(
   observedVsixSha256: string | undefined,
@@ -279,114 +181,6 @@ function writeVerifiedChildArtifact(receipt: ReceiptValue, sourceReceiptPath: st
   };
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, JSON.stringify(artifact, null, 2));
-}
-
-async function withTimeout<T>(
-  label: string,
-  operation: PromiseLike<T>,
-  timeoutMs: number,
-): Promise<T> {
-  let timeout: NodeJS.Timeout | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeout = setTimeout(
-      () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
-      timeoutMs,
-    );
-  });
-  try {
-    return await Promise.race([Promise.resolve(operation), timeoutPromise]);
-  } finally {
-    if (timeout) {
-      clearTimeout(timeout);
-    }
-  }
-}
-
-async function waitForStartupMetrics(
-  getMetrics: () => ReceiptValue,
-  timeoutMs: number,
-): Promise<ReceiptValue> {
-  const deadline = Date.now() + timeoutMs;
-  let metrics = getMetrics();
-  while (
-    Date.now() < deadline &&
-    [metrics.binary_resolution_status, metrics.server_start_status, metrics.initialize_status].some(
-      (status) => status === 'running',
-    )
-  ) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    metrics = getMetrics();
-  }
-  return metrics;
-}
-
-function bundledBinaryPath(extensionPath: string): string {
-  const directory = path.join(extensionPath, 'bin', `${process.platform}-${process.arch}`);
-  const names =
-    process.platform === 'win32' ? ['perllsp.exe', 'perl-lsp.exe'] : ['perllsp', 'perl-lsp'];
-  const binary = names
-    .map((name) => path.join(directory, name))
-    .find((candidate) => fs.existsSync(candidate));
-  assert.ok(binary, `packaged VSIX must contain a bundled server in ${directory}`);
-  return binary;
-}
-
-function pathsEquivalent(left: unknown, right: string): boolean {
-  if (typeof left !== 'string' || left.length === 0) {
-    return false;
-  }
-  const normalizedLeft = path.resolve(left);
-  const normalizedRight = path.resolve(right);
-  if (process.platform === 'win32' || process.platform === 'darwin') {
-    return normalizedLeft.toLowerCase() === normalizedRight.toLowerCase();
-  }
-  return normalizedLeft === normalizedRight;
-}
-
-async function providerResult(
-  label: string,
-  command: string,
-  ...args: unknown[]
-): Promise<ReceiptValue> {
-  const started = performance.now();
-  try {
-    const result = await withTimeout(
-      label,
-      vscode.commands.executeCommand(command, ...args),
-      15_000,
-    );
-    const record: ReceiptValue = {
-      status: 'ok',
-      duration_ms: Math.round(performance.now() - started),
-    };
-    if (Array.isArray(result)) {
-      record.item_count = result.length;
-    } else if (result && typeof result === 'object' && 'items' in result) {
-      const items = (result as { items?: unknown }).items;
-      record.item_count = Array.isArray(items) ? items.length : 0;
-    } else if (result === undefined || result === null) {
-      record.result = 'empty';
-    } else {
-      record.result = 'present';
-    }
-    return record;
-  } catch (error: unknown) {
-    return {
-      status: 'error',
-      duration_ms: Math.round(performance.now() - started),
-      message: error instanceof Error ? error.message : String(error),
-    };
-  }
-}
-
-function providerPosition(document: vscode.TextDocument): vscode.Position {
-  const offset = document.getText().indexOf('$value');
-  assert.notEqual(offset, -1, 'packaged journey fixture must contain the $value probe');
-  return document.positionAt(offset);
-}
-
-function assertProviderSucceeded(label: string, result: ReceiptValue): void {
-  assert.notEqual(result.status, 'error', `${label}: ${JSON.stringify(result)}`);
 }
 
 suite('Packaged VSIX bundled-server journey', function () {

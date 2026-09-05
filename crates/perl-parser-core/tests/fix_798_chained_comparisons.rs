@@ -154,7 +154,7 @@ fn test_parenthesised_comparison_not_chained() {
     assert_clean_parse("my $r = (1 < $x) < 10;");
     // The outer comparison is still Binary since the left is a parenthesised group.
     assert!(
-        !ks.iter().any(|&k| k == "ChainedComparison"),
+        !ks.contains(&"ChainedComparison"),
         "parenthesised `(1 < $x) < 10` should not become ChainedComparison, got: {ks:?}"
     );
 }

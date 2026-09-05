@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "G50-private-evidence-for-product-package",
+  "family": "documentation_cargo_test_proof_theater",
+  "purpose": "Private fixture/package evidence substituted for published product packages in release claims.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "release",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "test-support-fixture",
+      "instead of published perllsp"
+    ],
+    "content": "// release evidence cites crates/test-support-fixture instead of published perllsp\n{\"package\": \"test-support-fixture\", \"version\": \"0.0.0-local\"}\n",
+    "sha256": "f027d0a0ea41af707b54622bd0d5a22a67704e91cdb6cdb8d9b6a98939d7df3c"
+  },
+  "rejecting_authority": {
+    "status": "bound",
+    "authority_kind": "receipt_contract",
+    "reference": "symbol:xtask/src/publication_drift/mod.rs#Verdict"
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "private_evidence_substitution"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "\"public_repository\": \"perl-lsp\"",
+      "\"schema_version\": 1"
+    ],
+    "note": "Publication manifests classify drift.",
+    "content": "{\"schema_version\": 1, \"swarm_repository\": \"perl-lsp-swarm\", \"public_repository\": \"perl-lsp\", \"swarm_sha\": \"...\", \"public_sha\": \"...\"}\n",
+    "sha256": "86d37bea9001de2d71aeffb4aab0947f443755310c641f5b0f555af886d664d3"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Authority-bound publication-drift classifier (#6756) rejects product/public divergence."
+}

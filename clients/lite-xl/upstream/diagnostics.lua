@@ -114,6 +114,116 @@ diagnostics.sequence = 0
 ---@type table<string, table<string, boolean>>
 diagnostics.closed_sessions = {}
 
+-- Local patch (#11128): one diagnostic-range presentation authority. Every
+-- accepted range is resolved through the exact current editor document and
+-- the publication's negotiated position encoding before any inline, list,
+-- status or navigation surface consumes it; raw UTF-16 code units are
+-- never presented as proven editor byte columns. Presentation is
+-- observational: server range objects are never mutated. Unsupported
+-- encodings, malformed ranges and out-of-bounds endpoints fail typed
+-- instead of silently clamping; closed documents keep their line identity
+-- with an explicit not-proven column disposition.
+---
+---Delayed lintplus rendering re-resolves the live document at execution
+---time through an editor-installed resolver bundle (#11124 store supplies
+---uri/provider/encoding per projected item); no converted column is ever
+---cached across intervening edits.
+---
+---Resolver bundle (installed once by init.lua):
+---  resolve_doc(uri) -> core.doc|nil  live document bound to canonical uri
+---  is_current(uri, provider, session_generation, version) -> boolean
+
+local render_resolve_doc = nil
+local render_is_current = nil
+
+---Install the editor-side rendering resolver bundle (#11128). Idempotent;
+---later installs replace earlier ones.
+---@param resolve_doc function
+---@param is_current function
+function diagnostics.set_render_resolver(resolve_doc, is_current)
+  render_resolve_doc = resolve_doc
+  render_is_current = is_current
+end
+
+---Protocol default position encoding when a server negotiates none
+---(#11128). Declared before first use: resolve_range's nil-encoding path
+---reads this local, and a Lua local is only visible from its declaration
+---point onward.
+local Server_default_position_encoding = "utf-16"
+
+---Resolve one LSP range to editor line/column coordinates (#11128).
+---
+---Returns on success: line1, col1, line2, col2, nil
+---For a closed/unavailable document (line identity only):
+---  line1, nil, line2, nil, "column_not_proven"
+---On failure: nil, nil, nil, nil, disposition
+---  "malformed_range" | "unsupported_encoding" | "range_out_of_bounds"
+---
+---@param range lsp.diagnostics.range|any
+---@param doc core.doc|nil Live document when available
+---@param position_encoding string|nil Negotiated encoding; utf-16 default
+---@return integer|nil, integer|nil, integer|nil, integer|nil, string|nil
+function diagnostics.resolve_range(range, doc, position_encoding)
+  if
+    type(range) ~= "table"
+    or type(range.start) ~= "table"
+    or type(range["end"]) ~= "table"
+    or type(range.start.line) ~= "number"
+    or type(range.start.character) ~= "number"
+    or type(range["end"].line) ~= "number"
+    or type(range["end"].character) ~= "number"
+    or range.start.line < 0
+    or range.start.character < 0
+    or range["end"].line < 0
+    or range["end"].character < 0
+  then
+    return nil, nil, nil, nil, "malformed_range"
+  end
+
+  local encoding = position_encoding or Server_default_position_encoding
+  if encoding ~= "utf-16" and encoding ~= "utf-8" then
+    return nil, nil, nil, nil, "unsupported_encoding"
+  end
+
+  local line1 = range.start.line + 1
+  local col1 = range.start.character + 1
+  local line2 = range["end"].line + 1
+  local col2 = range["end"].character + 1
+
+  -- Ordering integrity: start must not land after end.
+  if
+    line1 > line2
+    or (line1 == line2 and col1 > col2)
+  then
+    return nil, nil, nil, nil, "range_out_of_bounds"
+  end
+
+  -- Closed/unavailable document: line identity survives from the range,
+  -- columns are explicitly not proven against any bytes.
+  if not doc then
+    return line1, nil, line2, nil, "column_not_proven"
+  end
+
+  -- Open document bounds: both endpoint lines must exist in live bytes.
+  if line2 > #doc.lines or line1 < 1 then
+    return nil, nil, nil, nil, "range_out_of_bounds"
+  end
+
+  if encoding == "utf-8" then
+    -- Already byte columns per the negotiated contract; validated against
+    -- live line bytes so an out-of-bounds endpoint fails typed instead of
+    -- presenting a proven column past the line's bytes (lite-xl lines
+    -- include the trailing newline byte).
+    if col1 > #doc.lines[line1] or col2 > #doc.lines[line2] then
+      return nil, nil, nil, nil, "range_out_of_bounds"
+    end
+    return line1, col1, line2, col2, nil
+  end
+
+  local sl1, sc1, sl2, sc2 = util.toselection(range, doc)
+  return sl1, sc1, sl2, sc2, nil
+end
+
 ---Forward declaration: the derived projection rebuilder (#11124).
 local rebuild_projection
 
@@ -327,6 +437,9 @@ function diagnostics.publish(subject, params)
     session_generation = subject.session_generation,
     version = version_disposition,
     seq = diagnostics.sequence,
+    -- Local patch (#11128): the publication's negotiated position encoding
+    -- rides with the subject so rendering resolves coordinates faithfully.
+    position_encoding = subject.position_encoding or Server_default_position_encoding,
     messages = messages,
   }
   slot.publications[uri] = by_uri
@@ -360,11 +473,26 @@ function rebuild_projection()
       table.sort(generations)
       for _, generation in ipairs(generations) do
         local publication = sessions[generation]
-        local filename = get_absolute_path(util.tofilename(publication.uri))
+        -- Local patch (#11165): publication URIs convert through the one
+        -- authority; non-file or malformed URIs project nothing, matching
+        -- the existing unresolvable-path disposition.
+        local publication_path = util.uri_to_path(publication.uri)
+        local filename = publication_path and get_absolute_path(publication_path) or nil
         if filename then
           local entry = merged[filename]
           if not entry then
-            entry = { filename = filename, messages = {} }
+            -- Local patch (#11128): projection entries carry their
+            -- publication subject so rendering can resolve the live
+            -- document and negotiated encoding per group.
+            entry = {
+              filename = filename,
+              messages = {},
+              uri = publication.uri,
+              provider = publication.provider,
+              session_generation = publication.session_generation,
+              version = publication.version,
+              position_encoding = publication.position_encoding,
+            }
             merged[filename] = entry
           end
           for _, message in ipairs(publication.messages) do
@@ -444,6 +572,38 @@ function diagnostics.lintplus_clear_messages(filename, force)
   end
 end
 
+---Resolve one projected message group's ranges through the live document
+---and negotiated encoding, feeding lintplus (#11128). Ranges whose subject
+---no longer resolves render nothing rather than stale coordinates.
+---@param item table Projected entry (filename, uri, messages, encoding)
+---@param fname string Normalized lintplus target filename
+local function populate_item(item, fname)
+  local doc = render_resolve_doc and render_resolve_doc(item.uri) or nil
+  for _, message in ipairs(item.messages) do
+    local line1, col1, _, _, disposition =
+      diagnostics.resolve_range(message.range, doc, item.position_encoding)
+    if line1 then
+      if col1 then
+        local text = message.message
+        local kind = lintplus_kinds[message.severity or diagnostics.severity.ERROR]
+        lintplus.add_message(fname, line1, col1, kind, text)
+      else
+        -- Closed-document column_not_proven: no inline marker is placed;
+        -- raw code units are never presented as byte columns.
+        core.log_quiet(
+          "[LSP Diagnostics] %s: %s:%d (%s)",
+          fname, tostring(message.message), line1, disposition or "column_not_proven"
+        )
+      end
+    else
+      core.log_quiet(
+        "[LSP Diagnostics] range not rendered (%s): %s",
+        disposition or "unresolved", tostring(message.message)
+      )
+    end
+  end
+end
+
 ---@param filename string
 function diagnostics.lintplus_populate(filename)
   if lintplus_found then
@@ -452,26 +612,14 @@ function diagnostics.lintplus_populate(filename)
     if not filename then
       for _, diagnostic in ipairs(diagnostics.list) do
         local fname = core.normalize_to_project_dir(diagnostic.filename)
-        for _, message in pairs(diagnostic.messages) do
-          local line, col = util.toselection(message.range)
-          local text = message.message
-          local kind = lintplus_kinds[message.severity or diagnostics.severity.ERROR]
-
-          lintplus.add_message(fname, line, col, kind, text)
-        end
+        -- Local patch (#11128): live-document, encoding-aware rendering.
+        populate_item(diagnostic, fname)
       end
     else
-      local messages = diagnostics.get(filename)
-      if messages then
-        for _, message in pairs(messages) do
-          local line, col = util.toselection(message.range)
-          local text = message.message
-          local kind = lintplus_kinds[message.severity or diagnostics.severity.ERROR]
-
-          lintplus.add_message(
-            core.normalize_to_project_dir(filename),
-            line, col, kind, text
-          )
+      for _, diagnostic in ipairs(diagnostics.list) do
+        if diagnostic.filename == filename then
+          populate_item(
+            diagnostic, core.normalize_to_project_dir(filename))
         end
       end
     end
@@ -488,6 +636,27 @@ function diagnostics.lintplus_populate_delayed(filename)
         true
       )
       lintplus_delays[filename].on_timer = function()
+        -- Local patch (#11128): the timer owns its publication subjects and
+        -- revalidates each at execution time; a subject that moved since
+        -- scheduling renders nothing instead of stale coordinates.
+        if render_is_current then
+          for _, item in ipairs(diagnostics.list) do
+            if
+              (not filename or item.filename == filename)
+              and
+              not render_is_current(
+                item.uri, item.provider,
+                item.session_generation, item.version)
+            then
+              core.log_quiet(
+                "[LSP Diagnostics] delayed render skipped (subject moved): %s",
+                item.filename or ""
+              )
+              lintplus_delays[filename] = nil
+              return
+            end
+          end
+        end
         diagnostics.lintplus_populate(filename)
         lintplus_delays[filename] = nil
       end

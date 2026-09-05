@@ -4,6 +4,7 @@ use std::sync::OnceLock;
 /// Compiled regex patterns for debugger output parsing
 pub(super) static CONTEXT_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
 pub(super) static PROMPT_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+pub(super) static DIE_SUFFIX_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
 pub(super) static STACK_FRAME_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
 #[allow(dead_code)] // Reserved for future variable parsing enhancements
 pub(super) static VARIABLE_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();

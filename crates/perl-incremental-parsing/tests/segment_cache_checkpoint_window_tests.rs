@@ -208,8 +208,7 @@ fn test_interior_edit_past_checkpoint_matches_full_parse() -> Result<(), Box<dyn
     let full_tree = full_parser.parse(expected_source)?;
 
     assert_eq!(
-        format!("{:?}", incremental_tree),
-        format!("{:?}", full_tree),
+        incremental_tree, full_tree,
         "incremental parse should match a full parse for edits past the first checkpoint"
     );
     Ok(())

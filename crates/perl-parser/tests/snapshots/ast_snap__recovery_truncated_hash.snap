@@ -1,5 +1,5 @@
 ---
-source: crates/perl-parser/tests/ast_snapshot_tests.rs
+source: crates/perl-parser/tests/ast_snap.rs
 expression: "parse_sexp(\"my %h = (a =>\")"
 ---
-(source_file (ERROR "expected expression, found end of input at position 13"))
+(source_file (statements (ERROR (message "expected expression, found end of input at position 13") (found Eof ""))))

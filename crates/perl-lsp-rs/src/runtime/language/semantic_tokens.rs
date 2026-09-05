@@ -1780,6 +1780,7 @@ fn semantic_tokens_live_slice_provider_trace(
     provider_action: &'static str,
 ) -> Value {
     let mut saw_compiler_token_candidate = false;
+    let mut acted_class_traces = Vec::new();
 
     let subroutine_candidate = semantic_token_subroutine_declaration_candidate(source);
     saw_compiler_token_candidate |= subroutine_candidate.is_some();
@@ -1796,7 +1797,7 @@ fn semantic_tokens_live_slice_provider_trace(
             claim_boundary: "only source-backed compiler subroutine-declaration spans that exactly match existing live parser/HIR function tokens participate; generated/no-source, stale, dynamic-boundary, low-confidence, fallback, and unmatched compiler candidates remain blocked, fallback-only, or shadowed",
         },
     ) {
-        return trace;
+        acted_class_traces.push(trace);
     }
 
     let method_declaration_candidate = semantic_token_method_declaration_candidate(source);
@@ -1814,7 +1815,7 @@ fn semantic_tokens_live_slice_provider_trace(
             claim_boundary: "only source-backed compiler method-declaration spans that exactly match existing live parser/HIR method tokens participate; generated/no-source, stale, dynamic-boundary, low-confidence, fallback, broader method classes, and unmatched compiler candidates remain blocked, fallback-only, or shadowed",
         },
     ) {
-        return trace;
+        acted_class_traces.push(trace);
     }
 
     let phase_block_declaration_candidate =
@@ -1833,7 +1834,7 @@ fn semantic_tokens_live_slice_provider_trace(
             claim_boundary: "only source-backed compiler phase-block declaration spans that exactly match existing live parser/HIR macro tokens participate; generated/no-source, stale, dynamic-boundary, low-confidence, fallback, broader macro classes, and unmatched compiler candidates remain blocked, fallback-only, or shadowed",
         },
     ) {
-        return trace;
+        acted_class_traces.push(trace);
     }
 
     let method_call_candidate = semantic_token_method_call_candidate(source);
@@ -1851,7 +1852,7 @@ fn semantic_tokens_live_slice_provider_trace(
             claim_boundary: "only source-backed compiler method-call spans that exactly match existing live parser/HIR method tokens participate; generated/no-source, stale, dynamic-boundary, low-confidence, fallback, broader method classes, and unmatched compiler candidates remain blocked, fallback-only, or shadowed",
         },
     ) {
-        return trace;
+        acted_class_traces.push(trace);
     }
 
     let self_method_call_candidate = semantic_token_self_method_call_candidate(source);
@@ -1869,7 +1870,7 @@ fn semantic_tokens_live_slice_provider_trace(
             claim_boundary: "only source-backed compiler $self method-call spans that exactly match existing live parser/HIR method tokens participate; generated/no-source, stale, dynamic-boundary, low-confidence, fallback, broader receiver classes, and unmatched compiler candidates remain blocked, fallback-only, or shadowed",
         },
     ) {
-        return trace;
+        acted_class_traces.push(trace);
     }
 
     let package_declaration_candidate = semantic_token_package_declaration_candidate(source);
@@ -1887,7 +1888,7 @@ fn semantic_tokens_live_slice_provider_trace(
             claim_boundary: "only source-backed compiler package-declaration spans that exactly match existing live parser/HIR namespace tokens participate; generated/no-source, stale, dynamic-boundary, low-confidence, fallback, and unmatched compiler candidates remain blocked, fallback-only, or shadowed",
         },
     ) {
-        return trace;
+        acted_class_traces.push(trace);
     }
 
     let field_declaration_candidate = semantic_token_class_field_declaration_candidate(source);
@@ -1905,7 +1906,7 @@ fn semantic_tokens_live_slice_provider_trace(
             claim_boundary: "only source-backed compiler field-declaration spans that exactly match existing live parser/HIR variable tokens participate; generated/no-source, stale, dynamic-boundary, low-confidence, fallback, broader variable classes, and unmatched compiler candidates remain blocked, fallback-only, or shadowed",
         },
     ) {
-        return trace;
+        acted_class_traces.push(trace);
     }
 
     let lexical_variable_declaration_candidate =
@@ -1924,7 +1925,7 @@ fn semantic_tokens_live_slice_provider_trace(
             claim_boundary: "only source-backed compiler lexical-variable declaration spans that exactly match existing live parser/HIR variable tokens participate; generated/no-source, stale, dynamic-boundary, low-confidence, fallback, broader variable classes, and unmatched compiler candidates remain blocked, fallback-only, or shadowed",
         },
     ) {
-        return trace;
+        acted_class_traces.push(trace);
     }
 
     let lexical_variable_use_candidate = semantic_token_lexical_variable_use_candidate(source);
@@ -1942,7 +1943,7 @@ fn semantic_tokens_live_slice_provider_trace(
             claim_boundary: "only source-backed compiler lexical-variable use spans that exactly match existing live parser/HIR variable tokens participate; generated/no-source, stale, dynamic-boundary, low-confidence, fallback, broader variable classes, and unmatched compiler candidates remain blocked, fallback-only, or shadowed",
         },
     ) {
-        return trace;
+        acted_class_traces.push(trace);
     }
 
     let our_variable_declaration_candidate =
@@ -1961,7 +1962,7 @@ fn semantic_tokens_live_slice_provider_trace(
             claim_boundary: "only source-backed compiler our-variable declaration spans that exactly match existing live parser/HIR variable tokens participate; generated/no-source, stale, dynamic-boundary, low-confidence, fallback, broader variable classes, and unmatched compiler candidates remain blocked, fallback-only, or shadowed",
         },
     ) {
-        return trace;
+        acted_class_traces.push(trace);
     }
 
     let state_variable_declaration_candidate =
@@ -1980,7 +1981,7 @@ fn semantic_tokens_live_slice_provider_trace(
             claim_boundary: "only source-backed compiler state-variable declaration spans that exactly match existing live parser/HIR variable tokens participate; generated/no-source, stale, dynamic-boundary, low-confidence, fallback, broader variable classes, and unmatched compiler candidates remain blocked, fallback-only, or shadowed",
         },
     ) {
-        return trace;
+        acted_class_traces.push(trace);
     }
 
     let named_function_call_candidate = semantic_token_named_function_call_candidate(source);
@@ -1998,7 +1999,11 @@ fn semantic_tokens_live_slice_provider_trace(
             claim_boundary: "only source-backed compiler named-function-call callee-name spans that exactly match existing live parser/HIR function tokens participate; generated/no-source, stale, dynamic-boundary, low-confidence, fallback, broader function classes, and unmatched compiler candidates remain blocked, fallback-only, or shadowed",
         },
     ) {
-        return trace;
+        acted_class_traces.push(trace);
+    }
+
+    if !acted_class_traces.is_empty() {
+        return semantic_tokens_aggregate_live_slice_trace(acted_class_traces);
     }
 
     if !saw_compiler_token_candidate {
@@ -2024,6 +2029,22 @@ struct SemanticTokenLiveSliceTraceSpec {
     source_backed_state: &'static str,
     user_message: &'static str,
     claim_boundary: &'static str,
+}
+
+fn semantic_tokens_aggregate_live_slice_trace(traces: Vec<Value>) -> Value {
+    let trace_count = traces.len();
+    // The first trace stays the primary top-level projection while the full
+    // vector — primary included — is retained in acted_class_traces, so the
+    // count and the array always describe the same set (#2035).
+    let mut primary = match traces.first().cloned() {
+        Some(first) => first,
+        None => return Value::Array(traces),
+    };
+    if let Some(object) = primary.as_object_mut() {
+        object.insert("acted_class_trace_count".to_string(), json!(trace_count));
+        object.insert("acted_class_traces".to_string(), Value::Array(traces));
+    }
+    primary
 }
 
 fn semantic_tokens_live_slice_provider_trace_for_candidate(

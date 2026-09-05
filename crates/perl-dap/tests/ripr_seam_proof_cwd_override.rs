@@ -19,6 +19,10 @@
 //! Perl variable `$proc_cwd` would hold the *scripts* directory path, not the
 //! *user_cwd* directory path, and the `assert!` below would fail.
 
+#![expect(
+    clippy::print_stderr,
+    reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
+)]
 mod common;
 
 use common::{DapWorkflowSession, perl_available, workflow_timeout};

@@ -1,8 +1,6 @@
 use std::path::Path;
 
-use perl_module::resolution::use_lib::{
-    extract_use_lib_operations, extract_use_lib_paths, resolve_use_lib_paths,
-};
+use perl_module::{extract_use_lib_operations, extract_use_lib_paths, resolve_use_lib_paths};
 
 fn fuzz_string(state: &mut u64, max_len: usize) -> String {
     *state ^= *state << 13;
@@ -72,8 +70,8 @@ fn fuzz_use_lib_parser_and_resolver_preserve_core_invariants() {
 
         for op in &ops {
             match op {
-                perl_module::resolution::use_lib::UseLibAction::Add(op_paths)
-                | perl_module::resolution::use_lib::UseLibAction::Remove(op_paths) => {
+                perl_module::UseLibAction::Add(op_paths)
+                | perl_module::UseLibAction::Remove(op_paths) => {
                     for op_path in op_paths {
                         assert!(
                             !op_path.path.is_empty(),

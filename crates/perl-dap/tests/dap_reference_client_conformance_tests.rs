@@ -36,10 +36,10 @@ fn load_fixtures() -> Result<Vec<(String, Value)>> {
 
 fn collect_events(rx: &Receiver<DapMessage>, timeout_ms: u64) -> Vec<(String, Option<Value>)> {
     let mut events = Vec::new();
-    if let Ok(message) = rx.recv_timeout(Duration::from_millis(timeout_ms)) {
-        if let DapMessage::Event { event, body, .. } = message {
-            events.push((event, body));
-        }
+    if let Ok(message) = rx.recv_timeout(Duration::from_millis(timeout_ms))
+        && let DapMessage::Event { event, body, .. } = message
+    {
+        events.push((event, body));
     }
     while let Ok(message) = rx.try_recv() {
         if let DapMessage::Event { event, body, .. } = message {

@@ -1,0 +1,433 @@
+{
+  "allowed_change_classes": [
+    "rc-reproduced-blocker",
+    "deterministic-release-preparation",
+    "release-lineage-reconciliation",
+    "release-proof"
+  ],
+  "already_included": [
+    {
+      "landed_sha": "cc1f8438796ec78a2f731f71df6573851e3f0a71",
+      "note": "fix(formatting): withdraw unproven secondary edit routes (#11955); formatting containment is represented as included tree state and grounds the whole-document-only formatting claim boundary.",
+      "number": 11983
+    },
+    {
+      "landed_sha": "35ada84dc64c881151671bfbe2076ebd0cb0d5ca",
+      "note": "refactor(critic): merge reviewed core-overlap producers into the normalized seam (#11918); landed critic-overlap work already inside the observed tree.",
+      "number": 11999
+    }
+  ],
+  "excluded_post_rc": [
+    {
+      "number": 11981,
+      "reason": "Formatter range/multi-range outcome policy is beyond the RC whole-document-only formatting claim; post-RC product work."
+    },
+    {
+      "number": 12002,
+      "reason": "Document-sync protocol schema validator registration touches the product crate's protocol surface; deferred past freeze."
+    },
+    {
+      "number": 12045,
+      "reason": "Draft reconstruction of secondary-route containment on current main; containment is already represented by landed #11983 tree state and remaining scope (range routes) sits outside the RC formatting claim."
+    },
+    {
+      "number": 12063,
+      "reason": "Draft workspace semantic query view core indexes; post-RC product feature."
+    },
+    {
+      "number": 12067,
+      "reason": "Native CriticService routing architecture change to diagnostic consumers; large post-RC refactor."
+    },
+    {
+      "number": 12069,
+      "reason": "Zed perllsp launch argv binding fix; editor integration work after the pin."
+    },
+    {
+      "number": 12095,
+      "reason": "Draft binary-identity reason union fix; post-RC product repair."
+    },
+    {
+      "number": 12096,
+      "reason": "Final LSP adapter pinned to gen-lsp-types 0.11.0; protocol-library refactor with wire-behavior risk, deferred past freeze."
+    },
+    {
+      "number": 12098,
+      "reason": "Windows CLI --check recovery hint wording; user-facing text polish after the pin."
+    },
+    {
+      "number": 12099,
+      "reason": "Draft sync convergence generation persistence; publication-sync lane work after the pin."
+    },
+    {
+      "number": 12171,
+      "reason": "Truthful live-route labeling of references source; public-claim honesty improvement that can enter release/0.18 stabilization only through allowed change classes, not required for this denominator."
+    },
+    {
+      "number": 12180,
+      "reason": "FilePirLexicalContributionV1 envelope adds parser-core product code; post-RC compiler work."
+    },
+    {
+      "number": 12182,
+      "reason": "Standalone owned-state manifest/removal contracts target the v0.18 install transition phase that follows RC."
+    },
+    {
+      "number": 12185,
+      "reason": "DAP MutationStructuredValue.v1 S0 profile adds perl-dap product code; post-RC DAP work."
+    },
+    {
+      "number": 12205,
+      "reason": "vscode-extension TypeScript toolchain bump; build-tooling maintenance deferred past freeze."
+    },
+    {
+      "number": 12206,
+      "reason": "rolldown bump changes extension bundle bytes; artifact-affecting maintenance deferred past freeze."
+    },
+    {
+      "number": 12207,
+      "reason": "@types/vscode bump; extension build-time types maintenance deferred past freeze."
+    },
+    {
+      "number": 12208,
+      "reason": "Cargo dependency group bump; dependency-tree maintenance deferred past freeze."
+    },
+    {
+      "number": 12209,
+      "reason": "similar 3.2.0 bump; cargo dependency-tree maintenance deferred past freeze."
+    },
+    {
+      "number": 12212,
+      "reason": "docker/setup-buildx-action bump feeds docker-publish release container workflow; release-workflow maintenance deferred past freeze."
+    },
+    {
+      "number": 12213,
+      "reason": "Standalone candidate/current-selection record contracts target the v0.18 install transition phase that follows RC."
+    },
+    {
+      "number": 12237,
+      "reason": "Document-symbol sink outcome retargeting changes LSP behavior; post-RC fix."
+    },
+    {
+      "number": 12239,
+      "reason": "Draft lexical source anchor independence from legacy reference ranges; post-RC compiler-pir repair."
+    },
+    {
+      "number": 12240,
+      "reason": "VS Code crash/watchdog arbiter unification; post-RC runtime refactor."
+    },
+    {
+      "number": 12246,
+      "reason": "Perl module provenance detection boundary in perl-module product code; security feature after the pin."
+    },
+    {
+      "number": 12251,
+      "reason": "Semantic-token acted-class trace retention changes token output; post-RC correctness fix."
+    },
+    {
+      "number": 12253,
+      "reason": "Bounded abstract value evaluator extends parser internals; post-RC feature."
+    },
+    {
+      "number": 12255,
+      "reason": "Semantic identity contribution/scope/fingerprint ownership code in parser-core and semantic-facts; post-RC contract implementation."
+    },
+    {
+      "number": 12265,
+      "reason": "Registry-driven native-first external tooling projection in doctor; post-RC feature."
+    },
+    {
+      "number": 12289,
+      "reason": "Session warning dedup state bound; reliability hardening after the pin."
+    },
+    {
+      "number": 12290,
+      "reason": "Release-affecting user-facing diagnostics behavior (producer-owned remediation preservation on merged overlap rows). Classified honestly: at observation its Rust formatting check and CI Gate shard (parser_stack) were failing and gates were still running, so it could not deterministically land before the immediate pin; it remains on main for post-RC consideration and may enter release/0.18 only through an allowed change class with fresh proof."
+    },
+    {
+      "number": 12312,
+      "reason": "refs-path isa occurrence boundaries extend workspace indexing behavior; post-RC feature fix."
+    },
+    {
+      "number": 12313,
+      "reason": "Checked vscode build semantics govern every tsc entrypoint and packaged-artifact pipeline; build-governance work deferred past freeze."
+    },
+    {
+      "number": 12332,
+      "reason": "Mojo-base registry-backed activation/profile facts; post-RC adapter feature."
+    },
+    {
+      "number": 12333,
+      "reason": "Public perl-dap asset receipt matrix execution; publication-evidence tooling deferred past freeze."
+    }
+  ],
+  "feature_intake_closed": true,
+  "frozen_product_sha": null,
+  "included_prs": [],
+  "invalidation": {
+    "metadata_change": [
+      "preparation",
+      "projection",
+      "sync",
+      "candidate",
+      "approval"
+    ],
+    "product_change": [
+      "freeze",
+      "preparation",
+      "reconciliation",
+      "projection",
+      "sync",
+      "candidate",
+      "approval"
+    ]
+  },
+  "issue_closures_required": [],
+  "known_limitations": [
+    "frozen_product_sha is null at admission by construction: the product denominator is exactly the squash-merge commit that introduces this receipt onto main. The concrete SHA and the release/0.18 ref read-back are recorded on issue #12228 immediately after merge.",
+    "Classification observes title, body, draft state, and touched files of the 68 open PRs at observation_sha; later main movement does not move this RC.",
+    "PR #12290 is release-affecting but was red (Rust formatting, CI Gate shard parser_stack) at observation, so it cannot deterministically land before the immediate pin and is excluded_post_rc rather than included_rc.",
+    "No open PR was admitted into the RC; included_prs is empty because the freeze is immediate and deterministic, not because the queue was empty.",
+    "classification_basis records the exact surfaces and bounded queries consulted; raw per-PR responses were not retained as bytes, so reproduction requires re-running those pinned queries at observation_sha."
+  ],
+  "not_proven": [],
+  "not_release_relevant": [
+    {
+      "number": 7332,
+      "reason": "Draft parser strategy/work receipt instrumentation foundation; repo evidence tooling, no shipped-surface effect."
+    },
+    {
+      "number": 7948,
+      "reason": "Draft Helix actual-host journey test provisioning; test infrastructure only."
+    },
+    {
+      "number": 10147,
+      "reason": "Draft typed CI route-plan domain in xtask; developer tooling."
+    },
+    {
+      "number": 11876,
+      "reason": "Regenerated post-merge status and inventory docs; documentation refresh."
+    },
+    {
+      "number": 11994,
+      "reason": "Source-authority boundaries in zed stage packets for agents; repo automation infrastructure."
+    },
+    {
+      "number": 11995,
+      "reason": "Typed host work status domain in xtask; local orchestration tooling."
+    },
+    {
+      "number": 12000,
+      "reason": "perl-lsp-rs-core all-targets clippy debt cleanup; lint hygiene without product behavior change."
+    },
+    {
+      "number": 12012,
+      "reason": "Draft host-independent discovery working-directory validation; harness/test infrastructure."
+    },
+    {
+      "number": 12037,
+      "reason": "Draft docs update for direct command execution default; agent guidance documentation."
+    },
+    {
+      "number": 12040,
+      "reason": "Issue-controller stable train validation; repository automation tooling."
+    },
+    {
+      "number": 12059,
+      "reason": "Typed writer preflight domain in xtask; developer-experience tooling."
+    },
+    {
+      "number": 12062,
+      "reason": "Draft vim/vim-lsp receipt fan-in into evidence profile; test evidence infrastructure."
+    },
+    {
+      "number": 12065,
+      "reason": "Authority-transfer programme graph publication/validation; repo governance tooling."
+    },
+    {
+      "number": 12087,
+      "reason": "Compiler performance receipt schema in xtask; benchmarking evidence tooling."
+    },
+    {
+      "number": 12088,
+      "reason": "Draft typed configuration observation model; internal tooling schema work."
+    },
+    {
+      "number": 12097,
+      "reason": "Content-bound Vim and vim-lsp host subject provisioning; test infrastructure."
+    },
+    {
+      "number": 12137,
+      "reason": "Per-attempt libtest-reach fact retention across gate retries; CI diagnostics."
+    },
+    {
+      "number": 12174,
+      "reason": "Parser-family clippy debt and corpus UTF-8 redness cleanup; hygiene without shipped-behavior change."
+    },
+    {
+      "number": 12175,
+      "reason": "Cache-restored receipts excluded from uploaded gate-receipt artifacts; CI artifact hygiene."
+    },
+    {
+      "number": 12183,
+      "reason": "PR Smoke disk-growth bounds and visible disk exhaustion; CI runner operations."
+    },
+    {
+      "number": 12184,
+      "reason": "ast_snap snapshot suite execution in unit_parser_stack_full gate; CI gate composition."
+    },
+    {
+      "number": 12210,
+      "reason": "codeql-action upload-sarif bump; CI security-scanning workflow maintenance only."
+    },
+    {
+      "number": 12211,
+      "reason": "taiki-e/install-action bump; CI tool-installation workflow maintenance only."
+    },
+    {
+      "number": 12252,
+      "reason": "Draft merge-gate freshness suites wiring; CI gate composition."
+    },
+    {
+      "number": 12256,
+      "reason": "Archived legacy tree file classification; repository file policy."
+    },
+    {
+      "number": 12258,
+      "reason": "CI and benchmark tooling file classification; repository file policy."
+    },
+    {
+      "number": 12259,
+      "reason": "Absolute working-directory fixture portability; test-only change."
+    },
+    {
+      "number": 12266,
+      "reason": "Draft DAP E2E logpoint continue semantics proof; test-only change."
+    },
+    {
+      "number": 12267,
+      "reason": "Non-production seams excluded from ripr new-gap basis; quality-basis tooling."
+    },
+    {
+      "number": 12269,
+      "reason": "Landing proof separated from semantic completion; close-proof methodology tooling."
+    },
+    {
+      "number": 12272,
+      "reason": "Sensitive-authority denominator and routing contract; review-policy surfaces."
+    },
+    {
+      "number": 12277,
+      "reason": "Emacs-train bounded work/review packet generation; agent train tooling."
+    },
+    {
+      "number": 12320,
+      "reason": "Workspace rustfmt blocking on the required Rust Small route; CI gate policy."
+    }
+  ],
+  "observation_sha": "1f13843a04ac4f2f5f266a1f5069c8ae80dc1032",
+  "observed_at_utc": "2026-08-25T00:00:23Z",
+  "public_claim_boundary": {
+    "dap": "preview",
+    "formatting": "whole-document-only",
+    "lsp": "daily-driver-public-alpha",
+    "primary_editor": "vscode",
+    "remote_ai": "fail-closed-without-trusted-adapter"
+  },
+  "queue_snapshot": {
+    "classification_basis": {
+      "queries": [
+        "gh pr list --repo EffortlessMetrics/perl-lsp-swarm --state open --limit 100 --json number,title,headRefName,updatedAt,isDraft",
+        "gh pr diff <number> --name-only ambiguity spot-checks: 12246 12333 12313 12213 12182 12185 12180 12087 12065 12272 12255 12059 11995 12002 12040",
+        "git merge-base --is-ancestor and git log --grep landed-state verification of 11983/11999/12004"
+      ],
+      "raw_response_retention": "Per-PR head OIDs and file lists were consulted live but not byte-captured into this receipt; dispositions carry the decisive reason per PR. Later re-derivation must re-run the pinned queries at observation_sha.",
+      "surfaces_consulted": [
+        "title",
+        "body",
+        "is_draft",
+        "touched files (gh pr diff --name-only where surface was ambiguous)",
+        "checks state where landing likelihood mattered (#12290)"
+      ]
+    },
+    "observed_numbers": [
+      7332,
+      7948,
+      10147,
+      11876,
+      11981,
+      11994,
+      11995,
+      12000,
+      12002,
+      12012,
+      12037,
+      12040,
+      12045,
+      12059,
+      12062,
+      12063,
+      12065,
+      12067,
+      12069,
+      12087,
+      12088,
+      12095,
+      12096,
+      12097,
+      12098,
+      12099,
+      12137,
+      12171,
+      12174,
+      12175,
+      12180,
+      12182,
+      12183,
+      12184,
+      12185,
+      12205,
+      12206,
+      12207,
+      12208,
+      12209,
+      12210,
+      12211,
+      12212,
+      12213,
+      12237,
+      12239,
+      12240,
+      12246,
+      12251,
+      12252,
+      12253,
+      12255,
+      12256,
+      12258,
+      12259,
+      12265,
+      12266,
+      12267,
+      12269,
+      12272,
+      12277,
+      12289,
+      12290,
+      12312,
+      12313,
+      12320,
+      12332,
+      12333
+    ],
+    "observed_open_count": 68,
+    "query": "gh pr list --repo EffortlessMetrics/perl-lsp-swarm --state open --limit 100 --json number,title,headRefName,updatedAt,isDraft",
+    "query_limit": 100,
+    "receipt_count": 68,
+    "set_equality": true
+  },
+  "release": "0.18.0-rc.1",
+  "release_branch": "release/0.18",
+  "required_blockers": [],
+  "schema_version": "v0.18_rc_intake.v1",
+  "superseded_for_release": [],
+  "track": "public-alpha-release-candidate"
+}

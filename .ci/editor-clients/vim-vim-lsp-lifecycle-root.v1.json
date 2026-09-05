@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "subject": {
+    "host": "vim",
+    "client": "prabirshrestha/vim-lsp",
+    "integration_mode": "generic_lsp",
+    "language_id": "perl",
+    "command": ["perllsp", "--stdio"]
+  },
+  "generations": {
+    "kinds": ["process", "host", "document", "root", "config"],
+    "old_new_binding_required": true,
+    "initialize_sequence": ["initialize", "initialized", "buffer_enabled"]
+  },
+  "stages": [
+    {"stage": "buffer_reopen", "entry": "buffer_closed_in_same_host", "host_replacement": false, "pending_identity": false, "min_iterations": 0, "cleanup": "none", "cardinality": "buffer_reopened_same_host_once", "disposition": "same_host_reopen_not_host_replacement"},
+    {"stage": "host_reopen", "entry": "host_exit_and_replacement_launch", "host_replacement": true, "pending_identity": false, "min_iterations": 0, "cleanup": "none", "cardinality": "replacement_host_initialized_once", "disposition": "host_instance_changed_not_server_restart"},
+    {"stage": "workspace_or_session_reopen", "entry": "workspace_or_session_replacement", "host_replacement": false, "pending_identity": false, "min_iterations": 0, "cleanup": "none", "cardinality": "workspace_replacement_observed_once", "disposition": "replacement_where_exposed_never_relabeled"},
+    {"stage": "cancellation", "entry": "pending_action_invalidated", "host_replacement": false, "pending_identity": true, "min_iterations": 0, "cleanup": "none", "cardinality": "pending_action_cancelled_bounded_once", "disposition": "held_action_never_applies_after_invalidation"},
+    {"stage": "late_result_rejected", "entry": "pending_action_invalidated", "host_replacement": false, "pending_identity": true, "min_iterations": 0, "cleanup": "none", "cardinality": "late_result_rejected_not_admitted", "disposition": "late_old_host_result_rejected"},
+    {"stage": "repeated_sessions", "entry": "finite_repeated_session_sequence", "host_replacement": true, "pending_identity": false, "min_iterations": 2, "cleanup": "none", "cardinality": "bounded_iterations_each_observed", "disposition": "per_iteration_fresh_not_stale_state"},
+    {"stage": "normal_cleanup", "entry": "normal_host_exit", "host_replacement": false, "pending_identity": false, "min_iterations": 0, "cleanup": "normal_exit", "cardinality": "normal_exit_cleanup_settled_once", "disposition": "cleanup_observed_not_client_event_or_force_kill"},
+    {"stage": "failure_cleanup", "entry": "forced_failure_or_timeout", "host_replacement": false, "pending_identity": false, "min_iterations": 0, "cleanup": "forced_failure", "cardinality": "failure_path_cleanup_settled_once", "disposition": "forced_failure_cleanup_observed"}
+  ],
+  "claim_rules": {
+    "server_restart_is_not_host_reopen": true,
+    "buffer_reopen_is_not_host_reopen": true,
+    "single_passing_run_is_not_repeated_use": true,
+    "missing_resource_observation_is_not_zero": true,
+    "client_event_or_force_kill_is_not_clean_cleanup": true,
+    "late_old_result_must_be_rejected": true,
+    "stale_state_cannot_satisfy_new_run": true,
+    "restart_buffer_host_repeated_cleanup_independent": true,
+    "same_contract_required_by": ["#11376", "#11378", "#11380", "#11372", "#10894"]
+  }
+}

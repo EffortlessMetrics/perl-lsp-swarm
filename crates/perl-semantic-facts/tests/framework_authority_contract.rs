@@ -1,7 +1,9 @@
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 use perl_semantic_facts::framework::{
     AdapterAuthorityError, AdapterBudget, AdapterCancellation, AdapterCancellationControl,
     AdapterDescriptor, AdapterDisposition, AdapterId, AdapterInput, AdapterOutcome, AdapterResult,
-    AdapterSourceScope, EmittedFact, FactClass, FactLimitation, FactSink, FactSinkId,
+    AdapterSourceScope, EmittedFact, FRAMEWORK_ADAPTER_SCHEMA_VERSION, FactClass, FactLimitation,
+    FactSink, FactSinkId,
 };
 use perl_semantic_facts::{
     AnchorId, Confidence, EntityId, FactId, FileId, LifecyclePhase, Provenance, SemanticConfidence,
@@ -22,7 +24,14 @@ impl AdapterCancellationControl for AtomicCancellation {
 }
 
 fn descriptor(disposition: AdapterDisposition) -> AdapterDescriptor {
-    AdapterDescriptor::new(AdapterId(7), "moo", "Moo", None, 1, disposition)
+    AdapterDescriptor::new(
+        AdapterId(7),
+        "moo",
+        "Moo",
+        None,
+        FRAMEWORK_ADAPTER_SCHEMA_VERSION,
+        disposition,
+    )
 }
 
 fn scope() -> AdapterSourceScope {

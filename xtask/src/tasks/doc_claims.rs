@@ -1,4 +1,6 @@
-//! Validate known stale publication claims inside docs/articles.
+//! Validate known stale publication claims inside docs/articles, plus the
+//! coro/thread claim-drift guards (#8355/#9076) over current generated and
+//! reference surfaces.
 
 use crate::utils::project_root;
 use color_eyre::eyre::{Context, Result, bail};
@@ -93,6 +95,7 @@ pub fn run() -> Result<()> {
     if hits.is_empty() {
         check_forbidden_workspace_crate_name(&root)?;
         check_release_runbook_is_parameterised(&root)?;
+        check_coro_thread_claim_drift(&root)?;
         // #4649: this validator only checks a fixed list of hardcoded stale
         // literals. It cannot detect new staleness patterns (e.g. a crate count
         // drifting past the last hand-edited value); it only catches
@@ -165,6 +168,91 @@ fn check_release_runbook_is_parameterised(root: &std::path::Path) -> Result<()> 
     Ok(())
 }
 
+/// Coro/thread claim-drift guards (#8355 controller, #9076 truth repair).
+///
+/// The catalog and docs used to collapse "one synthetic DAP main context" into
+/// "Perl is single-threaded", presented Coro-shaped future work as current
+/// thread support, and pointed coroutine ownership at `#3539` (now an
+/// unrelated PR). These guards keep the repaired surfaces at their exact
+/// strength: a forbidden literal is the undifferentiated claim, a required
+/// literal is the live owner or exact-strength marker that replaced it.
+struct CoroClaimGuard {
+    file: &'static str,
+    forbidden: &'static [&'static str],
+    required: &'static [&'static str],
+}
+
+/// The exact pre-repair literals. `features.toml` is the root catalog
+/// authority; the four crate-local `features_sot.toml` files are byte
+/// projections of it (#7029), so they carry the same guard.
+const CORO_CLAIM_GUARDS: &[CoroClaimGuard] = &[
+    CoroClaimGuard {
+        file: "features.toml",
+        forbidden: &[
+            // #9076 negative control: the exact stale description.
+            "Perl is single-threaded so returns one synthetic thread",
+            // #9076 drift check: "Perl is single-threaded" as a universal
+            // product fact must not return anywhere in the catalog.
+            "Perl is single-threaded",
+        ],
+        required: &["at most one synthetic execution context for the active session"],
+    },
+    CoroClaimGuard {
+        file: "crates/perl-dap/features_sot.toml",
+        forbidden: CORO_CLAIM_GUARDS_STALE_CATALOG_CLAIMS,
+        required: &["at most one synthetic execution context for the active session"],
+    },
+    CoroClaimGuard {
+        file: "crates/perl-lsp-rs/features_sot.toml",
+        forbidden: CORO_CLAIM_GUARDS_STALE_CATALOG_CLAIMS,
+        required: &["at most one synthetic execution context for the active session"],
+    },
+    CoroClaimGuard {
+        file: "crates/perl-lsp-rs-core/features_sot.toml",
+        forbidden: CORO_CLAIM_GUARDS_STALE_CATALOG_CLAIMS,
+        required: &["at most one synthetic execution context for the active session"],
+    },
+    CoroClaimGuard {
+        file: "crates/perl-parser/features_sot.toml",
+        forbidden: CORO_CLAIM_GUARDS_STALE_CATALOG_CLAIMS,
+        required: &["at most one synthetic execution context for the active session"],
+    },
+    CoroClaimGuard {
+        file: "docs/project/ISSUE_3539_COROUTINES_SCOPE.md",
+        forbidden: &[
+            // #9076 negative control: the title that presented #3539 as the
+            // live coroutine owner.
+            "# Issue #3539 Coroutine Scope Decision",
+        ],
+        required: &[
+            // The live ownership graph must stay named (#8290 programme).
+            "#8290",
+        ],
+    },
+    CoroClaimGuard {
+        file: "docs/reference/DAP_PHASE5_NATIVE.md",
+        forbidden: &[
+            // "Multi-threading: Single-threaded execution model (Perl
+            // limitation)" erased Coro and interpreter threads.
+            "Single-threaded execution model (Perl limitation)",
+        ],
+        required: &["at most one synthetic execution context for the active session"],
+    },
+    CoroClaimGuard {
+        file: "docs/how-to/DEBUGGING.md",
+        forbidden: &["- [ ] Multi-threaded debugging support"],
+        required: &["synthetic per-session execution context"],
+    },
+    CoroClaimGuard {
+        file: "book/src/user-guides/debugging.md",
+        forbidden: &["- [ ] Multi-threaded debugging support"],
+        required: &["synthetic per-session execution context"],
+    },
+];
+
+const CORO_CLAIM_GUARDS_STALE_CATALOG_CLAIMS: &[&str] =
+    &["Perl is single-threaded so returns one synthetic thread", "Perl is single-threaded"];
+
 fn check_forbidden_workspace_crate_name(root: &std::path::Path) -> Result<()> {
     for rel in CRATE_NAME_GUARD_FILES {
         if CRATE_NAME_EXCEPTIONS.contains(rel) {
@@ -180,6 +268,54 @@ fn check_forbidden_workspace_crate_name(root: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// Pure form of the coro/thread claim-drift guard so the negative control can
+/// run against synthetic mutated text without touching the tree.
+fn coro_claim_guard_violations(file: &str, text: &str) -> Vec<String> {
+    let Some(guard) = CORO_CLAIM_GUARDS.iter().find(|g| g.file == file) else {
+        return vec![format!(
+            "CORO_GUARD_TABLE: {file:?} is not covered by any coro/thread claim guard (#8355/#9076)"
+        )];
+    };
+    let mut violations = Vec::new();
+    for &stale in guard.forbidden {
+        if text.contains(stale) {
+            violations.push(format!(
+                "CORO_CLAIM: {} contains {:?} — the undifferentiated coro/thread claim \
+                 repaired by #9076 must not return (#8355)",
+                guard.file, stale
+            ));
+        }
+    }
+    for &marker in guard.required {
+        if !text.contains(marker) {
+            violations.push(format!(
+                "CORO_MARKER: {} no longer contains {:?} — the exact-strength/live-owner \
+                 wording it must keep (#8355/#9076)",
+                guard.file, marker
+            ));
+        }
+    }
+    violations
+}
+
+fn check_coro_thread_claim_drift(root: &std::path::Path) -> Result<()> {
+    let mut violations = Vec::new();
+    for guard in CORO_CLAIM_GUARDS {
+        let path = root.join(guard.file);
+        let text = fs::read_to_string(&path).with_context(|| {
+            format!("failed to read guarded coro/thread surface {}", path.display())
+        })?;
+        violations.extend(coro_claim_guard_violations(guard.file, &text));
+    }
+    if violations.is_empty() {
+        return Ok(());
+    }
+    for violation in &violations {
+        eprintln!("{violation}");
+    }
+    bail!("coro/thread claim drift check failed ({} violation(s))", violations.len());
+}
+
 /// Build the success message reported when no stale-literal regressions are
 /// found. Extracted so the #4649 scope caveat ("only N hardcoded literals are
 /// checked; new staleness patterns are NOT caught") can be unit-tested.
@@ -187,8 +323,10 @@ fn success_message(files_count: usize) -> String {
     format!(
         "Doc claims OK: {files_count} articles scanned, {n} hardcoded stale literals checked, \
          0 regressions found. Scope: only the {n} hardcoded literals below are checked; \
-         new staleness patterns are NOT caught.",
-        n = STALE_PATTERNS.len()
+         new staleness patterns are NOT caught. Coro/thread claim guards additionally cover \
+         {m} generated/reference surfaces (#8355/#9076).",
+        n = STALE_PATTERNS.len(),
+        m = CORO_CLAIM_GUARDS.len()
     )
 }
 
@@ -205,6 +343,10 @@ mod tests {
         assert!(msg.contains("new staleness patterns are NOT caught"), "msg: {msg}");
         assert!(msg.contains("0 regressions found"), "msg: {msg}");
         assert!(msg.contains("7 articles scanned"), "msg: {msg}");
+        assert!(
+            msg.contains("generated/reference surfaces"),
+            "the coro guard coverage must stay part of the honest scope statement: {msg}"
+        );
     }
 
     #[test]
@@ -248,6 +390,77 @@ mod tests {
             "the tag, formula, and extension versions that disagreed"
         );
         assert!(!RELEASE_RUNBOOK_REQUIRED.is_empty(), "the parameterization must stay asserted");
+    }
+
+    #[test]
+    fn coro_drift_guard_catches_every_negative_control_from_the_issue() {
+        // #9076 negative control: mutate a repaired surface back to its stale
+        // claim and the focused check must fail. Each mutation is the exact
+        // pre-repair text.
+        let mutations: &[(&str, &str)] = &[
+            (
+                "features.toml",
+                "description = \"Thread listing (threads request); Perl is single-threaded so returns one synthetic thread\"",
+            ),
+            (
+                "docs/project/ISSUE_3539_COROUTINES_SCOPE.md",
+                "# Issue #3539 Coroutine Scope Decision",
+            ),
+            (
+                "docs/reference/DAP_PHASE5_NATIVE.md",
+                "3. **Multi-threading**: Single-threaded execution model (Perl limitation)",
+            ),
+            ("docs/how-to/DEBUGGING.md", "- [ ] Multi-threaded debugging support"),
+            ("book/src/user-guides/debugging.md", "- [ ] Multi-threaded debugging support"),
+        ];
+        for (file, mutated) in mutations {
+            let violations = coro_claim_guard_violations(file, mutated);
+            // Assert the forbidden-literal match itself fired (CORO_CLAIM), not
+            // just a non-empty result: a standalone mutated snippet also omits
+            // the required marker, so a bare non-empty assertion would pass
+            // even if the forbidden table lost its entry (#12273 review).
+            assert!(
+                violations.iter().any(|v| v.starts_with("CORO_CLAIM:")),
+                "mutating {file} back to its stale claim must trip the forbidden-literal \
+                 guard, got only: {violations:?} (mutation: {mutated})"
+            );
+        }
+    }
+
+    #[test]
+    fn coro_drift_guard_passes_on_the_current_tree() -> Result<()> {
+        // Like the runbook guard, the coro guard is only worth having if it is
+        // live against the real repaired files.
+        check_coro_thread_claim_drift(&project_root()?)
+    }
+
+    #[test]
+    fn coro_drift_guard_covers_catalog_authority_and_every_vendored_projection() {
+        // The stale description lived in the root authority plus four byte
+        // projections (#7029); guarding only one would let the others
+        // reintroduce it.
+        let guarded: Vec<&str> = CORO_CLAIM_GUARDS.iter().map(|g| g.file).collect();
+        for file in [
+            "features.toml",
+            "crates/perl-dap/features_sot.toml",
+            "crates/perl-lsp-rs/features_sot.toml",
+            "crates/perl-lsp-rs-core/features_sot.toml",
+            "crates/perl-parser/features_sot.toml",
+            "docs/project/ISSUE_3539_COROUTINES_SCOPE.md",
+            "docs/reference/DAP_PHASE5_NATIVE.md",
+            "docs/how-to/DEBUGGING.md",
+            "book/src/user-guides/debugging.md",
+        ] {
+            assert!(guarded.contains(&file), "coro guard must cover {file}");
+        }
+    }
+
+    #[test]
+    fn coro_drift_guard_rejects_unguarded_surfaces_loudly() {
+        // A file with no guard row must not silently pass.
+        let violations = coro_claim_guard_violations("docs/not-a-guarded-surface.md", "anything");
+        assert!(!violations.is_empty());
+        assert!(violations[0].contains("not covered"), "violation: {}", violations[0]);
     }
 
     #[test]

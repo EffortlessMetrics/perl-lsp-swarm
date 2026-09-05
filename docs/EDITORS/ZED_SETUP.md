@@ -132,6 +132,16 @@ Zed keeps LSP semantic tokens disabled by default. The staged extension maps
 does not prove rendered behavior in Zed. Semantic-token support remains a
 separate receipt cell after upstream registration.
 
+## Debugger support (perl-dap)
+
+Zed debugger support is a separate evidence surface from the language-server
+row above; its current status and earned cells are projected by the generated
+surface [ZED_DAP_SUPPORT.md](ZED_DAP_SUPPORT.md) from the committed journey
+receipts. Installing the Perl extension does not by itself prove debugging.
+The `perl-dap` adapter identity never aliases the `perllsp`, `perl-lsp`, or
+`perlnavigator-server` server IDs, that page's status never changes this
+page's LSP verdict, and an LSP change never alters the debugger cells.
+
 ## Evidence required before promotion
 
 Merging or compiling the extension is not enough to promote the support claim.

@@ -756,9 +756,6 @@
                 "lsp.signature_help",
                 "lsp.document_highlight",
                 "lsp.formatting",
-                "lsp.range_formatting",
-                "lsp.ranges_formatting",
-                "lsp.on_type_formatting",
                 "lsp.inline_completion",
                 "lsp.inline_value",
                 "lsp.notebook_document_sync",
@@ -1040,6 +1037,12 @@
         "icon": "$(checklist)"
       },
       {
+        "command": "perl-lsp.showCoexistenceStatus",
+        "title": "%command.showCoexistenceStatus.title%",
+        "category": "Perl",
+        "icon": "$(extensions)"
+      },
+      {
         "command": "perl-lsp.explainMissingModuleLookup",
         "title": "%command.explainMissingModuleLookup.title%",
         "category": "Perl",
@@ -1166,6 +1169,10 @@
         },
         {
           "command": "perl-lsp.showWorkspaceTrustReport",
+          "when": "workspaceFolderCount >= 1"
+        },
+        {
+          "command": "perl-lsp.showCoexistenceStatus",
           "when": "workspaceFolderCount >= 1"
         },
         {
@@ -1373,21 +1380,23 @@
     ]
   },
   "scripts": {
-    "vscode:prepublish": "npm run doctor && npm run typecheck:all && npm run compile",
+    "vscode:prepublish": "npm run doctor && npm run build",
     "doctor": "node scripts/toolchain-doctor.js",
-    "typecheck": "tsc --noEmit -p ./tsconfig.json",
-    "typecheck:test": "tsc --noEmit -p ./tsconfig.test.json",
-    "typecheck:integration": "tsc --noEmit -p ./tsconfig.integration.json",
-    "typecheck:published": "tsc --noEmit -p ./tsconfig.published-smoke.json",
-    "typecheck:scripts": "tsc --noEmit -p ./tsconfig.scripts.json",
+    "typecheck": "node scripts/governed-tsc.js --noEmit -p ./tsconfig.json",
+    "typecheck:test": "node scripts/governed-tsc.js --noEmit -p ./tsconfig.test.json",
+    "typecheck:integration": "node scripts/governed-tsc.js --noEmit -p ./tsconfig.integration.json",
+    "typecheck:published": "node scripts/governed-tsc.js --noEmit -p ./tsconfig.published-smoke.json",
+    "typecheck:scripts": "node scripts/governed-tsc.js --noEmit -p ./tsconfig.scripts.json",
     "typecheck:authority": "node scripts/check-typescript-authority.js",
-    "typecheck:all": "npm run typecheck:authority && npm run typecheck && npm run typecheck:test && npm run typecheck:integration && npm run typecheck:published && npm run typecheck:scripts",
+    "typecheck:all": "npm run typecheck && npm run typecheck:test && npm run typecheck:integration && npm run typecheck:published && npm run typecheck:scripts",
+    "check:tsconfig-inventory": "node scripts/check-typescript-config-inventory.js",
     "clean:out": "node -e \"const fs=require('fs'),path=require('path'); if(fs.existsSync('out')){for(const f of fs.readdirSync('out')){if(f!=='test')fs.rmSync(path.join('out',f),{recursive:true,force:true});}}\"",
-    "compile": "npm run clean:out && rolldown -c rolldown.config.mjs",
+    "bundle": "npm run clean:out && rolldown -c rolldown.config.mjs",
+    "build": "npm run typecheck:authority && npm run check:tsconfig-inventory && npm run typecheck:all && npm run bundle",
     "clean:test": "node -e \"require('fs').rmSync('out-test',{recursive:true,force:true})\"",
-    "compile:test": "npm run clean:test && tsc -p ./tsconfig.test.json",
-    "watch": "npm run clean:out && rolldown -c rolldown.config.mjs --watch",
-    "watch:types": "tsc -watch --noEmit -p ./tsconfig.json",
+    "compile:test": "npm run clean:test && node scripts/governed-tsc.js -p ./tsconfig.test.json",
+    "watch:bundle": "npm run clean:out && rolldown -c rolldown.config.mjs --watch",
+    "watch:types": "node scripts/governed-tsc.js -watch --noEmit -p ./tsconfig.json",
     "lint": "npm run lint:canary && node scripts/check-oxlint-warning-budget.js",
     "lint:ratchet": "node scripts/check-oxlint-warning-budget.js",
     "lint:canary": "node scripts/lint-canary.js",
@@ -1397,13 +1406,13 @@
     "test:ci": "npm run compile:test && npm run test:receipt-summary && node scripts/run-jest.js --ci --coverage --verbose",
     "test:grammar": "vscode-tmgrammar-snap --config package.json \"test/grammar/fixtures/*.pl\"",
     "test:grammar:update": "vscode-tmgrammar-snap --config package.json -u \"test/grammar/fixtures/*.pl\"",
-    "test:receipt-summary": "node --test scripts/summarize-vscode-receipts.test.js && node --test scripts/sample-local-vsix-smoke.test.js && node --test scripts/run-local-vsix-smoke.test.js && node --test scripts/check-vsix-inventory.test.js && node --test scripts/check-publisher-tools.test.js && node --test scripts/vscode-toolchain-workflows.test.js && node --test scripts/check-source-map.test.js && node --test scripts/check-typescript-authority.test.js && node --test scripts/reporter.test.js",
+    "test:receipt-summary": "node --test scripts/summarize-vscode-receipts.test.js && node --test scripts/sample-local-vsix-smoke.test.js && node --test scripts/run-local-vsix-smoke.test.js && node --test scripts/check-vsix-inventory.test.js && node --test scripts/check-publisher-tools.test.js && node --test scripts/vscode-toolchain-workflows.test.js && node --test scripts/check-source-map.test.js && node --test scripts/check-typescript-authority.test.js && node --test scripts/governed-tsc.test.js && node --test scripts/checked-command-contract.test.js && node --test scripts/reporter.test.js",
     "check:package-inventory": "node scripts/check-vsix-inventory.js",
     "check:source-map": "node scripts/check-source-map.js",
     "summarize:vscode": "node scripts/summarize-vscode-receipts.js",
     "sample:published:local": "node scripts/sample-local-vsix-smoke.js",
-    "test:integration": "npm run typecheck && npm run compile && tsc -p ./tsconfig.integration.json && node ./out/test/integration/runTest.js",
-    "test:published": "tsc -p ./tsconfig.published-smoke.json && node ./out/test/published/runPublishedSmoke.js",
+    "test:integration": "npm run typecheck && npm run bundle && node scripts/governed-tsc.js -p ./tsconfig.integration.json && node ./out/test/integration/runTest.js",
+    "test:published": "node scripts/governed-tsc.js -p ./tsconfig.published-smoke.json && node ./out/test/published/runPublishedSmoke.js",
     "test:published:local": "node ./scripts/run-local-vsix-smoke.js",
     "test:workspace-capabilities": "node ./scripts/run-workspace-capability-smoke.js",
     "bundle-lsp": "node ./scripts/bundle-lsp.js",
@@ -1417,12 +1426,25 @@
   "dependencies": {
     "adm-zip": "^0.6.0",
     "tar": "^7.5.22",
-    "vscode-languageclient": "^10.1.0"
+    "vscode-languageclient": "^10.1.1"
   },
   "overrides": {
-    "brace-expansion@1": "1.1.16",
-    "brace-expansion@2": "2.1.3",
-    "brace-expansion@5": "5.0.9"
+    "@babel/core": "7.29.6",
+    "brace-expansion@1": "1.1.18",
+    "brace-expansion@2": "2.1.4",
+    "brace-expansion@5": "5.0.9",
+    "fast-uri": "3.1.5",
+    "form-data": "4.0.6",
+    "linkify-it": "5.0.2",
+    "lodash": "4.18.1",
+    "markdown-it": "14.2.0",
+    "picomatch@2": "2.3.2",
+    "picomatch@4": "4.0.4",
+    "qs": "6.15.2",
+    "serialize-javascript": "7.0.5",
+    "tmp": "0.2.7",
+    "undici": "7.29.0",
+    "uuid": "11.1.1"
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.8",
@@ -1434,13 +1456,13 @@
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "3.9.2",
     "ajv": "^8.20.0",
-    "jest": "^30.4.2",
+    "jest": "^30.5.0",
     "mocha": "^11.8.0",
     "ovsx": "1.1.1",
-    "oxfmt": "0.63.0",
-    "oxlint": "1.78.0",
+    "oxfmt": "0.65.0",
+    "oxlint": "1.80.0",
     "oxlint-tsgolint": "7.0.2001",
-    "rolldown": "1.2.4",
+    "rolldown": "1.2.6",
     "source-map": "0.8.0",
     "typescript": "^7.0.2",
     "vscode-tmgrammar-test": "^0.1.3"

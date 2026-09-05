@@ -20,37 +20,37 @@ impl<'a> Parser<'a> {
         }
         // In non-stmt-start context for print/etc., only allow the unambiguous forms:
         // 1. `{ $fh }` block-form filehandle
-        // 2. `$var $something` (two sigiled tokens, no comma) — indirect $fh
+        // 2. `$var $something` (two consecutive sigiled tokens, no comma) — indirect $fh
         if !self.at_stmt_start && is_filehandle_builtin {
             // Clone the needed info to avoid multiple borrows of self.tokens.
-            let next_kind = self.tokens.peek_second().ok().map(|t| t.kind);
+            let next_kind = self.tokens.peek_second().ok().map(|t| t.kind());
             let next_text = self.tokens.peek_second().ok().map(|t| t.text.to_string());
-            let third_kind = self.tokens.peek_third().ok().map(|t| t.kind);
+            let third_kind = self.tokens.peek_third().ok().map(|t| t.kind());
             let third_text = self.tokens.peek_third().ok().map(|t| t.text.to_string());
 
             if let Some(nk) = next_kind {
                 // Form 1: block filehandle `print { $fh } ...`
-                if nk == TokenKind::LeftBrace {
-                    if let Some(ref txt) = third_text {
-                        if txt.starts_with('$') || txt.starts_with('*') {
-                            return true;
-                        }
-                    }
+                if nk == TokenKind::LeftBrace
+                    && let Some(ref txt) = third_text
+                    && (txt.starts_with('$') || txt.starts_with('*'))
+                {
+                    return true;
                 }
                 // Form 2: variable filehandle `print $fh $msg` (no comma after $fh)
                 if next_text.as_deref().unwrap_or("").starts_with('$') {
-                    // If next-next starts with $ or @ or is a string, it's likely
-                    // `print $fh $msg` — no comma between filehandle and message.
-                    // A comma means it's a regular `print $var, $other` list.
-                    if third_kind != Some(TokenKind::Comma) {
-                        if let Some(ref txt) = third_text {
-                            if txt.starts_with('$')
-                                || txt.starts_with('@')
-                                || third_kind == Some(TokenKind::String)
-                            {
-                                return true;
-                            }
-                        }
+                    // If next-next starts with a sigil or string, or is a numeric term
+                    // accepted by an output builtin, it is likely `print $fh EXPR`.
+                    // A comma means it is a regular `print $var, $other` list.
+                    if third_kind != Some(TokenKind::Comma)
+                        && let Some(ref txt) = third_text
+                        && (txt.starts_with('$')
+                            || txt.starts_with('@')
+                            || txt.starts_with('%')
+                            || third_kind == Some(TokenKind::String)
+                            || (third_kind == Some(TokenKind::Number)
+                                && matches!(name, "print" | "printf" | "say")))
+                    {
+                        return true;
                     }
                 }
             }
@@ -59,12 +59,11 @@ impl<'a> Parser<'a> {
 
         // print "string" should not be treated as indirect object syntax
         // Note: peek_second() gets the token after "print" since peek() is "print"
-        if name == "print" {
-            if let Ok(next) = self.tokens.peek_second() {
-                if next.kind == TokenKind::String {
-                    return false;
-                }
-            }
+        if name == "print"
+            && let Ok(next) = self.tokens.peek_second()
+            && next.kind() == TokenKind::String
+        {
+            return false;
         }
 
         // Known builtins that commonly use indirect object syntax
@@ -82,7 +81,7 @@ impl<'a> Parser<'a> {
             } else {
                 return false;
             };
-            let next_kind = next_token.kind;
+            let next_kind = next_token.kind();
             let next_text = next_token.text.to_string();
 
             // These tokens *cannot* start an indirect object
@@ -124,7 +123,7 @@ impl<'a> Parser<'a> {
                 if let Ok(third) = self.tokens.peek_third() {
                     // A comma after $fh means regular argument list, NOT indirect object
                     // e.g., print $x, $y; is print both to STDOUT
-                    if third.kind == TokenKind::Comma {
+                    if third.kind() == TokenKind::Comma {
                         return false;
                     }
 
@@ -138,10 +137,12 @@ impl<'a> Parser<'a> {
                     // Verified via `perl -MO=Terse`. See issue #974.
                     let third_text = &third.text;
                     return matches!(
-                        third.kind,
+                        third.kind(),
                         TokenKind::String       // print $fh "x"
                         | TokenKind::LeftParen    // print $fh ($x)
-                    ) || third_text.starts_with('$')    // print $fh $x
+                    ) || (third.kind() == TokenKind::Number
+                        && matches!(name, "print" | "printf" | "say")) // print $fh 1
+                      || third_text.starts_with('$')    // print $fh $x
                       || third_text.starts_with('@')    // print $fh @array
                       || third_text.starts_with('%'); // print $fh %hash
                 }
@@ -155,49 +156,47 @@ impl<'a> Parser<'a> {
             //   print Data::Dumper->new([$self])->Dump()
             // And NOT if followed by fat arrow — that's a hash-style list, NOT indirect:
             //   print STDERR => "msg"  means  print(STDERR => "msg"), not print to STDERR
-            if matches!(next_kind, TokenKind::Identifier | TokenKind::Try) {
-                if let Ok(third) = self.tokens.peek_third() {
-                    if matches!(
-                        third.kind,
-                        TokenKind::Comma | TokenKind::Arrow | TokenKind::FatArrow
-                    ) {
-                        return false;
-                    }
+            if matches!(next_kind, TokenKind::Identifier | TokenKind::Try)
+                && let Ok(third) = self.tokens.peek_third()
+            {
+                if matches!(third.kind(), TokenKind::Comma | TokenKind::Arrow | TokenKind::FatArrow)
+                {
+                    return false;
+                }
 
-                    if next_text.chars().next().is_some_and(|c| c.is_uppercase()) {
-                        return true;
-                    }
+                if next_text.chars().next().is_some_and(|c| c.is_uppercase()) {
+                    return true;
+                }
 
-                    let third_text = &third.text;
-                    let third_starts_filehandle_argument =
-                        matches!(third.kind, TokenKind::String | TokenKind::LeftParen)
-                            || third_text.starts_with('$')
-                            || third_text.starts_with('@')
-                            || third_text.starts_with('%');
-                    let third_terminates_filehandle_call =
-                        Self::is_statement_terminator(Some(third.kind))
-                            || Self::is_symbolic_short_circuit_operator(Some(third.kind))
-                            || matches!(
-                                third.kind,
-                                TokenKind::WordOr
-                                    | TokenKind::WordAnd
-                                    | TokenKind::WordXor
-                                    | TokenKind::WordNot
-                                    | TokenKind::Question
-                            );
-                    if next_kind == TokenKind::Try
-                        && matches!(name, "print" | "say" | "printf")
-                        && third_starts_filehandle_argument
-                    {
-                        return true;
-                    }
+                let third_text = &third.text;
+                let third_starts_filehandle_argument =
+                    matches!(third.kind(), TokenKind::String | TokenKind::LeftParen)
+                        || third_text.starts_with('$')
+                        || third_text.starts_with('@')
+                        || third_text.starts_with('%');
+                let third_terminates_filehandle_call =
+                    Self::is_statement_terminator(Some(third.kind()))
+                        || Self::is_symbolic_short_circuit_operator(Some(third.kind()))
+                        || matches!(
+                            third.kind(),
+                            TokenKind::WordOr
+                                | TokenKind::WordAnd
+                                | TokenKind::WordXor
+                                | TokenKind::WordNot
+                                | TokenKind::Question
+                        );
+                if next_kind == TokenKind::Try
+                    && matches!(name, "print" | "say" | "printf")
+                    && third_starts_filehandle_argument
+                {
+                    return true;
+                }
 
-                    if next_kind == TokenKind::Try
-                        && matches!(name, "close")
-                        && third_terminates_filehandle_call
-                    {
-                        return true;
-                    }
+                if next_kind == TokenKind::Try
+                    && matches!(name, "close")
+                    && third_terminates_filehandle_call
+                {
+                    return true;
                 }
             }
         }
@@ -205,17 +204,65 @@ impl<'a> Parser<'a> {
         // Check for "new ClassName" pattern
         if name == "new" {
             // peek_second() gets the token after "new"
-            if let Ok(next) = self.tokens.peek_second() {
-                if let TokenKind::Identifier = next.kind {
-                    // Uppercase identifier after "new" suggests constructor
-                    if next.text.chars().next().is_some_and(|c| c.is_uppercase()) {
-                        return true;
-                    }
+            if let Ok(next) = self.tokens.peek_second()
+                && let TokenKind::Identifier = next.kind()
+            {
+                // Uppercase identifier after "new" suggests constructor
+                if next.text.chars().next().is_some_and(|c| c.is_uppercase()) {
+                    return true;
                 }
             }
         }
 
         false
+    }
+
+    /// Check the expression-context form of a scalar-filehandle output call.
+    ///
+    /// At this point in `parse_postfix_chain`, the builtin name has already been
+    /// parsed and the current token is the prospective filehandle. Keep the
+    /// admission deliberately narrow so the generic expression parser does not
+    /// consume `$fh %hash` as a modulo expression before the indirect-call route
+    /// can see it.
+    ///
+    /// This admission set is deliberately kept in lockstep with the
+    /// statement-start `$var ARG` arm of [`Self::looks_like_indirect_object`]:
+    /// widening one (for example admitting `LeftBrace` for braced-glob
+    /// filehandles, or `Number` for `exec`/`system`) must widen the other
+    /// consciously, or the two contexts will disagree on the same source.
+    fn is_expression_scalar_filehandle_pattern(&mut self, name: &str) -> bool {
+        if !matches!(name, "print" | "printf" | "say") {
+            return false;
+        }
+
+        let Some(filehandle) = self.tokens.peek().ok() else {
+            return false;
+        };
+        if !filehandle.text.starts_with('$') || filehandle.text.len() <= 1 {
+            return false;
+        }
+
+        let Some(argument) = self.tokens.peek_second().ok() else {
+            return false;
+        };
+        if matches!(
+            argument.kind(),
+            TokenKind::Comma
+                | TokenKind::FatArrow
+                | TokenKind::RightParen
+                | TokenKind::RightBrace
+                | TokenKind::RightBracket
+                | TokenKind::Eof
+        ) {
+            return false;
+        }
+
+        argument.kind() == TokenKind::String
+            || argument.kind() == TokenKind::LeftParen
+            || argument.kind() == TokenKind::Number
+            || argument.text.starts_with('$')
+            || argument.text.starts_with('@')
+            || argument.text.starts_with('%')
     }
 
     /// Statement-start unknown lowercase bareword followed by sigiled arguments.
@@ -321,21 +368,21 @@ impl<'a> Parser<'a> {
                     return false;
                 }
                 if let Ok(third) = self.tokens.peek_third() {
-                    if matches!(third.kind, TokenKind::Comma | TokenKind::FatArrow) {
+                    if matches!(third.kind(), TokenKind::Comma | TokenKind::FatArrow) {
                         return false;
                     }
                     if matches!(
-                        third.kind,
+                        third.kind(),
                         TokenKind::RightBrace | TokenKind::RightParen | TokenKind::RightBracket
                     ) {
                         return false;
                     }
-                    if third.kind == TokenKind::Arrow {
+                    if third.kind() == TokenKind::Arrow {
                         return false;
                     }
-                    if Self::is_symbolic_short_circuit_operator(Some(third.kind))
+                    if Self::is_symbolic_short_circuit_operator(Some(third.kind()))
                         || matches!(
-                            third.kind,
+                            third.kind(),
                             TokenKind::WordOr
                                 | TokenKind::WordAnd
                                 | TokenKind::WordXor
@@ -384,6 +431,16 @@ impl<'a> Parser<'a> {
                 args.push(s.parse_assignment_or_declaration()?);
 
                 if matches!(s.peek_kind(), Some(TokenKind::Comma | TokenKind::FatArrow)) {
+                    // A fat comma auto-quotes the bareword on its left, exactly
+                    // as it does inside `parse_args`. Without this the
+                    // parenthesised and parenthesis-free spellings of the same
+                    // call disagree about whether the operand is a name or a
+                    // call of a same-named sub.
+                    if s.peek_kind() == Some(TokenKind::FatArrow)
+                        && let Some(arg) = args.last_mut()
+                    {
+                        Self::auto_quote_bareword_before_fat_comma(arg);
+                    }
                     s.tokens.next()?;
                 } else if Self::is_statement_terminator(s.peek_kind())
                     || s.is_statement_modifier_keyword()
@@ -392,10 +449,8 @@ impl<'a> Parser<'a> {
                 }
             }
 
-            let end = args
-                .last()
-                .map(|arg| arg.location.end)
-                .unwrap_or_else(|| s.previous_position());
+            let end =
+                args.last().map(|arg| arg.location.end).unwrap_or_else(|| s.previous_position());
             Ok(Node::new(NodeKind::FunctionCall { name, args }, SourceLocation { start, end }))
         })
     }
@@ -404,8 +459,10 @@ impl<'a> Parser<'a> {
     fn parse_indirect_call(&mut self) -> ParseResult<Node> {
         // Use recursion guard to prevent stack overflow on deep nesting
         // Indirect calls can be nested: new Class(new Class(new Class()))
-        self.check_recursion()?;
+        self.with_depth(|s| s.parse_indirect_call_contents())
+    }
 
+    fn parse_indirect_call_contents(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
         let method_token = self.consume_token()?; // consume method name
         let method = method_token.text.to_string();
@@ -429,7 +486,7 @@ impl<'a> Parser<'a> {
                 let token = self.consume_token()?;
                 Node::new(
                     NodeKind::Identifier { name: token.text.to_string() },
-                    SourceLocation { start: token.start, end: token.end },
+                    SourceLocation { start: token.start(), end: token.end() },
                 )
             } else {
                 self.parse_primary()?
@@ -480,6 +537,19 @@ impl<'a> Parser<'a> {
             // Use parse_assignment instead of parse_expression to avoid grouping by comma operator
             args.push(self.parse_assignment()?);
 
+            if matches!(method.as_str(), "print" | "printf" | "say")
+                && matches!(
+                    args.last().map(|arg| &arg.kind),
+                    Some(NodeKind::Variable { sigil, name })
+                        if sigil == "%" && name.is_empty()
+                )
+            {
+                return Err(ParseError::syntax(
+                    "Incomplete hash variable",
+                    self.current_position(),
+                ));
+            }
+
             // Check if we should continue (comma or fat arrow as separator in indirect syntax)
             if matches!(self.peek_kind(), Some(TokenKind::Comma | TokenKind::FatArrow)) {
                 self.tokens.next()?; // consume , or =>
@@ -487,12 +557,42 @@ impl<'a> Parser<'a> {
                 || self.is_statement_modifier_keyword()
             {
                 break;
+            } else if matches!(method.as_str(), "print" | "printf" | "say")
+                && matches!(args.last().map(|arg| &arg.kind), Some(NodeKind::Number { .. }))
+                && !matches!(
+                    self.peek_kind(),
+                    Some(
+                        TokenKind::WordOr
+                            | TokenKind::WordAnd
+                            | TokenKind::WordXor
+                            | TokenKind::WordNot
+                            | TokenKind::Question
+                            | TokenKind::RightBrace
+                            | TokenKind::RightParen
+                            | TokenKind::RightBracket
+                    )
+                )
+                && !Self::is_symbolic_short_circuit_operator(self.peek_kind())
+            {
+                // After a comma-less numeric message term, any token that neither
+                // separates arguments nor ends the call is malformed input: Perl
+                // requires an operator or separator there.
+                return Err(ParseError::syntax(
+                    "Adjacent terms after a numeric message require an operator or separator",
+                    self.current_position(),
+                ));
             }
         }
 
-        let end = self.previous_position();
-
-        self.exit_recursion();
+        // Numeric scalar-filehandle output calls must own the span through their
+        // last argument so AST, HIR, and PIR ranges stay honest (#13079). Other
+        // indirect forms keep the current-main span that ends at the object;
+        // extending those is a separate production follow-up.
+        let end = if matches!(method.as_str(), "print" | "printf" | "say") {
+            args.last().map_or(object.location.end, |arg| arg.location.end)
+        } else {
+            self.previous_position()
+        };
 
         // Return as an indirect call node (using MethodCall with a flag or separate node)
         Ok(Node::new(
@@ -556,11 +656,7 @@ impl<'a> Parser<'a> {
             _ => true, // not a declaration node; treat as already complete
         };
 
-        if has_initializer {
-            Ok(decl)
-        } else {
-            self.parse_below_assignment_with(decl)
-        }
+        if has_initializer { Ok(decl) } else { self.parse_below_assignment_with(decl) }
     }
 
     /// Parse a variable declaration as a function argument.
@@ -584,7 +680,7 @@ impl<'a> Parser<'a> {
         let local_has_complex_lvalue = declarator == "local"
             && self.peek_kind() == Some(TokenKind::LeftParen)
             && matches!(
-                self.tokens.peek_third().ok().map(|t| t.kind),
+                self.tokens.peek_third().ok().map(|t| t.kind()),
                 Some(TokenKind::LeftBrace | TokenKind::LeftBracket | TokenKind::Arrow)
             );
         if local_has_complex_lvalue {
@@ -594,7 +690,7 @@ impl<'a> Parser<'a> {
 
             let initializer = if self.peek_kind() == Some(TokenKind::Assign) {
                 let op_token = self.tokens.next()?; // consume =
-                let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start) {
+                let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                     missing
                 } else {
                     self.parse_assignment()?
@@ -604,7 +700,13 @@ impl<'a> Parser<'a> {
                 None
             };
 
-            let end = self.previous_position();
+            // The initializer is parsed through `parse_assignment`, which does
+            // not advance `previous_position()`; anchor the end on the parsed
+            // nodes (see `parse_variable_declaration`).
+            let end = initializer
+                .as_ref()
+                .map_or(variable.location.end, |node| node.location.end)
+                .max(self.previous_position());
             Ok(Node::new(
                 NodeKind::VariableDeclaration {
                     declarator,
@@ -640,7 +742,7 @@ impl<'a> Parser<'a> {
 
             let initializer = if self.peek_kind() == Some(TokenKind::Assign) {
                 let op_token = self.tokens.next()?; // consume =
-                let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start) {
+                let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                     missing
                 } else {
                     self.parse_assignment()?
@@ -670,7 +772,7 @@ impl<'a> Parser<'a> {
 
             let initializer = if self.peek_kind() == Some(TokenKind::Assign) {
                 let op_token = self.tokens.next()?; // consume =
-                let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start) {
+                let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
                     missing
                 } else {
                     self.parse_assignment()?
@@ -680,7 +782,13 @@ impl<'a> Parser<'a> {
                 None
             };
 
-            let end = self.previous_position();
+            // `local $x = EXPR` as an argument parses its target through
+            // `parse_assignment`, which does not advance `previous_position()`;
+            // anchor the end on the parsed nodes (see `parse_variable_declaration`).
+            let end = initializer
+                .as_ref()
+                .map_or(variable.location.end, |node| node.location.end)
+                .max(self.previous_position());
             Ok(Node::new(
                 NodeKind::VariableDeclaration {
                     declarator,
@@ -718,12 +826,12 @@ impl<'a> Parser<'a> {
             let first_is_scalar =
                 s.tokens.peek().is_ok_and(|t| t.text.starts_with('$') && t.text.len() > 1);
             let first_is_filehandle_block =
-                s.tokens.peek().is_ok_and(|t| t.kind == TokenKind::LeftBrace)
+                s.tokens.peek().is_ok_and(|t| t.kind() == TokenKind::LeftBrace)
                     && s.tokens
                         .peek_second()
                         .is_ok_and(|t| t.text.starts_with('$') || t.text.starts_with('*'));
             let second_is_not_separator = s.tokens.peek_second().is_ok_and(|t| {
-                !matches!(t.kind, TokenKind::Comma | TokenKind::FatArrow | TokenKind::RightParen)
+                !matches!(t.kind(), TokenKind::Comma | TokenKind::FatArrow | TokenKind::RightParen)
             });
 
             if (first_is_scalar && second_is_not_separator) || first_is_filehandle_block {
@@ -735,6 +843,11 @@ impl<'a> Parser<'a> {
 
                 // Collect remaining arguments (no comma required after filehandle)
                 while s.peek_kind() != Some(TokenKind::RightParen) && !s.tokens.is_eof() {
+                    if s.peek_kind() == Some(TokenKind::FatArrow)
+                        && let Some(arg) = args.last_mut()
+                    {
+                        Self::auto_quote_bareword_before_fat_comma(arg);
+                    }
                     if matches!(s.peek_kind(), Some(TokenKind::Comma) | Some(TokenKind::FatArrow)) {
                         s.tokens.next()?;
                     }
@@ -751,7 +864,10 @@ impl<'a> Parser<'a> {
                 let mut args = Vec::new();
 
                 while s.peek_kind() != Some(TokenKind::RightParen) && !s.tokens.is_eof() {
-                    let arg = s.parse_assignment_or_declaration()?;
+                    let mut arg = s.parse_assignment_or_declaration()?;
+                    if s.peek_kind() == Some(TokenKind::FatArrow) {
+                        Self::auto_quote_bareword_before_fat_comma(&mut arg);
+                    }
                     args.push(arg);
                     match s.peek_kind() {
                         Some(TokenKind::Comma) | Some(TokenKind::FatArrow) => {
@@ -780,17 +896,9 @@ impl<'a> Parser<'a> {
                 // otherwise parse as a normal assignment expression.
                 let mut arg = s.parse_assignment_or_declaration()?;
 
-                // Check for fat arrow after the argument
-                // If we see =>, the argument should be auto-quoted if it's a bare identifier
+                // A fat comma auto-quotes a bare identifier on its left.
                 if s.peek_kind() == Some(TokenKind::FatArrow) {
-                    // Auto-quote bare identifiers before =>
-                    if let NodeKind::Identifier { ref name } = arg.kind {
-                        // Convert identifier to string (auto-quoting)
-                        arg = Node::new(
-                            NodeKind::String { value: name.clone(), interpolated: false },
-                            arg.location,
-                        );
-                    }
+                    Self::auto_quote_bareword_before_fat_comma(&mut arg);
                     args.push(arg);
                     s.tokens.next()?; // consume =>
                     if s.peek_kind() == Some(TokenKind::FatArrow) {
@@ -822,7 +930,7 @@ impl<'a> Parser<'a> {
                 match s.peek_kind() {
                     Some(TokenKind::Comma) | Some(TokenKind::FatArrow) => {
                         let separator = s.consume_token()?;
-                        if separator.kind == TokenKind::Comma {
+                        if separator.kind() == TokenKind::Comma {
                             s.consume_redundant_commas()?;
                         }
                         // Handle `, =>` (comma then fat arrow) — consume the

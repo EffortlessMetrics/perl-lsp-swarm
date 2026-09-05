@@ -25,7 +25,8 @@ use crate::state::{code_lens_cap, code_lens_resolve_deadline, inlay_hints_cap};
 use perl_lsp_rs_core::providers::completion::collect_module_names_from_roots_with_cache;
 use perl_lsp_rs_core::providers::inline_completion::{
     BackendError, EvaluatedInlineCompletionItem, InlineCompletionEnvironment,
-    InlineCompletionProvider, InlinePackageMethodFact,
+    InlineCompletionProvider, InlineCompletionSnapshotIdentity, InlinePackageMethodFact,
+    PreparedInvocationContext,
 };
 use perl_lsp_rs_core::providers::normalize_provider_decision_receipt;
 use perl_parser_core::source_file::is_perl_source_uri;
@@ -1029,11 +1030,21 @@ impl LspServer {
             let trigger_kind = inline_completion_trigger_kind(&params)?;
             let selected_completion = selected_inline_completion_info(&params)?;
 
-            // Snapshot text under document lock, then release before any slow work
-            let text = {
+            // Snapshot text plus its version/generation identity under the
+            // document lock, then release before any slow work. The identity
+            // binds the invoked AI context to one immutable snapshot.
+            let (text, snapshot_identity) = {
                 let documents = self.documents_guard();
                 match self.get_document(&documents, uri) {
-                    Some(doc) => doc.text_arc.to_string(),
+                    Some(doc) => (
+                        doc.text_arc.to_string(),
+                        InlineCompletionSnapshotIdentity {
+                            document_version: Some(i64::from(doc.version)),
+                            source_generation: Some(u64::from(
+                                doc.generation.load(std::sync::atomic::Ordering::Acquire),
+                            )),
+                        },
+                    ),
                     None => {
                         return Ok(Some(json!({ "items": [] })));
                     }
@@ -1053,54 +1064,69 @@ impl LspServer {
             // external candidate can qualify for automatic display anyway. The
             // predicate is shared with the custom streaming route.
             let consult_backend = ai_enabled && external_completion_permitted(trigger_kind);
-            if consult_backend
-                && let Some(context) = provider.prepare_context(&text, line, character)
-            {
-                let backend_result =
-                    self.try_ai_inline_completion(&context, ai_max_output_tokens, ai_timeout_ms);
-                match backend_result {
-                    Ok(ref items) if !items.is_empty() => {
-                        match evaluate_external_candidates(
-                            &provider,
-                            items.clone(),
-                            &text,
-                            &context,
-                            selected_completion.as_ref(),
-                            trigger_kind,
-                            line,
-                            character,
-                            ai_fallback,
-                        ) {
-                            ExternalCompletionOutcome::Accepted(list) => {
-                                return Ok(Some(serde_json::to_value(list).map_err(|e| {
-                                    crate::protocol::internal_error(&format!(
-                                        "Failed to serialize inline completions: {}",
-                                        e
-                                    ))
-                                })?));
+            if consult_backend {
+                // Invoked AI preparation is snapshot-bound and fails closed:
+                // a request version that no longer matches the snapshot, or a
+                // cursor inside a hard-reject zone, makes zero backend calls.
+                let request_document_version = params
+                    .pointer("/context/selectedCompletionInfo/textDocumentVersion")
+                    .and_then(Value::as_i64);
+                if let PreparedInvocationContext::Ready(context) = provider.prepare_invoked_context(
+                    &text,
+                    line,
+                    character,
+                    snapshot_identity,
+                    request_document_version,
+                ) {
+                    let backend_result = self.try_ai_inline_completion(
+                        &context,
+                        ai_max_output_tokens,
+                        ai_timeout_ms,
+                    );
+                    match backend_result {
+                        Ok(ref items) if !items.is_empty() => {
+                            match evaluate_external_candidates(
+                                &provider,
+                                items.clone(),
+                                &text,
+                                &context,
+                                selected_completion.as_ref(),
+                                trigger_kind,
+                                line,
+                                character,
+                                ai_fallback,
+                            ) {
+                                ExternalCompletionOutcome::Accepted(list) => {
+                                    return Ok(Some(serde_json::to_value(list).map_err(|e| {
+                                        crate::protocol::internal_error(&format!(
+                                            "Failed to serialize inline completions: {}",
+                                            e
+                                        ))
+                                    })?));
+                                }
+                                ExternalCompletionOutcome::FinalEmpty => {
+                                    return Ok(Some(json!({ "items": [] })));
+                                }
+                                ExternalCompletionOutcome::FallbackRequired => {
+                                    // Fall through to the deterministic route.
+                                }
                             }
-                            ExternalCompletionOutcome::FinalEmpty => {
+                        }
+                        Err(ref e) => {
+                            if matches!(e, BackendError::Auth(_)) {
+                                self.notify_ai_auth_failure();
+                            }
+                            tracing::debug!("AI inline completion failed: {}", e);
+                            if !ai_fallback {
                                 return Ok(Some(json!({ "items": [] })));
                             }
-                            ExternalCompletionOutcome::FallbackRequired => {
-                                // Fall through to the deterministic route.
+                            // Fall through to deterministic
+                        }
+                        _ => {
+                            // Ok(empty) — fall through to deterministic if fallback enabled
+                            if !ai_fallback {
+                                return Ok(Some(json!({ "items": [] })));
                             }
-                        }
-                    }
-                    Err(ref e) => {
-                        if matches!(e, BackendError::Auth(_)) {
-                            self.notify_ai_auth_failure();
-                        }
-                        tracing::debug!("AI inline completion failed: {}", e);
-                        if !ai_fallback {
-                            return Ok(Some(json!({ "items": [] })));
-                        }
-                        // Fall through to deterministic
-                    }
-                    _ => {
-                        // Ok(empty) — fall through to deterministic if fallback enabled
-                        if !ai_fallback {
-                            return Ok(Some(json!({ "items": [] })));
                         }
                     }
                 }

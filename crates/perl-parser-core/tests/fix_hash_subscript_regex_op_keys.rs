@@ -170,11 +170,12 @@ fn test_arrow_hash_subscript_key_qw() {
 // peek_second() has no token and the quote-operator name must still be
 // consumed as a bareword before recovery inserts the missing close.
 #[test]
-fn test_hash_subscript_quote_operator_names_at_eof() {
+fn test_hash_subscript_quote_operator_names_at_eof() -> Result<(), Box<dyn std::error::Error>> {
     for name in ["m", "s", "q", "qq", "qw", "qr", "qx", "tr", "y"] {
         let source = format!("$h{{{name}");
         let mut parser = perl_parser_core::Parser::new(&source);
-        let ast = parser.parse().expect("recovery parse should return an AST");
+        let ast =
+            parser.parse().map_err(|e| format!("recovery parse should return an AST: {e:?}"))?;
         assert!(
             !parser.get_errors().is_empty(),
             "truncated hash subscript must retain a recovery diagnostic: {source}"
@@ -185,6 +186,7 @@ fn test_hash_subscript_quote_operator_names_at_eof() {
             ast.to_sexp()
         );
     }
+    Ok(())
 }
 
 // The EOF rule must not consume a real quote-like expression whose delimiter

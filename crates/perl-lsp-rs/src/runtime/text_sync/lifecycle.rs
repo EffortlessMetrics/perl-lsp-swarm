@@ -1,6 +1,6 @@
 use super::{
-    Arc, AtomicU32, CodeFormatter, FormattingOptions, JsonRpcError, LspServer, NonZeroU32, Value,
-    invalid_params, json, source_path_from_uri,
+    Arc, AtomicU32, JsonRpcError, LspServer, NonZeroU32, Value, invalid_params, json,
+    source_path_from_uri,
 };
 use crate::runtime::BackingFileTransition;
 #[cfg(feature = "workspace")]
@@ -58,13 +58,13 @@ impl LspServer {
                 );
                 if !file_on_disk {
                     if let Some(coordinator) = self.coordinator() {
-                        for key in self.uri_key_variants(uri) {
+                        for key in Self::uri_key_variants(uri) {
                             coordinator.index().remove_file(&key);
                         }
                     }
                 } else {
                     if session_diverged && let Some(coordinator) = self.coordinator() {
-                        for key in self.uri_key_variants(uri) {
+                        for key in Self::uri_key_variants(uri) {
                             coordinator.index().remove_file(&key);
                         }
                         if let Some(content) =
@@ -95,7 +95,7 @@ impl LspServer {
                     // (#11305) — is not blocked by the stale high-water mark
                     // from the previous session (#5438).
                     if let Some(coordinator) = self.coordinator() {
-                        for key in self.uri_key_variants(uri) {
+                        for key in Self::uri_key_variants(uri) {
                             coordinator.index().reset_generation_for_close(&key);
                         }
                     }
@@ -333,78 +333,16 @@ impl LspServer {
         Ok(())
     }
 
-    /// Handle willSaveWaitUntil request
+    /// Handle willSaveWaitUntil request.
+    ///
+    /// Formatter-owned edits are withdrawn (#11955): this surface is no longer
+    /// advertised and direct requests receive the truthful method-not-advertised
+    /// refusal rather than an executable edit or a successful empty result.
+    /// #8092 owns selecting and proving one save owner.
     pub(crate) fn handle_will_save_wait_until(
         &self,
-        params: Option<Value>,
+        _params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
-
-            tracing::debug!("Document will save wait until: {}", uri);
-
-            // Reject stale requests: if the document version in the request is
-            // older than the current version, the edit would apply to outdated
-            // content (#5054). The non-save handle_formatting handler does the
-            // same check (formatting.rs:129-131).
-            let req_version =
-                params["textDocument"]["version"].as_i64().and_then(|n| i32::try_from(n).ok());
-            self.ensure_latest(uri, req_version)?;
-
-            // Phase 1: snapshot text under brief lock, then drop.
-            // Formatting can shell out to perltidy, so we must NOT hold locks
-            // during the format call (#4643 off-lock pattern).
-            if !self.is_formatting_enabled() || !self.config.lock().format_on_save {
-                return Ok(Some(json!([])));
-            }
-            let text = {
-                let documents = self.documents.lock();
-                match self.get_document(&documents, uri) {
-                    Some(doc) => doc.text_str().to_string(),
-                    None => return Ok(Some(json!([]))),
-                }
-            };
-            // locks dropped here
-
-            // Phase 2: format off-lock using the user's actual perltidy config.
-            let config = self.build_perltidy_config();
-            let tab_size = config.indent_columns.unwrap_or(4);
-            let insert_spaces = !config.tabs.unwrap_or(false);
-            let formatter = CodeFormatter::with_config_and_mode(config, self.formatter_mode());
-            let format_options = FormattingOptions {
-                tab_size,
-                insert_spaces,
-                trim_trailing_whitespace: Some(true),
-                insert_final_newline: Some(true),
-                trim_final_newlines: Some(true),
-            };
-
-            match formatter.format_document(&text, &format_options) {
-                Ok(edits) if !edits.is_empty() => {
-                    let lsp_edits: Vec<Value> = edits
-                        .iter()
-                        .map(|edit| {
-                            json!({
-                                "range": {
-                                    "start": {
-                                        "line": edit.range.start.line,
-                                        "character": edit.range.start.character
-                                    },
-                                    "end": {
-                                        "line": edit.range.end.line,
-                                        "character": edit.range.end.character
-                                    }
-                                },
-                                "newText": edit.new_text
-                            })
-                        })
-                        .collect();
-                    Ok(Some(json!(lsp_edits)))
-                }
-                _ => Ok(Some(json!([]))),
-            }
-        } else {
-            Ok(Some(json!([])))
-        }
+        Err(crate::protocol::method_not_advertised())
     }
 }

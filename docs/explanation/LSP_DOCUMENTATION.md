@@ -266,7 +266,7 @@ Using `lsp-mode`:
 - [x] `textDocument/codeLens`
 - [x] `textDocument/documentLink`
 - [x] `textDocument/selectionRange`
-- [x] `textDocument/onTypeFormatting`
+- [ ] `textDocument/onTypeFormatting` (withdrawn, #11955 — refuses until #9320)
 - [x] `workspace/symbol`
 
 ### Client Capabilities

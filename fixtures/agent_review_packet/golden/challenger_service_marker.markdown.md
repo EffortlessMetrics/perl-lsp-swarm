@@ -1,0 +1,93 @@
+# Review packet: R_service_marker_probe
+
+## Review subject
+
+- packet: example-train/R_service_marker/N_service_marker_probe/2026-08-24T00:00:00Z
+- repository: perl-lsp-swarm base a277266c5 head b31d5e9a2 (diff sha256:9f2c41ab)
+- programme: example-train / stage R_service_marker_probe / proposition P_service_marker_probe / profile read_only_reviewer
+- owning issue: #10858
+- builder packet: sha256:1c0f (agent_implementation_packet.v1)
+- candidate state: observed (sha256:77aa)
+  - candidate: PR #12301 head b31d5e9a2
+  - collision: single writer; no competing candidate branch
+- changed authority: xtask/src/tasks/service_marker_probe.rs — new probe module
+- changed authority: fixtures/service_marker_probe/stale_marker.v1.json — focused stale-marker fixture
+- changed authority: docs/policy/NON_RUST_INVENTORY.md — regenerated inventory
+- evidence: cargo test -p xtask --bin xtask service_marker_probe --locked@b31d5e9a2 (focused_test_receipt)
+- evidence: non-rust inventory second-run no-diff@b31d5e9a2 (generation_receipt)
+
+## Stage falsifiers under audit
+
+- falsifier F_marker_missing_fails [unit]: A stale service marker that the probe accepts is a defect: the focused test feeds one stale marker and asserts the typed mismatch is emitted.
+- falsifier F_fresh_marker_passes [unit]: A fresh marker must not emit a finding; the positive control feeds a current marker and asserts no mismatch.
+
+## Primary proposition and falsification questions
+
+Primary proposition: The service-marker probe emits one typed mismatch finding per stale marker on the current observed tree, and no other module acquires marker-freshness authority.
+
+- stage question Q_marker_tree_binding: Does the probe compare the marker's recorded tree against the observed tree rather than marker presence, so an alternate freshly-generated marker file cannot satisfy the test?
+- stage question Q_probe_authority_duplication: Does any existing authority already own marker-freshness semantics such that this probe duplicates it instead of consuming it?
+
+Shared seed questions (immutable):
+
+- Q_seed_proposition: What exact proposition would this PR establish?
+- Q_seed_wrong_impl: What realistic wrong implementation could pass a weak test?
+- Q_seed_substrate: What distinguishes substrate/mechanism from external behavior?
+- Q_seed_currentness: Which subject/currentness mismatch could create a false green?
+- Q_seed_duplicate: Which existing authority might have been duplicated?
+- Q_seed_cleanup: Which failure, cleanup, or retention path is easiest to omit?
+- Q_seed_widening: Which claim could be accidentally widened?
+
+## Review lenses
+
+- [required] semantic_correctness
+  - refinement R_marker_typing: One typed mismatch finding per stale marker; count or fingerprint change alone is not repair evidence.
+- [required] architecture_authority_duplication
+  - refinement R_train_edge_authority: train_edge_contract.v1 remains the sole shared edge/profile vocabulary owner; the probe must not redefine it.
+- [required] subject_evidence_identity
+- [required] lifecycle_currentness_concurrency
+- [not_applicable] security_trust_boundary — The probe reads repository-local marker files only; no external input, secret, or trust boundary is crossed.
+- [not_applicable] resource_retention_cleanup — The probe allocates no persistent resources; there is no retention or cleanup path to challenge.
+- [not_applicable] platform_runtime_portability — The probe runs inside the repository-owned xtask binary on the same toolchain as its tests.
+- [required] spec_test_docs_consistency
+  - refinement R_inventory_regeneration: New fixture files obligate allowlist entries and a second-run no-diff inventory regeneration.
+- [not_applicable] release_external_boundary — No release, publication, or external stage is claimed by this candidate.
+
+## Negative-control audit
+
+- falsifier F_marker_missing_fails:
+  - exists: established (service_marker_probe focused test exists at head b31d5e9a2 and runs in the focused route.)
+  - red_before_or_mutation_evidence: established (Deleting the emission path turns the focused stale-marker test red before the module lands.)
+  - passes_only_intended_implementation: established (The test asserts the typed mismatch enum variant, not a log line or exit-count proxy.)
+  - correct_subject_and_generation: established (The fixture is a hand-written stale marker, not output generated from the probe under test.)
+  - independent_expectation_source: established (Expected mismatch values are literal fixture expectations authored before the implementation.)
+  - alternate_subject_exclusion: established (A marker file recorded against a different tree is rejected, so an unrelated fresh file cannot satisfy the test.)
+- falsifier F_fresh_marker_passes:
+  - exists: established (Positive-control test feeds a current marker and asserts no mismatch.)
+  - red_before_or_mutation_evidence: established (Inverting the tree comparison flips this control red together with the stale-marker falsifier.)
+  - passes_only_intended_implementation: established (The control distinguishes fresh from stale by tree identity, not by file presence.)
+  - correct_subject_and_generation: established (The current marker fixture is hand-authored against the observed tree.)
+  - independent_expectation_source: established (No-mismatch expectation is the literal absence in the fixture, independent of probe output.)
+  - alternate_subject_exclusion: established (The control binds the marker to the observed tree identity; alternate-tree markers fail.)
+
+## Old-path disposition
+
+- seam marker_freshness_check: removed
+  - owner: #10858
+
+## Spec/test/docs/generated obligations
+
+- fixture_expectation_manifests: fixtures/service_marker_probe/stale_marker.v1.json (sha256:4b1e)
+- tests_mutations: xtask service_marker_probe focused tests (cargo test -p xtask --bin xtask service_marker_probe --locked@b31d5e9a2)
+- generated_artifacts: docs/policy/NON_RUST_INVENTORY.md (second-run no-diff@b31d5e9a2)
+
+## Review roles
+
+- [required] builder_self_review: The builder states the exact proposition and its falsifiers before independent review.
+- [required] adversarial_challenger: An independent challenger attempts the weak-oracle, wrong-subject, and duplicate-authority escapes named by this packet.
+- [optional] specialist: A train-graph specialist joins only when the probe touches shared edge vocabulary.
+- [optional] evidence_worker: Bounded evidence workers may gather receipts; they never review.
+
+## Lifecycle discrimination
+
+- graceful cleanup claimed: false

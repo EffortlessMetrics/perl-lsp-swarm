@@ -46,7 +46,7 @@
 
 use std::collections::BTreeSet;
 
-use perl_parser_core::pir::{LexicalExtractorReceipt, LexicalRole};
+use perl_parser_core::pir::LexicalExtractorReceipt;
 use perl_semantic_facts::{
     Confidence, Provenance, ProviderFactFreshness, ProviderFactSourceKind, ProviderFactTrace,
     ProviderFallbackState, ProviderSurface,
@@ -156,33 +156,13 @@ pub struct PirShadowCompareReceipt {
 /// near-match (range disagreement) rather than independent missing/extra sites.
 const RANGE_NEAR_MATCH_BYTES: usize = 2;
 
-/// Return the source range for a lexical fact, narrowing declaration anchors
-/// that include the declarator keyword (for example `my $i` in a `for` loop)
-/// to the actual variable token.  The legacy reference provider reports token
-/// ranges, so carrying the wider declaration anchor into the comparison would
-/// look like a compiler-only reference even though it is the same binding.
-fn lexical_fact_range(
-    role: LexicalRole,
-    sigil: &str,
-    name: &str,
-    range: Option<(usize, usize)>,
-    legacy_ranges: &BTreeSet<(usize, usize)>,
-) -> Option<(usize, usize)> {
-    let (range_start, range_end) = range?;
-    if role != LexicalRole::Write {
-        return Some((range_start, range_end));
-    }
-
-    let token_len = sigil.len().checked_add(name.len())?;
-    // Declaration anchors can include a declarator keyword, but the legacy
-    // provider supplies the authoritative token range for this comparison.
-    // Narrow only when that range has the same end and exact byte length as
-    // the named binding.  This avoids numeric-prefix guesses and leaves
-    // non-terminal or otherwise ambiguous anchors unchanged.
-    let token_range = legacy_ranges.iter().copied().find(|&(start, end)| {
-        end == range_end && start >= range_start && end.checked_sub(start) == Some(token_len)
-    });
-    token_range.or(Some((range_start, range_end)))
+/// Return the canonical source range carried by a lexical fact.
+///
+/// Lexical anchors are produced by the parser/HIR lowering path. This helper
+/// deliberately accepts no legacy-provider input: shadow output may compare
+/// against the compiler range, but it cannot construct, narrow, or repair it.
+fn lexical_fact_range(range: Option<(usize, usize)>) -> Option<(usize, usize)> {
+    range
 }
 
 impl PirShadowCompareReceipt {
@@ -331,13 +311,7 @@ pub fn shadow_references_with_pir(
         .iter()
         .filter(|f| f.name.name == target_name && f.source_anchor.is_anchored())
         .filter_map(|fact| {
-            lexical_fact_range(
-                fact.role,
-                &fact.name.sigil,
-                &fact.name.name,
-                fact.source_anchor.range.as_ref().map(|r| (r.start, r.end)),
-                &legacy_set,
-            )
+            lexical_fact_range(fact.source_anchor.range.as_ref().map(|r| (r.start, r.end)))
         })
         .collect();
 
@@ -506,7 +480,6 @@ fn evaluate_pir_reference_candidate(
     target_sigil: &str,
     target_name: &str,
     target_body_idx: usize,
-    legacy_ranges: &BTreeSet<(usize, usize)>,
     uri_mapper: &dyn Fn(usize, usize) -> lsp_types::Range,
     include_declaration: bool,
 ) -> Result<Vec<lsp_types::Range>, PirShadowRefusalReason> {
@@ -542,13 +515,9 @@ fn evaluate_pir_reference_candidate(
             declaration_skipped = true;
             continue;
         }
-        if let Some((start, end)) = lexical_fact_range(
-            fact.role,
-            &fact.name.sigil,
-            &fact.name.name,
-            fact.source_anchor.range.as_ref().map(|r| (r.start, r.end)),
-            legacy_ranges,
-        ) {
+        if let Some((start, end)) =
+            lexical_fact_range(fact.source_anchor.range.as_ref().map(|r| (r.start, r.end)))
+        {
             ranges.push(uri_mapper(start, end));
         }
     }
@@ -664,13 +633,11 @@ pub fn references_pir_promote(
         }
 
         PromotionMode::PromoteExact => {
-            let legacy_ranges: BTreeSet<(usize, usize)> = legacy_result.iter().copied().collect();
             match evaluate_pir_reference_candidate(
                 pir_receipt,
                 target_sigil,
                 target_name,
                 target_body_idx,
-                &legacy_ranges,
                 uri_mapper,
                 opts.include_declaration,
             ) {
@@ -692,7 +659,6 @@ pub fn references_pir_promote(
 
 #[cfg(test)]
 mod promote_tests {
-    use super::super::find_references_single_file;
     use super::{
         DEFAULT_PROMOTION_MODE, PirShadowRefusalReason, PromotionMode, ReferenceOptions,
         ReferencesPirPromoteOutcome, references_pir_promote,
@@ -1111,21 +1077,26 @@ mod promote_tests {
     }
 
     #[test]
-    fn promote_exact_uses_legacy_token_range_for_loop_declaration() -> Result<(), String> {
+    fn promote_exact_ignores_forged_legacy_anchor_for_loop_declaration() -> Result<(), String> {
         let source = "for my $i (1 .. 3) { print $i; }\n";
         let mut parser = Parser::new(source);
         let output = parser.parse_with_recovery();
         let hir = lower_ast(&output.ast);
         let receipt = extract_lexical_facts(&hir);
-        let legacy = find_references_single_file(&output.ast, 8)
-            .ok_or_else(|| "legacy provider found no loop-local references".to_string())?;
+        // Deliberately provide forged legacy ranges: one entirely outside the
+        // declaration, and one exactly matching the obsolete widened `my $i`
+        // span. Exact promotion must consume the canonical HIR binding anchor
+        // instead — a regression emitting the widened anchor alongside the
+        // token anchor, or an implementation that only narrows overlapping
+        // legacy ranges while leaking non-overlapping forgeries, fails here.
+        let forged_legacy = vec![(0usize, 1usize), (4usize, 9usize)];
 
         let outcome = references_pir_promote(
             PromotionMode::PromoteExact,
             "$",
             "i",
             &receipt,
-            &legacy,
+            &forged_legacy,
             0,
             &byte_mapper,
             opts_all(),
@@ -1138,11 +1109,13 @@ mod promote_tests {
             .iter()
             .map(|range| (range.start.character as usize, range.end.character as usize))
             .collect::<Vec<_>>();
-        if !mapped.contains(&(7, 9)) {
-            return Err(format!("promoted declaration was not token-normalized: {mapped:?}"));
-        }
-        if mapped.contains(&(4, 9)) {
-            return Err(format!("promoted declaration leaked widened anchor: {mapped:?}"));
+        // The foreach binding anchor is the `$i` token (7..9), per the
+        // iterator-binding token-anchor contract merged in #12274 — not the
+        // whole `my $i` span (4..9) this expectation pinned before it. Assert
+        // the complete result so exact promotion cannot emit unrelated ranges.
+        let expected = vec![(7, 9), (27, 29)];
+        if mapped != expected {
+            return Err(format!("expected only canonical anchors {expected:?}, got {mapped:?}"));
         }
         Ok(())
     }
@@ -1154,53 +1127,24 @@ mod tests {
         PirShadowRefusalReason, evaluate_refusal,
         lexical_fact_range as production_lexical_fact_range,
     };
-    use perl_parser_core::pir::LexicalRole;
-    use std::collections::BTreeSet;
 
-    fn narrowed(
-        role: LexicalRole,
-        sigil: &str,
-        name: &str,
-        range: Option<(usize, usize)>,
-        legacy: &[(usize, usize)],
-    ) -> Option<(usize, usize)> {
-        let legacy_ranges = legacy.iter().copied().collect::<BTreeSet<_>>();
-        production_lexical_fact_range(role, sigil, name, range, &legacy_ranges)
-    }
-
-    // Compatibility adapter for the Unicode assertions below: it supplies
-    // the authoritative token range that a parser/provider oracle would emit.
-    fn lexical_fact_range(
-        role: LexicalRole,
-        sigil: &str,
-        name: &str,
-        range: Option<(usize, usize)>,
-    ) -> Option<(usize, usize)> {
-        let legacy = range.and_then(|(_, end)| {
-            end.checked_sub(sigil.len().checked_add(name.len())?).map(|start| (start, end))
-        });
-        narrowed(role, sigil, name, range, legacy.as_slice())
+    fn canonical(range: Option<(usize, usize)>) -> Option<(usize, usize)> {
+        production_lexical_fact_range(range)
     }
 
     #[test]
-    fn declaration_anchor_narrows_for_my_state_and_bare_prefixes() {
-        assert_eq!(narrowed(LexicalRole::Write, "$", "i", Some((4, 9)), &[(7, 9)]), Some((7, 9)));
-        assert_eq!(narrowed(LexicalRole::Write, "$", "x", Some((0, 5)), &[(3, 5)]), Some((3, 5)));
-        assert_eq!(narrowed(LexicalRole::Write, "$", "s", Some((0, 8)), &[(6, 8)]), Some((6, 8)));
-        assert_eq!(narrowed(LexicalRole::Write, "$", "v", Some((0, 6)), &[(4, 6)]), Some((4, 6)));
+    fn canonical_anchor_is_consumed_without_legacy_repair() {
+        assert_eq!(canonical(Some((7, 9))), Some((7, 9)));
+        assert_eq!(canonical(Some((3, 5))), Some((3, 5)));
+        assert_eq!(canonical(Some((6, 8))), Some((6, 8)));
+        assert_eq!(canonical(Some((4, 6))), Some((4, 6)));
     }
 
     #[test]
-    fn declaration_anchor_handles_sigils_and_unicode_byte_lengths() {
-        assert_eq!(narrowed(LexicalRole::Write, "@", "xs", Some((0, 6)), &[(3, 6)]), Some((3, 6)));
-        assert_eq!(lexical_fact_range(LexicalRole::Write, "$", "é", Some((0, 6))), Some((3, 6)));
-        assert_eq!(lexical_fact_range(LexicalRole::Write, "%", "é", Some((0, 6))), Some((3, 6)));
-    }
-
-    #[test]
-    fn non_terminal_anchor_end_is_not_truncated() {
-        assert_eq!(narrowed(LexicalRole::Write, "$", "x", Some((0, 20)), &[(3, 5)]), Some((0, 20)));
-        assert_eq!(narrowed(LexicalRole::Read, "$", "x", Some((0, 20)), &[(0, 20)]), Some((0, 20)));
+    fn canonical_anchor_preserves_unicode_byte_geometry() {
+        assert_eq!(canonical(Some((3, 6))), Some((3, 6)));
+        assert_eq!(canonical(Some((0, 20))), Some((0, 20)));
+        assert_eq!(canonical(None), None);
     }
 
     // The five refusal guards, exercised with literal arguments so the two

@@ -9,6 +9,9 @@
 
 set -euo pipefail
 
+# Toolchain guard (#12593): refuse a stale non-rustup cargo before any build work.
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GATE_NAME="${1:?Gate name required}"
 RECEIPT_DIR="${RECEIPT_DIR:-$ROOT/target/receipts}"

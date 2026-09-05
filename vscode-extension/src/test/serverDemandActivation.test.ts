@@ -102,17 +102,17 @@ async function settle(): Promise<void> {
   }
 }
 
-/** Drive the listener the extension armed for later Perl documents. */
+/** Drive the listener the extension most recently armed for Perl documents. */
 function fireDocumentOpened(document: FakeDocument): void {
-  const listener = jest.mocked(vscode.workspace.onDidOpenTextDocument).mock.calls[0]?.[0] as
-    | ((document: FakeDocument) => void)
-    | undefined;
+  const calls = jest.mocked(vscode.workspace.onDidOpenTextDocument).mock.calls;
+  const listener = calls[calls.length - 1]?.[0] as ((document: FakeDocument) => void) | undefined;
   expect(listener).toBeDefined();
   listener?.(document);
 }
 
 function fireActiveEditorChanged(document: FakeDocument): void {
-  const listener = jest.mocked(vscode.window.onDidChangeActiveTextEditor).mock.calls[0]?.[0] as
+  const calls = jest.mocked(vscode.window.onDidChangeActiveTextEditor).mock.calls;
+  const listener = calls[calls.length - 1]?.[0] as
     | ((editor: { document: FakeDocument } | undefined) => void)
     | undefined;
   expect(listener).toBeDefined();
@@ -247,12 +247,24 @@ describe('deferred language-server startup (#8180)', () => {
     await waitForStarts(1);
     expect(mockLanguageClientStart).toHaveBeenCalledTimes(1);
 
-    // Reinstall stops the client and restarts it. If demand still believed a
-    // server was running, that restart would silently do nothing and leave the
-    // user on a stopped server.
+    // deactivate() is the terminal path (#7854): the committed activation
+    // runtime releases the armed demand listeners and the coordinator
+    // projections along with the client. A production host never delivers
+    // demand to a deactivated extension, so fresh demand has to arrive in a
+    // fresh session.
     await deactivate();
     await settle();
 
+    // The fresh session starts dormant: no open Perl document, and no
+    // stranded "server is running" belief carried over from the stopped
+    // session.
+    setOpenDocuments([]);
+    await activate(makeContext(makeExtensionRoot()));
+    await settle();
+    expect(mockLanguageClientStart).toHaveBeenCalledTimes(1);
+
+    // Fresh demand in the fresh session starts a second client generation —
+    // the stop never strands the user on a dead server.
     fireDocumentOpened(fakeDocument('perl'));
     await waitForStarts(2);
 

@@ -8,7 +8,7 @@
 //!
 //! All tests FAIL if the PR's fix to `primary.rs`
 //! (TokenKind::VString → NodeKind::VString) were reverted: the sexp would
-//! contain `(string "v1.2.3")` instead of `(vstring "v1.2.3")`.
+//! contain `(string "v1.2.3")` instead of `(vstring (value v1.2.3))`.
 //!
 //! CI feature detection: `feature_cfgs_in_source` scans for inner `#![cfg(...]` lines
 //! to auto-add `--features incremental` to the coverage command.
@@ -25,7 +25,7 @@ use perl_tdd_support::must;
 /// during `IncrementalDocument::new`.
 ///
 /// The test FAILS if `primary.rs`'s VString arm is reverted because
-/// `(vstring "v1.2.3")` would become `(string "v1.2.3")`.
+/// `(vstring (value v1.2.3))` would become `(string "v1.2.3")`.
 #[test]
 fn vstring_initial_parse_produces_vstring_node() {
     let source = "my $v = v1.2.3;".to_string();
@@ -33,14 +33,14 @@ fn vstring_initial_parse_produces_vstring_node() {
 
     let sexp = doc.root.to_sexp();
     assert!(
-        sexp.contains("(vstring \"v1.2.3\")"),
+        sexp.contains("(vstring (value v1.2.3))"),
         "IncrementalDocument::new must produce NodeKind::VString for v1.2.3; \
          reverting primary.rs VString arm would produce (string \"v1.2.3\") instead. \
          Got sexp: {}",
         sexp
     );
     assert!(
-        !sexp.contains("(string \"v1.2.3\")"),
+        !sexp.contains("(string (value v1.2.3))"),
         "v-string must not be represented as NodeKind::String; got sexp: {}",
         sexp
     );
@@ -66,7 +66,7 @@ fn vstring_node_survives_incremental_edit_outside_literal() {
     // Verify initial parse produces VString (baseline sanity).
     let initial_sexp = doc.root.to_sexp();
     assert!(
-        initial_sexp.contains("(vstring \"v1.2.3\")"),
+        initial_sexp.contains("(vstring (value v1.2.3))"),
         "initial parse must produce NodeKind::VString, got: {}",
         initial_sexp
     );
@@ -83,14 +83,14 @@ fn vstring_node_survives_incremental_edit_outside_literal() {
     // Reverting the primary.rs VString arm causes `v1.2.3` to become NodeKind::String.
     let updated_sexp = doc.root.to_sexp();
     assert!(
-        updated_sexp.contains("(vstring \"v1.2.3\")"),
+        updated_sexp.contains("(vstring (value v1.2.3))"),
         "after incremental edit, NodeKind::VString must be preserved; \
          reverting primary.rs VString arm would produce (string ...) here. \
          Got sexp: {}",
         updated_sexp
     );
     assert!(
-        !updated_sexp.contains("(string \"v1.2.3\")"),
+        !updated_sexp.contains("(string (value v1.2.3))"),
         "v-string must not be downgraded to NodeKind::String after incremental edit; \
          got sexp: {}",
         updated_sexp
@@ -107,7 +107,7 @@ fn vstring_node_survives_incremental_edit_outside_literal() {
 /// The fast-path update rewrites the VString node in place. The result is a
 /// v-string containing the inserted character.
 ///
-/// Non-vacuous guarantee: the sexp must contain `(vstring "v01.2.3")` — the
+/// Non-vacuous guarantee: the sexp must contain `(vstring (value v01.2.3))` — the
 /// v-string expanded by the insertion.  Reverting the primary.rs VString arm
 /// would produce `(string "v01.2.3")` instead.
 #[test]
@@ -133,14 +133,14 @@ fn vstring_edit_inside_literal_exercises_is_single_token_edit_arm() {
     // Reverting primary.rs VString arm would produce (string "v01.2.3") here.
     let sexp = doc.root.to_sexp();
     assert!(
-        sexp.contains("(vstring \"v01.2.3\")"),
+        sexp.contains("(vstring (value v01.2.3))"),
         "after inserting '0' inside VString, result must contain the exact edited vstring; \
          reverting primary.rs VString arm would produce a string node instead. \
          Got: {}",
         sexp
     );
     assert!(
-        !sexp.contains("(string \"v01.2.3\")"),
+        !sexp.contains("(string (value v01.2.3))"),
         "v01.2.3 must be NodeKind::VString not NodeKind::String; got: {}",
         sexp
     );

@@ -31,6 +31,7 @@ mod notebook;
 pub(crate) mod outbound;
 #[allow(unused_imports)]
 use outbound::OutboundSink;
+pub(crate) mod parse_effect_contract;
 pub(crate) mod parse_worker;
 #[cfg(feature = "workspace")]
 pub(crate) mod readiness;
@@ -40,6 +41,7 @@ mod resolve_session;
 pub mod routing;
 pub(crate) mod scheduler;
 mod serving;
+mod session_warning_dedup;
 pub(crate) mod stream_session;
 mod symbol_extraction;
 mod test_api;
@@ -62,6 +64,12 @@ mod diagnostics_sink_tests;
 mod document_symbols_sink_tests;
 #[cfg(test)]
 mod open_buffer_authority_tests;
+#[cfg(test)]
+mod session_warning_dedup_tests;
+
+// Test/pressure observation of the bounded session-warning dedup store (#9769).
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+pub use session_warning_dedup::{SessionWarningDedupSnapshot, SessionWarningFamilyCounters};
 
 // Re-export protocol types for backward compatibility
 // Tests and external code import these from perl_lsp::
@@ -76,6 +84,8 @@ use perl_parser::{
     Parser,
     ast::{Node, NodeKind},
     declaration::ParentMap,
+};
+use perl_tdd_support::{
     tdd_basic::TestGenerator,
     test_runner::{TestKind, TestRunner},
 };
@@ -98,7 +108,6 @@ use crate::features::{
     code_lens_provider::{CodeLensProvider, get_shebang_lens, resolve_code_lens},
     diagnostics::{DiagnosticSeverity as InternalDiagnosticSeverity, DiagnosticsProvider},
     document_highlight::DocumentHighlightProvider,
-    formatting::{CodeFormatter, FormattingOptions},
     implementation_provider::ImplementationProvider,
     type_hierarchy::TypeHierarchyProvider,
 };
@@ -132,7 +141,6 @@ use std::collections::HashSet;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-#[cfg(any(test, feature = "expose_lsp_test_api"))]
 use std::sync::atomic::AtomicU64;
 use std::sync::{
     Arc, Weak,
@@ -186,8 +194,10 @@ pub struct LspServer {
     ///
     /// `Drop` swaps `outbound` with a closed sender, drops the live sender to
     /// close the channel, then joins this thread so buffered bytes are flushed
-    /// before the server is deallocated.
-    outbound_writer_handle: Option<std::thread::JoinHandle<()>>,
+    /// before the server is deallocated. The join resolves to the writer's
+    /// terminal outcome; Drop records it as structured settlement evidence
+    /// (#8402).
+    outbound_writer_handle: Option<std::thread::JoinHandle<outbound::WriterTerminalOutcome>>,
     /// Client capabilities (behind mutex for interior mutability — written once during initialize)
     client_capabilities: Mutex<ClientCapabilities>,
     /// Cancelled request IDs
@@ -204,6 +214,14 @@ pub struct LspServer {
     /// workspaces with per-folder configuration. The old string-based approach
     /// is maintained via `workspace_folder_uris()` for backward compatibility.
     workspace_folders: Arc<Mutex<Vec<WorkspaceFolderState>>>,
+    /// Monotonic configuration/ownership generation for diagnostic snapshots.
+    pub(crate) workspace_identity_generation: Arc<AtomicU64>,
+    /// Serializes workspace identity invalidation with diagnostic publication.
+    pub(crate) workspace_identity_lock: Arc<Mutex<()>>,
+    /// Project configuration discovered for an unregistered single-file document.
+    single_file_project_config: Arc<Mutex<Option<perl_lsp_rs_core::config::ProjectConfig>>>,
+    /// Generation for the retained single-file project configuration authority.
+    single_file_project_config_generation: Arc<AtomicU64>,
     /// Root path for module resolution
     root_path: Arc<Mutex<Option<PathBuf>>>,
     /// `.perltidyrc` profile path discovered from the workspace root during
@@ -352,6 +370,12 @@ pub struct LspServer {
     /// Serializes the active/pending indexing handoff at scan completion.
     #[cfg(feature = "workspace")]
     indexing_transition_lock: Arc<Mutex<()>>,
+    /// Test-only gate fired inside the startup scan's per-file commit
+    /// critical section, after `indexing_transition_lock` is acquired
+    /// (#13308).
+    #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+    indexing_commit_gate:
+        Arc<std::sync::Mutex<Option<crate::runtime::readiness::WorkspaceIndexingStartGate>>>,
     /// One-time guard for the `window/showMessage` permission-denied warning.
     ///
     /// Set to `true` after the first permission-denied file is encountered during
@@ -411,19 +435,14 @@ pub struct LspServer {
     /// set this flag so unavailable-binary tests do not depend on PATH.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) force_perlcritic_command_unavailable: AtomicBool,
-    /// Deduplication set for workspace-scoped Perl::Critic warning notifications.
+    /// Typed, bounded dedup state for user-facing session warnings (#9769).
     ///
-    /// Keys are stable identifiers (for example, `missing-binary` or
-    /// `missing-profile:/abs/path`) so repeated diagnostic cycles do not spam
-    /// users with identical `window/showMessage` warnings.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) critic_workspace_warnings_sent: Mutex<std::collections::HashSet<String>>,
-    /// Deduplication set for invalid enum warnings from editor-provided settings.
-    ///
-    /// The same client payload can arrive through initialization, configuration
-    /// pulls, and repeated `didChangeConfiguration` notifications. Warn once per
-    /// setting/value pair per server session so a typo is visible without toast spam.
-    pub(crate) client_setting_warnings_sent: Mutex<std::collections::HashSet<String>>,
+    /// Governs whether a repeated Perl::Critic, invalid-client-setting, or AI
+    /// backend warning should be suppressed for the same reviewed subject.
+    /// Retains only fixed-size fingerprint identities under an explicit
+    /// per-family hard cap; it never holds semantic state and never
+    /// influences configuration, diagnostics, provider, or readiness truth.
+    pub(crate) session_warning_dedup: session_warning_dedup::SessionWarningDedupStore,
     /// Test-only hook invoked after push diagnostics capture their document
     /// snapshot and before the stale-generation guard decides whether to
     /// publish. This keeps concurrency boundary tests deterministic without
@@ -447,6 +466,11 @@ pub struct LspServer {
     /// mutation (#11674 falsifiers).
     #[cfg(test)]
     document_symbols_before_commit_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Test-only barrier inside the sink boundary: fires after the currency
+    /// precheck passes and before the serialized install, so falsifiers can
+    /// race the exact validation -> mutation window (#11674 review barrier).
+    #[cfg(test)]
+    document_symbols_before_install_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// Optional AI inline-completion backend.
     ///
     /// When `Some`, the `handle_inline_completion` handler will attempt
@@ -455,12 +479,6 @@ pub struct LspServer {
     pub(crate) ai_inline_backend: Mutex<
         Option<Arc<dyn perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend>>,
     >,
-    /// Deduplication set for user-facing AI backend warnings.
-    ///
-    /// Authentication failures are actionable but can recur on every
-    /// completion request. Keep the notification session-scoped so a broken
-    /// credential does not spam the editor while preserving one clear signal.
-    pub(crate) ai_backend_warnings_sent: Mutex<HashSet<String>>,
     /// When `true`, eagerly maintain the per-document incremental parsing state
     /// (`incremental_doc` / `incremental_state`) inside the `didChange` mutation
     /// critical section.
@@ -648,19 +666,29 @@ impl LspServer {
     /// The provider error is intentionally not included in the editor-facing
     /// message: provider responses may contain sensitive or noisy details.
     /// The detailed error remains available to the debug log at the call site.
+    /// Suppression identity is the reviewed auth code alone, retained in the
+    /// bounded session-warning dedup store (#9769) and cleared when a
+    /// configuration notification starts a new user-visible session.
     pub(crate) fn notify_ai_auth_failure(&self) {
-        let mut warnings = self.ai_backend_warnings_sent.lock();
-        if warnings.contains("auth") {
-            return;
-        }
-        warnings.insert("auth".to_string());
-
-        if let Err(error) = self.show_message(
-            MessageType::Warning,
-            "AI inline completion authentication failed. Check the configured API key and provider settings.",
-        ) {
-            warnings.remove("auth");
-            tracing::warn!(%error, "failed to notify client about AI authentication failure");
+        let identity = session_warning_dedup::SessionWarningIdentity::subjectless(
+            session_warning_dedup::SessionWarningCode::AiBackendAuthFailure,
+        );
+        // Decide + send + rollback under one family-lock hold (#9769): a
+        // concurrent auth failure must never suppress against an identity
+        // whose send has not succeeded yet.
+        let decision = self.session_warning_dedup.emit_once_with(
+            session_warning_dedup::SessionWarningFamily::AiBackend,
+            identity,
+            || {
+                self.show_message(
+                    MessageType::Warning,
+                    "AI inline completion authentication failed. Check the configured API key and provider settings.",
+                )
+                .is_ok()
+            },
+        );
+        if !matches!(decision, session_warning_dedup::SessionWarningDecision::Suppress) {
+            tracing::debug!(?decision, "AI auth failure warning emission decided");
         }
     }
 
@@ -780,7 +808,7 @@ impl LspServer {
         &self.stream_session_manager
     }
 
-    pub(crate) fn uri_key_variants(&self, uri: &str) -> Vec<String> {
+    pub(crate) fn uri_key_variants(uri: &str) -> Vec<String> {
         fn push_unique(keys: &mut Vec<String>, key: String) {
             if !keys.iter().any(|existing| existing == &key) {
                 keys.push(key);
@@ -814,14 +842,14 @@ impl LspServer {
 
         let mut uri_keys = Vec::new();
         push_unique(&mut uri_keys, uri.to_string());
-        push_unique(&mut uri_keys, self.normalize_uri_key(uri));
+        push_unique(&mut uri_keys, perl_uri::uri_key(uri));
 
         if let Some(path) = source_path_from_uri(uri)
             && let Ok(file_url) = url::Url::from_file_path(&path)
         {
             let file_uri = file_url.to_string();
             push_unique(&mut uri_keys, file_uri.clone());
-            push_unique(&mut uri_keys, self.normalize_uri_key(&file_uri));
+            push_unique(&mut uri_keys, perl_uri::uri_key(&file_uri));
         }
 
         for key in uri_keys.clone() {
@@ -829,6 +857,17 @@ impl LspServer {
         }
 
         uri_keys
+    }
+
+    /// Whether any URI spelling variant of `uri` is present in a raw open
+    /// documents map.
+    ///
+    /// Shared by `document_is_open` and contexts that hold the `documents`
+    /// handle without an `LspServer` — the indexing thread's reclassification
+    /// authority must apply the same open-buffer denominator as the watcher
+    /// seams (#14186).
+    pub(crate) fn documents_open_in(documents: &HashMap<String, DocumentState>, uri: &str) -> bool {
+        Self::uri_key_variants(uri).iter().any(|key| documents.contains_key(key))
     }
 
     /// Whether a document is currently open for `uri`.
@@ -839,9 +878,8 @@ impl LspServer {
     /// (`uri_to_fs_path` identity) must observe the open document even though
     /// `DocumentStore::uri_key` preserves percent-encoded path triplets.
     pub(crate) fn document_is_open(&self, uri: &str) -> bool {
-        let uri_keys = self.uri_key_variants(uri);
         let documents = self.documents.lock();
-        uri_keys.iter().any(|key| documents.contains_key(key))
+        Self::documents_open_in(&documents, uri)
     }
 
     /// Record (or overwrite) the backing-file transition for an open
@@ -859,7 +897,7 @@ impl LspServer {
         transition: BackingFileTransition,
     ) {
         let mut transitions = self.backing_file_transitions.lock();
-        for key in self.uri_key_variants(uri) {
+        for key in Self::uri_key_variants(uri) {
             transitions.insert(key, transition.clone());
         }
     }
@@ -871,7 +909,7 @@ impl LspServer {
     /// session. All filesystem-equivalent keys are swept together so one
     /// consume cannot leave alias-spelled duplicates behind.
     pub(crate) fn take_backing_file_transition(&self, uri: &str) -> Option<BackingFileTransition> {
-        let keys = self.uri_key_variants(uri);
+        let keys = Self::uri_key_variants(uri);
         let mut transitions = self.backing_file_transitions.lock();
         let taken = keys.iter().find_map(|key| transitions.remove(key));
         for key in &keys {
@@ -888,7 +926,7 @@ impl LspServer {
     /// normalized keys so URI spelling differences do not retain per-document
     /// caches after close.
     pub(crate) fn evict_open_document_session_state(&self, uri: &str) {
-        let uri_keys = self.uri_key_variants(uri);
+        let uri_keys = Self::uri_key_variants(uri);
         self.evict_use_lib_hir_cache(uri);
 
         for key in &uri_keys {
@@ -943,12 +981,18 @@ impl LspServer {
     /// session caches stay untouched — a watched disk deletion must not evict
     /// unsaved editor source.
     pub(crate) fn evict_deleted_file_state(&self, uri: &str) {
-        let uri_keys = self.uri_key_variants(uri);
+        let uri_keys = Self::uri_key_variants(uri);
         #[cfg(feature = "workspace")]
         if let Some(coordinator) = self.coordinator() {
             for key in &uri_keys {
                 coordinator.index().remove_file(key);
             }
+            // Catch-all watcher/file-operation contract (#13308, #14186
+            // review): a deleted directory URI must also evict every indexed
+            // descendant; the exact-URI eviction above cannot reach them.
+            // Open descendants record the same Deleted backing handoff as
+            // this exact-URI seam (#14074 review).
+            self.evict_index_descendants(uri, None);
         }
 
         if self.document_is_open(uri) {
@@ -973,7 +1017,7 @@ impl LspServer {
 
     /// Evict open-document state and workspace index state for a removed folder.
     pub(crate) fn evict_workspace_folder_state(&self, folder_uri: &str) {
-        let folder_keys = self.uri_key_variants(folder_uri);
+        let folder_keys = Self::uri_key_variants(folder_uri);
         let docs_to_evict = {
             let documents = self.documents.lock();
             documents
@@ -1410,19 +1454,68 @@ impl LspServer {
     }
 
     /// Install the diagnostic debouncer (called from Scheduler::new after Arc wrapping).
+    ///
+    /// The previous debouncer, if any, is released *after* the lock. Its `Drop`
+    /// joins the debounce worker, and that worker's `publish_fn` re-enters
+    /// `LspServer`; dropping it in place would hold this server-wide mutex
+    /// across a thread join. Today's production callback happens not to take
+    /// this lock, but nothing enforces that -- a callback reaching
+    /// `runtime_pressure_snapshot` or `publish_diagnostics_debounced` would
+    /// deadlock. Ordering the release out of the critical section removes the
+    /// invariant instead of relying on it.
     pub(crate) fn install_diagnostic_debouncer(
         &self,
         debouncer: diagnostic_debounce::DiagnosticDebouncer,
     ) {
-        *self.diagnostic_debouncer.lock() = Some(debouncer);
+        let previous = self.diagnostic_debouncer.lock().replace(debouncer);
+        drop(previous);
+    }
+
+    /// Install the production diagnostic debouncer (called from
+    /// `Scheduler::new` after `Arc` wrapping).
+    ///
+    /// Requires `Arc<Self>` because the debounce worker's `publish_fn` calls
+    /// back into `LspServer` from its own thread -- the same shape as
+    /// `install_default_parse_worker` below, and for the same reason.
+    ///
+    /// The callback captures `Weak<Self>`, not `Arc<Self>` (#14539). The
+    /// debouncer is owned by the server, so a strong capture would close an
+    /// ownership cycle -- `LspServer -> diagnostic_debouncer ->
+    /// DiagnosticDebouncer -> worker thread closure -> Arc<LspServer>` --
+    /// that no teardown path can break: the worker only stops on
+    /// `DiagnosticDebouncer::drop`, which is only reachable through the
+    /// server's own drop. `install_file_watcher_debouncer`'s callback is
+    /// weak for the identical reason (#8064).
+    ///
+    /// Because the callback is weak, the worker's shutdown drain is a clean
+    /// no-op during real server teardown: by the time this debouncer is
+    /// dropped as a field of `LspServer`, the strong count is already zero
+    /// and `upgrade()` returns `None`. Pending diagnostics are discarded
+    /// rather than published at teardown, which is the intended boundary --
+    /// there is no live server left to publish to.
+    ///
+    /// The interval comes from the active `RuntimeTuning` so e2e mode
+    /// (debounce=0) and user-tuned CLI/env values take effect.
+    pub(crate) fn install_default_diagnostic_debouncer(self: &Arc<Self>) {
+        let cb_server = Arc::downgrade(self);
+        let interval = self.runtime_tuning().diagnostic_debounce();
+        let debouncer =
+            diagnostic_debounce::DiagnosticDebouncer::with_interval(interval, move |uri| {
+                // Break the Arc cycle: if the server has been dropped
+                // (shutdown path), skip the publication cleanly.
+                if let Some(server) = cb_server.upgrade() {
+                    server.publish_diagnostics(uri);
+                }
+            });
+        self.install_diagnostic_debouncer(debouncer);
     }
 
     /// Publish diagnostics with trailing-edge debouncing.
     ///
-    /// If a debouncer is installed (normal runtime via Scheduler), the publication
-    /// is deferred until a quiet period elapses. If no debouncer is installed
-    /// (unit tests that construct LspServer directly), falls through to immediate
-    /// publication.
+    /// If a working debouncer is installed (normal runtime via Scheduler), the
+    /// publication is deferred until a quiet period elapses. If no debouncer is
+    /// installed, or its worker has already become unavailable, falls through to
+    /// immediate publication.
     ///
     /// When [`RuntimeTuning::diagnostic_debounce_is_immediate`] is true (e.g. e2e
     /// mode), the debouncer is bypassed and diagnostics publish synchronously —
@@ -1433,13 +1526,18 @@ impl LspServer {
             self.publish_diagnostics(uri);
             return;
         }
-        let guard = self.diagnostic_debouncer.lock();
-        if let Some(ref d) = *guard {
-            d.schedule(uri);
-        } else {
-            drop(guard);
-            self.publish_diagnostics(uri);
-        }
+        // Evict outside the lock for the same reason as
+        // `install_diagnostic_debouncer`: releasing a debouncer joins its
+        // worker thread, which must not happen under this mutex.
+        let evicted = {
+            let mut guard = self.diagnostic_debouncer.lock();
+            if guard.as_ref().is_some_and(|debouncer| debouncer.schedule(uri)) {
+                return;
+            }
+            guard.take()
+        };
+        drop(evicted);
+        self.publish_diagnostics(uri);
     }
 
     /// Install the off-lock async parse worker (#3396 Phase 3).
@@ -1608,6 +1706,7 @@ mod tests {
             current_package: Some("Demo".to_string()),
             variables: vec!["$got".to_string()],
             imports: vec!["strict".to_string(), "warnings".to_string()],
+            ..PreparedInlineCompletionContext::default()
         }
     }
 
@@ -1973,8 +2072,10 @@ mod tests {
         // the final empty line (#10220): byte length alone would report (0, N).
         assert_eq!(server.offset_to_pos16(lf_doc, lf.len()), (1, 0));
         assert_eq!(server.offset_to_pos16(crlf_doc, crlf.len()), (1, 0));
-        // Bare CR is an admitted separator: EOF follows the second line.
-        assert_eq!(server.offset_to_pos16(cr_doc, bare_cr.len()), (1, 1));
+        // Bare CR is source content under the LF-delimited source-line
+        // contract, so EOF remains on the first line after three UTF-16
+        // units.
+        assert_eq!(server.offset_to_pos16(cr_doc, bare_cr.len()), (0, 3));
     }
 
     #[test]
@@ -2005,8 +2106,14 @@ mod tests {
         use std::sync::Arc;
 
         let server = LspServer::new();
+        // Bare-CR sources are deliberately absent: the formatter's
+        // `SourceGeometry`/`true_eof_position` still admits bare CR as a
+        // separator, which is a legacy provider surface outside the #4973
+        // LF-delimited source-line contract and owned by the downstream
+        // geometry migration issues. Parity is asserted only where both
+        // authorities share the LF contract.
         let sources =
-            ["", "package Foo;", "package Foo;\n", "a\r\n", "a\r", "#!/usr/bin/perl😀", "x\n\r\nz"];
+            ["", "package Foo;", "package Foo;\n", "a\r\n", "#!/usr/bin/perl😀", "x\n\r\nz"];
         for (idx, content) in sources.iter().enumerate() {
             let uri = format!("file:///eof-parity-{idx}.pl");
             server.documents.lock().insert(
@@ -2091,8 +2198,8 @@ mod tests {
 
         let server = LspServer::new();
         let uri = "file:///bare-cr-eof.pl";
-        // Lone CR is an admitted line separator; true EOF is line 1, not the
-        // single-line byte column the split('\n') helper reported.
+        // Lone CR is source content under the LF-delimited source-line
+        // contract, so true EOF remains on line 0.
         let text = "#!/usr/bin/perl\rwarn 'x';";
         let rope = Rope::from_str(text);
         server.documents.lock().insert(
@@ -2107,8 +2214,8 @@ mod tests {
         let actions = result.as_array().expect("response must be an action array");
         assert!(!actions.is_empty(), "missing pragma must yield an action");
         let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
-        assert_eq!(edit["start"], json!({"line": 1, "character": 9}));
-        assert_eq!(edit["end"], json!({"line": 1, "character": 9}));
+        assert_eq!(edit["start"], json!({"line": 0, "character": 25}));
+        assert_eq!(edit["end"], json!({"line": 0, "character": 25}));
     }
 
     #[test]

@@ -129,7 +129,7 @@ impl SymbolIndex {
         for ch in s.chars() {
             if ch.is_uppercase() && !prev_upper && !current.is_empty() {
                 tokens.push(current.to_lowercase());
-                current = String::new();
+                current.clear();
             }
 
             if ch.is_alphanumeric() {
@@ -137,7 +137,7 @@ impl SymbolIndex {
                 prev_upper = ch.is_uppercase();
             } else if !current.is_empty() {
                 tokens.push(current.to_lowercase());
-                current = String::new();
+                current.clear();
                 prev_upper = false;
             }
         }

@@ -1,0 +1,217 @@
+{
+  "schema": "agent_implementation_packet.v1",
+  "schema_version": 1,
+  "packet_id": "example-train/P_service_marker_probe/2026-08-24T00:00:00Z",
+  "repository": {
+    "name": "perl-lsp-swarm",
+    "observed_tree": "a277266c5"
+  },
+  "programme": {
+    "name": "example-train",
+    "manifest": "example_train.v1",
+    "manifest_version": "3"
+  },
+  "work": {
+    "owning_issue": "#10858",
+    "node_id": "N_service_marker_probe",
+    "proposition_id": "P_service_marker_probe",
+    "profile": "coding_agent_bounded",
+    "profile_conditional": false,
+    "node_kind": "bounded_implementation_leaf",
+    "result_sentence": "The service-marker probe emits one typed mismatch finding per stale marker with a focused failing-first test.",
+    "claim_ceiling": "Establishes only the service-marker probe and its focused test; no frontier, scheduler, packet-selection, or live-observation semantics.",
+    "unproven": [
+      "end-to-end marker freshness across multiple programmes",
+      "performance under a ten-thousand-marker workspace"
+    ],
+    "non_goals": [
+      "no readiness evaluation",
+      "no GitHub observation",
+      "no scheduler or agent assignment"
+    ],
+    "successors": [
+      "P_service_marker_rollout"
+    ]
+  },
+  "actor": {
+    "role": "coding_agent_bounded",
+    "write_boundary": "repository_candidate_branch"
+  },
+  "frontier": {
+    "decision": "ready",
+    "digest": "frontier:example-train:3:ready:P_service_marker_probe:sha256:1c0f",
+    "blocking_edges": []
+  },
+  "current_tree_probe": {
+    "subject": "xtask/src/tasks/service_marker_probe.rs",
+    "result": "absent-on-observed-tree",
+    "digest": "probe:xtask/src/tasks/service_marker_probe.rs:a277266c5:absent"
+  },
+  "live_observation": {
+    "candidate_state": "not_observed",
+    "digest": "live:example-train:P_service_marker_probe:not_observed"
+  },
+  "authorities": {
+    "must_be_current": [
+      {
+        "ref": "#10858",
+        "subject": "shared train edge and claim-profile contract",
+        "proof_kind": "current_tree_probe",
+        "proof_tree": "a277266c5"
+      },
+      {
+        "ref": ".spec/10858-train-edge-contract/acceptance.md",
+        "subject": "checked acceptance criteria for the shared edge contract",
+        "proof_kind": "spec_disposition",
+        "proof_digest": "spec:10858:acceptance:a277266c5:current"
+      }
+    ],
+    "may_be_mined": [
+      {
+        "ref": "refs/heads/archived/marker-spike",
+        "subject": "historical marker-spike branch",
+        "proof_kind": "historical_branch",
+        "proof_tree": "6f04e1ab2"
+      }
+    ],
+    "must_not_be_reimplemented": [
+      {
+        "ref": "xtask/src/tasks/train_edge_contract.rs",
+        "subject": "shared edge-contract validator",
+        "proof_kind": "current_tree_probe",
+        "proof_tree": "a277266c5"
+      }
+    ],
+    "consumer_fan_in": [
+      {
+        "ref": "#10872",
+        "subject": "shared builder-packet contract consumer",
+        "proof_kind": "external_owner_note"
+      }
+    ],
+    "external_manual_owner": [
+      {
+        "ref": "maintainer/reviewer",
+        "subject": "review and merge authority",
+        "proof_kind": "external_owner_note"
+      }
+    ]
+  },
+  "surfaces": {
+    "implementation_paths": [
+      "xtask/src/tasks/service_marker_probe.rs"
+    ],
+    "tests_fixtures": [
+      "fixtures/service_marker_probe/stale_marker.v1.json"
+    ],
+    "generated_artifacts": [
+      "docs/policy/NON_RUST_INVENTORY.md"
+    ],
+    "docs_fragments": [],
+    "writer_slots": [
+      {
+        "key": "service-marker-probe-module",
+        "paths": [
+          "xtask/src/tasks/service_marker_probe.rs"
+        ]
+      },
+      {
+        "key": "service-marker-fixture",
+        "paths": [
+          "fixtures/service_marker_probe/stale_marker.v1.json"
+        ]
+      }
+    ],
+    "forbidden_adjacent": [
+      "xtask/src/tasks/train_edge_contract.rs",
+      "schemas/train_edge_contract.v1.schema.json"
+    ]
+  },
+  "proof": {
+    "falsifiers": [
+      {
+        "id": "F_marker_missing_fails",
+        "stage": "unit",
+        "statement": "A stale service marker that the probe accepts is a defect: the focused test feeds one stale marker and asserts the typed mismatch is emitted."
+      },
+      {
+        "id": "F_fresh_marker_passes",
+        "stage": "unit",
+        "statement": "A fresh marker must not emit a finding; the positive control feeds a current marker and asserts no mismatch."
+      }
+    ],
+    "positive_discriminator": "The probe distinguishes a stale marker from a fresh one by comparing the marker's recorded tree against the observed tree, not by marker presence alone.",
+    "mutation_controls": [
+      "Inverting the tree comparison in the probe must flip both focused tests red.",
+      "Deleting the emission path must fail the stale-marker falsifier."
+    ],
+    "terminal_outcomes": [
+      "DELIVERED_REVIEWABLE_PR",
+      "BLOCKED_MISSING_INPUT",
+      "NOT_PROVEN"
+    ],
+    "cleanup_retention": "No temporary files are retained; fixtures live under fixtures/service_marker_probe/ and are covered by the allowlist."
+  },
+  "verification": {
+    "steps": [
+      {
+        "command_id": "xtask.test.service_marker_probe",
+        "command": "cargo test -p xtask --bin xtask service_marker_probe --locked",
+        "scope": "focused_proof"
+      },
+      {
+        "command_id": "xtask.non_rust_inventory_write",
+        "command": "cargo xtask non-rust inventory --write",
+        "scope": "generation",
+        "second_run_no_diff": true
+      },
+      {
+        "command_id": "xtask.check_file_policy",
+        "command": "cargo xtask check-file-policy",
+        "scope": "file_policy"
+      },
+      {
+        "command_id": "cargo.fmt_check",
+        "command": "cargo fmt -p xtask -- --check",
+        "scope": "format"
+      },
+      {
+        "command_id": "cargo.clippy_xtask",
+        "command": "cargo clippy -p xtask --all-targets --locked -- -D warnings",
+        "scope": "clippy"
+      },
+      {
+        "command_id": "git.diff_check",
+        "command": "git diff --check",
+        "scope": "diff_check"
+      }
+    ]
+  },
+  "delivery": {
+    "definition": "local_diff_is_delivered",
+    "branch_suggestion": "tooling/example-service-marker-probe",
+    "pr_title_suggestion": "tooling(train): add the service-marker probe focused falsifier",
+    "pr_body_fields": [
+      "change",
+      "proof",
+      "boundaries",
+      "rollback"
+    ],
+    "old_path_disposition": "none",
+    "limitations": [
+      "probe covers one programme's marker namespace"
+    ],
+    "remaining_blocker_or_next": "after merge, P_service_marker_rollout may compose over this probe"
+  },
+  "stop": {
+    "conditions": [
+      "stop at the reviewable draft PR and handoff comment",
+      "do not merge, release, or perform any external action",
+      "do not mutate the programme manifest or frontier"
+    ],
+    "permitted_terminal_actions": []
+  },
+  "metadata": {
+    "observed_at": "2026-08-24T00:00:00Z"
+  }
+}

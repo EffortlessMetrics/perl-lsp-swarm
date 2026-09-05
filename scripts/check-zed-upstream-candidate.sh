@@ -2,10 +2,21 @@
 # Static fail-closed checks for the staged Zed extension submission packet.
 set -euo pipefail
 
+# Toolchain guard (#12593): refuse a stale non-rustup cargo before any build work.
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/cargo-toolchain-guard.sh" && cargo_toolchain_guard
+
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 bash -n "$REPO_ROOT/scripts/apply-zed-perl-upstream.sh"
+
+# Behavioral proof for the staged candidate: its own unit suite carries the
+# LSP/DAP identity-separation, schema acceptance/rejection, request-kind,
+# precedence, projection, and cleanup-boundary falsifiers (#9485).
+(
+  cd "$REPO_ROOT/.ci/fixtures/zed-perl-upstream/zed-perl"
+  cargo test --quiet
+)
 
 python3 - "$REPO_ROOT" <<'PY'
 from __future__ import annotations
@@ -173,6 +184,95 @@ require(
 require(
     "does **not** register `perllsp`" in setup,
     "Zed guide must state the public extension gap",
+)
+
+# ---- perl-dap debug-adapter authority (#9485) ----
+
+debug_adapters = extension.get("debug_adapters", {})
+require(
+    set(debug_adapters) == {"perl-dap"},
+    "extension.toml must declare exactly the `perl-dap` debug adapter",
+)
+require(
+    debug_adapters["perl-dap"].get("schema_path")
+    == "debug_adapter_schemas/perl-dap.json",
+    "[debug_adapters.perl-dap] must bind the debugger configuration schema",
+)
+schema_path = candidate / "debug_adapter_schemas" / "perl-dap.json"
+require(schema_path.is_file(), "perl-dap debugger configuration schema is missing")
+import json as _json
+
+schema = _json.loads(schema_path.read_text(encoding="utf-8"))
+require(
+    schema.get("required") == ["request", "program"],
+    "perl-dap schema must require exactly `request` and `program`",
+)
+require(
+    schema.get("properties", {}).get("request", {}).get("enum") == ["launch"],
+    "perl-dap schema must admit only the `launch` request kind",
+)
+require(
+    schema.get("additionalProperties") is True,
+    "perl-dap schema must preserve forward-compatible pass-through keys",
+)
+
+require(
+    set(servers) == {"perlnavigator-server", "perl-lsp", "perllsp"},
+    "the DAP increment must not change the three LSP provider identities",
+)
+require(
+    "perl-dap" not in servers,
+    "no language-server ID may alias the perl-dap debug-adapter ID",
+)
+require(
+    manifest.get("debug_adapter_id") == "perl-dap",
+    "packet manifest must own the exact `perl-dap` adapter identity",
+)
+require(
+    manifest.get("debug_binary") == "perl-dap",
+    "packet manifest must name `perl-dap` as the debug binary",
+)
+require(
+    manifest.get("debug_adapter_id") != manifest.get("server_id"),
+    "adapter ID must never alias the LSP server ID",
+)
+require(
+    "debug_adapter_schemas/perl-dap.json" in manifest.get("copied_files", []),
+    "submission packet must carry the perl-dap schema",
+)
+
+require(
+    'const PERL_DAP_ADAPTER_ID: &str = "perl-dap";' in source,
+    "candidate source must own the dedicated perl-dap adapter ID",
+)
+require(
+    'const PERL_DAP_REPO: &str = PERLLSP_REPO;' in source,
+    "candidate source must consume the canonical shared release topology",
+)
+require(
+    'const PERL_DAP_MANAGED_PREFIX: &str = "perl-dap-managed-";' in source,
+    "candidate source must keep a debugger-specific managed cache boundary",
+)
+require(
+    "unknown Perl debug adapter id" in source,
+    "candidate DAP dispatcher must reject unknown adapter IDs",
+)
+require(
+    "`attach` configurations are not supported" in source,
+    "candidate DAP dispatcher must fail closed on unsupported request kinds",
+)
+require(
+    "lacks the required `request` field" in source
+    and "lacks the required `program` field" in source,
+    "candidate DAP validation must name the exact missing field",
+)
+require(
+    "worktree.which(PERL_DAP_BINARY_NAME)" in source,
+    "candidate resolver must probe the exact `perl-dap` name on PATH",
+)
+require(
+    "remove_old_downloads(PERL_DAP_MANAGED_PREFIX" in source,
+    "cleanup must stay inside the perl-dap managed boundary",
 )
 
 print("Zed integration candidate checks passed.")

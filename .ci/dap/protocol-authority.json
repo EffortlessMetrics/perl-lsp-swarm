@@ -34,5 +34,52 @@
       "classification": "adapter-configuration",
       "owner": "#4754"
     }
+  ],
+  "project_families": [
+    {
+      "family": "perl-lsp/loadedModuleReload",
+      "version": 1,
+      "classification": "custom_dap_extension",
+      "request_name": "perl-lsp/loadedModuleReload",
+      "event_names": [],
+      "capability_advertisement": "unadvertised-until-r04",
+      "dispatched": false,
+      "backed": false,
+      "owner": "#10138",
+      "contract": "#10097",
+      "negotiation": {
+        "mode": "explicit-client-declaration",
+        "selection": "highest-mutual-version",
+        "unknown_version_policy": "reject-closed",
+        "unknown_variant_policy": "reject-closed",
+        "unknown_field_policy": "reject-closed",
+        "session_binding": "epoch",
+        "restart_effect": "prior-family-and-operation-identities-invalid"
+      },
+      "identity_policy": {
+        "subject_shape": "adapter-issued-opaque-tokens-only",
+        "raw_client_input": "refused",
+        "correlation": "operation-id-on-every-request-response-pair",
+        "terminal_vocabulary": "frozen-#10097-outcome-codes",
+        "possibly_applied_boundary": "runtime_mutation_begins"
+      },
+      "bounds": {
+        "max_request_bytes": 8192,
+        "max_identity_chars": 256,
+        "max_digest_chars": 128,
+        "max_reasons": 16,
+        "max_reason_chars": 96,
+        "max_detail_chars": 256,
+        "max_retained_operations": 64
+      },
+      "redaction": "codes-and-opaque-identities-only",
+      "cancellation": "honored-only-before-runtime_mutation_begins",
+      "standard_dap_exclusion": true,
+      "schema": "schemas/loaded_module_reload_family.v1.schema.json",
+      "typescript_projection": "vscode-extension/src/loadedModuleReloadFamily.generated.ts",
+      "rust_contract": "crates/perl-dap/src/reload_family.rs",
+      "vectors": ".spec/10138-loaded-module-reload-family/fixtures",
+      "generator_check": "cargo test -p perl-dap reload_family --locked"
+    }
   ]
 }

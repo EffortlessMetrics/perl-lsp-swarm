@@ -1,4 +1,4 @@
-use perl_module::reference::{
+use perl_module::{
     ModuleReferenceKind, extract_module_reference, extract_module_reference_extended,
     find_module_reference, find_module_reference_extended,
 };

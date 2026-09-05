@@ -16,10 +16,10 @@ use perl_tdd_support::must;
 fn find_isa_binary(
     node: &perl_parser_core::Node,
 ) -> Option<(&perl_parser_core::Node, &perl_parser_core::Node)> {
-    if let NodeKind::Binary { op, left, right } = &node.kind {
-        if op == "isa" {
-            return Some((left, right));
-        }
+    if let NodeKind::Binary { op, left, right } = &node.kind
+        && op == "isa"
+    {
+        return Some((left, right));
     }
     for child in node.children() {
         if let Some(found) = find_isa_binary(child) {
@@ -58,16 +58,17 @@ fn test_isa_infix_in_if_condition_parses_cleanly() {
 // ── Structural assertions: must produce Binary{op="isa"} ─────────────────────
 
 #[test]
-fn test_isa_infix_produces_binary_node_with_op_isa() {
+fn test_isa_infix_produces_binary_node_with_op_isa() -> Result<(), Box<dyn std::error::Error>> {
     let mut parser = Parser::new(r#"$obj isa Foo"#);
     let ast = must(parser.parse());
-    let (left, _right) = find_isa_binary(&ast).expect("should find a Binary node with op=isa");
+    let (left, _right) = find_isa_binary(&ast).ok_or("should find a Binary node with op=isa")?;
     // Left operand must be the $obj variable
     assert!(
         matches!(&left.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "obj"),
         "expected left operand to be $obj, got: {:?}",
         left.kind
     );
+    Ok(())
 }
 
 #[test]

@@ -36,10 +36,7 @@ fn test_validate_path_with_relative_path() {
     let result = validate_path(path, workspace_root);
 
     // Relative paths should be handled
-    match result {
-        Ok(_) => {}
-        Err(_) => {}
-    }
+    let _ = result;
 }
 
 #[test]
@@ -124,10 +121,7 @@ fn test_validate_expression_very_long() {
     let result = validate_expression(&long_expr);
 
     // Should not panic on long expressions
-    match result {
-        Ok(_) => {}
-        Err(_) => {}
-    }
+    let _ = result;
 }
 
 #[test]
@@ -151,11 +145,8 @@ fn test_validate_timeout_with_small_value() {
     // Boundary condition: small timeout value
     let result = validate_timeout(1);
 
-    match result {
-        Ok(valid_timeout) => {
-            assert!(valid_timeout > 0, "timeout should be positive");
-        }
-        Err(_) => {}
+    if let Ok(valid_timeout) = result {
+        assert!(valid_timeout > 0, "timeout should be positive");
     }
 }
 
@@ -195,10 +186,7 @@ fn test_validate_condition_with_empty_string() {
     // Edge case: empty condition
     let result = validate_condition("");
 
-    match result {
-        Ok(_) => {}
-        Err(_) => {}
-    }
+    let _ = result;
 }
 
 #[test]
@@ -210,10 +198,7 @@ fn test_validate_condition_with_logical_expressions() {
     for cond in conditions {
         let result = validate_condition(cond);
         // Should handle logical expressions
-        match result {
-            Ok(_) => {}
-            Err(_) => {}
-        }
+        let _ = result;
     }
 }
 
@@ -225,10 +210,7 @@ fn test_validate_condition_with_method_calls() {
     for cond in conditions {
         let result = validate_condition(cond);
         // Should handle data access
-        match result {
-            Ok(_) => {}
-            Err(_) => {}
-        }
+        let _ = result;
     }
 }
 
@@ -239,10 +221,7 @@ fn test_validate_condition_very_long() {
     let result = validate_condition(&long_cond);
 
     // Should handle long conditions
-    match result {
-        Ok(_) => {}
-        Err(_) => {}
-    }
+    let _ = result;
 }
 
 #[test]

@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "E34-trampoline-ordering-split",
+  "family": "structural_ownership_theater",
+  "purpose": "Splitting a long function into ordering-dependent trampoline fragments preserves length while faking decomposition.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "step_three(step_two(step_one",
+      "todo!()"
+    ],
+    "content": "fn process(input: &str) -> Result<Out, Err> { step_three(step_two(step_one(input)?)?)? }\nfn step_one(i: &str) -> Result<A, Err> { todo!() }\nfn step_two(a: A) -> Result<B, Err> { todo!() }\nfn step_three(b: B) -> Result<Out, Err> { todo!() }\n",
+    "sha256": "5d2cbee42c7d9edb3d76e36d6cc5e0f574db1211962499fe7f66f9bef3d306c4"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 11338,
+    "unresolved_reason": "too_many_lines/structural ratchet (#11338) open; trampoline detection is reviewer-owned."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "trampoline_splitting"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "enum Stage",
+      "let tokens = lex(input)?"
+    ],
+    "note": "Stages carry meaning and types, not ordering luck.",
+    "content": "enum Stage { Lex, Parse, Resolve }\nfn process(input: &str) -> Result<Out, Err> {\n    let tokens = lex(input)?;\n    let tree = parse(tokens)?;\n    resolve(tree)\n}\n",
+    "sha256": "2517a0488d4b9bc4f2bb68259890986796cb071f7bf89f49e4f9cd0f3c225fed"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Frozen so reviewers challenge split quality against one shared identity."
+}

@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Added
+body: Defined the MutationStructuredValue.v1 contract — versioned json:-prefixed bounded structured data for DAP mutation (exact integers/decimals, no f64, duplicate-key rejection, pinned size/depth/node budgets) with fresh unblessed ARRAY/HASH referent semantics, as domain types and validation only (S0 of the structured-mutation train, #11327).
+time: 2026-08-24T00:00:00Z
+custom:
+  PR: "12185"
+  Slug: mutation-structured-value-profile
+  Breaking: "no"

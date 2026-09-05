@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "case_id": "D31-unsafe-boundary-widening-unowned",
+  "family": "boundary_data_semantics_theater",
+  "purpose": "Moving or widening an unsafe block without owner and safety-invariant record dissolves the audited boundary.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "whole function unsafe",
+      "nowhere recorded"
+    ],
+    "content": "pub(crate) unsafe fn copy_into(dst: *mut u8, src: &[u8]) {\n    // widened: whole function unsafe; aliasing argument nowhere recorded\n    std::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len());\n}\n",
+    "sha256": "df048010ce9077d26d6670869b8b9125182ea4608fb2b5fae22c044f2513e338"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 11249,
+    "unresolved_reason": "forbid(unsafe_code) first proven pure-crate cohort (#11249) is open; UB-review lane records intent but no automated rejector fires."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "unsafe_boundary_widening"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "SAFETY:",
+      "dst.as_mut_ptr()"
+    ],
+    "note": "unsafe scoped with stated invariant.",
+    "content": "pub(crate) fn copy_into(dst: &mut [u8], src: &[u8]) {\n    let n = dst.len().min(src.len());\n    // SAFETY: lengths equalized above; regions disjoint by borrow checker.\n    unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), dst.as_mut_ptr(), n) };\n}\n",
+    "sha256": "8726e6558b90ba17a6462fc79d173c5808620ace1dc25bf128b80c1fe3e9fd43"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Adjacent ledger: policy/ub-review.toml review lanes; strict ownership pends #11249."
+}

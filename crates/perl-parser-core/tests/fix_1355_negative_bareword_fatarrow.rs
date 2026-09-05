@@ -422,9 +422,14 @@ fn test_ripr_seam_lookahead_fatarrow_not_assign() {
     let source = "my $x; -and = 5;";
     let ast = parse(source);
     let sexp = ast.to_sexp();
-    // The sexp may contain an error (can't assign to -and) but must not
-    // produce a clean bareword identifier "-and" in the intended bareword context.
-    // If the lookahead is broken, it might incorrectly treat this as bareword.
+    // Plain '=' must be REJECTED where '=>' accepts the bareword: a broken
+    // lookahead (accepting any '='-family token) would classify `-and`
+    // through the word-op path as a bareword Identifier and parse cleanly.
+    assert!(sexp.contains("ERROR"), "plain '=' must not accept the `-and` bareword; got:\n{sexp}");
+    assert!(
+        !sexp.contains("-and"),
+        "`-and` must stay distinct from the FatArrow case and not survive as a classified bareword; got:\n{sexp}"
+    );
 }
 
 /// Test the is_word_op_keyword boundary: only these 5 keywords trigger the path.
@@ -433,7 +438,6 @@ fn test_ripr_seam_is_word_op_keyword_boundary_if() {
     // -if is NOT a word-operator (it's a control-flow keyword handled separately).
     // It should NOT use the new word-op path; control-flow handling already works.
     let source = "my %h = (-if => 1);";
-    let ast = parse(source);
     assert_clean_parse(source);
     // Verify it parses cleanly (whether via word-op path or control-flow path
     // is implementation-dependent, but result must be correct).
@@ -469,11 +473,7 @@ fn test_ripr_seam_name_format_exact() {
     let ast = parse("my %h = (-or => 1);");
     let sexp = ast.to_sexp();
     // Must contain the exact string "-or" (not "or", not "-OR", not "- or").
-    assert!(
-        sexp.contains("\"") && sexp.contains("-or"),
-        "Expected exact '-or' string in identifier, got:\n{}",
-        sexp
-    );
+    assert!(sexp.contains("-or"), "Expected exact '-or' string in identifier, got:\n{}", sexp);
 }
 
 /// Test that consuming the keyword token (self.tokens.next()) happens correctly.

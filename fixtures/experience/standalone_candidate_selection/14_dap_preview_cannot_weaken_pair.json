@@ -1,0 +1,44 @@
+{
+  "packet_schema": "standalone_candidate_selection_vector.v1",
+  "expectation": {
+    "verdict": "reject",
+    "reason_code": "incomplete_pair_members"
+  },
+  "candidates": [
+    {
+      "schema_version": "standalone_candidate.v1",
+      "policy_version": "v1",
+      "route_mode": "first_party_posix",
+      "source_mode": "release_archive",
+      "transaction_id": "tx-11179-build-y",
+      "attempt_id": "at-11179-build-y",
+      "created_by_operation": "install",
+      "resolved_subject_digest": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "stage_dag_digest": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "release_display_version": "0.21.0-preview",
+      "release_topology_digest": "d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6",
+      "target_platform": "linux",
+      "target_triple": "x86_64-unknown-linux-gnu",
+      "target_libc": "gnu",
+      "product_unit_disposition": "archive_pair_required",
+      "dap_preview_maturity": true,
+      "candidate_generation": 6,
+      "members": [
+        {
+          "role": "perllsp_server",
+          "artifact_sha256": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+          "observation_packet_sha256": "1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b",
+          "subject_binding": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        }
+      ],
+      "limitations": [
+        "dap adapter still in preview maturity for this release train"
+      ],
+      "candidate_id": "e27b8167a5afc37571de20176bdda6765d1b8e4fa2de18b084b63b466163caeb",
+      "manifest_sha256": "d6a23fd8667020a0880d0aa2599f60a0dd6ef011b34573422d5392004965c71d"
+    }
+  ],
+  "prior_selection": null,
+  "next_selection": null,
+  "transition": null
+}

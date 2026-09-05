@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "case_id": "A08-platform-substitution-linux-for-hosted",
+  "family": "verifier_denominator_weakening",
+  "purpose": "Linux-only green presented as proof for Windows/macOS cfg bodies conceals host-specific findings.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "host-specific item proved by Linux run log",
+      "target/receipts/windows-msvc.json"
+    ],
+    "content": "// dishonest evidence swap: host-specific item proved by Linux run log alone\ncp target/receipts/linux-x86_64.json target/receipts/windows-msvc.json\n",
+    "sha256": "263619a8508dd73af438feec0eb4ffb280f350d7de6fe35b7d9a2ceef4119d80"
+  },
+  "rejecting_authority": {
+    "status": "pending_owner",
+    "owner_issue": 11225,
+    "unresolved_reason": "Representative hosted-platform required rows (#11225 consuming #10402/#11222) are unlanded; nightly matrix is advisory and quarantined."
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "platform_evidence_substitution"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "windows-latest",
+      "per-platform receipts"
+    ],
+    "note": "Hosted rows compile their own cfg branches.",
+    "content": "// honest shape (post #11225): each representative platform row runs the exact plan\n// windows-latest / macos-latest matrix cells emit per-platform receipts\n",
+    "sha256": "4fb0db6c463c877d8cf853664a519acb1c2e1934a113aeeaf3e5f3d80b18348a"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "unexpected_cfgs can reject unknown spellings but cannot prove cfg bodies cross-host; ownership unresolved by design."
+}

@@ -1,0 +1,28 @@
+WORK PACKET N_service_marker_probe | perl-lsp-swarm/example_train.v1@a277266c5
+RESULT: The service-marker probe emits one typed mismatch finding per stale marker with a focused failing-first test.
+CEILING: Establishes only the service-marker probe and its focused test; no frontier, scheduler, packet-selection, or live-observation semantics.
+ISSUE: #10858 | PROFILE: coding_agent_bounded | ACTOR: coding_agent_bounded (writes: repository_candidate_branch)
+FRONTIER: ready frontier:example-train:3:ready:P_service_marker_probe:sha256:1c0f
+CANDIDATE: not_observed
+AUTHORITIES:
+AUTHORITY[must_be_current]: #10858
+AUTHORITY[must_be_current]: .spec/10858-train-edge-contract/acceptance.md
+AUTHORITY[may_be_mined]: refs/heads/archived/marker-spike
+AUTHORITY[must_not_be_reimplemented]: xtask/src/tasks/train_edge_contract.rs
+AUTHORITY[consumer_fan_in]: #10872
+AUTHORITY[external_manual_owner]: maintainer/reviewer
+FALSIFIER F_marker_missing_fails: A stale service marker that the probe accepts is a defect: the focused test feeds one stale marker and asserts the typed mismatch is emitted.
+FALSIFIER F_fresh_marker_passes: A fresh marker must not emit a finding; the positive control feeds a current marker and asserts no mismatch.
+POSITIVE: The probe distinguishes a stale marker from a fresh one by comparing the marker's recorded tree against the observed tree, not by marker presence alone.
+VERIFY (in order):
+  xtask.test.service_marker_probe: cargo test -p xtask --bin xtask service_marker_probe --locked [focused_proof]
+  xtask.non_rust_inventory_write: cargo xtask non-rust inventory --write [generation]; second run must produce no diff
+  xtask.check_file_policy: cargo xtask check-file-policy [file_policy]
+  cargo.fmt_check: cargo fmt -p xtask -- --check [format]
+  cargo.clippy_xtask: cargo clippy -p xtask --all-targets --locked -- -D warnings [clippy]
+  git.diff_check: git diff --check [diff_check]
+STOP: stop at the reviewable draft PR and handoff comment
+STOP: do not merge, release, or perform any external action
+STOP: do not mutate the programme manifest or frontier
+TERMINAL: none — stop at the reviewable draft PR
+DELIVERED-MEANS: reviewable_draft_pr_and_handoff

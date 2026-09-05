@@ -11,8 +11,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Default DAP feature identifiers emitted when catalog processing fails.
-pub const DEFAULT_DAP_FEATURES: &[&str] =
-    &["dap.breakpoints.basic", "dap.core", "dap.inline_values"];
+///
+/// `dap.inline_values` is deliberately absent (#9089): the custom inlineValues
+/// extension is fail-closed, so a fallback that re-advertised it on catalog
+/// failure would contradict the single negotiation authority.
+pub const DEFAULT_DAP_FEATURES: &[&str] = &["dap.breakpoints.basic", "dap.core"];
 
 /// Source metadata for the catalog file.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -1095,5 +1098,40 @@ maturity = 'experimental'
         assert!(completion_idx < semantic_idx);
         assert!(semantic_idx < code_action_idx);
         assert!(code_action_idx < references_idx);
+    }
+
+    #[test]
+    fn checked_in_override_fixtures_parse_and_validate() {
+        // crates/perl-parser/tests/data/*.toml are consumed through this
+        // catalog loader via FEATURES_TOML_OVERRIDE, not by any perl-parser
+        // test target (#2006 review finding): they must parse and validate
+        // here, where the real consumer lives. Enumerate every TOML the
+        // allowlist glob admits so a future fixture cannot escape coverage
+        // (#12721 review).
+        let parser_data = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(|crates| crates.join("perl-parser/tests/data"))
+            .unwrap_or_else(|| PathBuf::from("../perl-parser/tests/data"));
+        let mut fixture_names: Vec<String> = must(fs::read_dir(&parser_data))
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".toml"))
+            .collect();
+        fixture_names.sort();
+        assert!(!fixture_names.is_empty(), "override fixture directory must not be empty");
+        for name in &fixture_names {
+            must(read_catalog(&parser_data.join(name)));
+        }
+        // The gating scenarios these fixtures exist for:
+        let minimal = must(read_catalog(&parser_data.join("features_minimal.toml")));
+        assert!(
+            minimal.feature.iter().any(|feature| feature.id == "lsp.hover" && !feature.advertised),
+            "features_minimal.toml must disable lsp.hover for the gating test"
+        );
+        let disabled = must(read_catalog(&parser_data.join("features_disabled_test.toml")));
+        assert!(
+            disabled.feature.iter().any(|feature| !feature.advertised),
+            "features_disabled_test.toml must disable at least one feature"
+        );
     }
 }

@@ -33,6 +33,7 @@ import {
   previewPackageRenameCommand,
   previewSafeDeleteCommand,
   runPerlCriticOnActiveFile,
+  settleFormattingProviderCall,
   setPerlCriticSeverity,
   syncPerlCriticConfiguration,
   workspaceTrustClientRuntimeState,
@@ -42,7 +43,6 @@ import {
   suggestAiCompletionIfSupported,
   suggestDiscoveredIncludePaths,
   validateIncludePaths,
-  warnAboutPerlExtensionConflicts,
 } from '../extensionWorkspaceGuidance';
 
 describe('formatting provider experience projection', () => {
@@ -71,6 +71,20 @@ describe('formatting provider experience projection', () => {
       action: 'Check the formatter configuration or run the Health Check.',
       reasonCode: 'range_formatting_error',
     });
+  });
+
+  test('formatting middleware preserves fallback for an unstringifiable rejection', async () => {
+    const error = {
+      toString() {
+        throw new Error('cannot stringify provider failure');
+      },
+    };
+
+    await expect(
+      settleFormattingProviderCall(async () => {
+        throw error;
+      }, null),
+    ).resolves.toBeNull();
   });
 });
 
@@ -408,51 +422,6 @@ describe('extension UX warnings', () => {
     expect(fs.existsSync(path.join(workspaceDir, 'safe-lib'))).toBe(true);
     // 'linked2/escape' resolves through a symlink outside: nothing should be created there.
     expect(fs.existsSync(path.join(outsideDir, 'escape'))).toBe(false);
-  });
-
-  test('warns once per major version when conflicting Perl extensions are installed', async () => {
-    const context = makeContext('0.12.3');
-    let warnedMajor: string | undefined;
-    context.globalState = {
-      get: jest.fn(() => warnedMajor),
-      update: jest.fn(async (_key: string, value: string) => {
-        warnedMajor = value;
-      }),
-    };
-
-    const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
-    showWarningMessage.mockResolvedValue(undefined);
-
-    (vscode.extensions as unknown as { all: unknown[] }).all = [
-      {
-        id: 'EffortlessMetrics.perl-lsp-rs',
-        packageJSON: {
-          publisher: 'EffortlessMetrics',
-          name: 'perl-lsp-rs',
-          version: '0.12.3',
-        },
-      },
-      {
-        id: 'example.perl-navigator',
-        packageJSON: {
-          displayName: 'Perl Navigator',
-          version: '1.0.0',
-          contributes: {
-            languages: [{ id: 'perl' }],
-          },
-        },
-      },
-    ];
-
-    await warnAboutPerlExtensionConflicts(asExtensionContext(context));
-    expect(showWarningMessage).toHaveBeenCalledWith(
-      expect.stringContaining('Perl Navigator'),
-      'Open Coexistence Guide',
-    );
-
-    showWarningMessage.mockClear();
-    await warnAboutPerlExtensionConflicts(asExtensionContext(context));
-    expect(showWarningMessage).not.toHaveBeenCalled();
   });
 
   test('does not offer directory creation for absolute include paths', async () => {
@@ -1507,10 +1476,12 @@ describe('suggestDiscoveredIncludePaths (#1633)', () => {
 
     await suggestDiscoveredIncludePaths(asExtensionContext(context));
 
+    // Folder-owned resource setting, so the discovered path is written to the
+    // owning folder rather than published workspace-wide (#14447).
     expect(update).toHaveBeenCalledWith(
       'includePaths',
       expect.arrayContaining(['lib', 'local/lib/perl5', 'vendor']),
-      vscode.ConfigurationTarget.Workspace,
+      vscode.ConfigurationTarget.WorkspaceFolder,
     );
   });
 

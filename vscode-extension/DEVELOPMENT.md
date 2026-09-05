@@ -44,14 +44,22 @@ This bypasses the auto-download and uses your local build.
 ```bash
 npm run typecheck   # Type-check only (tsc --noEmit) — TypeScript 7 is the sole type-check authority
 npm run typecheck:authority # Prove the compiler that runs really is TypeScript 7
-npm run typecheck:all # Authority gate, then source, unit tests, integration, published smoke, and scripts
-npm run compile     # Single build (Rolldown bundles out/extension.js — does NOT type-check)
+npm run typecheck:all # Source, unit-test, integration, published-smoke, and scripts configs — each through the authority gate
+npm run build      # Checked build: compiler authority + config inventory + all five configs + bundle
+npm run bundle     # One-shot Rolldown production bundle only (out/extension.js — does NOT type-check)
 npm run sample:published:local # Repeat exact-source VSIX smoke and write p50/p95 receipt summary
-npm run watch       # Rebuild out/extension.js on every file change (use during active development)
-npm run watch:types # Optional companion: live tsc --noEmit type-check loop in a separate terminal
+npm run watch:bundle # Rebuild out/extension.js on every file change (use during active development)
+npm run watch:types # Optional companion: authority preflight, then live tsc --noEmit watch in a separate terminal
 ```
 
-`npm run typecheck:authority` (the first step of `typecheck:all`, and blocking
+Every TypeScript execution above — and in `compile:test`, `test:integration`,
+and `test:published` — routes through `scripts/governed-tsc.js`: the authority
+gate runs to completion first, and a red gate refuses to compile rather than
+running whatever `tsc` happens to resolve to. No public command reaches `tsc`
+without that preflight, and `scripts/checked-command-contract.test.js` keeps it
+that way structurally.
+
+`npm run typecheck:authority` (also the first stage of `build`, and blocking
 in the extension PR gate) proves the claim above rather than restating it: that
 the declared range, the lockfile resolution, the installed package, and the
 binary that actually runs are all the same real registry TypeScript 7 — no
@@ -134,15 +142,17 @@ The `.vsix` file can be installed directly in VS Code via **Extensions → Insta
 
 ## Common tasks
 
-| Task                          | Command                           |
-| ----------------------------- | --------------------------------- |
-| Compile TypeScript            | `npm run compile`                 |
-| Watch mode                    | `npm run watch`                   |
-| Run unit tests                | `npm test`                        |
-| Lint                          | `npm run lint`                    |
-| Build `.vsix` package         | `npm run package`                 |
-| Check VSIX inventory baseline | `npm run check:package-inventory` |
-| Full marketplace verification | `npm run verify:marketplace`      |
+| Task                           | Command                           |
+| ------------------------------ | --------------------------------- |
+| Checked build (types + bundle) | `npm run build`                   |
+| Bundle only (Rolldown)         | `npm run bundle`                  |
+| Watch bundle                   | `npm run watch:bundle`            |
+| Watch types                    | `npm run watch:types`             |
+| Run unit tests                 | `npm test`                        |
+| Lint                           | `npm run lint`                    |
+| Build `.vsix` package          | `npm run package`                 |
+| Check VSIX inventory baseline  | `npm run check:package-inventory` |
+| Full marketplace verification  | `npm run verify:marketplace`      |
 
 ## Extension entry point
 

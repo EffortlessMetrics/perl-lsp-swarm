@@ -1,4 +1,5 @@
 use perl_dap::config::{LaunchConfiguration, create_launch_json_snippet};
+use perl_tdd_support::must_err;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -43,7 +44,7 @@ fn test_launch_config_validation_missing_program() {
 
     let result = config.validate();
     assert!(result.is_err(), "Should fail validation for missing program file");
-    let err = result.unwrap_err();
+    let err = must_err(result);
     assert!(err.to_string().contains("does not exist"), "Error should mention file doesn't exist");
 }
 
@@ -107,7 +108,7 @@ fn test_launch_config_validation_missing_cwd() {
 
     let result = config.validate();
     assert!(result.is_err(), "Should fail validation for missing cwd");
-    let err = result.unwrap_err();
+    let err = must_err(result);
     assert!(
         err.to_string().contains("does not exist"),
         "Error should mention directory doesn't exist"
@@ -128,7 +129,7 @@ fn test_launch_config_validation_invalid_perl_path() {
 
     let result = config.validate();
     assert!(result.is_err(), "Should fail validation for missing perl binary");
-    let err = result.unwrap_err();
+    let err = must_err(result);
     assert!(
         err.to_string().contains("does not exist"),
         "Error should mention perl binary doesn't exist"

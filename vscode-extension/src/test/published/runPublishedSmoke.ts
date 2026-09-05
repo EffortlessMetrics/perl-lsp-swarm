@@ -10,7 +10,7 @@ import {
   runTests,
 } from '@vscode/test-electron';
 import { resolveVSCodeTestVersion } from '../vscodeHostVersion';
-import { writeHostResolutionFailureReceipt } from '../vscodeHostResolution';
+import { downloadVsCodeHostOrWriteFailureReceipt } from '../vscodeHostResolution';
 import { runWithoutForcedWorkspaceTrust } from '../runVsCodeTests';
 import { workspaceSmokeLaunchArgs, workspaceSmokeTrustMode } from '../workspaceSmokeOptions';
 
@@ -345,6 +345,52 @@ function configureCurrentSourceSmoke(
   process.env.PERL_LSP_PUBLISHED_EXTENSIONS_DIR = extensionsDir;
 }
 
+/**
+ * Fixed installed-profile settings for the packaged activation-failure journey
+ * (#7856): the same isolated profile is shared by the failure leg and the
+ * retry leg, so both must resolve the server from the packaged bundle with
+ * downloads disabled — the retry receipt proves the activated server IS the
+ * bundled candidate, never an ambient or downloaded binary.
+ */
+function configureActivationFailureSmoke(userDataDir: string): void {
+  if (process.env.PERL_LSP_ACTIVATION_FAILURE_SMOKE !== '1') {
+    return;
+  }
+  const settingsDir = path.join(userDataDir, 'User');
+  fs.mkdirSync(settingsDir, { recursive: true });
+  const settings: Record<string, unknown> = {
+    'perl-lsp.autoDownload': false,
+    'perl-lsp.serverPath': '',
+    'perl-lsp.includePaths': [],
+    'perl-lsp.critic.enabled': false,
+    'update.showReleaseNotes': false,
+  };
+  fs.writeFileSync(path.join(settingsDir, 'settings.json'), JSON.stringify(settings, null, 2));
+}
+
+/**
+ * Fixed installed-profile settings for the packaged crash-recovery journey
+ * (#7848): both legs share one isolated profile and must resolve the server
+ * from the packaged bundle with downloads disabled, so every generation the
+ * journey kills and every replacement it observes IS the bundled candidate —
+ * never an ambient or downloaded binary.
+ */
+function configureCrashRecoverySmoke(userDataDir: string): void {
+  if (process.env.PERL_LSP_CRASH_RECOVERY_SMOKE !== '1') {
+    return;
+  }
+  const settingsDir = path.join(userDataDir, 'User');
+  fs.mkdirSync(settingsDir, { recursive: true });
+  const settings: Record<string, unknown> = {
+    'perl-lsp.autoDownload': false,
+    'perl-lsp.serverPath': '',
+    'perl-lsp.includePaths': [],
+    'perl-lsp.critic.enabled': false,
+    'update.showReleaseNotes': false,
+  };
+  fs.writeFileSync(path.join(settingsDir, 'settings.json'), JSON.stringify(settings, null, 2));
+}
+
 async function main(): Promise<void> {
   const source = publishedSource();
   const version = envValue('PERL_LSP_PUBLISHED_EXTENSION_VERSION');
@@ -378,10 +424,25 @@ async function main(): Promise<void> {
   if (!fs.existsSync(workspacePath)) {
     throw new Error(`Configured smoke workspace does not exist: ${workspacePath}`);
   }
-  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-published-smoke-user-'));
-  const extensionsDir = fs.mkdtempSync(
-    path.join(os.tmpdir(), 'perl-lsp-published-smoke-extensions-'),
-  );
+  // The activation-failure journey (#7856) shares one isolated profile across
+  // its failure and retry legs (the explicit reload path reuses the installed
+  // profile): when the orchestrator provides explicit profile directories they
+  // are used as-is and their lifecycle stays owned by the orchestrator.
+  const sharedUserDataDir = envValue('PERL_LSP_SMOKE_USER_DATA_DIR');
+  const sharedExtensionsDir = envValue('PERL_LSP_SMOKE_EXTENSIONS_DIR');
+  if (Boolean(sharedUserDataDir) !== Boolean(sharedExtensionsDir)) {
+    throw new Error(
+      'PERL_LSP_SMOKE_USER_DATA_DIR and PERL_LSP_SMOKE_EXTENSIONS_DIR must be provided together for a shared smoke profile.',
+    );
+  }
+  const userDataDir = sharedUserDataDir
+    ? path.resolve(sharedUserDataDir)
+    : fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-published-smoke-user-'));
+  const extensionsDir = sharedExtensionsDir
+    ? path.resolve(sharedExtensionsDir)
+    : fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-published-smoke-extensions-'));
+  fs.mkdirSync(userDataDir, { recursive: true });
+  fs.mkdirSync(extensionsDir, { recursive: true });
   const downloadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-published-smoke-download-'));
   const harnessExtensionPath = path.resolve(process.cwd(), 'src/test/published/harness');
   const extensionTestsPath = path.resolve(__dirname, './suite');
@@ -399,20 +460,15 @@ async function main(): Promise<void> {
   }
 
   try {
-    let vscodeExecutablePath: string;
-    try {
-      vscodeExecutablePath = await downloadAndUnzipVSCode({ version: vscodeVersion });
-    } catch (error: unknown) {
-      try {
-        writeHostResolutionFailureReceipt(receiptsRoot, vscodeVersion, error);
-      } catch (receiptError: unknown) {
-        const detail = receiptError instanceof Error ? receiptError.message : String(receiptError);
-        process.stderr.write(`Unable to write VS Code host-resolution receipt: ${detail}\n`);
-      }
-      throw error;
-    }
+    const { executablePath: vscodeExecutablePath } = await downloadVsCodeHostOrWriteFailureReceipt(
+      receiptsRoot,
+      vscodeVersion,
+      downloadAndUnzipVSCode,
+    );
     const installTarget = await resolveInstallTarget(source, downloadDir);
     configureCurrentSourceSmoke(userDataDir, extensionsDir, workspaceTrustMode);
+    configureActivationFailureSmoke(userDataDir);
+    configureCrashRecoverySmoke(userDataDir);
     await installExtension(vscodeExecutablePath, installTarget, userDataDir, extensionsDir);
     const vsixSha256 = selectedVsixSha256(installTarget);
     const extensionTestsEnv: NodeJS.ProcessEnv = {
@@ -450,7 +506,12 @@ async function main(): Promise<void> {
       await runTests(testOptions);
     }
   } finally {
-    for (const directory of [generatedWorkspacePath, userDataDir, extensionsDir, downloadDir]) {
+    // Shared profile directories belong to the orchestrator that created
+    // them; this invocation only reuses them across its legs.
+    const ownedDirectories = sharedUserDataDir
+      ? [generatedWorkspacePath, downloadDir]
+      : [generatedWorkspacePath, userDataDir, extensionsDir, downloadDir];
+    for (const directory of ownedDirectories) {
       if (!directory) {
         continue;
       }

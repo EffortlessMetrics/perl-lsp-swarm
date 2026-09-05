@@ -360,6 +360,21 @@ pub struct ScopesArguments {
     pub frame_id: i64,
 }
 
+/// `ValueFormat` from the pinned DAP schema (upstream commit
+/// `bf8a5d27e8040044b84b863f90916e08925ee811`): presentation options for
+/// value display, currently exactly one optional boolean property `hex`.
+///
+/// Deserialization is strict (`deny_unknown_fields`): an unknown or
+/// unsupported option fails the request instead of being silently ignored
+/// while `supportsValueFormattingOptions` is advertised true (#9588).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ValueFormat {
+    /// Display the value in hex.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hex: Option<bool>,
+}
+
 /// Arguments for variables request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -375,6 +390,11 @@ pub struct VariablesArguments {
     /// Number of variables to return
     #[serde(skip_serializing_if = "Option::is_none")]
     pub count: Option<i64>,
+    /// Optional `ValueFormat` presentation options for the returned values
+    /// (pinned DAP schema; honored only when `supportsValueFormattingOptions`
+    /// is advertised true — #9588).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<ValueFormat>,
 }
 
 /// Arguments for evaluate request
@@ -392,6 +412,11 @@ pub struct EvaluateArguments {
     /// Whether side effects are allowed during evaluation
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allow_side_effects: Option<bool>,
+    /// Optional `ValueFormat` presentation options for the response result
+    /// (pinned DAP schema; honored only when `supportsValueFormattingOptions`
+    /// is advertised true — #9588).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<ValueFormat>,
 }
 
 // ============================================================================
@@ -452,6 +477,11 @@ pub struct SetVariableArguments {
     pub name: String,
     /// New value for the variable
     pub value: String,
+    /// Optional `ValueFormat` presentation options for the response value
+    /// (pinned DAP schema; affects rendering only, never the assigned data —
+    /// mutation admission/read-back stay #8364/#9070-owned — #9588).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<ValueFormat>,
 }
 
 // ============================================================================
@@ -902,6 +932,11 @@ pub struct SetExpressionArguments {
     /// Evaluate the expressions in the scope of this stack frame (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frame_id: Option<i64>,
+    /// Optional `ValueFormat` presentation options for the response value
+    /// (pinned DAP schema; affects rendering only, never the assigned data —
+    /// mutation admission/read-back stay #8364/#9070-owned — #9588).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<ValueFormat>,
 }
 
 /// Response body for `setExpression` request

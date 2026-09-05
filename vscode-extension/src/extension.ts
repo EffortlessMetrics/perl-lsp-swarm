@@ -16,6 +16,11 @@ import type {
 import { PerlTestAdapter } from './testAdapter';
 import { activateDebugger, rewriteTestLensCommand } from './debugAdapter';
 import { BinaryDownloader, parseLocalVersion } from './downloader';
+import {
+  acquireLaunchManagedCandidateReference,
+  mayReleaseManagedCandidateReferences,
+  releaseManagedCandidateSessionReferences,
+} from './managedCandidateRuntime';
 import { runLanguageServerHealthCheck } from './languageServerHealth';
 import { OnboardingManager } from './onboarding';
 import {
@@ -23,15 +28,19 @@ import {
   suggestAiCompletionIfSupported,
   suggestDiscoveredIncludePaths,
   validateIncludePaths,
-  warnAboutPerlExtensionConflicts,
 } from './extensionWorkspaceGuidance';
 export {
   openDemoProjectCommand,
   suggestAiCompletionIfSupported,
   suggestDiscoveredIncludePaths,
   validateIncludePaths,
-  warnAboutPerlExtensionConflicts,
 } from './extensionWorkspaceGuidance';
+import {
+  coexistenceReevaluationRequested,
+  runCoexistenceAdvisory,
+  showCoexistenceStatusCommand,
+} from './coexistenceAdvisory';
+import { registerCoexistenceCommandGroup } from './coexistenceCommandGroup';
 import { WhatsNewManager } from './whatsNew';
 import { generateBoilerplate } from './fileCreation';
 import { handleFormattingError } from './formattingErrors';
@@ -43,6 +52,7 @@ import { registerGherkinProviders } from './gherkinProviders';
 import { registerGherkinStepDefinitionSupport } from './gherkinStepDefinitions';
 import { registerDocumentFeatureGroup } from './documentFeatureGroup';
 import { StreamingCompletionController } from './streamingCompletion';
+import { InlineCompletionOwner } from './inlineCompletionRouting';
 import {
   runAllTestsWithProve,
   runCurrentTestWithProve,
@@ -95,7 +105,19 @@ import { registerSupportCommandGroup } from './supportCommandGroup';
 import { reportIssueCommand } from './supportCommands';
 export { formatIssueDiagnosticInfo } from './supportCommands';
 import { ExtensionLanguageClientLifecycle } from './extensionComposition';
+import { LanguageClientLifecycleError } from './languageClientLifecycle';
 import type { LifecycleState } from './languageClientLifecycle';
+import {
+  StaleDocumentReplayError,
+  replayOpenPerlDocumentsWhenReady,
+} from './languageClientDocumentSync';
+import { settleLspProviderCallWithDisposition } from './lspProviderCall';
+import {
+  CrashRecoveryArbiter,
+  type CrashObservationSource,
+  type CrashRecoveryDecision,
+  type RecoveryTerminalDisposition,
+} from './crashRecoveryArbiter';
 import {
   ServerDemandCoordinator,
   isServerDependentDocument,
@@ -124,6 +146,7 @@ import {
   syncPerlCriticConfiguration as syncPerlCriticConfigurationFromConfig,
 } from './languageClientConfiguration';
 export { buildDisabledFeaturesFromConfig } from './languageClientConfiguration';
+import { perlConfigurationMiddleware } from './configurationPull';
 import {
   classifyStartupError,
   formatStartupFailureDialog,
@@ -135,6 +158,18 @@ import {
   ActiveDocumentReadiness,
   type ActiveDocumentReadinessSnapshot,
 } from './activeDocumentReadiness';
+import type {
+  ActivationAttemptState,
+  ActivationCleanupReceipt,
+  ActivationPhase,
+} from './activationTransaction';
+import { ACTIVATION_PHASES } from './activationTransaction';
+import {
+  ExtensionActivationOwner,
+  _setActivationPhaseFailureInjectorForTest,
+} from './activationOwner';
+import type { ClientResourceMeasurement } from './clientMeasurement';
+import { extensionOwnedResourceMeasurements } from './extensionOwnedResourceCensus';
 
 // Compatibility projections for existing command/provider code. Lifecycle
 // ownership lives in `languageClientLifecycle`; these values are synchronized
@@ -151,14 +186,34 @@ let statusBarItem: vscode.StatusBarItem | undefined;
 let healthWidget: HealthWidget | undefined;
 let healthWidgetDataSource: HealthWidgetDataSource | undefined;
 let streamingController: StreamingCompletionController | undefined;
+
+/**
+ * The single owner for Perl inline completion in VS Code (#8282).
+ *
+ * Consults the current streaming adapter through a getter rather than holding
+ * it, so a controller disposed by configuration change, restart, or extension
+ * disposal stops being routed to without rebuilding the owner.
+ */
+const inlineCompletionOwner = new InlineCompletionOwner(() => streamingController);
 let languageClientLifecycle:
   | ExtensionLanguageClientLifecycle<LanguageClient, StateChangeEvent>
   | undefined;
+// The extension lifecycle and CrashRecoveryArbiter are the sole restart owners.
+// Disable vscode-languageclient's independent connection-close restart loop so
+// one server crash cannot create overlapping replacement clients/processes.
+const LANGUAGE_CLIENT_CONNECTION_OPTIONS = Object.freeze({ maxRestartCount: 0 });
 /**
  * The single owner of "should perllsp be running?" (#8180). Extension
  * activation composes it; nothing else may start the language client directly.
  */
 let serverDemand: ServerDemandCoordinator | undefined;
+/**
+ * The transactional owner of the current activation attempt (#7854). Every
+ * activation-created resource registers with it; a failed attempt rolls back
+ * through it in reverse registration order, and a committed attempt hands its
+ * runtime to `deactivate()` for ordinary shutdown.
+ */
+let extensionActivation: ExtensionActivationOwner | null = null;
 
 export function createBinaryIdentityCommand(
   getClient: () => BinaryIdentityRequestClient | undefined,
@@ -188,7 +243,6 @@ export function createBinaryIdentityCommand(
 
 const languageClientStartupMetrics = new LanguageClientStartupMetrics();
 const activeDocumentReadiness = new ActiveDocumentReadiness();
-let latestLanguageClientGeneration = 0;
 const featureActivationMetrics = new FeatureActivationMetrics();
 
 export function getLanguageClientStartupMetrics(): LanguageClientStartupMetricsSnapshot {
@@ -201,6 +255,27 @@ export function getFeatureActivationMetrics(): FeatureActivationMetricsSnapshot 
 
 export function getActiveDocumentReadiness(): ActiveDocumentReadinessSnapshot {
   return activeDocumentReadiness.snapshot();
+}
+
+/**
+ * Production producer for the `extension_owned_*` counters of
+ * `vscode_client_measurement.v1` (#14678, parent #7866).
+ *
+ * Sourced from the activation ownership registry, so it reports only resources
+ * this extension registered. Counters the registry cannot distinguish, and
+ * shared extension-host memory, stay `not_proven` rather than `0`. This is a
+ * separate authority from {@link getLanguageClientStartupMetrics}, which owns
+ * startup milestone and server timing and carries no resource counts.
+ *
+ * Scope: the census is **attempt-scoped**. `extensionActivation` is replaced on
+ * each activation, so this reports the current attempt's ownership only and
+ * cannot see a resource a previous attempt failed to release. Within one
+ * attempt a failed release stays visible; detecting retention *across* a reload
+ * needs terminal censuses aggregated outside the attempt, which is part of
+ * #7866's restart/reload work, not this claim.
+ */
+export function getExtensionOwnedResourceMeasurements(): ClientResourceMeasurement[] {
+  return extensionOwnedResourceMeasurements(extensionActivation?.resourceCensus() ?? null);
 }
 
 export function markLanguageClientStartupMilestone(
@@ -233,16 +308,14 @@ let lastStartupDiagnosis: StartupErrorDiagnosis | undefined;
 let extensionContext: vscode.ExtensionContext | undefined;
 
 /**
- * Mid-session crash recovery state (#4625).
+ * Mid-session crash recovery state (#4625, #7845).
  *
- * `autoRestartAttempts` counts consecutive crash-triggered auto-restart
- * attempts. It is reset to 0 once the server has been stably `Running` for
- * at least `STABLE_RUN_GRACE_MS` (so a transient crash does not permanently
- * exhaust the retry budget, but a tight crash→restart→crash loop is capped).
- *
- * `stableRunningSince` records the timestamp at which the server last reached
- * `Running`; consulted at crash time to decide whether the prior run was long
- * enough to count as a new episode.
+ * `crashRecoveryArbiter` is the single generation-owned recovery arbiter
+ * (#7845): every post-activation crash observation (process exit, watchdog
+ * timeout, or both) is routed through `observeFailure` so one failed
+ * language-client generation authorizes at most one recovery operation. The
+ * arbiter owns the automatic-restart budget and the stable-run grace reset,
+ * consuming the pre-existing constants below rather than minting new policy.
  *
  * `userInitiatedStopPending` is set before a user-driven stop/restart so the
  * crash handler can distinguish an expected `Running → Stopped` transition
@@ -255,10 +328,28 @@ const MAX_AUTO_RESTART_ATTEMPTS = 3;
 const STABLE_RUN_GRACE_MS = 30_000;
 const WATCHDOG_INTERVAL_MS = 30_000;
 const WATCHDOG_TIMEOUT_MS = 10_000;
-let autoRestartAttempts = 0;
+const crashRecoveryArbiter = new CrashRecoveryArbiter(
+  MAX_AUTO_RESTART_ATTEMPTS,
+  STABLE_RUN_GRACE_MS,
+);
 let watchdogTimer: NodeJS.Timeout | undefined;
-let stableRunningSince: number | undefined;
 let userInitiatedStopPending = false;
+
+/**
+ * Fallback failed-generation identity used only when the real lifecycle
+ * controller is absent (unit-test harness). With a live lifecycle the
+ * generation comes from `snapshot.generation`, which increments on every
+ * start/stop and therefore identifies exactly one server process run.
+ */
+let fallbackCrashGeneration = 0;
+
+function currentCrashGeneration(): number {
+  return languageClientLifecycle?.snapshot.generation ?? fallbackCrashGeneration;
+}
+
+function crashProcessIdentity(generation: number): string {
+  return `perl-lsp-generation-${generation}`;
+}
 
 /**
  * Return the best available "server not running" message to show the user.
@@ -320,17 +411,17 @@ export function _setLastStartupDiagnosisForTest(
  * @internal
  */
 export function _resetCrashRecoveryStateForTest(): void {
-  autoRestartAttempts = 0;
-  stableRunningSince = undefined;
+  crashRecoveryArbiter.resetAllEpisodeMemory();
+  fallbackCrashGeneration = 0;
   userInitiatedStopPending = false;
 }
 
 /**
- * Test helper — read the current auto-restart attempt counter.
+ * Test helper — read the current automatic crash-recovery attempt counter.
  * @internal
  */
 export function _autoRestartAttemptsForTest(): number {
-  return autoRestartAttempts;
+  return crashRecoveryArbiter.automaticAttemptCount();
 }
 
 /**
@@ -339,7 +430,10 @@ export function _autoRestartAttemptsForTest(): number {
  * @internal
  */
 export function _markStableRunningForTest(since?: number): void {
-  stableRunningSince = since ?? Date.now() - (STABLE_RUN_GRACE_MS + 1_000);
+  crashRecoveryArbiter.markRunning(
+    currentCrashGeneration(),
+    since ?? Date.now() - (STABLE_RUN_GRACE_MS + 1_000),
+  );
 }
 
 /**
@@ -351,11 +445,63 @@ export function _setExtensionContextForTest(context: vscode.ExtensionContext): v
 }
 
 /**
+ * Test helper — inject (or clear) the live lifecycle controller so unit tests
+ * can drive `restartServer` through real start/stop transitions with fake
+ * clients. Pass `undefined` to restore the no-controller fallback harness.
+ * @internal
+ */
+export function _setLanguageClientLifecycleForTest(
+  lifecycle: ExtensionLanguageClientLifecycle<LanguageClient, StateChangeEvent> | undefined,
+): void {
+  languageClientLifecycle = lifecycle;
+}
+
+/** Test helper exposing the production connection-close ownership policy. */
+export function _languageClientConnectionOptionsForTest(): Readonly<{ maxRestartCount: number }> {
+  return LANGUAGE_CLIENT_CONNECTION_OPTIONS;
+}
+
+/**
+ * Test helper — deliver a watchdog-sourced failure observation through the
+ * same production arbiter entry point the watchdog interval calls (#7845).
+ * The optional generation mirrors the probe-binding the interval captures.
+ * @internal
+ */
+export function _watchdogFailureForTest(generation?: number): Promise<void> {
+  return recoverFromObservedCrash('watchdog', generation);
+}
+
+/**
+ * Test helper — simulate the lifecycle spawning one replacement generation
+ * while a recovery continuation is still awaiting its restart promise.
+ * With a live lifecycle the crash-generation identity is owned by the
+ * lifecycle controller (it increments on every start); the unit-test
+ * harness has no controller, so tests drive the increment explicitly to
+ * model a replacement generation that exists (and can fail) before the
+ * older continuation's `restartServer` promise resolves (#7845).
+ * @internal
+ */
+export function _spawnReplacementCrashGenerationForTest(): number {
+  fallbackCrashGeneration += 1;
+  return fallbackCrashGeneration;
+}
+
+/**
  * Test helper — set the user-initiated-stop sentinel.
  * @internal
  */
 export function _setUserInitiatedStopPendingForTest(value: boolean): void {
   userInitiatedStopPending = value;
+}
+
+/**
+ * Test helper — drive the explicit restart path with an injected lifecycle so
+ * cleanup-blocked restart admission can be asserted without a command
+ * registry (#14448).
+ * @internal
+ */
+export function _restartServerForTest(context: vscode.ExtensionContext): Promise<boolean> {
+  return restartServer(context);
 }
 
 export async function syncPerlCriticConfiguration(
@@ -481,6 +627,15 @@ export async function setPerlCriticSeverity(
 
   const severity = Number(selection.label);
   const config = vscode.workspace.getConfiguration('perl-lsp', resourceUri);
+  // `critic.severity` is declared `resource`, but the server keeps one
+  // session-global Critic state and only learns it through the unscoped
+  // `didChangeConfiguration` push (#8253; see CRITIC_SESSION_STATE_DEFECT in
+  // configurationOwnership.ts). Startup calls syncLanguageClientConfiguration
+  // with no scope, and an unscoped read cannot see a workspaceFolderValue — so
+  // writing the owning folder here would make the chosen severity work for the
+  // current session and then silently vanish on restart. Keep the write at a
+  // scope the session-global push can actually read until Critic becomes
+  // folder-owned server-side.
   const target =
     vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0
       ? vscode.ConfigurationTarget.Workspace
@@ -552,10 +707,98 @@ export async function copyProviderDecisionReceiptCommand(
 }
 
 export async function activate(context: vscode.ExtensionContext) {
+  const activation = new ExtensionActivationOwner(context, (message) => {
+    outputChannel?.error(message);
+  });
+  extensionActivation = activation;
+  const harnessFailureArmed = armHarnessActivationFailureInjection();
+  try {
+    const extensionApi = await runExtensionActivation(context, activation);
+    // Commit before publishing the activation-complete context key: the
+    // commandPalette/walkthrough `perl-lsp.activated` gate must not claim a
+    // committed runtime while the attempt is still rolling forward (#7854).
+    activation.commit();
+    vscode.commands.executeCommand('setContext', 'perl-lsp.activated', true);
+    return extensionApi;
+  } catch (error: unknown) {
+    const reason = error instanceof Error ? error.message : String(error);
+    const receipt = await activation.rollback();
+    vscode.commands.executeCommand('setContext', 'perl-lsp.activated', false);
+    outputChannel?.error(
+      `[activation] Attempt ${receipt.attempt_id} failed and was rolled back: ${reason}`,
+    );
+    throw error;
+  } finally {
+    if (harnessFailureArmed) {
+      _setActivationPhaseFailureInjectorForTest(null);
+    }
+  }
+}
+
+/**
+ * The extension id of the private published-smoke harness that ships only in
+ * this repository (`src/test/published/harness`) and is never published: its
+ * presence in a host is the discriminator that makes the packaged-journey
+ * failure seam (#7856) available only in that harness.
+ */
+const PUBLISHED_SMOKE_HARNESS_EXTENSION_ID = 'EffortlessMetrics.perl-lsp-published-smoke-harness';
+
+/**
+ * Test-only packaged-journey seam (#7856): arm the #7855 phase-boundary failure
+ * injector from the extension-test environment so the published-smoke harness
+ * can fail one deterministic pre-commit resource boundary of the INSTALLED
+ * extension — the exact shape a mid-activation host failure takes — without
+ * patching package bytes.
+ *
+ * Available only in the harness: it requires BOTH the namespaced test
+ * environment variable naming a real activation phase AND the private
+ * published-smoke harness extension to be present in the host. Real
+ * installations never satisfy both, and the guard is checked before any
+ * injector is installed, so the seam cannot affect a normal activation. The
+ * injector fires once, at the first boundary of the named phase, and is cleared
+ * when the attempt ends, so a later explicit retry cannot inherit the fault.
+ * @internal
+ */
+function armHarnessActivationFailureInjection(): boolean {
+  const phase = process.env.PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE;
+  if (!phase || !isActivationPhase(phase)) {
+    return false;
+  }
+  if (!vscode.extensions.getExtension(PUBLISHED_SMOKE_HARNESS_EXTENSION_ID)) {
+    return false;
+  }
+  let injected = false;
+  _setActivationPhaseFailureInjectorForTest((boundary) => {
+    if (injected || boundary.phase !== phase) {
+      return null;
+    }
+    injected = true;
+    return new Error(
+      `harness-injected activation failure after ${boundary.resource_id} (#7856 packaged journey)`,
+    );
+  });
+  return true;
+}
+
+function isActivationPhase(value: string): value is ActivationPhase {
+  return (ACTIVATION_PHASES as readonly string[]).includes(value);
+}
+
+async function runExtensionActivation(
+  context: vscode.ExtensionContext,
+  activation: ExtensionActivationOwner,
+) {
   languageClientStartupMetrics.markMilestone('activate_entered');
   featureActivationMetrics.beginActivation();
-  // Set activation context so commands are available even without a Perl file open (#UX4.4)
-  vscode.commands.executeCommand('setContext', 'perl-lsp.activated', true);
+  // Module-level compatibility projections are owned by the attempt from its
+  // first tick (#7854). Registered first so reverse-order cleanup clears them
+  // last, after every owned resource — including the language client — was
+  // torn down. The output channel is deliberately NOT cleared here: it is a
+  // retained support surface, so it stays reachable for failure reporting
+  // after a rolled-back attempt.
+  activation.ownCleanup('module-projections', 'base', 'mandatory_for_activation', () => {
+    clearActivationProjections();
+  });
   // Cache the context so the mid-session crash handler (#4625) can drive an
   // auto-restart without a parameter of its own.
   extensionContext = context;
@@ -563,11 +806,15 @@ export async function activate(context: vscode.ExtensionContext) {
   // traceOutputChannel. Messages are routed through level-aware methods
   // (debug/info/warn/error) so the VS Code Output panel level filter works.
   outputChannel = vscode.window.createOutputChannel('Perl Language Server', { log: true });
+  activation.own('base', 'support_surface_allowed_after_failure', outputChannel);
   // The generic MCP passthrough is runtime-inert (#7119), so this domain is no
   // longer activation-critical: it registers nothing and returns no disposable.
   const mcpDisposable = featureActivationMetrics.measure('mcp', false, () =>
     registerMcpSupport(outputChannel),
   );
+  if (mcpDisposable) {
+    activation.own('support', 'optional_degradable', mcpDisposable);
+  }
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusBarItem.command = 'perl-lsp.showWorkspaceStatus';
   statusBarItem.accessibilityInformation = {
@@ -575,6 +822,7 @@ export async function activate(context: vscode.ExtensionContext) {
     role: 'button',
   };
   statusBarItem.show();
+  activation.own('base', 'mandatory_for_activation', statusBarItem);
   healthWidget = new HealthWidget(statusBarItem);
   // Extension activation is not language-server startup (#8180). Until a
   // server-dependent trigger exists the widget reports the truthful dormant
@@ -591,8 +839,17 @@ export async function activate(context: vscode.ExtensionContext) {
     workspace: vscode.workspace,
   });
   healthWidgetDataSource.start();
-  context.subscriptions.push(healthWidgetDataSource);
+  activation.own('base', 'mandatory_for_activation', healthWidgetDataSource);
   languageClientLifecycle = createLanguageClientLifecycle(context);
+  // The language client lifecycle is attempt-owned until commit: a failed
+  // activation tears down any partially constructed client and timer state
+  // through the same primitive ordinary deactivation uses (#7854).
+  activation.ownCleanup(
+    'language-client-lifecycle',
+    'language_client',
+    'mandatory_for_activation',
+    () => disposeLanguageClient(),
+  );
   syncLifecycleProjection();
   // One owner for every server-dependent path (#8180). Command helpers and
   // document listeners route demand through this object; none of them call
@@ -606,13 +863,12 @@ export async function activate(context: vscode.ExtensionContext) {
       outputChannel.info(message);
     },
   });
-  context.subscriptions.push({
+  activation.own('language_client', 'mandatory_for_activation', {
     dispose: () => {
       serverDemand?.dispose();
       serverDemand = undefined;
     },
   });
-  context.subscriptions.push(statusBarItem);
 
   // Register server-facing commands through an explicit dependency context.
   // Lifecycle transitions remain owned by the authoritative composition.
@@ -646,7 +902,7 @@ export async function activate(context: vscode.ExtensionContext) {
       return lifecycle.serverPath;
     },
     reinstallServerBinary: () => reinstallServerBinary(context),
-    restartServer: () => restartServer(context),
+    restartServer: () => restartServerFromExplicitRecovery(context),
     showBinaryIdentity: createBinaryIdentityCommand(
       () => client ?? languageClientLifecycle?.client,
       (context.extension.packageJSON.version as string) ?? 'unknown',
@@ -675,6 +931,7 @@ export async function activate(context: vscode.ExtensionContext) {
       return onboarding.runSetupHealthCheck(serverPath);
     },
   });
+  activation.ownDisposables('commands', 'mandatory_for_activation', serverCommandDisposables);
 
   const openDemoProject = async () => {
     await openDemoProjectCommand(context);
@@ -684,6 +941,7 @@ export async function activate(context: vscode.ExtensionContext) {
     runPerlCriticOnActiveFile: () => runPerlCriticOnActiveFile(),
     setPerlCriticSeverity: () => setPerlCriticSeverity(),
   });
+  activation.ownDisposables('commands', 'mandatory_for_activation', criticCommandDisposables);
 
   const testCommandDisposables = registerTestCommandGroup({
     runTests: (test) =>
@@ -701,6 +959,7 @@ export async function activate(context: vscode.ExtensionContext) {
       }),
     runAllTests: () => runAllTestsWithProve(),
   });
+  activation.ownDisposables('commands', 'mandatory_for_activation', testCommandDisposables);
 
   const navigationCommandDisposables = registerNavigationCommandGroup({
     openDemoProject,
@@ -763,6 +1022,7 @@ export async function activate(context: vscode.ExtensionContext) {
         },
       }),
   });
+  activation.ownDisposables('commands', 'mandatory_for_activation', navigationCommandDisposables);
 
   const documentCommandDisposables = registerDocumentCommandGroup({
     checkSyntax: () =>
@@ -781,6 +1041,7 @@ export async function activate(context: vscode.ExtensionContext) {
         serverNotRunningMessage,
       }),
   });
+  activation.ownDisposables('commands', 'mandatory_for_activation', documentCommandDisposables);
 
   const diagnosticCommandDisposables = registerDiagnosticCommandGroup({
     explainProviderDecision: (provider) =>
@@ -801,6 +1062,7 @@ export async function activate(context: vscode.ExtensionContext) {
       ),
     explainDiagnostic: (request) => explainDiagnosticCommand(client, request),
   });
+  activation.ownDisposables('commands', 'mandatory_for_activation', diagnosticCommandDisposables);
 
   const whatsNewManager = featureActivationMetrics.measure(
     'whats_new',
@@ -830,6 +1092,15 @@ export async function activate(context: vscode.ExtensionContext) {
       await downloader.checkForUpdateSilent();
     },
   });
+  // Onboarding/What's New and support surfaces are intentionally usable after
+  // a failed activation attempt (the user may need to report the failure), so
+  // they register as retained support surfaces rather than mandatory ones
+  // (#7854).
+  activation.ownDisposables(
+    'support',
+    'support_surface_allowed_after_failure',
+    onboardingCommandDisposables,
+  );
 
   const refactoringCommandDisposables = registerRefactoringCommandGroup({
     extractVariable: () =>
@@ -837,6 +1108,7 @@ export async function activate(context: vscode.ExtensionContext) {
     extractMethod: () => extractMethodCommand({ activeClient: client, serverNotRunningMessage }),
     showRefactoringOptions: showRefactoringOptionsCommand,
   });
+  activation.ownDisposables('commands', 'mandatory_for_activation', refactoringCommandDisposables);
 
   const supportCommandDisposables = registerSupportCommandGroup({
     reportIssue: () =>
@@ -868,6 +1140,24 @@ export async function activate(context: vscode.ExtensionContext) {
         editorName: (vscode.env as unknown as { appName?: string }).appName,
       }),
   });
+  activation.ownDisposables(
+    'support',
+    'support_surface_allowed_after_failure',
+    supportCommandDisposables,
+  );
+
+  // Coexistence status is usable without a running server: it explains host
+  // observations and never mutates other tools (#7214). Registered last in
+  // the retained support prefix so failure-injection ordinals above stay
+  // stable.
+  const coexistenceCommandDisposables = registerCoexistenceCommandGroup({
+    showCoexistenceStatus: () => showCoexistenceStatusCommand(context),
+  });
+  activation.ownDisposables(
+    'support',
+    'support_surface_allowed_after_failure',
+    coexistenceCommandDisposables,
+  );
 
   const formatOnSaveDisposable = vscode.workspace.onWillSaveTextDocument((event) => {
     if (!shouldFormatOnSave(event.document)) {
@@ -876,6 +1166,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
     event.waitUntil(formatDocumentOnSave(event.document));
   });
+  activation.own('workspace_listeners', 'mandatory_for_activation', formatOnSaveDisposable);
 
   const configurationWatcher = featureActivationMetrics.measure('configuration', true, () =>
     registerWorkspaceConfigurationEvents({
@@ -895,6 +1186,14 @@ export async function activate(context: vscode.ExtensionContext) {
         );
         if (event.affectsConfiguration('perl-lsp.includePaths') || criticChanged) {
           await syncLanguageClientConfiguration(client);
+        }
+
+        // Advisory coexistence findings re-evaluate when an owned input
+        // changes; every collected input is classified live, so this block is
+        // reachable for all of them. Dedupe keeps this silent unless the
+        // finding set changed (#7214 clear/restore semantics).
+        if (coexistenceReevaluationRequested((setting) => event.affectsConfiguration(setting))) {
+          await runCoexistenceAdvisory(context);
         }
       },
       onReconstructConfigurationChanged: async (event) => {
@@ -917,6 +1216,7 @@ export async function activate(context: vscode.ExtensionContext) {
       },
     }),
   );
+  activation.own('workspace_listeners', 'mandatory_for_activation', configurationWatcher);
 
   const fileCreationWatcher = vscode.workspace.onDidCreateFiles(async (event) => {
     try {
@@ -945,41 +1245,34 @@ export async function activate(context: vscode.ExtensionContext) {
       outputChannel.error('File creation handler error', e);
     }
   });
+  activation.own('workspace_listeners', 'mandatory_for_activation', fileCreationWatcher);
 
   const arrowCompletionWatcher = vscode.workspace.onDidChangeTextDocument((event) => {
     maybeNudgeArrowCompletion(event);
   });
+  activation.own('workspace_listeners', 'mandatory_for_activation', arrowCompletionWatcher);
 
+  // The document feature group receives a scoped facade context: registrations
+  // it pushes during activation join the attempt, while lazily created
+  // resources (a POD preview webview panel's onDidDispose hook) fall through
+  // to ordinary host disposal after the attempt closed (#7854).
   const providerDisposables = featureActivationMetrics.measure('providers', true, () => [
     ...registerDocumentFeatureGroup({
-      extensionContext: context,
+      extensionContext: activation.scopedContext('document_providers', 'optional_degradable'),
       registerGherkinProviders,
       registerGherkinStepDefinitionSupport,
       registerPodPreview,
     }),
   ]);
+  activation.ownDisposables('document_providers', 'optional_degradable', providerDisposables);
 
-  context.subscriptions.push(
-    ...serverCommandDisposables,
-    ...criticCommandDisposables,
-    ...testCommandDisposables,
-    ...navigationCommandDisposables,
-    ...documentCommandDisposables,
-    ...diagnosticCommandDisposables,
-    ...onboardingCommandDisposables,
-    ...refactoringCommandDisposables,
-    ...supportCommandDisposables,
-    formatOnSaveDisposable,
-    configurationWatcher,
-    fileCreationWatcher,
-    arrowCompletionWatcher,
-    ...(mcpDisposable ? [mcpDisposable] : []),
-    ...providerDisposables,
-  );
   languageClientStartupMetrics.markMilestone('commands_registered');
 
-  // Initialize debug adapter
-  featureActivationMetrics.measure('debugger', true, () => activateDebugger(context));
+  // Initialize debug adapter. The debugger owns its registrations through the
+  // scoped facade context, which routes them into the attempt (#7854).
+  featureActivationMetrics.measure('debugger', true, () =>
+    activateDebugger(activation.scopedContext('debugger', 'mandatory_for_activation')),
+  );
 
   if (
     context.extensionMode === vscode.ExtensionMode.Test &&
@@ -991,9 +1284,10 @@ export async function activate(context: vscode.ExtensionContext) {
       getLanguageClientStartupMetrics,
       getFeatureActivationMetrics,
       getActiveDocumentReadiness,
+      getExtensionOwnedResourceMeasurements,
       markLanguageClientStartupMilestone,
       waitForActiveDocumentReady,
-      stop: deactivate,
+      stop: stopLanguageClientForActivationApi,
     };
   }
 
@@ -1022,32 +1316,124 @@ export async function activate(context: vscode.ExtensionContext) {
         outputChannel.error(`[startup] Post-trust startup failed: ${message}`);
       });
     });
-    context.subscriptions.push(trustDisposable);
+    activation.own('workspace_listeners', 'mandatory_for_activation', trustDisposable);
   }
 
   // Extension activation is complete. Language-server startup is a separate
   // transition driven by real demand (#8180): an eligible Perl document that
   // is already open, one that opens later, or an explicit server command.
   const documentDemandDisposables = registerServerDemandListeners();
-  context.subscriptions.push(...documentDemandDisposables);
+  activation.ownDisposables(
+    'workspace_listeners',
+    'mandatory_for_activation',
+    documentDemandDisposables,
+  );
   scheduleServerDemandEvaluation(context, whatsNewManager);
   languageClientStartupMetrics.markMilestone('activate_returned');
   return {
     getLanguageClientStartupMetrics,
     getFeatureActivationMetrics,
     getActiveDocumentReadiness,
+    getExtensionOwnedResourceMeasurements,
     markLanguageClientStartupMilestone,
     waitForActiveDocumentReady,
-    stop: deactivate,
+    stop: stopLanguageClientForActivationApi,
   };
 }
 
 export async function deactivate() {
   try {
-    await disposeLanguageClient();
+    // A committed activation owns shutdown through the same cleanup
+    // primitives rollback uses (#7854). Without a committed runtime
+    // (activation never ran to commit, or the attempt was rolled back) the
+    // pre-transaction shutdown path stays authoritative.
+    const receipt = (await extensionActivation?.deactivate()) ?? null;
+    if (receipt === null) {
+      await disposeLanguageClient();
+    }
   } finally {
     languageClientStartupMetrics.markMilestone('shutdown');
   }
+}
+
+/**
+ * The activation API's `stop` seam: a recoverable language-client shutdown,
+ * not the terminal teardown `deactivate()` performs (#7854).
+ *
+ * Historically `stop` was literally `deactivate`, and `deactivate()` only
+ * stopped the language client. The current-source smoke exercises this seam
+ * mid-session ("language client shutdown") and keeps using the extension
+ * afterwards — diagnostics arrive because the demand listeners survive and
+ * restart the server — so it must stay light: the committed activation
+ * runtime, its registrations, and the output channel stay live, and only the
+ * language client plus the shutdown milestone are touched.
+ */
+async function stopLanguageClientForActivationApi(): Promise<void> {
+  await disposeLanguageClient();
+  languageClientStartupMetrics.markMilestone('shutdown');
+}
+
+/**
+ * Clears the module-level compatibility projections from the activation
+ * transaction's authority (#7854). Registered as the attempt's first
+ * resource, so reverse-order cleanup runs it last — after every owned
+ * resource, including the language client lifecycle, was torn down. The
+ * output channel is deliberately retained: it is a support surface that must
+ * stay usable for failure reporting after a rolled-back attempt.
+ */
+function clearActivationProjections(): void {
+  stopWatchdog();
+  client = undefined;
+  currentServerPath = null;
+  configuredServerPathMissing = null;
+  testAdapter = undefined;
+  streamingController = undefined;
+  statusBarItem = undefined;
+  healthWidget = undefined;
+  healthWidgetDataSource = undefined;
+  serverDemand = undefined;
+  languageClientLifecycle = undefined;
+  lastStartupDiagnosis = undefined;
+  extensionContext = undefined;
+}
+
+/**
+ * Test helper — expose the production activation owner's state (#7854).
+ * @internal
+ */
+export function _extensionActivationStateForTest(): {
+  state: ActivationAttemptState;
+  attemptId: string;
+  resourceIds: string[];
+  lastCleanupReceipt: ActivationCleanupReceipt | null;
+} | null {
+  if (extensionActivation === null) {
+    return null;
+  }
+  return {
+    state: extensionActivation.currentState(),
+    attemptId: extensionActivation.attemptId,
+    resourceIds: extensionActivation.resourceIds(),
+    lastCleanupReceipt: extensionActivation.lastCleanupReceipt(),
+  };
+}
+
+/**
+ * Test helper — whether the module-level compatibility projections were
+ * cleared by the activation authority (#7854).
+ * @internal
+ */
+export function _activationProjectionsClearedForTest(): boolean {
+  return (
+    extensionContext === undefined &&
+    languageClientLifecycle === undefined &&
+    serverDemand === undefined &&
+    statusBarItem === undefined &&
+    healthWidget === undefined &&
+    healthWidgetDataSource === undefined &&
+    testAdapter === undefined &&
+    streamingController === undefined
+  );
 }
 
 /**
@@ -1144,7 +1530,7 @@ async function startLanguageServerOnDemand(context: vscode.ExtensionContext): Pr
   languageClientStartupMetrics.markMilestone('workspace_ready');
   await validateIncludePaths(context);
   await suggestDiscoveredIncludePaths(context);
-  await warnAboutPerlExtensionConflicts(context);
+  await runCoexistenceAdvisory(context);
 
   // Background update check — fire-and-forget after startup completes.
   // Runs at most once per updateCheckInterval hours; no-ops when serverPath
@@ -1432,6 +1818,19 @@ function createLanguageClientLifecycle(
       }
     },
     createClient: (serverPath) => {
+      // Bind this extension-host session to the exact managed candidate
+      // before the server process can spawn (#10083), so no collector can
+      // delete the candidate between selection and reference establishment.
+      // No-op for user-managed or pre-policy installs, which are never
+      // deletion subjects.
+      const boundCandidateId = acquireLaunchManagedCandidateReference(
+        serverPath,
+        vscode.env.sessionId,
+        (message) => outputChannel.info(`[managed-candidate] ${message}`),
+      );
+      if (boundCandidateId !== null) {
+        outputChannel.info(`[managed-candidate] session bound to ${boundCandidateId}`);
+      }
       languageClientStartupMetrics.beginServerStart();
       languageClientStartupMetrics.beginInitialize();
       return createLanguageClient(serverPath);
@@ -1442,16 +1841,32 @@ function createLanguageClientLifecycle(
       languageClientStartupMetrics.setServerVersion(
         startedClient.initializeResult?.serverInfo?.version,
       );
-      await finalizeStartedLanguageClient(context, startedClient, latestLanguageClientGeneration);
+      const generation = languageClientLifecycle?.snapshot.generation;
+      if (generation === undefined) {
+        throw new Error('Language-client lifecycle is unavailable during startup finalization.');
+      }
+      await finalizeStartedLanguageClient(context, startedClient, generation);
     },
-    onFailed: () => {
+    onFailed: (snapshot) => {
       languageClientStartupMetrics.finishServerStart('error');
       languageClientStartupMetrics.finishInitialize('error');
+      const message =
+        snapshot.error instanceof Error ? snapshot.error.message : String(snapshot.error);
+      outputChannel.error(
+        `[lifecycle] Language client failed to start (generation ${snapshot.generation}): ${message}`,
+      );
     },
     onStateChange: (snapshot) => {
       languageClientStartupMetrics.setLifecycleState(snapshot.state);
       syncLifecycleProjection();
       healthWidget?.onStateChange(clientStateForLifecycle(snapshot.state));
+      if (snapshot.state === 'running') {
+        // A language client can emit Running before onStarted finishes. The
+        // lifecycle's running transition is the authoritative post-finalization
+        // signal, so only it may start the stable-run grace window and reset
+        // the automatic-restart budget after a genuinely healthy replacement.
+        crashRecoveryArbiter.markRunning(snapshot.generation, Date.now());
+      }
       // Only `resolving` needs an explicit projection: onStateChange maps it to
       // generic Starting, and every other lifecycle state is already owned by
       // onStateChange (including active indexing tokens and client_stopped detail).
@@ -1459,19 +1874,7 @@ function createLanguageClientLifecycle(
         healthWidget?.setWorkspaceLifecycleState(projectWorkspaceLifecycle(snapshot.state));
       }
     },
-    onClientStateChange: (_activeClient, event) => {
-      if (event.newState === LanguageClientState.Starting) {
-        languageClientStartupMetrics.markMilestone('process_started');
-        languageClientStartupMetrics.finishServerStart('ok');
-      }
-      if (event.newState === LanguageClientState.Running) {
-        // Record when the server last reached Running so the crash handler
-        // (#4625) can decide whether the prior run was stable long enough to
-        // reset the auto-restart attempt counter.
-        stableRunningSince = Date.now();
-      }
-      handleClientStateChange(event);
-    },
+    onClientStateChange: (_activeClient, event) => handleLifecycleClientStateChange(event),
     onCallbackError: (error, phase) => {
       const message = error instanceof Error ? error.message : String(error);
       outputChannel.error(`[lifecycle] ${phase} callback failed: ${message}`);
@@ -1494,19 +1897,50 @@ async function finalizeStartedLanguageClient(
   startedClient: LanguageClient,
   generation: number,
 ): Promise<void> {
+  const isCurrent = (): boolean =>
+    languageClientLifecycle?.controller.isCurrent(startedClient, generation) === true;
+  const assertCurrent = (): void => {
+    if (!isCurrent()) {
+      throw new StaleDocumentReplayError();
+    }
+  };
+
+  assertCurrent();
   // A LanguageClient restart does not replay didOpen for documents that VS Code
   // kept open while the previous client was stopped. Rehydrate those documents
   // before providers issue requests against the new server.
   if (generation > 1) {
-    await synchronizeOpenPerlDocuments(startedClient);
+    const openPerlDocuments = vscode.workspace.textDocuments
+      .filter(
+        (document) =>
+          document.languageId === 'perl' &&
+          (document.uri.scheme === 'file' || document.uri.scheme === 'untitled'),
+      )
+      .map((document) => ({
+        uri: document.uri.toString(),
+        languageId: document.languageId,
+        version: document.version,
+        text: document.getText(),
+      }));
+    await replayOpenPerlDocumentsWhenReady(
+      startedClient,
+      openPerlDocuments,
+      LanguageClientState.Running,
+      isCurrent,
+      2000,
+    );
+    assertCurrent();
   }
 
   // This hook is part of the lifecycle controller so initial startup and
   // restart/reinstall generations rebuild the same client integrations.
-  const serverVersion = startedClient.initializeResult?.serverInfo?.version;
-  if (serverVersion) {
-    healthWidget?.setVersion(serverVersion);
-  }
+  // Refresh both self-reported identity fields on every generation (#12705):
+  // assigning and clearing here keeps the reused status widget honest across
+  // replacement startups instead of retaining the prior server's identity,
+  // while a custom/wrapper server's name survives alongside its version.
+  const serverInfo = startedClient.initializeResult?.serverInfo;
+  healthWidget?.setName(serverInfo?.name);
+  healthWidget?.setVersion(serverInfo?.version);
 
   // Offer AI inline completion once if the server advertises support (#1634).
   // Fire-and-forget; failures must not block lifecycle finalization.
@@ -1516,6 +1950,7 @@ async function finalizeStartedLanguageClient(
   });
 
   await refreshTestAdapter(context);
+  assertCurrent();
   refreshStreamingController(startedClient);
   try {
     await syncLanguageClientConfiguration(startedClient);
@@ -1523,27 +1958,28 @@ async function finalizeStartedLanguageClient(
     const message = error instanceof Error ? error.message : String(error);
     outputChannel.error(`[configuration] initial synchronization failed: ${message}`);
   }
+  assertCurrent();
   lastStartupDiagnosis = undefined;
   outputChannel.info('Perl Language Server started successfully');
 }
 
-async function synchronizeOpenPerlDocuments(client: LanguageClient): Promise<void> {
-  for (const document of vscode.workspace.textDocuments) {
-    if (
-      document.languageId !== 'perl' ||
-      (document.uri.scheme !== 'file' && document.uri.scheme !== 'untitled')
-    ) {
-      continue;
-    }
-
-    await client.sendNotification('textDocument/didOpen', {
-      textDocument: {
-        uri: document.uri.toString(),
-        languageId: document.languageId,
-        version: document.version,
-        text: document.getText(),
-      },
-    });
+/**
+ * Present the remediation for replacement startup blocked by incomplete
+ * client cleanup (#14448): the lifecycle refuses to construct a replacement
+ * client until the window reloads, so generic start/restart guidance would
+ * mislead the user into retrying a permanently blocked lifecycle.
+ */
+async function presentCleanupIncompleteBlockedRecovery(): Promise<void> {
+  healthWidget?.onStateChange(ClientState.Stopped);
+  const choice = await vscode.window.showErrorMessage(
+    'The previous Perl language client did not finish cleaning up, so replacement startup is blocked. Reload the window before trying again.',
+    'Reload Window',
+    'View Logs',
+  );
+  if (choice === 'Reload Window') {
+    void vscode.commands.executeCommand('workbench.action.reloadWindow');
+  } else if (choice === 'View Logs') {
+    outputChannel.show();
   }
 }
 
@@ -1573,6 +2009,14 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
   } catch (startError: unknown) {
     const msg = startError instanceof Error ? startError.message : String(startError);
     outputChannel.error(`[startup] Language client failed to start: ${msg}`);
+
+    if (
+      startError instanceof LanguageClientLifecycleError &&
+      startError.reason === 'cleanup-incomplete'
+    ) {
+      await presentCleanupIncompleteBlockedRecovery();
+      return false;
+    }
 
     if (!lifecycle.serverPath) {
       healthWidget?.onStateChange(ClientState.Stopped);
@@ -1638,9 +2082,12 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
   }
 }
 
-function createLanguageClient(serverPath: string): LanguageClient {
+/**
+ * Exported so the configuration-transport wiring contract can execute the real
+ * client options rather than asserting on source text (#14447).
+ */
+export function createLanguageClient(serverPath: string): LanguageClient {
   const generation = activeDocumentReadiness.beginGeneration();
-  latestLanguageClientGeneration = generation;
   healthWidget?.seedIndexReadinessState('building');
   const serverOptions: ServerOptions = {
     run: {
@@ -1660,6 +2107,7 @@ function createLanguageClient(serverPath: string): LanguageClient {
   );
 
   const clientOptions: LanguageClientOptions = {
+    connectionOptions: LANGUAGE_CLIENT_CONNECTION_OPTIONS,
     documentSelector: [
       { scheme: 'file', language: 'perl' },
       { scheme: 'untitled', language: 'perl' },
@@ -1670,107 +2118,314 @@ function createLanguageClient(serverPath: string): LanguageClient {
     outputChannel,
     traceOutputChannel: outputChannel,
     middleware: {
+      // The server pulls `section: "perl"` once unscoped and once per workspace
+      // folder. Without this adapter the language client would resolve those
+      // against the `perl.*` namespace, which this extension does not
+      // contribute, and every folder item would come back null (#14447).
+      workspace: {
+        configuration: perlConfigurationMiddleware(),
+      },
       provideCompletionItem: async (document, position, context, token, next) => {
-        try {
-          const result = await next(document, position, context, token);
-          recordLspProviderOutcome('Completion', document, result);
-          return result;
-        } catch (error: unknown) {
-          return handleLspProviderError('Completion', error);
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
         }
+        return settleMiddlewareProviderCall(
+          'Completion',
+          document,
+          async () => next(document, position, context, token),
+          null,
+        );
+      },
+      // The one authoritative provider for Perl inline completion (#8282).
+      // Installing the owner as middleware keeps it on the language client's
+      // own provider registration, so no second provider competes for the same
+      // document selector.
+      provideInlineCompletionItems: (document, position, context, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
+        }
+        return inlineCompletionOwner.provideInlineCompletionItems(
+          document,
+          position,
+          context,
+          token,
+          next,
+        );
       },
       provideDefinition: async (document, position, token, next) => {
-        try {
-          const result = await next(document, position, token);
-          recordLspProviderOutcome('Definition', document, result);
-          return result;
-        } catch (error: unknown) {
-          return handleLspProviderError('Definition', error);
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
         }
+        return settleMiddlewareProviderCall(
+          'Definition',
+          document,
+          async () => next(document, position, token),
+          null,
+        );
       },
       provideHover: async (document, position, token, next) => {
-        try {
-          const result = await next(document, position, token);
-          recordLspProviderOutcome('Hover', document, result);
-          return result;
-        } catch (error: unknown) {
-          return handleLspProviderError('Hover', error);
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
         }
+        return settleMiddlewareProviderCall(
+          'Hover',
+          document,
+          async () => next(document, position, token),
+          null,
+        );
       },
       provideReferences: async (document, position, options, token, next) => {
-        try {
-          const result = await next(document, position, options, token);
-          recordLspProviderOutcome('References', document, result);
-          return result;
-        } catch (error: unknown) {
-          return handleLspProviderError('References', error);
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
         }
+        return settleMiddlewareProviderCall(
+          'References',
+          document,
+          async () => next(document, position, options, token),
+          null,
+        );
       },
       provideDocumentSymbols: async (document, token, next) => {
-        try {
-          const result = await next(document, token);
-          recordLspProviderOutcome('Symbols', document, result);
-          return result;
-        } catch (error: unknown) {
-          return handleLspProviderError('Symbols', error);
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
         }
+        return settleMiddlewareProviderCall(
+          'Symbols',
+          document,
+          async () => next(document, token),
+          null,
+        );
       },
       provideRenameEdits: async (document, position, newName, token, next) => {
-        try {
-          const result = await next(document, position, newName, token);
-          recordLspProviderOutcome('Rename', document, result, 'safe_refusal');
-          return result;
-        } catch (error: unknown) {
-          return handleLspProviderError('Rename', error);
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
         }
+        return settleMiddlewareProviderCall(
+          'Rename',
+          document,
+          async () => next(document, position, newName, token),
+          null,
+          'safe_refusal',
+        );
       },
       provideCodeLenses: async (document, token, next) => {
-        const lenses = await next(document, token);
-        return lenses?.map(rewriteTestLensCommand);
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return [];
+        }
+        try {
+          const lenses = await next(document, token);
+          return lenses?.map(rewriteTestLensCommand);
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return [];
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return [];
+          }
+          outputChannel?.warn(`[provider] CodeLens failed: ${message}`);
+          return [];
+        }
       },
       resolveCodeLens: async (codeLens, token, next) => {
-        const resolved = await next(codeLens, token);
-        return rewriteTestLensCommand(resolved ?? codeLens);
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return rewriteTestLensCommand(codeLens);
+        }
+        try {
+          const resolved = await next(codeLens, token);
+          return rewriteTestLensCommand(resolved ?? codeLens);
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return rewriteTestLensCommand(codeLens);
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return rewriteTestLensCommand(codeLens);
+          }
+          outputChannel?.warn(`[provider] CodeLens resolve failed: ${message}`);
+          return rewriteTestLensCommand(codeLens);
+        }
       },
       provideDocumentFormattingEdits: async (document, options, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
+        }
+        return settleFormattingProviderCall(async () => next(document, options, token), null);
+      },
+      provideDocumentRangeFormattingEdits: async (document, range, options, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
+        }
+        return settleFormattingProviderCall(
+          async () => next(document, range, options, token),
+          null,
+          true,
+        );
+      },
+      provideFoldingRanges: async (document, context, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return [];
+        }
         try {
-          const edits = await next(document, options, token);
-          const presentation = presentFormattingProviderOutcome(edits?.length ?? 0);
-          healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
-          return edits;
-        } catch (err: unknown) {
-          const code =
-            err && typeof err === 'object' && 'code' in err
-              ? (err as { code: unknown }).code
-              : undefined;
-          // Do not notify for request cancellations (code -32800)
-          if (code !== -32800) {
-            const msg = err instanceof Error ? err.message : String(err);
-            handleFormattingError(msg, outputChannel);
-            const presentation = presentFormattingProviderError(msg);
-            healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
+          const result = await next(document, context, token);
+          return result ?? [];
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return [];
           }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return [];
+          }
+          outputChannel?.warn(`[provider] FoldingRanges failed: ${message}`);
+          return [];
+        }
+      },
+      provideInlayHints: async (document, range, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return [];
+        }
+        try {
+          const result = await next(document, range, token);
+          return result ?? [];
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return [];
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return [];
+          }
+          outputChannel?.warn(`[provider] InlayHints failed: ${message}`);
+          return [];
+        }
+      },
+      provideDocumentSemanticTokens: async (document, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
+        }
+        try {
+          return (await next(document, token)) ?? null;
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return null;
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return null;
+          }
+          outputChannel?.warn(`[provider] SemanticTokens failed: ${message}`);
           return null;
         }
       },
-      provideDocumentRangeFormattingEdits: async (document, range, options, token, next) => {
-        try {
-          const edits = await next(document, range, options, token);
-          const presentation = presentFormattingProviderOutcome(edits?.length ?? 0, true);
-          healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
-          return edits;
-        } catch (err: unknown) {
-          const code =
-            err && typeof err === 'object' && 'code' in err
-              ? (err as { code: unknown }).code
-              : undefined;
-          if (code !== -32800) {
-            const msg = err instanceof Error ? err.message : String(err);
-            handleFormattingError(msg, outputChannel);
-            const presentation = presentFormattingProviderError(msg, true);
-            healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
-          }
+      provideDocumentRangeSemanticTokens: async (document, range, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
           return null;
+        }
+        try {
+          return (await next(document, range, token)) ?? null;
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return null;
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return null;
+          }
+          outputChannel?.warn(`[provider] RangeSemanticTokens failed: ${message}`);
+          return null;
+        }
+      },
+      provideDocumentSemanticTokensEdits: async (document, previousResultId, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return null;
+        }
+        try {
+          return (await next(document, previousResultId, token)) ?? null;
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return null;
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return null;
+          }
+          outputChannel?.warn(`[provider] SemanticTokensEdits failed: ${message}`);
+          return null;
+        }
+      },
+      provideCodeActions: async (document, range, context, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return [];
+        }
+        try {
+          const result = await next(document, range, context, token);
+          return result ?? [];
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return [];
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return [];
+          }
+          outputChannel?.warn(`[provider] CodeActions failed: ${message}`);
+          return [];
+        }
+      },
+      resolveCodeAction: async (item, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return item;
+        }
+        try {
+          return (await next(item, token)) ?? item;
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return item;
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return item;
+          }
+          outputChannel?.warn(`[provider] CodeAction resolve failed: ${message}`);
+          return item;
+        }
+      },
+      provideDocumentLinks: async (document, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return [];
+        }
+        try {
+          const result = await next(document, token);
+          return result ?? [];
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return [];
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return [];
+          }
+          outputChannel?.warn(`[provider] DocumentLinks failed: ${message}`);
+          return [];
+        }
+      },
+      resolveDocumentLink: async (link, token, next) => {
+        if (languageClientLifecycle?.snapshot.state !== 'running') {
+          return link;
+        }
+        try {
+          return (await next(link, token)) ?? link;
+        } catch (error: unknown) {
+          if (isRequestCancellation(error)) {
+            return link;
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('Client got disposed')) {
+            return link;
+          }
+          outputChannel?.warn(`[provider] DocumentLink resolve failed: ${message}`);
+          return link;
         }
       },
       handleWorkDoneProgress: (token, params, next) => {
@@ -1818,24 +2473,91 @@ function recordLspProviderOutcome(
   result: unknown,
   emptyOutcome: 'legitimate_empty' | 'safe_refusal' = 'legitimate_empty',
 ): void {
-  const presentation = presentLspProviderOutcome(
-    label,
-    result,
-    activeDocumentReadiness.isReady(document.uri.toString()),
-    emptyOutcome,
-  );
-  healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
+  try {
+    const presentation = presentLspProviderOutcome(
+      label,
+      result,
+      activeDocumentReadiness.isReady(document.uri.toString()),
+      emptyOutcome,
+    );
+    healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
+  } catch {
+    // Provider status projection must never replace the settled wire result.
+  }
 }
 
-function handleLspProviderError(label: string, error: unknown): null {
-  if (isRequestCancellation(error)) {
-    return null;
+async function settleMiddlewareProviderCall<T>(
+  label: string,
+  document: vscode.TextDocument,
+  call: () => Promise<T>,
+  fallback: T,
+  emptyOutcome: 'legitimate_empty' | 'safe_refusal' = 'legitimate_empty',
+): Promise<T> {
+  const settlement = await settleLspProviderCallWithDisposition(call, fallback);
+  if (settlement.kind === 'returned') {
+    safelyObserveProviderOutcome(() =>
+      recordLspProviderOutcome(label, document, settlement.value, emptyOutcome),
+    );
+  } else if (settlement.kind === 'failed') {
+    safelyObserveProviderOutcome(() => handleLspProviderError(label, settlement.error));
   }
-  const message = error instanceof Error ? error.message : String(error);
-  const presentation = presentLspProviderError(label, message);
-  healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
-  outputChannel?.warn(`[provider] ${label} failed: ${message}`);
-  return null;
+  return settlement.wireValue;
+}
+
+export async function settleFormattingProviderCall<T>(
+  call: () => Promise<T>,
+  fallback: T,
+  range: boolean = false,
+): Promise<T> {
+  const settlement = await settleLspProviderCallWithDisposition(call, fallback);
+  if (settlement.kind === 'returned') {
+    safelyObserveProviderOutcome(() => {
+      const presentation = presentFormattingProviderOutcome(
+        Array.isArray(settlement.value) ? settlement.value.length : 0,
+        range,
+      );
+      healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
+    });
+  } else if (settlement.kind === 'failed') {
+    const message = describeLspProviderError(settlement.error);
+    safelyObserveProviderOutcome(() => handleFormattingError(message, outputChannel));
+    safelyObserveProviderOutcome(() => {
+      const presentation = presentFormattingProviderError(message, range);
+      healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
+    });
+  }
+  return settlement.wireValue;
+}
+
+function safelyObserveProviderOutcome(observer: () => void): void {
+  try {
+    observer();
+  } catch {
+    // Provider status and diagnostics must never replace the wire fallback.
+  }
+}
+
+function describeLspProviderError(error: unknown): string {
+  try {
+    return error instanceof Error ? error.message : String(error);
+  } catch {
+    return 'unavailable provider error';
+  }
+}
+
+function handleLspProviderError(label: string, error: unknown): void {
+  const message = describeLspProviderError(error);
+  try {
+    const presentation = presentLspProviderError(label, message);
+    healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
+  } catch {
+    // A failing status projection must not suppress the diagnostic warning.
+  }
+  try {
+    outputChannel?.warn(`[provider] ${label} failed: ${message}`);
+  } catch {
+    // Logging is best effort after the wire fallback has been selected.
+  }
 }
 
 function isRequestCancellation(error: unknown): boolean {
@@ -2116,20 +2838,39 @@ function getSupportedFeatureProfiles(): string[] {
   return ['auto', 'ga-lock', 'ga', 'prod', 'production', 'all'];
 }
 
-async function restartServer(_context: vscode.ExtensionContext) {
+/**
+ * Restart the language server through the authoritative lifecycle.
+ *
+ * Returns true only when restart was refused because the lifecycle's client
+ * cleanup is incomplete (#14448): that lifecycle cannot admit a replacement
+ * until the window reloads, so automatic crash recovery must not spend
+ * further retry slots on it.
+ */
+async function restartServer(_context: vscode.ExtensionContext): Promise<boolean> {
   const lifecycle = languageClientLifecycle;
   if (!lifecycle) {
     vscode.window.showWarningMessage('Perl Language Server is not initialized yet.');
-    return;
+    return false;
   }
 
-  if (!client && !currentServerPath && !lifecycle.hasPendingServerPathOverride) {
-    // A dormant server has nothing to restart. An explicit restart request is
-    // itself a server-dependent entry point (#8180), so honour it by starting
-    // the server rather than reporting the extension as "not initialized".
+  // A dormant server has nothing to restart: only a lifecycle that never
+  // left its initial stopped state is dormant. A `failed` lifecycle owns a
+  // half-built generation that `restart()` must stop before starting (#12724),
+  // so it must fall through to the restart path even when the compatibility
+  // projections are stale. An explicit restart request is itself a
+  // server-dependent entry point (#8180), so a dormant request is honoured by
+  // starting the server rather than reporting the extension as "not
+  // initialized".
+  if (
+    !client &&
+    !currentServerPath &&
+    !lifecycle.hasPendingServerPathOverride &&
+    lifecycle.snapshot.generation === 0 &&
+    lifecycle.snapshot.state === 'stopped'
+  ) {
     if (!serverDemand) {
       vscode.window.showWarningMessage('Perl Language Server is not initialized yet.');
-      return;
+      return false;
     }
     await serverDemand.ensureStarted('command:restart', { retry: true });
     syncLifecycleProjection();
@@ -2139,7 +2880,7 @@ async function restartServer(_context: vscode.ExtensionContext) {
       // Staying silent here would be worse than the old "not initialized"
       // warning: the user asked for a server and would get no answer at all.
       const message = describeDemandError(demand.error);
-      outputChannel.error(`Failed to start perl-lsp: ${message}`);
+      outputChannel?.error(`Failed to start perl-lsp: ${message}`);
       vscode.window
         .showErrorMessage(`Failed to start Perl Language Server: ${message}`, 'Show Output')
         .then((selection) => {
@@ -2147,7 +2888,7 @@ async function restartServer(_context: vscode.ExtensionContext) {
             outputChannel.show();
           }
         });
-      return;
+      return false;
     }
     vscode.window
       .showInformationMessage('Perl Language Server started', 'Show Output')
@@ -2156,7 +2897,7 @@ async function restartServer(_context: vscode.ExtensionContext) {
           outputChannel.show();
         }
       });
-    return;
+    return false;
   }
 
   // Mark this as a user-driven (or auto-recovery-driven) restart so the
@@ -2170,7 +2911,7 @@ async function restartServer(_context: vscode.ExtensionContext) {
     disposeClientIntegrations();
     const started = await lifecycle.restart();
     if (!started) {
-      return;
+      return false;
     }
     languageClientStartupMetrics.markMilestone('restart');
     syncLifecycleProjection();
@@ -2185,15 +2926,23 @@ async function restartServer(_context: vscode.ExtensionContext) {
           outputChannel.show();
         }
       });
+    return false;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    outputChannel.error(`Failed to restart perl-lsp: ${message}`);
+    outputChannel?.error(`Failed to restart perl-lsp: ${message}`);
     // A rejected restart() means the running generation was stopped and its
     // replacement failed: the server is stopped. Tell the demand owner,
     // otherwise its stale `running`/in-flight belief suppresses all later
     // document demand, and even an explicit health-check retry no-ops because
     // `retry` only overrides `failed`.
     serverDemand?.noteStopped();
+    if (error instanceof LanguageClientLifecycleError && error.reason === 'cleanup-incomplete') {
+      // Incomplete cleanup blocks this lifecycle until the window reloads
+      // (#14448): present that remediation instead of a bare restart failure,
+      // and report the block so automatic crash recovery stops retrying.
+      await presentCleanupIncompleteBlockedRecovery();
+      return true;
+    }
     vscode.window
       .showErrorMessage(`Failed to restart Perl Language Server: ${message}`, 'Show Output')
       .then((selection) => {
@@ -2201,9 +2950,15 @@ async function restartServer(_context: vscode.ExtensionContext) {
           outputChannel.show();
         }
       });
+    return false;
   } finally {
     userInitiatedStopPending = false;
   }
+}
+
+async function restartServerFromExplicitRecovery(context: vscode.ExtensionContext): Promise<void> {
+  crashRecoveryArbiter.resetForExplicitRecovery();
+  await restartServer(context);
 }
 
 function shouldFormatOnSave(document: vscode.TextDocument): boolean {
@@ -2475,126 +3230,246 @@ export function handleClientStateChange(event: StateChangeEvent): void {
     return;
   }
 
-  // The server crashed mid-session. Capture a generic diagnosis so
-  // serverNotRunningMessage() returns an actionable hint instead of the stale
-  // "not running" fallback. We can't run probeStartupFailure here (async), so
-  // we set a generic "server stopped" diagnosis; the user can run Health Check
-  // for details.
+  // One authoritative crash-recovery entry point (#7845): the unexpected
+  // process-exit observation is arbitrated by generation + process identity,
+  // so a late duplicate callback for the same failed generation cannot start
+  // a second recovery.
+  void recoverFromObservedCrash('process_exit');
+}
+
+/**
+ * Testable adapter for the raw language-client state callback. A raw Running
+ * event is presentation/process evidence only; lifecycle stability is not
+ * recorded until startup finalization publishes the lifecycle `running`
+ * transition (#12724).
+ * @internal
+ */
+export function _handleLifecycleClientStateChangeForTest(event: StateChangeEvent): void {
+  handleLifecycleClientStateChange(event);
+}
+
+function handleLifecycleClientStateChange(event: StateChangeEvent): void {
+  if (event.newState === LanguageClientState.Starting) {
+    languageClientStartupMetrics.markMilestone('process_started');
+    languageClientStartupMetrics.finishServerStart('ok');
+  }
+  handleClientStateChange(event);
+}
+
+/**
+ * Capture the mid-session failure diagnosis, invalidate the failed
+ * generation's demand state, and surface the failure on the health widget.
+ * Shared by every non-deduped arbiter decision (#7845). Returns the captured
+ * hint for user-facing messages.
+ */
+function recordUnexpectedFailure(): string {
+  const hint = 'The Perl Language Server stopped unexpectedly. Check the Output panel for details.';
   lastStartupDiagnosis = {
     kind: StartupErrorKind.Unknown,
-    hint: 'The Perl Language Server stopped unexpectedly. Check the Output panel for details.',
+    hint,
     remediation:
       'Try restarting the server (Command Palette: "Perl: Restart Server") or run the Health Check.',
   };
-
-  // The generation that satisfied the current demand is gone. Invalidating it
-  // here means a later explicit start (or a newly opened Perl document) is
-  // treated as fresh demand instead of being ignored as already-running.
   serverDemand?.noteStopped();
-
-  // ClientState.Stopped is ambiguous and is rendered neutrally by the widget.
-  // This path has established the stronger meaning: an unexpected mid-session
-  // crash with an actionable diagnosis.
   healthWidget?.setWorkspaceLifecycleState('failed', {
     detail: 'The Perl Language Server stopped unexpectedly.',
     action: 'Restart the server or run the Health Check.',
     reasonCode: 'unexpected_server_stop',
   });
-
-  outputChannel?.info('[lifecycle] Perl Language Server stopped unexpectedly (mid-session crash).');
-
-  // If the prior run was stable long enough, treat this crash as a new
-  // episode and reset the auto-restart budget so transient crashes don't
-  // permanently exhaust it.
-  if (stableRunningSince !== undefined && Date.now() - stableRunningSince >= STABLE_RUN_GRACE_MS) {
-    autoRestartAttempts = 0;
-  }
-  stableRunningSince = undefined;
-
-  void handleUnexpectedServerStop();
+  return hint;
 }
 
 /**
- * Surface an unexpected mid-session server crash and attempt an auto-restart
- * (#4625). Shows a user-visible toast (the diagnosis hint captured above) with
- * `Restart Server` and `Show Output` actions, then retries up to
- * `MAX_AUTO_RESTART_ATTEMPTS` times. Once the budget is exhausted, the toast
- * asks the user to restart manually or run a Health Check.
+ * Surface an unexpected mid-session server failure observed through
+ * `source` (process exit or watchdog) and arbitrate its recovery (#4625,
+ * #7845).
+ *
+ * The observation is routed through the generation-owned
+ * `crashRecoveryArbiter` first: a duplicate observation for a generation
+ * that already has an active or recently settled recovery episode is
+ * deduplicated and performs no recovery work, and a different-generation
+ * failure that arrives while an episode's restart promise is still pending
+ * is deferred behind that episode (the active continuation drains and
+ * re-arbitrates it after settling its own episode handle). Only a
+ * `start_recovery` decision captures the crash diagnosis, invalidates the
+ * failed generation's demand state, surfaces the failure, and consumes one
+ * automatic-restart slot; a `crash_budget_exhausted` decision stops looping
+ * and asks the user to intervene.
  */
-/**
- * Start a periodic liveness watchdog. Every WATCHDOG_INTERVAL_MS, sends a
- * lightweight workspace/symbol request. If it doesn't respond within
- * WATCHDOG_TIMEOUT_MS, the server is considered hung and restarted. (#5092)
- */
-function startWatchdog(): void {
-  stopWatchdog();
-  watchdogTimer = setInterval(async () => {
-    if (languageClientLifecycle?.snapshot.state !== 'running') {
-      return;
-    }
-    let watchdogTimeout: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        languageClientLifecycle.client?.sendRequest('$/perl-lsp/watchdog'),
-        new Promise((_, reject) => {
-          watchdogTimeout = setTimeout(
-            () => reject(new Error('watchdog timeout')),
-            WATCHDOG_TIMEOUT_MS,
-          );
-        }),
-      ]);
-    } catch {
-      outputChannel.warn('[watchdog] Server unresponsive — triggering restart');
-      autoRestartAttempts = 0;
-      await handleUnexpectedServerStop();
-    } finally {
-      if (watchdogTimeout !== undefined) {
-        clearTimeout(watchdogTimeout);
-      }
-    }
-  }, WATCHDOG_INTERVAL_MS);
-}
+async function recoverFromObservedCrash(
+  source: CrashObservationSource,
+  observedGeneration: number = currentCrashGeneration(),
+): Promise<void> {
+  // A stale observation (e.g. a watchdog probe that started before the
+  // failed generation was replaced) must never arbitrate against the
+  // replacement generation: if the observed generation has been superseded,
+  // drop the observation instead of restarting the healthy replacement.
+  if (observedGeneration !== currentCrashGeneration()) {
+    outputChannel?.warn(
+      `[lifecycle] Stale ${source} observation for superseded generation ${observedGeneration} ignored (current generation ${currentCrashGeneration()}).`,
+    );
+    return;
+  }
+  const failedGeneration = observedGeneration;
+  const decision = crashRecoveryArbiter.observeFailure({
+    failed_generation: failedGeneration,
+    process_identity: crashProcessIdentity(failedGeneration),
+    source,
+    observed_at_ms: Date.now(),
+  });
 
-/** Stop the watchdog timer. */
-function stopWatchdog(): void {
-  if (watchdogTimer) {
-    clearInterval(watchdogTimer);
-    watchdogTimer = undefined;
+  if (
+    decision.disposition === 'deduped_existing_episode' ||
+    decision.disposition === 'deduped_previous_episode'
+  ) {
+    outputChannel?.info(
+      `[lifecycle] ${source} observation for generation ${failedGeneration} deduplicated by recovery episode ${decision.episode_id} (${decision.disposition}); no second arbitration.`,
+    );
+    return;
+  }
+
+  if (decision.disposition === 'deferred_active_episode') {
+    // A different generation failed while this episode's restart promise is
+    // still pending. It must not open a second concurrent restart nor
+    // overwrite the active episode: it is queued in the arbiter and
+    // re-arbitrated by the active continuation's settle (#7845).
+    outputChannel?.info(
+      `[lifecycle] ${source} observation for generation ${failedGeneration} deferred behind active recovery episode ${decision.episode_id}; it will be re-arbitrated when that episode settles.`,
+    );
+    return;
+  }
+
+  const context = extensionContext;
+  const hint = recordUnexpectedFailure();
+
+  outputChannel?.info(
+    `[lifecycle] Perl Language Server failed mid-session (source: ${decision.observation_source}, episode ${decision.episode_id}).`,
+  );
+
+  if (decision.disposition === 'crash_budget_exhausted') {
+    // The raw client has stopped, but the lifecycle snapshot otherwise still
+    // advertises its last accepted `running` generation. Retire that dead
+    // client before presenting the manual-recovery boundary so exhaustion is
+    // observably terminal and an explicit retry starts from `stopped`.
+    disposeClientIntegrations();
+    await languageClientLifecycle?.stop();
+    await reportCrashBudgetExhausted();
+    return;
+  }
+
+  const attempt = decision.automatic_attempt;
+  outputChannel?.info(
+    `[lifecycle] Auto-restarting Perl Language Server (attempt ${attempt}/${MAX_AUTO_RESTART_ATTEMPTS})…`,
+  );
+  const message = `Perl Language Server crashed and is restarting automatically (attempt ${attempt}/${MAX_AUTO_RESTART_ATTEMPTS}). ${hint}`;
+  void vscode.window.showErrorMessage(message, 'Show Output').then((selection) => {
+    if (selection === 'Show Output') {
+      outputChannel?.show();
+    }
+  });
+  if (!context) {
+    outputChannel?.info('[lifecycle] Cannot auto-restart: extension context is not available.');
+    await settleRecoveryEpisode(decision, 'recovery_failed', null);
+    return;
+  }
+  // restartServer surfaces its own dialogs/logs; its boolean result reports
+  // the one terminal refusal automatic recovery must not retry: a lifecycle
+  // whose client cleanup is incomplete stays blocked until the window
+  // reloads, and re-arming it would only burn the remaining retry budget.
+  const restartBlockedByIncompleteCleanup = await restartServer(context);
+  // The replacement run now owns the next failed-generation identity (in
+  // the unit-test harness the lifecycle controller is absent, so the
+  // fallback generation advances here — after arbitration began — so that
+  // a duplicate observation for the failed generation still dedupes).
+  if (languageClientLifecycle === undefined) {
+    // The fallback models "this restart spawned one newer generation":
+    // advance monotonically past the failed generation, but never past a
+    // replacement that already spawned and failed while the restart
+    // promise was pending — that failed replacement stays current so its
+    // deferred observation re-arbitrates after this settle.
+    fallbackCrashGeneration = Math.max(fallbackCrashGeneration, failedGeneration + 1);
+    await settleRecoveryEpisode(decision, 'recovered', currentCrashGeneration());
+    return;
+  }
+  // With a live lifecycle, restartServer resolves only after the
+  // replacement generation finished its startup finalization (initialize +
+  // document replay + readiness rebound), so the episode settles as
+  // recovered only on an accepted running replacement — a spawned process
+  // alone is not "recovered" (#7845). A restart that did not reach the
+  // running state settles as failed and the next crash (if any) consumes
+  // another retry slot.
+  const replacementSnapshot = languageClientLifecycle.snapshot;
+  if (replacementSnapshot.state === 'running') {
+    await settleRecoveryEpisode(decision, 'recovered', replacementSnapshot.generation);
+    return;
+  }
+  outputChannel?.error(
+    `[lifecycle] Auto-restart attempt ${attempt} did not reach the running state (state: ${replacementSnapshot.state}).`,
+  );
+  await settleRecoveryEpisode(decision, 'recovery_failed', null);
+  // A replacement that failed during STARTUP (#12724) can never be observed
+  // again by the existing failure surfaces: it never reached Running, so no
+  // Running→Stopped crash event fires, and the watchdog only arms while
+  // running. Settling `recovery_failed` here would therefore deadlock
+  // convergence — readiness stays cleared and no later restart ever happens
+  // even though automatic budget remains. Re-arm instead: arbitrate the
+  // failed replacement generation's own recorded failure through this same
+  // entry point, so the arbiter keeps sole ownership of dedupe, budget, and
+  // exhaustion (fail-closed: genuinely repeated failures still end at the
+  // exhaustion dialog). An explicit recovery that superseded the failed
+  // generation meanwhile is handled by the stale-generation guard above.
+  if (replacementSnapshot.state === 'failed' && !restartBlockedByIncompleteCleanup) {
+    await recoverFromObservedCrash('startup_failure', replacementSnapshot.generation);
   }
 }
 
-async function handleUnexpectedServerStop(): Promise<void> {
+/**
+ * Settle exactly the episode that authorized the current recovery
+ * continuation — the episode handle carried by `decision` — and then drain
+ * the oldest deferred different-generation failure, if any (#7845).
+ *
+ * Binding settlement to the handle means a continuation whose restart
+ * promise resolved late can never settle a newer episode that became
+ * active in the meantime; the deferred drain serializes a
+ * different-generation failure that arrived while this episode was active
+ * into its own recovery instead of running a second restart concurrently.
+ */
+async function settleRecoveryEpisode(
+  decision: CrashRecoveryDecision,
+  terminal: RecoveryTerminalDisposition,
+  replacementGeneration: number | null,
+): Promise<void> {
+  const settledActive = crashRecoveryArbiter.settleEpisode(
+    decision,
+    terminal,
+    replacementGeneration,
+  );
+  if (!settledActive) {
+    outputChannel?.warn(
+      `[lifecycle] Settling recovery episode ${decision.episode_id} as ${terminal} skipped: the episode is no longer active (superseded by an explicit recovery or an earlier settle).`,
+    );
+  }
+  const pending = crashRecoveryArbiter.takePendingFailureObservation();
+  if (pending === null) {
+    return;
+  }
+  outputChannel?.info(
+    `[lifecycle] Re-arbitrating deferred ${pending.source} observation for generation ${pending.failed_generation} after recovery episode ${decision.episode_id} settled (${terminal}).`,
+  );
+  await recoverFromObservedCrash(pending.source, pending.failed_generation);
+}
+
+/**
+ * Report the arbiter's crash-budget exhaustion to the user (#7845). Called
+ * from `recoverFromObservedCrash` when the arbiter returns
+ * `crash_budget_exhausted`; a manual restart is an explicit user action and
+ * does not consume crash budget.
+ */
+async function reportCrashBudgetExhausted(): Promise<void> {
   const context = extensionContext;
   const hint =
     lastStartupDiagnosis?.hint ??
     'The Perl Language Server stopped unexpectedly. Check the Output panel for details.';
-
-  if (autoRestartAttempts < MAX_AUTO_RESTART_ATTEMPTS) {
-    autoRestartAttempts += 1;
-    const attempt = autoRestartAttempts;
-    outputChannel?.info(
-      `[lifecycle] Auto-restarting Perl Language Server (attempt ${attempt}/${MAX_AUTO_RESTART_ATTEMPTS})\u2026`,
-    );
-    const message = `Perl Language Server crashed and is restarting automatically (attempt ${attempt}/${MAX_AUTO_RESTART_ATTEMPTS}). ${hint}`;
-    void vscode.window.showErrorMessage(message, 'Show Output').then((selection) => {
-      if (selection === 'Show Output') {
-        outputChannel?.show();
-      }
-    });
-    if (!context) {
-      outputChannel?.info('[lifecycle] Cannot auto-restart: extension context is not available.');
-      return;
-    }
-    try {
-      await restartServer(context);
-    } catch (error: unknown) {
-      // restartServer surfaces its own dialog/log; record the failure and
-      // let the next crash (if any) consume another retry slot.
-      const msg = error instanceof Error ? error.message : String(error);
-      outputChannel?.error(`[lifecycle] Auto-restart attempt ${attempt} failed: ${msg}`);
-    }
-    return;
-  }
 
   // Retry budget exhausted — do not loop. Ask the user to intervene.
   outputChannel?.info(
@@ -2608,19 +3483,66 @@ async function handleUnexpectedServerStop(): Promise<void> {
     'Show Output',
   );
   if (selection === 'Restart Server' && context) {
-    // A manual restart resets the auto-restart budget.
-    autoRestartAttempts = 0;
-    try {
-      await restartServer(context);
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
-      outputChannel?.error(`[lifecycle] Manual restart failed: ${msg}`);
-    }
+    // A manual restart is an explicit user restart (#7845): it resets the
+    // automatic crash-recovery budget without ever having consumed it.
+    // restartServer never rejects; it surfaces its own failure dialogs.
+    await restartServerFromExplicitRecovery(context);
   } else if (selection === 'Run Health Check') {
     const serverPath = currentServerPath ?? undefined;
     await vscode.commands.executeCommand('perl-lsp.runHealthCheck', serverPath);
   } else if (selection === 'Show Output') {
     outputChannel?.show();
+  }
+}
+
+/**
+ * Start a periodic liveness watchdog. Every WATCHDOG_INTERVAL_MS, sends a
+ * lightweight workspace/symbol request. If it doesn't respond within
+ * WATCHDOG_TIMEOUT_MS, the server is considered hung and restarted. (#5092)
+ */
+function startWatchdog(): void {
+  stopWatchdog();
+  watchdogTimer = setInterval(async () => {
+    if (languageClientLifecycle?.snapshot.state !== 'running') {
+      return;
+    }
+    // Bind the probe to the generation it interrogates: if the generation is
+    // replaced while the request is in flight, the late result is stale and
+    // must not arbitrate against the replacement (#7845).
+    const probedGeneration = currentCrashGeneration();
+    let watchdogTimeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        languageClientLifecycle.client?.sendRequest('$/perl-lsp/watchdog'),
+        new Promise((_, reject) => {
+          watchdogTimeout = setTimeout(
+            () => reject(new Error('watchdog timeout')),
+            WATCHDOG_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } catch {
+      outputChannel.warn('[watchdog] Server unresponsive — triggering restart');
+      // Watchdog observations route through the same arbiter (#7845): a
+      // hung generation is a failure episode keyed by generation + process
+      // identity, so a watchdog timeout and the process exit that follows
+      // deduplicate into one recovery operation, while a stale probe for a
+      // superseded generation is dropped. Unlike the legacy path, the
+      // watchdog no longer resets the crash budget before recovering.
+      await recoverFromObservedCrash('watchdog', probedGeneration);
+    } finally {
+      if (watchdogTimeout !== undefined) {
+        clearTimeout(watchdogTimeout);
+      }
+    }
+  }, WATCHDOG_INTERVAL_MS);
+}
+
+/** Stop the watchdog timer. */
+function stopWatchdog(): void {
+  if (watchdogTimer) {
+    clearInterval(watchdogTimer);
+    watchdogTimer = undefined;
   }
 }
 
@@ -2650,14 +3572,45 @@ function disposeClientIntegrations(): void {
 
 async function disposeLanguageClient(): Promise<void> {
   // Extension shutdown is user-initiated; suppress the crash handler and
-  // clear crash-recovery state so a re-activation starts with a fresh budget.
+  // reset crash-recovery state so a re-activation starts with a fresh budget.
+  // Deactivation is terminal for the session (#7845): the episode dedupe
+  // history is cleared too, so a re-activated lifecycle's restarted
+  // generation counter cannot collide with a previous session's episode
+  // identities and suppress a genuine new crash.
   userInitiatedStopPending = true;
-  autoRestartAttempts = 0;
-  stableRunningSince = undefined;
+  crashRecoveryArbiter.resetAllEpisodeMemory();
   disposeClientIntegrations();
+  let shutdownProvedTerminal = false;
   if (languageClientLifecycle) {
     await languageClientLifecycle.stop();
+    // stop() resolves — never rejects — even when stop/dispose timed out and
+    // the lifecycle transitioned to `failed`. Only the clean `stopped` state
+    // proves the server process is terminal (#10083); anything else keeps
+    // the session's host references `live` so a collector cannot delete the
+    // candidate under a possibly-still-running process.
+    shutdownProvedTerminal = mayReleaseManagedCandidateReferences(
+      languageClientLifecycle.snapshot.state,
+    );
     syncLifecycleProjection();
+  }
+  // The server process bound to the managed candidate is proven terminal
+  // now, so this session's exact host references can be released (#10083).
+  // Crashes and unproven shutdowns never reach the release — their
+  // references stay `live` and conservative for a later recovery path
+  // (#11539) rather than authorizing deletion.
+  const managedStorageRoot = extensionContext?.globalStorageUri?.fsPath;
+  if (typeof managedStorageRoot !== 'string') {
+    outputChannel.info(
+      '[managed-candidate] no managed storage root available; host reference release skipped.',
+    );
+  } else if (shutdownProvedTerminal) {
+    releaseManagedCandidateSessionReferences(managedStorageRoot, vscode.env.sessionId, (message) =>
+      outputChannel.info(`[managed-candidate] ${message}`),
+    );
+  } else {
+    outputChannel.info(
+      '[managed-candidate] shutdown did not prove process termination; host references retained.',
+    );
   }
   // No generation is running any more. Reinstall stops the client and then
   // restarts it, so leaving demand on `running` here would make that restart a

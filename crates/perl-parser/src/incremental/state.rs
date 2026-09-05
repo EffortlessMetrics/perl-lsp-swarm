@@ -238,7 +238,9 @@ impl IncrementalState {
     /// The snapshot and parse checkpoints are updated from the same recovered
     /// parse so the state cannot expose mixed generations. Generation
     /// advancement is checked: counter exhaustion fails closed before any
-    /// state is committed.
+    /// state is committed. The parser-state lifetime identity remains stable
+    /// across committed generations and changes only for a newly constructed
+    /// or reopened `IncrementalState`.
     pub(crate) fn refresh_parse_output(
         &mut self,
         strategy: ParseSnapshotStrategy,
@@ -247,10 +249,16 @@ impl IncrementalState {
             .generation()
             .checked_next()
             .ok_or_else(|| anyhow::anyhow!("parse generation counter exhausted"))?;
+        let previous_geometry_subject = self.snapshot().source_geometry().subject().clone();
         let mut parser = Parser::new(self.source());
         let parse_output = parser.parse_with_recovery();
-        let snapshot =
-            ParseSnapshot::from_output(self.source(), generation, strategy, parse_output);
+        let snapshot = ParseSnapshot::from_output_for_existing_instance(
+            self.source(),
+            generation,
+            strategy,
+            parse_output,
+            &previous_geometry_subject,
+        );
         self.read_view.parse_checkpoints =
             Self::create_parse_checkpoints(&snapshot.parse_output().ast);
         self.read_view.snapshot = snapshot;
@@ -274,17 +282,17 @@ fn walk_ast_for_checkpoints(
     match &node.kind {
         NodeKind::Package { name, .. } => {
             scope.package_name = name.clone();
-            checkpoints.push(ParseCheckpoint {
-                byte: node.location.start,
-                scope_snapshot: scope.clone(),
-                node_id,
-            });
+            push_parse_checkpoint(checkpoints, node, scope, node_id);
         }
-        NodeKind::Subroutine { .. } | NodeKind::Block { .. } => checkpoints.push(ParseCheckpoint {
-            byte: node.location.start,
-            scope_snapshot: scope.clone(),
-            node_id,
-        }),
+        NodeKind::Subroutine { .. } => {
+            push_parse_checkpoint(checkpoints, node, scope, node_id);
+        }
+        NodeKind::Block { statements } => {
+            push_parse_checkpoint(checkpoints, node, scope, node_id);
+            let saved = scope.clone();
+            walk_statement_list(statements, checkpoints, scope, node_id);
+            *scope = saved;
+        }
         NodeKind::VariableDeclaration { variable, .. } => {
             if let NodeKind::Variable { name, sigil, .. } = &variable.kind {
                 scope.locals.push(format!("{}{}", sigil, name));
@@ -297,19 +305,38 @@ fn walk_ast_for_checkpoints(
                 }
             }
         }
-        _ => {}
-    }
-    match &node.kind {
-        NodeKind::Program { statements } | NodeKind::Block { statements } => {
-            for (i, stmt) in statements.iter().enumerate() {
-                walk_ast_for_checkpoints(
-                    stmt,
-                    checkpoints,
-                    scope,
-                    node_id.wrapping_mul(101).wrapping_add(i),
-                );
-            }
+        NodeKind::Program { statements } => {
+            walk_statement_list(statements, checkpoints, scope, node_id);
         }
         _ => {}
+    }
+}
+
+fn push_parse_checkpoint(
+    checkpoints: &mut Vec<ParseCheckpoint>,
+    node: &Node,
+    scope: &ScopeSnapshot,
+    node_id: usize,
+) {
+    checkpoints.push(ParseCheckpoint {
+        byte: node.location.start,
+        scope_snapshot: scope.clone(),
+        node_id,
+    });
+}
+
+fn walk_statement_list(
+    statements: &[Node],
+    checkpoints: &mut Vec<ParseCheckpoint>,
+    scope: &mut ScopeSnapshot,
+    node_id: usize,
+) {
+    for (i, stmt) in statements.iter().enumerate() {
+        walk_ast_for_checkpoints(
+            stmt,
+            checkpoints,
+            scope,
+            node_id.wrapping_mul(101).wrapping_add(i),
+        );
     }
 }

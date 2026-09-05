@@ -48,8 +48,7 @@ fn benchmark_launch_config_validation(c: &mut Criterion) {
 
     let temp_dir = std::env::temp_dir();
     let temp_file = temp_dir.join("benchmark_test.pl");
-    if let Err(e) = fs::write(&temp_file, "#!/usr/bin/env perl\nprint 'test';\n") {
-        eprintln!("Warning: Failed to create temp file for benchmark: {e}");
+    if fs::write(&temp_file, "#!/usr/bin/env perl\nprint 'test';\n").is_err() {
         group.finish();
         return;
     }

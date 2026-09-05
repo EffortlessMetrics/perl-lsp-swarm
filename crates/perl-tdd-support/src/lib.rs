@@ -32,6 +32,7 @@
     clippy::print_stderr,
     reason = "test support crate intentionally emits narrative scenario output"
 )]
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 #![allow(
     clippy::too_many_lines,
     clippy::module_name_repetitions,
@@ -50,8 +51,6 @@
     clippy::items_after_statements,
     clippy::return_self_not_must_use,
     clippy::unused_self,
-    clippy::collapsible_match,
-    clippy::collapsible_if,
     clippy::only_used_in_recursion,
     clippy::items_after_test_module,
     clippy::while_let_loop,
@@ -87,7 +86,37 @@ pub use tdd::test_runner;
 
 /// Safe unwrap replacements for tests.
 /// Re-exported from `perl-test-must` for backward compatibility.
-pub use perl_test_must::{must, must_err, must_some};
+///
+/// Both families are re-exported. The `_with` variants are the
+/// context-preserving counterparts: when a call site migrates away from
+/// `.expect("…")`, `must_with` / `must_some_with` / `must_err_with` keep the
+/// explanation in the panic diagnostic, while the bare helpers drop it
+/// ([#14291]). Re-exporting only the bare three made the correct form
+/// unreachable through this import path.
+///
+/// [#14291]: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/14291
+pub use perl_test_must::{must, must_err, must_err_with, must_some, must_some_with, must_with};
+
+/// Typed skip for symlink-creating tests on Windows sessions without
+/// `SeCreateSymbolicLinkPrivilege` (os error 1314).
+pub mod symlink_privilege;
+
+pub use symlink_privilege::{SymlinkTestDecision, classify_symlink_error, symlink_test_decision};
 
 /// CI Guardrail Ignored Test Monitoring and Governance.
 pub mod governance;
+
+/// Windows symlink capability helpers for tests that exercise reparse-point
+/// semantics without requiring Developer Mode ([#12567]).
+///
+/// Windows-only by construction: every helper wraps a `std::os::windows::fs`
+/// API and none has a non-Windows stub. On Unix targets tests use
+/// [`std::os::unix::fs::symlink`] directly under `#[cfg(unix)]` ([#12567]),
+/// so both this module and the crate-root re-export are gated behind
+/// `#[cfg(windows)]`; unconditional imports of these names are a compile
+/// error on other targets.
+#[cfg(windows)]
+pub mod windows_fs;
+
+#[cfg(windows)]
+pub use windows_fs::{try_create_dir_symlink, try_create_file_symlink};

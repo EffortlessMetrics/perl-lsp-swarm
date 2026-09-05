@@ -454,6 +454,31 @@ gates:
     planning:
       role: always_on
 
+  # Issue #1269 action item 3: a new parallel-unsafe test function (process
+  # env or CWD mutation without `#[serial]`-family serialization or an
+  # adjudicated row in ci/serial_test_identities.json) must not enter the
+  # workspace. The gate is fail-closed on NEW identities; repairing a
+  # registered site requires retiring its row, so the accepted set only
+  # shrinks. The 35 seeded rows are the measured current-main residual census
+  # at 94e099747f (env/cwd signals; port binds and static counters are
+  # documented non-goals in the lint module).
+  - name: serial_test_ratchet
+    tier: pr_fast
+    description: "Ratchet parallel-unsafe test serialization (#[serial] policy, #1269)"
+    required: true
+    command: just ci-serial-test-ratchet
+    timeout_seconds: 120
+    retry_count: 0
+    budgets:
+      max_duration_ms: 90000
+    quarantine: false
+    tags:
+      - policy
+      - tests
+      - ratchet
+    planning:
+      role: always_on
+
   - name: release_history_check
     tier: pr_fast
     description: "Check release-history drift"
@@ -775,10 +800,14 @@ gates:
       cargo clippy
       --workspace --bins --locked --no-deps
       -- -D clippy::unwrap_used -D clippy::expect_used
-    timeout_seconds: 300
+    # 600s/480000ms: cold-runner clippy over 1307 production files measured
+    # ~272s before timing out at the old 300s envelope (#13292-era meta-shard
+    # redness); the lint content itself is clean, so the envelope was the
+    # binding constraint.
+    timeout_seconds: 600
     retry_count: 0
     budgets:
-      max_duration_ms: 240000
+      max_duration_ms: 480000
       max_warnings: 0
     quarantine: false
     tags:
@@ -790,7 +819,7 @@ gates:
 
   - name: clippy_tests_kernel
     tier: pr_fast
-    description: "Clippy --all-targets on the known-clean staged cohort (32/46 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
+    description: "Clippy --all-targets on the known-clean staged cohort (36/46 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
     required: true
     # (#11736): The workspace lints in Cargo.toml deny `unwrap_used`, `expect_used`,
     # and `panic` but the existing clippy gates use `--lib` only, so these denials
@@ -804,7 +833,7 @@ gates:
     # docs/CLIPPY_POLICY.md ("Target-kind lint contract"): print_stdout and
     # print_stderr are intentional in tests//examples/ (encoded as file-scoped
     # reasoned #[expect]s, never config or gate flags); the panic family stays
-    # denied everywhere. The remaining 14 crates carry measured repair tranches
+    # denied everywhere. The remaining 12 crates carry measured repair tranches
     # tracked on #11736 (2026-08-23 census on 470277161, warn-neutralized
     # disjoint-unit method: 3195 test-context findings across those 14 crates;
     # production --lib/--bins pass clean except one xtask
@@ -835,6 +864,30 @@ gates:
     #     perl-pod (2 needless_borrow), perl-pragma (unfulfilled_lint_expectation +
     #     bool_assert_comparison), perl-test-generators (2 collapsible_if),
     #     perl-core-harness-types (expect_err_on_result)
+    #   2026-08-25 batch (residual tranches repaired, see PR for #11736):
+    #     perllsp (3 expect_err replaced with typed let-else bail, 2 unused
+    #     bindings dropped, 1 deferred-init binding), perl-regex (8 Option::expect
+    #     in cfg(test) replaced with must_some_with via a new perl-test-must
+    #     dev-dependency). The two fresh regressions inside the existing cohort
+    #     (perl-semantic-analyzer too_many_arguments from #12334,
+    #     perl-semantic-facts explicit_auto_deref) were repaired on main itself
+    #     (#12395, #12398), so this batch's duplicate fixes were dropped during
+    #     the merge with e40c2a386. Exact extended-cohort rerun PASS on this
+    #     branch.
+    #   2026-08-25 batch (parked tranches unblocked and repaired, see PR for
+    #     #11736): perl-ci-hygiene (expect_err in commands/doc_links.rs cfg(test)
+    #     replaced with a match returning a typed Err; 12 Regex::new unwrap() in
+    #     main.rs cfg(test) propagated via eyre `?`, matching the module's
+    #     Result<()> convention), perl-lexer (3 Option::expect in
+    #     lexer_slash_timeout_tests + 2 in hang_risk_regex_literal_tests replaced
+    #     with ok_or()? per each file's TestResult convention; 3 panic fallbacks
+    #     and 2 fixture-offset expects in lexer_robustness_tests replaced with
+    #     the file's established assert!-then-if-let pattern). The parked
+    #     perl-lexer tranche census predated #12534; current-main findings differ
+    #     (collapsible_if/assertions_on_constants no longer present). Prerequisite
+    #     verification on 6ec7242bd: lexer_robustness_tests green twice,
+    #     check-panic-test exit 0. Exact extended-cohort rerun PASS on this
+    #     branch.
     command: >-
       cargo clippy
       -p perl-token
@@ -869,12 +922,24 @@ gates:
       -p perl-pragma
       -p perl-test-generators
       -p perl-core-harness-types
+      -p perl-regex
+      -p perllsp
+      -p perl-lexer
+      -p perl-ci-hygiene
       --all-targets --locked
       -- -D warnings -A missing_docs
     # Budget: measured ~80s locally with warm dependencies and cold check
     # fingerprints for the 32-crate cohort (~1s fully warm); scaled from the
     # previous 7-crate envelope and kept below the compile_all_targets
-    # ceiling (600s / 540000ms), which compiles strictly more work.
+    # ceiling (600s / 540000ms), which compiles strictly more work. The
+    # 2026-08-25 additions pull in perl-lsp-rs/perl-lsp-rs-core libraries
+    # through perllsp; clippy emits metadata only (no linking), and
+    # clippy_full already lints those libraries inside its 300s envelope,
+    # so the dominant new cost stays within existing measured ceilings.
+    # The PR Smoke run carrying this change produces the authoritative
+    # cold-runner number requested on #11736; if it exceeds the envelope,
+    # split perllsp into its own sharded kernel lane rather than raising
+    # this budget.
     timeout_seconds: 480
     retry_count: 0
     budgets:
@@ -995,7 +1060,7 @@ gates:
   # by #9831.
   - name: unit_parser_stack_full
     tier: merge_gate
-    description: "Parser, lexer, and parser-core library tests, plus deterministic incremental integration targets"
+    description: "Parser, lexer, and parser-core library tests, deterministic AST/error-recovery snapshot proof, plus deterministic incremental integration targets"
     required: true
     command: >-
       cargo test --locked --lib
@@ -1005,6 +1070,7 @@ gates:
       &&
       cargo test --locked -p perl-parser --features incremental
       --test advanced_reuse_analyzer_heuristics_tests
+      --test ast_snap
       --test facade_pattern_edge_cases
       --test g2_api_regression_guards
       --test incremental_edit_set_normalization
@@ -1180,12 +1246,17 @@ gates:
 
   - name: unit_dap_support_full
     tier: merge_gate
-    description: "DAP, CI hygiene, test support, and tree-sitter workspace library tests"
+    description: "DAP, CI hygiene, test support, and tree-sitter workspace tests; Linux does not prove Windows-only pause runtime"
     required: true
-    # `--lib` excludes tests/. 143 integration targets in these crates are
-    # executed by no gate on a bounded schedule -- only when a PR diff happens
-    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
-    # this to --tests is blocked on the red suites in #11708.
+    # Keep the broad support-crate portion --lib-only because the remaining
+    # integration suites are tracked red debt (#11708). The four perl-dap
+    # test-helpers targets below are healthy and must be executed explicitly:
+    # `cargo test --tests` otherwise skips them silently when the feature is off
+    # (#14333). Recorded per #11694; flipping the broad support-crate portion to
+    # --tests is blocked on the red suites in #11708.
+    # pr_fast residual: unit_routed_full still runs the perl-dap leg without
+    # `--features test-helpers`, so these four targets stay absent from the
+    # pr_fast lane; closing that leg is tracked in #14458.
     #   perl-ci-hygiene               6
     #   perl-dap                    115
     #   perl-tdd-support              4
@@ -1193,16 +1264,31 @@ gates:
     #   perl-test-must                2
     #   tree-sitter-perl-c            6
     #   tree-sitter-perl-rs           8
+    # The command is retried once only after a watchdog timeout. Two attempts
+    # at 450s plus the Linux watchdog's 75s TERM/KILL grace per attempt consume
+    # 1050s, leaving 150s inside the workflow's 1200s shard watchdog for the
+    # terminal gate receipt, summary, and process cleanup. Do not increase this
+    # ceiling without revisiting that outer watchdog contract.
+    # Claim boundary: on Linux `#[cfg(windows)]` removes the Windows-only
+    # pause test before compilation, so this row runs only non-Windows tests
+    # and does not prove Windows pause behavior; that remains a Windows proof
+    # obligation.
     command: >-
       cargo test --locked --lib
       -p perl-ci-hygiene -p perl-dap
       -p perl-tdd-support -p perl-test-generators -p perl-test-must
       -p tree-sitter-perl-c -p tree-sitter-perl-rs
+      -- --test-threads=4 &&
+      cargo test --locked --features test-helpers -p perl-dap
+      --test eval_ref_cache_miss_resume_tests
+      --test dap_evaluate_comprehensive_tests
+      --test dap_variable_reference_hardening_tests
+      --test pause_signal_delivery_tests
       -- --test-threads=4
-    timeout_seconds: 300
+    timeout_seconds: 450
     retry_count: 1
     budgets:
-      max_duration_ms: 240000
+      max_duration_ms: 360000
     quarantine: false
     tags:
       - test
@@ -1211,38 +1297,67 @@ gates:
 
   - name: lsp_smoke
     tier: merge_gate
-    description: "Deterministic LSP semantic-definition and initialize-contract tests"
+    description: "Deterministic LSP semantic-definition and initialize-contract tests (atomic children, #8063)"
     required: true
-    # Single-threaded for determinism. Keep the wire-shape regression focused:
-    # this target contains many API contracts, but only textDocumentSync owns
-    # the reviewed recurrence claim in #6776.
+    # Atomic, bounded, independently terminal (#8063): the old composite
+    # (`cargo build && cargo test && cargo test`) under one 300s watchdog
+    # could only ever report `lsp_smoke = timeout`, erasing every child
+    # verdict — the symptom behind the #9601 fleet timeouts and the #8053
+    # classification pain.
     #
-    # Build the server binary first, for the same reason the routed integration
-    # gate above does (#9464): `perllsp` is its own workspace package, so
-    # `cargo test -p perl-lsp-rs` never builds it. The harness then resolves
-    # PERL_LSP_BIN -> CARGO_BIN_EXE -> target/debug/perllsp -> PATH ->
-    # cargo-run fallback, and that fallback has to compile the whole binary
-    # inside each test's 16s initialize timeout. Every test in
-    # semantic_definition that spawns a server times out twice and fails,
-    # which is what made this gate red on main (#9677). With the binary
-    # prebuilt the same suite is 16/16 in about a second.
+    # The xtask harness (`xtask/src/tasks/lsp_smoke_atomic.rs`) executes nine
+    # children, each with its own bounded timeout and typed terminal status.
+    # Behavior children run the PREBUILT test binary directly (the path the
+    # compile child's `--no-run` output names) — never cargo again: the first
+    # hosted run of a cargo-per-child shape rebuilt units every re-entry and
+    # each watchdog kill corrupted cargo fingerprints, cascading into four
+    # consecutive child timeouts (PR #12091 run 32681631693)
+    # (PASS / ASSERTION_FAILURE / REQUEST_TIMEOUT / TEARDOWN_TIMEOUT /
+    # PROCESS_EXIT / COMPILE_FAILURE / INSTRUMENT_FAILURE / CANCELLED /
+    # NOT_PROVEN): the perllsp prebuild (#9677 keeps this mandatory) blocks
+    # only server-dependent semantic behavior, while the in-process API child
+    # remains independently provable; the two
+    # per-target `--no-run` compiles, the four named semantic-definition
+    # cases, the client-support registry suite (one grouped child — shared
+    # registry-drift failure surface, no sibling suppression), and the
+    # textDocumentSync camelCase contract (#6776). A compile/setup failure
+    # marks dependents NOT_PROVEN; one hanging child cannot consume the
+    # evidence surface; behavior children run prebuilt, single-threaded
+    # (`--test-threads=1`) for determinism; setup/compile children use
+    # default build parallelism (`CARGO_BUILD_JOBS=1` only slowed compilation).
+    #
+    # Per-child budgets: 300s setup/compile (the old composite's whole-gate
+    # budget; the incident compile measured ~219s and sibling unit gates
+    # finish in 173-243s including compiles; default build parallelism — not
+    # the old CARGO_BUILD_JOBS=1 — cuts the cold-compile wall), 120s behavior.
+    #
+    # The 720s declared gate timeout is the suite runaway bound sized to the
+    # hosted envelope. On Linux the shared gate watchdog adds a 75s TERM/KILL
+    # grace to its Rust backstop after the declared execution window. This is
+    # NOT the arithmetic sum
+    # of child budgets (3 x 2 x 300s retrying
+    # compiles + 6 x 120s behavior = 2520s worst case): this gate runs third
+    # in the `lsp` CI Gate shard behind unit_lsp_core_full and unit_lsp_full
+    # (typically 173-243s each) under the shard runner's 1200s inner watchdog
+    # (scripts/ci/run_gate_shard.py + the `timeout 1200s` step guard), leaving
+    # lsp_smoke roughly 720s in a typical hosted run. If either the gate guard
+    # or the shard watchdog pre-empts the suite, the child receipt — persisted
+    # after every child — retains completed children and marks the
+    # running/remaining ones CANCELLED with explicit execution marks.
+    #
+    # retry_count is deliberately absent: retry policy is executable only
+    # inside the harness, where it is typed — setup/compile children retry a
+    # watchdog timeout once (#10023 compile-overrun remedy, attempts
+    # retained), and behavior children never retry (a prebuilt-binary timeout
+    # is genuine test evidence a rerun must not erase). A gate-level
+    # `retry_count` here would rerun the whole suite on outer timeout.
     command: >-
-      cargo build -p perllsp --locked
-      &&
-      env -u RUSTC_WRAPPER
-      RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1
-      cargo test -p perl-lsp-rs --test semantic_definition --locked
-      -- --test-threads=1
-      &&
-      env -u RUSTC_WRAPPER
-      RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1
-      cargo test -p perl-lsp-rs --test lsp_api_contracts --locked
-      test_text_document_sync_option_keys_use_lsp_camel_case
-      -- --exact --test-threads=1
-    timeout_seconds: 300
-    retry_count: 1
+      cargo run --locked -p xtask
+      -- lsp-smoke-atomic
+      --receipt target/receipts/artifacts/lsp_smoke_children.json
+    timeout_seconds: 720
     budgets:
-      max_duration_ms: 240000
+      max_duration_ms: 576000
     quarantine: false
     tags:
       - test
@@ -1444,7 +1559,7 @@ gates:
 
   - name: non_rust_inventory_check
     tier: merge_gate
-    description: "Scan and classify tracked non-Rust files without requiring a race-prone snapshot match"
+    description: "Scan and classify tracked non-Rust files and require the normalized committed snapshot to match"
     required: true
     command: cargo xtask non-rust inventory --check
     timeout_seconds: 300
@@ -1456,6 +1571,31 @@ gates:
       - policy
       - docs
       - generated
+
+  - name: must_context_check
+    tier: merge_gate
+    # ADVISORY on landing (#14291). The blocking-failure filter in
+    # `xtask/src/tasks/gates.rs` is `required.unwrap_or(true)`, so a
+    # `required: false` member runs on every PR and reports without failing the
+    # shard. That is deliberate for a brand-new guard: it needs a period of
+    # real hosted traffic before a false positive can block anyone's merge. The
+    # known false-positive shape is documented in
+    # `crates/perl-ci-hygiene/src/commands/must_context.rs` (unrelated edits
+    # sharing one zero-context hunk); its remedy is always one line. Promoting
+    # this to `required: true` is a separate, evidenced decision.
+    description: "Report changes that drop an .expect(\"…\") explanation into a bare perl-test-must helper"
+    required: false
+    command: cargo xtask ci-hygiene check-must-context
+    # Matches non_rust_inventory_check, the sibling `cargo xtask ...` gate in
+    # this shard: the cost is the cargo invocation, not the scan itself.
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - tests
 
   - name: lint_policy
     tier: merge_gate
@@ -2099,7 +2239,6 @@ workflow_integration:
   job_mapping:
     ci-gate:
       gates:
-        - fmt
         - ignored_tests_check_refs
         - clippy_full
         - unit_foundation_full

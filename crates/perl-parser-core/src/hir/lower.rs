@@ -16,17 +16,17 @@ use super::model::{
     BlockShell, BranchKeyword, BranchShell, CallExpr, CallForm, ClassDecl, CompileConfidence,
     CompileDirective, CompileDirectiveAction, CompileDirectiveKind, CompileEnvironment,
     CompileEnvironmentBoundary, CompileEnvironmentBoundaryKind, CompilePhase, CompilePhaseBlock,
-    CompileProvenance, ControlTransfer, ControlTransferKind, DeferExpr, DerefAggregateKind,
-    DerefExpr, DerefOperandKind, DynamicBoundary, DynamicBoundaryKind, ExportDeclaration,
-    ExportDeclarationKind, GlobMigrationAdapter, GlobSlot, GlobSlotKind, GlobSlotSource,
-    HIR_BODY_MODEL_VERSION, HeredocMigrationAdapter, HirBindingId, HirFile, HirId, HirItem,
-    HirKind, HirScopeId, IncRootAction, IncRootFact, IncRootKind, IndirectCallExpr,
-    InheritanceSource, LiteralExpr, LiteralKind, LoopKind, LoopShell, MatchExpr, MethodCallExpr,
-    MethodDecl, ModuleRequest, ModuleRequestKind, ModuleResolutionStatus, PackageDecl,
-    PackageInheritanceEdge, PackageStash, PragmaArgumentKind, PragmaEffect, PragmaStateFact,
-    PrototypeFact, PrototypeTable, ReadlineMigrationAdapter, ReadlineSource, RecoveryConfidence,
-    RegexExpr, RegexTargetKind, RequireDecl, ScopeFrame, ScopeGraph, ScopeKind, StashConfidence,
-    StashDynamicBoundary, StashDynamicBoundaryKind, StashGraph, StashProvenance,
+    CompileProvenance, ControlTransfer, ControlTransferKind, DataSectionDecl, DataSectionMarker,
+    DeferExpr, DerefAggregateKind, DerefExpr, DerefOperandKind, DynamicBoundary,
+    DynamicBoundaryKind, ExportDeclaration, ExportDeclarationKind, GlobMigrationAdapter, GlobSlot,
+    GlobSlotKind, GlobSlotSource, HIR_BODY_MODEL_VERSION, HeredocMigrationAdapter, HirBindingId,
+    HirFile, HirId, HirItem, HirKind, HirScopeId, IncRootAction, IncRootFact, IncRootKind,
+    IndirectCallExpr, InheritanceSource, LiteralExpr, LiteralKind, LoopKind, LoopShell, MatchExpr,
+    MethodCallExpr, MethodDecl, ModuleRequest, ModuleRequestKind, ModuleResolutionStatus,
+    PackageDecl, PackageInheritanceEdge, PackageStash, PragmaArgumentKind, PragmaEffect,
+    PragmaStateFact, PrototypeFact, PrototypeTable, ReadlineMigrationAdapter, ReadlineSource,
+    RecoveryConfidence, RegexExpr, RegexTargetKind, RequireDecl, ScopeFrame, ScopeGraph, ScopeKind,
+    StashConfidence, StashDynamicBoundary, StashDynamicBoundaryKind, StashGraph, StashProvenance,
     StatementModifierKind, StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr,
     TransliterationExpr, TryExpr, UseDecl, VariableBinding, VariableDecl,
     glob_pattern_interpolates,
@@ -207,21 +207,21 @@ impl Lowerer {
                     Some(sub_scope),
                 );
                 if let Some(name) = name {
-                    if let Some(prototype) = prototype {
-                        if let NodeKind::Prototype { content } = &prototype.kind {
-                            self.prototype_table.facts.push(PrototypeFact {
-                                sub_name: name.clone(),
-                                package_context: self.package_context.clone(),
-                                content: content.clone(),
-                                range: prototype.location,
-                                declaration_range: node.location,
-                                declaration_item: item_id,
-                                scope_id: Some(sub_scope),
-                                anchor_id: AnchorId(prototype.location.start as u64),
-                                provenance: CompileProvenance::ExactAst,
-                                confidence: CompileConfidence::High,
-                            });
-                        }
+                    if let Some(prototype) = prototype
+                        && let NodeKind::Prototype { content } = &prototype.kind
+                    {
+                        self.prototype_table.facts.push(PrototypeFact {
+                            sub_name: name.clone(),
+                            package_context: self.package_context.clone(),
+                            content: content.clone(),
+                            range: prototype.location,
+                            declaration_range: node.location,
+                            declaration_item: item_id,
+                            scope_id: Some(sub_scope),
+                            anchor_id: AnchorId(prototype.location.start as u64),
+                            provenance: CompileProvenance::ExactAst,
+                            confidence: CompileConfidence::High,
+                        });
                     }
                     let source = if has_empty_prototype(prototype.as_deref()) {
                         GlobSlotSource::ConstantDeclaration
@@ -389,6 +389,9 @@ impl Lowerer {
                 self.visit_require_args(args, confidence);
             }
             NodeKind::FunctionCall { name, args } => {
+                if name == "push" {
+                    self.record_isa_push(args, node.location, confidence);
+                }
                 let form = if name == "->()" { CallForm::Coderef } else { CallForm::NamedFunction };
                 let arg_count = match form {
                     CallForm::NamedFunction => args.len(),
@@ -895,7 +898,8 @@ impl Lowerer {
                 self.visit_children(node, confidence);
             }
             NodeKind::VariableDeclaration { declarator, variable, attributes, initializer } => {
-                let (variables, has_embedded_initializer) = variable_decl_bindings(variable);
+                let variables = variable_decl_bindings(variable);
+                let initializer = declaration_initializer_node(variable, initializer.as_deref());
                 let item_id = self.push_item(
                     node,
                     variables.first().map(|binding| binding.range),
@@ -904,26 +908,17 @@ impl Lowerer {
                         declarator: declarator.clone(),
                         variables: variables.clone(),
                         attribute_count: attributes.len(),
-                        has_initializer: initializer.is_some() || has_embedded_initializer,
-                        initializer_range: initializer
-                            .as_deref()
-                            .map(|initializer| initializer.location),
+                        has_initializer: initializer.is_some(),
+                        initializer_range: initializer.map(|initializer| initializer.location),
                         is_list: false,
                     }),
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
                 self.record_declaration_bindings(declarator, &variables, item_id);
-                self.record_variable_stash_effects(
-                    declarator,
-                    &variables,
-                    initializer.as_deref(),
-                    item_id,
-                );
+                self.record_variable_stash_effects(declarator, &variables, initializer, item_id);
                 if let Some(initializer) = initializer {
                     self.visit(initializer, confidence);
-                } else if has_embedded_initializer {
-                    self.visit_declaration_variable_payload(variable, confidence);
                 }
             }
             NodeKind::VariableListDeclaration {
@@ -1174,6 +1169,52 @@ impl Lowerer {
             | NodeKind::MissingIdentifier
             | NodeKind::MissingBlock
             | NodeKind::UnknownRest => {}
+            NodeKind::DataSection { marker, marker_span, body, body_span } => {
+                // Map the source-faithful marker text to its typed identity.
+                // Any text other than the two real Perl markers cannot occur
+                // from the parser, but this arm must not panic on it — fall
+                // back to the previous no-op (no HIR item emitted) instead.
+                let Some(marker_kind) = (match marker.as_str() {
+                    "__DATA__" => Some(DataSectionMarker::Data),
+                    "__END__" => Some(DataSectionMarker::End),
+                    _ => None,
+                }) else {
+                    return;
+                };
+                // Defensive: a missing marker span means no exact range is
+                // available, so no item is emitted rather than fabricating one.
+                let Some(marker_range) = *marker_span else {
+                    return;
+                };
+                // Defensive: the payload text and its source geometry are
+                // joined — the parser only produces them together (both
+                // `Some` when a payload follows the marker, both `None` when
+                // the file ends at the marker). `NodeKind` fields are public,
+                // so a hand-built or recovered AST can carry one without the
+                // other; publishing then would either claim a payload region
+                // for no payload (`body: None, body_span: Some(_)`) or hide
+                // payload text the node knows about (`body: Some(_),
+                // body_span: None`). Withhold on either contradiction, like
+                // the arms above, rather than emitting a decl that misstates
+                // the source.
+                if body.is_some() != body_span.is_some() {
+                    return;
+                }
+                self.push_item(
+                    node,
+                    *marker_span,
+                    confidence,
+                    HirKind::DataSectionDecl(DataSectionDecl {
+                        marker: marker_kind,
+                        marker_range,
+                        payload_range: *body_span,
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+                // No children: the payload is an opaque source region and is
+                // never traversed or lowered as Perl.
+            }
             _ => self.visit_children(node, confidence),
         }
     }
@@ -2161,6 +2202,90 @@ impl Lowerer {
                     StashProvenance::ExactAst,
                 );
             }
+            if contains_dynamic_package_name(node) {
+                self.record_dynamic_stash_boundary(
+                    Some(package),
+                    Some("ISA".to_string()),
+                    range,
+                    item_id,
+                    StashDynamicBoundaryKind::DynamicInheritance,
+                    "@ISA contains a parent name that is not statically known",
+                );
+            }
+        }
+    }
+
+    fn record_isa_push(
+        &mut self,
+        args: &[Node],
+        range: SourceLocation,
+        confidence: RecoveryConfidence,
+    ) {
+        let Some(target) = args.first() else { return };
+        if !is_isa_target(target) {
+            return;
+        }
+
+        let (package, symbol, qualified) = match &target.kind {
+            NodeKind::Variable { sigil, name } if sigil == "@" => {
+                let (package, symbol) = package_and_symbol(name, self.package_context.as_deref());
+                (package, symbol, name.contains("::"))
+            }
+            _ => return,
+        };
+        if symbol != "ISA" {
+            return;
+        }
+        // A lexical `my @ISA` only shadows the bare `@ISA` form. A
+        // package-qualified `@Child::ISA` always targets the stash slot, so
+        // the lexical-suppression check must not apply to it.
+        if !qualified
+            && let Some(binding_id) =
+                self.resolve_visible_binding(self.current_scope(), "@", &symbol)
+            && self
+                .scope_graph
+                .bindings
+                .iter()
+                .find(|binding| binding.id == binding_id)
+                .is_some_and(|binding| {
+                    matches!(binding.storage, StorageClass::LexicalMy | StorageClass::LexicalState)
+                })
+        {
+            return;
+        }
+        for argument in args.iter().skip(1) {
+            for parent in static_package_names_from_node(argument) {
+                self.record_inheritance_edge(
+                    package.clone(),
+                    parent,
+                    range,
+                    None,
+                    InheritanceSource::IsaPush,
+                    StashProvenance::ExactAst,
+                );
+            }
+            if contains_dynamic_package_name(argument) {
+                let boundary_item = self.push_item(
+                    argument,
+                    Some(argument.location),
+                    confidence,
+                    HirKind::DynamicBoundary(DynamicBoundary {
+                        kind: DynamicBoundaryKind::DynamicStashMutation,
+                        reason: "@ISA push contains a parent name that is not statically known"
+                            .to_string(),
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+                self.record_dynamic_stash_boundary(
+                    Some(package.clone()),
+                    Some("ISA".to_string()),
+                    range,
+                    Some(boundary_item),
+                    StashDynamicBoundaryKind::DynamicInheritance,
+                    "@ISA push contains a parent name that is not statically known",
+                );
+            }
         }
     }
 
@@ -2233,20 +2358,6 @@ impl Lowerer {
                 .and_then(|scope| scope.parent);
         }
         None
-    }
-
-    fn visit_declaration_variable_payload(
-        &mut self,
-        variable: &Node,
-        confidence: RecoveryConfidence,
-    ) {
-        match &variable.kind {
-            NodeKind::Assignment { rhs, .. } => self.visit(rhs, confidence),
-            NodeKind::VariableWithAttributes { variable, .. } => {
-                self.visit_declaration_variable_payload(variable, confidence);
-            }
-            _ => {}
-        }
     }
 
     fn visit_declaration_list_entries(
@@ -2759,19 +2870,60 @@ fn static_package_names_from_node(node: &Node) -> Vec<String> {
         NodeKind::ArrayLiteral { elements } => {
             elements.iter().flat_map(static_package_names_from_node).collect()
         }
-        NodeKind::String { value, .. } | NodeKind::Identifier { name: value } => {
+        NodeKind::String { value, interpolated: false } | NodeKind::Identifier { name: value } => {
             static_names_from_arg(value)
         }
         _ => Vec::new(),
     }
 }
 
-fn variable_decl_bindings(node: &Node) -> (Vec<VariableBinding>, bool) {
+fn contains_dynamic_package_name(node: &Node) -> bool {
     match &node.kind {
-        NodeKind::Assignment { lhs, .. } => (variable_binding(lhs).into_iter().collect(), true),
-        NodeKind::VariableWithAttributes { variable, .. } => variable_decl_bindings(variable),
-        _ => (variable_binding(node).into_iter().collect(), false),
+        NodeKind::ArrayLiteral { elements } => elements.iter().any(contains_dynamic_package_name),
+        NodeKind::String { interpolated, .. } => *interpolated,
+        NodeKind::Identifier { .. } => false,
+        _ => true,
     }
+}
+
+fn is_isa_target(node: &Node) -> bool {
+    // Both `@ISA` and package-qualified `@Child::ISA` are push targets that
+    // mutate a stash inheritance slot; split via `package_and_symbol` so the
+    // accepted shape stays in one place.
+    matches!(&node.kind, NodeKind::Variable { sigil, name }
+        if sigil == "@" && package_and_symbol(name, None).1 == "ISA")
+}
+
+fn variable_decl_bindings(node: &Node) -> Vec<VariableBinding> {
+    match &node.kind {
+        NodeKind::Assignment { lhs, .. } => variable_binding(lhs).into_iter().collect(),
+        NodeKind::VariableWithAttributes { variable, .. } => variable_decl_bindings(variable),
+        _ => variable_binding(node).into_iter().collect(),
+    }
+}
+
+/// The expression that initializes a single-variable declaration, as the flat
+/// lowerer sees it.
+///
+/// `my`/`our`/`state` carry their RHS in the separate `initializer` field.
+/// `local $x = EXPR` (and compound forms such as `local $x .= EXPR`) instead
+/// parse the whole assignment into `variable`, because `local` accepts
+/// arbitrary lvalues. The flat lowerer wants only that assignment's RHS: the
+/// localized `$x` is the declaration's own binding, and traversing it as an
+/// expression would record a spurious self-reference in the scope graph. The
+/// canonical body lowerer lowers the embedded assignment node itself, because
+/// there the operator and place are the payload.
+fn declaration_initializer_node<'a>(
+    variable: &'a Node,
+    initializer: Option<&'a Node>,
+) -> Option<&'a Node> {
+    initializer.or_else(|| match &variable.kind {
+        NodeKind::Assignment { rhs, .. } => Some(rhs),
+        NodeKind::VariableWithAttributes { variable, .. } => {
+            declaration_initializer_node(variable, None)
+        }
+        _ => None,
+    })
 }
 
 fn require_target(argument: Option<&Node>) -> Option<String> {
@@ -3178,34 +3330,45 @@ impl<'a> BodyBuilder2<'a> {
                 let sigil = sigil_from_str(sigil_str);
                 let storage = storage_class_for_decl(declarator);
 
-                let init_expr_id = initializer.as_ref().map(|init_node| {
-                    // Allocate the write-place for the declared variable.
-                    // Always Lexical regardless of declarator — the place IS the
-                    // declaration site, not a resolved binding.
-                    let place_kind = match declarator.as_str() {
-                        "our" => VariableKind::Package,
-                        _ => VariableKind::Lexical,
-                    };
-                    let place_expr = HirExpr::Variable(HirVariable {
-                        sigil: sigil_from_str(sigil_str),
-                        name: var_name.clone(),
-                        kind: place_kind,
-                        access: AccessMode::Write,
-                    });
-                    let place_id = self.alloc_expr(place_expr, variable.location);
+                let init_expr_id = match (initializer.as_deref(), &variable.kind) {
+                    // `local $x = EXPR` / `local $x .= EXPR`: the parser stores the
+                    // whole assignment in `variable`, so lower that node directly. It
+                    // already owns the place, RHS, operator mode, and exact range; a
+                    // second synthetic assignment would double-count the write.
+                    (None, NodeKind::Assignment { .. }) => Some(self.lower_expr(variable)),
+                    (None, _) => None,
+                    (Some(init_node), _) => Some({
+                        // Allocate the write-place for the declared variable.
+                        // Always Lexical regardless of declarator — the place IS the
+                        // declaration site, not a resolved binding.
+                        let place_kind = match declarator.as_str() {
+                            "our" => VariableKind::Package,
+                            _ => VariableKind::Lexical,
+                        };
+                        let place_expr = HirExpr::Variable(HirVariable {
+                            sigil: sigil_from_str(sigil_str),
+                            name: var_name.clone(),
+                            kind: place_kind,
+                            access: AccessMode::Write,
+                        });
+                        let place_id = self.alloc_expr(place_expr, variable.location);
 
-                    // Lower the RHS.
-                    let rhs_id = self.lower_expr(init_node);
+                        // Lower the RHS.
+                        let rhs_id = self.lower_expr(init_node);
 
-                    // Assign node spanning from variable to end of initializer.
-                    let assign_range = SourceLocation {
-                        start: variable.location.start,
-                        end: init_node.location.end,
-                    };
-                    let assign_expr =
-                        HirExpr::Assign { lhs: place_id, rhs: rhs_id, mode: AssignMode::Simple };
-                    self.alloc_expr(assign_expr, assign_range)
-                });
+                        // Assign node spanning from variable to end of initializer.
+                        let assign_range = SourceLocation {
+                            start: variable.location.start,
+                            end: init_node.location.end,
+                        };
+                        let assign_expr = HirExpr::Assign {
+                            lhs: place_id,
+                            rhs: rhs_id,
+                            mode: AssignMode::Simple,
+                        };
+                        self.alloc_expr(assign_expr, assign_range)
+                    }),
+                };
 
                 self.alloc_stmt(
                     HirStmt::Let {
@@ -3967,6 +4130,15 @@ impl<'a> BodyBuilder2<'a> {
                     "our" => VariableKind::Package,
                     _ => VariableKind::Lexical,
                 };
+                // Anchor at the variable token, not the whole `my $i` declaration
+                // span — mirrors the statement-level VariableDeclaration path,
+                // which anchors at `variable.location` (body.rs). Anchoring at
+                // `node.location` widens PIR lexical-write anchors to include
+                // the declarator keyword (#12191/#12274).
+                let binding_node = match &variable.kind {
+                    NodeKind::VariableWithAttributes { variable, .. } => variable.as_ref(),
+                    _ => variable.as_ref(),
+                };
                 self.alloc_expr(
                     HirExpr::Variable(HirVariable {
                         sigil: sigil_from_str(sigil),
@@ -3974,7 +4146,7 @@ impl<'a> BodyBuilder2<'a> {
                         kind,
                         access: AccessMode::Write,
                     }),
-                    node.location,
+                    binding_node.location,
                 )
             }
             _ => self.lower_expr(node),
@@ -4144,5 +4316,102 @@ mod goto_lowering_tests {
             )),
             "goto must lower to a ControlTransfer HIR item of kind Goto"
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod isa_lowering_tests {
+    use super::*;
+    use crate::parser::Parser;
+    use perl_tdd_support::must;
+
+    fn lower(source: &str) -> HirFile {
+        let mut parser = Parser::new(source);
+        lower_ast(&must(parser.parse()))
+    }
+
+    #[test]
+    fn static_push_isa_produces_inheritance_edge() {
+        let file = lower("package Child; push @ISA, 'Base'; 1;");
+        assert_eq!(file.stash_graph.inheritance_edges.len(), 1);
+        let edge = &file.stash_graph.inheritance_edges[0];
+        assert_eq!(edge.from_package, "Child");
+        assert_eq!(edge.to_package, "Base");
+        assert_eq!(edge.source, InheritanceSource::IsaPush);
+        assert_eq!(edge.provenance, StashProvenance::ExactAst);
+    }
+
+    #[test]
+    fn mixed_push_isa_preserves_static_edge_and_dynamic_boundary() {
+        let file = lower("package Child; push @ISA, 'Base', $computed; 1;");
+        assert!(file.stash_graph.inheritance_edges.iter().any(|edge| {
+            edge.to_package == "Base" && edge.source == InheritanceSource::IsaPush
+        }));
+        assert!(file.stash_graph.dynamic_boundaries.iter().any(|boundary| {
+            boundary.kind == StashDynamicBoundaryKind::DynamicInheritance
+                && boundary.package.as_deref() == Some("Child")
+                && boundary.symbol.as_deref() == Some("ISA")
+                && boundary.provenance == StashProvenance::DynamicBoundary
+                && boundary.confidence == StashConfidence::Low
+        }));
+    }
+
+    #[test]
+    fn computed_isa_assignment_produces_dynamic_boundary_without_fake_parent() {
+        let file = lower("package Child; @ISA = @computed; 1;");
+        assert!(file.stash_graph.inheritance_edges.is_empty());
+        assert!(file.stash_graph.dynamic_boundaries.iter().any(|boundary| {
+            boundary.kind == StashDynamicBoundaryKind::DynamicInheritance
+                && boundary.package.as_deref() == Some("Child")
+        }));
+        assert!(!file.stash_graph.packages.iter().any(|package| package.package == "__DYNAMIC__"));
+    }
+
+    #[test]
+    fn interpolated_push_isa_is_dynamic() {
+        let file = lower("package Child; push @ISA, \"Base::$suffix\"; 1;");
+        assert!(file.stash_graph.inheritance_edges.is_empty());
+        assert!(
+            file.stash_graph
+                .dynamic_boundaries
+                .iter()
+                .any(|boundary| { boundary.kind == StashDynamicBoundaryKind::DynamicInheritance })
+        );
+    }
+
+    #[test]
+    fn qualified_push_isa_targets_declared_package() {
+        let file = lower("package Other; push @Child::ISA, 'Base'; 1;");
+        let edge = file.stash_graph.inheritance_edges.first().expect("expected inheritance edge");
+        assert_eq!(edge.from_package, "Child");
+        assert_eq!(edge.to_package, "Base");
+    }
+
+    #[test]
+    fn qualified_push_isa_ignores_lexical_isa() {
+        // A lexical `my @ISA` shadows only the bare `@ISA` form; the
+        // package-qualified push still targets the Child stash slot.
+        let file = lower("package Other; my @ISA; push @Child::ISA, 'Base'; 1;");
+        let edge = file.stash_graph.inheritance_edges.first().expect("expected inheritance edge");
+        assert_eq!(edge.from_package, "Child");
+        assert_eq!(edge.to_package, "Base");
+    }
+
+    #[test]
+    fn qualified_interpolated_push_isa_records_owning_package() {
+        let file = lower("package Other; push @Child::ISA, \"Base::$suffix\"; 1;");
+        assert!(file.stash_graph.inheritance_edges.is_empty());
+        assert!(file.stash_graph.dynamic_boundaries.iter().any(|boundary| {
+            boundary.kind == StashDynamicBoundaryKind::DynamicInheritance
+                && boundary.package.as_deref() == Some("Child")
+        }));
+    }
+
+    #[test]
+    fn lexical_isa_is_not_treated_as_stash_inheritance() {
+        let file = lower("package Child; my @ISA; push @ISA, 'Base'; 1;");
+        assert!(file.stash_graph.inheritance_edges.is_empty());
+        assert!(file.stash_graph.dynamic_boundaries.is_empty());
     }
 }

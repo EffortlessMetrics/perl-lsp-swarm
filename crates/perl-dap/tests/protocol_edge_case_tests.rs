@@ -222,6 +222,7 @@ fn test_large_expression_in_evaluate_args() -> Result<()> {
         frame_id: None,
         context: None,
         allow_side_effects: None,
+        format: None,
     };
     let json = serde_json::to_string(&args)?;
     let round_tripped: EvaluateArguments = serde_json::from_str(&json)?;
@@ -764,6 +765,7 @@ fn test_variables_args() -> Result<()> {
         filter: Some("named".to_string()),
         start: Some(0),
         count: Some(50),
+        format: None,
     };
     let json = serde_json::to_string(&args)?;
     let rt: VariablesArguments = serde_json::from_str(&json)?;
@@ -782,6 +784,7 @@ fn test_set_variable_args_round_trip() -> Result<()> {
         variables_reference: 10,
         name: "$x".to_string(),
         value: "99".to_string(),
+        format: None,
     };
     let json = serde_json::to_string(&args)?;
     let rt: SetVariableArguments = serde_json::from_str(&json)?;
@@ -945,6 +948,7 @@ fn test_set_expression_round_trip() -> Result<()> {
         expression: "$x".to_string(),
         value: "42".to_string(),
         frame_id: Some(0),
+        format: None,
     };
     let body = SetExpressionResponseBody {
         value: "42".to_string(),
@@ -1155,6 +1159,7 @@ fn test_unicode_in_evaluate_expression() -> Result<()> {
         frame_id: None,
         context: None,
         allow_side_effects: None,
+        format: None,
     };
     let json = serde_json::to_string(&args)?;
     let rt: EvaluateArguments = serde_json::from_str(&json)?;

@@ -1,10 +1,14 @@
 //! Variable inspection: variable display, scope variables, set variable.
 
 use super::{
-    DEBUGGER_QUERY_WAIT_MS, DapMessage, DebugAdapter, DebugState, HashMap, SetVariableArguments,
-    SetVariableResponseBody, Value, VariableCacheKind, VariablesArguments,
-    is_valid_set_variable_name, json, lock_or_recover, slice_variables,
+    CachedVariable, DEBUGGER_QUERY_WAIT_MS, DapMessage, DebugAdapter, DebugState, HashMap,
+    SetVariableArguments, SetVariableResponseBody, Value, VariableCacheKind, VariablesArguments,
+    is_valid_set_variable_name, json, lock_or_recover, parse_dap_arguments, slice_variables,
 };
+use crate::parse_origin::{DebuggerOutputOrigin, ParseIdentity};
+use crate::value_format::ValueFormatPolicy;
+#[cfg(test)]
+use perl_tdd_support::must_some;
 
 impl DebugAdapter {
     /// Handle variables request
@@ -14,20 +18,24 @@ impl DebugAdapter {
         request_seq: i64,
         arguments: Option<Value>,
     ) -> DapMessage {
-        let args: VariablesArguments = match arguments.and_then(|v| serde_json::from_value(v).ok())
-        {
-            Some(a) => a,
-            None => {
+        let args: VariablesArguments = match parse_dap_arguments(arguments) {
+            Ok(a) => a,
+            Err(message) => {
                 return DapMessage::Response {
                     seq,
                     request_seq,
                     success: false,
                     command: "variables".to_string(),
                     body: None,
-                    message: Some("Missing arguments".to_string()),
+                    message: Some(message),
                 };
             }
         };
+
+        // One typed presentation policy for the whole response: projected from
+        // retained typed facts at the response boundary, never by reparsing
+        // cached display strings, and never leaking into row identity (#9588).
+        let format_policy = ValueFormatPolicy::from_options(args.format.as_ref());
 
         if args.start.is_some_and(|start| start < 0) {
             return DapMessage::Response {
@@ -340,8 +348,14 @@ impl DebugAdapter {
                 }
 
                 let (full_roots, child_cache) = if let Some(lines) = framed_scope_lines.as_ref() {
-                    let (framed_vars, framed_child_cache) =
-                        Self::parse_scope_variables_from_lines(lines, variables_ref, 0, 1024);
+                    let (framed_vars, framed_child_cache) = Self::parse_scope_variables_from_lines(
+                        lines,
+                        variables_ref,
+                        0,
+                        1024,
+                        DebuggerOutputOrigin::DebuggerControlPayload,
+                        ParseIdentity::new().with_operation_id_from_i64(request_seq),
+                    );
                     if framed_vars.is_empty() {
                         // A failed or empty framed locals response is unavailable;
                         // never reinterpret unrelated session history as this
@@ -383,11 +397,23 @@ impl DebugAdapter {
             cached_total.map(|n| n as i64)
         };
 
-        let variables = if parsed_from_output.is_empty() {
+        // Project the response rows under this request's format policy. Cached
+        // and freshly parsed rows both carry typed facts; identity fields come
+        // from the cached row and the display value is recomputed from typed
+        // facts only. The fallback scope is unavailable (honest empty), so it
+        // projects as untyped rows. (#9588)
+        let cached_rows: Vec<CachedVariable> = if parsed_from_output.is_empty() {
             Self::fallback_scope_variables(variables_ref, start, count)
+                .into_iter()
+                .map(CachedVariable::untyped)
+                .collect()
         } else {
             parsed_from_output
         };
+        let variables: Vec<crate::types::Variable> = cached_rows
+            .iter()
+            .map(|cached| format_policy.project_variable(&cached.row, cached.typed.as_ref()))
+            .collect();
 
         // Cache parsed roots and generated child references for expansion/paging requests.
         if !used_session_cache
@@ -439,10 +465,22 @@ impl DebugAdapter {
     /// bound cumulative nodes, bytes, or query duration. Safe bounded lexical
     /// collection snapshots are owned by #7358; until that contract exists this
     /// path stays honest about not having observed the contents.
+    ///
+    /// The same no-user-code contract applies to scalars (#9590's public stdio
+    /// canaries caught the old read chain violating it): the value is read
+    /// through raw slot flags only — references render their address via
+    /// `overload::StrVal` (which bypasses overloaded stringification), strings
+    /// via the PV slot when `SVf_POK` is set, integers via IV, floats via NV,
+    /// and anything carrying no readable slot (a tied proxy, a magical SV) as
+    /// `undef`. The previous `$s->SV->PV`/`->IV` chain invoked tied `FETCH` and
+    /// overloaded `""`/numification on magical values, executing debuggee code
+    /// during a read-only inspection; it also lost NV-only scalars entirely
+    /// (they dumped as `undef`). Reading the referent of a reference is still
+    /// not done here.
     pub(super) fn build_locals_b_eval_cmd() -> String {
         format!(
             concat!(
-                "p eval {{ require B; ",
+                "p eval {{ require B; require overload; ",
                 "my $cv=$DB::sub?B::svref_2object(\\&{{$DB::sub}}):B::main_cv(); ",
                 "my $pl=$cv->PADLIST; ",
                 "my @nm=$pl->NAMES->ARRAY; ",
@@ -461,7 +499,32 @@ impl DebugAdapter {
                 "  my $v; ",
                 "  if ($rt eq 'B::AV') {{ $v='ARRAY(0x0)' }} ",
                 "  elsif ($rt eq 'B::HV') {{ $v='HASH(0x0)' }} ",
-                "  else {{ $v=eval{{$s->SV->PV}}//eval{{$s->SV->IV}}//eval{{$s->IV}}//eval{{$s->PV}}//'undef' }} ",
+                "  else {{ ",
+                "    my $f=eval{{$s->FLAGS}}//0; ",
+                "    if ($f & B::SVf_ROK()) {{ ",
+                // Read the RV's referent, not the pad slot: `$a = \$x; $b = $a`
+                // share one referent but sit in distinct slots, so stringifying
+                // the slot would give aliases different addresses. The referent
+                // address also matches the pre-#9590 IV display exactly.
+                "      my $qr=eval{{$s->RV->object_2svref}}; ",
+                "      my $sv=defined $qr?overload::StrVal($qr):''; ",
+                "      if ($sv=~/0x([0-9a-fA-F]+)/) {{ no warnings 'portable'; $v=hex($1) }} ",
+                "      else {{ $v='REF' }} ",
+                "    }} ",
+                "    elsif ($f & B::SVf_POK()) {{ $v=eval{{$s->PV}}//'undef' }} ",
+                "    elsif ($f & B::SVf_IOK()) {{ $v=eval{{$s->IV}}//'undef' }} ",
+                "    elsif ($f & B::SVf_NOK()) {{ $v=eval{{$s->NV}}//'undef' }} ",
+                "    else {{ $v='undef' }} ",
+                "  }} ",
+                // A flagged (wide) PV must not reach perl5db's print: the resulting
+                // "Wide character in print" warning echoes this whole eval back
+                // into the control stream on every locals request and can blow
+                // the bounded capture window. Encode in place to the identical
+                // UTF-8 bytes: unlike utf8::downgrade this always succeeds (it
+                // never fails on code points above 255) and never emits raw
+                // Latin-1 bytes that would break the control reader's UTF-8
+                // line decoding.
+                "  if (defined $v && !ref($v) && utf8::is_utf8($v)) {{ utf8::encode($v) }} ",
                 "  $o.=\"$pv = $v\\n\" ",
                 "}} $o }}",
             ),
@@ -476,20 +539,44 @@ impl DebugAdapter {
         request_seq: i64,
         arguments: Option<Value>,
     ) -> DapMessage {
-        let args: SetVariableArguments =
-            match arguments.and_then(|v| serde_json::from_value(v).ok()) {
-                Some(a) => a,
-                None => {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: false,
-                        command: "setVariable".to_string(),
-                        body: None,
-                        message: Some("Missing arguments".to_string()),
-                    };
-                }
+        // #8354 fail-closed gate. The refusal is a function of the advertised
+        // capability alone, so advertisement and enforcement cannot disagree.
+        // It fires before `parse_dap_arguments`, name/value screening,
+        // reference lookup, and any broker/debugger traffic: while the
+        // capability is closed, no parser, resolver, coordinator, or transport
+        // call may run and no reference or retained state may change — valid
+        // and hostile input get the identical early unsupported response.
+        if crate::backend::capabilities::refuse_set_variable(
+            crate::backend::capabilities::advertises_set_variable(),
+        ) {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "setVariable".to_string(),
+                body: None,
+                message: Some(
+                    crate::backend::capabilities::SET_VARIABLE_UNSUPPORTED_MESSAGE.to_string(),
+                ),
             };
+        }
+        let args: SetVariableArguments = match parse_dap_arguments(arguments) {
+            Ok(a) => a,
+            Err(message) => {
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: false,
+                    command: "setVariable".to_string(),
+                    body: None,
+                    message: Some(message),
+                };
+            }
+        };
+        // `format` affects the response rendering only; the assigned data below
+        // is always the admitted client `value` (#9588; #8364/#9070 own
+        // admission and read-back).
+        let format_policy = ValueFormatPolicy::from_options(args.format.as_ref());
 
         let variables_ref = args.variables_reference;
         if variables_ref <= 0 {
@@ -647,9 +734,17 @@ impl DebugAdapter {
             .and_then(|(begin, end)| {
                 self.capture_framed_debugger_output(begin, end, DEBUGGER_QUERY_WAIT_MS * 8)
             })
-            .and_then(|lines| Self::parse_evaluate_result_from_lines(&lines, name, true));
+            .and_then(|lines| {
+                Self::parse_evaluate_result_from_lines(
+                    &lines,
+                    name,
+                    true,
+                    DebuggerOutputOrigin::DebuggerControlPayload,
+                    ParseIdentity::new().with_operation_id_from_i64(request_seq),
+                )
+            });
 
-        let Some((rendered_value, rendered_type)) = parsed else {
+        let Some((default_value, rendered_type, typed)) = parsed else {
             return DapMessage::Response {
                 seq,
                 request_seq,
@@ -662,10 +757,14 @@ impl DebugAdapter {
             };
         };
 
+        // The cached placeholder keeps the policy-neutral rendering plus typed
+        // facts, so a later `variables` expansion projects under its own
+        // request's format (#9588). The response value is projected from typed
+        // facts under this request's policy.
         let variables_reference =
-            self.allocate_evaluate_result_ref(name, &rendered_value, &rendered_type);
+            self.allocate_evaluate_result_ref(name, &default_value, &rendered_type, typed.clone());
         let set_var_body = SetVariableResponseBody {
-            value: rendered_value,
+            value: format_policy.project_display(&default_value, typed.as_ref()),
             type_: Some(rendered_type),
             variables_reference,
         };
@@ -910,9 +1009,10 @@ mod hazard_invariant_tests {
     }
 
     #[test]
-    fn package_globals_and_noncurrent_scope_refs_are_rejected_before_query() {
+    fn package_globals_and_noncurrent_scope_refs_are_rejected_before_query()
+    -> Result<(), Box<dyn std::error::Error>> {
         if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
-            return;
+            return Ok(());
         }
         use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
         use crate::types::StackFrame;
@@ -936,9 +1036,7 @@ mod hazard_invariant_tests {
             (8, ScopeKind::Locals),
             (8, ScopeKind::Arguments),
         ] {
-            let wire = VariableReference::Scope { frame_id, kind }
-                .encode()
-                .expect("test scope reference must encode");
+            let wire = must_some(VariableReference::Scope { frame_id, kind }.encode());
             assert!(
                 variables_body_is_empty(&mut a, i64::from(wire)),
                 "unadmitted {kind:?} scope for frame {frame_id} must be honest empty"
@@ -949,12 +1047,14 @@ mod hazard_invariant_tests {
             before_queries,
             "unadmitted scope references must perform zero framed debugger queries"
         );
+        Ok(())
     }
 
     #[test]
-    fn cleared_session_does_not_revive_stale_scope_from_recent_output() {
+    fn cleared_session_does_not_revive_stale_scope_from_recent_output()
+    -> Result<(), Box<dyn std::error::Error>> {
         if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
-            return;
+            return Ok(());
         }
         let mut a = adapter();
         a.seed_stopped_session_with_frames_for_test(vec![]);
@@ -965,12 +1065,13 @@ mod hazard_invariant_tests {
             variables_body_is_empty(&mut a, 11),
             "a scope ref must stay empty after its session is cleared"
         );
+        Ok(())
     }
 
     #[test]
-    fn unknown_reference_does_not_parse_recent_output() {
+    fn unknown_reference_does_not_parse_recent_output() -> Result<(), Box<dyn std::error::Error>> {
         if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
-            return;
+            return Ok(());
         }
         let mut a = adapter();
         a.seed_stopped_session_with_frames_for_test(vec![]);
@@ -982,6 +1083,7 @@ mod hazard_invariant_tests {
             variables_body_is_empty(&mut a, 999_999),
             "an unknown reference must not be correlated with recent output"
         );
+        Ok(())
     }
 
     // --- Fix #1338: stale EvalResult ref with Stopped session -> early short-circuit ---
@@ -1001,10 +1103,11 @@ mod hazard_invariant_tests {
     // Skip when perl is not on PATH (seed_stopped_session_with_frames_for_test
     // spawns perl -e 1 as a no-op child process).
     #[test]
-    fn fix_1338_stale_eval_ref_stopped_session_short_circuits_to_honest_empty() {
+    fn fix_1338_stale_eval_ref_stopped_session_short_circuits_to_honest_empty()
+    -> Result<(), Box<dyn std::error::Error>> {
         // Skip if perl is not available on PATH.
         if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
-            return;
+            return Ok(());
         }
         let mut a = adapter();
         // Seed a Stopped session so the Running-state guard does not trigger.
@@ -1018,6 +1121,7 @@ mod hazard_invariant_tests {
                 "fix #1338: stopped session + stale eval_ref={eval_ref_wire} must return honest empty"
             );
         }
+        Ok(())
     }
 
     // --- Guard test: cached EvalResult is NOT short-circuited by the fix #1338 early return ---
@@ -1046,8 +1150,7 @@ mod hazard_invariant_tests {
         // An EvalResult wire value that IS in cache (simulates a fresh evaluate result
         // before resume — the client holds the ref and sends a variables request while
         // the session is still stopped at the same breakpoint).
-        let eval_ref_wire: i32 =
-            VariableReference::EvalResult { counter: 42 }.encode().expect("counter=42 is valid");
+        let eval_ref_wire: i32 = must_some(VariableReference::EvalResult { counter: 42 }.encode());
         assert!(
             (1_000_000..=1_999_999_999).contains(&eval_ref_wire),
             "setup: must be in EvalResult band"
@@ -1130,17 +1233,50 @@ mod hazard_invariant_tests {
     /// A read-only `variables` request must not enumerate or serialize live
     /// aggregates. Bounded lexical collection snapshots are owned by #7358; until
     /// that contract lands, re-introducing an unbudgeted traversal here is a
-    /// regression, so the command template must stay free of it.
+    /// regression, so the command template must stay free of it. The one
+    /// admitted use of `object_2svref` (#9590) is the ROK scalar branch: the
+    /// reference is handed straight to `overload::StrVal` — the documented
+    /// hook-free stringifier — to read the address without invoking overloaded
+    /// `""` (which the raw `->IV` numification path executes on AMG-carrying
+    /// references). It must never feed a traversal.
     #[test]
     fn build_locals_b_eval_cmd_does_not_enumerate_live_collections() {
         let cmd = DebugAdapter::build_locals_b_eval_cmd();
-        for forbidden in ["object_2svref", "Data::Dumper", "Dumper(", "keys %$", "@$r"] {
+        for forbidden in ["Data::Dumper", "Dumper(", "keys %$", "@$r"] {
             assert!(
                 !cmd.contains(forbidden),
                 "lexical introspection must not use {forbidden} \
                  (unbudgeted traversal / debuggee side effects, see #7358): {cmd}"
             );
         }
+        assert_eq!(
+            cmd.matches("object_2svref").count(),
+            1,
+            "object_2svref may only appear in the ROK scalar branch: {cmd}"
+        );
+        assert!(
+            cmd.contains("B::SVf_ROK()"),
+            "the object_2svref read must be gated on SVf_ROK: {cmd}"
+        );
+        assert!(
+            cmd.contains("overload::StrVal($qr)"),
+            "the obtained reference must be consumed only by overload::StrVal: {cmd}"
+        );
+        let rok_branch = cmd
+            .split("B::SVf_ROK()")
+            .nth(1)
+            .unwrap_or_default()
+            .split("elsif")
+            .next()
+            .unwrap_or_default();
+        assert!(
+            rok_branch.contains("$s->RV->object_2svref") && rok_branch.contains("overload::StrVal"),
+            "object_2svref must stay inside the ROK branch and address the referent, not the pad slot: {cmd}"
+        );
+        assert!(
+            cmd.contains("$v='ARRAY(0x0)'") && cmd.contains("$v='HASH(0x0)'"),
+            "aggregate pad entries must keep their opaque non-enumerated markers: {cmd}"
+        );
     }
 
     /// The child-reference codec and child cache serve pages beyond the first 256
@@ -1151,23 +1287,31 @@ mod hazard_invariant_tests {
     fn parsed_array_literal_preserves_a_deep_page() {
         let values = (1..=500).map(|value| value.to_string()).collect::<Vec<_>>().join(",");
         let lines = vec![format!("@big = [{values}]")];
-        let (roots, child_cache) =
-            DebugAdapter::parse_scope_variables_from_lines(&lines, 11, 0, 1024);
-        let root = roots
-            .iter()
-            .find(|variable| variable.name == "@big")
-            .expect("@big root must be rendered");
-        assert_eq!(root.indexed_variables, Some(500));
-        assert!(root.variables_reference > 0);
+        let (roots, child_cache) = DebugAdapter::parse_scope_variables_from_lines(
+            &lines,
+            11,
+            0,
+            1024,
+            DebuggerOutputOrigin::FixtureOrInstrumentInput,
+            ParseIdentity::new(),
+        );
+        let root = must_some(roots.iter().find(|variable| variable.row.name == "@big"));
+        assert_eq!(root.row.indexed_variables, Some(500));
+        assert!(root.row.variables_reference > 0);
 
-        let children = child_cache
-            .get(&root.variables_reference)
-            .expect("@big children must be cached for paging");
+        let children = must_some(child_cache.get(&root.row.variables_reference));
         assert_eq!(children.len(), 500);
-        assert_eq!(children[250].name, "[250]");
-        assert_eq!(children[250].value, "251");
-        assert_eq!(children[274].name, "[274]");
-        assert_eq!(children[274].value, "275");
+        assert_eq!(children[250].row.name, "[250]");
+        assert_eq!(children[250].row.value, "251");
+        assert_eq!(children[274].row.name, "[274]");
+        assert_eq!(children[274].row.value, "275");
+        // Cached children retain typed facts so a later request's ValueFormat
+        // projects from typed authority (#9588).
+        assert!(
+            matches!(children[250].typed, Some(crate::value::PerlValue::Integer(251))),
+            "child rows must retain typed facts, got {:?}",
+            children[250].typed
+        );
     }
 
     #[test]
@@ -1182,5 +1326,416 @@ mod hazard_invariant_tests {
             cmd.contains("= $v"),
             "Perl emit format must contain '= $v' for parse_assignment compatibility: {cmd}"
         );
+    }
+
+    #[test]
+    fn build_locals_b_eval_cmd_reads_raw_slots_only() {
+        // #9590's public stdio canaries proved the old read chain
+        // (`$s->SV->PV`/`$s->SV->IV`) executed tied `FETCH` and overloaded
+        // `""`/numification during a read-only locals dump, and lost NV-only
+        // scalars entirely. The command must read raw slots gated on FLAGS,
+        // take reference addresses through `overload::StrVal` (which bypasses
+        // overloaded stringification), cover the NV slot, and never emit a
+        // flagged string into perl5db's print (whose "Wide character" warning
+        // echoes the whole eval back into the control stream).
+        let cmd = DebugAdapter::build_locals_b_eval_cmd();
+        assert!(
+            !cmd.contains("$s->SV->PV") && !cmd.contains("$s->SV->IV"),
+            "the stringify-prone read chain must stay gone: {cmd}"
+        );
+        assert!(cmd.contains("B::SVf_ROK()"), "references must be gated on SVf_ROK: {cmd}");
+        assert!(
+            cmd.contains("overload::StrVal"),
+            "reference addresses must be read hook-free via overload::StrVal: {cmd}"
+        );
+        assert!(cmd.contains("B::SVf_POK()"), "string values must be gated on SVf_POK: {cmd}");
+        assert!(cmd.contains("B::SVf_IOK()"), "integers must be gated on SVf_IOK: {cmd}");
+        assert!(cmd.contains("B::SVf_NOK()"), "floats must be read from the NV slot: {cmd}");
+        assert!(
+            cmd.contains("utf8::encode"),
+            "wide PVs must be encoded to UTF-8 bytes before reaching perl5db's print: {cmd}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #9588 - DAP `ValueFormat` family tests
+//
+// One typed presentation policy shared by every `ValueFormat` request family
+// (variables / setVariable / evaluate / setExpression per the pinned upstream
+// schema). These tests cover the per-family behaviors the issue demands:
+// default/no-format, hex projection from typed authority, unknown/unsupported
+// option rejection (never silently ignored), malformed input, identity
+// independence, and no cross-request format leak through the shared cache.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod value_format_family_tests {
+    use super::*;
+    use crate::debug_adapter::var_ref::VariableReference;
+    use crate::debug_adapter::variable_cache::{CachedVariable, VariableCacheKind};
+    use crate::types::{Source, StackFrame, Variable};
+    use serde_json::json;
+    use std::error::Error;
+
+    type TestResult = Result<(), Box<dyn Error>>;
+
+    fn perl_available() -> bool {
+        std::process::Command::new("perl").arg("-e").arg("1").output().is_ok()
+    }
+
+    /// Frame 1 as the exact current stopped frame, so the Locals scope wire
+    /// reference for frame 1 (11) passes current-frame admission.
+    fn seed_current_frame(adapter: &DebugAdapter) -> TestResult {
+        adapter.seed_stopped_session_with_frames_for_test(vec![StackFrame::new(
+            1,
+            "main::run",
+            Source {
+                name: Some("test.pl".to_string()),
+                path: "/tmp/test.pl".to_string(),
+                source_reference: None,
+            },
+            3,
+        )]);
+        Ok(())
+    }
+
+    fn seed_typed_roots(adapter: &DebugAdapter, wire: i32) {
+        let lines = vec![
+            "$n = 255".to_string(),
+            "$neg = -42".to_string(),
+            "$f = 2.5".to_string(),
+            "$s = 'hello'".to_string(),
+            "$u = undef".to_string(),
+            "$zero = 0".to_string(),
+        ];
+        let (roots, _children) = DebugAdapter::parse_scope_variables_from_lines(
+            &lines,
+            wire,
+            0,
+            16,
+            DebuggerOutputOrigin::FixtureOrInstrumentInput,
+            ParseIdentity::new(),
+        );
+        let mut session = lock_or_recover(&adapter.session, "value_format_family_tests.seed");
+        if let Some(ref mut sess) = *session {
+            sess.variable_cache.upsert(wire, VariableCacheKind::Root, roots);
+        }
+    }
+
+    fn response_value_at(
+        adapter: &mut DebugAdapter,
+        wire: i64,
+        format: Option<serde_json::Value>,
+        index: usize,
+    ) -> Result<serde_json::Value, String> {
+        let mut arguments = json!({ "variablesReference": wire });
+        if let Some(format) = format {
+            arguments["format"] = format;
+        }
+        match adapter.handle_request(1, "variables", Some(arguments)) {
+            DapMessage::Response { success: true, body: Some(body), .. } => body
+                .get("variables")
+                .and_then(|v| v.as_array())
+                .and_then(|a| a.get(index))
+                .cloned()
+                .ok_or_else(|| format!("expected variable row {index}")),
+            other => Err(format!("expected successful variables response, got {other:?}")),
+        }
+    }
+
+    fn response_message(
+        adapter: &mut DebugAdapter,
+        command: &str,
+        arguments: serde_json::Value,
+    ) -> Result<String, String> {
+        match adapter.handle_request(1, command, Some(arguments)) {
+            DapMessage::Response { success: false, message: Some(message), .. } => Ok(message),
+            other => Err(format!("expected failed {command} response, got {other:?}")),
+        }
+    }
+
+    // --- variables family: projection + identity independence ---------------
+
+    #[test]
+    fn variables_hex_projects_from_typed_authority_and_preserves_identity() -> TestResult {
+        if !perl_available() {
+            return Ok(());
+        }
+        let mut adapter = DebugAdapter::new();
+        seed_current_frame(&adapter)?;
+        seed_typed_roots(&adapter, 11);
+
+        // Rows are sorted by name: $f, $n, $neg, $s, $u, $zero.
+        let f = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 0)?;
+        assert_eq!(f["value"], "2.5", "floats are not an integer authority: unchanged");
+
+        let n = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 1)?;
+        assert_eq!(n["value"], "0xff", "Integer(255) must render from typed authority");
+        assert_eq!(n["name"], "$n", "formatting must not change identity fields");
+        assert_eq!(n["type"], "SCALAR");
+        assert_eq!(n["evaluateName"], "$n");
+
+        let neg = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 2)?;
+        assert_eq!(neg["value"], "-0x2a", "signed integers keep sign-magnitude hex");
+
+        let s = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 3)?;
+        assert_eq!(s["value"], "\"hello\"", "strings are never heuristically parsed");
+
+        let u = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 4)?;
+        assert_eq!(u["value"], "undef", "undef is a non-numeric class: unchanged");
+
+        let zero = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 5)?;
+        assert_eq!(zero["value"], "0x0", "zero renders as 0x0");
+        Ok(())
+    }
+
+    #[test]
+    fn variables_hex_does_not_leak_across_requests_sharing_the_cache() -> TestResult {
+        if !perl_available() {
+            return Ok(());
+        }
+        let mut adapter = DebugAdapter::new();
+        seed_current_frame(&adapter)?;
+        seed_typed_roots(&adapter, 11);
+
+        // Hex first, then default on the same cached reference: the second
+        // response must be decimal - the cache retains policy-neutral rows.
+        assert_eq!(
+            response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 1)?["value"],
+            "0xff"
+        );
+        assert_eq!(response_value_at(&mut adapter, 11, None, 1)?["value"], "255");
+        // And hex again after default - projection is per request.
+        assert_eq!(
+            response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 1)?["value"],
+            "0xff"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn variables_hex_false_and_empty_format_behave_as_default() -> TestResult {
+        if !perl_available() {
+            return Ok(());
+        }
+        let mut adapter = DebugAdapter::new();
+        seed_current_frame(&adapter)?;
+        seed_typed_roots(&adapter, 11);
+
+        assert_eq!(
+            response_value_at(&mut adapter, 11, Some(json!({ "hex": false })), 1)?["value"],
+            "255"
+        );
+        assert_eq!(response_value_at(&mut adapter, 11, Some(json!({})), 1)?["value"], "255");
+        Ok(())
+    }
+
+    #[test]
+    fn variables_hex_projects_cached_child_rows() -> TestResult {
+        if !perl_available() {
+            return Ok(());
+        }
+        let mut adapter = DebugAdapter::new();
+        seed_current_frame(&adapter)?;
+
+        let lines = vec!["@arr = [10, 20]".to_string()];
+        let (roots, children) = DebugAdapter::parse_scope_variables_from_lines(
+            &lines,
+            11,
+            0,
+            16,
+            DebuggerOutputOrigin::FixtureOrInstrumentInput,
+            ParseIdentity::new(),
+        );
+        let child_ref = roots[0].row.variables_reference;
+        {
+            let mut session = lock_or_recover(&adapter.session, "value_format_family_tests.child");
+            if let Some(ref mut sess) = *session {
+                sess.variable_cache.upsert(11, VariableCacheKind::Root, roots);
+                for (reference, rows) in children {
+                    sess.variable_cache.upsert(reference, VariableCacheKind::Child, rows);
+                }
+            }
+        }
+        assert!(child_ref > 0, "fixture must produce an expandable child ref");
+
+        let first_hex =
+            response_value_at(&mut adapter, i64::from(child_ref), Some(json!({ "hex": true })), 0)?;
+        assert_eq!(first_hex["value"], "0xa", "child Integer(10) must render hex");
+        let first_default = response_value_at(&mut adapter, i64::from(child_ref), None, 0)?;
+        assert_eq!(first_default["value"], "10");
+        Ok(())
+    }
+
+    // --- unknown/unsupported option: one documented behavior (fail) ---------
+
+    #[test]
+    fn variables_unknown_format_option_fails_the_request() -> TestResult {
+        let mut adapter = DebugAdapter::new();
+        let message = response_message(
+            &mut adapter,
+            "variables",
+            json!({ "variablesReference": 11, "format": { "octal": true } }),
+        )?;
+        assert!(message.contains("Invalid arguments"), "got: {message}");
+        assert!(message.contains("octal"), "unknown option must be named: {message}");
+        Ok(())
+    }
+
+    #[test]
+    fn variables_wrong_typed_hex_option_fails_the_request() -> TestResult {
+        let mut adapter = DebugAdapter::new();
+        let message = response_message(
+            &mut adapter,
+            "variables",
+            json!({ "variablesReference": 11, "format": { "hex": "true" } }),
+        )?;
+        assert!(message.contains("Invalid arguments"), "got: {message}");
+        Ok(())
+    }
+
+    #[test]
+    fn mutation_and_evaluate_families_reject_unknown_format_options() -> TestResult {
+        let mut adapter = DebugAdapter::new();
+        // Argument deserialization fails before any session or mutation work.
+        // setVariable is deliberately absent from the family loop: since
+        // #8354 its capability gate refuses before argument parsing, so
+        // setExpression carries the mutation-family admission proof. The
+        // ordering claim itself (gate precedes screening) is asserted below
+        // and in dap_setvariable_capability_fail_closed_8354.
+        for (command, arguments) in [
+            ("evaluate", json!({ "expression": "$x", "format": { "radix": 16 } })),
+            (
+                "setExpression",
+                json!({ "expression": "$x", "value": "5", "format": { "radix": 16 } }),
+            ),
+        ] {
+            let message = response_message(&mut adapter, command, arguments)?;
+            assert!(
+                message.contains("Invalid arguments") && message.contains("radix"),
+                "{command} must reject the unknown option by name: {message}"
+            );
+        }
+        // setVariable must refuse on the capability floor before it would ever
+        // reach this argument validation.
+        let message = response_message(
+            &mut adapter,
+            "setVariable",
+            json!({ "variablesReference": 11, "name": "$x", "value": "5", "format": { "radix": 16 } }),
+        )?;
+        assert!(
+            message.contains("supportsSetVariable"),
+            "setVariable must be refused by the #8354 capability gate, not by argument \
+             validation: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn valid_hex_format_is_accepted_by_supported_families_and_floored_for_set_expression()
+    -> TestResult {
+        // A well-formed format deserializes cleanly: without a session the
+        // setVariable/evaluate handlers proceed to their normal "No debugger
+        // session" failure, NOT to a format error - proving the option is
+        // consumed, not rejected.
+        //
+        // #8354: setVariable is absent from this family because its capability
+        // gate refuses before argument parsing, so evaluate carries the
+        // format-acceptance proof.
+        //
+        // #9568: setExpression refuses at the capability floor before any
+        // session work, so its well-formed-format leg expects the authority
+        // refusal instead of "No debugger session". Typed deserialization is
+        // still proven here: a *malformed* format on the same command fails
+        // with "Invalid arguments" (see
+        // `mutation_and_evaluate_families_reject_unknown_format_options`),
+        // which runs before this same gate.
+        let mut adapter = DebugAdapter::new();
+        for (command, arguments) in
+            [("evaluate", json!({ "expression": "$x", "format": { "hex": true } }))]
+        {
+            let message = response_message(&mut adapter, command, arguments)?;
+            assert_eq!(message, "No debugger session", "{command}: {message}");
+        }
+        let set_expression_message = response_message(
+            &mut adapter,
+            "setExpression",
+            json!({ "expression": "$x", "value": "5", "format": { "hex": true } }),
+        )?;
+        assert_eq!(
+            set_expression_message,
+            crate::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE,
+            "a well-formed format deserializes cleanly; the #9568 capability floor, \
+             not a format error, is what refuses setExpression"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn missing_arguments_message_is_preserved() -> TestResult {
+        // Regression guard: `None` arguments still report "Missing arguments"
+        // (existing integration tests assert this exact message). setVariable
+        // is absent since #8354: its capability gate refuses before argument
+        // parsing, so it can no longer produce this message.
+        let mut adapter = DebugAdapter::new();
+        for command in ["variables", "evaluate", "setExpression"] {
+            let outcome = adapter.handle_request(1, command, None);
+            match outcome {
+                DapMessage::Response { success: false, message: Some(message), .. } => {
+                    assert_eq!(message, "Missing arguments", "{command}: {message}");
+                }
+                other => {
+                    return Err(format!(
+                        "{command} must fail with Missing arguments, got {other:?}"
+                    )
+                    .into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // --- EvaluateResult placeholder expansion under a later format ----------
+
+    #[test]
+    fn eval_result_placeholder_rows_with_typed_facts_project_under_request_format() -> TestResult {
+        if !perl_available() {
+            return Ok(());
+        }
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test()?; // EvalResult refs bypass frame admission
+
+        let wire: i32 = VariableReference::EvalResult { counter: 7 }
+            .encode()
+            .ok_or("EvalResult counter=7 must encode")?;
+        let row = Variable {
+            name: "$expr".to_string(),
+            value: "48879".to_string(),
+            type_: Some("SCALAR".to_string()),
+            variables_reference: 0,
+            named_variables: None,
+            indexed_variables: None,
+            evaluate_name: Some("$expr".to_string()),
+        };
+        {
+            let mut session =
+                lock_or_recover(&adapter.session, "value_format_family_tests.evalref");
+            if let Some(ref mut sess) = *session {
+                sess.variable_cache.upsert(
+                    wire,
+                    VariableCacheKind::EvaluateResult,
+                    vec![CachedVariable::typed(row, crate::value::PerlValue::Integer(48879))],
+                );
+            }
+        }
+
+        let mut adapter_mut = adapter;
+        let hexed =
+            response_value_at(&mut adapter_mut, i64::from(wire), Some(json!({ "hex": true })), 0)?;
+        assert_eq!(hexed["value"], "0xbeef", "48879 = 0xbeef from typed authority");
+        assert_eq!(hexed["name"], "$expr");
+        let decimal = response_value_at(&mut adapter_mut, i64::from(wire), None, 0)?;
+        assert_eq!(decimal["value"], "48879");
+        Ok(())
     }
 }

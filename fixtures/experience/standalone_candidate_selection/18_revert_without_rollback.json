@@ -1,0 +1,126 @@
+{
+  "packet_schema": "standalone_candidate_selection_vector.v1",
+  "expectation": {
+    "verdict": "reject",
+    "reason_code": "revert_without_rollback"
+  },
+  "candidates": [
+    {
+      "schema_version": "standalone_candidate.v1",
+      "policy_version": "v1",
+      "route_mode": "first_party_posix",
+      "source_mode": "release_archive",
+      "transaction_id": "tx-11179-build-a",
+      "attempt_id": "at-11179-build-a",
+      "created_by_operation": "install",
+      "resolved_subject_digest": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "stage_dag_digest": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "release_display_version": "0.19.0",
+      "release_topology_digest": "d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6",
+      "target_platform": "linux",
+      "target_triple": "x86_64-unknown-linux-gnu",
+      "target_libc": "gnu",
+      "product_unit_disposition": "archive_pair_required",
+      "dap_preview_maturity": false,
+      "candidate_generation": 1,
+      "members": [
+        {
+          "role": "perllsp_server",
+          "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "observation_packet_sha256": "abababababababababababababababababababababababababababababababab",
+          "subject_binding": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        },
+        {
+          "role": "perl_dap_adapter",
+          "artifact_sha256": "cacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacaca",
+          "observation_packet_sha256": "cbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcb",
+          "subject_binding": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        }
+      ],
+      "limitations": [
+        "synthetic contract vector for the standalone install train"
+      ],
+      "candidate_id": "0881d897be01c74163eabcc3abd3f33189a70000c7bc28fbb3aa8a08e7117a64",
+      "manifest_sha256": "71463d1dcea4609524540bf6ec9e97beaff497267a2570b235f0c7241b90e437"
+    },
+    {
+      "schema_version": "standalone_candidate.v1",
+      "policy_version": "v1",
+      "route_mode": "first_party_posix",
+      "source_mode": "release_archive",
+      "transaction_id": "tx-11179-build-b",
+      "attempt_id": "at-11179-build-b",
+      "created_by_operation": "update",
+      "resolved_subject_digest": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "stage_dag_digest": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "release_display_version": "0.20.0",
+      "release_topology_digest": "d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6",
+      "target_platform": "linux",
+      "target_triple": "x86_64-unknown-linux-gnu",
+      "target_libc": "gnu",
+      "product_unit_disposition": "archive_pair_required",
+      "dap_preview_maturity": false,
+      "candidate_generation": 2,
+      "members": [
+        {
+          "role": "perllsp_server",
+          "artifact_sha256": "adadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadad",
+          "observation_packet_sha256": "aeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeae",
+          "subject_binding": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        },
+        {
+          "role": "perl_dap_adapter",
+          "artifact_sha256": "acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac",
+          "observation_packet_sha256": "afafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafaf",
+          "subject_binding": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        }
+      ],
+      "limitations": [
+        "synthetic contract vector for the standalone install train"
+      ],
+      "candidate_id": "2a69cdc20b7baddeeb9556156428f52bb75631b3f7c8192888aaa9153c5bdb6e",
+      "manifest_sha256": "fd9c45ecec8cfc276138baa09862102ee796d4b1217ce2b61b5bef9e25398ce0"
+    }
+  ],
+  "prior_selection": {
+    "schema_version": "standalone_current_selection.v1",
+    "selection_policy_version": "v1",
+    "install_root": {
+      "root_role": "user_local",
+      "root_identity_sha256": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+    },
+    "selection_generation": 31,
+    "selected_candidate_id": "2a69cdc20b7baddeeb9556156428f52bb75631b3f7c8192888aaa9153c5bdb6e",
+    "selected_manifest_sha256": "fd9c45ecec8cfc276138baa09862102ee796d4b1217ce2b61b5bef9e25398ce0",
+    "previous_known_good": {
+      "candidate_id": "0881d897be01c74163eabcc3abd3f33189a70000c7bc28fbb3aa8a08e7117a64",
+      "manifest_sha256": "71463d1dcea4609524540bf6ec9e97beaff497267a2570b235f0c7241b90e437"
+    },
+    "operation": "update",
+    "transaction_id": "tx-11179-sel-18p",
+    "attempt_id": "at-11179-sel-18p",
+    "commit_result": "committed",
+    "bounded_reason": "B current with A governed as previous"
+  },
+  "next_selection": {
+    "schema_version": "standalone_current_selection.v1",
+    "selection_policy_version": "v1",
+    "install_root": {
+      "root_role": "user_local",
+      "root_identity_sha256": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+    },
+    "selection_generation": 32,
+    "selected_candidate_id": "0881d897be01c74163eabcc3abd3f33189a70000c7bc28fbb3aa8a08e7117a64",
+    "selected_manifest_sha256": "71463d1dcea4609524540bf6ec9e97beaff497267a2570b235f0c7241b90e437",
+    "previous_known_good": {
+      "candidate_id": "2a69cdc20b7baddeeb9556156428f52bb75631b3f7c8192888aaa9153c5bdb6e",
+      "manifest_sha256": "fd9c45ecec8cfc276138baa09862102ee796d4b1217ce2b61b5bef9e25398ce0"
+    },
+    "operation": "repair",
+    "transaction_id": "tx-11179-sel-18",
+    "attempt_id": "at-11179-sel-18",
+    "commit_result": "committed",
+    "bounded_reason": "silently reverting without declaring rollback"
+  },
+  "transition": null
+}

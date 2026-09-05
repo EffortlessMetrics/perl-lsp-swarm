@@ -6,23 +6,36 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::process::Command;
 use xtask::editor_client_compat::{
-    ArtifactKind, CANONICAL_EXPECTATION_SET_ID, CapabilityIdentity, CleanupResult,
-    ClientSourceState, DiagnosticMode, DiagnosticsIdentity, EditorClientCompatReceipt,
-    EvidenceArtifact, EvidenceStage, FailureClass, HostIdentity, IntegrationIdentity,
-    IntegrationMode, JourneyCell, ObservationResult, PlatformIdentity, RegistrationState,
-    SCHEMA_VERSION as RECEIPT_SCHEMA_VERSION, ServerIdentity, WorkspaceFixtureIdentity,
-    canonical_expectation_set_digest, fixture_digest,
+    CANONICAL_EXPECTATION_SET_ID, CapabilityIdentity, ClientSourceState, DiagnosticMode,
+    DiagnosticsIdentity, EditorClientCompatReceipt, EvidenceStage, FailureClass, HostIdentity,
+    IntegrationIdentity, IntegrationMode, JourneyCell, ObservationResult, PlatformIdentity,
+    RegistrationState, SCHEMA_VERSION as RECEIPT_SCHEMA_VERSION, ServerIdentity,
+    WorkspaceFixtureIdentity, canonical_expectation_set_digest, fixture_digest,
 };
 
 pub const RUN_PLAN_SCHEMA_VERSION: &str = "emacs_host_run_plan.v1";
 pub const DRIVER_SCHEMA_VERSION: &str = "emacs_host_driver.v1";
+pub const CAPTURE_BOUNDS_SCHEMA_VERSION: &str = "emacs_host_capture_bounds.v1";
 const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
+
+#[cfg(test)]
+#[path = "emacs_host_fake_host.rs"]
+mod fake_host;
+#[path = "emacs_host_process.rs"]
+mod process;
+
+#[cfg(test)]
+pub use fake_host::{
+    FAKE_HOST_MODE_ENV, run_fake_host_entry, spawn_preexisting_candidate, stop_test_descendant,
+    supervision_command, supervision_plan,
+};
+pub use process::{
+    ProcessObservation, parse_process_snapshot, parse_windows_process_snapshot, run_owned_process,
+    surviving_processes,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -325,6 +338,14 @@ impl HermeticLayout {
         self.raw_directory.join("initialize.json")
     }
 
+    pub fn process_snapshot_before(&self) -> PathBuf {
+        self.raw_directory.join("processes-before.txt")
+    }
+
+    pub fn process_snapshot_after(&self) -> PathBuf {
+        self.raw_directory.join("processes-after.txt")
+    }
+
     pub fn environment(&self, plan: &EmacsHostRunPlan) -> Result<BTreeMap<OsString, OsString>> {
         let mut environment = BTreeMap::new();
         for key in [
@@ -391,6 +412,16 @@ impl HermeticLayout {
             OsString::from("PERL_LSP_EMACS_CANDIDATE"),
             plan.paths.candidate_executable.as_os_str().to_owned(),
         );
+        environment.insert(
+            OsString::from("PERL_LSP_EMACS_CLIENT_SOURCE"),
+            plan.paths.client_source.as_os_str().to_owned(),
+        );
+        if let Some(client_package) = plan.paths.client_package.as_ref() {
+            environment.insert(
+                OsString::from("PERL_LSP_EMACS_CLIENT_PACKAGE"),
+                client_package.as_os_str().to_owned(),
+            );
+        }
         environment.insert(
             OsString::from("PERL_LSP_EMACS_FIXTURE_ROOT"),
             plan.paths.fixture_root.as_os_str().to_owned(),
@@ -473,6 +504,36 @@ pub fn parse_driver_events(bytes: &[u8], require_complete: bool) -> Result<Vec<D
     Ok(events)
 }
 
+/// Parse the longest prefix of events that still validate as an in-progress
+/// driver stream. Stop at the first JSON, schema, sequence, safety, or
+/// lifecycle-order failure so a later syntactically valid
+/// `shutdown_completed` cannot mint a barrier the driver never established.
+/// An in-progress `host_action_started` is retained: completeness, not prefix
+/// recovery, requires every action to close. UTF-8 failure and an invalid
+/// first line yield an empty prefix.
+pub fn parse_driver_event_prefix(bytes: &[u8]) -> Vec<DriverEvent> {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return Vec::new();
+    };
+    let mut events = Vec::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<DriverEvent>(line) {
+            Ok(event) => {
+                events.push(event);
+                if validate_driver_events(&events, false).is_err() {
+                    events.pop();
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    events
+}
+
 pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) -> Result<()> {
     ensure!(!events.is_empty(), "driver emitted no events");
     let mut singleton = BTreeSet::new();
@@ -536,9 +597,9 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
             }
         }
     }
-    ensure!(open_actions.is_empty(), "driver left host actions incomplete");
 
     if require_complete {
+        ensure!(open_actions.is_empty(), "driver left host actions incomplete");
         ensure!(
             !singleton.contains(&DriverEventKind::DriverFailed),
             "complete host run reported driver failure"
@@ -574,236 +635,6 @@ fn lifecycle_rank(kind: DriverEventKind) -> u8 {
         | DriverEventKind::EditApplied
         | DriverEventKind::DriverFailed => 6,
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct ProcessLedger {
-    pid: u32,
-    timed_out: bool,
-    kill_requested: bool,
-    exit_code: Option<i32>,
-    cleanup: CleanupResult,
-    event_count: usize,
-    driver_complete: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct ProcessObservation {
-    pub status_code: Option<i32>,
-    pub timed_out: bool,
-    pub kill_requested: bool,
-    pub cleanup: CleanupResult,
-    pub events: Vec<DriverEvent>,
-    pub driver_complete: bool,
-    pub artifacts: Vec<EvidenceArtifact>,
-}
-
-impl ProcessObservation {
-    pub fn passed_process_boundary(&self) -> bool {
-        self.status_code == Some(0)
-            && !self.timed_out
-            && self.cleanup == CleanupResult::Pass
-            && self.driver_complete
-    }
-}
-
-pub fn run_owned_process(
-    command: &mut Command,
-    plan: &EmacsHostRunPlan,
-    layout: &HermeticLayout,
-) -> Result<ProcessObservation> {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().context("spawning Emacs host subject")?;
-    let pid = child.id();
-    let mut stdout = child.stdout.take().context("capturing host stdout")?;
-    let mut stderr = child.stderr.take().context("capturing host stderr")?;
-    let stdout_reader = thread::spawn(move || -> std::io::Result<Vec<u8>> {
-        let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes)?;
-        Ok(bytes)
-    });
-    let stderr_reader = thread::spawn(move || -> std::io::Result<Vec<u8>> {
-        let mut bytes = Vec::new();
-        stderr.read_to_end(&mut bytes)?;
-        Ok(bytes)
-    });
-
-    let deadline = Instant::now() + Duration::from_millis(plan.identity.timeout_ms);
-    let mut timed_out = false;
-    let mut kill_requested = false;
-    let status: ExitStatus = loop {
-        if let Some(status) = child.try_wait().context("polling Emacs host process")? {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            timed_out = true;
-            child.kill().context("killing timed-out Emacs host process")?;
-            kill_requested = true;
-            break child.wait().context("reaping timed-out Emacs host process")?;
-        }
-        thread::sleep(Duration::from_millis(10));
-    };
-
-    let stdout = join_reader(stdout_reader, "host stdout")?;
-    let stderr = join_reader(stderr_reader, "host stderr")?;
-    // `Child::kill` signals only the Emacs process. The adapter starts
-    // `perllsp` as a descendant, so after a forced kill — or any exit that
-    // skipped the driver's own shutdown path — nothing here has observed that
-    // the server went away, and the server can outlive the run. Claiming
-    // `pass` in the receipt would assert a cleanup that was never witnessed,
-    // so only a host that terminated through its own shutdown path with a
-    // success status may report a proven cleanup; everything else is
-    // `not_proven` rather than `fail`, because a leak is unobserved here, not
-    // demonstrated.
-    let cleanup = if timed_out || kill_requested || status.code() != Some(0) {
-        CleanupResult::NotProven
-    } else {
-        CleanupResult::Pass
-    };
-    let event_bytes = fs::read(layout.event_file()).unwrap_or_default();
-    let events = parse_driver_events(&event_bytes, false).unwrap_or_default();
-    let driver_complete = validate_driver_events(&events, true).is_ok();
-
-    let mut artifacts = Vec::new();
-    artifacts.push(write_sanitized_artifact(
-        &layout.artifact_directory,
-        "emacs/driver-stdout.log",
-        ArtifactKind::DriverOutput,
-        &stdout,
-        plan,
-        layout,
-    )?);
-    artifacts.push(write_sanitized_artifact(
-        &layout.artifact_directory,
-        "emacs/driver-stderr.log",
-        ArtifactKind::DriverOutput,
-        &stderr,
-        plan,
-        layout,
-    )?);
-    artifacts.push(write_sanitized_artifact(
-        &layout.artifact_directory,
-        "emacs/driver-events.jsonl",
-        ArtifactKind::DriverOutput,
-        &event_bytes,
-        plan,
-        layout,
-    )?);
-
-    for (path, id, kind) in [
-        (layout.client_log(), "emacs/client.log", ArtifactKind::ClientLog),
-        (layout.server_stderr(), "emacs/perllsp.stderr", ArtifactKind::ServerStderr),
-        (layout.capability_snapshot(), "emacs/initialize.json", ArtifactKind::CapabilitySnapshot),
-    ] {
-        if path.is_file() {
-            let bytes = fs::read(&path)
-                .with_context(|| format!("reading host artifact {}", path.display()))?;
-            artifacts.push(write_sanitized_artifact(
-                &layout.artifact_directory,
-                id,
-                kind,
-                &bytes,
-                plan,
-                layout,
-            )?);
-        }
-    }
-
-    let ledger = ProcessLedger {
-        pid,
-        timed_out,
-        kill_requested,
-        exit_code: status.code(),
-        cleanup,
-        event_count: events.len(),
-        driver_complete,
-    };
-    let ledger_bytes = serde_json::to_vec_pretty(&ledger)?;
-    artifacts.push(write_sanitized_artifact(
-        &layout.artifact_directory,
-        "emacs/process-ledger.json",
-        ArtifactKind::ProcessLedger,
-        &ledger_bytes,
-        plan,
-        layout,
-    )?);
-
-    Ok(ProcessObservation {
-        status_code: status.code(),
-        timed_out,
-        kill_requested,
-        cleanup,
-        events,
-        driver_complete,
-        artifacts,
-    })
-}
-
-fn join_reader(
-    handle: thread::JoinHandle<std::io::Result<Vec<u8>>>,
-    label: &str,
-) -> Result<Vec<u8>> {
-    handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("{label} reader thread panicked"))?
-        .with_context(|| format!("reading {label}"))
-}
-
-fn write_sanitized_artifact(
-    artifact_root: &Path,
-    id: &str,
-    kind: ArtifactKind,
-    bytes: &[u8],
-    plan: &EmacsHostRunPlan,
-    layout: &HermeticLayout,
-) -> Result<EvidenceArtifact> {
-    validate_safe_identity(id, "artifact id")?;
-    let sanitized = sanitize_text(bytes, plan, layout);
-    let bounded = bound_capture(sanitized.as_bytes());
-    let destination = artifact_root.join(id);
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(&destination, bounded)
-        .with_context(|| format!("writing sanitized artifact {}", destination.display()))?;
-    Ok(EvidenceArtifact { kind, id: id.to_string(), sha256: file_sha256(&destination)? })
-}
-
-fn sanitize_text(bytes: &[u8], plan: &EmacsHostRunPlan, layout: &HermeticLayout) -> String {
-    let mut text = String::from_utf8_lossy(bytes).into_owned();
-    // Every absolute path the run plan accepts has to appear here. An Emacs
-    // load error or backtrace names the driver, adapter, configuration, and
-    // package files directly, and these captures are written as sanitized
-    // artifacts that may be uploaded, so a path omitted from this list leaks
-    // the checkout or user directory it came from.
-    let mut replacements = vec![
-        (&layout.root, "<RUN_ROOT>"),
-        (&plan.paths.artifact_root, "<ARTIFACT_ROOT>"),
-        (&plan.paths.fixture_root, "<WORKSPACE>"),
-        (&plan.paths.candidate_executable, "<CANDIDATE>"),
-        (&plan.paths.emacs_executable, "<EMACS>"),
-        (&plan.paths.client_source, "<CLIENT_SOURCE>"),
-        (&plan.paths.driver, "<DRIVER>"),
-        (&plan.paths.adapter, "<ADAPTER>"),
-        (&plan.paths.configuration, "<CONFIGURATION>"),
-    ];
-    if let Some(client_package) = plan.paths.client_package.as_ref() {
-        replacements.push((client_package, "<CLIENT_PACKAGE>"));
-    }
-    // Longest first: a run root is a prefix of the paths nested under it, and
-    // replacing the prefix first would leave the longer path unrecognizable.
-    replacements.sort_by_key(|(path, _)| std::cmp::Reverse(path.as_os_str().len()));
-    for (path, token) in replacements {
-        if let Some(value) = path.to_str() {
-            text = text.replace(value, token);
-            text = text.replace(&value.replace('\\', "/"), token);
-        }
-    }
-    text
-}
-
-fn bound_capture(bytes: &[u8]) -> &[u8] {
-    if bytes.len() <= MAX_CAPTURE_BYTES { bytes } else { &bytes[..MAX_CAPTURE_BYTES] }
 }
 
 #[allow(clippy::too_many_arguments)]

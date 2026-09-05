@@ -1,4 +1,4 @@
-use perl_module::token_parser::{ModuleTokenSpan, parse_module_token};
+use perl_module::{ModuleTokenSpan, parse_module_token};
 use proptest::prelude::*;
 
 fn head_chars() -> Vec<char> {

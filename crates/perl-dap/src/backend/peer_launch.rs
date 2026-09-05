@@ -24,9 +24,11 @@
 //! editor↔real-`Devel::ptkdb` sessions remain deferred; the seam is proven with
 //! a fake peer.
 
+#[cfg(test)]
+use perl_tdd_support::{must, must_err, must_some};
 use std::fmt;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpListener, ToSocketAddrs};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -40,7 +42,7 @@ use super::{
     SetBackendBreakpointsParams, SetFunctionBreakpointsParams, StackTraceParams,
 };
 use crate::breakpoint_oracle::{AstBreakpointOracle, BreakpointOracle};
-use crate::debug_adapter::DapMessage;
+use crate::debug_adapter::{DapMessage, DapRequestRoute};
 use crate::model::{
     DebugBreakpoint, DebugEvent, DebugFunctionBreakpoint, DebugSource, FrameId, StopReason,
     ThreadId, VariablesRef,
@@ -318,7 +320,10 @@ pub fn static_mirror_capabilities() -> Value {
         "supportsConditionalBreakpoints": true,
         "supportsFunctionBreakpoints": true,
         "supportsBreakpointLocationsRequest": true,
-        "supportsEvaluateForHovers": false,
+        "supportsEvaluateForHovers": crate::backend::capabilities::MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS,
+        // One source with the mirror setExpression refusal gate (#9568): the
+        // profile does not advertise setExpression, so it must refuse it.
+        "supportsSetExpression": crate::backend::capabilities::MIRROR_ADVERTISES_SET_EXPRESSION,
         "supportsHitConditionalBreakpoints": false,
         "supportsLogPoints": false,
         "supportsDataBreakpoints": false,
@@ -594,45 +599,71 @@ impl MirrorPeerBridge {
         arguments: Option<Value>,
     ) -> Vec<DapMessage> {
         let mut out = Vec::new();
-        match command {
-            "initialize" => {
+        match DapRequestRoute::from_command(command)
+            .filter(DapRequestRoute::available_in_peer_frontends)
+        {
+            Some(DapRequestRoute::Initialize) => {
                 // Static conservative profile — never blocks on or consults the
                 // peer, which may not be connected yet.
                 let body = static_mirror_capabilities();
                 out.push(self.response(request_seq, command, true, Some(body), None));
                 out.push(self.event("initialized", None));
             }
-            "launch" | "attach" => {
+            Some(DapRequestRoute::Launch) => {
                 // In mirror listen mode the peer owns the debuggee; acknowledge.
                 out.push(self.response(request_seq, command, true, None, None));
             }
-            "configurationDone" => {
+            Some(DapRequestRoute::Attach) => {
+                // In mirror listen mode the peer owns the debuggee; acknowledge.
                 out.push(self.response(request_seq, command, true, None, None));
             }
-            "threads" => {
+            Some(DapRequestRoute::ConfigurationDone) => {
+                out.push(self.response(request_seq, command, true, None, None));
+            }
+            Some(DapRequestRoute::Threads) => {
                 let body = json!({ "threads": [{ "id": 1, "name": "main" }] });
                 out.push(self.response(request_seq, command, true, Some(body), None));
             }
-            "breakpointLocations" => {
+            Some(DapRequestRoute::BreakpointLocations) => {
                 let body = handle_breakpoint_locations(arguments.as_ref());
                 out.push(self.response(request_seq, command, true, Some(body), None));
             }
-            "setBreakpoints" => {
+            Some(DapRequestRoute::SetBreakpoints) => {
                 let msg = self.handle_set_breakpoints(request_seq, arguments.as_ref());
                 out.push(msg);
             }
-            "setFunctionBreakpoints" => {
+            Some(DapRequestRoute::SetFunctionBreakpoints) => {
                 let msg = self.handle_set_function_breakpoints(request_seq, arguments.as_ref());
                 out.push(msg);
             }
-            "continue" | "next" | "stepIn" | "stepOut" | "pause" => {
+            Some(DapRequestRoute::Continue) => {
                 out.push(self.handle_control(request_seq, command));
             }
-            "stackTrace" => out.push(self.handle_stack_trace(request_seq, arguments.as_ref())),
-            "scopes" => out.push(self.handle_scopes(request_seq, arguments.as_ref())),
-            "variables" => out.push(self.handle_variables(request_seq, arguments.as_ref())),
-            "evaluate" => out.push(self.handle_evaluate(request_seq, arguments.as_ref())),
-            "terminate" => {
+            Some(DapRequestRoute::Next) => {
+                out.push(self.handle_control(request_seq, command));
+            }
+            Some(DapRequestRoute::StepIn) => {
+                out.push(self.handle_control(request_seq, command));
+            }
+            Some(DapRequestRoute::StepOut) => {
+                out.push(self.handle_control(request_seq, command));
+            }
+            Some(DapRequestRoute::Pause) => {
+                out.push(self.handle_control(request_seq, command));
+            }
+            Some(DapRequestRoute::StackTrace) => {
+                out.push(self.handle_stack_trace(request_seq, arguments.as_ref()))
+            }
+            Some(DapRequestRoute::Scopes) => {
+                out.push(self.handle_scopes(request_seq, arguments.as_ref()))
+            }
+            Some(DapRequestRoute::Variables) => {
+                out.push(self.handle_variables(request_seq, arguments.as_ref()))
+            }
+            Some(DapRequestRoute::Evaluate) => {
+                out.push(self.handle_evaluate(request_seq, arguments.as_ref()))
+            }
+            Some(DapRequestRoute::Terminate) => {
                 if let Some(b) = self.backend.as_mut() {
                     let _ = b.disconnect(true);
                 }
@@ -645,7 +676,7 @@ impl MirrorPeerBridge {
                     out.push(self.event("terminated", None));
                 }
             }
-            "disconnect" => {
+            Some(DapRequestRoute::Disconnect) => {
                 let terminate = arguments
                     .as_ref()
                     .and_then(|a| a.get("terminateDebuggee"))
@@ -660,9 +691,89 @@ impl MirrorPeerBridge {
                     out.push(self.event("terminated", None));
                 }
             }
-            other => {
-                tracing::warn!(command = other, "mirror bridge: unhandled DAP request");
-                out.push(self.response(request_seq, other, true, None, None));
+            Some(DapRequestRoute::InlineValues) => {
+                // #9089: the custom inline-values extension is fail-closed in
+                // every frontend until a versioned negotiation contract is
+                // proven. The mirror frontend neither advertises nor
+                // negotiates it, so the single authority refuses the request —
+                // explicitly, on its own route, before any backend access —
+                // rather than acking success-empty while the native adapter
+                // refuses the identical request.
+                out.push(self.response(
+                    request_seq,
+                    command,
+                    false,
+                    None,
+                    Some(
+                        crate::backend::capabilities::INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE
+                            .to_string(),
+                    ),
+                ));
+            }
+            None | Some(_) => {
+                // #9568: setExpression is `native_only` in the route table, so
+                // the peer-availability filter reduces it to `None` before this
+                // arm. The mirror profile does not advertise setExpression, and
+                // this mode refuses exactly what it does not advertise — the
+                // lenient success acknowledgement would promise an assignment
+                // the mirror bridge never performs while the native adapter
+                // refuses the identical request.
+                if matches!(
+                    DapRequestRoute::from_command(command),
+                    Some(DapRequestRoute::SetExpression)
+                ) {
+                    if crate::backend::capabilities::refuse_set_expression(
+                        crate::backend::capabilities::MIRROR_ADVERTISES_SET_EXPRESSION,
+                    ) {
+                        out.push(self.response(
+                            request_seq,
+                            command,
+                            false,
+                            None,
+                            Some(
+                                crate::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE
+                                    .to_string(),
+                            ),
+                        ));
+                    } else {
+                        // Promotion path: advertised by this mode but mirror
+                        // delegation to an assignment primitive is not wired
+                        // yet. Fail loudly instead of acknowledging a write
+                        // that did not happen.
+                        out.push(
+                            self.response(
+                                request_seq,
+                                command,
+                                false,
+                                None,
+                                Some(
+                                    "setExpression: mirror-mode delegation is not implemented"
+                                        .to_string(),
+                                ),
+                            ),
+                        );
+                    }
+                } else if DapRequestRoute::from_command(command).is_some() {
+                    // A catalog route that exists but is unavailable in this
+                    // frontend must fail closed: acknowledging it would report
+                    // success for work no backend performed (#9069).
+                    tracing::warn!(
+                        command,
+                        "mirror bridge: request is unavailable in this frontend"
+                    );
+                    out.push(self.response(
+                        request_seq,
+                        command,
+                        false,
+                        None,
+                        Some("request is unavailable in the mirror peer frontend".to_string()),
+                    ));
+                } else {
+                    // Lenient: acknowledge unrecognized requests so a client is not
+                    // wedged, but carry no body. (mirror-MVP behavior.)
+                    tracing::warn!(command, "mirror bridge: unhandled DAP request");
+                    out.push(self.response(request_seq, command, true, None, None));
+                }
             }
         }
         out.extend(self.poll_events());
@@ -961,6 +1072,21 @@ impl MirrorPeerBridge {
     }
 
     fn handle_evaluate(&mut self, request_seq: i64, args: Option<&Value>) -> DapMessage {
+        // #9573: refuse hover before reaching the peer, gated on the same value
+        // `static_mirror_capabilities` advertises, so the mirror profile's
+        // advertisement and its admission stay in step.
+        if crate::backend::capabilities::refuse_hover_evaluation(
+            crate::backend::capabilities::MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS,
+            args.and_then(|a| a.get("context")).and_then(Value::as_str),
+        ) {
+            return self.response(
+                request_seq,
+                "evaluate",
+                false,
+                None,
+                Some(crate::backend::capabilities::HOVER_UNSUPPORTED_MESSAGE.to_string()),
+            );
+        }
         let Some(backend) = self.backend.as_mut() else {
             return self.error(request_seq, "evaluate", BackendError::NotConnected);
         };
@@ -1120,32 +1246,22 @@ pub fn run_mirror_listen_session_stdio(
     run_mirror_editor_loop(std::io::stdin(), std::io::stdout(), bridge, peer_rx, poll_interval)
 }
 
-/// Drive a [`MirrorPeerBridge`] listen-launch session over a **socket** editor
-/// connection while the peer connects back on `peer_listener`. `expected_token`
-/// is the session token the peer must present in its `peer/hello` (pass
-/// `Some(endpoint.token)`); a peer that cannot present it is rejected during the
-/// handshake.
-///
-/// # Errors
-/// Returns a transport error if the socket read/write fails irrecoverably.
-pub fn run_mirror_listen_session_socket(
-    editor: TcpStream,
-    peer_listener: TcpListener,
-    bridge: MirrorPeerBridge,
-    handshake_timeout: Duration,
-    poll_interval: Duration,
-    expected_token: Option<PeerSessionToken>,
-) -> std::io::Result<()> {
-    let peer_rx = spawn_peer_acceptor(peer_listener, handshake_timeout, expected_token);
-    let reader = editor.try_clone()?;
-    let writer = editor;
-    run_mirror_editor_loop(reader, writer, bridge, peer_rx, poll_interval)
-}
-
 /// The transport-agnostic editor loop: read framed DAP requests off `reader_src`
 /// on a dedicated thread, dispatch them, write framed responses/events to
 /// `writer`, interleave backend-event delivery, and transition the bridge to
 /// live when the peer backend arrives on `peer_rx`.
+///
+/// Frame admission is bounded (#9522): the reader enqueues through
+/// [`super::peer_frame_queue::admit_peer_frame`] against a
+/// [`super::peer_frame_queue::PEER_FRAME_QUEUE_CAPACITY`] bounded channel. If
+/// the editor loop cannot keep up and the queue saturates, the reader stops and
+/// the session ends with the typed
+/// [`super::peer_frame_queue::PEER_BACKPRESSURE_MSG`] failure instead of
+/// buffering without bound or reporting generic success.
+///
+/// # Errors
+/// Returns a transport error if writing framed messages to `writer` fails, or
+/// the typed peer backpressure failure when the bounded frame queue saturates.
 fn run_mirror_editor_loop<R, W>(
     reader_src: R,
     mut writer: W,
@@ -1157,9 +1273,14 @@ where
     R: Read + Send + 'static,
     W: Write,
 {
+    use super::peer_frame_queue::{PEER_FRAME_QUEUE_CAPACITY, admit_peer_frame, overflow_failure};
     use perl_lsp_rs_core::transport::ContentLengthFramer;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(PEER_FRAME_QUEUE_CAPACITY);
+    let overflow = Arc::new(AtomicBool::new(false));
+    let reader_overflow = Arc::clone(&overflow);
     let _reader = std::thread::spawn(move || {
         let mut src = reader_src;
         let mut framer = ContentLengthFramer::new();
@@ -1171,8 +1292,15 @@ where
                     framer.push(&buf[..n]);
                     loop {
                         match framer.try_next() {
+                            // Receiver gone, queue saturated, or session ended —
+                            // stop reading (bounded admission #9522).
                             Ok(Some(body)) => {
-                                if tx.send(body).is_err() {
+                                if !admit_peer_frame(
+                                    &tx,
+                                    body,
+                                    &reader_overflow,
+                                    "mirror listen (editor)",
+                                ) {
                                     return;
                                 }
                             }
@@ -1235,8 +1363,25 @@ where
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            // Reader thread ended (editor EOF / saturated queue): a saturated
+            // queue fails the session closed with the typed backpressure
+            // disposition instead of generic success (#9522); frames admitted
+            // before the overflow were still dispatched above.
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if let Some(failure) = overflow_failure(&overflow) {
+                    return Err(failure);
+                }
+                break;
+            }
         }
+    }
+
+    // A latched overflow wins over every successful exit — including a
+    // pending-peer handshake failure and an admitted DAP `disconnect` that
+    // both `break` directly: reporting generic success after the reader
+    // rejected frames is the explicit #9522 falsifier.
+    if let Some(failure) = overflow_failure(&overflow) {
+        return Err(failure);
     }
     Ok(())
 }
@@ -1367,6 +1512,7 @@ mod tests {
     use crate::peer_protocol::message::{PeerEvent, PeerMessage, PeerRequest, command, event};
     use crate::peer_protocol::payloads::HelloArgs;
     use crate::peer_protocol::{PROTOCOL_VERSION, PeerReportedCapabilities, encode_message};
+    use std::net::TcpStream;
 
     fn spawn_hello_peer(
         addr: SocketAddr,
@@ -1374,7 +1520,7 @@ mod tests {
         hold_open: bool,
     ) -> std::thread::JoinHandle<()> {
         std::thread::spawn(move || {
-            let mut stream = TcpStream::connect(addr).expect("connect peer listener");
+            let mut stream = must(TcpStream::connect(addr));
             let hello = PeerMessage::Request(PeerRequest {
                 seq: 1,
                 command: command::HELLO.to_string(),
@@ -1387,7 +1533,7 @@ mod tests {
                 })
                 .ok(),
             });
-            stream.write_all(&encode_message(&hello).expect("encode hello")).expect("write hello");
+            must(stream.write_all(&must(encode_message(&hello))));
             if hold_open {
                 std::thread::sleep(Duration::from_secs(1));
             }
@@ -1399,7 +1545,7 @@ mod tests {
         token: String,
     ) -> std::thread::JoinHandle<()> {
         std::thread::spawn(move || {
-            let mut stream = TcpStream::connect(addr).expect("connect attacker peer");
+            let mut stream = must(TcpStream::connect(addr));
             let hello = PeerMessage::Request(PeerRequest {
                 seq: 1,
                 command: command::HELLO.to_string(),
@@ -1412,15 +1558,13 @@ mod tests {
                 })
                 .ok(),
             });
-            stream.write_all(&encode_message(&hello).expect("encode hello")).expect("write hello");
+            must(stream.write_all(&must(encode_message(&hello))));
             let stopped = PeerMessage::Event(PeerEvent {
                 seq: 2,
                 event: event::STOPPED.to_string(),
                 body: Some(json!({ "reason": "breakpoint", "threadId": 1 })),
             });
-            stream
-                .write_all(&encode_message(&stopped).expect("encode stopped"))
-                .expect("write stopped");
+            must(stream.write_all(&must(encode_message(&stopped))));
             std::thread::sleep(Duration::from_secs(1));
         })
     }
@@ -1445,7 +1589,7 @@ mod tests {
                 "port": 0,
             },
         });
-        let cfg = ExternalPeerLaunchConfig::from_launch_arguments(&args).expect("external config");
+        let cfg = must_some(ExternalPeerLaunchConfig::from_launch_arguments(&args));
         assert_eq!(cfg.kind, ExternalDebuggerKind::Ptkdb);
         assert_eq!(cfg.mode, PeerRendezvousMode::Listen);
         assert_eq!(cfg.control, ControlMode::Mirror);
@@ -1455,10 +1599,9 @@ mod tests {
 
     #[test]
     fn parse_defaults_when_external_block_absent() {
-        let cfg = ExternalPeerLaunchConfig::from_launch_arguments(
+        let cfg = must_some(ExternalPeerLaunchConfig::from_launch_arguments(
             &json!({ "debuggerBackend": "external" }),
-        )
-        .expect("defaults");
+        ));
         assert_eq!(cfg.kind, ExternalDebuggerKind::Ptkdb);
         assert_eq!(cfg.mode, PeerRendezvousMode::Connect);
         assert_eq!(cfg.control, ControlMode::Mirror);
@@ -1469,7 +1612,7 @@ mod tests {
     #[test]
     fn bind_allocates_ephemeral_port_and_env_contract() {
         let (listener, endpoint) =
-            PeerListenEndpoint::bind("127.0.0.1", 0, ControlMode::Mirror).expect("bind");
+            must(PeerListenEndpoint::bind("127.0.0.1", 0, ControlMode::Mirror));
         assert_ne!(endpoint.addr.port(), 0, "port 0 must resolve to an OS-assigned port");
         assert!(endpoint.addr.ip().is_loopback());
         let token = endpoint.session_token();
@@ -1492,8 +1635,7 @@ mod tests {
         // that keeps the port off the network; `bind` must refuse rather than
         // expose.
         for host in ["0.0.0.0", "::"] {
-            let err = PeerListenEndpoint::bind(host, 0, ControlMode::Mirror)
-                .expect_err("non-loopback host must be refused");
+            let err = must_err(PeerListenEndpoint::bind(host, 0, ControlMode::Mirror));
             assert_eq!(
                 err.kind(),
                 std::io::ErrorKind::InvalidInput,
@@ -1502,8 +1644,7 @@ mod tests {
         }
         // Loopback forms remain accepted.
         for host in ["127.0.0.1", "localhost"] {
-            let (listener, endpoint) = PeerListenEndpoint::bind(host, 0, ControlMode::Mirror)
-                .expect("loopback host must bind");
+            let (listener, endpoint) = must(PeerListenEndpoint::bind(host, 0, ControlMode::Mirror));
             assert!(endpoint.addr.ip().is_loopback());
             drop(listener);
         }
@@ -1511,15 +1652,15 @@ mod tests {
 
     #[test]
     fn tokens_are_unique_per_session() {
-        let a = mint_session_token().expect("first secure token");
-        let b = mint_session_token().expect("second secure token");
+        let a = must(mint_session_token());
+        let b = must(mint_session_token());
         assert_ne!(a, b, "each session mints a distinct token");
     }
 
     #[test]
     fn endpoint_debug_redacts_the_session_token() {
         let (listener, endpoint) =
-            PeerListenEndpoint::bind("127.0.0.1", 0, ControlMode::Mirror).expect("bind");
+            must(PeerListenEndpoint::bind("127.0.0.1", 0, ControlMode::Mirror));
         let secret = endpoint.session_token();
         let rendered = format!("{endpoint:?}");
         assert!(!rendered.contains(&secret), "Debug must not disclose the bearer token");
@@ -1529,28 +1670,25 @@ mod tests {
 
     #[test]
     fn acceptor_retries_after_wrong_token_until_correct_peer_authenticates() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind listener");
-        let addr = listener.local_addr().expect("listener address");
-        let expected = PeerSessionToken::try_from("0123456789abcdef0123456789abcdef")
-            .expect("valid expected token");
+        let listener = must(TcpListener::bind(("127.0.0.1", 0)));
+        let addr = must(listener.local_addr());
+        let expected = must(PeerSessionToken::try_from("0123456789abcdef0123456789abcdef"));
         let peer_rx = spawn_peer_acceptor(listener, Duration::from_secs(2), Some(expected.clone()));
 
         // This validly-shaped but incorrect credential must consume only the
         // first connection, leaving the listener available for the real peer.
         let wrong = spawn_hello_peer(addr, "00000000000000000000000000000000".to_string(), false);
-        wrong.join().expect("wrong-token peer exits");
+        must(wrong.join());
 
         let correct = spawn_hello_peer(addr, expected.as_str().to_string(), true);
-        let backend = peer_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("correct peer must authenticate after wrong peer");
+        let backend = must(peer_rx.recv_timeout(Duration::from_secs(1)));
         drop(backend);
-        correct.join().expect("correct peer exits");
+        must(correct.join());
     }
 
     #[test]
     fn acceptor_refuses_missing_expected_token() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind listener");
+        let listener = must(TcpListener::bind(("127.0.0.1", 0)));
         let peer_rx = spawn_peer_acceptor(listener, Duration::from_secs(1), None);
 
         assert!(matches!(
@@ -1561,31 +1699,27 @@ mod tests {
 
     #[test]
     fn silent_peer_cannot_starve_correct_peer() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind listener");
-        let addr = listener.local_addr().expect("listener address");
-        let expected = PeerSessionToken::try_from("0123456789abcdef0123456789abcdef")
-            .expect("valid expected token");
+        let listener = must(TcpListener::bind(("127.0.0.1", 0)));
+        let addr = must(listener.local_addr());
+        let expected = must(PeerSessionToken::try_from("0123456789abcdef0123456789abcdef"));
         let peer_rx = spawn_peer_acceptor(listener, Duration::from_secs(2), Some(expected.clone()));
 
         // Connect first, but never send peer/hello. The acceptor must keep
         // making progress on later connections instead of waiting for this
         // unauthenticated stream until the two-second session deadline.
-        let silent = TcpStream::connect(addr).expect("connect silent peer");
+        let silent = must(TcpStream::connect(addr));
         let correct = spawn_hello_peer(addr, expected.as_str().to_string(), true);
-        let backend = peer_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("correct peer must authenticate behind a silent peer");
+        let backend = must(peer_rx.recv_timeout(Duration::from_secs(1)));
         drop(backend);
         drop(silent);
-        correct.join().expect("correct peer exits");
+        must(correct.join());
     }
 
     #[test]
     fn unauthenticated_peer_cannot_inject_events_before_correct_peer() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind listener");
-        let addr = listener.local_addr().expect("listener address");
-        let expected = PeerSessionToken::try_from("0123456789abcdef0123456789abcdef")
-            .expect("valid expected token");
+        let listener = must(TcpListener::bind(("127.0.0.1", 0)));
+        let addr = must(listener.local_addr());
+        let expected = must(PeerSessionToken::try_from("0123456789abcdef0123456789abcdef"));
         let peer_rx = spawn_peer_acceptor(listener, Duration::from_secs(2), Some(expected.clone()));
 
         let attacker =
@@ -1596,12 +1730,10 @@ mod tests {
         );
 
         let correct = spawn_hello_peer(addr, expected.as_str().to_string(), true);
-        let backend = peer_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("correct peer must still authenticate after attacker event");
+        let backend = must(peer_rx.recv_timeout(Duration::from_secs(1)));
         drop(backend);
-        attacker.join().expect("attacker peer exits");
-        correct.join().expect("correct peer exits");
+        must(attacker.join());
+        must(correct.join());
     }
 
     #[test]
@@ -1612,6 +1744,9 @@ mod tests {
         assert_eq!(caps["supportsFunctionBreakpoints"], true);
         assert_eq!(caps["supportsBreakpointLocationsRequest"], true);
         assert_eq!(caps["supportsEvaluateForHovers"], false);
+        // #9568: the mirror profile advertises setExpression false, from the
+        // same single authority its request gate reads.
+        assert_eq!(caps["supportsSetExpression"], false);
         assert_eq!(caps["supportsHitConditionalBreakpoints"], false);
         assert_eq!(caps["supportsLogPoints"], false);
         assert_eq!(caps["supportsDataBreakpoints"], false);
@@ -1636,6 +1771,119 @@ mod tests {
         Ok(())
     }
 
+    /// #9573: the mirror bridge refuses hover before it ever looks for a peer.
+    ///
+    /// This is discriminating precisely because the bridge is pending: without
+    /// the gate, `handle_evaluate` reaches the `self.backend` lookup and returns
+    /// `NotConnected`. Getting the hover refusal instead proves the gate runs
+    /// first, so hover text can never reach a live external debugger's
+    /// evaluator. A `watch` request on the same pending bridge must still fail
+    /// the ordinary way, which keeps this from passing vacuously.
+    #[test]
+    fn mirror_refuses_hover_before_reaching_the_peer() -> Result<(), String> {
+        let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
+
+        for context in ["hover", "Hover", "HOVER"] {
+            let out = bridge.dispatch(
+                2,
+                "evaluate",
+                Some(json!({ "expression": "$x", "context": context })),
+            );
+            let first = out.first().ok_or_else(|| format!("{context} produced no response"))?;
+            let (cmd, ok, body) = as_response(first)?;
+            assert_eq!(cmd, "evaluate");
+            assert!(!ok, "hover-context evaluate must be refused ({context})");
+            assert!(body.is_none(), "a refused hover must not carry a result body ({context})");
+            if let DapMessage::Response { message, .. } = first {
+                let message = message.as_deref().unwrap_or("");
+                assert!(
+                    message.contains("supportsEvaluateForHovers"),
+                    "{context}: expected the #9573 hover refusal, got {message:?}"
+                );
+            }
+        }
+
+        // Negative control: a non-hover context is NOT swept up by the gate and
+        // fails for its own reason instead.
+        let out =
+            bridge.dispatch(3, "evaluate", Some(json!({ "expression": "$x", "context": "watch" })));
+        let first = out.first().ok_or_else(|| "watch produced no response".to_string())?;
+        if let DapMessage::Response { message, .. } = first {
+            assert!(
+                !message.as_deref().unwrap_or("").contains("supportsEvaluateForHovers"),
+                "watch must not be refused as hover"
+            );
+        }
+        Ok(())
+    }
+
+    /// #9089: the mirror bridge refuses the routed inlineValues extension
+    /// instead of acking it.
+    ///
+    /// Before this gate, the mirror fallthrough answered `success: true` with
+    /// no body while the native adapter refused the identical request. The
+    /// refusal is decided on the explicit `InlineValues` dispatch route before
+    /// any backend access, so the pending phase (no peer connected) is the
+    /// discriminating seat: getting the #9089 refusal rather than
+    /// `NotConnected` or a success ack proves the gate owns the route.
+    #[test]
+    fn mirror_refuses_inline_values_instead_of_acking() -> Result<(), String> {
+        let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
+
+        let out = bridge.dispatch(
+            2,
+            "inlineValues",
+            Some(json!({ "source": { "path": "script.pl" }, "startLine": 1, "endLine": 2 })),
+        );
+        let first = out.first().ok_or_else(|| "produced no response".to_string())?;
+        let (cmd, ok, body) = as_response(first)?;
+        assert_eq!(cmd, "inlineValues");
+        assert!(!ok, "inlineValues must be refused, not acked with success");
+        assert!(body.is_none(), "a refused inlineValues response carries no body");
+        if let DapMessage::Response { message, .. } = first {
+            assert_eq!(
+                message.as_deref(),
+                Some(crate::backend::capabilities::INLINE_VALUES_EXTENSION_UNSUPPORTED_MESSAGE),
+                "expected the deterministic #9089 refusal"
+            );
+        }
+        Ok(())
+    }
+
+    /// #9568: the mirror bridge refuses setExpression instead of acking it.
+    ///
+    /// `setExpression` is `native_only` in the route table, so before this
+    /// gate it fell through the lenient fallthrough as `success: true` with no
+    /// body — while the native adapter refused the identical request and the
+    /// profile advertised the capability false. The refusal is decided in the
+    /// dispatch fallthrough before any backend access, so the pending phase
+    /// (no peer connected) is the discriminating seat: getting the #9568
+    /// refusal rather than `NotConnected` or a success ack proves the gate
+    /// owns the route.
+    #[test]
+    fn mirror_refuses_set_expression_instead_of_acking() -> Result<(), String> {
+        let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
+
+        let out = bridge.dispatch(
+            2,
+            "setExpression",
+            Some(json!({ "expression": "$x", "value": "42", "frameId": 0 })),
+        );
+        let first = out.first().ok_or_else(|| "produced no response".to_string())?;
+        let (cmd, ok, body) = as_response(first)?;
+        assert_eq!(cmd, "setExpression");
+        assert!(!ok, "setExpression must be refused, not acked with success");
+        assert!(body.is_none(), "a refused setExpression carries no body");
+        if let DapMessage::Response { message, .. } = first {
+            assert_eq!(
+                message.as_deref(),
+                Some(crate::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE),
+                "expected the deterministic #9568 refusal"
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     fn mirror_rejects_control_gracefully_without_a_peer() -> Result<(), String> {
         let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
@@ -1647,6 +1895,44 @@ mod tests {
             assert!(!ok, "{cmd} must be rejected in mirror mode");
             if let DapMessage::Response { message, .. } = &out[0] {
                 assert!(message.as_deref().unwrap_or("").contains("mirror mode"));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_only_step_in_targets_fails_closed() -> Result<(), String> {
+        let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
+        let out = bridge.dispatch(17, "stepInTargets", Some(json!({ "frameId": 1 })));
+        let first = out.first().ok_or_else(|| "stepInTargets produced no response".to_string())?;
+        let (command, success, body) = as_response(first)?;
+        assert_eq!(command, "stepInTargets");
+        assert!(!success, "peer-unavailable requests must not acknowledge success");
+        assert!(body.is_none(), "a refused request must not carry a response body");
+        if let DapMessage::Response { message, .. } = first {
+            assert!(message.as_deref().is_some_and(|message| !message.is_empty()));
+        }
+        Ok(())
+    }
+
+    /// #9064: standard goto is native-only and fail-closed; a mirror peer
+    /// must never acknowledge a `goto`/`gotoTargets` request it cannot route
+    /// to a backend, whatever the native catalog says.
+    #[test]
+    fn native_only_goto_requests_fail_closed() -> Result<(), String> {
+        let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
+        for (seq, command, args) in [
+            (17, "gotoTargets", json!({ "source": {"path": "s.pl"}, "line": 3 })),
+            (18, "goto", json!({ "threadId": 1, "targetId": 1 })),
+        ] {
+            let out = bridge.dispatch(seq, command, Some(args));
+            let first = out.first().ok_or_else(|| format!("{command} produced no response"))?;
+            let (rcmd, success, body) = as_response(first)?;
+            assert_eq!(rcmd, command);
+            assert!(!success, "{command}: peer-unavailable requests must not acknowledge success");
+            assert!(body.is_none(), "{command}: a refused request must not carry a response body");
+            if let DapMessage::Response { message, .. } = first {
+                assert!(message.as_deref().is_some_and(|message| !message.is_empty()));
             }
         }
         Ok(())
@@ -1676,6 +1962,283 @@ mod tests {
                 .clone();
         assert_eq!(bps.len(), 2);
         assert_eq!(bps[0]["verified"], false, "queued breakpoints are unverified until flush");
+        Ok(())
+    }
+
+    #[test]
+    fn acceptor_timeout_surfaces_terminated_over_stdio_pipes_not_a_hang() {
+        use perl_lsp_rs_core::transport::ContentLengthFramer;
+        use std::sync::{Arc, Mutex};
+
+        // No peer ever connects: the acceptor deadline elapses with no live
+        // backend. Drive the editor loop over a held-open pipe so stdin does
+        // not EOF before the timeout, proving the session emits `terminated`
+        // without an editor TCP listener.
+        let peer_listener = must(TcpListener::bind(("127.0.0.1", 0)));
+        let (reader, _hold_open) = must(std::io::pipe());
+        let out_buf = Arc::new(Mutex::new(Vec::new()));
+
+        #[derive(Clone)]
+        struct SharedSink(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for SharedSink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
+        must(run_mirror_editor_loop(
+            reader,
+            SharedSink(out_buf.clone()),
+            bridge,
+            spawn_peer_acceptor(peer_listener, Duration::from_millis(80), None),
+            Duration::from_millis(10),
+        ));
+
+        let raw = out_buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let mut framer = ContentLengthFramer::new();
+        framer.push(&raw);
+        let mut saw_terminated = false;
+        while let Ok(Some(body)) = framer.try_next() {
+            if let Ok(v) = serde_json::from_slice::<Value>(&body)
+                && v.get("event").and_then(Value::as_str) == Some("terminated")
+            {
+                saw_terminated = true;
+            }
+        }
+        assert!(
+            saw_terminated,
+            "an acceptor timeout with no peer must surface a terminated event, not hang forever"
+        );
+    }
+
+    /// #9522: an editor frame burst against a stalled session loop saturates
+    /// the bounded queue, and the mirror session fails closed with the typed
+    /// backpressure disposition instead of buffering without bound or
+    /// returning generic success. Frames admitted before the overflow are
+    /// still dispatched once the stall clears.
+    #[test]
+    fn mirror_editor_loop_fails_closed_when_frame_queue_saturates() -> Result<(), String> {
+        use perl_lsp_rs_core::transport::frame;
+        use std::io::Cursor;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Condvar, Mutex as StdMutex};
+
+        // A writer sink that stalls its first write until released (or a short
+        // bounded deadline elapses), leaving the editor loop parked in `write`
+        // while the reader bursts frames into the bounded queue.
+        struct GatedSink {
+            gate: Arc<(StdMutex<bool>, Condvar)>,
+            first_write_done: AtomicBool,
+        }
+        impl GatedSink {
+            fn new(gate: Arc<(StdMutex<bool>, Condvar)>) -> Self {
+                Self { gate, first_write_done: AtomicBool::new(false) }
+            }
+        }
+        impl Write for GatedSink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if !self.first_write_done.swap(true, Ordering::SeqCst) {
+                    let (lock, cvar) = &*self.gate;
+                    let _guard = cvar
+                        .wait_timeout_while(
+                            lock.lock().unwrap_or_else(|e| e.into_inner()),
+                            Duration::from_millis(300),
+                            |open| !*open,
+                        )
+                        .unwrap_or_else(|e| e.into_inner());
+                }
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let frame_of = |seq: i64| {
+            frame(&must(serde_json::to_vec(&json!({
+                "seq": seq, "type": "request", "command": "launch", "arguments": {}
+            }))))
+        };
+        let mut input = Vec::new();
+        for seq in 1..=200 {
+            input.extend_from_slice(&frame_of(seq));
+        }
+
+        // A peer handoff channel whose sender is held but never used: the loop
+        // stays in the pending phase for the whole burst.
+        let (_peer_tx, peer_rx) = mpsc::channel::<Box<dyn DebugBackend>>();
+
+        let gate: Arc<(StdMutex<bool>, Condvar)> = Arc::new((StdMutex::new(false), Condvar::new()));
+        let result = run_mirror_editor_loop(
+            Cursor::new(input),
+            GatedSink::new(Arc::clone(&gate)),
+            MirrorPeerBridge::new_pending(ControlMode::Mirror),
+            peer_rx,
+            Duration::from_millis(1),
+        );
+
+        let Err(failure) = result else {
+            return Err(
+                "a saturated mirror frame queue must fail the session, not return Ok".to_string()
+            );
+        };
+        assert!(
+            failure.to_string().contains(crate::backend::peer_frame_queue::PEER_BACKPRESSURE_MSG),
+            "the session failure must carry the typed backpressure disposition, got: {failure}"
+        );
+        Ok(())
+    }
+
+    /// #9522 review: an admitted DAP `disconnect` must not mask a latched
+    /// overflow. The queue holds [launch, disconnect, filler...] when the
+    /// reader saturates on the fillers; the session loop dispatches the launch
+    /// (stalling its first write so the reader finishes the burst), then the
+    /// disconnect breaks the loop — the typed backpressure failure must win
+    /// over generic success.
+    #[test]
+    fn mirror_editor_loop_disconnect_does_not_mask_overflow() -> Result<(), String> {
+        use perl_lsp_rs_core::transport::frame;
+        use std::io::Cursor;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Condvar, Mutex as StdMutex};
+
+        struct GatedSink {
+            gate: Arc<(StdMutex<bool>, Condvar)>,
+            first_write_done: AtomicBool,
+        }
+        impl GatedSink {
+            fn new(gate: Arc<(StdMutex<bool>, Condvar)>) -> Self {
+                Self { gate, first_write_done: AtomicBool::new(false) }
+            }
+        }
+        impl Write for GatedSink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if !self.first_write_done.swap(true, Ordering::SeqCst) {
+                    let (lock, cvar) = &*self.gate;
+                    let _guard = cvar
+                        .wait_timeout_while(
+                            lock.lock().unwrap_or_else(|e| e.into_inner()),
+                            Duration::from_millis(300),
+                            |open| !*open,
+                        )
+                        .unwrap_or_else(|e| e.into_inner());
+                }
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let frame_of = |seq: i64, command: &str| {
+            frame(&must(serde_json::to_vec(
+                &json!({ "seq": seq, "type": "request", "command": command, "arguments": {} }),
+            )))
+        };
+        let mut input = Vec::new();
+        input.extend_from_slice(&frame_of(1, "launch"));
+        input.extend_from_slice(&frame_of(2, "disconnect"));
+        for seq in 3..=220 {
+            input.extend_from_slice(&frame_of(seq, "launch"));
+        }
+
+        let (_peer_tx, peer_rx) = mpsc::channel::<Box<dyn DebugBackend>>();
+        let gate: Arc<(StdMutex<bool>, Condvar)> = Arc::new((StdMutex::new(false), Condvar::new()));
+        let result = run_mirror_editor_loop(
+            Cursor::new(input),
+            GatedSink::new(Arc::clone(&gate)),
+            MirrorPeerBridge::new_pending(ControlMode::Mirror),
+            peer_rx,
+            Duration::from_millis(1),
+        );
+
+        let Err(failure) = result else {
+            return Err("an admitted disconnect after a latched overflow must not report success"
+                .to_string());
+        };
+        assert!(
+            failure.to_string().contains(crate::backend::peer_frame_queue::PEER_BACKPRESSURE_MSG),
+            "the session failure must carry the typed backpressure disposition, got: {failure}"
+        );
+        Ok(())
+    }
+
+    /// #9522 review: when overflow coincides with a failed pending handshake,
+    /// the shared overflow latch must win. The reader saturates on the launch
+    /// burst long before the peer handoff sender is dropped, so the loop
+    /// reaches the pending-phase `Disconnected` branch with overflow already
+    /// latched — and must return the typed backpressure failure, not Ok(()).
+    #[test]
+    fn mirror_editor_loop_handshake_failure_does_not_mask_overflow() -> Result<(), String> {
+        use perl_lsp_rs_core::transport::frame;
+        use std::io::Cursor;
+
+        // A sink that paces every write, so the loop stays mid-drain for a
+        // deterministic window: the reader saturates and exits (latching the
+        // overflow and dropping the frame channel) during the first stall,
+        // while the loop is still working through the admitted frames when the
+        // peer handoff sender is dropped.
+        struct PacedSink;
+        impl Write for PacedSink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                std::thread::sleep(Duration::from_millis(50));
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let frame_of = |seq: i64| {
+            frame(&must(serde_json::to_vec(
+                &json!({ "seq": seq, "type": "request", "command": "launch", "arguments": {} }),
+            )))
+        };
+        let mut input = Vec::new();
+        for seq in 1..=100 {
+            input.extend_from_slice(&frame_of(seq));
+        }
+
+        let (peer_tx, peer_rx) = mpsc::channel::<Box<dyn DebugBackend>>();
+        // The reader saturates the queue and exits within the first ~50 ms
+        // stall (the burst is in-memory; the queue holds 16). Dropping the
+        // peer sender at 400 ms therefore lands while the loop is still
+        // draining the admitted frames, so the loop observes the pending-phase
+        // `Disconnected` with overflow already latched — the exact ordering
+        // where the old code exited through the handshake break and reported
+        // generic success.
+        {
+            let peer_tx = peer_tx;
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(400));
+                drop(peer_tx);
+            });
+        }
+        let result = run_mirror_editor_loop(
+            Cursor::new(input),
+            PacedSink,
+            MirrorPeerBridge::new_pending(ControlMode::Mirror),
+            peer_rx,
+            Duration::from_millis(1),
+        );
+
+        let Err(failure) = result else {
+            return Err(
+                "overflow latched before a pending-handshake failure must still fail the session"
+                    .to_string(),
+            );
+        };
+        assert!(
+            failure.to_string().contains(crate::backend::peer_frame_queue::PEER_BACKPRESSURE_MSG),
+            "the session failure must carry the typed backpressure disposition, got: {failure}"
+        );
         Ok(())
     }
 

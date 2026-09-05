@@ -71,12 +71,10 @@
 //! let config = LexerConfig {
 //!     // Recognize interpolation islands in ordinary double-quoted strings.
 //!     parse_interpolation: true,
-//!     // Compatibility field: token byte spans are produced in every configuration.
-//!     track_positions: true,
 //!     // Shared cursor bound for character, byte, and fixed-pattern probes.
 //!     max_lookahead: LexerConfig::DEFAULT_MAX_LOOKAHEAD,
 //!     // No pre-scanned sub declarations for bareword/regex disambiguation.
-//!     symbol_table: None,
+//!     ..LexerConfig::default()
 //! };
 //!
 //! let mut lexer = PerlLexer::with_config("my $x = 1;", config);
@@ -98,11 +96,51 @@
 //!
 //! - **MAX_REGEX_BYTES**: 64KB maximum for regex patterns
 //! - **MAX_HEREDOC_BYTES**: 256KB maximum for heredoc bodies
-//! - **MAX_DELIM_NEST**: 128 levels maximum nesting depth for delimiters
+//! - **MAX_DELIM_NEST**: 128 levels maximum nesting depth for local delimiter recovery
 //! - **MAX_REGEX_PARSE_STEPS**: 32K maximum scan iterations for regex literals
 //!
-//! When limits are exceeded, the lexer emits an `UnknownRest` token preserving
-//! all previously parsed symbols, allowing continued analysis.
+//! # Budget-Stop Recovery Contract (#6717, #14158)
+//!
+//! When a reachable per-token budget is exhausted — regex scan steps
+//! (`MAX_REGEX_PARSE_STEPS`), regex bytes (`MAX_REGEX_BYTES`), or heredoc
+//! body bytes (`MAX_HEREDOC_BYTES`) — every over-budget token is emitted in
+//! one uniform shape, regardless of which construct hit the limit:
+//!
+//! - **Kind**: [`TokenType::UnknownRest`], classified as a recovery token.
+//! - **Text**: empty. Over-budget recovery must never copy the unbounded
+//!   source remainder (which can span the rest of the file). No current
+//!   consumer reconstructs the payload: the parser's `TokenStream` conversion
+//!   preserves the empty text and collapsed span, so payload reconstruction
+//!   remains deferred work at the consumer seam.
+//! - **Span**: `[token_start, input.len())`, the full degraded region, so
+//!   downstream trees can honestly mark the remainder as unparsed.
+//! - **Termination**: the next token is `EOF`, and nothing follows it.
+//! - **Determinism**: identical source and configuration produce identical
+//!   tokens (#6717).
+//!
+//! Two bounded-payload shapes are documented exceptions to the uniform
+//! budget-stop shape — boundedness, not token kind, is the dividing line
+//! between payload-free budget stops and payload-carrying recovery:
+//!
+//! - A heredoc that reaches EOF *inside* its budget is bounded unterminated
+//!   recovery, not a budget stop: it retains its body payload
+//!   (`text == &input[body_start..]`) because the body is budget-bounded
+//!   (`<= MAX_HEREDOC_BYTES`).
+//! - `try_heredoc` at `MAX_HEREDOC_DEPTH` pending heredocs emits
+//!   [`TokenType::Error`]`("Heredoc nesting too deep")` carrying the
+//!   line-bounded heredoc header text over `[start, position)` — no
+//!   remainder copy, no EOF jump. Pinned by
+//!   `tests/heredoc_security_tests.rs`.
+//!
+//! `MAX_DELIM_NEST` is a local quote-like recovery limit, not a reachable
+//! uniform budget-stop path: `budget_guard` is byte-budget only, and
+//! `consume_nested_opener` rejects the opener at the depth limit so the
+//! balanced-segment helpers recover locally and the enclosing token
+//! terminates cleanly without an `UnknownRest` EOF jump (#14389, #14469).
+//!
+//! The reachable budget stops above are pinned end to end by
+//! `tests/budget_recovery_contract.rs`, alongside #6717's heredoc threshold
+//! contract in `tests/heredoc_byte_budget_contract.rs`.
 //!
 //! # Integration with perl-parser
 //!
@@ -176,9 +214,9 @@ use unicode::{is_perl_identifier_continue, is_perl_identifier_start};
 use crate::heredoc::HeredocSpec;
 use crate::lexer::helpers::{
     empty_arc, is_builtin_function, is_compound_operator, is_keyword_fast,
-    is_perl_punctuation_variable, is_quote_op_word_prefix, truncate_preview,
+    is_perl_punctuation_variable, is_quote_op_word_prefix,
 };
-use crate::limits::{MAX_DELIM_NEST, MAX_HEREDOC_BYTES, MAX_HEREDOC_DEPTH, MAX_REGEX_BYTES};
+use crate::limits::{MAX_HEREDOC_BYTES, MAX_HEREDOC_DEPTH, MAX_REGEX_BYTES};
 
 impl<'a> PerlLexer<'a> {
     /// Create a new lexer that emits `HeredocBody` tokens (for LSP folding)
@@ -188,11 +226,28 @@ impl<'a> PerlLexer<'a> {
         lexer
     }
 
+    /// Create a lexer with an explicit configuration that also emits heredoc
+    /// body tokens (#8779): the interpolation policy for interpolating
+    /// heredoc bodies is observable through this constructor.
+    pub fn with_config_and_body_tokens(input: &'a str, config: LexerConfig) -> Self {
+        let mut lexer = Self::with_config(input, config);
+        lexer.emit_heredoc_body_tokens = true;
+        lexer
+    }
+
     /// Set the lexer mode (for resetting state at statement boundaries)
     pub fn set_mode(&mut self, mode: LexerMode) {
         self.mode = mode;
     }
 
+    /// Over-budget heredoc recovery (#6717): geometry-only `UnknownRest` with
+    /// empty text over `[body_start, input.len())`. The unbounded remainder is
+    /// deliberately not copied; the EOF-inside-budget arm in [`Self::next_token`]
+    /// is the only payload-carrying `UnknownRest`, and it is bounded
+    /// unterminated recovery rather than a budget stop — its body stays within
+    /// `MAX_HEREDOC_BYTES`. `try_heredoc`'s `MAX_HEREDOC_DEPTH` stop is the
+    /// other bounded-payload shape (a payload-carrying `Error` over the header
+    /// text). Pinned by `tests/budget_recovery_contract.rs`.
     fn heredoc_budget_recovery(&mut self, body_start: usize) -> Token {
         self.pending_heredocs.remove(0);
         self.position = self.input.len();
@@ -209,17 +264,30 @@ impl<'a> PerlLexer<'a> {
         line_start: usize,
         label: &str,
         allow_indent: bool,
+        body_indent: Option<&[u8]>,
+        body_has_content: bool,
     ) -> Option<usize> {
         // A delimiter line is not part of the body budget, but probing it must
         // still be bounded. Reuse the body cap as the maximum delimiter-line
-        // inspection window; pathological indentation or trailing whitespace
-        // therefore cannot restore an unbounded scan.
+        // inspection window. `<<~` may indent the label, but the label itself
+        // must be followed immediately by a line ending or EOF.
         let scan_end = line_start.saturating_add(MAX_HEREDOC_BYTES).min(self.input_bytes.len());
         let mut cursor = line_start;
 
         if allow_indent {
             while cursor < scan_end && matches!(self.input_bytes[cursor], b' ' | b'\t') {
                 cursor += 1;
+            }
+
+            // Perl's indented heredoc form permits the terminator to be less
+            // indented than the body, but its indentation must still be a
+            // prefix of every non-blank body line. Without this relationship,
+            // a terminator indented farther than the body would be accepted.
+            let terminator_indent = &self.input_bytes[line_start..cursor];
+            if body_has_content
+                && !body_indent.is_some_and(|indent| indent.starts_with(terminator_indent))
+            {
+                return None;
             }
         }
 
@@ -228,10 +296,6 @@ impl<'a> PerlLexer<'a> {
             return None;
         }
         cursor = label_end;
-
-        while cursor < scan_end && matches!(self.input_bytes[cursor], b' ' | b'\t') {
-            cursor += 1;
-        }
 
         if cursor == self.input_bytes.len()
             || (cursor < self.input_bytes.len()
@@ -270,22 +334,26 @@ impl<'a> PerlLexer<'a> {
             let mut found_terminator = false;
             if !self.pending_heredocs.is_empty() {
                 // Clone what we need to avoid holding a borrow
-                let (body_start, label, allow_indent) =
-                    if let Some(spec) = self.pending_heredocs.first() {
-                        if spec.body_start > 0
-                            && self.position >= spec.body_start
-                            && self.position < self.input.len()
-                        {
-                            (spec.body_start, spec.label.clone(), spec.allow_indent)
-                        } else {
-                            // Not in a heredoc body yet or at EOF
-                            (0, empty_arc(), false)
-                        }
+                let (body_start, label, allow_indent, interpolates) = if let Some(spec) =
+                    self.pending_heredocs.first()
+                {
+                    if spec.body_start > 0
+                        && self.position >= spec.body_start
+                        && self.position < self.input.len()
+                    {
+                        (spec.body_start, spec.label.clone(), spec.allow_indent, spec.interpolates)
                     } else {
-                        (0, empty_arc(), false)
-                    };
+                        // Not in a heredoc body yet or at EOF
+                        (0, empty_arc(), false, false)
+                    }
+                } else {
+                    (0, empty_arc(), false, false)
+                };
 
                 if body_start > 0 {
+                    let mut body_indent: Option<Vec<u8>> = None;
+                    let mut body_has_content = false;
+
                     // Include exactly the first byte above the accepted body budget.
                     // All physical-line searches use this absolute endpoint, so a
                     // missing newline cannot scan the remainder of a large document.
@@ -312,10 +380,22 @@ impl<'a> PerlLexer<'a> {
                             continue;
                         }
 
-                        let line_start = self.position;
-                        if let Some(line_end) =
-                            self.heredoc_terminator_line_end(line_start, &label, allow_indent)
-                        {
+                        // `skip_whitespace_and_comments` may have consumed
+                        // indentation on the first body line before the
+                        // pending-heredoc loop runs. Restore that physical
+                        // line start so `<<~` can compare the real prefixes.
+                        let line_start = if self.line_start_offset == body_start {
+                            body_start
+                        } else {
+                            self.position
+                        };
+                        if let Some(line_end) = self.heredoc_terminator_line_end(
+                            line_start,
+                            &label,
+                            allow_indent,
+                            body_indent.as_deref(),
+                            body_has_content,
+                        ) {
                             self.pending_heredocs.remove(0);
                             found_terminator = true;
                             self.position = line_end;
@@ -328,8 +408,22 @@ impl<'a> PerlLexer<'a> {
                             }
 
                             if self.emit_heredoc_body_tokens {
+                                // #8779: interpolating heredoc bodies consume
+                                // the interpolation setting — segmented parts
+                                // when enabled, one opaque Literal part of
+                                // the whole body when disabled (the scanner
+                                // degrades uniformly). Non-interpolating
+                                // bodies stay `HeredocBody` (control
+                                // invariance).
+                                let token_type = if interpolates {
+                                    TokenType::InterpolatedHeredocBody(
+                                        self.segment_heredoc_body(body_start, line_start),
+                                    )
+                                } else {
+                                    TokenType::HeredocBody(empty_arc())
+                                };
                                 return Some(Token {
-                                    token_type: TokenType::HeredocBody(empty_arc()),
+                                    token_type,
                                     text: empty_arc(),
                                     start: body_start,
                                     end: line_start,
@@ -344,6 +438,31 @@ impl<'a> PerlLexer<'a> {
                             return Some(self.heredoc_budget_recovery(body_start));
                         }
 
+                        if allow_indent {
+                            let mut content_start = line_start;
+                            while content_start < line_end
+                                && matches!(self.input_bytes[content_start], b' ' | b'\t')
+                            {
+                                content_start += 1;
+                            }
+
+                            if content_start < line_end {
+                                let line_indent = &self.input_bytes[line_start..content_start];
+                                body_has_content = true;
+                                match body_indent.as_mut() {
+                                    Some(common) => {
+                                        let common_len = common
+                                            .iter()
+                                            .zip(line_indent.iter())
+                                            .take_while(|(left, right)| left == right)
+                                            .count();
+                                        common.truncate(common_len);
+                                    }
+                                    None => body_indent = Some(line_indent.to_vec()),
+                                }
+                            }
+                        }
+
                         self.position = line_end;
                         self.consume_newline();
                         if self.position - body_start > MAX_HEREDOC_BYTES {
@@ -353,6 +472,9 @@ impl<'a> PerlLexer<'a> {
 
                     // EOF inside the budget retains its bounded source payload.
                     // Over-budget recovery is geometry-only in the helper above.
+                    // Boundedness (body <= MAX_HEREDOC_BYTES) is what makes this
+                    // payload copy safe; see the budget-stop recovery contract
+                    // in the crate docs.
                     if !found_terminator {
                         self.pending_heredocs.remove(0);
                         self.position = self.input.len();
@@ -371,7 +493,7 @@ impl<'a> PerlLexer<'a> {
                 }
             }
 
-            self.skip_whitespace_and_comments()?;
+            self.skip_whitespace_and_comments();
 
             // Check again if we're now in a heredoc body (might have been set during skip_whitespace)
             if !self.pending_heredocs.is_empty()
@@ -389,16 +511,7 @@ impl<'a> PerlLexer<'a> {
             }
 
             if self.position >= self.input.len() {
-                if self.eof_emitted {
-                    return None; // Stop the stream
-                }
-                self.eof_emitted = true;
-                return Some(Token {
-                    token_type: TokenType::EOF,
-                    text: empty_arc(),
-                    start: self.position,
-                    end: self.position,
-                });
+                return self.emit_eof();
             }
 
             let start = self.position;
@@ -452,8 +565,19 @@ impl<'a> PerlLexer<'a> {
                 return Some(token);
             }
 
-            // If nothing else matches, return an error token
-            let ch = self.current_char()?;
+            // If nothing else matches, return an error token. Never end the
+            // stream here: `None` is reserved for after `EOF` has been emitted.
+            let Some(ch) = self.current_char() else {
+                if self.position < self.input.len() {
+                    let before = self.position;
+                    self.normalize_char_boundary();
+                    if self.position == before {
+                        self.position = self.position.saturating_add(1).min(self.input.len());
+                    }
+                    continue;
+                }
+                return self.emit_eof();
+            };
             self.advance();
 
             // Optimize error token creation - avoid expensive formatting in hot path
@@ -484,13 +608,22 @@ impl<'a> PerlLexer<'a> {
     ///
     /// **Limits**:
     /// - `MAX_REGEX_BYTES` (64KB): Maximum bytes in a single regex literal
-    /// - `MAX_DELIM_NEST` (128): Maximum delimiter nesting depth
+    ///
+    /// This guard is byte-budget only (#14389). Delimiter nesting has its own
+    /// stop: `consume_nested_opener` rejects at `MAX_DELIM_NEST` and the
+    /// balanced-segment helpers recover locally instead of jumping to EOF.
     ///
     /// **Graceful Degradation**:
-    /// - Budget exceeded → emit `UnknownRest` token
-    /// - Jump to EOF to prevent further parsing of problematic region
-    /// - LSP client can emit soft diagnostic about truncation
-    /// - All previously parsed symbols remain valid
+    /// - A regex byte-budget stop emits `UnknownRest` and jumps to EOF.
+    /// - That recovery is geometry-only: empty text over
+    ///   `[start, input.len())`, followed by terminal `EOF`. The unbounded
+    ///   source remainder is never copied; see the crate-level budget-stop
+    ///   recovery contract and `tests/budget_recovery_contract.rs`
+    ///   (#6717, #14158).
+    /// - `MAX_DELIM_NEST` is a separate local-recovery path: the balanced
+    ///   segment helpers return `None` at the rejected opener, and their
+    ///   owning quote/interpolation parser emits a bounded error or continues
+    ///   locally. It does not produce this guard's `UnknownRest` token.
     ///
     /// **Performance**:
     /// - Fast path: inlined subtraction + comparison (~1-2 CPU cycles)
@@ -498,22 +631,17 @@ impl<'a> PerlLexer<'a> {
     /// - Amortized cost: O(1) per token
     #[allow(clippy::inline_always)] // Performance critical in lexer hot path
     #[inline(always)]
-    fn budget_guard(&mut self, start: usize, depth: usize) -> Option<Token> {
+    fn budget_guard(&mut self, start: usize) -> Option<Token> {
         // Fast path: most calls won't hit limits
         let bytes_consumed = self.position - start;
-        if bytes_consumed <= MAX_REGEX_BYTES && depth <= MAX_DELIM_NEST {
+        if bytes_consumed <= MAX_REGEX_BYTES {
             return None;
         }
 
         // Slow path: budget exceeded - graceful degradation
         #[cfg(debug_assertions)]
         {
-            tracing::debug!(
-                bytes_consumed,
-                depth,
-                position = self.position,
-                "Lexer budget exceeded"
-            );
+            tracing::debug!(bytes_consumed, position = self.position, "Lexer budget exceeded");
         }
 
         self.position = self.input.len();
@@ -617,8 +745,21 @@ impl<'a> PerlLexer<'a> {
 
     // Token-specific parsing methods
 
+    fn emit_eof(&mut self) -> Option<Token> {
+        if self.eof_emitted {
+            return None;
+        }
+        self.eof_emitted = true;
+        Some(Token {
+            token_type: TokenType::EOF,
+            text: empty_arc(),
+            start: self.position,
+            end: self.position,
+        })
+    }
+
     #[inline]
-    fn skip_whitespace_and_comments(&mut self) -> Option<()> {
+    fn skip_whitespace_and_comments(&mut self) {
         // Don't reset after_newline if we're at the start of a line
         if self.position > 0 && self.position != self.line_start_offset {
             self.after_newline = false;
@@ -759,7 +900,6 @@ impl<'a> PerlLexer<'a> {
                 }
             }
         }
-        Some(())
     }
 
     fn try_heredoc(&mut self) -> Option<Token> {
@@ -812,14 +952,24 @@ impl<'a> PerlLexer<'a> {
             false
         };
 
-        // Parse delimiter
+        // Parse delimiter. `quoted` records the interpolation disposition of
+        // a quoted delimiter (#8779): `"` interpolates, `'` and backtick do
+        // not (backtick is the intentional command boundary).
+        let mut quoted_interpolates: Option<bool> = None;
         let delimiter = if self.position < self.input.len() {
             match self.current_char() {
-                Some('"') if !backslashed => self.parse_quoted_heredoc_delimiter('"', &mut text)?,
+                Some('"') if !backslashed => {
+                    quoted_interpolates = Some(true);
+                    self.parse_quoted_heredoc_delimiter('"', &mut text)?
+                }
                 Some('\'') if !backslashed => {
+                    quoted_interpolates = Some(false);
                     self.parse_quoted_heredoc_delimiter('\'', &mut text)?
                 }
-                Some('`') if !backslashed => self.parse_quoted_heredoc_delimiter('`', &mut text)?,
+                Some('`') if !backslashed => {
+                    quoted_interpolates = Some(false);
+                    self.parse_quoted_heredoc_delimiter('`', &mut text)?
+                }
                 Some(c) if is_perl_identifier_start(c) => {
                     // Bare word delimiter
                     let mut delim = String::new();
@@ -865,11 +1015,15 @@ impl<'a> PerlLexer<'a> {
             });
         }
 
-        // Queue the heredoc spec with its label
+        // Queue the heredoc spec with its label. `interpolates` follows the
+        // #8779 disposition: bareword and `<<"EOF"` bodies interpolate;
+        // `<<'EOF'`, `<<\EOF`, and backtick bodies do not.
+        let interpolates = !backslashed && quoted_interpolates.unwrap_or(true);
         self.pending_heredocs.push(HeredocSpec {
             label: Arc::from(delimiter.as_str()),
             body_start: 0, // Will be set when we see the newline after this line
             allow_indent,
+            interpolates,
         });
 
         Some(Token {
@@ -884,6 +1038,27 @@ impl<'a> PerlLexer<'a> {
         let start = self.position;
         let quote = self.current_char()?;
 
+        // Punctuation typeglob names (`*"`, `*'`, *`): after a glob sigil in
+        // term position, a quote character immediately followed by `;` is the
+        // punctuation-variable typeglob name (English.pm, e.g.
+        // `*PREMATCH = *`;`), never the start of a string. String-lexing it
+        // runs the unterminated-quote recovery, which consumes through
+        // end-of-line: it errors when a newline follows (#12363) and silently
+        // swallows the rest of the line otherwise. A multiplication such as
+        // `$a * ";"` is excluded by requiring a non-operand before the star.
+        if matches!(quote, '"' | '\'' | '`')
+            && self.peek_char(1) == Some(';')
+            && self.glob_sigil_precedes()
+        {
+            self.advance();
+            return Some(Token {
+                token_type: TokenType::Operator(Arc::from(&self.input[start..start + 1])),
+                text: Arc::from(&self.input[start..start + 1]),
+                start,
+                end: start + 1,
+            });
+        }
+
         match quote {
             '"' => self.parse_double_quoted_string(start),
             '\'' => self.parse_single_quoted_string(start),
@@ -891,6 +1066,33 @@ impl<'a> PerlLexer<'a> {
             'q' if self.peek_char(1) == Some('{') => self.parse_q_string(start),
             _ => None,
         }
+    }
+
+    /// Whether the previous significant character is a `*` in glob-sigil
+    /// position (preceded by an operator or the start of input, not by an
+    /// operand — `$a * x` is multiplication, `= *x` is a glob).
+    fn glob_sigil_precedes(&self) -> bool {
+        let bytes = self.input.as_bytes();
+        let mut index = self.position;
+        while index > 0 && bytes[index - 1].is_ascii_whitespace() {
+            index -= 1;
+        }
+        if index == 0 || bytes[index - 1] != b'*' {
+            return false;
+        }
+        index -= 1;
+        while index > 0 && bytes[index - 1].is_ascii_whitespace() {
+            index -= 1;
+        }
+        if index == 0 {
+            return true;
+        }
+        let before = bytes[index - 1] as char;
+        !(before.is_ascii_alphanumeric()
+            || matches!(
+                before,
+                '_' | '$' | '@' | '%' | '&' | '*' | ')' | ']' | '}' | '\'' | '"' | '`'
+            ))
     }
 
     #[inline]
@@ -1502,7 +1704,7 @@ impl<'a> PerlLexer<'a> {
         loop {
             let mut saw_whitespace = false;
             while let Some(ch) = self.input.get(offset..).and_then(|suffix| suffix.chars().next()) {
-                if ch.is_whitespace() {
+                if ch.is_ascii_whitespace() {
                     offset += ch.len_utf8();
                     saw_whitespace = true;
                 } else {
@@ -1805,7 +2007,6 @@ impl<'a> PerlLexer<'a> {
 
             // Check for substitution/transliteration operators
             // Skip if after '->'  -- these are method names, not operators.
-            #[allow(clippy::collapsible_if)]
             if !self.after_sub
                 && !self.after_arrow
                 && !follows_sigil_prefix
@@ -1945,16 +2146,15 @@ impl<'a> PerlLexer<'a> {
                                 self.skip_quote_operator_delimiter_gap();
 
                                 // Get the delimiter
-                                #[allow(clippy::collapsible_if)]
-                                if let Some(delim) = self.current_char() {
-                                    if !delim.is_alphanumeric() {
-                                        self.advance();
-                                        if let Some(ref mut info) = self.current_quote_op {
-                                            info.delimiter = delim;
-                                        }
-                                        // Parse the quote operator content and return the complete token
-                                        return self.parse_quote_operator(delim);
+                                if let Some(delim) = self.current_char()
+                                    && !delim.is_alphanumeric()
+                                {
+                                    self.advance();
+                                    if let Some(ref mut info) = self.current_quote_op {
+                                        info.delimiter = delim;
                                     }
+                                    // Parse the quote operator content and return the complete token
+                                    return self.parse_quote_operator(delim);
                                 }
                             } else {
                                 // Not a quote operator here → treat as IDENTIFIER
@@ -2179,7 +2379,7 @@ impl<'a> PerlLexer<'a> {
             if self.mode == LexerMode::ExpectTerm {
                 // Mode indicates we're expecting a term → `/` starts a regex
                 // Examples: `if (/pattern/)`, `=~ /test/`, `while (/match/)`
-                return self.parse_regex(start);
+                return Some(self.parse_regex(start));
             } else {
                 // Mode indicates we're expecting an operator → `/` is division or `//`
                 // Examples: `$x / 2`, `$x // $y`, `10 / 3`
@@ -2245,31 +2445,30 @@ impl<'a> PerlLexer<'a> {
                 }
                 self.advance();
                 // Check for compound operators
-                #[allow(clippy::collapsible_if)]
-                if let Some(next) = self.current_char() {
-                    if is_compound_operator(ch, next) {
-                        self.advance();
+                if let Some(next) = self.current_char()
+                    && is_compound_operator(ch, next)
+                {
+                    self.advance();
 
-                        // Check for three-character operators like **=, <<=, >>=
-                        if self.position < self.input.len() {
-                            let third = self.current_char();
-                            // Check for three-character operators
-                            if matches!(
-                                (ch, next, third),
-                                ('*', '*', Some('='))
-                                    | ('<', '<', Some('='))
-                                    | ('>', '>', Some('='))
-                                    | ('&', '&', Some('='))
-                                    | ('|', '|', Some('='))
-                                    | ('/', '/', Some('='))
-                            ) {
-                                self.advance(); // consume the =
-                            } else if ch == '<' && next == '=' && third == Some('>') {
-                                self.advance(); // consume the >
-                            // Special case: <=> spaceship operator
-                            } else if ch == '.' && next == '.' && third == Some('.') {
-                                self.advance(); // consume the third .
-                            }
+                    // Check for three-character operators like **=, <<=, >>=
+                    if self.position < self.input.len() {
+                        let third = self.current_char();
+                        // Check for three-character operators
+                        if matches!(
+                            (ch, next, third),
+                            ('*', '*', Some('='))
+                                | ('<', '<', Some('='))
+                                | ('>', '>', Some('='))
+                                | ('&', '&', Some('='))
+                                | ('|', '|', Some('='))
+                                | ('/', '/', Some('='))
+                        ) {
+                            self.advance(); // consume the =
+                        } else if ch == '<' && next == '=' && third == Some('>') {
+                            self.advance(); // consume the >
+                        // Special case: <=> spaceship operator
+                        } else if ch == '.' && next == '.' && third == Some('.') {
+                            self.advance(); // consume the third .
                         }
                     }
                 }
@@ -2278,29 +2477,28 @@ impl<'a> PerlLexer<'a> {
             | '\\' => {
                 self.advance();
                 // Check for compound operators
-                #[allow(clippy::collapsible_if)]
-                if let Some(next) = self.current_char() {
-                    if is_compound_operator(ch, next) {
-                        self.advance();
+                if let Some(next) = self.current_char()
+                    && is_compound_operator(ch, next)
+                {
+                    self.advance();
 
-                        // Check for three-character operators like **=, <<=, >>=
-                        if self.position < self.input.len() {
-                            let third = self.current_char();
-                            // Check for three-character operators
-                            if matches!(
-                                (ch, next, third),
-                                ('*', '*', Some('='))
-                                    | ('<', '<', Some('='))
-                                    | ('>', '>', Some('='))
-                                    | ('&', '&', Some('='))
-                                    | ('|', '|', Some('='))
-                                    | ('/', '/', Some('='))
-                            ) {
-                                self.advance(); // consume the =
-                            } else if ch == '<' && next == '=' && third == Some('>') {
-                                self.advance(); // consume the >
-                                // Special case: <=> spaceship operator
-                            }
+                    // Check for three-character operators like **=, <<=, >>=
+                    if self.position < self.input.len() {
+                        let third = self.current_char();
+                        // Check for three-character operators
+                        if matches!(
+                            (ch, next, third),
+                            ('*', '*', Some('='))
+                                | ('<', '<', Some('='))
+                                | ('>', '>', Some('='))
+                                | ('&', '&', Some('='))
+                                | ('|', '|', Some('='))
+                                | ('/', '/', Some('='))
+                        ) {
+                            self.advance(); // consume the =
+                        } else if ch == '<' && next == '=' && third == Some('>') {
+                            self.advance(); // consume the >
+                            // Special case: <=> spaceship operator
                         }
                     }
                 }
@@ -2596,9 +2794,30 @@ impl<'a> PerlLexer<'a> {
                             if is_perl_identifier_start(ch)
                                 || (ch == ':' && self.peek_char(1) == Some(':')) =>
                         {
-                            self.consume_qualified_identifier_in_string();
+                            self.consume_qualified_identifier_in_string(Some('"'));
                             let part_text = &self.input[part_start..self.position];
                             parts.push(StringPart::Variable(Arc::from(part_text)));
+                            // Array and hash slices interpolate with the
+                            // array (`"@a[0]"` yields the slice element,
+                            // `@h{key}` the hash slice; verified against
+                            // real perl: `@a=(x,y); print "@a[0]"` prints
+                            // `x`). Consume the balanced tail as an
+                            // interpolation part instead of leaving it to
+                            // the literal bucket, mirroring the `$`-island
+                            // subscript tails and the qq/heredoc `@` arm.
+                            if self.current_char() == Some('[') {
+                                let tail_start = self.position;
+                                let _ = self.consume_balanced_segment_in_string('[', ']', '"');
+                                parts.push(StringPart::ArraySlice(Arc::from(
+                                    &self.input[tail_start..self.position],
+                                )));
+                            } else if self.current_char() == Some('{') {
+                                let tail_start = self.position;
+                                let _ = self.consume_balanced_segment_in_string('{', '}', '"');
+                                parts.push(StringPart::Expression(Arc::from(
+                                    &self.input[tail_start..self.position],
+                                )));
+                            }
                         }
                         // Array dereference: `@$ref`, `@$$ref`, `@$main::ref`.
                         // Perl interpolates the whole deref chain as one array
@@ -2615,7 +2834,7 @@ impl<'a> PerlLexer<'a> {
                             while self.current_char() == Some('$') {
                                 self.advance();
                             }
-                            self.consume_qualified_identifier_in_string();
+                            self.consume_qualified_identifier_in_string(Some('"'));
                             let part_text = &self.input[part_start..self.position];
                             parts.push(StringPart::Variable(Arc::from(part_text)));
                         }
@@ -2679,6 +2898,13 @@ impl<'a> PerlLexer<'a> {
                             }
 
                             if self.position > var_start {
+                                // Fold package-qualified segments (`::`,
+                                // old-style `'`) so `$Foo::bar` interpolates
+                                // as the one variable Perl interpolates.
+                                // Terminator precedence still applies: with
+                                // `:` or `'` as the quote delimiter the close
+                                // wins before a separator fold.
+                                self.consume_qualified_identifier_in_string(Some('"'));
                                 let var_name = &self.input[part_start..self.position];
                                 parts.push(StringPart::Variable(Arc::from(var_name)));
 
@@ -2820,7 +3046,7 @@ impl<'a> PerlLexer<'a> {
                                 while self.current_char() == Some('$') {
                                     self.advance();
                                 }
-                                self.consume_qualified_identifier_in_string();
+                                self.consume_qualified_identifier_in_string(Some('"'));
                             }
                             let part_text = &self.input[part_start..self.position];
                             parts.push(StringPart::Variable(Arc::from(part_text)));
@@ -2877,7 +3103,7 @@ impl<'a> PerlLexer<'a> {
                                 for _ in 0..dollar_run {
                                     self.advance();
                                 }
-                                self.consume_qualified_identifier_in_string();
+                                self.consume_qualified_identifier_in_string(Some('"'));
                                 let part_text = &self.input[part_start..self.position];
                                 parts.push(StringPart::Variable(Arc::from(part_text)));
 
@@ -2965,7 +3191,7 @@ impl<'a> PerlLexer<'a> {
                         // by the literal ":foo" -- which is exactly what the
                         // shared `::`-folding scan produces here.
                         Some(':') if self.peek_char(1) == Some(':') => {
-                            self.consume_qualified_identifier_in_string();
+                            self.consume_qualified_identifier_in_string(Some('"'));
                             let part_text = &self.input[part_start..self.position];
                             parts.push(StringPart::Variable(Arc::from(part_text)));
                         }
@@ -3087,15 +3313,22 @@ impl<'a> PerlLexer<'a> {
     }
 
     #[inline]
+    pub(crate) fn line_bounded_unclosed_end(&self, start: usize) -> usize {
+        let Some(remaining) = self.input.get(start..) else {
+            return self.input.len();
+        };
+        match remaining.find('\n') {
+            Some(nl_offset) => start.saturating_add(nl_offset),
+            None => self.input.len(),
+        }
+    }
+
+    #[inline]
     fn unterminated_string_error(&mut self, start: usize) -> Token {
         // Line-bounded recovery: consume to end of line (or EOF if no newline).
         // This allows subsequent declarations to be lexed after an unterminated
         // string on the same line, instead of losing the entire rest of the file. (#5090)
-        let remaining = &self.input[start..];
-        let end = match remaining.find('\n') {
-            Some(nl_offset) => start + nl_offset, // include the newline in the error token
-            None => self.input.len(),             // single-line file or last line
-        };
+        let end = self.line_bounded_unclosed_end(start);
         self.position = end;
 
         Token {
@@ -3124,7 +3357,7 @@ impl<'a> PerlLexer<'a> {
 
         let pattern_is_paired = quote_handler::paired_close(delimiter).is_some();
         if pattern_is_paired {
-            self.skip_paired_substitution_replacement_gap();
+            self.skip_two_body_quote_like_gap();
 
             if let Some(repl_delim) = self.current_char()
                 && Self::is_quote_delim(repl_delim)
@@ -3164,12 +3397,12 @@ impl<'a> PerlLexer<'a> {
         Some(Token { token_type, text: Arc::from(text), start, end: self.position })
     }
 
-    fn skip_paired_substitution_replacement_gap(&mut self) {
+    fn skip_two_body_quote_like_gap(&mut self) {
         self.skip_comment_gap_after_whitespace();
     }
 
     fn skip_quote_operator_delimiter_gap(&mut self) {
-        if self.current_char().is_some_and(char::is_whitespace) {
+        if self.current_char().is_some_and(|ch| ch.is_ascii_whitespace()) {
             self.skip_comment_gap_after_whitespace();
         }
     }
@@ -3178,7 +3411,7 @@ impl<'a> PerlLexer<'a> {
         let mut comment_eligible = false;
         loop {
             let mut saw_whitespace = false;
-            while self.current_char().is_some_and(char::is_whitespace) {
+            while self.current_char().is_some_and(|ch| ch.is_ascii_whitespace()) {
                 self.advance();
                 saw_whitespace = true;
             }
@@ -3201,7 +3434,7 @@ impl<'a> PerlLexer<'a> {
 
     fn peek_quote_operator_gap_and_following(&self) -> (Option<char>, Option<char>, bool) {
         let (candidate, following) = self.peek_nonspace_and_following();
-        let saw_gap = self.current_char().is_some_and(char::is_whitespace);
+        let saw_gap = self.current_char().is_some_and(|ch| ch.is_ascii_whitespace());
         (candidate, following, saw_gap)
     }
 
@@ -3365,9 +3598,7 @@ impl<'a> PerlLexer<'a> {
 
     fn parse_transliteration(&mut self, start: usize) -> Option<Token> {
         // We've already consumed 'tr' or 'y'
-        while self.current_char().is_some_and(char::is_whitespace) {
-            self.advance();
-        }
+        self.skip_quote_operator_delimiter_gap();
 
         let delimiter = self.current_char()?;
         self.advance(); // Skip delimiter
@@ -3384,9 +3615,7 @@ impl<'a> PerlLexer<'a> {
 
         let search_is_paired = quote_handler::paired_close(delimiter).is_some();
         if search_is_paired {
-            while self.current_char().is_some_and(char::is_whitespace) {
-                self.advance();
-            }
+            self.skip_two_body_quote_like_gap();
 
             if let Some(repl_delim) = self.current_char()
                 && Self::is_quote_delim(repl_delim)
@@ -4046,9 +4275,11 @@ impl<'a> PerlLexer<'a> {
         // No terminating semicolon before EOF: recover only when the candidate ran to
         // end-of-file cleanly — balanced delimiters, no degraded/unclosed token, and every
         // trailing byte turned into a real token. The final check rejects constructs that
-        // silently consume to EOF without emitting a token (an unterminated bare `/regex/`
-        // or heredoc body leaves its text after the last token), which would otherwise be
-        // misclassified as a complete statement and split the qw list incorrectly (#4494).
+        // consume source without a token covering it (a heredoc body can still leave text
+        // after the last token). Unterminated bare `/regex/` now emits Error (#12504) and
+        // is already rejected via `saw_incomplete`. Without the trailing-span check, a
+        // silent hole would be misclassified as a complete statement and split the qw
+        // list incorrectly (#4494).
         delimiter_depth == 0
             && !saw_incomplete
             && source[last_end..].chars().all(char::is_whitespace)
@@ -4066,6 +4297,11 @@ impl<'a> PerlLexer<'a> {
         self.current_quote_op = None;
 
         // Parse based on operator type; track whether all delimiters were closed.
+        // `qq` additionally carries the body's string parts (#8779): enabled
+        // interpolation segments the body during the original scan, disabled
+        // interpolation keeps one opaque Literal part, and the token stays
+        // `QuoteDouble` in both configurations.
+        let mut qq_parts: Option<Vec<StringPart>> = None;
         let closed = match operator.as_str() {
             "s" => {
                 return self.parse_substitution_with_delimiter(start, delimiter);
@@ -4087,8 +4323,20 @@ impl<'a> PerlLexer<'a> {
                 let (_body, body_closed) = self.read_qw_body(delimiter);
                 body_closed
             }
+            "qq" => {
+                let (parts, body_closed) = if self.config.interpolation_enabled() {
+                    self.read_delimited_body_with_parts(delimiter)
+                } else {
+                    let (body, body_closed) = self.read_delimited_body(delimiter);
+                    (vec![StringPart::Literal(Arc::from(body))], body_closed)
+                };
+                qq_parts = Some(parts);
+                body_closed
+            }
             _ => {
-                // q, qq, qx - no modifiers
+                // q, qx - no modifiers. q is non-interpolating and invariant
+                // under the setting; qx/backticks are the intentional command
+                // boundary (#8779) and stay opaque in every configuration.
                 let (_body, body_closed) = self.read_delimited_body(delimiter);
                 body_closed
             }
@@ -4112,120 +4360,12 @@ impl<'a> PerlLexer<'a> {
             });
         }
 
-        let token_type = quote_handler::get_quote_token_type(&operator);
+        let token_type = if operator == "qq" {
+            TokenType::QuoteDouble(qq_parts.take().unwrap_or_default())
+        } else {
+            quote_handler::get_quote_token_type(&operator)
+        };
         Some(Token { token_type, text: Arc::from(text), start, end: self.position })
-    }
-
-    /// Parse regex modifiers according to the given spec
-    ///
-    /// This function includes ALL characters that could be intended as modifiers,
-    /// including invalid ones. This allows the parser to properly reject invalid
-    /// modifiers with a clear error message, rather than leaving them as separate
-    /// tokens that could be confusingly parsed.
-    fn parse_regex_modifiers(&mut self, _spec: &quote_handler::ModSpec) {
-        // Consume all alphanumeric characters that could be intended as modifiers
-        // The parser will validate and reject invalid ones
-        while let Some(ch) = self.current_char() {
-            if ch.is_ascii_alphanumeric() {
-                self.advance();
-            } else {
-                break;
-            }
-        }
-        // Note: We no longer validate here - the parser will validate and provide
-        // clear error messages for invalid modifiers (MUT_005 fix)
-    }
-
-    /// Parse a regex literal starting with `/`
-    ///
-    /// **Budget Protection (Issue #422)**:
-    /// - Budget guards prevent runaway scanning on pathological input
-    /// - `MAX_REGEX_PARSE_STEPS` bounds literal scanning before the byte budget
-    /// - `MAX_REGEX_BYTES` bounds total bytes consumed in a single regex literal
-    /// - Graceful degradation: emit UnknownRest token if budget exceeded
-    ///
-    /// **Performance**:
-    /// - Single-pass scanning with escape handling
-    /// - Budget check per iteration (amortized O(1) via inline fast path)
-    /// - Typical regex: <10μs, Large regex (64KB): ~1ms
-    fn parse_regex(&mut self, start: usize) -> Option<Token> {
-        self.advance(); // Skip opening /
-
-        let mut regex_parse_steps: usize = 0;
-        let mut in_character_class = false;
-
-        while let Some(ch) = self.current_char() {
-            regex_parse_steps += 1;
-            if regex_parse_steps > MAX_REGEX_PARSE_STEPS {
-                #[cfg(debug_assertions)]
-                {
-                    let text = &self.input[start..self.position];
-                    let preview = truncate_preview(text, 50);
-                    tracing::debug!(
-                        limit = MAX_REGEX_PARSE_STEPS,
-                        pattern_preview = %preview,
-                        "Regex parse step budget exceeded"
-                    );
-                }
-                self.position = self.input.len();
-                return Some(Token {
-                    token_type: TokenType::UnknownRest,
-                    text: empty_arc(),
-                    start,
-                    end: self.position,
-                });
-            }
-
-            // Budget guard: prevent timeout on pathological input (Issue #422)
-            // If exceeded, returns UnknownRest token for graceful degradation
-            if let Some(token) = self.budget_guard(start, 0) {
-                return Some(token);
-            }
-
-            match ch {
-                '/' if !in_character_class => {
-                    self.advance();
-                    // Parse flags - include all alphanumeric for proper validation in parser (MUT_005 fix)
-                    while let Some(ch) = self.current_char() {
-                        if ch.is_ascii_alphanumeric() {
-                            self.advance();
-                        } else {
-                            break;
-                        }
-                    }
-
-                    let text = &self.input[start..self.position];
-                    self.mode = LexerMode::ExpectOperator;
-
-                    return Some(Token {
-                        token_type: TokenType::RegexMatch,
-                        text: Arc::from(text),
-                        start,
-                        end: self.position,
-                    });
-                }
-                '\\' => {
-                    // Handle escape sequences: consume backslash + next char
-                    self.advance();
-                    if self.current_char().is_some() {
-                        self.advance();
-                    }
-                }
-                '[' => {
-                    in_character_class = true;
-                    self.advance();
-                }
-                ']' if in_character_class => {
-                    in_character_class = false;
-                    self.advance();
-                }
-                _ => self.advance(),
-            }
-        }
-
-        // Unterminated regex - EOF reached before closing /
-        // Parser will emit diagnostic for unterminated literal
-        None
     }
 }
 

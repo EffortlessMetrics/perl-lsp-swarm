@@ -1,7 +1,7 @@
 impl<'a> Parser<'a> {
     /// Parse a complete program
     fn parse_program(&mut self) -> ParseResult<Node> {
-        let start = self.current_position();
+        let start = 0;
         let mut statements = Vec::new();
 
         while !self.tokens.is_eof() {
@@ -12,8 +12,13 @@ impl<'a> Parser<'a> {
                 let t = self.consume_token()?;
                 statements.push(Node::new(
                     NodeKind::UnknownRest,
-                    SourceLocation { start: t.start, end: t.end },
+                    SourceLocation { start: t.start(), end: t.end() },
                 ));
+                // The truncated program still parses "successfully": record
+                // the terminal cause at this exact branch so the Ok path of
+                // `parse_with_recovery` cannot report a clean completion for
+                // an AST whose remainder is explicitly unparsed.
+                self.operation.record_terminal(ParseStopCause::LexerBudgetExhausted);
                 break; // Stop parsing but preserve earlier nodes
             }
 
@@ -26,6 +31,7 @@ impl<'a> Parser<'a> {
                     if matches!(
                         e,
                         ParseError::RecursionLimit
+                            | ParseError::RecursionDepthExhausted { .. }
                             | ParseError::NestingTooDeep { .. }
                             | ParseError::Cancelled
                     ) {
@@ -82,7 +88,7 @@ impl<'a> Parser<'a> {
         self.tokens
             .peek_second()
             .ok()
-            .map(|t| t.kind == TokenKind::FatArrow)
+            .map(|t| t.kind() == TokenKind::FatArrow)
             .unwrap_or(false)
     }
 
@@ -98,7 +104,7 @@ impl<'a> Parser<'a> {
         self.tokens
             .peek_second()
             .ok()
-            .is_some_and(|t| matches!(t.kind, TokenKind::RightBrace | TokenKind::FatArrow))
+            .is_some_and(|t| matches!(t.kind(), TokenKind::RightBrace | TokenKind::FatArrow))
     }
 
     fn is_async_sub_start(&mut self) -> bool {
@@ -108,7 +114,7 @@ impl<'a> Parser<'a> {
                 .tokens
                 .peek_second()
                 .ok()
-                .is_some_and(|t| t.kind == TokenKind::Sub)
+                .is_some_and(|t| t.kind() == TokenKind::Sub)
     }
 
     fn is_adjust_block_start(&mut self) -> bool {
@@ -119,7 +125,7 @@ impl<'a> Parser<'a> {
                 .tokens
                 .peek_second()
                 .ok()
-                .is_some_and(|t| t.kind == TokenKind::LeftBrace)
+                .is_some_and(|t| t.kind() == TokenKind::LeftBrace)
     }
 
     fn finish_subroutine_statement(&mut self, sub_node: Node) -> ParseResult<Node> {
@@ -162,11 +168,11 @@ impl<'a> Parser<'a> {
         // The lexer may be in ExpectOperator mode after a preceding block's `}`,
         // causing it to emit Division (Slash) instead of RegexMatch.  Roll back
         // and re-lex in ExpectTerm mode to get the correct token.
-        if self.tokens.peek()?.kind == TokenKind::Slash {
-            self.tokens.relex_as_term();
+        if self.tokens.peek()?.kind() == TokenKind::Slash {
+            self.reclassify_head_as_term()?;
         }
 
-        let kind = self.tokens.peek()?.kind;
+        let kind = self.tokens.peek()?.kind();
 
         // Don't check for labels here - it breaks regular identifier parsing
         // Labels will be handled differently
@@ -181,7 +187,7 @@ impl<'a> Parser<'a> {
             // Produce a String node (autoquoting) and continue as an expression statement
             let key_node = Node::new(
                 NodeKind::String { value: token.text.to_string(), interpolated: false },
-                SourceLocation { start: token.start, end: token.end },
+                SourceLocation { start: token.start(), end: token.end() },
             );
             // Now parse the rest of the expression (=> value, more pairs, etc.)
             // Re-enter the comma parser with the key already consumed
@@ -197,7 +203,7 @@ impl<'a> Parser<'a> {
 
         if kind == TokenKind::Identifier {
             let keyword_text = self.tokens.peek()?.text.clone();
-            let next_kind = self.tokens.peek_second().ok().map(|t| t.kind);
+            let next_kind = self.tokens.peek_second().ok().map(|t| t.kind());
 
             if keyword_text.as_ref() == "else" && next_kind == Some(TokenKind::LeftBrace) {
                 return self.parse_orphaned_else();
@@ -215,7 +221,7 @@ impl<'a> Parser<'a> {
         let mut stmt = if self.is_async_sub_start() {
             let async_token = self.consume_token()?;
             let mut sub_node = self.parse_subroutine()?;
-            sub_node.location.start = async_token.start;
+            sub_node.location.start = async_token.start();
             if let NodeKind::Subroutine { attributes, .. } = &mut sub_node.kind
                 && !attributes.iter().any(|attr| attr == "async")
             {
@@ -238,17 +244,17 @@ impl<'a> Parser<'a> {
             // Variable declarations (`my $x`, `our @y`, ...) and scoped sub declarations
             // (`my sub helper { ... }`, `our sub helper { ... }`, `state sub memo { ... }`).
             TokenKind::My | TokenKind::Our | TokenKind::State => {
-                if matches!(self.tokens.peek_second().map(|t| t.kind), Ok(TokenKind::Sub)) {
+                if matches!(self.tokens.peek_second().map(|t| t.kind()), Ok(TokenKind::Sub)) {
                     let decl_token = self.consume_token()?;
                     let mut sub_node = self.parse_subroutine()?;
-                    sub_node.location.start = decl_token.start;
+                    sub_node.location.start = decl_token.start();
                     // Inject the declarator into the Subroutine node
                     if let NodeKind::Subroutine { declarator, name, .. } = &mut sub_node.kind {
                         *declarator = Some(decl_token.text.to_string());
                         if name.is_none() {
                             self.errors.push(ParseError::syntax(
                                 "Expected subroutine name after scoped declarator",
-                                decl_token.start,
+                                decl_token.start(),
                             ));
                         }
                     }
@@ -339,7 +345,7 @@ impl<'a> Parser<'a> {
                     .tokens
                     .peek_second()
                     .ok()
-                    .is_some_and(|token| token.kind == TokenKind::LeftBrace) => self.parse_try(),
+                    .is_some_and(|token| token.kind() == TokenKind::LeftBrace) => self.parse_try(),
                 TokenKind::Defer => self.parse_defer(),
 
             // Loop control — next/last/redo can be followed by a word operator at statement level,
@@ -356,7 +362,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Class
                 if matches!(
-                    self.tokens.peek_second().map(|t| t.kind),
+                    self.tokens.peek_second().map(|t| t.kind()),
                     Ok(TokenKind::Identifier)
                         | Ok(TokenKind::DoubleColon)
                         | Ok(TokenKind::Colon)
@@ -369,7 +375,7 @@ impl<'a> Parser<'a> {
             // checking the next token is an Identifier (the method name).
             TokenKind::Method
                 if matches!(
-                    self.tokens.peek_second().map(|t| t.kind),
+                    self.tokens.peek_second().map(|t| t.kind()),
                     Ok(TokenKind::Identifier)
                 ) =>
             {
@@ -396,7 +402,7 @@ impl<'a> Parser<'a> {
                     .tokens
                     .peek_second()
                     .ok()
-                    .map(|t| t.kind == TokenKind::Colon)
+                    .map(|t| t.kind() == TokenKind::Colon)
                     .unwrap_or(false) =>
             {
                 self.parse_keyword_as_label()
@@ -410,7 +416,7 @@ impl<'a> Parser<'a> {
                     .tokens
                     .peek_second()
                     .ok()
-                    .map(|t| t.kind == TokenKind::LeftBrace)
+                    .map(|t| t.kind() == TokenKind::LeftBrace)
                     .unwrap_or(false) =>
             {
                 self.parse_phase_block()
@@ -431,7 +437,7 @@ impl<'a> Parser<'a> {
                     .tokens
                     .peek_second()
                     .ok()
-                    .map(|t| t.kind == TokenKind::Colon)
+                    .map(|t| t.kind() == TokenKind::Colon)
                     .unwrap_or(false) =>
             {
                 self.parse_keyword_as_label()
@@ -483,7 +489,7 @@ impl<'a> Parser<'a> {
                     #[cfg_attr(not(test), allow(unused_variables))]
                     let (text, token_start, token_end) = {
                         let token = self.tokens.peek()?;
-                        (token.text.clone(), token.start, token.end)
+                        (token.text.clone(), token.start(), token.end())
                     };
                     if self.is_unknown_lowercase_bareword_call_pattern(&text) {
                         // The predicate stays the sole dispatch authority. The test-only
@@ -556,18 +562,33 @@ impl<'a> Parser<'a> {
     /// nested blocks.
     fn finish_statement_terminator(&mut self, stmt: &Node) -> ParseResult<()> {
         if self.peek_kind() == Some(TokenKind::Semicolon) {
+            // A keyword-like heredoc delimiter (`<<print`) parses as a
+            // builtin statement and can absorb tokens from the following
+            // line, ending with a `;` — it reaches this path instead of the
+            // body-consumption path below. The heredoc body still ended at
+            // its first line, so the tag must clear here or every later
+            // missing terminator in the file is silently suppressed (#12852
+            // review).
+            if let Some(tag) = self.heredoc_recovery_tag.as_deref() {
+                let start = stmt.location.start.min(self.src_bytes.len());
+                let end = stmt.location.end.min(self.src_bytes.len());
+                let first_line_is_tag = std::str::from_utf8(&self.src_bytes[start..end])
+                    .map(|text| text.lines().next().map(str::trim) == Some(tag))
+                    .unwrap_or(false);
+                if first_line_is_tag {
+                    self.heredoc_recovery_tag = None;
+                }
+            }
             if self.pending_heredocs.is_empty()
                 && !Self::contains_heredoc(stmt)
                 && Self::can_arm_heredoc_recovery(stmt)
-            {
-                if let Some(tag) = self.statement_span_heredoc_tag(stmt) {
+                && let Some(tag) = self.statement_span_heredoc_tag(stmt) {
                     self.heredoc_recovery_tag = Some(tag);
                 }
-            }
             let semi_token = self.consume_token()?;
             // Track cursor after semicolon for heredoc content collection
             if self.pending_heredocs.is_empty() {
-                self.byte_cursor = semi_token.end;
+                self.byte_cursor = semi_token.end();
             }
             return Ok(());
         }
@@ -625,26 +646,41 @@ impl<'a> Parser<'a> {
         if self.pending_heredocs.is_empty()
             && !Self::contains_heredoc(stmt)
             && Self::can_arm_heredoc_recovery(stmt)
-        {
-            if let Some(tag) = self.statement_span_heredoc_tag(stmt) {
+            && let Some(tag) = self.statement_span_heredoc_tag(stmt) {
                 self.heredoc_recovery_tag = Some(tag);
                 return Ok(());
             }
-        }
 
         // An unrecognised heredoc may leak its body and terminator into the
-        // token stream. Exempt only the exact delimiter line, not every lone
-        // identifier: `foo` followed by `print` is a real missing terminator.
-        if Self::is_bare_identifier_statement(stmt) {
-            let matches_recovery_tag = self.heredoc_recovery_tag.as_deref().is_some_and(|tag| {
-                let start = stmt.location.start.min(self.src_bytes.len());
-                let end = stmt.location.end.min(self.src_bytes.len());
-                std::str::from_utf8(&self.src_bytes[start..end])
-                    .map(|text| text.trim() == tag)
-                    .unwrap_or(false)
-            });
-            if matches_recovery_tag {
+        // token stream. While the recovery tag is armed, every statement
+        // before the exact delimiter line is body content, whatever shape it
+        // parses as — a multi-line leaked body must not read as a missing
+        // terminator (#12839). The delimiter line itself ends the body. A
+        // missing `;` between two statements written without a heredoc
+        // introducer (`foo` followed by `print`) still reports, because no
+        // tag is armed there.
+        //
+        // A keyword-like delimiter (`<<print`) parses as a builtin statement
+        // and can absorb tokens from the following line, so the statement is
+        // more than the tag alone: the body still ended at its first line,
+        // the tag must clear, and the merged statement is real code that
+        // must be processed normally — otherwise every later missing
+        // terminator in the file is silently accepted (#12852 review).
+        if let Some(tag) = self.heredoc_recovery_tag.as_deref() {
+            let start = stmt.location.start.min(self.src_bytes.len());
+            let end = stmt.location.end.min(self.src_bytes.len());
+            let source = std::str::from_utf8(&self.src_bytes[start..end]).unwrap_or("");
+            if source.trim() == tag {
+                // Pure delimiter line: the body ends here; skip it.
                 self.heredoc_recovery_tag = None;
+                return Ok(());
+            }
+            if source.lines().next().map(str::trim) == Some(tag) {
+                // Delimiter head with absorbed tokens: body ended, tag clears,
+                // and the statement continues through the normal path below.
+                self.heredoc_recovery_tag = None;
+            } else {
+                // Ordinary body line: skip it.
                 return Ok(());
             }
         }
@@ -768,17 +804,6 @@ impl<'a> Parser<'a> {
                     | TokenKind::RightBracket
             )
         )
-    }
-
-    /// Whether the statement is a single bare identifier.
-    fn is_bare_identifier_statement(node: &Node) -> bool {
-        match &node.kind {
-            NodeKind::Identifier { .. } => true,
-            NodeKind::ExpressionStatement { expression } => {
-                matches!(expression.kind, NodeKind::Identifier { .. })
-            }
-            _ => false,
-        }
     }
 
     /// Whether the subtree declares a heredoc.
@@ -918,8 +943,13 @@ impl<'a> Parser<'a> {
                     continue;
                 }
                 _ => {
-                    if let Some(end) = Self::quote_like_body_end(span, index) {
-                        index = end;
+                    if let Some((end, rescan_start)) = Self::quote_like_body_skip(span, index) {
+                        // An s///e replacement is evaluated code, so a heredoc
+                        // introducer inside it is real: resume scanning at the
+                        // replacement body instead of skipping over it
+                        // (#12839). Every other quote-like body keeps hiding
+                        // `<<TAG` as ordinary text.
+                        index = rescan_start.unwrap_or(end);
                         continue;
                     }
                     index += 1;
@@ -930,28 +960,26 @@ impl<'a> Parser<'a> {
         None
     }
 
-    /// Return the byte after a quote-like expression beginning at `index`.
-    ///
-    /// This is deliberately a source scanner rather than a parser-level
-    /// expression check: its only job is to keep `<<TAG` inside quote-like
-    /// bodies from being mistaken for a heredoc introducer. Paired delimiters
-    /// are balanced, escapes are skipped, and substitution-like operators
-    /// consume both bodies.
+    /// Test-only flat form of [`quote_like_body_skip`] (end index only).
+    #[cfg(test)]
+    fn quote_like_body_end(span: &[u8], index: usize) -> Option<usize> {
+        Self::quote_like_body_skip(span, index).map(|(end, _)| end)
+    }
+
+    /// Body-skip result for a quote-like expression: the index just past the
+    /// expression, plus the replacement-body start when the expression is an
+    /// `s///e` substitution whose replacement is evaluated code.
     #[expect(
         clippy::question_mark,
         reason = "policy:ripr-quote-like-body: intentional let-else return None so RIPR None-oracles observe the miss path (#5838)"
     )]
-    fn quote_like_body_end(span: &[u8], index: usize) -> Option<usize> {
+    fn quote_like_body_skip(span: &[u8], index: usize) -> Option<(usize, Option<usize>)> {
         const OPERATORS: &[&[u8]] = &[b"tr", b"qq", b"qx", b"qr", b"qw", b"m", b"s", b"y", b"q"];
 
         if index > 0 && matches!(span[index - 1], b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'$') {
             return None;
         }
 
-        // Prefer an explicit miss-return over `find(...)?`. RIPR classifies the
-        // Option-`?` form as an error_path sink that existing `None` oracles do
-        // not observe; `return None` is the same control flow and is already
-        // covered by the non-operator prefix discriminators below.
         let Some(operator) = OPERATORS.iter().find(|operator| {
             span.get(index..index + operator.len()) == Some(**operator)
         }) else {
@@ -976,7 +1004,11 @@ impl<'a> Parser<'a> {
         let first_delimiter = span[delimiter_index];
         let paired = matches!(first_delimiter, b'(' | b'[' | b'{' | b'<');
         let mut cursor = delimiter_index;
+        let mut second_body_start = None;
         for part in 0..parts {
+            if part == 1 {
+                second_body_start = Some(cursor);
+            }
             cursor = if part == 0 || paired {
                 Self::quote_like_part_end(span, cursor)?
             } else {
@@ -988,7 +1020,21 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        Some(cursor)
+
+        // s///e evaluates its replacement as code: a `<<TAG` there is a real
+        // heredoc introducer, and the scan must see it rather than skip it.
+        let has_embedded_code = if *operator == b"s" {
+            let mut modifier_index = cursor;
+            while matches!(span.get(modifier_index), Some(byte) if byte.is_ascii_alphabetic())
+            {
+                modifier_index += 1;
+            }
+            span.get(cursor..modifier_index).is_some_and(|mods| mods.contains(&b'e'))
+        } else {
+            false
+        };
+        let rescan_start = if has_embedded_code { second_body_start } else { None };
+        Some((cursor, rescan_start))
     }
 
     fn quote_like_unpaired_end(span: &[u8], start: usize, delimiter: u8) -> Option<usize> {
@@ -1135,16 +1181,14 @@ impl<'a> Parser<'a> {
         let start = self.current_position();
 
         // Check for special blocks like AUTOLOAD and DESTROY
-        if let Ok(token) = self.tokens.peek() {
-            if matches!(token.text.as_ref(), "AUTOLOAD" | "DESTROY" | "CLONE" | "CLONE_SKIP") {
+        if let Ok(token) = self.tokens.peek()
+            && matches!(token.text.as_ref(), "AUTOLOAD" | "DESTROY" | "CLONE" | "CLONE_SKIP") {
                 // Check if next token is a block
-                if let Ok(second) = self.tokens.peek_second() {
-                    if second.kind == TokenKind::LeftBrace {
+                if let Ok(second) = self.tokens.peek_second()
+                    && second.kind() == TokenKind::LeftBrace {
                         return self.parse_special_block();
                     }
-                }
             }
-        }
 
         // First, try to parse the initial part as a simple statement
         let mut expr = self.parse_simple_statement()?;
@@ -1186,12 +1230,12 @@ impl<'a> Parser<'a> {
     fn parse_named_unary_statement_tail(&mut self, mut expr: Node) -> ParseResult<Node> {
         expr = self.parse_relational_with(expr)?;
         expr = self.parse_equality_with(expr)?;
-        expr = self.parse_range_with(expr)?;
         expr = self.parse_bitwise_and_with(expr)?;
         expr = self.parse_bitwise_xor_with(expr)?;
         expr = self.parse_bitwise_or_with(expr)?;
         expr = self.parse_and_with(expr)?;
         expr = self.parse_or_with(expr)?;
+        expr = self.parse_range_with(expr)?;
         expr = self.parse_ternary_with(expr)?;
         expr = self.collect_comma_fat_arrow_continuation(expr)?;
         self.parse_word_or_expr(expr)
@@ -1257,40 +1301,20 @@ impl<'a> Parser<'a> {
         // building the call node, check for an assignment operator so the
         // result is `Assignment { lhs: pos($s), rhs: value }` rather than
         // leaving `= value` as an unparsed token sequence.
-        if func_name == "pos" {
-            let assign_op = match self.peek_kind() {
-                Some(TokenKind::Assign) => Some("="),
-                Some(TokenKind::PlusAssign) => Some("+="),
-                Some(TokenKind::MinusAssign) => Some("-="),
-                Some(TokenKind::StarAssign) => Some("*="),
-                Some(TokenKind::SlashAssign) => Some("/="),
-                Some(TokenKind::PercentAssign) => Some("%="),
-                Some(TokenKind::DotAssign) => Some(".="),
-                Some(TokenKind::AndAssign) => Some("&="),
-                Some(TokenKind::OrAssign) => Some("|="),
-                Some(TokenKind::XorAssign) => Some("^="),
-                Some(TokenKind::PowerAssign) => Some("**="),
-                Some(TokenKind::LeftShiftAssign) => Some("<<="),
-                Some(TokenKind::RightShiftAssign) => Some(">>="),
-                Some(TokenKind::LogicalAndAssign) => Some("&&="),
-                Some(TokenKind::LogicalOrAssign) => Some("||="),
-                Some(TokenKind::DefinedOrAssign) => Some("//="),
-                _ => None,
-            };
-            if let Some(op) = assign_op {
-                self.tokens.next()?; // consume the assignment operator
-                let rhs = self.parse_assignment()?;
-                let assign_end = rhs.location.end;
-                expr = Node::new(
-                    NodeKind::Assignment {
-                        lhs: Box::new(expr),
-                        rhs: Box::new(rhs),
-                        op: op.to_string(),
-                    },
-                    SourceLocation { start, end: assign_end },
-                );
-                return self.parse_named_unary_statement_tail(expr);
-            }
+        if func_name == "pos"
+            && let Some((op, _op_start)) = self.consume_assignment_operator()?
+        {
+            let rhs = self.parse_assignment()?;
+            let assign_end = rhs.location.end;
+            expr = Node::new(
+                NodeKind::Assignment {
+                    lhs: Box::new(expr),
+                    rhs: Box::new(rhs),
+                    op: op.to_string(),
+                },
+                SourceLocation { start, end: assign_end },
+            );
+            return self.parse_named_unary_statement_tail(expr);
         }
 
         if had_args {
@@ -1312,7 +1336,7 @@ impl<'a> Parser<'a> {
         // Check if it's a builtin that can take arguments without parens
         if let Ok(token) = self.tokens.peek() {
             let token_text = token.text.clone();
-            let token_start = token.start;
+            let token_start = token.start();
 
             match token_text.as_ref() {
                 // Parenthesized nullary builtins are handled by the general
@@ -1320,7 +1344,7 @@ impl<'a> Parser<'a> {
                 // bare calls like `shift @arr` or `caller 1 || die`.
                 name if Self::is_nullary_builtin(name) => {
                     if self.tokens.peek_second().is_ok_and(|t| {
-                        matches!(t.kind, TokenKind::LeftParen | TokenKind::Arrow)
+                        matches!(t.kind(), TokenKind::LeftParen | TokenKind::Arrow)
                     }) {
                         self.parse_expression()
                     } else {
@@ -1511,7 +1535,7 @@ impl<'a> Parser<'a> {
                                 // the `/` after these builtins is a regex delimiter, not
                                 // division. Roll back the lexer to re-lex the `/` in
                                 // ExpectTerm mode so it becomes a regex.
-                                self.tokens.relex_as_term();
+                                self.reclassify_head_as_term()?;
                                 args.push(self.parse_assignment()?);
                             } else if self.peek_kind() == Some(TokenKind::LeftParen)
                                 && (Self::is_block_list_func(func_name.as_ref())
@@ -1559,6 +1583,11 @@ impl<'a> Parser<'a> {
                             // Also skip an optional fat arrow (`=>`) which Perl treats as a comma synonym.
                             if parsed_block_arg && !self.is_at_statement_end() {
                                 // Skip optional comma or fat arrow before the list
+                                if self.peek_kind() == Some(TokenKind::FatArrow)
+                                    && let Some(arg) = args.last_mut()
+                                {
+                                    Self::auto_quote_bareword_before_fat_comma(arg);
+                                }
                                 if matches!(self.peek_kind(), Some(TokenKind::Comma) | Some(TokenKind::FatArrow)) {
                                     self.consume_token()?;
                                 }
@@ -1581,6 +1610,11 @@ impl<'a> Parser<'a> {
                                     && !self.peek_kind().is_some_and(TokenKind::is_low_precedence_word_operator)
                                 {
                                     // Skip optional comma or fat arrow
+                                    if self.peek_kind() == Some(TokenKind::FatArrow)
+                                        && let Some(arg) = args.last_mut()
+                                    {
+                                        Self::auto_quote_bareword_before_fat_comma(arg);
+                                    }
                                     if matches!(self.peek_kind(), Some(TokenKind::Comma) | Some(TokenKind::FatArrow)) {
                                         self.consume_token()?;
                                     }
@@ -1601,6 +1635,11 @@ impl<'a> Parser<'a> {
                                         break;
                                     }
 
+                                    if self.peek_kind() == Some(TokenKind::FatArrow)
+                                        && let Some(arg) = args.last_mut()
+                                    {
+                                        Self::auto_quote_bareword_before_fat_comma(arg);
+                                    }
                                     self.consume_token()?; // consume comma or fat arrow
 
                                     // Handle `, =>` (comma then fat arrow) — consume
@@ -1659,7 +1698,7 @@ impl<'a> Parser<'a> {
         let modifier = modifier_token.text.to_string();
 
         // For 'for' and 'foreach', we parse a list expression
-        let condition = if matches!(modifier_token.kind, TokenKind::For | TokenKind::Foreach) {
+        let condition = if matches!(modifier_token.kind(), TokenKind::For | TokenKind::Foreach) {
             self.parse_expression()?
         } else {
             // For other modifiers, parse a regular expression
@@ -1705,6 +1744,7 @@ impl<'a> Parser<'a> {
                         if matches!(
                             e,
                             ParseError::RecursionLimit
+                                | ParseError::RecursionDepthExhausted { .. }
                                 | ParseError::NestingTooDeep { .. }
                                 | ParseError::Cancelled
                         ) {
@@ -1826,17 +1866,16 @@ impl<'a> Parser<'a> {
         let Ok(second_token) = self.tokens.peek_second() else {
             return false;
         };
-        if second_token.kind != TokenKind::Colon {
+        if second_token.kind() != TokenKind::Colon {
             return false;
         }
 
         // Check the 3rd token (token after the colon)
         // If it can't start a statement, this is not a label
-        if let Ok(third_token) = self.tokens.peek_third() {
-            if Self::third_token_cannot_start_statement(third_token.kind) {
+        if let Ok(third_token) = self.tokens.peek_third()
+            && Self::third_token_cannot_start_statement(third_token.kind()) {
                 return false;
             }
-        }
 
         // Single colon (`:`, not `::`) unambiguously indicates a label in Perl.
         // Qualified identifiers use `::` which tokenizes as DoubleColon, so

@@ -4,6 +4,7 @@
 //! document-symbol providers fan out from `to_lsp_kind()` /
 //! `to_lsp_kind_document_symbol()`, and the rename / completion features
 //! rely on `sigil()` and the category predicates being consistent.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_symbol::{SymbolKind, VarKind};
 use proptest::prelude::*;

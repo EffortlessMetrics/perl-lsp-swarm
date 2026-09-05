@@ -1,6 +1,6 @@
 //! Comprehensive unit tests for perl-module-token-core public API.
 
-use perl_module::token_core::{
+use perl_module::{
     ModuleTokenSpan, has_standalone_module_token_boundaries, is_module_identifier_char,
     is_module_token_char, parse_module_token,
 };

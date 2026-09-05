@@ -155,8 +155,11 @@ impl LspServer {
 
     /// Test-only helper that forces the pending-parse generation gap (#3396 PR4).
     ///
-    /// Updates a document's rope/text/version and bumps its generation counter
-    /// -- exactly like a real `didChange` -- but deliberately does **not**
+    /// Updates a document's full text state (rope, canonical `text_arc`,
+    /// `text`, version, line starts) via
+    /// [`crate::state::DocumentState::update_content`] and bumps its
+    /// generation counter -- exactly like a real `didChange` -- but
+    /// deliberately does **not**
     /// re-parse or publish a new [`crate::state::ParsedSnapshot`]. Immediately
     /// after this call, [`crate::state::DocumentState::current_parsed`] returns
     /// `None` (the last published snapshot's generation now trails the text
@@ -180,18 +183,19 @@ impl LspServer {
         version: i32,
     ) -> Result<(), String> {
         let normalized_uri = self.normalize_uri_key(uri);
-        let rope = ropey::Rope::from_str(new_text);
-        let line_starts = perl_parser::position::LineStartsCache::new(new_text);
 
         let mut documents = self.documents.lock();
         let doc = documents
             .get_mut(&normalized_uri)
             .ok_or_else(|| format!("document not open: {uri}"))?;
-        doc.rope = rope;
-        doc.text = new_text.to_string();
-        doc.version = version;
-        doc.line_starts = line_starts;
-        doc.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // Route through `DocumentState::update_content` so *every* text
+        // surface moves together, including the canonical `text_arc` copy
+        // (#4999). Writing a subset of the fields by hand left `text_arc`
+        // holding the pre-edit text while the gap was open, and providers
+        // that read `text_arc` (hover, symbols) answered from stale source
+        // text (#11933) even though the gap contract only tolerates a stale
+        // *parse snapshot*, never stale text.
+        doc.update_content(new_text, version);
         // Deliberately do NOT call `publish_parsed_if_current` here: the whole
         // point of this helper is to leave the previously published snapshot
         // stale relative to the bumped generation, forcing `current_parsed()`
@@ -938,6 +942,19 @@ impl LspServer {
             started,
             release,
         );
+    }
+
+    /// Pause the real background scan inside its per-file commit critical
+    /// section, after `indexing_transition_lock` is acquired (#13308). The
+    /// gate fires once, at the first indexed file, and holds the scan — and
+    /// the transition lock — until `release` fires or the gate times out.
+    #[cfg(feature = "workspace")]
+    pub fn test_gate_indexing_commit(
+        &self,
+        started: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        super::readiness::set_indexing_commit_gate(&self.indexing_commit_gate, started, release);
     }
 
     #[cfg(feature = "workspace")]

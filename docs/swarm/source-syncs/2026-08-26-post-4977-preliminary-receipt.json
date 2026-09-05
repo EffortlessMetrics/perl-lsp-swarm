@@ -1,0 +1,204 @@
+{
+  "schema_version": 2,
+  "subjects": {
+    "source": {
+      "role": "patch_equivalence_upstream",
+      "input": "7eea107b67d56944e883103f4624ceb32198824d",
+      "commit": "7eea107b67d56944e883103f4624ceb32198824d"
+    },
+    "boundary": {
+      "role": "history_limit",
+      "input": "ed546227c1233d8171cc758dc30f38505544112f",
+      "commit": "ed546227c1233d8171cc758dc30f38505544112f"
+    },
+    "target": {
+      "role": "release_head",
+      "input": "287a4275794411040eda128c98c92e823cf9aba1",
+      "commit": "287a4275794411040eda128c98c92e823cf9aba1"
+    }
+  },
+  "ledger": "docs/swarm/source-syncs/2026-08-26-post-4977-preliminary-reconciliation.json",
+  "verdict": "blocked",
+  "population_digest": "c5dc7bd6c5711d5adbdc788447ccefc3c7d63684a407995faf9bee05d9c68d6c",
+  "target_unique_commits": [
+    {
+      "commit": "0375bf19a9289c5a285c1cb5c96fb8ab3578da4c",
+      "subject": "chore(deps)(deps): bump softprops/action-gh-release",
+      "classification": "release_lineage_only"
+    },
+    {
+      "commit": "07cf813f6b8af58a3b3d15e68786d1ee77302852",
+      "subject": "fix(ci): close inherited-packet, body-edit, and control-dir gaps (#10088)",
+      "classification": null
+    },
+    {
+      "commit": "0cf55ae9ba3a91b4a26c0ddae6c4395a5a137439",
+      "subject": "chore(dap): deprecate legacy bridge API (#9951) (#10029)",
+      "classification": "superseded_by_newer_architecture"
+    },
+    {
+      "commit": "1148fcbfa226832a37325f832207ca3e748b38ff",
+      "subject": "chore(deps)(deps): bump tokio in the tokio group across 1 directory (#10040)",
+      "classification": "deliberately_abandoned"
+    },
+    {
+      "commit": "1517e39451bc29b68bff4f1ed447a4cfb218bd22",
+      "subject": "chore(deps)(deps): bump dtolnay/rust-toolchain (#10042)",
+      "classification": "release_lineage_only"
+    },
+    {
+      "commit": "1fe56093a6b3529ae3456edcba9e21fa276b45f9",
+      "subject": "docs(vscode): route onboarding health checks through extension (#0000) (#10023)",
+      "classification": "already_equivalent_in_swarm"
+    },
+    {
+      "commit": "239942e6d8ce22e0b2b4f4da123ad10679c84f31",
+      "subject": "chore(deps)(deps): bump EffortlessMetrics/ub-review (#10065)",
+      "classification": "release_lineage_only"
+    },
+    {
+      "commit": "2819142b0b7937b6f64644dee1bd37f23264d109",
+      "subject": "docs(agent): require decision shapes in specs (#7128) (#10027)",
+      "classification": "release_lineage_only"
+    },
+    {
+      "commit": "333497691787e5d7ed6789a21c42360b4dca08fb",
+      "subject": "fix(install): correct the Windows installer asset name and the curl-pipe bootstrap (#10067)",
+      "classification": "superseded_by_newer_architecture"
+    },
+    {
+      "commit": "4f0de95797a6769d237b5aea77990683acfd0367",
+      "subject": "fix(ci): ratchet test-source panic usage (#4904) (#10024)",
+      "classification": "superseded_by_newer_architecture"
+    },
+    {
+      "commit": "666981ab5571a8e7844cd6232f2b48a567391e93",
+      "subject": "chore(deps)(deps): bump docker/login-action from 4.4.0 to 4.6.0 (#10064)",
+      "classification": "release_lineage_only"
+    },
+    {
+      "commit": "71916684b1b34b504d01082a201a3c97821430f4",
+      "subject": "test(lsp): prove dependency roots reach providers (#3553)",
+      "classification": null
+    },
+    {
+      "commit": "846603420bb20c05bbfa9a77e363ea0f3155b277",
+      "subject": "docs(semantic): consolidate Wave 2 scope and sequencing in canonical plan (#0000)",
+      "classification": "release_lineage_only"
+    },
+    {
+      "commit": "939e9b0eee1c046c9a42d01cd28470c4c6c2010a",
+      "subject": "chore(deps)(deps-dev): bump source-map in /vscode-extension (#10037)",
+      "classification": "deliberately_abandoned"
+    },
+    {
+      "commit": "a3e51152e463e3815772b23b9026a73de6b04d01",
+      "subject": "ci(cache): warm merge-gate artifacts after merges (#4827) (#10026)",
+      "classification": "superseded_by_newer_architecture"
+    },
+    {
+      "commit": "c4e03ab73649c625aa5bf29a1b6ddb5ed256199e",
+      "subject": "ci(sync): require the audited 0.18.0-rc.1 publication join (#10088)",
+      "classification": null
+    },
+    {
+      "commit": "c636be32cc37f98a7739c7cca7e47f4cb9ae8858",
+      "subject": "docs(changelog): backfill 0.15.1 through 0.17.0 (#9960) (#9957)",
+      "classification": "release_lineage_only"
+    },
+    {
+      "commit": "ca493c617e6ab02ed3fe75b568f5c30b928b69ac",
+      "subject": "chore(deps)(deps): bump the dependencies group across 1 directory with 9 updates (#10068)",
+      "classification": "deliberately_abandoned"
+    },
+    {
+      "commit": "cd60f9289d7244f418f2e96ef8c2e6fc8795d15a",
+      "subject": "sync(goals): remove RTK proof-command dependency (#10054)",
+      "classification": "superseded_by_newer_architecture"
+    },
+    {
+      "commit": "cdd67d0b5be83ee9ad278be03f7563862127bba3",
+      "subject": "chore(deps)(deps): bump the serde group across 1 directory with 2 updates (#10039)",
+      "classification": "deliberately_abandoned"
+    },
+    {
+      "commit": "e98e9c714b8cca76146fe3c80624c543400ba5a2",
+      "subject": "chore(deps)(deps-dev): bump the typescript group across 1 directory with 2 updates (#10056)",
+      "classification": "deliberately_abandoned"
+    },
+    {
+      "commit": "f4b2033515bdb736eaa7686d6804d793d9dae4dc",
+      "subject": "chore(deps)(deps): bump taiki-e/install-action from 2.83.1 to 2.85.10 (#10063)",
+      "classification": "release_lineage_only"
+    }
+  ],
+  "excluded_merge_commits": [
+    "24b4b6fef947b7691ffc5c742910046c39a5798b",
+    "287a4275794411040eda128c98c92e823cf9aba1",
+    "2e6583fc3e737ccb2d69bfaae11ef42fa26c74af",
+    "e18efa9329839d472a96ba17fda0f13c3c9f27bb"
+  ],
+  "excluded_merge_ancestry": [
+    {
+      "commit": "24b4b6fef947b7691ffc5c742910046c39a5798b",
+      "subject": "Merge pull request #10059 from EffortlessMetrics/dependabot/github_actions/github-actions-00a0d7aaea",
+      "parents": [
+        "e18efa9329839d472a96ba17fda0f13c3c9f27bb",
+        "0375bf19a9289c5a285c1cb5c96fb8ab3578da4c"
+      ]
+    },
+    {
+      "commit": "287a4275794411040eda128c98c92e823cf9aba1",
+      "subject": "Merge pull request #10090 from EffortlessMetrics/ci/publication-sync-contract",
+      "parents": [
+        "2819142b0b7937b6f64644dee1bd37f23264d109",
+        "07cf813f6b8af58a3b3d15e68786d1ee77302852"
+      ]
+    },
+    {
+      "commit": "2e6583fc3e737ccb2d69bfaae11ef42fa26c74af",
+      "subject": "Merge pull request #10060 from EffortlessMetrics/pr7330-on-main",
+      "parents": [
+        "cd60f9289d7244f418f2e96ef8c2e6fc8795d15a",
+        "846603420bb20c05bbfa9a77e363ea0f3155b277"
+      ]
+    },
+    {
+      "commit": "e18efa9329839d472a96ba17fda0f13c3c9f27bb",
+      "subject": "Merge pull request #10021 from EffortlessMetrics/agent/lsp-onboarding-guard",
+      "parents": [
+        "2e6583fc3e737ccb2d69bfaae11ef42fa26c74af",
+        "71916684b1b34b504d01082a201a3c97821430f4"
+      ]
+    }
+  ],
+  "excluded_release_lineage_commits": [
+    "0375bf19a9289c5a285c1cb5c96fb8ab3578da4c",
+    "1517e39451bc29b68bff4f1ed447a4cfb218bd22",
+    "239942e6d8ce22e0b2b4f4da123ad10679c84f31",
+    "2819142b0b7937b6f64644dee1bd37f23264d109",
+    "666981ab5571a8e7844cd6232f2b48a567391e93",
+    "846603420bb20c05bbfa9a77e363ea0f3155b277",
+    "c636be32cc37f98a7739c7cca7e47f4cb9ae8858",
+    "f4b2033515bdb736eaa7686d6804d793d9dae4dc"
+  ],
+  "accepted_commits": [
+    "0cf55ae9ba3a91b4a26c0ddae6c4395a5a137439",
+    "1148fcbfa226832a37325f832207ca3e748b38ff",
+    "1fe56093a6b3529ae3456edcba9e21fa276b45f9",
+    "333497691787e5d7ed6789a21c42360b4dca08fb",
+    "4f0de95797a6769d237b5aea77990683acfd0367",
+    "939e9b0eee1c046c9a42d01cd28470c4c6c2010a",
+    "a3e51152e463e3815772b23b9026a73de6b04d01",
+    "ca493c617e6ab02ed3fe75b568f5c30b928b69ac",
+    "cd60f9289d7244f418f2e96ef8c2e6fc8795d15a",
+    "cdd67d0b5be83ee9ad278be03f7563862127bba3",
+    "e98e9c714b8cca76146fe3c80624c543400ba5a2"
+  ],
+  "unresolved_commits": [
+    "07cf813f6b8af58a3b3d15e68786d1ee77302852",
+    "71916684b1b34b504d01082a201a3c97821430f4",
+    "c4e03ab73649c625aa5bf29a1b6ddb5ed256199e"
+  ],
+  "errors": []
+}

@@ -55,6 +55,7 @@ generated sections.
 - [PLSP-SPEC-0033: Three-rail evidence contract](PLSP-SPEC-0033-three-rail-evidence.md)
 - [PLSP-SPEC-0034: Compiler-world contract](PLSP-SPEC-0034-compiler-world.md)
 - [PLSP-SPEC-0035: Executable-profile charter and EIR contract](PLSP-SPEC-0035-executable-profile-and-eir.md)
+- [PLSP-SPEC-0036: Windows LSP4IJ entry-point compatibility](PLSP-SPEC-0036-lsp4ij-windows-entrypoints.md)
 
 ## Acceptance and Proof
 

@@ -1,0 +1,245 @@
+schema = "perl-parser-pest.fixture_manifest.v1"
+
+# Package-local discriminating catalog for the pest train.
+# Rows record current observations only. `Ok` is not correctness.
+
+[[fixtures]]
+id = "decl.simple-scalar"
+family = "declaration-control-flow"
+source = "tests/fixtures/sources/declaration-control-flow/simple-scalar.pl"
+classification = "valid"
+execution_modes = ["embedded"]
+observation_owner = "8419"
+expected_outcome_owner = "8248"
+newline = "lf"
+disposition = "provisional-observation"
+notes = "seeded from current inline tests; not final acceptance"
+
+[[fixtures]]
+id = "control.if-block"
+family = "declaration-control-flow"
+source = "tests/fixtures/sources/declaration-control-flow/if-block.pl"
+classification = "valid"
+execution_modes = ["embedded"]
+observation_owner = "8419"
+expected_outcome_owner = "8248"
+newline = "lf"
+disposition = "provisional-observation"
+notes = "simple control-flow seed; not final acceptance"
+
+[[fixtures]]
+id = "control.foreach-my"
+family = "declaration-control-flow"
+source = "tests/fixtures/sources/declaration-control-flow/foreach-my.pl"
+classification = "valid"
+execution_modes = ["embedded"]
+observation_owner = "8419"
+expected_outcome_owner = "8248"
+newline = "lf"
+disposition = "provisional-observation"
+notes = "foreach lexical declaration seed; not final acceptance"
+
+[[fixtures]]
+id = "recovery.valid-invalid-valid"
+family = "recovery"
+source = "tests/fixtures/sources/recovery/valid-invalid-valid.pl"
+classification = "malformed"
+execution_modes = ["embedded"]
+observation_owner = "8419"
+expected_outcome_owner = "8248"
+newline = "lf"
+disposition = "provisional-observation"
+notes = "current recovery may return Ok(Program); not complete-vs-recovered"
+
+[[fixtures]]
+id = "recovery.strict-invalid"
+family = "recovery"
+source = "tests/fixtures/sources/recovery/strict-invalid.pl"
+classification = "malformed"
+execution_modes = ["embedded"]
+observation_owner = "8419"
+expected_outcome_owner = "8248"
+newline = "lf"
+disposition = "provisional-observation"
+notes = "strict invalid seed; parser Err is an observation, not a fixture failure"
+
+[[fixtures]]
+id = "deref.double-dollar"
+family = "scalar-deref"
+source = "tests/fixtures/sources/scalar-deref/double-dollar.pl"
+classification = "valid"
+execution_modes = ["embedded"]
+observation_owner = "8419"
+expected_outcome_owner = "8093"
+newline = "lf"
+disposition = "provisional-observation"
+notes = "depends on #8093; current parse uses source normalization"
+
+[[fixtures]]
+id = "bitnot.spaced-tilde"
+family = "bitwise-not"
+source = "tests/fixtures/sources/bitwise-not/spaced-tilde.pl"
+classification = "valid"
+execution_modes = ["embedded"]
+observation_owner = "8419"
+expected_outcome_owner = "8148"
+newline = "lf"
+disposition = "provisional-observation"
+notes = "depends on #8148; current parse uses bitnot normalization"
+
+[[fixtures]]
+id = "assign.chained"
+family = "assignment-exponentiation"
+source = "tests/fixtures/sources/assignment-exponentiation/chained-assign.pl"
+classification = "valid"
+execution_modes = ["embedded"]
+observation_owner = "8419"
+expected_outcome_owner = "8163"
+newline = "lf"
+disposition = "provisional-observation"
+notes = "depends on #8163; grouping is not asserted here"
+
+[[fixtures]]
+id = "exp.power"
+family = "assignment-exponentiation"
+source = "tests/fixtures/sources/assignment-exponentiation/power.pl"
+classification = "valid"
+execution_modes = ["embedded"]
+observation_owner = "8419"
+expected_outcome_owner = "8163"
+newline = "lf"
+disposition = "provisional-observation"
+notes = "depends on #8163; associativity is not asserted here"
+
+[[fixtures]]
+id = "modifier.print-if"
+family = "statement-modifier"
+source = "tests/fixtures/sources/statement-modifier/print-if.pl"
+classification = "valid"
+execution_modes = ["embedded"]
+observation_owner = "8419"
+expected_outcome_owner = "8190"
+newline = "lf"
+disposition = "provisional-observation"
+notes = "depends on #8190; modifier trees are not asserted here"
+
+[[fixtures]]
+id = "call.nested-multi"
+family = "nested-call"
+source = "tests/fixtures/sources/nested-call/nested-multi.pl"
+classification = "valid"
+execution_modes = ["embedded"]
+observation_owner = "8419"
+expected_outcome_owner = "8248"
+newline = "lf"
+disposition = "provisional-observation"
+notes = "nested/multi-argument call seed; exact call trees are later work"
+
+[[fixtures]]
+id = "heredoc.bare-eof"
+family = "heredoc"
+source = "tests/fixtures/sources/heredoc/bare-eof.pl"
+classification = "unsupported-candidate"
+execution_modes = ["embedded"]
+observation_owner = "8419"
+expected_outcome_owner = "8220"
+newline = "lf"
+disposition = "provisional-observation"
+notes = "depends on #8220; opener is recognized, body capture is a known limitation"
+
+[[fixtures]]
+id = "heredoc.q-placeholder"
+family = "heredoc"
+source = "tests/fixtures/sources/heredoc/q-placeholder.pl"
+classification = "valid"
+execution_modes = ["embedded"]
+observation_owner = "8419"
+expected_outcome_owner = "8220"
+newline = "lf"
+disposition = "provisional-observation"
+notes = "q{} placeholder edge; not a heredoc body contract"
+
+[[fixtures]]
+id = "quoting.qq-heredoc-token"
+family = "quoting-context"
+source = "tests/fixtures/sources/quoting-context/qq-heredoc-token.pl"
+classification = "valid"
+execution_modes = ["embedded"]
+observation_owner = "8419"
+expected_outcome_owner = "8220"
+newline = "lf"
+disposition = "provisional-observation"
+notes = "normalization-like heredoc token inside qq{}; string context only"
+
+[[fixtures]]
+id = "quoting.comment-double-dollar"
+family = "quoting-context"
+source = "tests/fixtures/sources/quoting-context/comment-double-dollar.pl"
+classification = "valid"
+execution_modes = ["embedded"]
+observation_owner = "8419"
+expected_outcome_owner = "8093"
+newline = "lf"
+disposition = "provisional-observation"
+notes = "double-dollar bytes in a comment must not become a support claim"
+
+[[fixtures]]
+id = "quoting.regex-bitnot"
+family = "quoting-context"
+source = "tests/fixtures/sources/quoting-context/regex-bitnot.pl"
+classification = "valid"
+execution_modes = ["embedded"]
+observation_owner = "8419"
+expected_outcome_owner = "8148"
+newline = "lf"
+disposition = "provisional-observation"
+notes = "spaced bitwise-not-like bytes inside a match operator"
+
+[[fixtures]]
+id = "unicode.identifier"
+family = "unicode-newline"
+source = "tests/fixtures/sources/unicode-newline/identifier.pl"
+classification = "valid"
+execution_modes = ["embedded"]
+observation_owner = "8419"
+expected_outcome_owner = "8248"
+newline = "lf"
+encoding = "utf-8"
+disposition = "provisional-observation"
+notes = "non-ASCII identifier/literal seed; not a Unicode-completeness claim"
+
+[[fixtures]]
+id = "newline.lf"
+family = "unicode-newline"
+source = "tests/fixtures/sources/unicode-newline/lf.pl"
+classification = "valid"
+execution_modes = ["embedded"]
+observation_owner = "8419"
+expected_outcome_owner = "8248"
+newline = "lf"
+disposition = "provisional-observation"
+notes = "LF control for newline identity"
+
+[[fixtures]]
+id = "newline.crlf"
+family = "unicode-newline"
+source = "tests/fixtures/sources/unicode-newline/crlf.pl"
+classification = "valid"
+execution_modes = ["embedded"]
+observation_owner = "8419"
+expected_outcome_owner = "8248"
+newline = "crlf"
+disposition = "provisional-observation"
+notes = "CRLF bytes are the fixture identity; git must not rewrite them"
+
+[[fixtures]]
+id = "newline.bare-cr"
+family = "unicode-newline"
+source = "tests/fixtures/sources/unicode-newline/bare-cr.pl"
+classification = "valid"
+execution_modes = ["embedded"]
+observation_owner = "8419"
+expected_outcome_owner = "8248"
+newline = "cr"
+disposition = "provisional-observation"
+notes = "bare CR bytes are the fixture identity; git must not rewrite them"

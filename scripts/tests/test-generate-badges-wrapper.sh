@@ -3,6 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+# The toolchain guard (#12593) probes `cargo --version` before delegating;
+# fake cargo stubs answer with the workspace-required version and do not log it.
+FAKE_CARGO_VERSION="$(awk -F'"' '/^rust-version[[:space:]]*=/{print $2; exit}' "${REPO_ROOT}/Cargo.toml")"
+export FAKE_CARGO_VERSION
 GENERATE_BADGES_SCRIPT="${REPO_ROOT}/scripts/generate-badges.sh"
 
 PASS=0
@@ -53,10 +58,28 @@ write_fake_cargo() {
   mkdir -p "$fake_bin"
   cat > "${fake_bin}/cargo" <<FAKE
 #!/usr/bin/env bash
+if [ "\${1:-}" = "--version" ]; then printf 'cargo %s (stub)\n' "\${FAKE_CARGO_VERSION:-1.95.0}"; exit 0; fi
 printf '%s\n' "\$@" > "${log_path}"
 exit "\${FAKE_CARGO_EXIT:-0}"
 FAKE
   chmod +x "${fake_bin}/cargo"
+}
+
+write_interpreter_sentinel() {
+  local sentinel_bin="$1"
+  local log_path="$2"
+  local name
+
+  mkdir -p "$sentinel_bin"
+  # Cover the spellings a re-embedded owner proof could resolve through PATH.
+  for name in python python3 py; do
+    cat > "${sentinel_bin}/${name}" <<SENTINEL
+#!/usr/bin/env bash
+printf '%s %s\n' "${name}" "\$*" >> "${log_path}"
+exit 97
+SENTINEL
+    chmod +x "${sentinel_bin}/${name}"
+  done
 }
 
 assert_args_equal() {
@@ -88,6 +111,15 @@ FAKE_BIN="${TMPDIR_BASE}/bin"
 FAKE_LOG="${TMPDIR_BASE}/cargo-args.txt"
 write_fake_cargo "$FAKE_BIN" "$FAKE_LOG"
 
+# Routing-ownership sentinel (#14184), armed for the whole run: any interpreter
+# this suite resolves through PATH is recorded instead of executed. See the
+# guard assertion at the end of the file for what it proves.
+SENTINEL_BIN="${TMPDIR_BASE}/sentinel-bin"
+SENTINEL_LOG="${TMPDIR_BASE}/interpreter-invocations.txt"
+write_interpreter_sentinel "$SENTINEL_BIN" "$SENTINEL_LOG"
+PATH="${SENTINEL_BIN}:$PATH"
+export PATH
+
 PASS_DIR="${TMPDIR_BASE}/pass"
 mkdir -p "$PASS_DIR"
 EXPECTED_PASS_ARGS="${PASS_DIR}/expected-args.txt"
@@ -114,6 +146,27 @@ code=0
   PATH="${FAKE_BIN}:$PATH" FAKE_CARGO_EXIT=37 bash "$GENERATE_BADGES_SCRIPT" --check
 ) > "${FAIL_DIR}/out.txt" 2> "${FAIL_DIR}/err.txt" || code=$?
 assert_exit_nonzero "propagates cargo failure from delegated command" "$code"
+
+# Routing-ownership guard (#14184). Direct proof of the Python badge generator
+# belongs to the `ripr-badge-endpoints` pack
+# (`scripts/tests/test-generate-badges.py`), which CI selects for generator
+# edits. This wrapper pack is selected only by shell-wrapper edits, so proof
+# embedded here would stop running exactly when the generator changes.
+#
+# The check is behavioral, not textual: the sentinel armed at the top of this
+# run shadows `python`/`python3`/`py` on PATH, so any interpreter this suite
+# actually launches is recorded no matter how its name is spelled in source
+# (a runtime-assembled string defeats a grep, not a PATH lookup). A stub also
+# exits 97, so re-embedded proof fails loudly rather than silently passing.
+# Residual gap, stated rather than papered over: an invocation by absolute
+# path (`/usr/bin/python3 ...`) bypasses PATH and would not be recorded.
+if [[ -s "$SENTINEL_LOG" ]]; then
+  fail "wrapper proof stays shell-scoped and never runs the Python owner"
+  printf 'interpreter invocations recorded during this run:\n'
+  cat "$SENTINEL_LOG"
+else
+  pass "wrapper proof stays shell-scoped and never runs the Python owner"
+fi
 
 TOTAL=$((PASS + FAIL))
 echo ""

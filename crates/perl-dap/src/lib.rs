@@ -1,7 +1,7 @@
 //! Native Debug Adapter Protocol implementation for Perl.
 //!
 //! `perl-dap` is the Rust DAP server shipped with `perl-lsp`. It speaks DAP over
-//! stdio or TCP, launches or attaches to Perl debug sessions, validates
+//! stdio to editors, launches or attaches to Perl debug sessions, validates
 //! breakpoints with the native parser stack, and serves stack, variable,
 //! evaluation, and execution-control requests to DAP-capable editors.
 //!
@@ -28,11 +28,10 @@
 //! perl-dap --stdio
 //! ```
 //!
-//! Native TCP mode:
-//!
-//! ```text
-//! perl-dap --socket --port 13603
-//! ```
+//! Native editor TCP (`--socket` / editor `--port`) is retired. Those flags still
+//! parse via shared transport options and fail before bind with a `perl-dap --stdio`
+//! migration, including when combined with `--external-peer`. They are not a
+//! supported editor run mode.
 //!
 //! # Programmatic launch
 //!
@@ -97,6 +96,8 @@
 //! - [`backend`] defines the backend-neutral execution seam.
 //! - [`model`] carries canonical debugger facts across native and optional peer
 //!   backends.
+//! - [`reload`] freezes the loaded-module reload semantic contract consumed
+//!   by the reload train (#10097).
 //! - [`protocol`] carries DAP wire types.
 //! - [`platform`], [`shell`], and [`security`] own process, path, and admission
 //!   boundaries.
@@ -120,8 +121,12 @@ pub mod breakpoint;
 pub mod command_args;
 /// DAP launch and attach configuration types (from perl-dap-config).
 pub mod config;
+/// Fixed-origin operational error classification for the #8739 DAP slice.
+mod error_class;
 /// Safe expression evaluation validation (from perl-dap-eval).
 pub mod eval;
+/// Caller-supplied origin for stack/variable parser inputs (#8746).
+pub mod parse_origin;
 /// Cross-platform utilities for Perl path resolution and environment setup (from perl-dap-platform).
 pub mod platform;
 /// Security validation and hardening (from perl-dap-security).
@@ -134,6 +139,8 @@ pub mod stack;
 pub mod types;
 /// Shared Perl value model for DAP parser and renderer (from perl-dap-value).
 pub mod value;
+/// One shared typed presentation policy for the DAP `ValueFormat` option (#9588).
+pub mod value_format;
 /// Variable parsing and rendering for Perl DAP (from perl-dap-variables).
 pub mod variables;
 
@@ -143,10 +150,19 @@ pub mod backend;
 pub mod breakpoint_oracle;
 /// Canonical, backend-neutral Perl debug model shared by all debug backends.
 pub mod model;
+pub mod mutation;
 /// The Perl Debugger Peer Protocol spoken to external engines (ptkdb-first).
 pub mod peer_protocol;
 /// `.ptkdbrc` bootstrap/fallback rendering for `Devel::ptkdb`.
 pub mod ptkdb_bootstrap;
+/// Loaded-module reload semantic contract (R01, #10097): eligibility,
+/// transaction phases, runtime-module generation, invalidation, protocol
+/// requirements, and mechanism limits.
+pub mod reload;
+/// Wire registration for the `perl-lsp/loadedModuleReload` custom DAP family
+/// (R01B, #10138): transport and compatibility only, unadvertised and
+/// undischarged.
+pub mod reload_family;
 /// Frozen debug-session packet builder (the stable external handoff format).
 pub mod session_plan;
 
@@ -174,7 +190,7 @@ pub use configuration::{
     create_launch_json_snippet,
 };
 pub use debug_adapter::{DapMessage, DebugAdapter};
-pub use server::{DapConfig, DapMode, DapServer, DapSocketBindError};
+pub use server::{DapConfig, DapMode, DapServer};
 
 pub use breakpoints::{BreakpointRecord, BreakpointStore, interpolate_logpoint_message};
 pub use protocol::{
@@ -194,6 +210,7 @@ pub use protocol::{
     SetVariableArguments, SetVariableResponseBody, Source, SourceArguments, SourceBreakpoint,
     SourceResponseBody, StackTraceArguments, StackTraceResponseBody, StepInArguments, StepInTarget,
     StepInTargetsArguments, StepInTargetsResponseBody, StepOutArguments, TerminateArguments,
-    TerminateThreadsArguments, Thread, ThreadsResponseBody, VariablesArguments,
+    TerminateThreadsArguments, Thread, ThreadsResponseBody, ValueFormat, VariablesArguments,
     VariablesResponseBody,
 };
+pub use value_format::ValueFormatPolicy;

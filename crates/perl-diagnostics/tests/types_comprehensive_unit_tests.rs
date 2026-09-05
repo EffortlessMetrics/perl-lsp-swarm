@@ -1,4 +1,5 @@
 //! Comprehensive unit tests for `perl_diagnostics::types`.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_diagnostics::types::{
     ByteSpan, Diagnostic, DiagnosticSeverity, DiagnosticTag, RelatedInformation,
@@ -35,7 +36,6 @@ fn severity_clone_and_copy() {
 
 #[test]
 fn severity_equality() {
-    assert_eq!(DiagnosticSeverity::Error, DiagnosticSeverity::Error);
     assert_ne!(DiagnosticSeverity::Error, DiagnosticSeverity::Warning);
 }
 
@@ -85,7 +85,6 @@ fn tag_clone_and_copy() {
 
 #[test]
 fn tag_equality() {
-    assert_eq!(DiagnosticTag::Unnecessary, DiagnosticTag::Unnecessary);
     assert_ne!(DiagnosticTag::Unnecessary, DiagnosticTag::Deprecated);
 }
 

@@ -21,6 +21,10 @@
 
 set -euo pipefail
 
+# The only Cargo text below is an example embedded in generated documentation;
+# this renderer never invokes Cargo.
+# cargo-toolchain-guard: exempt — documentation example only.
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 

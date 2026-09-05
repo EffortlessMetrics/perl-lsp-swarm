@@ -10,7 +10,7 @@ use super::{
 };
 use crate::providers::completion::module_scan_cache::{ModuleCompletionScanCache, ScanCacheKey};
 use perl_lexer::{PerlLexer, TokenType};
-use perl_module::path::module_name_to_path;
+use perl_module::module_name_to_path;
 use perl_semantic_analyzer::{
     Node, NodeKind, Parser,
     receiver_facts::{

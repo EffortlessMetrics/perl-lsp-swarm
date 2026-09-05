@@ -1,0 +1,72 @@
+{
+  "schema": "module_train_live_raw.v1",
+  "observed_at": "2026-08-24T09:30:00Z",
+  "repository": {
+    "owner": "EffortlessMetrics",
+    "name": "perl-lsp-swarm",
+    "default_branch": "main",
+    "observed_main_sha": "0469e74ceaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "observed_main_source": "git ls-remote origin refs/heads/main",
+    "local_origin_main_sha": "0469e74ceaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "git_local": {
+    "head": "0469e74ceaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "branch": "main",
+    "dirty_paths": [],
+    "manifest_dirty": false,
+    "branches": [
+      {
+        "name": "tooling/8497-requests",
+        "sha": "dddddddddddddddddddddddddddddddddddddddd",
+        "upstream": "origin/tooling/8497-requests",
+        "ahead": 0,
+        "behind": 2,
+        "worktree_path": "F:/code/Rust2/plsw-8497"
+      }
+    ],
+    "worktrees": [
+      {
+        "path": "F:/code/Rust2/plsw-8497",
+        "head": "dddddddddddddddddddddddddddddddddddddddd",
+        "branch": "tooling/8497-requests",
+        "detached": false,
+        "locked": false,
+        "dirty_paths": 0
+      }
+    ]
+  },
+  "git_remote": {
+    "refs": [
+      {
+        "name": "main",
+        "sha": "0469e74ceaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "name": "tooling/8497-requests",
+        "sha": "dddddddddddddddddddddddddddddddddddddddd"
+      }
+    ]
+  },
+  "github": {
+    "open_observed": 0,
+    "merged_observed": 0,
+    "prs": []
+  },
+  "instruments": {
+    "git_local": {
+      "source": "fixture",
+      "state": "ok",
+      "detail": ""
+    },
+    "git_remote": {
+      "source": "fixture",
+      "state": "ok",
+      "detail": ""
+    },
+    "github_prs": {
+      "source": "fixture",
+      "state": "ok",
+      "detail": ""
+    }
+  }
+}

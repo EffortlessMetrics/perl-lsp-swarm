@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "case_id": "A01-file-wide-suppression-carveout",
+  "family": "verifier_denominator_weakening",
+  "purpose": "A whole-file allow of unwrap/expect erases the governed silent-failure denial instead of repairing the unchecked collapse.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": {
+    "lint": "clippy::unwrap_used",
+    "level_source": "Cargo.toml [workspace.lints.clippy]"
+  },
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "#![allow(clippy::unwrap_used",
+      "hit.unwrap()"
+    ],
+    "content": "#![allow(clippy::unwrap_used, clippy::expect_used)]\n\npub fn load_setting(table: &[(String, String)], key: &str) -> String {\n    let mut hit = None;\n    for (k, v) in table {\n        if k == key { hit = Some(v); }\n    }\n    hit.unwrap().clone()\n}\n",
+    "sha256": "19f081b4fc27154ea8951433cc78905935d9bede7cdf87c13d8360e0e3e92548"
+  },
+  "rejecting_authority": {
+    "status": "bound",
+    "authority_kind": "cargo_lints",
+    "reference": "lint:clippy::unwrap_used"
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "broad_suppression_carveout"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "ok_or_else",
+      "Result<String>"
+    ],
+    "note": "Typed refusal preserves the governed denial.",
+    "content": "pub fn load_setting(table: &[(String, String)], key: &str) -> color_eyre::Result<String> {\n    let found = table\n        .iter()\n        .find(|(k, _)| k == key)\n        .ok_or_else(|| color_eyre::eyre!(\"missing setting key {key}\"))?;\n    Ok(found.1.clone())\n}\n",
+    "sha256": "3d13175065287083231b4c22451a502fb1acb11dfe9df211a3076982da15de97"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "Records the fixture identity only; the corpus neither executes Clippy nor owns suppression admission (docs/CLIPPY_POLICY.md owners)."
+}

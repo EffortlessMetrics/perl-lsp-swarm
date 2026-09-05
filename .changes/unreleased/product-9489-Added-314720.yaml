@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Added
+body: "Added the Zed debugger support projection (#9489): a fail-closed generator that consumes the landed #9487 official-registry journey validator and its committed blocked_external receipt exactly as they are, projecting the earned debugger cells into a separate machine-readable registry (policy/zed-dap-support.toml) and generated documentation (docs/EDITORS/ZED_DAP_SUPPORT.md). The projection keeps the Zed LSP row and the debugger surface independent, preserves the static/exact-source/public-registry evidence stages, managed/PATH routes, platform rows, and unsupported cells as not-proven with their blockers, quotes every gate, blocker, and limitation from the receipt without re-deriving the #9516 asset matrix, and fails closed on gate staleness, a landed registry subject, a committed exact-source pass, lying pass shapes, adapter identity aliasing, and committed-output drift."
+time: 2026-08-25T00:00:00Z
+custom:
+  PR: "TBD"
+  Slug: zed-dap-support-projection
+  Breaking: "no"

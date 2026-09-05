@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "case_id": "G47-test-proof-weakening-for-green",
+  "family": "documentation_cargo_test_proof_theater",
+  "purpose": "Disabling/weakening doctests, tests, or snapshots to obtain green erases the proof while keeping the claim.",
+  "incident_reference": null,
+  "subject": {
+    "scope": "workspace",
+    "target_kinds": [
+      "lib",
+      "bin",
+      "test"
+    ],
+    "profile": "all",
+    "platforms": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "features": "default"
+  },
+  "governed_lint": null,
+  "dishonest_mutation": {
+    "kind": "source-snippet",
+    "language": "rust",
+    "trigger_evidence": [
+      "#[ignore = \"flaky locally\"]",
+      "assert!(true)"
+    ],
+    "content": "#[test]\n#[ignore = \"flaky locally\"]\nfn incremental_edit_preserves_ast() { /* strong assertions */ }\n\n#[test]\nfn smoke() { assert!(true); } // replacement asserts nothing\n",
+    "sha256": "69a20ff681beddfb1a50d4caeee837b03bf47c3fb53c078324d3c9529b3a94a0"
+  },
+  "rejecting_authority": {
+    "status": "bound",
+    "authority_kind": "gate_command",
+    "reference": "gate:ignored_tests_check_refs"
+  },
+  "expected_result": {
+    "result_class": "reject",
+    "reason_code": "weakened_test_proof"
+  },
+  "positive_counterpart": {
+    "sanctioned_evidence": [
+      "tracked flake, see #11708"
+    ],
+    "note": "Ignores must reference tracked issues.",
+    "content": "#[test]\n#[ignore = \"tracked flake, see #11708\"]\nfn incremental_edit_preserves_ast() { /* unchanged */ }\n",
+    "sha256": "6c0191672f7afaa7b2981ac645f7b42b44f374867e608e905732100835a707c5"
+  },
+  "applicability": {
+    "packet_classes": [
+      "qualification",
+      "foundation",
+      "migration",
+      "activation",
+      "review"
+    ],
+    "domains": [
+      "clippy-core"
+    ]
+  },
+  "delta_provenance": {
+    "change_reason": "initial corpus freeze (#11649)",
+    "owning_issue": 11649,
+    "historical_interpretability": true
+  },
+  "claim_boundary": "ignored_tests_check_refs validates ignore annotations carry refs; assertion strength stays reviewer-owned."
+}

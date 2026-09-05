@@ -29,7 +29,32 @@ pub const FRAMEWORK_ADAPTER_SDK_VERSION: &str = "framework_adapter_sdk.v2";
 pub const FRAMEWORK_ADAPTER_SDK_LEGACY_VERSION: &str = "framework_adapter_sdk.v1";
 
 /// Current numeric schema version for descriptor/result records.
-pub const FRAMEWORK_ADAPTER_SCHEMA_VERSION: u32 = 1;
+///
+/// Version history:
+///
+/// - `1`: initial descriptor/result records;
+/// - `2`: adds the `RoutePrefix`, `RouteParameter`, and `RouteHandlerContext`
+///   `SemanticFactKind` discriminants (#8921) — per this module's wire
+///   contract, adding an enum discriminant requires a new schema version,
+///   because `#[non_exhaustive]` does not give older consumers an
+///   unknown-variant fallback on the wire;
+/// - `3`: adds the `Hook` `SemanticFactKind` discriminant (#8924) under the
+///   same rule;
+/// - `4`: widens what a `RouteHandlerContext` payload may mean (#13604). The
+///   kind previously implied "an established *route* handler context", so a
+///   consumer could read that invariant off the discriminant alone. It now
+///   also carries hook intervals and intervals whose request context the
+///   reviewed contract does not establish, distinguished by the additive
+///   `handler_kind` and `request_context` fields. A version-3 consumer
+///   ignores unknown fields, so without this bump it would silently read an
+///   unadmitted hook interval as an established route context and offer
+///   request-scoped keywords in a position that does not support them.
+///
+///   The rule is therefore not only "a new discriminant needs a new version"
+///   but "a payload an older consumer would misread needs one": the check in
+///   [`AdapterResult::validate_structure`] is an exact match, so the bump
+///   makes those consumers reject the record instead of misreading it.
+pub const FRAMEWORK_ADAPTER_SCHEMA_VERSION: u32 = 4;
 
 /// Stable opaque identity for a registered adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -912,7 +937,14 @@ mod tests {
         EntityId, FactId, LifecyclePhase, SemanticFactKind, SemanticReasonCode, SourceAnchor,
     };
     fn descriptor(disposition: AdapterDisposition) -> AdapterDescriptor {
-        AdapterDescriptor::new(AdapterId(1), "moo", "Moo", None, 1, disposition)
+        AdapterDescriptor::new(
+            AdapterId(1),
+            "moo",
+            "Moo",
+            None,
+            FRAMEWORK_ADAPTER_SCHEMA_VERSION,
+            disposition,
+        )
     }
 
     fn scope() -> AdapterSourceScope {
@@ -1005,6 +1037,52 @@ mod tests {
             SourceGeneration::known("generation-1"),
             AdapterOutcome::Applied { sink, limitations: Vec::new() },
         )
+    }
+
+    #[test]
+    fn route_family_discriminants_advertise_the_bumped_schema_version()
+    -> Result<(), serde_json::Error> {
+        // Ratchet for this module's own wire contract. Two rules, not one:
+        // adding an enum discriminant requires a new schema version because
+        // `#[non_exhaustive]` is not an unknown-variant wire fallback; and so
+        // does widening what an existing kind's payload may mean, because an
+        // older consumer ignores unknown fields and would apply the narrower
+        // invariant it was written against.
+        //
+        // Version 4 is the second case: a `RouteHandlerContext` payload may
+        // now describe a hook interval, or one whose request context is not
+        // established (#13604), neither of which a version-3 consumer could
+        // tell apart from an established route context.
+        assert_eq!(FRAMEWORK_ADAPTER_SCHEMA_VERSION, 4);
+        for kind in [
+            SemanticFactKind::Route,
+            SemanticFactKind::RoutePrefix,
+            SemanticFactKind::RouteParameter,
+            SemanticFactKind::RouteHandlerContext,
+            SemanticFactKind::Hook,
+        ] {
+            let mut envelope = envelope(Provenance::FrameworkSynthesis);
+            envelope.kind = kind;
+            let fact = EmittedFact::new(
+                FactSinkId(7),
+                AdapterId(1),
+                "Dancer2",
+                Provenance::FrameworkSynthesis,
+                Confidence::High,
+                envelope,
+                FactClass::GeneratedMembers,
+                None,
+                false,
+            );
+            let result = applied(AdapterDisposition::Production, fact);
+            let value = serde_json::to_value(&result)?;
+            assert_eq!(
+                value["schema_version"],
+                serde_json::json!(4),
+                "{kind:?} must only travel on the bumped schema version"
+            );
+        }
+        Ok(())
     }
 
     #[test]
@@ -1102,7 +1180,7 @@ mod tests {
             "moo",
             "Moo",
             None,
-            1,
+            FRAMEWORK_ADAPTER_SCHEMA_VERSION,
             AdapterDisposition::Production,
         );
         assert_eq!(

@@ -6,14 +6,26 @@ use color_eyre::eyre::{Result, bail, eyre};
 use std::collections::BTreeMap;
 use toml::Value;
 
-const REQUIRED_DISPOSITIONS: &[&str] = &[
-    "rust::const_item_interior_mutations",
-    "rust::function_casts_as_integer",
-    "clippy::same_length_and_capacity",
-    "clippy::disallowed_fields",
-    "clippy::manual_checked_ops",
-    "clippy::manual_take",
-    "clippy::manual_pop_if",
+/// Required lint identities, with optional pinned level and pinned ledger status.
+///
+/// A pinned level alone is not enough to hold a promotion: `[[planned]]` and
+/// `[[deferred_due]]` rows also carry `level = "deny"`, so a row demoted out of
+/// active enforcement still satisfies a level pin. Pinning the status as well is
+/// what makes a promotion non-reversible without an explicit policy change.
+const REQUIRED_DISPOSITIONS: &[(&str, Option<&str>, Option<&str>)] = &[
+    ("rust::const_item_interior_mutations", None, None),
+    ("rust::function_casts_as_integer", None, None),
+    ("clippy::same_length_and_capacity", None, None),
+    ("clippy::manual_checked_ops", None, None),
+    ("clippy::manual_ilog2", Some("deny"), Some("active")),
+    ("clippy::manual_take", None, None),
+    ("clippy::manual_pop_if", None, None),
+    // The lock-guard invariant is split across two tools with non-overlapping
+    // coverage (#14444), so both rows are pinned. Pinning only one would let a
+    // rollback silently uncover either the standard-library guards or the
+    // `parking_lot` guards while the surviving row still looks like coverage.
+    ("rust::let_underscore_lock", Some("deny"), Some("active")),
+    ("clippy::let_underscore_lock", Some("deny"), Some("active")),
 ];
 
 pub(crate) fn validate_workspace_lints(
@@ -109,11 +121,51 @@ pub(crate) fn validate_required_dispositions(ledger: &LintLedger) -> Result<()> 
         *counts.entry(name).or_default() += 1;
     }
 
-    for required in REQUIRED_DISPOSITIONS {
+    for (required, expected_level, expected_status) in REQUIRED_DISPOSITIONS {
         if counts.get(required).copied().unwrap_or_default() != 1 {
             bail!(
                 "required lint identity {required} must appear exactly once across the merged disposition model"
             );
+        }
+        let entry_level = ledger
+            .lint
+            .iter()
+            .find(|lint| lint.name == *required)
+            .map(|lint| lint.level.as_str())
+            .or_else(|| {
+                ledger
+                    .planned
+                    .iter()
+                    .find(|lint| lint.name == *required)
+                    .map(|lint| lint.level.as_str())
+            })
+            .or_else(|| {
+                ledger
+                    .deferred_due
+                    .iter()
+                    .find(|lint| lint.name == *required)
+                    .map(|lint| lint.level.as_str())
+            });
+        if let Some(expected_level) = expected_level
+            && entry_level != Some(*expected_level)
+        {
+            bail!(
+                "required lint {required} must remain at level {expected_level}, but ledger has {}",
+                entry_level.unwrap_or("missing")
+            );
+        }
+        if let Some(expected_status) = expected_status {
+            let entry_status = ledger
+                .lint
+                .iter()
+                .find(|lint| lint.name == *required)
+                .map(|lint| lint.status.as_str());
+            if entry_status != Some(*expected_status) {
+                bail!(
+                    "required lint {required} must remain an active ledger entry at status {expected_status}, but ledger has {}",
+                    entry_status.unwrap_or("no active entry (demoted to planned or deferred_due)")
+                );
+            }
         }
     }
     Ok(())

@@ -8,6 +8,7 @@ use model::{
     TargetTopologyDriftStatus, UpstreamTargetMatrix,
 };
 use perl_core_harness::target_contracts::{io, model};
+use perl_test_must::must_err_with;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -171,7 +172,7 @@ fn legacy_composites_are_partitioned_by_runner() -> TestResult {
 }
 
 #[test]
-fn read_matrix_rejects_changed_target_id_in_part() -> TestResult {
+fn read_matrix_rejects_cross_part_duplicate_target_id() -> TestResult {
     let source = repo_file(".ci/perl-core-harness/upstream-targets-5.42.2.v1");
     let temporary = tempfile::tempdir()?;
     for entry in fs::read_dir(&source)? {
@@ -179,15 +180,37 @@ fn read_matrix_rejects_changed_target_id_in_part() -> TestResult {
         fs::copy(entry.path(), temporary.path().join(entry.file_name()))?;
     }
 
-    let part_path = temporary.path().join("01-components-a.json");
+    let part_path = temporary.path().join("02-components-b.json");
     let mut part: serde_json::Value = serde_json::from_slice(&fs::read(&part_path)?)?;
-    part["targets"][0]["contract"]["target_id"] =
-        serde_json::Value::String("component_class".to_string());
-    fs::write(&part_path, serde_json::to_vec_pretty(&part)?)?;
+    let targets =
+        part["targets"].as_array_mut().ok_or("target matrix part targets must be an array")?;
+    let duplicate_target = targets.first_mut().ok_or("target matrix part is empty")?;
+    let original_id = duplicate_target["contract"]["target_id"]
+        .as_str()
+        .ok_or("target matrix part first target ID must be a string")?;
+    if original_id != "component_opbasic" {
+        return Err(format!("fixture first target changed unexpectedly: {original_id}").into());
+    }
+    duplicate_target["contract"]["target_id"] =
+        serde_json::Value::String("component_op_hook".to_string());
+    let serialized = serde_json::to_vec_pretty(&part)?;
+    fs::write(&part_path, &serialized)?;
 
-    let error = io::read_matrix(temporary.path())
-        .expect_err("duplicate target ID in changed matrix part was accepted");
-    assert!(error.to_string().contains("target matrix"));
+    // The mutated part remains independently sorted and valid. The expected
+    // rejection must therefore come from the assembled global ID check.
+    let mutated_part: model::TargetMatrixPart = serde_json::from_slice(&serialized)?;
+    mutated_part
+        .validate()
+        .map_err(|error| format!("cross-part duplicate fixture is not part-valid: {error}"))?;
+
+    let error = must_err_with(
+        io::read_matrix(temporary.path()),
+        "duplicate target ID across matrix parts was accepted",
+    );
+    let message = error.to_string();
+    if message != "target matrix rows must be strictly sorted by target ID" {
+        return Err(format!("unexpected duplicate-ID rejection: {message}").into());
+    }
     Ok(())
 }
 
@@ -205,8 +228,10 @@ fn assert_loader_rejects_contract_mutation(
 
     let temporary = tempfile::NamedTempFile::new()?;
     fs::write(temporary.path(), serde_json::to_vec_pretty(&matrix)?)?;
-    let error = io::read_matrix(temporary.path())
-        .expect_err("offline loader accepted an invalid target contract");
+    let error = must_err_with(
+        io::read_matrix(temporary.path()),
+        "offline loader accepted an invalid target contract",
+    );
     assert!(
         error.to_string().contains(target_id),
         "loader error should identify {target_id}: {error}"

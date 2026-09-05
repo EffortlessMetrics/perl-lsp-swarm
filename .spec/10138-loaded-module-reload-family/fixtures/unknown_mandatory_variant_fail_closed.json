@@ -1,0 +1,13 @@
+{
+  "schema": "perl_dap.loaded_module_reload_family.vector.v1",
+  "name": "unknown_mandatory_variant_fail_closed",
+  "description": "A response carrying an unknown mandatory kind variant classifies fail-closed on the client side: never clean, never reloaded, never silently reinterpreted.",
+  "response_probe": {
+    "kind": "reloaded_extended_v2",
+    "phase": "terminal_projection",
+    "possibly_applied": false
+  },
+  "expect": {
+    "classify": "unknown_fail_closed"
+  }
+}

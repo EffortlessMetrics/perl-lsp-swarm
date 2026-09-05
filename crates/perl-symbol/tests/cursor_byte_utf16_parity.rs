@@ -1,5 +1,6 @@
 //! Focused cursor regressions that separate source-position APIs from
 //! UTF-16 line/column behavior.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_symbol::cursor::{
     CursorSymbolKind, byte_offset_utf16, extract_symbol_from_source, get_symbol_range_at_position,
@@ -43,7 +44,7 @@ fn byte_cursor_multibyte_prefix_extract_and_range_remain_stable() -> Result<()> 
 }
 
 #[test]
-fn byte_cursor_middle_of_bareword_extracts_suffix_and_range_matches_it() -> Result<()> {
+fn byte_cursor_middle_of_bareword_extracts_complete_token_and_range_matches_it() -> Result<()> {
     let source = "compute_value();";
     // Use BYTE position (str::find returns byte offset).
     let pos = source.find('v').ok_or("missing v")?;
@@ -53,20 +54,21 @@ fn byte_cursor_middle_of_bareword_extracts_suffix_and_range_matches_it() -> Resu
 
     assert_eq!(name, "value");
     assert_eq!(kind, CursorSymbolKind::Subroutine);
-    // With cursor in the middle, both APIs currently return the forward suffix.
-    assert_eq!(char_span(source, start, end), "value");
+    assert_eq!(name, "compute_value");
+    // A middle-of-token cursor resolves the complete lexical token.
+    assert_eq!(char_span(source, start, end), "compute_value");
     Ok(())
 }
 
 #[test]
-fn byte_cursor_on_sigil_extracts_name_but_range_is_empty_conservative_span() -> Result<()> {
+fn byte_cursor_on_sigil_extracts_name_and_nonempty_range() -> Result<()> {
     let source = "$item";
     let (name, kind) = must_some(extract_symbol_from_source(0, source));
     let (start, end) = must_some(get_symbol_range_at_position(0, source));
 
     assert_eq!(name, "item");
     assert_eq!(kind, CursorSymbolKind::Scalar);
-    assert_eq!((start, end), (0, 0));
+    assert_eq!(char_span(source, start, end), "$item");
     Ok(())
 }
 
@@ -83,14 +85,14 @@ fn byte_cursor_after_sigil_extract_and_range_include_same_symbol() -> Result<()>
 }
 
 #[test]
-fn byte_cursor_package_qualified_name_extract_degrades_to_segment() -> Result<()> {
+fn byte_cursor_package_qualified_name_extracts_complete_token() -> Result<()> {
     let source = "My::Pkg::run";
     let first = must_some(extract_symbol_from_source(0, source));
     let run_pos = source.chars().position(|c| c == 'r').ok_or("missing run")?;
     let last = must_some(extract_symbol_from_source(run_pos, source));
 
-    assert_eq!(first.0, "My");
-    assert_eq!(last.0, "run");
+    assert_eq!(first.0, "My::Pkg::run");
+    assert_eq!(last.0, "My::Pkg::run");
     assert_eq!(first.1, CursorSymbolKind::Subroutine);
     assert_eq!(last.1, CursorSymbolKind::Subroutine);
     Ok(())

@@ -1,0 +1,380 @@
+{
+  "schema": "module_train_live_raw.v1",
+  "observed_at": "2026-08-24T09:00:00Z",
+  "repository": {
+    "owner": "EffortlessMetrics",
+    "name": "perl-lsp-swarm",
+    "default_branch": "main",
+    "observed_main_sha": "0469e74ceaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "observed_main_source": "git ls-remote origin refs/heads/main",
+    "local_origin_main_sha": "0469e74ceaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "git_local": {
+    "head": "0469e74ceaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "branch": "main",
+    "dirty_paths": [],
+    "manifest_dirty": false,
+    "branches": [
+      {
+        "name": "tooling/11627-module-live-frontier",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "upstream": "origin/tooling/11627-module-live-frontier",
+        "ahead": 0,
+        "behind": 0,
+        "worktree_path": "F:/code/Rust2/plsw-11627"
+      },
+      {
+        "name": "wip/10573-context-contract",
+        "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "upstream": null,
+        "ahead": null,
+        "behind": null,
+        "worktree_path": "F:/code/Rust2/plsw-e00b"
+      }
+    ],
+    "worktrees": [
+      {
+        "path": "F:/code/Rust2/plsw-11627",
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "branch": "tooling/11627-module-live-frontier",
+        "detached": false,
+        "locked": false,
+        "dirty_paths": 0
+      },
+      {
+        "path": "F:/code/Rust2/plsw-e00b",
+        "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "branch": "wip/10573-context-contract",
+        "detached": false,
+        "locked": false,
+        "dirty_paths": 3
+      }
+    ]
+  },
+  "git_remote": {
+    "refs": [
+      {
+        "name": "main",
+        "sha": "0469e74ceaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "name": "m01-work",
+        "sha": "cccccccccccccccccccccccccccccccccccccccc"
+      },
+      {
+        "name": "tooling/11627-module-live-frontier",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ]
+  },
+  "github": {
+    "open_observed": 12,
+    "merged_observed": 2,
+    "prs": [
+      {
+        "number": 2001,
+        "state": "OPEN",
+        "draft": false,
+        "title": "tooling(module): validated request surface (#8497)",
+        "author_login": "writer-a",
+        "base_ref": "main",
+        "head_ref": "tooling/8497-validated-requests",
+        "head_oid": "dddddddddddddddddddddddddddddddddddddddd",
+        "mergeable": "MERGEABLE",
+        "merged_at": null,
+        "updated_at": "2026-08-24T08:00:00Z",
+        "review_decision": "",
+        "reviews": [],
+        "checks": [
+          {
+            "name": "Perl LSP Rust Small Result",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS"
+          },
+          {
+            "name": "ripr+ New Gap Gate",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS"
+          }
+        ],
+        "merge_commit_oid": null,
+        "merge_commit_in_local_head": null,
+        "body": "Implementation of validated requests.\n\nModule train: #11625\nModule node: #8497\nParent/controller: #4240\n\nCloses #8497."
+      },
+      {
+        "number": 2002,
+        "state": "OPEN",
+        "draft": false,
+        "title": "evidence(module): contract matrix schema (#10977)",
+        "author_login": "writer-b",
+        "base_ref": "main",
+        "head_ref": "evidence/10977-matrix-schema",
+        "head_oid": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "mergeable": "MERGEABLE",
+        "merged_at": null,
+        "updated_at": "2026-08-24T08:30:00Z",
+        "review_decision": "CHANGES_REQUESTED",
+        "reviews": [
+          {
+            "author_login": "reviewer-x",
+            "state": "CHANGES_REQUESTED",
+            "submitted_at": "2026-08-24T08:30:00Z"
+          }
+        ],
+        "checks": [
+          {
+            "name": "Perl LSP Rust Small Result",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS"
+          }
+        ],
+        "merge_commit_oid": null,
+        "merge_commit_in_local_head": null,
+        "body": "Module train: #11625\nModule node: #10977\nParent/controller: #8479"
+      },
+      {
+        "number": 2003,
+        "state": "OPEN",
+        "draft": false,
+        "title": "evidence(module): directive scanner rows (#10986) candidate one",
+        "author_login": "writer-c",
+        "base_ref": "main",
+        "head_ref": "evidence/10986-rows-a",
+        "head_oid": "1111111111111111111111111111111111111111",
+        "mergeable": "MERGEABLE",
+        "merged_at": null,
+        "updated_at": "2026-08-24T07:00:00Z",
+        "review_decision": "",
+        "reviews": [],
+        "checks": [],
+        "merge_commit_oid": null,
+        "merge_commit_in_local_head": null,
+        "body": "Module train: #11625\nModule node: #10986\nParent/controller: #8479"
+      },
+      {
+        "number": 2004,
+        "state": "OPEN",
+        "draft": false,
+        "title": "evidence(module): directive scanner rows (#10986) candidate two, greener CI",
+        "author_login": "writer-d",
+        "base_ref": "main",
+        "head_ref": "evidence/10986-rows-b",
+        "head_oid": "2222222222222222222222222222222222222222",
+        "mergeable": "MERGEABLE",
+        "merged_at": null,
+        "updated_at": "2026-08-24T08:59:00Z",
+        "review_decision": "APPROVED",
+        "reviews": [
+          {
+            "author_login": "reviewer-y",
+            "state": "APPROVED",
+            "submitted_at": "2026-08-24T08:59:00Z"
+          }
+        ],
+        "checks": [
+          {
+            "name": "Perl LSP Rust Small Result",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS"
+          }
+        ],
+        "merge_commit_oid": null,
+        "merge_commit_in_local_head": null,
+        "body": "Module train: #11625\nModule node: #10986\nParent/controller: #8479"
+      },
+      {
+        "number": 2005,
+        "state": "OPEN",
+        "draft": false,
+        "title": "misbound: controller bound as implementation (#4240)",
+        "author_login": "writer-e",
+        "base_ref": "main",
+        "head_ref": "tooling/4240-controller-impl",
+        "head_oid": "3333333333333333333333333333333333333333",
+        "mergeable": "MERGEABLE",
+        "merged_at": null,
+        "updated_at": "2026-08-24T06:00:00Z",
+        "review_decision": "",
+        "reviews": [],
+        "checks": [],
+        "merge_commit_oid": null,
+        "merge_commit_in_local_head": null,
+        "body": "Module train: #11625\nModule node: #4240\nParent/controller: #8133"
+      },
+      {
+        "number": 2006,
+        "state": "MERGED",
+        "draft": false,
+        "title": "tooling(module-train): offline current-tree status and safe frontier (#11626) (#12055)",
+        "author_login": "writer-f",
+        "base_ref": "main",
+        "head_ref": "tooling/11626-module-train-frontier",
+        "head_oid": "e45175b2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "mergeable": "MERGEABLE",
+        "merged_at": "2026-08-24T08:24:18Z",
+        "updated_at": "2026-08-24T08:24:18Z",
+        "review_decision": null,
+        "reviews": [],
+        "checks": [],
+        "merge_commit_oid": "0469e74ceaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "merge_commit_in_local_head": true,
+        "body": "Module train: #11625\nModule node: #11626\nParent/controller: #4240"
+      },
+      {
+        "number": 2007,
+        "state": "MERGED",
+        "draft": false,
+        "title": "cutover(runtime): service ledger (#11008) (merged on a different tree)",
+        "author_login": "writer-g",
+        "base_ref": "main",
+        "head_ref": "cutover/11008-service-ledger",
+        "head_oid": "4444444444444444444444444444444444444444",
+        "mergeable": "MERGEABLE",
+        "merged_at": "2026-08-20T10:00:00Z",
+        "updated_at": "2026-08-20T10:00:00Z",
+        "review_decision": null,
+        "reviews": [],
+        "checks": [],
+        "merge_commit_oid": "9999999999999999999999999999999999999999",
+        "merge_commit_in_local_head": false,
+        "body": "Module train: #11625\nModule node: #11008\nParent/controller: #7421"
+      },
+      {
+        "number": 2008,
+        "state": "CLOSED",
+        "draft": false,
+        "title": "implementation(module): effective roots (#10575) closed without merge",
+        "author_login": "writer-h",
+        "base_ref": "main",
+        "head_ref": "tooling/10575-effective-roots",
+        "head_oid": "5555555555555555555555555555555555555555",
+        "mergeable": "CONFLICTING",
+        "merged_at": null,
+        "updated_at": "2026-08-01T10:00:00Z",
+        "review_decision": null,
+        "reviews": [],
+        "checks": [],
+        "merge_commit_oid": null,
+        "merge_commit_in_local_head": null,
+        "body": "Module train: #11625\nModule node: #10575\nParent/controller: #8701"
+      },
+      {
+        "number": 2009,
+        "state": "OPEN",
+        "draft": false,
+        "title": "implementation(module): candidate enumeration on a wrong base (#10578)",
+        "author_login": "writer-i",
+        "base_ref": "tooling/other-pr-base",
+        "head_ref": "tooling/10578-enumeration",
+        "head_oid": "6666666666666666666666666666666666666666",
+        "mergeable": "MERGEABLE",
+        "merged_at": null,
+        "updated_at": "2026-08-24T05:00:00Z",
+        "review_decision": "",
+        "reviews": [],
+        "checks": [],
+        "merge_commit_oid": null,
+        "merge_commit_in_local_head": null,
+        "body": "Module train: #11625\nModule node: #10578\nParent/controller: #8701"
+      },
+      {
+        "number": 2010,
+        "state": "OPEN",
+        "draft": false,
+        "title": "trailer names an unknown node",
+        "author_login": "writer-j",
+        "base_ref": "main",
+        "head_ref": "tooling/999999-unknown",
+        "head_oid": "7777777777777777777777777777777777777777",
+        "mergeable": "MERGEABLE",
+        "merged_at": null,
+        "updated_at": "2026-08-24T04:00:00Z",
+        "review_decision": "",
+        "reviews": [],
+        "checks": [],
+        "merge_commit_oid": null,
+        "merge_commit_in_local_head": null,
+        "body": "Module train: #11625\nModule node: #999999\nParent/controller: #4240"
+      },
+      {
+        "number": 2011,
+        "state": "OPEN",
+        "draft": false,
+        "title": "unrelated PR with no module trailers",
+        "author_login": "writer-k",
+        "base_ref": "main",
+        "head_ref": "docs/readme-typo",
+        "head_oid": "8888888888888888888888888888888888888888",
+        "mergeable": "MERGEABLE",
+        "merged_at": null,
+        "updated_at": "2026-08-24T03:00:00Z",
+        "review_decision": "",
+        "reviews": [],
+        "checks": [],
+        "merge_commit_oid": null,
+        "merge_commit_in_local_head": null,
+        "body": "Fixes a typo. Mentions 8497 and 11627 in prose but carries no identity block."
+      },
+      {
+        "number": 2012,
+        "state": "OPEN",
+        "draft": false,
+        "title": "incomplete identity block: names a node but omits the other trailers (#10571)",
+        "author_login": "writer-l",
+        "base_ref": "main",
+        "head_ref": "tooling/10571-lib-expansion",
+        "head_oid": "abababababababababababababababababababab",
+        "mergeable": "MERGEABLE",
+        "merged_at": null,
+        "updated_at": "2026-08-24T02:00:00Z",
+        "review_decision": "",
+        "reviews": [],
+        "checks": [
+          {
+            "name": "Compile agent-flow control plane",
+            "status": "COMPLETED",
+            "conclusion": "CANCELLED"
+          }
+        ],
+        "merge_commit_oid": null,
+        "merge_commit_in_local_head": null,
+        "body": "Module node: #10571\n\n(This block omits Module train and Parent/controller: it must stay attached to its node as a misbound claim, never let the node silently START.)"
+      }
+    ]
+  },
+  "instruments": {
+    "git_local": {
+      "source": "fixture",
+      "state": "ok",
+      "detail": ""
+    },
+    "git_remote": {
+      "source": "fixture",
+      "state": "ok",
+      "detail": ""
+    },
+    "github_prs": {
+      "source": "fixture",
+      "state": "ok",
+      "detail": ""
+    }
+  },
+  "issues": [
+    {
+      "number": 8497,
+      "state": "closed",
+      "labels": [
+        "status:done",
+        "landed"
+      ],
+      "note": "stray issue-state payload: closure/labels are never ownership or tree authority and must not alter classification"
+    },
+    {
+      "number": 11627,
+      "state": "closed",
+      "labels": [
+        "status:blocked-obsolete"
+      ]
+    }
+  ]
+}

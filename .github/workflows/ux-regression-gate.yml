@@ -73,7 +73,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2.85.13
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
         with:
           tool: just
 
@@ -353,30 +353,45 @@ jobs:
           fi
 
       - name: Setup VS Code toolchain
+        id: toolchain
         uses: ./.github/actions/setup-vscode-toolchain
 
+      # Formatting/lint failures still fail this job, but must not suppress
+      # runnable test evidence (#14750). Explicit status predicates bypass the
+      # implicit success() gate; setup, typecheck, build, and cancellation remain
+      # real prerequisites. No continue-on-error or second result collector.
       - name: Lint (oxlint --type-aware, with type-aware canary)
+        id: lint
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         working-directory: vscode-extension
         run: npm run lint
 
       - name: Format check (oxfmt)
+        id: format
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         working-directory: vscode-extension
         run: npm run fmt:check
 
       - name: Typecheck all configs (tsc --noEmit, TS7)
+        id: typecheck
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         working-directory: vscode-extension
         run: npm run typecheck:all
 
       - name: Build (rolldown)
+        id: build
+        if: ${{ !cancelled() && steps.typecheck.outcome == 'success' }}
         working-directory: vscode-extension
-        run: npm run compile
+        run: npm run bundle
 
       - name: Unit tests (jest --ci)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         id: jest
         working-directory: vscode-extension
         run: npm run test:ci
 
       - name: Grammar snapshot tests (visual regression)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         id: grammar
         working-directory: vscode-extension
         run: npm run test:grammar
@@ -385,6 +400,10 @@ jobs:
         if: always()
         env:
           TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          LINT_OUTCOME: ${{ steps.lint.outcome }}
+          FORMAT_OUTCOME: ${{ steps.format.outcome }}
+          TYPECHECK_OUTCOME: ${{ steps.typecheck.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
           JEST_OUTCOME: ${{ steps.jest.outcome }}
           GRAMMAR_OUTCOME: ${{ steps.grammar.outcome }}
         run: |
@@ -392,6 +411,10 @@ jobs:
             echo "## Extension Jest"
             echo
             echo "- Exact tested SHA: \`$TESTED_SHA\`"
+            echo "- Lint: \`${LINT_OUTCOME:-not_run}\`"
+            echo "- Format: \`${FORMAT_OUTCOME:-not_run}\`"
+            echo "- Typecheck: \`${TYPECHECK_OUTCOME:-not_run}\`"
+            echo "- Build: \`${BUILD_OUTCOME:-not_run}\`"
             echo "- Jest: \`${JEST_OUTCOME:-not_run}\`"
             echo "- Grammar snapshots: \`${GRAMMAR_OUTCOME:-not_run}\`"
           } >> "$GITHUB_STEP_SUMMARY"

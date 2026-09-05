@@ -1,6 +1,4 @@
-use perl_module::reference::{
-    ModuleReferenceKind, extract_module_reference, find_module_reference,
-};
+use perl_module::{ModuleReferenceKind, extract_module_reference, find_module_reference};
 use perl_tdd_support::must_some;
 
 #[test]

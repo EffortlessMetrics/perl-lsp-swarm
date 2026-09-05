@@ -48,6 +48,8 @@ set -euo pipefail
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+. "$REPO_ROOT/scripts/lib/cargo-toolchain-guard.sh"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 WORKTREE_DIR="${PROJECT_ROOT}/.worktrees"
 OUTPUT_DIR="${PROJECT_ROOT}/artifacts/telemetry"
@@ -243,6 +245,8 @@ fi
 cd "$PROJECT_ROOT"
 BASE_SHA=$(git rev-parse "$BASE_SHA" 2>/dev/null || echo "$BASE_SHA")
 HEAD_SHA=$(git rev-parse "$HEAD_SHA" 2>/dev/null || echo "$HEAD_SHA")
+
+cargo_toolchain_guard
 
 log_info "Mode: $MODE"
 log_info "Base: ${BASE_SHA:0:12}"

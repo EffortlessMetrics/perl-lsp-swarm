@@ -4,25 +4,26 @@ mod build_catalog {
     // only the resolver and generation subset (grid/deprecated helpers belong to
     // the build.rs and perl-dap consumers).
     #![allow(dead_code)]
+    use perl_test_must::{must_err_with, must_with};
 
     include!("../build_catalog.rs");
 
-    use perl_tdd_support::{must, must_err};
+
 
     #[test]
     fn missing_explicit_override_is_terminal_even_with_workspace_catalog() {
-        let root = must(tempfile::tempdir());
+        let root = must_with(tempfile::tempdir(), "create test catalog directory");
         let workspace_catalog = root.path().join("features.toml");
         let missing_override = root.path().join("missing-features.toml");
-        must(std::fs::write(
-            &workspace_catalog,
-            "[meta]\nversion = 'test'\nlsp_version = 'test'\n",
-        ));
+        must_with(
+            std::fs::write(&workspace_catalog, "[meta]\nversion = 'test'\nlsp_version = 'test'\n"),
+            "write fallback workspace catalog",
+        );
 
-        let error = must_err(resolve_catalog_source_with_override(
-            root.path(),
-            Some(missing_override.clone()),
-        ));
+        let error = must_err_with(
+            resolve_catalog_source_with_override(root.path(), Some(missing_override.clone())),
+            "missing explicit override must be terminal",
+        );
 
         assert!(error.contains("FEATURES_TOML_OVERRIDE path does not exist"));
         assert!(workspace_catalog.exists());
@@ -31,19 +32,25 @@ mod build_catalog {
 
     #[test]
     fn missing_override_emits_no_fallback_artifact() {
-        let root = must(tempfile::tempdir());
-        must(std::fs::write(
-            root.path().join("features.toml"),
-            "[meta]\nversion = 'test'\nlsp_version = 'test'\n",
-        ));
+        let root = must_with(tempfile::tempdir(), "create test catalog directory");
+        must_with(
+            std::fs::write(
+                root.path().join("features.toml"),
+                "[meta]\nversion = 'test'\nlsp_version = 'test'\n",
+            ),
+            "write fallback workspace catalog",
+        );
         let out_dir = root.path().join("out");
-        must(std::fs::create_dir(&out_dir));
+        must_with(std::fs::create_dir(&out_dir), "create test output directory");
 
-        let error = must_err(generate_lsp_catalog_module_at(
-            root.path(),
-            &out_dir,
-            Some(root.path().join("missing-features.toml")),
-        ));
+        let error = must_err_with(
+            generate_lsp_catalog_module_at(
+                root.path(),
+                &out_dir,
+                Some(root.path().join("missing-features.toml")),
+            ),
+            "missing explicit override must fail the entrypoint",
+        );
 
         assert!(error.contains("FEATURES_TOML_OVERRIDE path does not exist"));
         assert!(!out_dir.join("feature_contracts.rs").exists());
@@ -51,14 +58,18 @@ mod build_catalog {
 
     #[test]
     fn declared_compliance_percent_is_refused_before_generation() {
-        let root = must(tempfile::tempdir());
+        let root = must_with(tempfile::tempdir(), "create test catalog directory");
         let catalog_path = root.path().join("features.toml");
-        must(std::fs::write(
-            &catalog_path,
-            "[meta]\nversion = 'test'\nlsp_version = 'test'\ncompliance_percent = 98\n\n[[feature]]\nid = 'test'\nmaturity = 'planned'\n",
-        ));
+        must_with(
+            std::fs::write(
+                &catalog_path,
+                "[meta]\nversion = 'test'\nlsp_version = 'test'\ncompliance_percent = 98\n\n[[feature]]\nid = 'test'\nmaturity = 'planned'\n",
+            ),
+            "write catalog with refused aggregate",
+        );
 
-        let error = must_err(read_catalog(&catalog_path));
+        let error =
+            must_err_with(read_catalog(&catalog_path), "declaration aggregate must be refused");
 
         assert!(error.contains("meta.compliance_percent is refused"));
     }

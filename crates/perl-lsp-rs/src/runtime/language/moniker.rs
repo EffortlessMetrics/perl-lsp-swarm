@@ -2,7 +2,7 @@
 
 use super::super::{JsonRpcError, LspServer, Value, json};
 use crate::protocol::{req_position, req_uri};
-use perl_module::import::resolve_known_export_tag;
+use perl_module::resolve_known_export_tag;
 
 impl LspServer {
     /// Handle textDocument/moniker request
@@ -559,10 +559,8 @@ impl LspServer {
                         }
                     }
                 }
-                NodeKind::Subroutine { body, .. } => {
-                    if check(body, name, sigil) {
-                        return true;
-                    }
+                NodeKind::Subroutine { body, .. } if check(body, name, sigil) => {
+                    return true;
                 }
                 _ => {}
             }

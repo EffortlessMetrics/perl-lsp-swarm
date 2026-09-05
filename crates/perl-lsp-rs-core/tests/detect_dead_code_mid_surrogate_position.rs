@@ -12,7 +12,7 @@
 mod tests {
     use perl_lsp_rs_core::providers::diagnostics::detect_dead_code;
     use perl_parser_core::position::LineStartsCache;
-    use perl_tdd_support::{must, must_some};
+    use perl_test_must::{must_some_with, must_with};
     use perl_workspace::workspace_index::WorkspaceIndex;
 
     /// Index a Perl file, call `detect_dead_code` with emoji source text whose
@@ -46,11 +46,17 @@ mod tests {
         let perl_source = "1;sub foo{}";
         let index = WorkspaceIndex::new();
         let raw_uri = "file:///test_mid_surrogate_2478.pl";
-        must(index.index_file_str(raw_uri, perl_source));
+        must_with(
+            index.index_file_str(raw_uri, perl_source),
+            "Perl source must parse without error",
+        );
 
         // ── 2. Confirm the symbol is present and unused ───────────────────────
         let unused = index.find_unused_symbols();
-        let foo_sym = must_some(unused.iter().find(|s| s.name == "foo"));
+        let foo_sym = must_some_with(
+            unused.iter().find(|s| s.name == "foo"),
+            "sub foo should be unused (no callers indexed)",
+        );
 
         // The symbol must start at line=0, column=2 (UTF-16).
         // This is what drives the mid-surrogate branch in position_to_offset.
@@ -90,8 +96,10 @@ mod tests {
         );
 
         // The start byte for "foo" must be 1 — the clamped emoji start, not 5 ('y').
-        let start_byte =
-            must_some(diags.iter().find(|d| d.message.contains("foo")).map(|d| d.range.0));
+        let start_byte = must_some_with(
+            diags.iter().find(|d| d.message.contains("foo")).map(|d| d.range.0),
+            "a diagnostic mentioning 'foo' must be present",
+        );
 
         assert_eq!(
             start_byte, 1,

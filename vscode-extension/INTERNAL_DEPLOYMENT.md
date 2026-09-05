@@ -48,7 +48,7 @@ The simplest approach for internal deployment.
    ```bash
    cd vscode-extension
    npm install
-   npm run compile
+   npm run bundle
    npx vsce package
    ```
 
@@ -154,7 +154,7 @@ Package the binary directly with the extension.
 
    ```bash
    npm install
-   npm run compile
+   npm run bundle
    npx vsce package
    ```
 

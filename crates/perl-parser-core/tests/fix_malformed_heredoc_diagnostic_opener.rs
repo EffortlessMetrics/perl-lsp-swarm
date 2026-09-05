@@ -30,11 +30,11 @@ fn unterminated_heredoc_diagnostic_pins_to_opener_not_eof() -> Result<(), String
     assert!(!locations.is_empty(), "unterminated heredoc diagnostic must carry a byte location");
 
     assert!(
-        locations.iter().any(|&loc| loc == opener),
+        locations.contains(&opener),
         "expected diagnostic at opener offset {opener}, got {locations:?}"
     );
     assert!(
-        locations.iter().any(|&loc| loc == body),
+        locations.contains(&body),
         "expected diagnostic at body offset {body}, got {locations:?}"
     );
     assert!(
@@ -84,15 +84,15 @@ fn later_same_line_heredoc_body_diagnostic_uses_collected_span() -> Result<(), S
         .ok_or_else(|| "fixture must contain first body line".to_string())?;
 
     assert!(
-        locations.iter().any(|&loc| loc == opener_b),
+        locations.contains(&opener_b),
         "expected unterminated diagnostic at B opener {opener_b}, got {locations:?}"
     );
     assert!(
-        locations.iter().any(|&loc| loc == body_b),
+        locations.contains(&body_b),
         "expected body diagnostic at collected B body {body_b}, got {locations:?}"
     );
     assert!(
-        !locations.iter().any(|&loc| loc == body_a),
+        !locations.contains(&body_a),
         "B must not report its body diagnostic on A's body offset {body_a}; locations={locations:?}"
     );
     Ok(())

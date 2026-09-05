@@ -6,13 +6,15 @@
 //! effective-state store.
 //!
 //! Explicit non-registration dispositions (#7054): parsed settings that
-//! deliberately carry no authority row are limited to
-//! `ProjectPerlConfig.version` (parsed from `.perl-lsp.toml`, documented as
-//! reserved and ignored — no effective field exists to own) and the internal
+//! deliberately carry no authority row are limited to the internal
 //! `LspLimits` fields listed in `INTERNAL_UNPARSED_LIMIT_FIELDS` (compiled
 //! defaults with no external configuration channel).
+//! `ProjectPerlConfig.version` is intentionally a derived folder-scoped PL900
+//! input and is not merged into the global authority catalog.
 
 #![allow(dead_code)]
+
+use serde::{Deserialize, Serialize};
 
 mod catalog;
 
@@ -38,7 +40,7 @@ pub(crate) enum ConfigScope {
 }
 
 /// Input authority, ordered from lowest to highest precedence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) enum ConfigSource {
     CompiledDefault,
     InitializationOptions,
@@ -81,7 +83,7 @@ pub(crate) enum ConfigValueKind {
 }
 
 /// Validation rule applied before an input can become authoritative.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ConfigValidation {
     Boolean,
     NonEmptyString,
@@ -117,7 +119,7 @@ pub(crate) enum InvalidValueFallback {
 }
 
 /// Sensitivity and trust class for configuration evidence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ConfigSensitivity {
     Ordinary,
     Path,
@@ -128,7 +130,7 @@ pub(crate) enum ConfigSensitivity {
 }
 
 /// How the value may appear in logs, receipts, and generated status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum EvidencePolicy {
     SafeValue,
     BoundedValue,

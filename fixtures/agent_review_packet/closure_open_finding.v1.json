@@ -1,0 +1,60 @@
+{
+  "schema": "stage_closure_projection.v1",
+  "schema_version": 1,
+  "projection_id": "issue-controllers/R_controller_leaf/N_controller_bounded/closure/2026-08-24T00:00:00Z",
+  "reviewed": {
+    "packet_id": "issue-controllers/R_controller_leaf/N_controller_bounded/2026-08-24T00:00:00Z",
+    "packet_digest": "sha256:90bc",
+    "builder_packet_digest": "sha256:8d22",
+    "reviewed_head": "c44e0d1b7",
+    "reviewed_base": "06a6af4f0",
+    "claim_ceiling": "Establishes only the bounded controller-leaf adapter and its focused tests; no independent readiness, GitHub write, or merge authority."
+  },
+  "currentness": {
+    "head": "c44e0d1b7",
+    "base": "06a6af4f0",
+    "tree": "c44e0d1b7^{tree}",
+    "packet_digest": "sha256:90bc",
+    "builder_packet_digest": "sha256:8d22",
+    "claim_ceiling": "Establishes only the bounded controller-leaf adapter and its focused tests; no independent readiness, GitHub write, or merge authority."
+  },
+  "review_state": {
+    "roles": [
+      { "role": "builder_self_review", "required": true, "state": "terminal", "reference": "builder self-review receipt@c44e0d1b7" },
+      { "role": "adversarial_challenger", "required": true, "state": "terminal", "reference": "challenger review FIND-dry-run-mutation@c44e0d1b7" },
+      { "role": "specialist", "required": true, "state": "pending" },
+      { "role": "evidence_worker", "required": false, "state": "not_applicable", "reason": "No bounded evidence gathering was needed for this review." }
+    ],
+    "findings": [
+      {
+        "finding_id": "issue-controllers/R_controller_leaf/N_controller_bounded/FIND-dry-run-mutation",
+        "material": true,
+        "outcome": "material_blocker",
+        "state": "open"
+      },
+      {
+        "finding_id": "issue-controllers/R_controller_leaf/N_controller_bounded/FIND-api-pagination-silence",
+        "material": false,
+        "outcome": "bounded_follow_up",
+        "state": "open"
+      }
+    ]
+  },
+  "controls": {
+    "negative_controls_load_bearing": true,
+    "old_paths_dispositioned": true,
+    "generated_outputs_current": true,
+    "generated_identities": ["docs/policy/NON_RUST_INVENTORY.md second-run no-diff@c44e0d1b7"]
+  },
+  "external_stage": {
+    "claimed": false,
+    "observed": false
+  },
+  "lifecycle": {
+    "graceful_cleanup_claimed": false,
+    "force_path_excluded": false
+  },
+  "eligibility": "not_eligible",
+  "authorization": "advisory_only",
+  "merge_authorized": false
+}

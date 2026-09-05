@@ -3,7 +3,7 @@
 //! Covers the public API: [`find_standalone_module_token_ranges`],
 //! [`contains_standalone_module_token`], and [`ModuleTokenRange`].
 
-use perl_module::boundary::{
+use perl_module::{
     ModuleTokenRange, contains_standalone_module_token, find_standalone_module_token_ranges,
 };
 

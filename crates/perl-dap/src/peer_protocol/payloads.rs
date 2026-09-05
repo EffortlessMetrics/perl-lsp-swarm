@@ -5,6 +5,8 @@
 //! [`crate::model`] so the internal model can evolve without breaking peers.
 //! The external peer backend translates between these and the model.
 
+#[cfg(test)]
+use perl_tdd_support::{must, must_some};
 use serde::{Deserialize, Serialize};
 
 use super::capabilities::{HostReportedCapabilities, PeerReportedCapabilities};
@@ -382,12 +384,12 @@ mod tests {
                 ..Default::default()
             },
         };
-        let json = serde_json::to_value(&args).expect("serialize");
+        let json = must(serde_json::to_value(&args));
         assert_eq!(json["peerVersion"], "1.1091");
         assert_eq!(json["protocolVersion"], super::super::PROTOCOL_VERSION);
         assert_eq!(json["token"], "deadbeefcafef00ddeadbeefcafef00d");
         assert_eq!(json["capabilities"]["canSetBreakpoints"], true);
-        let back: HelloArgs = serde_json::from_value(json).expect("deserialize");
+        let back: HelloArgs = must(serde_json::from_value(json));
         assert_eq!(args, back);
     }
 
@@ -403,26 +405,25 @@ mod tests {
             token: None,
             capabilities: PeerReportedCapabilities::default(),
         };
-        let json = serde_json::to_value(&args).expect("serialize");
+        let json = must(serde_json::to_value(&args));
         assert!(json.get("token").is_none(), "absent token must not be serialized");
         let tokenless = serde_json::json!({
             "peer": "Devel::ptkdb",
             "protocolVersion": super::super::PROTOCOL_VERSION,
         });
-        let back: HelloArgs = serde_json::from_value(tokenless).expect("deserialize");
+        let back: HelloArgs = must(serde_json::from_value(tokenless));
         assert_eq!(back.token, None);
     }
 
     #[test]
     fn stopped_event_body_parses_ptkdb_shape() {
-        let body: StoppedEventBody = serde_json::from_str(
+        let body: StoppedEventBody = must(serde_json::from_str(
             r#"{"reason":"breakpoint","threadId":1,"source":{"path":"/work/script.pl"},"line":42,"column":1}"#,
-        )
-        .expect("deserialize");
+        ));
         assert_eq!(body.reason, "breakpoint");
         assert_eq!(body.thread_id, 1);
         assert_eq!(body.line, Some(42));
-        assert_eq!(body.source.expect("source").path, "/work/script.pl");
+        assert_eq!(must_some(body.source).path, "/work/script.pl");
     }
 
     #[test]
@@ -445,8 +446,8 @@ mod tests {
                 },
             ],
         };
-        let json = serde_json::to_string(&body).expect("serialize");
-        let back: SetBreakpointsResponseBody = serde_json::from_str(&json).expect("deserialize");
+        let json = must(serde_json::to_string(&body));
+        let back: SetBreakpointsResponseBody = must(serde_json::from_str(&json));
         assert_eq!(back.breakpoints[0].id, 1);
         assert_eq!(back.breakpoints[1].id, 2);
         assert!(!back.breakpoints[1].verified);

@@ -5,6 +5,7 @@
 //! distinct same-position zero-width edits, and must
 //! apply valid whole-document edits byte-exactly through true EOF. It shares
 //! no geometry code with any production range constructor.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_lsp_perltidy::native::{
     EditApplicationError, EditSpec, FormatResult, PositionEncoding, TextEdit, TextPosition,

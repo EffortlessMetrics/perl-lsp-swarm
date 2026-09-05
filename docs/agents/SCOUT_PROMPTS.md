@@ -20,7 +20,10 @@ Task: Classify PR #{PR_NUMBER} in {REPO} into exactly one category:
   merge | port | close-superseded | defer | duplicate
 
 Evidence rules:
-- DO NOT classify as close-superseded without running and pasting merge-base proof.
+- DO NOT classify as close-superseded without running and pasting landing-proof evidence
+  (`cargo xtask landing-proof --commit <sha> --canonical-main origin/main --format json`).
+  Landing proof alone never authorizes the close — semantic completion evidence is
+  separate (CLOSE_PROOF_POLICY.md, Three Distinct Proof Layers).
 - DO NOT classify as duplicate without citing the canonical PR/issue number.
 - DO NOT use label state alone as evidence — labels can be stale.
 - Read the diff, CI status URL, and any linked issues before deciding.
@@ -78,32 +81,34 @@ Role: Reachability verification scout (read-only, haiku tier).
 
 Task: Verify that commit {COMMIT_SHA} is in the ancestry of origin/main.
 
-Required command — run it and paste the verbatim output:
-  git merge-base --is-ancestor {COMMIT_SHA} origin/main && echo "ANCESTOR" || echo "NOT ANCESTOR"
+Required command — run it and paste the verbatim JSON receipt:
+  cargo xtask landing-proof --commit {COMMIT_SHA} --canonical-main origin/main --format json
 
 Evidence rules:
-- The command output is the evidence. Do not substitute label state, PR status, or
-  branch existence for the command output.
-- If the command fails (unknown revision), report the error verbatim — do not guess.
-- A commit on a feature branch that has not yet been merged to main is NOT ANCESTOR
+- The landing_proof.v1 receipt is the evidence. Do not substitute label state, PR status, or
+  branch existence for the receipt.
+- If the command fails (unknown revision, git unavailable), report the error verbatim — do not guess.
+- A commit on a feature branch that has not yet been merged to main is NOT REACHABLE
   even if the branch is "merged" in GitHub's PR UI (squash-merge may orphan the original SHA).
+- Landing proof is ancestry evidence only. It never authorizes an issue close by itself;
+  semantic completion evidence is separate (CLOSE_PROOF_POLICY.md, Three Distinct Proof Layers).
 
 Required output (JSON, no prose before or after):
 {
-  "claim": "commit {COMMIT_SHA} is ANCESTOR|NOT ANCESTOR of origin/main",
+  "claim": "commit {COMMIT_SHA} is REACHABLE|NOT REACHABLE from origin/main",
   "evidence": [
-    "Command: git merge-base --is-ancestor {COMMIT_SHA} origin/main && echo ANCESTOR || echo NOT ANCESTOR",
-    "Output: <paste verbatim output here>"
+    "Command: cargo xtask landing-proof --commit {COMMIT_SHA} --canonical-main origin/main --format json",
+    "Receipt: <paste verbatim landing_proof.v1 receipt here>"
   ],
   "confidence": "high",
-  "recommended_action": "<close-proof-satisfied | close-proof-not-satisfied | error-investigate>",
+  "recommended_action": "<landing-proof-satisfied | landing-proof-not-satisfied | error-investigate>",
   "blocked_by": null
 }
 
 Constraints:
 - Read-only. Do not close, label, or comment on any PR or issue.
 - confidence is always "high" when the command ran successfully — this is a deterministic check.
-- If command output is NOT ANCESTOR, set recommended_action to "close-proof-not-satisfied — do not close".
+- If the receipt reports commit_reachable=false, set recommended_action to "landing-proof-not-satisfied — landing not proven".
 ```
 
 ---

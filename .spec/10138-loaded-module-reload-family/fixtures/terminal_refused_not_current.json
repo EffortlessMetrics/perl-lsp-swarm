@@ -1,0 +1,20 @@
+{
+  "schema": "perl_dap.loaded_module_reload_family.vector.v1",
+  "name": "terminal_refused_not_current",
+  "description": "Admission refused because the subject identity is no longer exact or current; nothing was attempted and the generation does not advance.",
+  "outcome": { "kind": "refused", "disposition": "source_not_exact_or_stale" },
+  "generation_before": 3,
+  "expect": {
+    "kind": "refused",
+    "phase": "admission",
+    "disposition": "source_not_exact_or_stale",
+    "success": false,
+    "possibly_applied": false,
+    "generation": { "previous": 3, "current": 3, "advanced": false },
+    "reconciliation": {
+      "loaded_source_refresh": "deferred",
+      "inspection_invalidation": "deferred",
+      "breakpoint_reconciliation": "deferred"
+    }
+  }
+}

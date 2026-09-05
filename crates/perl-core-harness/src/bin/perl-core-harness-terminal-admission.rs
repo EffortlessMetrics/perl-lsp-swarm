@@ -10,7 +10,9 @@
 //! later consumers cannot silently reopen different report bytes.
 
 use color_eyre::eyre::{Context, Result, bail};
-use perl_core_harness_types::{HarnessMode, RUN_REPORT_SCHEMA_VERSION, RunReport};
+use perl_core_harness_types::{
+    HarnessMode, RUN_REPORT_SCHEMA_VERSION, RunReport, validate_file_result_mechanisms,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -207,6 +209,12 @@ fn read_report_evidence(path: &Path) -> Result<ReportEvidence> {
         .with_context(|| format!("decoding run report {}", path.display()))?;
     if report.schema_version != RUN_REPORT_SCHEMA_VERSION {
         bail!("{} uses unsupported run-report schema {}", path.display(), report.schema_version);
+    }
+    // Admission copies report bytes forward as evidence, so a report whose
+    // execution-mechanism claim is inadmissible must not pass through here
+    // either (#14363).
+    if let Err(violation) = validate_file_result_mechanisms(report.mode, &report.file_results) {
+        bail!("{}: {violation}", path.display());
     }
 
     let (terminal_admitted, reason) = match report.harness_status {
@@ -470,7 +478,9 @@ fn write_receipt(path: &Path, receipt: &AdmissionReceipt) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_core_harness_types::{HarnessProfile, HarnessRunner, RunSummary};
+    use perl_core_harness_types::{
+        ExecutionMechanism, HarnessProfile, HarnessRunner, RunFileResult, RunSummary, RunnerStatus,
+    };
 
     type TestResult = Result<()>;
 
@@ -774,5 +784,101 @@ mod tests {
         };
         fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&report)?))?;
         Ok(path)
+    }
+
+    /// Admission copies report bytes forward as evidence, so a report whose
+    /// execution-mechanism claim is inadmissible must be refused here rather
+    /// than carried into the admitted directory (#14363).
+    #[test]
+    fn admission_refuses_an_inadmissible_execution_mechanism() -> TestResult {
+        let temp = tempfile::tempdir()?;
+
+        // A compile receipt executes nothing, so any mechanism on it is a
+        // claim its rail never made.
+        let mislabelled = write_report_with_mechanism(
+            temp.path(),
+            "mislabelled.json",
+            HarnessMode::Compile,
+            Some(ExecutionMechanism::FixtureReplay),
+        )?;
+        let error = match read_report_evidence(&mislabelled) {
+            Err(error) => error,
+            Ok(_) => bail!("a compile report claiming execution evidence must not be admitted"),
+        };
+        if !format!("{error:?}").contains("only execution receipts may carry") {
+            bail!("unexpected mislabelling error: {error:?}");
+        }
+
+        // An execute receipt claiming a rail nothing backs.
+        let forged = write_report_with_mechanism(
+            temp.path(),
+            "forged.json",
+            HarnessMode::Execute,
+            Some(ExecutionMechanism::EirExecution),
+        )?;
+        let error = match read_report_evidence(&forged) {
+            Err(error) => error,
+            Ok(_) => bail!("a forged execution mechanism must not be admitted"),
+        };
+        if !format!("{error:?}").contains("no current rail can supply") {
+            bail!("unexpected forgery error: {error:?}");
+        }
+
+        // Opposite-direction control: honest evidence still admits.
+        let honest = write_report_with_mechanism(
+            temp.path(),
+            "honest.json",
+            HarnessMode::Execute,
+            Some(ExecutionMechanism::FixtureReplay),
+        )?;
+        read_report_evidence(&honest)?;
+        Ok(())
+    }
+
+    fn write_report_with_mechanism(
+        directory: &Path,
+        name: &str,
+        mode: HarnessMode,
+        mechanism: Option<ExecutionMechanism>,
+    ) -> Result<PathBuf> {
+        let path = write_report(directory, name, mode, Some(0), false)?;
+        let mut report: RunReport = serde_json::from_str(&fs::read_to_string(&path)?)?;
+        report.file_results.push(RunFileResult {
+            path: "base/0.t".to_string(),
+            status: RunnerStatus::Pass,
+            assertions_passed: 1,
+            assertions_total: 1,
+            mechanism,
+        });
+        fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&report)?))?;
+        Ok(path)
+    }
+
+    /// #6884: the legacy receipt bin must refuse exactly the shapes the typed
+    /// terminal authority refuses, so the two admission surfaces cannot drift
+    /// while the v2 legacy schema stays frozen.
+    #[test]
+    fn bin_admission_matches_typed_terminal_authority() -> TestResult {
+        for mode in [HarnessMode::Parse, HarnessMode::Compile] {
+            for status in [None, Some(0), Some(255)] {
+                let temp = tempfile::tempdir()?;
+                let path = write_report(temp.path(), "report.json", mode, status, false)?;
+                let evidence = read_report_evidence(&path)?;
+                let typed =
+                    perl_core_harness::transition::TerminalProcessOutcome::from_harness_status(
+                        status,
+                        HarnessRunner::Test,
+                        mode,
+                    );
+                assert_eq!(
+                    evidence.admission.terminal_admitted,
+                    typed.is_scoreable(),
+                    "bin/typed drift for {mode:?} status {status:?}: bin reason '{}', typed '{}'",
+                    evidence.admission.reason,
+                    typed.label()
+                );
+            }
+        }
+        Ok(())
     }
 }
