@@ -1,27 +1,27 @@
 ---
 name: deliver-pr
-description: Run one coherent claim through its named Codex route using a claim-local lane orchestrator, one writer, useful subagents, and GitHub-native durable handoffs.
+description: Carry one coherent claim through its named Codex route in the accountable root, using one writer, bounded research/review programmes, and GitHub-native durable handoffs.
 ---
 
 # Deliver PR
 
-This is a lane-root flow for one coherent acceptance-and-rollback claim. Reconstruct
-only that lane's issue, governing contract, proof, branch/worktree, candidate, PR,
-substantive review, live integration, explicit prerequisites, and closeout state.
+This is the root claim flow for one coherent acceptance-and-rollback claim. Reconstruct
+only the selected claim frame: controlling issue, governing contract, proof,
+branch/worktree, candidate, PR, substantive review, live integration, explicit
+prerequisites, and closeout state.
 
-The lane root runs the route; it does not merely choose a starting point and then invent
-an ad hoc lifecycle. Invoke `$orchestrate-work` where useful, follow each selected
-skill's normal and material backward routes, keep one candidate writer, and return a
-typed lane result to the campaign root.
+The main/root orchestrator owns the claim meaning, current route, evidence joins,
+finding dispositions, integration judgment, and continuation. It invokes
+`$orchestrate-work` where useful, follows each selected skill's normal and material
+backward routes, keeps one candidate writer, and updates the root-held claim frame.
 
-Mentioning one issue or PR does not make the Codex campaign root a leaf worker. A
-campaign root normally delegates a substantial claim as a whole-flow `$deliver-pr`
-lane. A lane root may perform tiny claim-local work directly when briefing and joining
-would cost more than the context it preserves.
+A substantial claim does **not** normally create another orchestrator. Bounded workers
+may execute research, build, proof, or review programmes; the root remains accountable
+for orchestration and synthesis.
 
 Before creating a candidate, check whether an equivalent current PR already implements
-the same claim. Do not inspect sibling lanes, touched-file overlap, nearby symbols, or
-unrelated worktrees as a routine ownership check.
+the same claim. Do not inspect sibling claim implementation details, touched-file
+overlap, nearby symbols, or unrelated worktrees as a routine ownership check.
 
 ## Shift-left claim admission
 
@@ -83,38 +83,46 @@ claim already reconciled
 Create or link a missing issue where it improves continuity, but do not replay completed
 stages performatively.
 
-## Run the route through claim-local orchestration
+## Run the route from the root
 
 For each current transition:
 
 1. Invoke the named public flow or atomic `$skill`.
-2. Use `$orchestrate-work` to choose focused workers, one writer, review contexts, or a
-   claim-local dynamic workflow when useful.
+2. Use `$orchestrate-work` to decide what remains direct in the root and what becomes a
+   bounded researcher, builder/writer, reviewer, explorer, fork, or other execution
+   programme.
 3. Require children to consume the named `$skill` when one is supplied.
-4. Join compact evidence and contradictions; do not adopt a child verdict as approval.
-5. Send accepted mutations through one writer.
+4. Join compact evidence and contradictions in the root; do not adopt a child verdict as
+   approval.
+5. Send accepted mutation through one writer.
 6. Publish useful durable facts to the native GitHub surface.
-7. Continue through the named next/backward route or return the typed result.
+7. Continue through the named next/backward route or update the claim frame with the
+   typed result/wake event.
 
-A whole-flow lane may recursively orchestrate within this claim. Leaf task agents may
-not select unrelated work or widen into lane ownership unless their brief grants that
-authority.
+A child programme may span several ordered atomic skills when the same subject and
+artifact context remain load-bearing. Do not respawn once per skill merely to imitate a
+pipeline stage.
 
-## Candidate and lane contract
+Recursive orchestration is optional provider mechanics only. If a whole-flow worker,
+nested agent, dynamic workflow, or team is experimentally useful, it remains a bounded
+execution context and does not become the repository's logical claim owner or create a
+required sub-hierarchy.
+
+## Candidate and claim contract
 
 One claim normally has one current candidate. One writer mutates this branch/worktree at
-a time. Focused readers, reviewers, external oracles, CI evidence agents, and native
+a time. Focused readers, reviewers, external oracles, CI evidence workers, and native
 subagents may assist without creating rival implementations.
 
-This lane owns its integration work:
+The selected claim owns its integration work:
 
 - behind-only movement on `main` requires no action;
-- an actual Git conflict is resolved in this lane, normally by the later-landing lane;
+- an actual Git conflict is repaired in the affected claim;
 - an explicit stacked prerequisite is retargeted after the prerequisite lands;
 - a combined-tree semantic failure is repaired in the smallest affected candidate;
 - only conflict- or interaction-affected proof and review are refreshed.
 
-Use direct issue or PR comments for material cross-lane facts. Do not create
+Use direct issue or PR comments for material cross-claim facts. Do not create
 reservations, overlap ledgers, central lane state, or routine sibling-PR surveillance.
 
 ## Traceable intended route
@@ -149,8 +157,8 @@ disposition when the information:
 - provides a useful candidate-wide review, integration, merge, or closeout synthesis.
 
 Keep agent identity, topology, liveness, retry order, provisional reasoning, raw logs,
-unchanged polls, and routine skill transitions runtime-local. Do not write lane state to
-a tracked file.
+unchanged polls, and routine skill transitions runtime-local. Do not write claim-frame
+state to a tracked file.
 
 ## Remote-owned waits
 
@@ -159,27 +167,30 @@ owns the next action:
 
 - leave the coherent candidate in GitHub;
 - record the exact remaining action and wake event once when useful;
-- return `IN_FLIGHT` to the caller;
-- let `$deliver-goal` advance another distinct claim;
+- mark this root-held claim frame `IN_FLIGHT`;
+- let `$deliver-goal` select another distinct claim;
+- do not keep an idle agent alive merely to represent the wait;
 - do not poll unchanged state;
 - do not refresh the branch for unrelated `main` movement;
 - do not call the claim blocked merely because it is in flight.
 
 ## What this establishes
 
-One claim follows a traceable provider-native route through issue, proof, candidate,
-review, integration, merge, and closeout, with claim-local orchestration and useful
-GitHub handoffs.
+One root-held claim follows a traceable provider-native route through issue, proof,
+candidate, review, integration, merge, and closeout, with bounded programme delegation
+and useful GitHub handoffs.
 
 ## What this does not establish
 
-A repository scheduler, tracked active-claim/frontier file, agent registry, competing
-candidate set, overlap ledger, comment-per-transition protocol, or merge authorization
-independent of `$review-pr`, live required checks, mergeability, rulesets, and
-unresolved findings.
+A subordinate claim orchestrator, repository scheduler, tracked active-claim/frontier
+file, agent registry, competing candidate set, overlap ledger, comment-per-transition
+protocol, or merge authorization independent of `$review-pr`, live required checks,
+mergeability, rulesets, and unresolved findings.
 
 ## Completion
 
-Return `RECONCILED`, `IN_FLIGHT`, `PARTIAL`, `SUPERSEDED`, `BLOCKED`, or
-`NOT_PROVEN`, naming what landed or remains, which evidence is current, the durable
-issue/PR subject, and the next material route or wake event.
+Update the root-held claim frame with `RECONCILED`, `IN_FLIGHT`, `PARTIAL`,
+`SUPERSEDED`, `BLOCKED`, or `NOT_PROVEN`, naming what landed or remains, which evidence
+is current, the durable issue/PR subject, and the next material route or wake event.
+Return to `$deliver-goal` or the caller when the current claim has no immediately useful
+root work.
