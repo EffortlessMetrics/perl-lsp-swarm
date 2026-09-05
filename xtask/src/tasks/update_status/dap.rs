@@ -248,19 +248,39 @@ mod tests {
             fixture_dir.join("value_format_stdio_matrix.pl").is_file(),
             "stdio-proof fixture must remain present but is not a launch-scorecard fixture"
         );
-        assert_eq!(
-            counts.integration_test_targets, 70,
-            "expected 70 [[test]] targets in perl-dap/Cargo.toml (67 + error_class_fixed_origin from #8739 + debugger_output_origin from #8746 + backend_error_class from #8758), got {}",
-            counts.integration_test_targets
-        );
-        // The count alone cannot prove the two named targets are present — an
-        // unrelated addition could keep the total at 69 while either one goes
-        // missing. Assert both names exist in their [[test]] declarations.
+        // The manifest is the authority for how many [[test]] targets exist;
+        // a bare integer here went stale twice in three days (#8758, #9069;
+        // #14642). Check the counter against an independent TOML parse of the
+        // same manifest, so a counting defect (e.g. matching `[[test]]` inside
+        // a comment or missing a target) is still caught without restating a
+        // fact the manifest already carries.
         let manifest = fs::read_to_string(root.join("crates/perl-dap/Cargo.toml"))?;
-        for target in ["error_class_fixed_origin", "debugger_output_origin", "backend_error_class"]
-        {
+        let parsed: toml::Value = toml::from_str(&manifest)?;
+        let declared: Vec<&str> = parsed
+            .get("test")
+            .and_then(toml::Value::as_array)
+            .map(|targets| {
+                targets.iter().filter_map(|t| t.get("name").and_then(toml::Value::as_str)).collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            !declared.is_empty(),
+            "perl-dap/Cargo.toml must declare explicit [[test]] targets with names"
+        );
+        assert_eq!(
+            counts.integration_test_targets,
+            declared.len(),
+            "count_dap_tests disagrees with the parsed [[test]] targets in perl-dap/Cargo.toml"
+        );
+        // Named targets whose landing issues bound them to this ratchet: a
+        // count alone cannot prove they are still present.
+        for target in [
+            "error_class_fixed_origin", // #8739
+            "debugger_output_origin",   // #8746
+            "backend_error_class",      // #8758
+        ] {
             assert!(
-                manifest.contains(&format!("name = \"{target}\"")),
+                declared.contains(&target),
                 "expected a [[test]] target named {target} in perl-dap/Cargo.toml"
             );
         }
